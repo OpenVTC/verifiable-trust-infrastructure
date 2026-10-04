@@ -16,6 +16,8 @@ import {
   driftRevertImpact,
   adoptStanding,
   projectedRepoRank,
+  selfGrantWaivedOf,
+  waiverFor,
 } from "./model";
 import {
   ACME,
@@ -364,6 +366,24 @@ describe("adoptStanding — what git-ns/drift/resolve adopt accepts", () => {
     });
   });
 
+  it("offers a self-adopt under single-administrator mode, marked, and lets the VTC decide (VTI-APV-022)", () => {
+    // Bob owns docs and is a community administrator; the forge shows him as
+    // admin, which projects to git.repo.own — a self-grant.
+    const off = adoptStanding(BOB, true, ACME, DOCS, added("admin"), BOB, 0);
+    expect(off).toMatchObject({ may: false, handOver: true, right: "git.repo.own" });
+    const on = adoptStanding(BOB, true, ACME, DOCS, added("admin"), BOB, 0, true);
+    expect(on).toEqual({ may: true, member: BOB, right: "git.repo.own", selfGrant: true });
+    // The mode waives separation of duties only: the other checks still apply.
+    const notAdmin = adoptStanding(BOB, false, ACME, DOCS, added("admin"), BOB, 0, true);
+    expect(notAdmin).toMatchObject({ may: false, handOver: true });
+    // Somebody else's adopt carries no mark.
+    expect(adoptStanding(BOB, true, ACME, DOCS, added("admin"), HANA, 0, true)).toEqual({
+      may: true,
+      member: HANA,
+      right: "git.repo.own",
+    });
+  });
+
   it("hands over to an owner, and an elevated adopt to a community administrator", () => {
     const outsider = adoptStanding(HANA, true, ACME, DOCS, added("maintain"), HANA, 0);
     expect(outsider).toMatchObject({ may: false, handOver: true, right: "git.repo.maintain" });
@@ -459,5 +479,32 @@ describe("adoptStanding — what git-ns/drift/resolve adopt accepts", () => {
     expect(raised).toMatchObject({ may: false, handOver: true, member: ALICE, right: "git.repo.maintain" });
     expect(raised.may === false && raised.why).toMatch(/role map/);
     expect(raised.may === false && raised.why).not.toMatch(/break-glass/);
+  });
+});
+
+describe("single-administrator mode's waived self-grants (VTI-APV-022)", () => {
+  const mark = {
+    subject: BOB,
+    right: "git.repo.own",
+    resource: DOCS.resource,
+    at: "2026-10-03T12:00:00Z",
+    task: "https://trusttasks.org/spec/git-ns/right/grant/0.3",
+  };
+
+  it("reads the view's ext.org.openvtc.selfGrantWaived, dropping what is not a record", () => {
+    expect(selfGrantWaivedOf(undefined)).toEqual([]);
+    expect(selfGrantWaivedOf({ "org.openvtc": { selfGrantWaived: "yes" } })).toEqual([]);
+    expect(
+      selfGrantWaivedOf({ "org.openvtc": { selfGrantWaived: [mark, null, { subject: BOB }] } }),
+    ).toEqual([mark]);
+  });
+
+  it("matches a recorded right by subject, right and resource — never a role-derived one", () => {
+    const row = RIGHTS.find((r) => r.subject === BOB && r.resource === DOCS.resource)!;
+    expect(waiverFor([mark], row)).toEqual(mark);
+    expect(waiverFor([mark], { ...row, right: "git.repo.maintain" })).toBeNull();
+    expect(waiverFor([mark], { ...row, subject: HANA })).toBeNull();
+    expect(waiverFor([mark], { ...row, origin: "roleDerived" })).toBeNull();
+    expect(waiverFor(undefined, row)).toBeNull();
   });
 });

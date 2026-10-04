@@ -834,6 +834,17 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Docs**: `docs/02-vta/approvals.md` (the rules),
   `docs/02-vta/task-consent.md` (the ceremony),
   `docs/05-design-notes/approvals-convergence.md` (why one model).
+- **VTC single-administrator mode** (VTI-APV-022): `[acl] single_admin_mode`,
+  host-only (setup writes it; `config/patch`/import refuse it), waives a VTC
+  consent only when the approver set is empty, on the requester's
+  operation-bound step-up, always `Critical`-audited and bannered — never widen
+  it to a non-empty set or make it patchable (`vtc-action-list.md` §8.5). It
+  also waives git separation of duties (rule 7) on the same terms
+  (`git_ns::single_admin`): only when nobody else is eligible
+  (`others_eligible` reuses `approvers_for`), step-up bound to the signed
+  document, `SingleAdminMode{selfGrantWaived}` written before the record or the
+  operation is refused; the record is marked `singleAdmin` and counts for the
+  invariants.
 - **The VTC differs: it parks, the VTA re-sends.** A consent-gated VTC
   operation is stored as an action and runs itself on the N-th approval — see
   *VTC administrator action list* below. The VTC has no rule list yet; its
@@ -1171,6 +1182,10 @@ new flow, update both this section and the relevant `docs/*.md`.
   `AuditSeverity::Critical`, and is announced to every other administrator —
   policy may disable, delay or tighten it, never quieten it. An unratified
   break-glass record never counts toward the last-owner/last-admin invariants.
+  In single-administrator mode, where nobody else could make the grant, rule 7
+  is instead waived for that one operation (`git_ns::single_admin`, a
+  `Waivable` token the rules accept for exactly that self-grant), and that
+  record does count.
   Each unratified one is also an action-list `queue` item for the namespace's
   other administrators (`admin_actions::queues`): Ratify/Revoke call
   `right_ratify`/`right_revoke` as the decider, it never expires into

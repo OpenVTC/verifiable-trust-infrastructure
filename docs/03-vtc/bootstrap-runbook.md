@@ -375,7 +375,10 @@ even then. It is host configuration
 (`[acl] single_admin_mode` in `config.toml`, changed only there and by a
 restart), every administrator sees a permanent banner while it is on, and each
 waived consent is audited at `Critical`
-([`admin-access.md`](admin-access.md) §2.1a). If you installed with neither, add
+([`admin-access.md`](admin-access.md) §2.1a). The same goes for the git side:
+`cnm git adopt <resource> --owner <your DID>` and the other elevated
+self-grants run on your step-up while nobody else could grant them
+([`git-namespaces.md`](git-namespaces.md#single-administrator-mode-waives-it-where-nobody-else-could-grant)). If you installed with neither, add
 the second offline with `vtc acl add`, daemon stopped.
 
 Every offline ACL change — `vtc acl add` and `remove`, `vtc create-did-key

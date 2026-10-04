@@ -41,8 +41,8 @@ import type {
   MembersPage,
 } from "@/lib/wire-types";
 
-import type { GitNsBreakGlassItem, GitNsBreakGlassList } from "./model";
-import { breakGlassState } from "./model";
+import type { GitNsBreakGlassItem, GitNsBreakGlassList, GitNsSelfGrantWaived } from "./model";
+import { breakGlassState, selfGrantWaivedOf } from "./model";
 
 const TASK_MEMBERS_LIST = "https://trusttasks.org/spec/vtc/members/list/0.1";
 
@@ -76,6 +76,10 @@ interface GitNsViewAnswer {
     grantedAt: string;
     breakGlass?: GitNsBreakGlassMark | null;
   }[];
+  /** The records single-administrator mode's waiver of separation of duties
+   *  made (`ext.org.openvtc.selfGrantWaived`, VTI-APV-022): `RightRecord`
+   *  admits no member to carry the mark, so the view lists them beside. */
+  ext?: { "org.openvtc"?: { selfGrantWaived?: unknown } };
 }
 
 /** The outstanding drift on one repository: its `repos[].sync` in the view. */
@@ -86,9 +90,11 @@ export interface GitNsDriftRow {
   drift: GitNsDriftItem[];
 }
 
-/** Every repository with outstanding drift. */
+/** Every repository with outstanding drift — and, from the same view, every
+ *  record made under single-administrator mode's self-grant waiver. */
 export interface GitNsDriftList {
   repos: GitNsDriftRow[];
+  waived: GitNsSelfGrantWaived[];
 }
 
 /** Query keys. Everything under `["git-ns"]` is refreshed together. */
@@ -132,11 +138,14 @@ export const fetchIssuedByDeparted = (): Promise<GitNsDepartedGrants> =>
 /**
  * Every repository whose forge differs from the projection, in the namespaces
  * the caller administers: `git-ns/view/0.5` with `scope: administrator`,
- * whose `repos[].sync` is the drift the bridge last reported.
+ * whose `repos[].sync` is the drift the bridge last reported. The same answer
+ * lists the self-grants single-administrator mode waived, which the people
+ * tables flag (`SelfGrantWaivedChip`), so they come with it rather than as a
+ * second read of the same view.
  */
 export async function fetchDrift(): Promise<GitNsDriftList> {
   const view = await postSignedRead<GitNsViewAnswer>(TASK_VIEW, { scope: "administrator" });
-  return { repos: driftRows(view) };
+  return { repos: driftRows(view), waived: selfGrantWaivedOf(view.ext) };
 }
 
 /** The repositories in `view` with outstanding drift. */

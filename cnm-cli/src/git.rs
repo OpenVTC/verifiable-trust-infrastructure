@@ -707,7 +707,9 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
         "git-ns:selfGrantNotAllowed" => "\nThis would give you an elevated right (own, \
              repo.create or ns.admin) on your own authority. Ask another community \
              administrator to do it, or use break-glass (`cnm git break-glass`), which is \
-             audited and must be ratified."
+             audited and must be ratified. (A community set up in single-administrator mode \
+             waives this with your passkey gesture, but only while nobody else could grant \
+             it.)"
             .to_string(),
         "git-ns/right/break-glass:disabled" => "\nThis community's policy has turned \
              break-glass off: another administrator must grant the right."
@@ -1070,6 +1072,10 @@ async fn send_with_step_up(
                 let Some(req) = vtc_client::git_ns::step_up_request(&e) else {
                     return Err(explain(e, did));
                 };
+                if let Some(note) = task_error(&e).and_then(|(_, m)| single_admin_step_up_note(&m))
+                {
+                    eprintln!("{note}");
+                }
                 let reason = terminal_safe(req["reason"].as_str().unwrap_or_default());
                 let bound = terminal_safe(req["boundTo"].as_str().unwrap_or_default());
                 eprintln!(
@@ -1091,6 +1097,48 @@ async fn send_with_step_up(
         }
     }
     Err("the step-up was not completed; nothing was changed".into())
+}
+
+/// What to say before the gesture, when the step-up stands in for a second
+/// administrator under single-administrator mode (VTI-APV-022): the VTC's
+/// refusal says so in its message.
+fn single_admin_step_up_note(message: &str) -> Option<String> {
+    message.contains("single-administrator mode").then(|| {
+        format!(
+            "{BOLD}Single-administrator mode:{RESET} this would record an elevated right for              you, which separation of duties normally leaves to another administrator. This              community has none who could grant it, so your passkey gesture stands in for one,              and the VTC audits it at Critical."
+        )
+    })
+}
+
+/// The note printed after a change the VTC accepted under single-administrator
+/// mode's waiver of separation of duties (`ext.org.openvtc.selfGrantWaived`).
+fn self_grant_waived_note(answer: &Value) -> Option<String> {
+    let w = vtc_client::git_ns::self_grant_waived(answer)?;
+    Some(format!(
+        "{BOLD}Single-administrator waiver applied:{RESET} {} on {} was recorded for you on          your own passkey gesture, because nobody else in this community could grant it          (VTI-APV-022). The VTC wrote a Critical audit row, and the record stays marked as          self-granted under single-administrator mode.",
+        terminal_safe(w["right"].as_str().unwrap_or("the right")),
+        terminal_safe(w["resource"].as_str().unwrap_or("the resource")),
+    ))
+}
+
+/// Sign `payload` as `type_uri` and send it through [`send_with_step_up`], so
+/// a change the VTC answers with an operation-bound step-up — a self-grant
+/// under single-administrator mode — is completed rather than refused, then
+/// say when the single-administrator waiver applied.
+async fn send_change<P: serde::Serialize>(
+    client: &VtcClient,
+    base: &str,
+    type_uri: &str,
+    payload: &P,
+    did: &str,
+    key: &HolderKey,
+) -> CliResult<Value> {
+    let doc = client.git_ns_sign(type_uri, payload, key).await?;
+    let v = send_with_step_up(client, base, type_uri, &doc, did, key).await?;
+    if let Some(note) = self_grant_waived_note(&v) {
+        eprintln!("{note}");
+    }
+    Ok(v)
 }
 
 /// The prefix of the answer code `/admin/step-up` shows a member with no
@@ -1421,11 +1469,16 @@ async fn run_task(
             }
             let payload: specs::right::grant::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that grant is not well formed: {e}"))?;
-            let resp = client
-                .git_ns_grant(&payload, &key)
-                .await
-                .map_err(|e| explain(e, &did))?;
-            show(&resp)
+            let v = send_change(
+                client,
+                &target.base,
+                vtc_client::git_ns::GIT_NS_GRANT_TYPE,
+                &payload,
+                &did,
+                &key,
+            )
+            .await?;
+            show(&v)
         }
         GitCommands::Revoke {
             subject,
@@ -1478,11 +1531,15 @@ async fn run_task(
             }
             let payload: specs::repo::create::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that repository is not well formed: {e}"))?;
-            let resp = client
-                .git_ns_create_repo(&payload, &key)
-                .await
-                .map_err(|e| explain(e, &did))?;
-            let v = serde_json::to_value(&resp)?;
+            let v = send_change(
+                client,
+                &target.base,
+                vtc_client::git_ns::GIT_NS_REPO_CREATE_TYPE,
+                &payload,
+                &did,
+                &key,
+            )
+            .await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
@@ -1592,11 +1649,17 @@ async fn run_task(
                 did_arg("--owner", o)?;
             }
             let (did, key) = signing_key(keyring_key)?;
-            let resp = client
-                .git_ns_adopt(&resource.to_lowercase(), &owners, &key)
-                .await
-                .map_err(|e| explain(e, &did))?;
-            show(&resp)
+            let payload = json!({ "resource": resource.to_lowercase(), "owners": owners });
+            let v = send_change(
+                client,
+                &target.base,
+                vtc_client::git_ns::GIT_NS_REPO_ADOPT_TYPE,
+                &payload,
+                &did,
+                &key,
+            )
+            .await?;
+            show(&v)
         }
         GitCommands::View { resource, admin } => {
             let (did, key) = signing_key(keyring_key)?;
@@ -1926,11 +1989,16 @@ async fn run_task(
             )?;
             let payload: specs::drift::resolve::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that resolution is not well formed: {e}"))?;
-            let resp = client
-                .git_ns_drift_resolve_v3(&payload, &key)
-                .await
-                .map_err(|e| explain(e, &did))?;
-            show(&resp)
+            let v = send_change(
+                client,
+                &target.base,
+                vtc_client::git_ns::GIT_NS_DRIFT_RESOLVE_V3_TYPE,
+                &payload,
+                &did,
+                &key,
+            )
+            .await?;
+            show(&v)
         }
         GitCommands::Reproject { resource, reason } => {
             let (did, key) = signing_key(keyring_key)?;
@@ -1963,11 +2031,21 @@ async fn run_task(
         } => {
             let subject = did_arg("--subject", &subject)?;
             let (did, key) = signing_key(keyring_key)?;
-            let resp = client
-                .git_ns_reseat(&namespace, &subject, &statement, &key)
-                .await
-                .map_err(|e| explain(e, &did))?;
-            show(&resp)
+            let payload = json!({
+                "namespace": namespace,
+                "subject": subject,
+                "statement": statement,
+            });
+            let v = send_change(
+                client,
+                &target.base,
+                vtc_client::git_ns::RESEAT_TYPE_URI,
+                &payload,
+                &did,
+                &key,
+            )
+            .await?;
+            show(&v)
         }
     }
 }
@@ -2147,10 +2225,55 @@ mod tests {
             g.ends_with(
                 "\nThis would give you an elevated right (own, repo.create or ns.admin) on your \
                  own authority. Ask another community administrator to do it, or use break-glass \
-                 (`cnm git break-glass`), which is audited and must be ratified."
+                 (`cnm git break-glass`), which is audited and must be ratified. (A community set \
+                 up in single-administrator mode waives this with your passkey gesture, but only \
+                 while nobody else could grant it.)"
             ),
             "{g}"
         );
+    }
+
+    /// VTI-APV-022 on the git side: the note before the gesture is printed
+    /// only when the VTC's refusal says the step-up stands in for a second
+    /// administrator, and the note after names what was recorded.
+    #[test]
+    fn the_single_administrator_waiver_is_announced_before_and_after_the_gesture() {
+        assert!(
+            single_admin_step_up_note(
+                "single-administrator mode: nobody else can grant git.repo.own on \
+                 github.com/acme/gadgets, so recording it for yourself needs a passkey gesture"
+            )
+            .is_some_and(|n| n.contains("stands in for one"))
+        );
+        assert!(single_admin_step_up_note("a passkey gesture bound to this break-glass").is_none());
+
+        let answer = json!({
+            "repo": { "resource": "github.com/acme/gadgets" },
+            "ext": { "org.openvtc": { "selfGrantWaived": {
+                "mode": "singleAdministrator",
+                "requirement": "git-ns/right/grant/0.3#rule-7",
+                "right": "git.repo.own",
+                "resource": "github.com/acme/gadgets",
+            } } },
+        });
+        let note = self_grant_waived_note(&answer).unwrap();
+        assert!(
+            note.contains("Single-administrator waiver applied"),
+            "{note}"
+        );
+        assert!(
+            note.contains("git.repo.own on github.com/acme/gadgets"),
+            "{note}"
+        );
+        assert!(note.contains("Critical audit row"), "{note}");
+        assert!(self_grant_waived_note(&json!({ "repo": {} })).is_none());
+        // A hostile VTC cannot drive the terminal through the note.
+        let hostile = json!({ "ext": { "org.openvtc": { "selfGrantWaived": {
+            "right": "git.repo.own\u{1b}[2J", "resource": "x\u{202e}y",
+        } } } });
+        let note = self_grant_waived_note(&hostile).unwrap();
+        assert!(!note.contains('\u{202e}'), "{note:?}");
+        assert!(!note.contains("\u{1b}[2J"), "{note:?}");
     }
 
     #[test]

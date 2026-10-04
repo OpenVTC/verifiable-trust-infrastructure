@@ -25,9 +25,23 @@ import type {
   GitNsRightRow,
 } from "@/lib/wire-types";
 
-import { fetchAccounts, fetchRights, gitNsKeys } from "../repos/api";
-import { expiresWithin, rightLabel, rightRank, shortName } from "../repos/model";
-import { BreakGlassChip, formatDay, readErrorMessage, repoPath, ToneChip } from "../repos/ui";
+import { fetchAccounts, fetchDrift, fetchRights, gitNsKeys } from "../repos/api";
+import {
+  expiresWithin,
+  type GitNsSelfGrantWaived,
+  rightLabel,
+  rightRank,
+  shortName,
+  waiverFor,
+} from "../repos/model";
+import {
+  BreakGlassChip,
+  formatDay,
+  readErrorMessage,
+  repoPath,
+  SelfGrantWaivedChip,
+  ToneChip,
+} from "../repos/ui";
 
 /** A grant this close to its expiry is flagged. */
 const EXPIRY_WARNING_DAYS = 14;
@@ -131,7 +145,14 @@ export function MemberGitCell({ did, index }: { did: string; index: MemberGitInd
   );
 }
 
-function RightRow({ row }: { row: GitNsRightRow }) {
+function RightRow({
+  row,
+  waived,
+}: {
+  row: GitNsRightRow;
+  /** The records single-administrator mode's waiver made (VTI-APV-022). */
+  waived?: readonly GitNsSelfGrantWaived[];
+}) {
   const book = useNameBook();
   // A repository resource is host/owner/name; a namespace's is host/owner.
   const isRepo = row.resource.split("/").length >= 3;
@@ -144,6 +165,12 @@ function RightRow({ row }: { row: GitNsRightRow }) {
           <>
             {" "}
             <BreakGlassChip mark={row.breakGlass} />
+          </>
+        )}
+        {waiverFor(waived, row) && (
+          <>
+            {" "}
+            <SelfGrantWaivedChip mark={waiverFor(waived, row)} />
           </>
         )}
       </td>
@@ -196,6 +223,10 @@ function RightRow({ row }: { row: GitNsRightRow }) {
 /** The member page's "Git rights" card. */
 export function MemberGitCard({ did }: { did: string }) {
   const { index, isPending, error } = useMemberGit();
+  // The administrator's `git-ns/view`, shared with the Repos plugin's drift
+  // read: it lists the self-grants single-administrator mode waived. A
+  // failure only leaves them unflagged.
+  const viewQ = useQuery({ queryKey: gitNsKeys.drift, queryFn: fetchDrift, retry: false });
   const rights = index.rights.get(did) ?? [];
   const accounts = index.accounts.get(did) ?? [];
 
@@ -225,7 +256,11 @@ export function MemberGitCard({ did }: { did: string }) {
               </thead>
               <tbody>
                 {rights.map((r) => (
-                  <RightRow key={`${r.right} ${r.resource} ${r.origin}`} row={r} />
+                  <RightRow
+                    key={`${r.right} ${r.resource} ${r.origin}`}
+                    row={r}
+                    waived={viewQ.data?.waived}
+                  />
                 ))}
               </tbody>
             </table>

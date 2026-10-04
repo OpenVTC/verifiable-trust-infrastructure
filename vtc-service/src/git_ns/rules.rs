@@ -16,13 +16,14 @@
 //! | 4. Last admin | [`is_last_admin`] |
 //! | 5. Members-only floor | [`members_only`] |
 //! | 6. Policy may only narrow | the decision can only deny — [`super::policy`] |
-//! | 7. Separation of duties (`grant/0.3`) | [`separation_of_duties`] |
+//! | 7. Separation of duties (`grant/0.3`) | [`separation_of_duties`] (lifted only by break-glass, or by single-administrator mode's [`Waivable`]) |
 
 use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
 
 use super::model::{Level, Resource, Right, RightRow, Scope};
+use super::single_admin::Waivable;
 use super::store::Snapshot;
 
 /// Why a rule refused. Each maps onto exactly one wire code.
@@ -451,6 +452,10 @@ impl RulesPassed {
 
 /// Grant: fixed rules 1, 2, 7 and 5, in that order (`git-ns/right/grant/0.3`,
 /// *Request* item 4: "rule 7 before rule 5").
+///
+/// `waiver` is single-administrator mode's leave to lift rule 7 for exactly
+/// this self-grant ([`super::single_admin::Waivable`], VTI-APV-022); every
+/// other rule still runs, and leave for any other grant lifts nothing.
 #[allow(clippy::too_many_arguments)]
 pub fn grant_admitted(
     snap: &Snapshot,
@@ -462,15 +467,20 @@ pub fn grant_admitted(
     actor_is_member: bool,
     settings: RuleSettings,
     now: DateTime<Utc>,
+    waiver: Option<&Waivable>,
 ) -> Result<RulesPassed, Refusal> {
     authority_to_grant(snap, actor, right, target, settings, now)?;
-    separation_of_duties(
+    match separation_of_duties(
         actor,
         subject,
         right,
         elevated_on(snap, right, target),
         target,
-    )?;
+    ) {
+        Err(Refusal::SelfGrant(_))
+            if waiver.is_some_and(|w| w.covers(actor, subject, right, target)) => {}
+        other => other?,
+    }
     members_only(right, subject_is_member, actor_is_member)?;
     Ok(RulesPassed::new())
 }
@@ -480,8 +490,10 @@ pub fn grant_admitted(
 /// on the namespace by explicit, live record (granted by someone else, or a
 /// break-glass record); a `git.repo.create` only implied by `git.ns.admin`
 /// carries no creator ownership, and naming oneself is a self-grant of
-/// `git.repo.own` (fixed rule 7). Every other owner is a grant of `own` under
-/// rule 2, and every owner and the requester are members (rule 5).
+/// `git.repo.own` (fixed rule 7) — unless single-administrator mode gives
+/// leave for exactly that (`waiver`, VTI-APV-022). Every other owner is a
+/// grant of `own` under rule 2, and every owner and the requester are members
+/// (rule 5).
 #[allow(clippy::too_many_arguments)]
 pub fn create_owners_admitted(
     snap: &Snapshot,
@@ -493,12 +505,14 @@ pub fn create_owners_admitted(
     owners: &[(String, bool)],
     settings: RuleSettings,
     now: DateTime<Utc>,
+    waiver: Option<&Waivable>,
 ) -> Result<RulesPassed, Refusal> {
     let explicit_create =
         explicit_admitted(snap, actor, Right::RepoCreate, ns_scope, now).is_some();
+    let waived = waiver.is_some_and(|w| w.covers(actor, actor, Right::RepoOwn, target));
     for (owner, owner_is_member) in owners {
         if owner == actor {
-            if !explicit_create {
+            if !explicit_create && !waived {
                 return Err(Refusal::SelfGrant(format!(
                     "your git.repo.create on this namespace is only implied by git.ns.admin, \
                      which does not make you the owner of what you create: name another member \
@@ -851,6 +865,7 @@ mod tests {
             granter_was_member: true,
             break_glass: None,
             review: None,
+            single_admin: None,
         }
     }
 
@@ -1110,6 +1125,99 @@ mod tests {
         }
         assert!(members_only(Right::CommitSign, false, false).is_ok());
         assert!(members_only(Right::RepoMaintain, false, false).is_ok());
+    }
+
+    /// Single-administrator mode's leave lifts rule 7 for exactly the
+    /// self-grant it names — never another right, resource or subject — and
+    /// leaves every other rule in force.
+    #[test]
+    fn a_waiver_lifts_rule_7_for_exactly_the_self_grant_it_names() {
+        let s = snap();
+        let widgets = res("github.com/acme/widgets");
+        let st = RuleSettings::default();
+        let admit = |subject: &str, right: Right, target: &Resource, w: Option<&Waivable>| {
+            grant_admitted(&s, ALICE, subject, right, target, true, true, st, now(), w)
+        };
+        assert!(matches!(
+            admit(ALICE, Right::RepoOwn, &widgets, None),
+            Err(Refusal::SelfGrant(_))
+        ));
+        let w = Waivable::for_test(ALICE, Right::RepoOwn, widgets.clone());
+        assert!(admit(ALICE, Right::RepoOwn, &widgets, Some(&w)).is_ok());
+        // Another right, another resource, another actor: still refused.
+        assert!(matches!(
+            admit(ALICE, Right::NsAdmin, &res("github.com/acme"), Some(&w)),
+            Err(Refusal::SelfGrant(_))
+        ));
+        assert!(matches!(
+            admit(
+                ALICE,
+                Right::RepoOwn,
+                &res("github.com/acme/gadgets"),
+                Some(&w)
+            ),
+            Err(Refusal::SelfGrant(_))
+        ));
+        let bobs = Waivable::for_test(BOB, Right::RepoOwn, widgets.clone());
+        assert!(matches!(
+            admit(ALICE, Right::RepoOwn, &widgets, Some(&bobs)),
+            Err(Refusal::SelfGrant(_))
+        ));
+        // Rule 5 still binds a waived self-grant.
+        assert!(matches!(
+            grant_admitted(
+                &s,
+                ALICE,
+                ALICE,
+                Right::RepoOwn,
+                &widgets,
+                false,
+                true,
+                st,
+                now(),
+                Some(&w)
+            ),
+            Err(Refusal::MembersOnly(_))
+        ));
+        // Rule 2 still binds: Bob holds no authority over widgets' owners.
+        let bob_w = Waivable::for_test(BOB, Right::RepoOwn, widgets.clone());
+        assert!(
+            grant_admitted(
+                &s,
+                BOB,
+                BOB,
+                Right::RepoOwn,
+                &widgets,
+                true,
+                true,
+                st,
+                now(),
+                Some(&bob_w)
+            )
+            .is_err()
+        );
+    }
+
+    /// A waived record counts toward the invariants; an unratified
+    /// break-glass record does not.
+    #[test]
+    fn a_waived_record_counts_for_the_invariants_and_an_unratified_break_glass_does_not() {
+        let mut waived = row(ALICE, Right::RepoOwn);
+        waived.single_admin = Some(crate::git_ns::model::SingleAdminMark {
+            at: now(),
+            task: "https://trusttasks.org/spec/git-ns/repo/adopt/0.1".into(),
+        });
+        assert!(waived.counts_for_invariants(now()));
+        let mut bg = row(ALICE, Right::RepoOwn);
+        bg.break_glass = Some(crate::git_ns::model::BreakGlassMark {
+            by: ALICE.into(),
+            at: now(),
+            justification: "x".into(),
+            effective_at: None,
+            ratified_by: None,
+            ratified_at: None,
+        });
+        assert!(!bg.counts_for_invariants(now()));
     }
 
     /// A service grant is admitted for exactly one shape: `commit.sign`, on a

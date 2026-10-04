@@ -102,6 +102,22 @@ export function useWaitingCount(enabled: boolean): number {
 }
 
 /**
+ * Whether the community runs in single-administrator mode (VTI-APV-022), off
+ * the same signed action-list read the shell's badge and banner make, shared
+ * through its cache key. `false` while unknown or on any failure — the forms
+ * that read it then keep their ordinary, stricter behaviour, and the VTC
+ * decides either way.
+ */
+export function useSingleAdminMode(): boolean {
+  const query = useQuery({
+    queryKey: WAITING_COUNT_KEY,
+    queryFn: fetchActionsAttention,
+    retry: false,
+  });
+  return query.data?.singleAdminMode === true;
+}
+
+/**
  * [`useWaitingCount`]'s read, whole: the count, plus the operator writes
  * waiting for this administrator's acknowledgement (VTI-VTC-023) and the
  * cooling-offs reducing their own authority (VTI-APV-019) — what the shell's

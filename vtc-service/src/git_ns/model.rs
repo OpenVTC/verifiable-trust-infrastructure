@@ -616,6 +616,25 @@ pub struct RightRow {
     /// published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<crate::acl::resource_grant::GrantReview>,
+    /// Present exactly when the subject recorded this elevated right for
+    /// themselves under **single-administrator mode** (VTI-APV-022), because
+    /// nobody else could grant it ([`super::single_admin`]). Unlike a
+    /// break-glass record it needs no ratification and counts toward the
+    /// last-owner and last-admin invariants: in such a community it is the
+    /// normal way a right is held. Never published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_admin: Option<SingleAdminMark>,
+}
+
+/// How a self-granted right came to be under single-administrator mode
+/// (VTI-APV-022, [`super::single_admin`]): the moment, and the operation the
+/// requester's operation-bound step-up was spent on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SingleAdminMark {
+    pub at: DateTime<Utc>,
+    /// The Trust Task type URI of the operation that recorded it.
+    pub task: String,
 }
 
 /// How a self-granted right came to be, and whether another administrator has

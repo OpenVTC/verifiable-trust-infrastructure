@@ -295,6 +295,7 @@ pub fn row_of(subject: &str, g: &crate::acl::resource_grant::ResourceGrant) -> O
         granter_was_member: g.granter_was_member,
         break_glass: g.break_glass.clone(),
         review: g.review.clone(),
+        single_admin: g.single_admin.clone(),
     })
 }
 
@@ -316,6 +317,7 @@ pub fn grant_of(
         granter_was_member: row.granter_was_member,
         break_glass: row.break_glass.clone(),
         review: row.review.clone(),
+        single_admin: row.single_admin.clone(),
     }
 }
 

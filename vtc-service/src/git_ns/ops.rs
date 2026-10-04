@@ -509,6 +509,7 @@ pub(super) fn new_row(
         granter_was_member: true,
         break_glass: None,
         review: None,
+        single_admin: None,
     }
 }
 
@@ -859,6 +860,7 @@ pub async fn namespace_reseat(
 ) -> OpResult<reseat::Response> {
     did_core("subject", &p.subject.to_string())?;
     let actor = standing(state, actor_did).await?;
+    let payload_json = serde_json::to_value(&p).map_err(AppError::from)?;
     // Step 1.
     if !actor.community_admin {
         return Err(OpError::PermissionDenied(
@@ -906,10 +908,33 @@ pub async fn namespace_reseat(
     }
     // Fixed rule 7 of `git-ns/right/grant/0.3` binds reseat: a community
     // administrator reseating a headless namespace to themselves is a
-    // self-grant of `git.ns.admin`, which is `git-ns/right/break-glass`'s.
+    // self-grant of `git.ns.admin`, which is `git-ns/right/break-glass`'s —
+    // unless single-administrator mode finds nobody else who could reseat it
+    // (VTI-APV-022, `single_admin`).
     let subject = p.subject.to_string();
     did_core("subject", &subject)?;
-    rules::separation_of_duties(&actor.did, &subject, Right::NsAdmin, true, &resource)?;
+    let waiver =
+        match rules::separation_of_duties(&actor.did, &subject, Right::NsAdmin, true, &resource) {
+            Ok(()) => None,
+            Err(Refusal::SelfGrant(m)) => {
+                let settings = settings(state).await;
+                match super::single_admin::waivable(
+                    state,
+                    &snap,
+                    &ns,
+                    &actor,
+                    Right::NsAdmin,
+                    &resource,
+                    settings.rules,
+                )
+                .await?
+                {
+                    Some(w) => Some(w),
+                    None => return Err(Refusal::SelfGrant(m).into()),
+                }
+            }
+            Err(e) => return Err(e.into()),
+        };
     // Step 4 — fixed rule 5.
     let subject_standing = standing(state, &subject).await?;
     if !subject_standing.member {
@@ -971,6 +996,24 @@ pub async fn namespace_reseat(
         evidence.push(e);
     }
 
+    // Single-administrator mode: the step-up and the `Critical` row, both
+    // before the write; either missing refuses it.
+    let mark = match &waiver {
+        Some(w) => Some(
+            super::single_admin::authorize(
+                state,
+                w,
+                super::single_admin::WaivedOp {
+                    type_uri: <reseat::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                    payload: &payload_json,
+                    kind: "namespace.reseat",
+                },
+            )
+            .await?,
+        ),
+        None => None,
+    };
+
     // Step 6 — permanent, so the recovered namespace meets the last-admin
     // invariant from the moment it has an admin again.
     let mut set = store::get_rights(&state.git_ns, &scope).await?;
@@ -981,6 +1024,7 @@ pub async fn namespace_reseat(
     let mut row = new_row(&subject, Right::NsAdmin, &actor.did, true);
     row.reason = Some(statement.clone());
     row.granter_was_member = actor.member;
+    row.single_admin = mark;
     set.rows.push(row.clone());
     store::put_rights(&state.git_ns, &scope, &set).await?;
     // Step 8 — no forge projection to queue: `git.ns.admin` projects to no
@@ -1017,9 +1061,12 @@ pub async fn namespace_reseat(
         },
     )
     .await;
-    Ok(wire::into(
-        json!({ "right": wire::right_record(&row, &resource, true) }),
-    )?)
+    let mut body = json!({ "right": wire::right_record(&row, &resource, true) });
+    if let Some(w) = &waiver {
+        super::single_admin::note(state, w, &ns, "namespace.reseat").await;
+        body["ext"] = super::single_admin::response_ext(w);
+    }
+    Ok(wire::into(body)?)
 }
 
 /// How each `git.ns.admin` record of a namespace ended, from the audit log:
@@ -1068,6 +1115,7 @@ pub async fn repo_create(
     p: create::Payload,
 ) -> OpResult<create::Response> {
     let actor = standing(state, actor_did).await?;
+    let payload_json = serde_json::to_value(&p).map_err(AppError::from)?;
     let _guard = store::write_lock().await;
     let snap = Snapshot::load(&state.git_ns).await?;
     let t = now();
@@ -1103,17 +1151,43 @@ pub async fn repo_create(
         owners.push((o, member));
     }
     let st = settings(state).await;
-    let passed = rules::create_owners_admitted(
-        &snap,
-        &actor.did,
-        actor.member,
-        &Scope::Namespace(ns.id.clone()),
-        &ns_res,
-        &resource,
-        &owners,
-        st.rules,
-        t,
-    )?;
+    let admit = |waiver: Option<&super::single_admin::Waivable>| {
+        rules::create_owners_admitted(
+            &snap,
+            &actor.did,
+            actor.member,
+            &Scope::Namespace(ns.id.clone()),
+            &ns_res,
+            &resource,
+            &owners,
+            st.rules,
+            t,
+            waiver,
+        )
+    };
+    // An implied `repo.create` naming its holder owner is a self-grant of
+    // `own` — waived only where single-administrator mode finds nobody else
+    // who could make it (VTI-APV-022, `single_admin`).
+    let (passed, waiver) = match admit(None) {
+        Ok(passed) => (passed, None),
+        Err(Refusal::SelfGrant(m)) => {
+            let Some(w) = super::single_admin::waivable(
+                state,
+                &snap,
+                &ns,
+                &actor,
+                Right::RepoOwn,
+                &resource,
+                st.rules,
+            )
+            .await?
+            else {
+                return Err(Refusal::SelfGrant(m).into());
+            };
+            (admit(Some(&w))?, Some(w))
+        }
+        Err(e) => return Err(e.into()),
+    };
     consent_gate(state, &actor, "repo.create", None).await?;
     let version = check_policy(
         state,
@@ -1139,6 +1213,21 @@ pub async fn repo_create(
         ));
     }
     refuse_while_withdrawing(state, &snap, &resource, None).await?;
+    let mark = match &waiver {
+        Some(w) => Some(
+            super::single_admin::authorize(
+                state,
+                w,
+                super::single_admin::WaivedOp {
+                    type_uri: <create::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                    payload: &payload_json,
+                    kind: "repo.create",
+                },
+            )
+            .await?,
+        ),
+        None => None,
+    };
     // Item 4 — reserved, and the requester owns the reservation. Published
     // only once active.
     let bot = can_bot_create(&ns);
@@ -1167,8 +1256,11 @@ pub async fn repo_create(
     let scope = Scope::Repo(repo.id.clone());
     let mut set = store::get_rights(&state.git_ns, &scope).await?;
     for (owner, member) in &owners {
-        set.rows
-            .push(new_row(owner, Right::RepoOwn, &actor.did, *member));
+        let mut row = new_row(owner, Right::RepoOwn, &actor.did, *member);
+        if *owner == actor.did {
+            row.single_admin = mark.clone();
+        }
+        set.rows.push(row);
     }
     store::put_rights(&state.git_ns, &scope, &set).await?;
     audit(
@@ -1209,8 +1301,15 @@ pub async fn repo_create(
         .await;
     }
 
+    if let Some(w) = &waiver {
+        super::single_admin::note(state, w, &ns, "repo.create").await;
+    }
+
     let owners: Vec<String> = owners.into_iter().map(|(o, _)| o).collect();
     let mut response = json!({ "repo": wire::repo_summary(&repo, &owners) });
+    if let Some(w) = &waiver {
+        response["ext"] = super::single_admin::response_ext(w);
+    }
     if bot {
         // Item 5 — the bridge creates it and turns commit trust on.
         let mut spec = json!({ "visibility": visibility.as_str() });
@@ -1276,6 +1375,7 @@ pub async fn repo_adopt(
     p: adopt::Payload,
 ) -> OpResult<adopt::Response> {
     let actor = standing(state, actor_did).await?;
+    let payload_json = serde_json::to_value(&p).map_err(AppError::from)?;
     let _guard = store::write_lock().await;
     let snap = Snapshot::load(&state.git_ns).await?;
     let t = now();
@@ -1338,28 +1438,58 @@ pub async fn repo_adopt(
         .collect();
     let mut version = None;
     let mut owner_standing = Vec::new();
+    let mut waiver = None;
     for o in &p.owners {
         let s = standing(state, o).await?;
         // Naming an owner is a grant of `own`, under the same fixed rules as
         // `git-ns/right/grant` — except on one's own reservation, whose
-        // entitlement is the reservation itself.
+        // entitlement is the reservation itself. Naming oneself is a
+        // self-grant (rule 7), waived only where single-administrator mode
+        // finds nobody else who could make it (VTI-APV-022, `single_admin`).
         let passed = match &reservation {
             Some(scope) if owns_reservation => {
                 rules::explicit_admitted(&snap, &actor.did, Right::RepoOwn, scope, t).ok_or_else(
                     || OpError::PermissionDenied("the reservation is not yours".into()),
                 )?
             }
-            _ => rules::grant_admitted(
-                &snap,
-                &actor.did,
-                o,
-                Right::RepoOwn,
-                &resource,
-                s.member,
-                actor.member,
-                st.rules,
-                t,
-            )?,
+            _ => {
+                let admit = |w: Option<&super::single_admin::Waivable>| {
+                    rules::grant_admitted(
+                        &snap,
+                        &actor.did,
+                        o,
+                        Right::RepoOwn,
+                        &resource,
+                        s.member,
+                        actor.member,
+                        st.rules,
+                        t,
+                        w,
+                    )
+                };
+                match admit(None) {
+                    Ok(passed) => passed,
+                    Err(Refusal::SelfGrant(m)) => {
+                        let Some(w) = super::single_admin::waivable(
+                            state,
+                            &snap,
+                            &ns,
+                            &actor,
+                            Right::RepoOwn,
+                            &resource,
+                            st.rules,
+                        )
+                        .await?
+                        else {
+                            return Err(Refusal::SelfGrant(m).into());
+                        };
+                        let passed = admit(Some(&w))?;
+                        waiver = Some(w);
+                        passed
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
         };
         // Fixed rule 5 binds the reservation path too: every owner is a member.
         rules::members_only(Right::RepoOwn, s.member, actor.member)?;
@@ -1381,6 +1511,23 @@ pub async fn repo_adopt(
         .await?;
         owner_standing.push(s);
     }
+    // Single-administrator mode: the step-up and the `Critical` row, both
+    // before the write; either missing refuses it.
+    let mark = match &waiver {
+        Some(w) => Some(
+            super::single_admin::authorize(
+                state,
+                w,
+                super::single_admin::WaivedOp {
+                    type_uri: <adopt::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                    payload: &payload_json,
+                    kind: "repo.adopt",
+                },
+            )
+            .await?,
+        ),
+        None => None,
+    };
 
     // Item 4.
     let mut repo = match existing {
@@ -1441,8 +1588,11 @@ pub async fn repo_adopt(
         {
             set.rows
                 .retain(|r| !(r.subject == s.did && r.right == Right::RepoOwn));
-            set.rows
-                .push(new_row(&s.did, Right::RepoOwn, &actor.did, s.member));
+            let mut row = new_row(&s.did, Right::RepoOwn, &actor.did, s.member);
+            if s.did == actor.did {
+                row.single_admin = mark.clone();
+            }
+            set.rows.push(row);
             audit(
                 state,
                 &actor.did,
@@ -1498,9 +1648,12 @@ pub async fn repo_adopt(
         .filter(|r| r.right == Right::RepoOwn && r.is_live(t))
         .map(|r| r.subject.clone())
         .collect();
-    Ok(wire::into(
-        json!({ "repo": wire::repo_summary(&repo, &owners) }),
-    )?)
+    let mut body = json!({ "repo": wire::repo_summary(&repo, &owners) });
+    if let Some(w) = &waiver {
+        super::single_admin::note(state, w, &ns, "repo.adopt").await;
+        body["ext"] = super::single_admin::response_ext(w);
+    }
+    Ok(wire::into(body)?)
 }
 
 // ── git-ns/repo/transfer/0.1 ────────────────────────────────────────────────
@@ -1808,6 +1961,11 @@ pub(crate) struct GrantVia<'a> {
     /// is written under — so that a relink cannot fall between check and write
     /// (drift/resolve 0.3, adopt step 6).
     pub linked_to: Option<&'a LinkedTo>,
+    /// The document the requester actually signed, which a single-administrator
+    /// waiver's step-up is bound to and its audit row names
+    /// ([`super::single_admin`]) — the `drift/resolve` document, not the grant
+    /// derived from it.
+    pub op: super::single_admin::WaivedOp<'a>,
 }
 
 /// A forge account and the member it must be linked to.
@@ -1823,10 +1981,12 @@ pub(crate) async fn right_grant_via(
     p: grant::Payload,
     via: Option<GrantVia<'_>>,
 ) -> OpResult<grant::Response> {
-    let (row, resource) = right_grant_record(state, actor_did, p, via).await?;
-    Ok(wire::into(
-        json!({ "right": wire::right_record_full(&row, &resource, true) }),
-    )?)
+    let (row, resource, waived) = right_grant_record(state, actor_did, p, via).await?;
+    let mut body = json!({ "right": wire::right_record_full(&row, &resource, true) });
+    if let Some(w) = &waived {
+        body["ext"] = super::single_admin::response_ext(w);
+    }
+    Ok(wire::into(body)?)
 }
 
 async fn right_grant_record(
@@ -1834,8 +1994,19 @@ async fn right_grant_record(
     actor_did: &str,
     p: grant::Payload,
     via: Option<GrantVia<'_>>,
-) -> OpResult<(RightRow, Resource)> {
+) -> OpResult<(RightRow, Resource, Option<super::single_admin::Waivable>)> {
     let actor = standing(state, actor_did).await?;
+    // What a single-administrator waiver's step-up is bound to: the grant as
+    // signed, or the document it was derived from.
+    let own_payload = serde_json::to_value(&p).map_err(AppError::from)?;
+    let waived_op = match &via {
+        Some(v) => v.op,
+        None => super::single_admin::WaivedOp {
+            type_uri: <grant::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            payload: &own_payload,
+            kind: "right.grant",
+        },
+    };
     let _guard = store::write_lock().await;
     let snap = Snapshot::load(&state.git_ns).await?;
     if let Some(v) = &via {
@@ -1895,20 +2066,39 @@ async fn right_grant_record(
         }
         Scope::Repo(repo.id.clone())
     };
-    // Item 4 — the fixed rules, in order, then policy.
+    // Item 4 — the fixed rules, in order, then policy. Rule 7 refuses an
+    // elevated self-grant unless single-administrator mode finds nobody else
+    // who could make it (VTI-APV-022, `single_admin`).
     let st = settings(state).await;
     let subject_standing = standing(state, &subject).await?;
-    let passed = rules::grant_admitted(
-        &snap,
-        &actor.did,
-        &subject,
-        right,
-        &resource,
-        subject_standing.member,
-        actor.member,
-        st.rules,
-        t,
-    )?;
+    let admit = |waiver: Option<&super::single_admin::Waivable>| {
+        rules::grant_admitted(
+            &snap,
+            &actor.did,
+            &subject,
+            right,
+            &resource,
+            subject_standing.member,
+            actor.member,
+            st.rules,
+            t,
+            waiver,
+        )
+    };
+    let (passed, waiver) = match admit(None) {
+        Ok(passed) => (passed, None),
+        Err(Refusal::SelfGrant(m)) => {
+            let Some(w) = super::single_admin::waivable(
+                state, &snap, &ns, &actor, right, &resource, st.rules,
+            )
+            .await?
+            else {
+                return Err(Refusal::SelfGrant(m).into());
+            };
+            (admit(Some(&w))?, Some(w))
+        }
+        Err(e) => return Err(e.into()),
+    };
     // VTI-ACL-037 / VTI-ACL-071, read from the ACL entry itself: a grant is a
     // delegation and is never wider than what the granter's own live entry
     // holds at a covering qualifier. The fixed rules above decide which
@@ -1966,8 +2156,14 @@ async fn right_grant_record(
         .iter()
         .find(|r| r.subject == subject && r.right == right && r.is_recorded(t))
     {
-        return Ok((existing.clone(), resource));
+        return Ok((existing.clone(), resource, None));
     }
+    // Single-administrator mode: the step-up and the `Critical` row, both
+    // before the write; either missing refuses it.
+    let mark = match &waiver {
+        Some(w) => Some(super::single_admin::authorize(state, w, waived_op).await?),
+        None => None,
+    };
     // Item 7.
     set.rows
         .retain(|r| !(r.subject == subject && r.right == right));
@@ -1975,6 +2171,7 @@ async fn right_grant_record(
     row.expires_at = expires_at.map(|e| e.with_nanosecond(0).unwrap_or(e));
     row.reason = p.reason.as_ref().map(|r| r.to_string());
     row.granter_was_member = actor.member;
+    row.single_admin = mark;
     set.rows.push(row.clone());
     store::put_rights(&state.git_ns, &scope, &set).await?;
     // A named owner ends an orphaned repository's orphanhood.
@@ -2000,7 +2197,10 @@ async fn right_grant_record(
         },
     )
     .await;
-    Ok((row, resource))
+    if let Some(w) = &waiver {
+        super::single_admin::note(state, w, &ns, waived_op.kind).await;
+    }
+    Ok((row, resource, waiver))
 }
 
 // ── git-ns/right/revoke/0.3 ─────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import type {
   GitNsRightRow,
 } from "@/lib/wire-types";
 import { ACL_LIST_TASK } from "@/lib/acl";
+import { ACTIONS_LIST_TASK } from "@/lib/actions-api";
 import { MEMBERS_LIST_TASK, taskRoute, type MockRoute } from "@/test/render";
 
 import {
@@ -23,7 +24,7 @@ import {
   TASK_RIGHT_LIST,
   TASK_VIEW,
 } from "./api";
-import type { GitNsBreakGlassItem } from "./model";
+import type { GitNsBreakGlassItem, GitNsSelfGrantWaived } from "./model";
 
 /** `policy/active/0.1`, the one policy read the Repos plugin makes. */
 export const POLICY_ACTIVE_TASK = "https://trusttasks.org/spec/policy/active/0.1";
@@ -263,11 +264,25 @@ export function gitNsRoutes(
     breakGlassStatus?: number;
     namespacesStatus?: number;
     reposStatus?: number;
+    /** Answer the shell's action-list read with single-administrator mode
+     *  on or off (VTI-APV-022); left out, that read is not answered. */
+    singleAdminMode?: boolean;
+    /** The records the administrator's view lists as waived self-grants. */
+    waived?: GitNsSelfGrantWaived[];
   } = {},
 ): MockRoute[] {
   const namespaces = over.namespaces ?? [ACME, PERSONAL];
   return [
     ...(over.extra ?? []),
+    ...(over.singleAdminMode === undefined
+      ? []
+      : [
+          taskRoute(ACTIONS_LIST_TASK, {
+            actions: [],
+            counts: { waitingForMe: 0, requestedByMe: 0 },
+            ext: { "org.openvtc": { singleAdminMode: over.singleAdminMode } },
+          }),
+        ]),
     // The six community-administrator and administrator reads
     // (trustoverip/dtgwg-trust-tasks-tf#686): specific `taskRoute`s, checked
     // before the catch-all `signedReads` below so their own answers win.
@@ -310,6 +325,7 @@ export function gitNsRoutes(
       namespaces,
       repos: over.repos ?? [DOCS, LEGACY, SANDBOX, WIDGETS],
       breakGlass: over.breakGlass ?? [],
+      waived: over.waived,
       breakGlassStatus: over.breakGlassStatus,
       namespacesStatus: over.namespacesStatus,
       reposStatus: over.reposStatus,
@@ -334,6 +350,7 @@ export function signedReads(o: {
   namespaces: GitNsNamespaceRow[];
   repos: GitNsRepoRow[];
   breakGlass: GitNsBreakGlassItem[];
+  waived?: GitNsSelfGrantWaived[];
   breakGlassStatus?: number;
   namespacesStatus?: number;
   reposStatus?: number;
@@ -378,7 +395,7 @@ export function signedReads(o: {
         case TASK_VIEW:
           if (!(body as { payload?: { breakGlass?: boolean } }).payload?.breakGlass) {
             // The administrator's whole view: the repositories' drift.
-            return { payload: driftView(o.namespaces) };
+            return { payload: driftView(o.namespaces, o.waived) };
           }
           return o.breakGlassStatus && o.breakGlassStatus !== 200
             ? refused(o.breakGlassStatus, "git-ns/view")
@@ -445,8 +462,9 @@ export function driftViewRoute(
 }
 
 /** A `git-ns/view/0.5` `scope: administrator` answer: `docs` has drifted. */
-function driftView(namespaces: GitNsNamespaceRow[]) {
+function driftView(namespaces: GitNsNamespaceRow[], waived?: GitNsSelfGrantWaived[]) {
   return {
+    ...(waived ? { ext: { "org.openvtc": { selfGrantWaived: waived } } } : {}),
     namespaces: namespaces.map((n) => ({
       id: n.id,
       forge: n.forge,
@@ -536,6 +554,9 @@ export function isSignedRead(r: { url: string; body: unknown }): boolean {
       ACL_LIST_TASK,
       MEMBERS_LIST_TASK,
       POLICY_ACTIVE_TASK,
+      // The shell's action-list read, which says whether single-administrator
+      // mode is on.
+      ACTIONS_LIST_TASK,
     ].includes(type ?? "")
   );
 }

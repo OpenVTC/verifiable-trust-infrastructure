@@ -8,6 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Check, Plus, X } from "lucide-react";
 
 import { NamedDid } from "@/components/NamedDid";
+import { useSingleAdminMode } from "@/lib/action-badge";
 import { useNameBook } from "@/lib/names";
 import { useIsGitCommunityAdmin, useViewerDid } from "@/lib/viewer";
 import type {
@@ -68,9 +69,12 @@ import {
   revertStanding,
   rightLabel,
   shortName,
+  type GitNsSelfGrantWaived,
+  waiverFor,
 } from "./model";
 import {
   BreakGlassChip,
+  SelfGrantWaivedChip,
   errorMessage,
   readErrorMessage,
   isNotAdministrator,
@@ -165,9 +169,12 @@ function PeopleTable({
   readOnlyNote,
   vtcDid,
   roleMap,
+  waived,
 }: {
   rows: GitNsRightRow[];
   vtcDid: string | undefined;
+  /** The records single-administrator mode's waiver made, each flagged. */
+  waived?: readonly GitNsSelfGrantWaived[];
   forge: string;
   forges: ForgeAccounts | undefined;
   /** The repository's role map: each row then shows the forge role its right
@@ -216,6 +223,11 @@ function PeopleTable({
                   {r.breakGlass && (
                     <div>
                       <BreakGlassChip mark={r.breakGlass} />
+                    </div>
+                  )}
+                  {waiverFor(waived, r) && (
+                    <div>
+                      <SelfGrantWaivedChip mark={waiverFor(waived, r)} />
                     </div>
                   )}
                 </td>
@@ -303,6 +315,7 @@ function DriftList({
   const book = useNameBook();
   const viewer = useViewerDid();
   const superAdmin = useIsGitCommunityAdmin();
+  const singleAdmin = useSingleAdminMode();
   return (
     <ul className="finding-list">
       {items.map((d, i) => {
@@ -324,6 +337,7 @@ function DriftList({
                 d,
                 member,
                 member ? projectedRepoRank(rights, member, repo, ns) : 0,
+                singleAdmin,
               );
         const protection = d.type === "requiredCheckMissing" || d.type === "protectionWeakened";
         const standing = revertStanding(viewer, superAdmin, ns, repo, d);
@@ -916,6 +930,7 @@ export function RepoDetail() {
                 forges={forges}
                 vtcDid={vtcDid}
                 roleMap={repo.roleMap}
+                waived={driftQ.data?.waived}
                 readOnlyNote={(r) =>
                   r.origin === "roleDerived"
                     ? "Managed in configuration"
@@ -948,6 +963,7 @@ export function RepoDetail() {
                 forges={forges}
                 vtcDid={vtcDid}
                 roleMap={repo.roleMap}
+                waived={driftQ.data?.waived}
                 readOnlyNote={(r) =>
                   isServiceGrant(r, ns)
                     ? "Bridge service grant · Dependabot re-sign"

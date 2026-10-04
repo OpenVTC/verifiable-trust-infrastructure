@@ -754,8 +754,11 @@ pub enum AuditEvent {
     /// [`AuditSeverity::Critical`] in every case, as the specification
     /// requires: when the mode takes effect or is removed by host
     /// configuration (`event`: `enabled` / `disabled`), each time the node
-    /// starts with it in effect (`inEffect`), and for every operation whose
-    /// consent it waived (`consentWaived`, naming the operation).
+    /// starts with it in effect (`inEffect`), for every operation whose
+    /// consent it waived (`consentWaived`, naming the operation), and for every
+    /// elevated git right a VTC recorded for its requester because nobody else
+    /// could grant it (`selfGrantWaived`, naming the operation, the right and
+    /// the resource).
     SingleAdminMode(SingleAdminModeData),
     /// A community defined or replaced a **custom administrative role**
     /// (`vtc/roles/define/0.1`) — a named ceiling every entry holding it is
@@ -1187,29 +1190,45 @@ pub struct AdminActionBurstData {
 }
 
 /// Payload for [`AuditEvent::SingleAdminMode`] (VTI-APV-022).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SingleAdminModeData {
     /// `enabled` / `disabled` — the host configuration changed the mode since
     /// the last start; `inEffect` — the node started with it on;
     /// `consentWaived` — an operation ran on the requester's re-authentication
-    /// where another party's consent would otherwise be required.
+    /// where another party's consent would otherwise be required;
+    /// `selfGrantWaived` — a VTC recorded an elevated git right for the
+    /// requester themselves (separation of duties, fixed rule 7 of
+    /// `git-ns/right/grant/0.3`) because nobody else could grant it.
     pub event: String,
     /// For `consentWaived`: the requirement whose consent was waived
-    /// (`VTI-APV-018`, `VTI-APV-020`, `VTI-VTC-022`).
+    /// (`VTI-APV-018`, `VTI-APV-020`, `VTI-VTC-022`). For `selfGrantWaived`:
+    /// the rule waived (`git-ns/right/grant/0.3#rule-7`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requirement: Option<String>,
-    /// For `consentWaived`: the Trust Task type URI of the operation.
+    /// For `consentWaived` and `selfGrantWaived`: the Trust Task type URI of
+    /// the operation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
-    /// For `consentWaived`: the operation's payload digest (VTI-APV-004) — the
-    /// one its re-authentication was bound to (VTI-APV-015).
+    /// For `consentWaived` and `selfGrantWaived`: the operation's payload
+    /// digest (VTI-APV-004) — the one its re-authentication was bound to
+    /// (VTI-APV-015).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
     /// For `consentWaived`: the action-list kind of the operation
-    /// (`acl.grant.authority`, …).
+    /// (`acl.grant.authority`, …). For `selfGrantWaived`: the git-ns action
+    /// (`right.grant`, `repo.create`, `repo.adopt`, `namespace.reseat`,
+    /// `drift.adopt`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// For `selfGrantWaived`: the git right recorded for the requester
+    /// (`git.repo.own`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right: Option<String>,
+    /// For `selfGrantWaived`: the resource it was recorded on
+    /// (`github.com/acme/widgets`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
 }
 
 /// Payload for [`AuditEvent::AdminActionEffect`].
@@ -2587,6 +2606,7 @@ mod tests {
             task: Some("https://trusttasks.org/spec/acl/grant/0.2".into()),
             digest: Some("zQm".into()),
             kind: Some("acl.grant.authority".into()),
+            ..Default::default()
         });
         round_trip(&e);
         assert_eq!(e.variant_name(), "SingleAdminMode");
@@ -2595,14 +2615,28 @@ mod tests {
         assert_eq!(e.severity(), AuditSeverity::Critical);
         let boot = AuditEvent::SingleAdminMode(SingleAdminModeData {
             event: "inEffect".into(),
-            requirement: None,
-            task: None,
-            digest: None,
-            kind: None,
+            ..Default::default()
         });
         round_trip(&boot);
         assert!(wire_value(&boot)["data"].get("task").is_none());
+        assert!(wire_value(&boot)["data"].get("right").is_none());
         assert_eq!(boot.severity(), AuditSeverity::Critical);
+        let self_grant = AuditEvent::SingleAdminMode(SingleAdminModeData {
+            event: "selfGrantWaived".into(),
+            requirement: Some("git-ns/right/grant/0.3#rule-7".into()),
+            task: Some("https://trusttasks.org/spec/git-ns/repo/adopt/0.1".into()),
+            digest: Some("zQm".into()),
+            kind: Some("repo.adopt".into()),
+            right: Some("git.repo.own".into()),
+            resource: Some("github.com/acme/widgets".into()),
+        });
+        round_trip(&self_grant);
+        assert_eq!(wire_value(&self_grant)["data"]["right"], "git.repo.own");
+        assert_eq!(
+            wire_value(&self_grant)["data"]["resource"],
+            "github.com/acme/widgets"
+        );
+        assert_eq!(self_grant.severity(), AuditSeverity::Critical);
     }
 
     #[test]
