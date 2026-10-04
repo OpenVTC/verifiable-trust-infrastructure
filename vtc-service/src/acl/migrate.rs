@@ -101,6 +101,7 @@ pub fn migrate_row(bytes: &[u8]) -> Result<(VtcAclEntry, Migrated), AppError> {
             expires_at: legacy.expires_at,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         },
         outcome,
     ))

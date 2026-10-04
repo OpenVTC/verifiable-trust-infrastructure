@@ -41,6 +41,7 @@ pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn st
             expires_at: None,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         };
         store_acl_entry(&acl_ks, &entry).await?;
         // An unrestricted admin made offline, without the consent the daemon

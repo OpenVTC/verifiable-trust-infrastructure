@@ -19,7 +19,7 @@ pub use capability::{
     AdminAuthority, AdminRole, CapRef, Capability, CapabilityGrant, CapabilityScope,
     ResourceQualifier, RoleCeilings, VtcActScope,
 };
-pub use entry::VtcAclEntry;
+pub use entry::{Suspension, VtcAclEntry};
 pub use role::{VtcRole, as_vti_role};
 pub use storage::{
     auth_role_for, capability_refusal, delete_acl_entry, get_acl_entry, list_acl_entries,

@@ -508,10 +508,18 @@ pub(crate) async fn standing(state: &AppState, signer: &str) -> Result<Option<St
     if !entry.is_administrator() {
         return Ok(None);
     }
-    let topics: BTreeSet<Topic> = Topic::ALL
-        .into_iter()
-        .filter(|t| read_capability(*t).is_none_or(|cap| entry.can(cap, None)))
-        .collect();
+    let topics: BTreeSet<Topic> = if entry.is_suspended() {
+        // Suspended pending a cooling-off reduction (`vtc-action-list.md`
+        // §8.2): the action about itself and the mode banner, nothing more.
+        [Topic::Actions, Topic::SingleAdminMode]
+            .into_iter()
+            .collect()
+    } else {
+        Topic::ALL
+            .into_iter()
+            .filter(|t| read_capability(*t).is_none_or(|cap| entry.can(cap, None)))
+            .collect()
+    };
     let entry_until = entry
         .expires_at
         .and_then(|e| DateTime::<Utc>::from_timestamp(e as i64, 0));

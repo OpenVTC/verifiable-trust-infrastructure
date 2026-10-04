@@ -338,7 +338,8 @@ narrower role — `moderator`, `auditor`, `credential-officer`, `vetting-lead` �
 confers no authority, so it takes only your step-up. When only the requester
 and the subject hold what a removal takes away, it has nobody to approve it,
 so it lands after a 24-hour cooling-off the requester can cancel
-(`acl.removal_cooling_off`, [`admin-access.md`](admin-access.md) §3.4).
+(`acl.removal_cooling_off`, [`admin-access.md`](admin-access.md) §3.4),
+during which the subject is suspended — its entry authorizes nothing.
 
 When the operation makes a new community administrator, the VTC also issues
 that admin an approver enrolment invite. The requester sees it once, on the
@@ -372,7 +373,8 @@ community that really is run by one person is installed in
 bound to the operation stands in for another administrator's consent, so you
 can add your other identifiers (one per device) as administrators online —
 and consent stays waived beside them, since they are all you. Removals keep
-their cooling-off even then. Turn it on only where every administrator is the
+their cooling-off even then, unless you choose **Remove now** (a typed
+confirmation and a passkey gesture bound to it). Turn it on only where every administrator is the
 same person. It is host configuration
 (`[acl] single_admin_mode` in `config.toml`, changed only there and by a
 restart), every administrator sees a permanent banner while it is on, and each

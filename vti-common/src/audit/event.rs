@@ -1201,7 +1201,9 @@ pub struct SingleAdminModeData {
     /// requester themselves (separation of duties, fixed rule 7 of
     /// `git-ns/right/grant/0.3`) under the mode; `selfEditWaived` — a subject
     /// with unrestricted act scope modified its own ACL entry under the mode
-    /// (VTI-ACL-052 item 3).
+    /// (VTI-ACL-052 item 3); `reductionImmediate` — a VTC reduced another
+    /// administrator now, or landed an open cooling-off now, under the mode
+    /// (VTI-APV-019; `resource` names the cooling-off landed, if any).
     pub event: String,
     /// For `consentWaived`: the requirement whose consent was waived
     /// (`VTI-APV-018`, `VTI-APV-020`, `VTI-VTC-022`). For `selfGrantWaived`:

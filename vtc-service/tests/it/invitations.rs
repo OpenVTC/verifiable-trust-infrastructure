@@ -116,6 +116,7 @@ async fn build() -> Fixture {
                 expires_at: None,
                 resource_grants: Vec::new(),
                 label_set_by_subject: false,
+                suspension: None,
             },
         )
         .await

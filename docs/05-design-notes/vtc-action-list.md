@@ -45,12 +45,20 @@ Builds on `vtc-operation-bound-step-up.md` §4 (the APV-014 consent as built,
 | #1927 | the same machinery for custom roles, the departed-granter review (`acl.grants.review`) and a restore's commit (`vtc-admin-roles.md` §7) |
 | #1929 | the join-request badge and the dashboard's count tiles beside the Actions badge |
 | #1931 | the existing queues as `queue` items (§8.2): break-glass ratification, join review, vetting withdrawal review; listings that filter before paging and count exactly |
+| #1943 | the subject of a cooling-off is **suspended** until it lands or is cancelled (§8.2); in single-administrator mode a reduction can be made **now**, and an open cooling-off landed now, on a typed confirmation and a gesture bound to the immediate variant (§8.5) |
 
 Deviations recorded during implementation, beside the two above:
 
-- **Removals keep their cooling-off in single-administrator mode.** The mode
-  waives consent; it never lands a reduction of another administrator at once
-  — the cooling-off is a delay the subject sees, not a consent (§8.5).
+- **Removals keep their cooling-off in single-administrator mode by default.**
+  The mode waives consent; the cooling-off is a delay the subject sees, not a
+  consent. What the mode adds is a deliberate way past it — **remove now**, or
+  **land now** on an open cooling-off — on a typed confirmation and a gesture
+  bound to the immediate variant (§8.5). Without the mode the cooling-off
+  always runs.
+- **The subject of a cooling-off is suspended** (§8.2): its entry authorizes
+  nothing until the reduction lands or is cancelled. The specification asks
+  only re-authentication, notice and a `Critical` audit of such a removal
+  (VTI-APV-019); the cooling-off and the suspension during it are this VTC's.
 - **Consent is a SHOULD.** VTI-APV-014 and -018 – -020 are SHOULD, and
   VTI-APV-022 is the one way this VTC does not apply them: single-administrator
   mode, host-configured, waiving consent whatever the approver set (one
@@ -457,18 +465,65 @@ So when the approver set excluding requester and subject is empty, a removal
 - it takes the requester's step-up;
 - it is delayed by a **cooling-off** period (default 24 h, an action of its own,
   visible to both);
+- it **suspends the subject** for that whole period;
 - it notifies the subject;
 - it is audited at `Critical`.
 
 During the cooling-off the requester can cancel. The subject cannot block it,
 because if the subject is the attacker a veto would protect them; the subject
-can only see it coming. If the subject answers by asking to remove the
-requester, the earlier request completes first, and the removed admin's own
-pending actions are then cancelled (§4.4). So the first to act wins, and that
-is stated plainly in both admins' action lists. In every other case the normal
-rule applies. A
+can only see it coming. In every other case the normal rule applies. A
 community that wants to remove that window runs with three or more unrestricted
 admins.
+
+**Suspended while it cools off.** A delay that left the subject fully active
+would leave a compromised administrator a day to do damage. So from the moment
+the cooling-off is raised until it lands or is cancelled, the subject's entry
+is **suspended**: it authorizes nothing. As built:
+
+- **One chokepoint.** The suspension is set on the entry wherever it is read
+  (`acl::storage::get_acl_entry`, `list_acl_entries`), and the authorization
+  questions every gate asks — `VtcAclEntry::can`, `can_any`, `can_approve` —
+  answer `false` for it. Nothing is per handler. Over that, the signed
+  administrative door (`trust_tasks::resolve_admin_claims`, the console-key
+  arm included) and the git-ns door (`git_ns::tasks::acting_as`) refuse a
+  suspended signer outright, naming the action and when it lands, as do the
+  capability gates (`require_capability`) and ACL reads (`reader_entry`).
+- **What it may still do.** Sign in — console sign-in admits any entry whose
+  row holds an administrative role, so the subject can see why — and read the
+  action list (`vtc/admin/actions/list`, `show`), where the action about it is
+  shown with `callerRole: subject`; and cancel an action of its own, which
+  reduces nothing. Its console event stream carries only `actions` and
+  `singleAdminMode`. Nothing else: no act, no approval or queue decision (it
+  is no approver, `may_decide`), no acknowledgement (it is no expected
+  acknowledger), no git-ns operation.
+- **Kept, not deleted.** The row is untouched until the reduction lands, and
+  the suspension is never written to it; cancelling restores the entry
+  exactly. Its sessions are revoked when it is suspended, as any reduction's
+  are, and it may sign in again.
+- **Crash-safe.** The suspension is derived from the open action and kept
+  beside the entry as a marker (`suspended:<did>` in the ACL keyspace).
+  `admin_actions::save` writes the marker **before** an action that suspends
+  and lifts it **after** one that no longer does, so a crash between the two
+  can only leave an entry held a moment too long, never an open cooling-off
+  whose subject acts; `reconcile_suspensions` settles either half at start,
+  before anything is served, and on every sweep, and after a restore.
+- **Attrition.** A suspended entry is not a live role assigner
+  (`admin_consent::role_assigners`), so it never counts toward the attrition
+  guard; raising a cooling-off checks the guard as though the subject were
+  already gone, so a suspension can never leave the community with no live
+  holder of `vtc.roles.assign`.
+- **One at a time.** A second cooling-off on a subject already suspended is
+  refused, naming the open one.
+- **Its own requests lapse.** A suspended requester authorizes nothing, so its
+  own open actions are invalidated (§4.4), and an approver set it alone made
+  meetable is too. Cancelling the cooling-off restores the entry, not those.
+
+**First to act wins — by suspension.** The subject cannot answer with a
+counter-removal: it is suspended the moment the first request is raised, and
+its request is refused at the door before any gesture. The first to act wins
+outright, and the subject sees why in its action list.
+(`refuse_if_reduced_first`, which used to land the earlier request at once on
+a counter-request, stays as a backstop that no longer fires.)
 
 #### Irreversible or high-impact (policy)
 
@@ -638,11 +693,50 @@ consent "wherever such a party exists", and requires the requester's step-up,
 a notice to the subject and a `Critical` audit wherever none is obtained —
 "none exists, or the node does not require it under VTI-APV-022". In the mode
 `gate_reduction` counts no third party, so every reduction of another
-administrator takes that path. It keeps the §8.2 **cooling-off**: a delay, not
-a consent — the subject is told and sees it coming, and the first-to-act rule
-(`refuse_if_reduced_first`) still settles a counter-request. A community that
-wants no cooling-off sets `acl.removal_cooling_off = 0`, which is a visible,
-audited configuration change rather than a property of the mode.
+administrator takes that path. It keeps the §8.2 **cooling-off** by default: a
+delay, not a consent — the subject is told and sees it coming, and is
+suspended until it lands. A community that wants no cooling-off at all sets
+`acl.removal_cooling_off = 0`, which is a visible, audited configuration change
+rather than a property of the mode.
+
+**Remove now, and land now (mode only).** In the mode the cooling-off is a
+delay one person imposes on themselves, so the requester may skip it for one
+reduction — deliberately:
+
+- **Wire.** No new task. The reduction's own payload carries
+  `ext["org.openvtc"].immediate = {"confirm": "<subject DID or action id>",
+  "actionId": "<optional>"}` (`admin_actions::immediate_request`; any other
+  shape is malformed, never read as the delayed path). Every reduction door —
+  `acl/revoke`, a downward `acl/change-role`, a narrowing `acl/update` or
+  `acl/grant`, `vtc/members/admin-remove` — reaches it through
+  `gate_reduction`. To **land an open cooling-off now**, the same operation is
+  sent again with `immediate` naming the action: it must be open, about the
+  same subject, and the same operation once `immediate` is set aside (its
+  digest is compared with the action's); without `actionId`, an open
+  cooling-off of exactly that operation is landed if there is one
+  (`admin_actions::cooling_off_to_land`).
+- **Typed confirmation.** `confirm` must be the subject's DID, or the id of the
+  action being landed. A mismatch is refused before any gesture is asked for.
+- **Bound gesture.** The requester's gesture is bound to the payload digest
+  (VTI-APV-015), and the payload includes `immediate`: a gesture made for the
+  delayed removal is never spent on the immediate one, nor the reverse.
+- **Refused** without the mode (naming the cooling-off and that the mode is
+  set on the host), on a mismatched confirmation, without the gesture, and by
+  the attrition guard as any reduction is.
+- **Audited.** Spending it writes a `Critical` `SingleAdminMode { event:
+  reductionImmediate }` row (requirement `VTI-APV-019`, task, digest, kind,
+  `resource`: the cooling-off landed, if any) **before** the write, refusing
+  on failure; the write is then recorded as any unopposed reduction —
+  `AuthorityReducedUnopposed` at `Critical` and the authority-reduced notice to
+  the subject (VTI-APV-019).
+- **History.** A cooling-off landed early closes `completed`
+  (`landedAfterCoolingOff`), lifting the suspension, with
+  `ext.org.openvtc.landedNow = {by, at, mode}`; a reduction that never waited
+  is entered as a closed history record carrying the same marker.
+- **Surfaces.** The console offers **Remove now** beside **Revoke** for another
+  unrestricted administrator, and **Land now** on an open cooling-off, each
+  behind a typed confirmation and then the passkey; `cnm access revoke <did>
+  --now [--action <id>] [--confirm <did|id>]` prompts for the confirmation.
 
 **Self-edits (VTI-ACL-052 item 3).** In the mode, an administrator whose entry
 has unrestricted act scope (`granting::is_unrestricted`) may modify its own

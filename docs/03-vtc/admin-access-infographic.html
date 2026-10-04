@@ -326,7 +326,7 @@
       <ul>
         <li>Turn it on only where every administrator is the same person; turn it off on the host when someone else joins</li>
         <li>An unrestricted administrator may edit its own entry, on its step-up, audited <b>Critical</b> (VTI-ACL-052)</li>
-        <li>Removals and narrowings keep their cooling-off</li>
+        <li>Removals and narrowings keep their cooling-off — unless you choose <b>Remove now</b> / <b>Land now</b>: type their DID, then a passkey gesture bound to the immediate removal, audited <b>Critical</b></li>
         <li>A <b>SINGLE ADMIN MODE</b> banner on every page; every waived consent audited <b>Critical</b></li>
       </ul>
     </div>
@@ -365,7 +365,7 @@
     <div class="layer">
       <div class="ic">🛡️</div>
       <div><h4>Attrition guards and the cooling-off</h4>
-        <p>Removals and demotions run one at a time under a lock. The last holder of <code>vtc.roles.assign</code> can't be removed, nor anyone whose removal would leave the threshold unmeetable. Removing or narrowing an admin needs the other holders' approval (VTI-APV-019). With nobody else to approve, it lands after a <b>24 h cooling-off</b> (<code>acl.removal_cooling_off</code>): the requester can cancel, the subject is sent a reduction-pending notice and sees it coming but can't block it. First to act wins.</p></div>
+        <p>Removals and demotions run one at a time under a lock. The last holder of <code>vtc.roles.assign</code> can't be removed, nor anyone whose removal would leave the threshold unmeetable. Removing or narrowing an admin needs the other holders' approval (VTI-APV-019). With nobody else to approve, it lands after a <b>24 h cooling-off</b> (<code>acl.removal_cooling_off</code>): the requester can cancel, the subject is sent a reduction-pending notice and sees it coming but can't block it. Until it lands the subject is <b>suspended</b>: its entry authorizes nothing (it can only sign in and see the action), and cancelling restores it. A suspended subject can't counter-remove, so the first to act wins.</p></div>
       <span class="stops">stops: stripping the other admins</span>
     </div>
     <div class="layer">
@@ -562,7 +562,7 @@
       <ul>
         <li><b>Approval</b> — N of M, then it runs</li>
         <li><b>Queue</b> — one decision on a break-glass, a referred join or a withdrawn vetting statement; never expires</li>
-        <li><b>Cooling-off</b> — a reduction nobody else could approve; lands at <code>landsAt</code> unless its requester cancels</li>
+        <li><b>Cooling-off</b> — a reduction nobody else could approve; lands at <code>landsAt</code> unless its requester cancels, its subject suspended meanwhile (single-administrator mode: <b>Land now</b>)</li>
         <li><b>Acknowledge</b> — an operator's offline write (<code>vtc/operator/offline-write/0.1</code>), with a <code>Critical</code> banner</li>
       </ul>
     </div>

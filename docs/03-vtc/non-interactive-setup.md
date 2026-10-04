@@ -118,7 +118,10 @@ approval is authorized by the requester's step-up bound to that operation (a
 passkey gesture, or their approver device) instead, audited at `Critical` —
 whether or not other administrators' entries exist, since the mode states they
 are all one person. Removing or narrowing another
-administrator keeps its cooling-off in the mode.
+administrator keeps its cooling-off in the mode by default (the subject is
+suspended meanwhile), and the mode adds **remove now** — a typed confirmation
+and a gesture bound to the immediate removal
+([`admin-access.md`](admin-access.md) §2.1a).
 Setup writes `[acl] single_admin_mode = true` to the generated `config.toml`,
 and only then; the key is host configuration, changed afterwards only by
 editing `config.toml` and restarting — `config/patch` and `vtc/config/import`

@@ -70,8 +70,16 @@
 //! and the node cannot tell one person's identifiers from two people's
 //! (VTI-APV-022). Reductions ([`gate_reduction`]) take the unopposed
 //! VTI-APV-019 path — the gesture, a notice to the subject, a `Critical` row —
-//! and keep its cooling-off, a delay rather than a consent
-//! (`vtc-action-list.md` §8.5).
+//! and keep its cooling-off by default, a delay rather than a consent; the
+//! requester may land one now, on a typed confirmation and a gesture bound to
+//! the immediate variant (`immediate_reduction`, `vtc-action-list.md` §8.5).
+//!
+//! ## Suspension during a cooling-off
+//!
+//! The subject of an open cooling-off is suspended (`vtc-action-list.md`
+//! §8.2): its entry authorizes nothing ([`VtcAclEntry::can`] answers `false`),
+//! approves nothing ([`may_approve`]), and is no role assigner for the
+//! attrition guard ([`role_assigners`]).
 //!
 //! ## The other acts it gates
 //!
@@ -386,9 +394,11 @@ pub fn lost_conferring(prev: &VtcAclEntry, next: Option<&VtcAclEntry>, now: u64)
 /// action its approve scope reaches. Approve scope is itself bounded: by the
 /// role's approve ceiling, and by the granter's own when it was conferred
 /// (**VTI-ACL-042**), so it reaches no further than someone who held it chose.
+///
+/// A suspended entry approves nothing (`vtc-action-list.md` §8.2).
 #[must_use]
 pub fn may_approve(entry: &VtcAclEntry, stake: &[CapRef], now: u64) -> bool {
-    !entry.is_expired(now) && stake.iter().all(|c| entry.admin.can_approve(c))
+    !entry.is_expired(now) && stake.iter().all(|c| entry.can_approve(c))
 }
 
 /// Whether `entry` may decide an action of `act` with this stake. For a
@@ -416,11 +426,15 @@ pub fn may_decide(entry: &VtcAclEntry, act: Act, stake: &[CapRef], now: u64) -> 
 /// The DIDs of every live holder of `vtc.roles.assign`, unqualified — the
 /// community's role assigners. The consent threshold is counted against them,
 /// and the last of them is never removed.
+///
+/// A suspended entry is not one (`vtc-action-list.md` §8.2): while its
+/// reduction cools off it can neither grant nor consent, so it never counts
+/// toward the attrition guard either.
 pub async fn role_assigners(state: &AppState, now: u64) -> Result<Vec<String>, AppError> {
     Ok(list_acl_entries(&state.acl_ks)
         .await?
         .into_iter()
-        .filter(|e| is_live_role_assigner(e, now))
+        .filter(|e| is_live_role_assigner(e, now) && !e.is_suspended())
         .map(|e| e.did)
         .collect())
 }
@@ -535,6 +549,9 @@ enum Ready {
     Approved { action_id: String },
     /// Consent waived by single-administrator mode (VTI-APV-022).
     Waived(Box<crate::admin_actions::Waiver>),
+    /// A reduction landing now, without its cooling-off, in
+    /// single-administrator mode (`vtc-action-list.md` §8.5).
+    Immediate(Box<crate::admin_actions::Immediate>),
 }
 
 impl ReadyGrant {
@@ -568,6 +585,7 @@ impl ReadyGrant {
                 Ok(())
             }
             Ready::Waived(waiver) => crate::admin_actions::spend_waiver(state, *waiver).await,
+            Ready::Immediate(imm) => crate::admin_actions::spend_immediate(state, *imm).await,
         }
     }
 }
@@ -827,10 +845,12 @@ pub enum ReductionGate {
 /// alone suffices, but not at once: the reduction is parked for a
 /// **cooling-off** (`acl.removal_cooling_off`, default 24 h, §8.2) that both
 /// can see, and lands by itself when it ends unless the requester cancels it.
-/// The subject cannot block it; if the subject answers by asking to reduce the
-/// requester, the earlier request lands first
-/// ([`crate::admin_actions::refuse_if_reduced_first`]). A cooling-off of zero
-/// lands it at once ([`Reduction::Unopposed`]).
+/// The subject is suspended meanwhile, so it can neither block it nor answer
+/// with a counter-request; only one cooling-off runs on a subject at a time,
+/// and raising one checks the attrition guard as though the subject were
+/// already gone. A cooling-off of zero lands it at once
+/// ([`Reduction::Unopposed`]), and so does `ext["org.openvtc"].immediate` in
+/// single-administrator mode (`immediate_reduction`, §8.5).
 ///
 /// The attrition guard ([`check_attrition`]) is asked first as well when the
 /// subject loses `vtc.roles.assign`, so a reduction that would strand the
@@ -858,6 +878,22 @@ pub async fn gate_reduction(
         lost_conferring(subject, after, now)
     };
     let executing = crate::admin_actions::executing();
+    // "Remove now" (`vtc-action-list.md` §8.5): asked for in the payload, so
+    // the requester's gesture is bound to the immediate variant and never to
+    // the delayed one (VTI-APV-015). Only single-administrator mode offers it.
+    let immediate = crate::admin_actions::immediate_request(op.payload)?;
+    if immediate.is_some() && executing.is_none() && !single_admin_mode(state).await {
+        return Err(AppError::Forbidden(format!(
+            "removing or reducing an administrator now, without its cooling-off \
+             (ext.org.openvtc.immediate), is offered only in single-administrator mode \
+             (VTI-APV-022), which is set on the host ([acl] single_admin_mode in config.toml) and \
+             cannot be changed through this service. Without it the reduction of {} waits out \
+             its cooling-off ({}), during which they are suspended — send it again without \
+             `immediate`",
+            subject.did,
+            crate::config_store::REMOVAL_COOLING_OFF
+        )));
+    }
     if !lost.is_empty() {
         if is_live_role_assigner(subject, now)
             && !after.is_some_and(|a| is_live_role_assigner(a, now))
@@ -898,6 +934,24 @@ pub async fn gate_reduction(
         if executing.is_none() && third == 0 {
             crate::admin_actions::refuse_if_reduced_first(state, requester, &subject.did).await?;
         }
+        // Remove now, in single-administrator mode (checked above): no
+        // cooling-off, on a typed confirmation and the requester's gesture
+        // bound to this immediate operation (`vtc-action-list.md` §8.5).
+        if let Some(imm) = immediate.as_ref()
+            && executing.is_none()
+        {
+            return immediate_reduction(
+                state,
+                requester,
+                subject,
+                op,
+                imm,
+                lost,
+                gesture_reason,
+                consent_summary,
+            )
+            .await;
+        }
         // An approved action executing this reduction goes through its consent
         // whatever the count is now: approvals that no longer suffice fail it
         // closed, rather than letting the unopposed path run it on the gesture
@@ -932,6 +986,29 @@ pub async fn gate_reduction(
             if let Some(open) = crate::admin_actions::open_for(state, requester, op).await? {
                 return Err(crate::admin_actions::parked_error(state, &open).await);
             }
+            // One reduction cools off on a subject at a time: it is what
+            // suspends them, and a second would only race the first.
+            if let Some(other) =
+                crate::admin_actions::open_cooling_off_on(state, &subject.did).await?
+            {
+                return Err(AppError::Conflict(format!(
+                    "a reduction of {} is already cooling off ({}, requested by {}, lands {}), and \
+                     they are suspended until it lands or is cancelled. Cancel that one first \
+                     (vtc/admin/actions/cancel) to ask for something different",
+                    subject.did,
+                    other.id,
+                    other.requester,
+                    crate::admin_actions::rfc3339(other.cooling_off_until.unwrap_or_default()),
+                )));
+            }
+            // The subject is suspended from the moment this is raised, so it
+            // stops counting toward the attrition guard now, whatever the
+            // reduction leaves it when it lands (`vtc-action-list.md` §8.2).
+            if is_live_role_assigner(subject, now)
+                && after.is_some_and(|a| is_live_role_assigner(a, now))
+            {
+                check_attrition(state, &subject.did).await?;
+            }
             crate::admin_actions::check_limits(
                 state,
                 Act::ReduceUnrestricted,
@@ -959,7 +1036,7 @@ pub async fn gate_reduction(
                 task = op.type_uri,
                 window,
                 "ending an unrestricted admin's authority with nobody else left to consent \
-                 (VTI-APV-019): parked for its cooling-off"
+                 (VTI-APV-019): parked for its cooling-off, the subject suspended until it lands"
             );
             let pin = pin_for(state, Act::ReduceUnrestricted, &subject.did).await?;
             let action = crate::admin_actions::park(
@@ -1007,6 +1084,95 @@ pub async fn gate_reduction(
             Gate::Required(r) => ReductionGate::StepUpRequired(r),
         },
     )
+}
+
+/// "Remove now" (`vtc-action-list.md` §8.5): a reduction of another
+/// administrator that lands at once instead of waiting out its cooling-off —
+/// or that lands an open cooling-off of the same operation now. Offered only in
+/// single-administrator mode (the caller has checked it), where the cooling-off
+/// is a delay one person imposes on themselves (VTI-APV-022).
+///
+/// It asks two deliberate things, in this order, before anything is written:
+///
+/// 1. a typed confirmation in the payload — the subject's DID, or the id of the
+///    cooling-off being landed — refused without a gesture when it does not
+///    match, so a slip costs nothing;
+/// 2. the requester's gesture bound to **this** operation (VTI-APV-015), whose
+///    payload carries `ext.org.openvtc.immediate`: a gesture made for the
+///    delayed removal is bound to a different digest and is never spent here,
+///    and this one is never spent on the delayed removal.
+///
+/// The attrition guard has already run ([`gate_reduction`]). Spending the grant
+/// writes a `Critical` `SingleAdminMode { event: reductionImmediate }` row before
+/// the write; the caller then records the unopposed reduction at `Critical` and
+/// notifies the subject (VTI-APV-019, [`after_reduction`]).
+#[allow(clippy::too_many_arguments)]
+async fn immediate_reduction(
+    state: &AppState,
+    requester: &str,
+    subject: &VtcAclEntry,
+    op: Operation<'_>,
+    imm: &crate::admin_actions::ImmediateRequest,
+    lost: Vec<CapRef>,
+    gesture_reason: &str,
+    consent_summary: &str,
+) -> Result<ReductionGate, AppError> {
+    use super::bound_step_up::{self, EvidencedGate};
+
+    let confirmed =
+        imm.confirm == subject.did || imm.action_id.as_deref().is_some_and(|id| imm.confirm == id);
+    if !confirmed {
+        return Err(AppError::Validation(format!(
+            "the confirmation does not match. To make this change now, without its cooling-off \
+             ({consent_summary}), type the subject's DID ({}){} as \
+             ext.org.openvtc.immediate.confirm",
+            subject.did,
+            imm.action_id
+                .as_deref()
+                .map(|id| format!(" or the action's id ({id})"))
+                .unwrap_or_default(),
+        )));
+    }
+    let target = crate::admin_actions::cooling_off_to_land(
+        state,
+        &subject.did,
+        op,
+        imm.action_id.as_deref(),
+    )
+    .await?;
+    let evidence = match bound_step_up::redeem_or_request_with_evidence(
+        state,
+        requester,
+        op.type_uri,
+        op.payload,
+        &format!("{gesture_reason} — now, without the cooling-off"),
+    )
+    .await?
+    {
+        EvidencedGate::Required(request) => return Ok(ReductionGate::StepUpRequired(request)),
+        EvidencedGate::Satisfied(evidence) => evidence,
+    };
+    warn!(
+        requester,
+        subject = %subject.did,
+        task = op.type_uri,
+        landing = target.as_deref().unwrap_or("-"),
+        "reducing an administrator now, without the cooling-off — single-administrator mode \
+         (VTI-APV-022, VTI-APV-019)"
+    );
+    Ok(ReductionGate::Cleared(Reduction::Unopposed(Some(
+        ReadyGrant {
+            ready: Ready::Immediate(Box::new(crate::admin_actions::Immediate::new(
+                lost,
+                requester,
+                &subject.did,
+                op,
+                consent_summary,
+                evidence,
+                target,
+            )?)),
+        },
+    ))))
 }
 
 /// [`gate_reduction`] for a door about to end or reduce `prior` (to `after`,
@@ -1263,7 +1429,10 @@ pub(crate) fn requester_still_authorized(
     stake: &[CapRef],
     now: u64,
 ) -> bool {
-    if entry.is_expired(now) || !entry.admin.is_administrator() {
+    // A suspended requester authorizes nothing while its own reduction cools
+    // off (`vtc-action-list.md` §8.2), so what it asked for can no longer run
+    // as it.
+    if entry.is_expired(now) || !entry.admin.is_administrator() || entry.is_suspended() {
         return false;
     }
     match act {
@@ -1369,6 +1538,7 @@ mod tests {
             expires_at,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         }
     }
 

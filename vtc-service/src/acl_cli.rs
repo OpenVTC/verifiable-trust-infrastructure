@@ -164,6 +164,7 @@ pub async fn run_acl_add(args: AclAddArgs) -> CliResult {
             .unwrap_or_default(),
         // Written by the operator, not by the subject (VTI-ACL-052 item 2).
         label_set_by_subject: false,
+        suspension: None,
     };
     store_acl_entry(&acl_ks, &entry).await?;
     // The break-glass bypasses the consent and attrition rules; the daemon

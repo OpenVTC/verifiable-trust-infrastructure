@@ -40,7 +40,9 @@ import {
 } from "./action-summary";
 import type { ActionSummaryWire } from "./action-summary";
 import type { SignedTrustTaskDocument } from "./console-key";
+import { withImmediate } from "./immediate";
 import { ACTIONS_SHOW_TASK } from "./parked-action";
+import { postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 import { fetchApprovers } from "./step-up-approvers";
 import {
   approveDecisionWithWallet,
@@ -139,6 +141,19 @@ export interface ActionExt {
    *  requester's own gesture in place of another's consent (VTI-APV-022).
    *  Completed at once; it carries no threshold. */
   consentWaived?: ConsentWaived;
+  /** An open cooling-off suspends its subject until it lands or is
+   *  cancelled (vtc-action-list.md §8.2). */
+  subjectSuspended?: { subject: string; until: string };
+  /** Landed now, without (the rest of) its cooling-off, in
+   *  single-administrator mode (vtc-action-list.md §8.5). */
+  landedNow?: LandedNow;
+}
+
+/** Who landed a reduction now, and when. */
+export interface LandedNow {
+  by: string;
+  at: string;
+  mode: "singleAdministrator";
 }
 
 /** How an action's consent was waived (VTI-APV-022). */
@@ -230,6 +245,38 @@ export function isAcknowledgeItem(action: Action): boolean {
 export function consentWaivedOf(action: Action): ConsentWaived | null {
   const w = actionExt(action).consentWaived;
   return w && typeof w.requirement === "string" ? w : null;
+}
+
+/** Who landed `action` now, if single-administrator mode let it skip (the
+ *  rest of) its cooling-off (vtc-action-list.md §8.5). */
+export function landedNowOf(action: Action): LandedNow | null {
+  const l = actionExt(action).landedNow;
+  return l && typeof l.by === "string" ? l : null;
+}
+
+/** The administrator an open cooling-off holds suspended, if any. */
+export function suspendedSubjectOf(action: Action): string | null {
+  if (action.status !== "open") return null;
+  const s = actionExt(action).subjectSuspended?.subject;
+  return typeof s === "string" ? s : (coolingOffOf(action)?.subject ?? null);
+}
+
+/**
+ * Land an open cooling-off now — single-administrator mode only
+ * (vtc-action-list.md §8.5): the same operation, sent again by the caller
+ * with `ext["org.openvtc"].immediate` naming the action and carrying what the
+ * administrator typed. The VTC asks for a gesture bound to exactly that.
+ */
+export async function landActionNow(
+  action: Action,
+  typed: string,
+  confirmGesture: ConfirmGesture,
+): Promise<void> {
+  await postSignedWithStepUp<unknown>(
+    action.typeUri,
+    withImmediate(action.payload, typed, action.actionId),
+    confirmGesture,
+  );
 }
 
 /** The cooling-off `action` waits out, if it is one (VTI-APV-019): a 0.2

@@ -93,9 +93,12 @@ above:
   them is VTI-APV-022's host-configured single-administrator mode, judged per
   act from the same approver set (§7). Without the mode, an empty approver set
   refuses before any gesture, as §7 says.
-- **Removals keep their cooling-off in single-administrator mode**
-  (`vtc-action-list.md` §8.5): the mode waives a consent nobody could give; it
-  never lands a reduction of another administrator at once.
+- **Removals keep their cooling-off in single-administrator mode by default**
+  (`vtc-action-list.md` §8.5): the mode waives a consent nobody could give, and
+  lands a reduction of another administrator at once only when asked to
+  deliberately — a typed confirmation and a gesture bound to the immediate
+  variant. The subject of a cooling-off is suspended until it lands
+  (`vtc-action-list.md` §8.2).
 - **`vtc.approvals.admin` gates custom roles only.** The approvals rule list
   it is named for (`vtc-action-list.md` §8.3) is not built, and with it none of
   §7's rule-driven rows (vetter grants, repo transfer, `ns.admin` grants as
@@ -326,7 +329,8 @@ one exception: on a node configured for it on the host, the consent is waived
 whatever the approver set — every administrator is taken to be the same person
 — and the requester's operation-bound step-up authorizes the act, audited at
 `Critical`. Rows 2 (reductions) take VTI-APV-019's unopposed path in the mode
-— step-up, notice, `Critical` row — and keep their cooling-off.
+— step-up, notice, `Critical` row — and keep their cooling-off unless the
+requester lands it now (`vtc-action-list.md` §8.5).
 
 ## 8. Act scope and contexts
 

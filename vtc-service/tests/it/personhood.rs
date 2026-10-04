@@ -100,6 +100,7 @@ async fn build_fixture() -> Fixture {
             expires_at: None,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         },
     )
     .await
@@ -124,6 +125,7 @@ async fn build_fixture() -> Fixture {
             expires_at: None,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         },
     )
     .await
@@ -148,6 +150,7 @@ async fn build_fixture() -> Fixture {
             expires_at: None,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         },
     )
     .await

@@ -247,3 +247,78 @@ describe("Access control — your own entry (VTI-ACL-052)", () => {
     expect(await screen.findByText("self-set")).toBeTruthy();
   });
 });
+
+// vtc-action-list.md §8.2 / §8.5: an entry whose removal is cooling off is
+// marked suspended until it lands; in single-administrator mode another
+// unrestricted administrator can be removed now, on their DID typed back and a
+// gesture bound to the immediate removal.
+describe("Access control — suspension and remove now", () => {
+  const OTHER = "did:example:other";
+  const REVOKE = "https://trusttasks.org/spec/acl/revoke/0.1";
+  const ACTIONS_LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.2";
+  const LANDS_AT = "2026-10-05T09:00:00Z";
+  const other = (suspended = false) => ({
+    subject: OTHER,
+    role: "community-admin",
+    act: { scope: "all" },
+    keys: { scope: "none" },
+    capabilities: { scope: "ceiling" },
+    approve: { scope: "all" },
+    ext: {
+      "org.openvtc": {
+        communityRole: "admin",
+        ...(suspended
+          ? { suspended: { actionId: "act-9", landsAt: LANDS_AT, requester: "did:example:me" } }
+          : {}),
+      },
+    },
+  });
+  const render = (singleAdminMode: boolean, suspended = false) => {
+    const requests = mockFetch([
+      taskRoute(LIST, { entries: [other(suspended)], truncated: false }),
+      taskRoute(ACTIONS_LIST, {
+        actions: [],
+        counts: { waitingForMe: 0, requestedByMe: 0 },
+        ext: { "org.openvtc": { singleAdminMode } },
+      }),
+      taskRoute(REVOKE, { entry: null }),
+    ]);
+    renderWithProviders(<Acl />, { route: "/acl", path: "/acl" });
+    return requests;
+  };
+
+  it("marks a suspended entry with when its removal lands", async () => {
+    render(false, true);
+    const chip = await screen.findByTestId("suspended");
+    expect(chip.textContent).toContain("suspended — removal lands");
+    expect(chip.textContent).toContain(new Date(LANDS_AT).toLocaleString());
+    expect(chip.getAttribute("title")).toMatch(/act-9/);
+  });
+
+  it("offers no Remove now outside single-administrator mode", async () => {
+    render(false);
+    await screen.findByRole("button", { name: "Revoke" });
+    expect(screen.queryByRole("button", { name: "Remove now" })).toBeNull();
+  });
+
+  it("removes now only once the DID is typed back, with the immediate request", async () => {
+    const requests = render(true);
+    fireEvent.click(await screen.findByRole("button", { name: "Remove now" }));
+    const dialog = await screen.findByRole("dialog");
+    const submit = Array.from(dialog.querySelectorAll("button")).find(
+      (b) => b.textContent === "Remove now",
+    ) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    const input = screen.getByLabelText("Type the administrator's DID to confirm");
+    fireEvent.change(input, { target: { value: "did:example:wrong" } });
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(input, { target: { value: OTHER } });
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+    await waitFor(() => expect(sentPayloads(requests, REVOKE)).toHaveLength(1));
+    expect(sentPayloads(requests, REVOKE)[0]).toEqual({
+      subject: OTHER,
+      ext: { "org.openvtc": { immediate: { confirm: OTHER } } },
+    });
+  });
+});

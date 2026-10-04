@@ -208,6 +208,7 @@ async fn raise(state: &AppState, spec: QueueSpec) -> Result<Option<String>, AppE
         approver_invite: None,
         consent_waived: false,
         queue_key: Some(spec.key.clone()),
+        landed_now: None,
     };
     {
         let _guard = ACTION_LOCK.lock().await;

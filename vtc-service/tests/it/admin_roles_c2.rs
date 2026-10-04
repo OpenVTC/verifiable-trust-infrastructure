@@ -76,6 +76,7 @@ fn row(did: &str, admin: AdminAuthority, delegated_by: Option<&str>) -> VtcAclEn
         expires_at: None,
         resource_grants: Vec::new(),
         label_set_by_subject: false,
+        suspension: None,
     }
 }
 

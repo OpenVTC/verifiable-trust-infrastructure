@@ -28,9 +28,12 @@ import {
   grantAcl,
   grantLabel,
   grantRequest,
+  isUnrestricted,
   labelSelfSet,
   ownEntryEdits,
   revokeAcl,
+  revokeAclNow,
+  suspensionOf,
   updateAcl,
   type AclEntry,
   type AclGrantRequest,
@@ -44,6 +47,8 @@ import {
   type ConfirmGesture,
 } from "@/lib/signed-act";
 import { useConfirm } from "@/components/ConfirmDialog";
+import { TypedConfirmDialog } from "@/components/TypedConfirmDialog";
+import { immediateConfirmMatches } from "@/lib/immediate";
 import { Field } from "@/components/Field";
 import { formatIso, shorten, shortenDid } from "@/lib/format";
 import { useToast } from "@/lib/toast";
@@ -160,6 +165,19 @@ export function Acl() {
     },
     onError: (err) => toast.pushFromError(err, "Revoke failed"),
   });
+  // Remove now (single-administrator mode, vtc-action-list.md §8.5): the
+  // subject's DID typed back, then a gesture bound to the immediate removal.
+  const [removingNow, setRemovingNow] = useState<AclEntry | null>(null);
+  const removeNow = useMutation({
+    mutationFn: (args: { subject: string; typed: string }) =>
+      revokeAclNow(args.subject, args.typed, gestureFromConfirm(confirm)),
+    onSuccess: (_, args) => {
+      toast.push("success", `Removed ${args.subject} now, without the cooling-off`);
+      void queryClient.invalidateQueries({ queryKey: ["acl"] });
+      void queryClient.invalidateQueries({ queryKey: ["actions"] });
+    },
+    onError: (err) => toast.pushFromError(err, "Remove now failed"),
+  });
 
   return (
     <section className="page">
@@ -223,6 +241,30 @@ export function Acl() {
         />
       )}
 
+      {removingNow && (
+        <TypedConfirmDialog
+          title="Remove this administrator now?"
+          message={
+            <p>
+              Single-administrator mode: {removingNow.subject} loses every right at once, with no
+              cooling-off{suspensionOf(removingNow) ? " (the one already open lands now)" : ""}.
+              This cannot be undone. You will then be asked for a passkey gesture bound to this
+              removal.
+            </p>
+          }
+          prompt="Type the administrator's DID to confirm"
+          matches={(t) => immediateConfirmMatches(t, removingNow.subject)}
+          confirmLabel="Remove now"
+          busy={removeNow.isPending}
+          onCancel={() => setRemovingNow(null)}
+          onConfirm={(typed) => {
+            const subject = removingNow.subject;
+            setRemovingNow(null);
+            removeNow.mutate({ subject, typed });
+          }}
+        />
+      )}
+
       {query.error && (
         <section className="card error">
           <h3>Failed to load ACL</h3>
@@ -270,6 +312,10 @@ export function Acl() {
               // Your own entry (VTI-ACL-052): the label always; anything else
               // only where the VTC would allow it, explained otherwise.
               const own = me !== null && e.subject === me ? ownEntryEdits(e, singleAdminMode) : null;
+              const suspended = suspensionOf(e);
+              // Another unrestricted administrator: in single-administrator
+              // mode, removing them may skip the cooling-off (§8.5).
+              const mayRemoveNow = singleAdminMode && own === null && isUnrestricted(e);
               return (
                 <tr key={e.subject}>
                   <td>
@@ -292,6 +338,15 @@ export function Acl() {
                         title={`Granted by ${review.granter}, who has left or narrowed. Withdrawn at ${review.deadline} unless an administrator re-affirms it (Edit, then Save).`}
                       >
                         under review
+                      </span>
+                    )}
+                    {suspended && (
+                      <span
+                        className="chip danger"
+                        data-testid="suspended"
+                        title={`A reduction of this entry is cooling off (action ${suspended.actionId}, requested by ${suspended.requester}). Until it lands or is cancelled the entry authorizes nothing; cancelling restores it.`}
+                      >
+                        suspended — removal lands {formatIso(suspended.landsAt)}
                       </span>
                     )}
                   </td>
@@ -352,7 +407,9 @@ export function Acl() {
                         onClick={async () => {
                           const ok = await confirm({
                             title: "Revoke ACL entry?",
-                            message: `${e.subject} loses access immediately. This cannot be undone.`,
+                            message: isUnrestricted(e)
+                              ? `${e.subject} is an unrestricted administrator. With nobody else to consent, the removal waits out a cooling-off, during which they are suspended — their entry authorizes nothing — and you can cancel it. Otherwise another administrator approves it.`
+                              : `${e.subject} loses access immediately. This cannot be undone.`,
                             confirmLabel: "Revoke",
                             destructive: true,
                           });
@@ -361,6 +418,17 @@ export function Acl() {
                       >
                         Revoke
                       </button>
+                      {mayRemoveNow && (
+                        <button
+                          type="button"
+                          className="secondary destructive"
+                          disabled={removeNow.isPending}
+                          title="Single-administrator mode: remove at once, without the cooling-off — after typing their DID and a passkey gesture bound to this removal"
+                          onClick={() => setRemovingNow(e)}
+                        >
+                          Remove now
+                        </button>
+                      )}
                     </div>
                     {own && !own.other && e.role !== NO_ADMIN_ROLE && (
                       <p className="muted own-entry-note">{own.why}</p>

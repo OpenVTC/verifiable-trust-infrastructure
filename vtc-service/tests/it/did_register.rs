@@ -208,6 +208,7 @@ async fn vtc_client_authenticates_and_installs() {
             expires_at: None,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         },
     )
     .await

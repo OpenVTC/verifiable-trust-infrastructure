@@ -341,6 +341,36 @@ impl VtcClient {
             .await
     }
 
+    /// Remove `subject`'s entry **now**, without the cooling-off — offered only
+    /// by a VTC in single-administrator mode (`vtc-action-list.md` §8.5). The
+    /// request carries `ext["org.openvtc"].immediate`, so the passkey gesture
+    /// the VTC asks for is bound to this immediate removal and to nothing
+    /// else. `confirm` is what the operator typed: the subject's DID, or —
+    /// with `action_id`, to land that open cooling-off now — the action's id.
+    pub async fn acl_revoke_now(
+        &self,
+        subject: &str,
+        confirm: &str,
+        action_id: Option<&str>,
+        reason: Option<&str>,
+        key: &HolderKey,
+    ) -> Result<revoke::Response, VtcError> {
+        let mut immediate = serde_json::json!({ "confirm": confirm });
+        if let Some(id) = action_id {
+            immediate["actionId"] = serde_json::json!(id);
+        }
+        let mut body = serde_json::json!({
+            "subject": subject,
+            "ext": { "org.openvtc": { "immediate": immediate } },
+        });
+        if let Some(reason) = reason {
+            body["reason"] = serde_json::json!(reason);
+        }
+        let payload = checked::<revoke::Payload>(body)?;
+        self.acl_task(task::REVOKE, payload, key, revoke::ERROR_CODES)
+            .await
+    }
+
     /// One page of the ACL at 0.2 — every entry with every axis stated. Any
     /// administrative role may read it.
     pub async fn acl_list_v0_2(

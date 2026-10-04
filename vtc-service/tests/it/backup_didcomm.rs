@@ -94,6 +94,7 @@ async fn a_backup_round_trips_over_didcomm() {
             expires_at: None,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         },
     )
     .await

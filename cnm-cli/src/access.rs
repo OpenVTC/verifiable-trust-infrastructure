@@ -23,7 +23,7 @@
 use chrono::{DateTime, Utc};
 use clap::Subcommand;
 use serde_json::Value;
-use vta_cli_common::render::{DIM, GREEN, RESET, bin_name, is_json_output, print_json};
+use vta_cli_common::render::{DIM, GREEN, RESET, YELLOW, bin_name, is_json_output, print_json};
 use vta_sdk::session::TransportChoice;
 use vtc_client::acl::{AclGrantV02, AclListFilterV02, AclUpdateV02};
 use vtc_client::{HolderKey, VtcError};
@@ -143,13 +143,70 @@ pub enum AccessCommands {
         reason: Option<String>,
     },
     /// Remove a subject's entry.
+    ///
+    /// Removing another unrestricted administrator when nobody else can
+    /// consent waits out a cooling-off (`acl.removal_cooling_off`, default
+    /// 24 h), during which they are suspended: their entry authorizes nothing,
+    /// and cancelling restores it. In single-administrator mode, `--now`
+    /// removes them at once instead — or, with `--action`, lands that open
+    /// cooling-off now — after you type their DID (or the action id) to
+    /// confirm and make a passkey gesture bound to the immediate removal.
     Revoke {
         /// The subject DID.
         subject: String,
         /// Why, recorded with the change.
         #[arg(long)]
         reason: Option<String>,
+        /// Single-administrator mode only: remove now, without the
+        /// cooling-off.
+        #[arg(long)]
+        now: bool,
+        /// With `--now`: the open cooling-off of this same removal to land
+        /// now. Send the same `--reason` it was raised with.
+        #[arg(long, requires = "now")]
+        action: Option<String>,
+        /// With `--now`: the confirmation, typed in advance — the subject's
+        /// DID, or the `--action` id. Prompted for when omitted on a terminal.
+        #[arg(long, requires = "now")]
+        confirm: Option<String>,
     },
+}
+
+/// What the operator typed to confirm a removal now: `--confirm`, or a
+/// prompt on a terminal. Checked here as well as by the VTC, so a slip costs
+/// neither a gesture nor a round trip.
+fn confirm_now(subject: &str, action: Option<&str>, given: Option<String>) -> CliResult<String> {
+    use std::io::IsTerminal as _;
+    let typed = match given {
+        Some(c) => c,
+        None if std::io::stderr().is_terminal() => {
+            eprintln!(
+                "This removes {subject} {}, without the cooling-off — single-administrator mode.",
+                if action.is_some() {
+                    "now, landing the open cooling-off"
+                } else {
+                    "now"
+                }
+            );
+            dialoguer::Input::<String>::new()
+                .with_prompt(match action {
+                    Some(_) => "Type the subject's DID, or the action id, to confirm",
+                    None => "Type the subject's DID to confirm",
+                })
+                .interact_text()?
+        }
+        None => {
+            return Err(
+                "removing now needs a typed confirmation: pass `--confirm <the subject's DID>`"
+                    .into(),
+            );
+        }
+    };
+    let typed = typed.trim().to_string();
+    if typed != subject && action.is_none_or(|a| typed != a) {
+        return Err("the confirmation does not match — nothing was removed".into());
+    }
+    Ok(typed)
 }
 
 /// Run one `cnm access` command.
@@ -327,12 +384,24 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
                 .map_err(fail)?;
             report(&serde_json::to_value(&changed)?, "role changed")?;
         }
-        AccessCommands::Revoke { subject, reason } => {
-            let revoked = vtc
-                .client
-                .acl_revoke(&subject, None, reason.as_deref(), &key)
-                .await
-                .map_err(fail)?;
+        AccessCommands::Revoke {
+            subject,
+            reason,
+            now,
+            action,
+            confirm,
+        } => {
+            let revoked = if now {
+                let typed = confirm_now(&subject, action.as_deref(), confirm)?;
+                vtc.client
+                    .acl_revoke_now(&subject, &typed, action.as_deref(), reason.as_deref(), &key)
+                    .await
+            } else {
+                vtc.client
+                    .acl_revoke(&subject, None, reason.as_deref(), &key)
+                    .await
+            }
+            .map_err(fail)?;
             let v = serde_json::to_value(&revoked)?;
             if is_json_output() {
                 print_json(&v)?;
@@ -395,8 +464,14 @@ fn print_entry(e: &Value) {
         .map(|c| format!("  {DIM}community role {c}{RESET}"))
         .unwrap_or_default();
     let scopes = holds;
+    // A cooling-off reduction is open: the entry authorizes nothing until it
+    // lands or is cancelled (`vtc-action-list.md` §8.2).
+    let suspended = e["ext"]["org.openvtc"]["suspended"]["landsAt"]
+        .as_str()
+        .map(|t| format!("  {YELLOW}suspended — removal lands {t}{RESET}"))
+        .unwrap_or_default();
     println!(
-        "  {}  {role}  {scopes}{community}{}{}",
+        "  {}  {role}  {scopes}{community}{}{}{suspended}",
         s("subject").unwrap_or("?"),
         s("label").map(|l| format!("  \"{l}\"")).unwrap_or_default(),
         s("expiresAt")
@@ -414,6 +489,16 @@ fn access_error(vtc: &Connected, err: VtcError) -> Box<dyn std::error::Error> {
     // Not a failure: parked for other administrators' approval, and it
     // completes itself when enough approve (VTI-APV-017).
     if let VtcError::Parked { action_id, message } = &err {
+        if message.contains("cooling-off") {
+            return format!(
+                "{message}\n  Nothing more to send: it lands by itself. Follow it with `{bin} \
+                 actions show {action_id}`, or withdraw it with `{bin} actions cancel \
+                 {action_id}`. In single-administrator mode, `{bin} access revoke <subject> \
+                 --now --action {action_id}` lands it now.",
+                bin = bin_name()
+            )
+            .into();
+        }
         return format!(
             "{message}\n  Nothing more to send: it runs when the approvals land. Follow it with \
              `{bin} actions show {action_id}`, or withdraw it with `{bin} actions cancel \
@@ -432,4 +517,30 @@ fn access_error(vtc: &Connected, err: VtcError) -> Box<dyn std::error::Error> {
         .into();
     }
     format!("the VTC refused {}: {text}", vtc.client_did).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--now` proceeds only on the subject's DID typed back — or, landing an
+    /// open cooling-off, its action id (`vtc-action-list.md` §8.5).
+    #[test]
+    fn remove_now_needs_the_subject_or_the_action_typed_back() {
+        let did = "did:key:zSubject";
+        assert_eq!(
+            confirm_now(did, None, Some(format!(" {did} "))).unwrap(),
+            did
+        );
+        assert!(confirm_now(did, None, Some("did:key:zOther".into())).is_err());
+        assert!(confirm_now(did, None, Some("act-1".into())).is_err());
+        assert_eq!(
+            confirm_now(did, Some("act-1"), Some("act-1".into())).unwrap(),
+            "act-1"
+        );
+        assert_eq!(
+            confirm_now(did, Some("act-1"), Some(did.into())).unwrap(),
+            did
+        );
+    }
 }

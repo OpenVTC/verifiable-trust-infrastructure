@@ -277,6 +277,16 @@ pub fn render(v: &VerifiedAction) {
             lands_in(lands, chrono::Utc::now()),
             a["requester"].as_str().unwrap_or("its requester")
         );
+        if a["status"] == "open" {
+            // §8.2: the subject is suspended until it lands or is cancelled.
+            println!(
+                "  {YELLOW}! {} is suspended until then: their entry authorizes nothing, and \
+                 cancelling restores it{RESET}",
+                a["ext"]["org.openvtc"]["subjectSuspended"]["subject"]
+                    .as_str()
+                    .unwrap_or("the subject")
+            );
+        }
         if a["callerRole"] == "subject" {
             println!(
                 "  {RED}! this reduces your own authority; you cannot approve or block it{RESET}"
@@ -296,6 +306,12 @@ pub fn render(v: &VerifiedAction) {
         println!(
             "  {YELLOW}! consent waived — single-administrator mode (VTI-APV-022): every \
              administrator is one person, so the requester's passkey gesture authorized it{RESET}"
+        );
+    }
+    if let Some(by) = a["ext"]["org.openvtc"]["landedNow"]["by"].as_str() {
+        println!(
+            "  {YELLOW}! landed now by {by}, without waiting out the cooling-off — \
+             single-administrator mode (vtc-action-list.md §8.5){RESET}"
         );
     }
     if a["ext"]["org.openvtc"]["burst"] == true {

@@ -363,10 +363,21 @@ is unrestricted may also edit its own entry (§1.4a).
 - **A reduction cools off rather than waiting for consent.** Removing or
   narrowing another administrator (VTI-APV-019) is not parked for a third
   party's consent in this mode, even where one exists: it takes your step-up,
-  the subject is notified, it is audited at `Critical`, and it keeps its
-  cooling-off (§3.4) — a delay, not a consent, so the subject sees it coming. A
-  community that wants no cooling-off sets `acl.removal_cooling_off = 0`, a
-  visible, audited configuration change.
+  the subject is notified, it is audited at `Critical`, and by default it keeps
+  its cooling-off (§3.4) — a delay, not a consent, so the subject sees it
+  coming, suspended until it lands. A community that wants no cooling-off at
+  all sets `acl.removal_cooling_off = 0`, a visible, audited configuration
+  change.
+- **You can remove an administrator now.** Because the cooling-off is a delay
+  you impose on yourself, the mode lets you skip it for one removal: **Remove
+  now** beside **Revoke** on Access control (or **Land now** on a cooling-off
+  already running, in Actions; `cnm access revoke <did> --now`). You type the
+  administrator's DID — or the action's id — to confirm, then make a passkey
+  gesture bound to the immediate removal; a gesture made for the ordinary,
+  delayed removal does not count. It lands at once, is audited at `Critical`
+  (`SingleAdminMode` `reductionImmediate`, then `AuthorityReducedUnopposed`),
+  and the subject is told. Without the mode it is refused: the cooling-off
+  always runs.
 - **It covers git separation of duties the same way.** Nobody records an
   elevated git right (`git.ns.admin`, `git.repo.create`, `git.repo.own`) for
   themselves (git-namespaces *Separation of duties*), and break-glass needs
@@ -701,8 +712,18 @@ default 24 hours, 0 to 7 days, read live; `0` lands it at once). In
 single-administrator mode every reduction of another administrator takes this
 path, whoever else could have approved it (§2.1a):
 
+- **The subject is suspended until it lands.** From the moment it is parked,
+  the subject's entry authorizes nothing: every administrative operation it
+  sends — signed by its own key or a console key, over TSP, DIDComm or REST,
+  git-ns included — is refused with a message naming the action and when it
+  lands, it approves and decides nothing, and it no longer counts as an
+  administrator for the attrition guard. Its sessions are revoked. It can still
+  sign in, see the action about itself and cancel a request of its own, but
+  nothing more. Its entry is kept as it was; the Access control page marks it
+  *suspended — removal lands T*. Cancelling lifts the suspension and restores
+  the entry exactly. The suspension survives a restart.
 - The requester sees it under **Requested by me** and can **Cancel** it until
-  it lands.
+  it lands. In single-administrator mode they can also **Land now** (§2.1a).
 - The subject is sent `vtc/members/authority-reduction-pending-notice/0.1`
   when it is parked (a durable push, like the other notices): what will happen
   (`revoked`, `demoted` or `narrowed`), who asked, and when it lands. They also
@@ -722,10 +743,11 @@ path, whoever else could have approved it (§2.1a):
   notice is sent.
 - If a third administrator who can approve it appears meanwhile, the action is
   cancelled: there is now someone to approve, so send it again.
-- **First to act wins.** If the subject asks to reduce the requester while the
-  first request is open, the first request lands at once, the subject's request
-  is refused with a message saying so, and the subject's own open actions are
-  cancelled as they lose authority.
+- **First to act wins.** The subject is suspended the moment the first
+  request is raised, so it cannot answer with a request to reduce the
+  requester: that is refused as suspended, before any gesture. The subject's
+  own open actions are cancelled as it loses authority. Only one reduction
+  cools off on a subject at a time.
 
 Run with three or more community administrators to close the window
 altogether.
@@ -1052,6 +1074,7 @@ requester is never the approver of their own request.
 | approve a promotion | console → Actions → Waiting for me → Approve (wallet), or `cnm consent approve --action <actionId>` |
 | see what is waiting | console → Actions, or `cnm actions list` |
 | withdraw my request, including a cooling-off | console → Actions → Requested by me → Cancel |
+| remove an administrator now (single-administrator mode only) | Access control → Remove now, or Actions → the cooling-off → Land now; `cnm access revoke <did> --now [--action <id>]` — type their DID (or the action id), then the passkey |
 | acknowledge an offline write | console → the banner, or Actions → Acknowledge |
 | give approvers longer | `acl.action_lifetime` (seconds, default 72 h, at most 14 days) |
 | change the cooling-off | `acl.removal_cooling_off` (seconds, default 86400, at most 604800; `0` lands at once) |

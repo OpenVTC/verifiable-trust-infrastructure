@@ -46,6 +46,7 @@ pub async fn seed_role(vtc: &TestVtc, did: &str, role: VtcRole, contexts: &[&str
             expires_at: None,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         },
     )
     .await

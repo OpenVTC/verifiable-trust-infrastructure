@@ -60,6 +60,7 @@ fn admin_row(did: &str) -> VtcAclEntry {
         expires_at: None,
         resource_grants: Vec::new(),
         label_set_by_subject: false,
+        suspension: None,
     }
 }
 

@@ -249,6 +249,18 @@ fn caller<P>(doc: &TrustTask<P>, ctx: &GitNsCtx) -> Result<String, TrustTaskOutc
 /// Never applied to `git-ns/bridge/*`: a bridge is identified by its own DID
 /// and nothing else.
 async fn acting_as(state: &AppState, signer: &str) -> Result<String, OpError> {
+    let actor = acting_as_unchecked(state, signer).await?;
+    // A subject whose reduction is cooling off holds no git right
+    // (`vtc-action-list.md` §8.2): every git-ns operation it signs is refused,
+    // naming the action and when it lands. Its rights are kept, untouched, for
+    // a cancelled reduction to restore.
+    if let Some(s) = crate::acl::storage::get_suspension(&state.acl_ks, &actor).await? {
+        return Err(OpError::PermissionDenied(s.message(&actor)));
+    }
+    Ok(actor)
+}
+
+async fn acting_as_unchecked(state: &AppState, signer: &str) -> Result<String, OpError> {
     if crate::acl::get_acl_entry(&state.acl_ks, signer)
         .await?
         .is_some()

@@ -76,6 +76,7 @@ async fn seed_audit_rows(fix: &Fixture, _token: &Party, count: usize) -> String 
             expires_at: None,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         },
     )
     .await
