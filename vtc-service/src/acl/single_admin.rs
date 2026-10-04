@@ -17,10 +17,14 @@
 //!    `vtc/config/import` refuse the key by name
 //!    ([`crate::config_store::host_only_refusal`]), and it is read once at
 //!    start;
-//! 2. **waives a consent only where nobody but the requester is eligible to
-//!    give it** ([`crate::acl::admin_consent::gesture_then_consent_for`]). The
-//!    moment a second eligible administrator exists, the operation is parked
-//!    for their approval exactly as without the mode;
+//! 2. **waives a consent whether or not other administrators' entries exist**
+//!    ([`crate::acl::admin_consent::gesture_then_consent_for`]): it is the
+//!    host's statement that every administrator is the same person, under as
+//!    many identifiers (one per device, say) as they hold, and the node cannot
+//!    tell one person's identifiers from two people's, so it does not count
+//!    them. It should be on only where that is true (the specification's item
+//!    2); an administrator who is in fact someone else sees it in every
+//!    session (item 3) and can have it turned off on the host;
 //! 3. is **reported to every administrator in every session** — the action
 //!    list carries it (`ext.org.openvtc.singleAdminMode` on
 //!    `vtc/admin/actions/list`, the signed read the console makes on every
@@ -30,11 +34,14 @@
 //!    effect (`inEffect`), and for every operation whose consent it waived
 //!    (`consentWaived`, [`crate::admin_actions::spend_waiver`]).
 //!
-//! It does **not** change a reduction (VTI-APV-019): that proceeds without
-//! another party's consent wherever none exists, with or without the mode, and
-//! keeps its cooling-off — the subject of a reduction is another administrator,
-//! and removing them at once would be the first step of a two-step way around
-//! item 2. Design: `docs/05-design-notes/vtc-action-list.md` §8.5.
+//! A reduction of another administrator (VTI-APV-019) is not consented to in
+//! the mode either: it takes the unopposed path — the requester's gesture, a
+//! notice to the subject, a `Critical` row — and keeps its cooling-off, which
+//! is a delay, not a consent: the subject is told, and sees it coming.
+//!
+//! An administrator whose entry is unrestricted may edit its own entry in the
+//! mode (**VTI-ACL-052** item 3, [`authorize_self_edit`]). Design:
+//! `docs/05-design-notes/vtc-action-list.md` §8.5.
 
 use tracing::warn;
 use vti_common::audit::{AuditEvent, SingleAdminModeData};
@@ -84,6 +91,82 @@ pub async fn audit_on_boot(state: &AppState) -> Result<(), AppError> {
         state.install_ks.insert(LAST_SEEN_KEY.to_vec(), &on).await?;
     }
     Ok(())
+}
+
+/// The `SingleAdminMode` audit event a sole administrator's edit of its own
+/// entry is recorded under (VTI-ACL-052 item 3).
+pub const SELF_EDIT_EVENT: &str = "selfEditWaived";
+
+/// What [`authorize_self_edit`] settled to.
+#[derive(Debug)]
+pub enum SelfEditGate {
+    /// The requester's gesture bound to this operation was spent and the
+    /// `Critical` row written. Commit the write.
+    Authorized,
+    /// No gesture yet. A ceremony is parked; refuse with it.
+    StepUpRequired(Box<crate::acl::bound_step_up::ApproveRequest>),
+}
+
+/// Authorize an unrestricted administrator's edit of its own entry in
+/// single-administrator mode — **VTI-ACL-052** item 3.
+///
+/// The modification MUST be authorized by the subject's re-authentication bound
+/// to the operation under VTI-APV-015 — asked for and spent here, the same
+/// operation-bound step-up this mode waives a consent on
+/// ([`crate::acl::admin_consent::gesture_then_consent_for`]) — and MUST be
+/// audited at the node's highest severity: a `Critical` `SingleAdminMode` row
+/// ([`SELF_EDIT_EVENT`]) naming the task and its digest, written **before** the
+/// write it authorizes, so an unrecorded self-edit cannot land. A failure to
+/// audit refuses it.
+///
+/// Whether the exception applies at all — the mode on, the requester the only
+/// unrestricted entry, the result still unrestricted — is decided by
+/// [`crate::routes::acl::plan_write`] before this is reached.
+pub async fn authorize_self_edit(
+    state: &AppState,
+    requester: &str,
+    op: crate::acl::admin_consent::Operation<'_>,
+) -> Result<SelfEditGate, AppError> {
+    use crate::acl::bound_step_up::{self, EvidencedGate};
+    match bound_step_up::redeem_or_request_with_evidence(
+        state,
+        requester,
+        op.type_uri,
+        op.payload,
+        "Edit your own ACL entry as an unrestricted administrator (single-administrator \
+         mode, VTI-ACL-052)",
+    )
+    .await?
+    {
+        EvidencedGate::Required(request) => return Ok(SelfEditGate::StepUpRequired(request)),
+        EvidencedGate::Satisfied(_) => {}
+    }
+    warn!(
+        requester,
+        task = op.type_uri,
+        "an unrestricted administrator edited its own ACL entry — single-administrator \
+         mode (VTI-ACL-052 item 3, VTI-APV-022), authorized by its operation-bound step-up"
+    );
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                requester,
+                Some(requester),
+                AuditEvent::SingleAdminMode(SingleAdminModeData {
+                    event: SELF_EDIT_EVENT.into(),
+                    requirement: Some("VTI-ACL-052".into()),
+                    task: Some(op.type_uri.to_string()),
+                    digest: Some(vti_common::task_consent::payload_digest(
+                        op.type_uri,
+                        op.payload,
+                    )?),
+                    kind: Some("acl.self-edit".into()),
+                    ..Default::default()
+                }),
+            )
+            .await?;
+    }
+    Ok(SelfEditGate::Authorized)
 }
 
 async fn write(state: &AppState, event: &str) -> Result<(), AppError> {

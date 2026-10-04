@@ -277,6 +277,7 @@ pub(crate) async fn commit_invite(
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            label_set_by_subject: false,
         };
         store_acl_entry(&state.acl_ks, &entry).await?;
         true

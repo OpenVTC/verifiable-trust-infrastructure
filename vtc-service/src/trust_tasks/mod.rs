@@ -5676,6 +5676,7 @@ mod tests {
                     updated_by: None,
                     expires_at: None,
                     resource_grants: Vec::new(),
+                    label_set_by_subject: false,
                 },
             )
             .await
@@ -6061,6 +6062,7 @@ mod members_admin_tests {
                 updated_by: None,
                 expires_at: None,
                 resource_grants: Vec::new(),
+                label_set_by_subject: false,
             },
         )
         .await
@@ -6322,6 +6324,7 @@ mod members_admin_tests {
                 updated_by: None,
                 expires_at: Some(1),
                 resource_grants: Vec::new(),
+                label_set_by_subject: false,
             },
         )
         .await
@@ -6537,6 +6540,7 @@ mod members_admin_tests {
                 updated_by: None,
                 expires_at: Some(1),
                 resource_grants: Vec::new(),
+                label_set_by_subject: false,
             },
         )
         .await

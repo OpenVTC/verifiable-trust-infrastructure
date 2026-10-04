@@ -203,7 +203,7 @@ describe("the single-administrator mode banner", () => {
     });
     expect(within(banner).getByText("SINGLE ADMIN MODE")).toBeTruthy();
     expect(banner.textContent).toContain(
-      "Approvals are by your own step-up; another administrator's consent is not required.",
+      "Approvals are by your own step-up; another administrator's consent is not required, even where other administrator entries exist",
     );
     expect(within(banner).queryByRole("button")).toBeNull();
     // Dismissing the waiting-count banner leaves it in place.

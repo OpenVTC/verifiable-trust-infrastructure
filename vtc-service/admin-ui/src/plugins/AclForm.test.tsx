@@ -139,4 +139,111 @@ describe("Access control — roles and capabilities", () => {
       grants: [{ capability: "git.repo.manage", resource: "git-ns:github.com/acme" }],
     });
   });
+
+  // The roles form layout: each capability's checkbox sits on the same line as
+  // its text, left-aligned (no `.row-actions`, which right-aligns), and the
+  // approve toggle is a checkbox label, not a column `.field`.
+  it("lays each checkbox out beside its label", async () => {
+    mockFetch([taskRoute(LIST, { entries: [], truncated: false })]);
+    renderWithProviders(<Acl />, { route: "/acl", path: "/acl" });
+    fireEvent.click(await screen.findByRole("button", { name: /add entry/i }));
+    fireEvent.change(await screen.findByLabelText("Administrative role"), {
+      target: { value: "community-admin" },
+    });
+    const box = screen.getByLabelText("vtc.roles.assign");
+    const label = box.closest("label")!;
+    expect(label.className).toBe("checkbox");
+    expect(label.closest(".row-actions")).toBeNull();
+    expect(label.querySelector(".checkbox-text .chip")?.textContent).toBe("confers authority");
+    const approve = screen.getByText("May approve others' actions within this role").closest("label")!;
+    expect(approve.className).toBe("checkbox");
+  });
+});
+
+// VTI-ACL-052: your own entry. Its label is always yours to change (item 2);
+// anything else only in single-administrator mode while the entry is
+// unrestricted (item 3) — otherwise the console says why rather than letting
+// the VTC answer 403. A label its subject set shows as self-set.
+describe("Access control — your own entry (VTI-ACL-052)", () => {
+  const ME = "did:example:me";
+  const UPDATE = "https://trusttasks.org/spec/acl/update/0.2";
+  const ACTIONS_LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.2";
+  const whoami = {
+    session: {
+      id: "s1",
+      subject: ME,
+      issuedAt: "2026-10-02T10:00:00Z",
+      expiresAt: "2099-10-02T10:15:00Z",
+    },
+    roles: ["admin"],
+    scopes: [],
+  };
+  const mine = (label?: string, selfSet = false) => ({
+    subject: ME,
+    role: "community-admin",
+    act: { scope: "all" },
+    keys: { scope: "none" },
+    capabilities: { scope: "ceiling" },
+    approve: { scope: "all" },
+    ...(label ? { label } : {}),
+    ext: {
+      "org.openvtc": { communityRole: "admin", ...(selfSet ? { labelSetBySubject: true } : {}) },
+    },
+  });
+  const render = (singleAdminMode: boolean, entry = mine()) => {
+    const requests = mockFetch([
+      taskRoute(LIST, { entries: [entry], truncated: false }),
+      taskRoute(ACTIONS_LIST, {
+        actions: [],
+        counts: { waitingForMe: 0, requestedByMe: 0 },
+        ext: { "org.openvtc": { singleAdminMode } },
+      }),
+      taskRoute(UPDATE, { entry: mine("laptop", true) }),
+    ]);
+    renderWithProviders(<Acl />, {
+      route: "/acl",
+      path: "/acl",
+      whoami: whoami as never,
+    });
+    return requests;
+  };
+
+  it("lets you relabel your own entry", async () => {
+    const requests = render(false);
+    fireEvent.click(await screen.findByTitle("Click to edit label"));
+    const input = await screen.findByDisplayValue("");
+    fireEvent.change(input, { target: { value: "laptop" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(sentPayloads(requests, UPDATE)).toHaveLength(1));
+    expect(sentPayloads(requests, UPDATE)[0]).toMatchObject({ subject: ME, label: "laptop" });
+  });
+
+  it("does not offer other edits of your own entry outside single-administrator mode, and says why", async () => {
+    render(false);
+    expect(await screen.findByText("you")).toBeTruthy();
+    const edit = screen.getByRole("button", { name: "Edit" }) as HTMLButtonElement;
+    expect(edit.disabled).toBe(true);
+    expect(edit.getAttribute("title")).toMatch(/You can change its label/);
+    expect(screen.getByText(/made by another administrator \(VTI-ACL-052\)/)).toBeTruthy();
+    const revoke = screen.getByRole("button", { name: "Revoke" }) as HTMLButtonElement;
+    expect(revoke.disabled).toBe(true);
+  });
+
+  it("offers them in single-administrator mode while your entry is unrestricted", async () => {
+    render(true);
+    await screen.findByText("you");
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Edit" }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+    expect(screen.getByRole("button", { name: "Edit" }).getAttribute("title")).toMatch(
+      /passkey gesture, bound to this change/,
+    );
+  });
+
+  it("shows a label its subject set as self-set", async () => {
+    render(false, mine("laptop", true));
+    expect(await screen.findByText("self-set")).toBeTruthy();
+  });
 });

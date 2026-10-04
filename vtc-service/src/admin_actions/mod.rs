@@ -515,7 +515,7 @@ pub(crate) struct Submission {
 }
 
 /// An operation whose consent single-administrator mode waived
-/// (**VTI-APV-022**): nobody but the requester was eligible to give it, so the
+/// (**VTI-APV-022**): every administrator is the same person, so the
 /// requester's operation-bound gesture (VTI-APV-015) stands in for it.
 #[derive(Debug, Clone)]
 pub struct Waiver {
@@ -569,8 +569,8 @@ pub(crate) async fn spend_waiver(state: &AppState, waiver: Waiver) -> Result<(),
         subject = %waiver.subject,
         task = %waiver.type_uri,
         requirement = waiver.act.requirement(),
-        "consent waived — single-administrator mode (VTI-APV-022): nobody but the requester \
-         could consent, and the requester's operation-bound step-up stands in for it"
+        "consent waived — single-administrator mode (VTI-APV-022): every administrator is \
+         one person, so the requester's operation-bound step-up stands in for consent"
     );
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
@@ -1254,7 +1254,8 @@ pub(crate) async fn recheck(
 /// its cooling-off (VTI-APV-019, §8.2): the operation must be the one parked,
 /// the subject's entry unmoved, and still nobody but the requester and the
 /// subject able to consent — a third administrator who has appeared since
-/// decides it instead. `Ok(action id)` when it may land.
+/// decides it instead, unless single-administrator mode is on, which asks no
+/// third party (VTI-APV-022). `Ok(action id)` when it may land.
 pub(crate) async fn recheck_cooling_off(
     state: &AppState,
     exec: &Executing,
@@ -1287,9 +1288,10 @@ pub(crate) async fn recheck_cooling_off(
         )));
     }
     let now = now_epoch();
-    if !admin_consent::approvers_for(state, rec.act, &rec.stake, requester, subject, now)
-        .await?
-        .is_empty()
+    if !admin_consent::single_admin_mode(state).await
+        && !admin_consent::approvers_for(state, rec.act, &rec.stake, requester, subject, now)
+            .await?
+            .is_empty()
     {
         return Err(AppError::Conflict(
             "another holder of what is at stake can now consent to this, so it no longer lands \
@@ -1358,7 +1360,12 @@ async fn settle(state: &AppState, rec: &mut ActionRecord, now: u64) -> Result<bo
         return Ok(true);
     }
     if rec.cooling_off_until.is_some() {
-        // VTI-APV-019: it lands unopposed only while nobody else could consent.
+        // VTI-APV-019: it lands unopposed only while nobody else could consent
+        // — or while single-administrator mode asks no third party at all
+        // (VTI-APV-022).
+        if admin_consent::single_admin_mode(state).await {
+            return Ok(false);
+        }
         let others = admin_consent::approvers_for(
             state,
             rec.act,
@@ -2020,8 +2027,9 @@ async fn run_and_close(
             if rec.cooling_off_until.is_some() {
                 rec.closed_reason = Some(ClosedReason::LandedAfterCoolingOff);
                 rec.closed_message = Some(
-                    "the cooling-off ended with nobody but the requester and the subject able \
-                     to consent, so it landed unopposed (VTI-APV-019)"
+                    "the cooling-off ended uncancelled with no third party's consent to ask \
+                     (none could give it, or single-administrator mode asks none), so it landed \
+                     unopposed (VTI-APV-019)"
                         .into(),
                 );
             }
@@ -2656,6 +2664,12 @@ impl<'a> ViewCtx<'a> {
 
         let mut ext = Map::new();
         ext.insert("approverCount".into(), json!(eligible.len()));
+        // Who can decide it, so a requester waiting on "0 of 1" can see whom
+        // to ask. Every caller of the list is an administrator, who can read
+        // the ACL these DIDs come from anyway.
+        if rec.status.is_open() && !eligible.is_empty() {
+            ext.insert("approvers".into(), json!(eligible));
+        }
         ext.insert("requesterRecentActions".into(), json!(recent));
         ext.insert("burst".into(), json!(recent > BURST_MAX));
         if let Some(m) = &rec.closed_message {
@@ -2677,9 +2691,8 @@ impl<'a> ViewCtx<'a> {
             ext.insert("approverInvite".into(), invite.clone());
         }
         if rec.consent_waived {
-            // VTI-APV-022: nobody but the requester could consent, and
-            // single-administrator mode let the requester's own
-            // operation-bound gesture stand in for it. No threshold was met by
+            // VTI-APV-022: single-administrator mode let the requester's own
+            // operation-bound gesture stand in for another's consent. No threshold was met by
             // anyone else — so, as for a cooling-off, none is shown.
             ext.insert(
                 "consentWaived".into(),

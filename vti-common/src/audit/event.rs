@@ -1199,11 +1199,14 @@ pub struct SingleAdminModeData {
     /// where another party's consent would otherwise be required;
     /// `selfGrantWaived` — a VTC recorded an elevated git right for the
     /// requester themselves (separation of duties, fixed rule 7 of
-    /// `git-ns/right/grant/0.3`) because nobody else could grant it.
+    /// `git-ns/right/grant/0.3`) under the mode; `selfEditWaived` — a subject
+    /// with unrestricted act scope modified its own ACL entry under the mode
+    /// (VTI-ACL-052 item 3).
     pub event: String,
     /// For `consentWaived`: the requirement whose consent was waived
     /// (`VTI-APV-018`, `VTI-APV-020`, `VTI-VTC-022`). For `selfGrantWaived`:
-    /// the rule waived (`git-ns/right/grant/0.3#rule-7`).
+    /// the rule waived (`git-ns/right/grant/0.3#rule-7`). For
+    /// `selfEditWaived`: `VTI-ACL-052`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requirement: Option<String>,
     /// For `consentWaived` and `selfGrantWaived`: the Trust Task type URI of

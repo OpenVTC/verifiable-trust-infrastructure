@@ -75,6 +75,7 @@ fn row(did: &str, admin: AdminAuthority, delegated_by: Option<&str>) -> VtcAclEn
         updated_by: None,
         expires_at: None,
         resource_grants: Vec::new(),
+        label_set_by_subject: false,
     }
 }
 
@@ -860,10 +861,11 @@ async fn vti_apv_022_a_sole_admin_defines_and_deletes_a_role_on_their_own_gestur
     );
 }
 
-/// The mode waives nothing while another holder could approve: the
-/// definition parks as without it (VTI-APV-022 item 2).
+/// VTI-APV-022: the mode waives the consent whether or not another holder
+/// could approve — one person may hold an administrator entry per device —
+/// so the definition lands on the requester's gesture and parks nothing.
 #[tokio::test]
-async fn vti_apv_022_a_role_still_parks_when_another_admin_could_approve() {
+async fn vti_apv_022_a_role_lands_on_the_gesture_beside_another_admin() {
     let mut fix = fixture().await;
     fix.vtc.state.config.write().await.acl.single_admin_mode = true;
     let a = requester(&mut fix).await;
@@ -872,12 +874,12 @@ async fn vti_apv_022_a_role_still_parks_when_another_admin_could_approve() {
     let (_, reply) = post(&fix.vtc, &doc).await;
     fix.gesturer.gesture(&fix.vtc, &a, &reply).await;
     let (status, reply) = post(&fix.vtc, &doc).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "{reply}");
-    assert!(crate::common::second_party::parked_action(&reply).is_some());
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert!(crate::common::second_party::parked_action(&reply).is_none());
     assert!(
         roles::get(&fix.vtc.state.acl_ks, "events-team")
             .await
             .unwrap()
-            .is_none()
+            .is_some()
     );
 }

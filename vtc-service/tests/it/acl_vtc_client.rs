@@ -50,6 +50,7 @@ async fn seed(state: &AppState, did: &str) {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            label_set_by_subject: false,
         },
     )
     .await

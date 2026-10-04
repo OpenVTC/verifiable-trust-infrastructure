@@ -61,12 +61,16 @@
 //!
 //! ## Single-administrator mode (VTI-APV-022)
 //!
-//! On a node configured on the host for it ([`crate::acl::single_admin`]), an
-//! **empty** approver set does not refuse: once the requester's gesture bound
-//! to the operation is spent, it stands in for the consent nobody else could
-//! give, and [`ReadyGrant::spend`] audits the waiver at `Critical`. A non-empty
-//! set parks exactly as without the mode. Reductions ([`gate_reduction`]) are
-//! not affected: they keep the VTI-APV-019 path and its cooling-off
+//! On a node configured on the host for it ([`crate::acl::single_admin`]), no
+//! operation is parked for consent: once the requester's gesture bound to the
+//! operation is spent, it stands in for the consent, and
+//! [`ReadyGrant::spend`] audits the waiver at `Critical` — whether or not
+//! other administrators' entries exist. The mode states that every
+//! administrator is the same person, under as many identifiers as they hold,
+//! and the node cannot tell one person's identifiers from two people's
+//! (VTI-APV-022). Reductions ([`gate_reduction`]) take the unopposed
+//! VTI-APV-019 path — the gesture, a notice to the subject, a `Critical` row —
+//! and keep its cooling-off, a delay rather than a consent
 //! (`vtc-action-list.md` §8.5).
 //!
 //! ## The other acts it gates
@@ -517,9 +521,8 @@ pub async fn check_attrition(state: &AppState, subject: &str) -> Result<(), AppE
 /// executed. Only an approved action's execution produces one
 /// ([`crate::admin_actions`], VTI-APV-017): a submission parks instead.
 ///
-/// Or, in single-administrator mode with nobody but the requester eligible to
-/// consent, the requester's own operation-bound gesture standing in for that
-/// consent (**VTI-APV-022**).
+/// Or, in single-administrator mode, the requester's own operation-bound
+/// gesture standing in for that consent (**VTI-APV-022**).
 #[derive(Debug)]
 #[must_use = "a ReadyGrant authorizes nothing until it is spent with the write"]
 pub struct ReadyGrant {
@@ -663,11 +666,13 @@ pub async fn gesture_then_consent_for(
     // asking the requester for one.
     let approvers = approvers_for(state, act, &stake, requester, subject, now).await?;
     let threshold = threshold(state).await?;
-    // VTI-APV-022: single-administrator mode waives the consent only where
-    // nobody but the requester could give it. One other eligible party — even
-    // one too few to meet the threshold — and consent applies as it always
-    // does (item 2).
-    let waive = approvers.is_empty() && single_admin_mode(state).await;
+    // VTI-APV-022: single-administrator mode waives the consent whether or not
+    // other administrators' entries exist — the mode states they are all the
+    // same person, under as many identifiers as they hold, and the node cannot
+    // tell one person's identifiers from two people's. The requester's gesture
+    // bound to this operation still stands in for it, and the waiver is
+    // audited at `Critical`.
+    let waive = single_admin_mode(state).await;
     if !waive {
         refuse_if_unmeetable(
             act,
@@ -868,16 +873,26 @@ pub async fn gate_reduction(
                 ReadyGrant::approved(action_id),
             ))));
         }
-        let third = approvers_for(
-            state,
-            Act::ReduceUnrestricted,
-            &lost,
-            requester,
-            &subject.did,
-            now,
-        )
-        .await?
-        .len();
+        // VTI-APV-019 asks a third party's consent "wherever such a party
+        // exists"; single-administrator mode does not require it (VTI-APV-022):
+        // another of the requester's own entries is no third party. The
+        // reduction then takes the unopposed path — the requester's gesture,
+        // the subject told, a `Critical` row and the cooling-off, which is a
+        // delay, not a consent, and stays.
+        let third = if single_admin_mode(state).await {
+            0
+        } else {
+            approvers_for(
+                state,
+                Act::ReduceUnrestricted,
+                &lost,
+                requester,
+                &subject.did,
+                now,
+            )
+            .await?
+            .len()
+        };
         // First to act wins (§8.2): with nobody else to decide, a
         // counter-request lands the earlier one.
         if executing.is_none() && third == 0 {
@@ -1158,7 +1173,7 @@ pub async fn require(
     // Single-administrator mode waives the consent only on a passkey gesture
     // bound to the operation (VTI-APV-022, VTI-APV-015) — which only a signed
     // document carries.
-    if approvers == 0 && single_admin_mode(state).await {
+    if single_admin_mode(state).await {
         return Err(AppError::Forbidden(format!(
             "{summary} needs, in single-administrator mode, your passkey gesture bound to the \
              operation (VTI-APV-022), which only a signed {} document can carry",
@@ -1353,6 +1368,7 @@ mod tests {
             updated_by: None,
             expires_at,
             resource_grants: Vec::new(),
+            label_set_by_subject: false,
         }
     }
 

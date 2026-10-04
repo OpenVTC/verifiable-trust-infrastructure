@@ -213,8 +213,9 @@ async fn run_role_change(
     // granting bounds would refuse it less helpfully.
     if authority_moves && actor_did == subject_did {
         return Err(AppError::Forbidden(
-            "you cannot promote yourself; admin elevation requires a separate admin caller to \
-             run acl/change-role for you"
+            "you cannot promote yourself or move your own administrative authority \
+             (VTI-ACL-052) — another administrator must run acl/change-role for you. You may \
+             change your own entry's label"
                 .into(),
         ));
     }
@@ -1121,6 +1122,7 @@ mod p0_14_role_change_policy_tests {
                 updated_by: None,
                 expires_at: None,
                 resource_grants: Vec::new(),
+                label_set_by_subject: false,
             },
         )
         .await

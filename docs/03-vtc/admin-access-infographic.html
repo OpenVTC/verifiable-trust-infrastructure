@@ -322,9 +322,10 @@
     <div class="card top warn">
       <span class="lbl">Run by one person</span>
       <h3>Single-administrator mode</h3>
-      <p>Set on the host (<code>vtc setup --single-admin</code>; <code>[acl] single_admin_mode</code>, never online). Where nobody but you could consent, your step-up bound to the operation authorizes it (VTI-APV-022).</p>
+      <p>Set on the host (<code>vtc setup --single-admin</code>; <code>[acl] single_admin_mode</code>, never online). Your step-up bound to the operation stands in for another administrator's consent, whether or not other administrator entries exist — the mode says they are all you (VTI-APV-022).</p>
       <ul>
-        <li>A second eligible admin makes consent apply again, automatically</li>
+        <li>Turn it on only where every administrator is the same person; turn it off on the host when someone else joins</li>
+        <li>An unrestricted administrator may edit its own entry, on its step-up, audited <b>Critical</b> (VTI-ACL-052)</li>
         <li>Removals and narrowings keep their cooling-off</li>
         <li>A <b>SINGLE ADMIN MODE</b> banner on every page; every waived consent audited <b>Critical</b></li>
       </ul>
@@ -358,7 +359,7 @@
     <div class="layer">
       <div class="ic">⚖️</div>
       <div><h4>Separation of duties</h4>
-        <p>No self-grant, self-promotion, self-rewrite or self-revoke; rolling your own entry to a new key is the one exception, and changes nothing it holds. No entry can outlive the one who wrote it, and a grant can't exceed its granter. Every promotion runs the role-change policy and its host checks.</p></div>
+        <p>No self-grant, self-promotion, self-rewrite or self-revoke, with three exceptions (VTI-ACL-052): rolling your own entry to a new key, which changes nothing it holds; changing your own label, audited and shown as self-set; and, in single-administrator mode, an unrestricted administrator's own edit on its step-up, audited <b>Critical</b>, never leaving no unrestricted entry. No entry can outlive the one who wrote it, and a grant can't exceed its granter. Every promotion runs the role-change policy and its host checks.</p></div>
       <span class="stops">stops: self-elevation</span>
     </div>
     <div class="layer">
@@ -702,7 +703,7 @@ cnm consent approve --action &lt;actionId&gt;</pre>
     <div class="layer"><div class="ic">4</div><div><h4>Operator writes, notices, cooling-off</h4><p>Offline writes raised to acknowledge (VTI-VTC-023), the authority-reduced notice, the two-admin cooling-off, <code>approverSigned</code> decisions, crash-safe execution, pushes off by default, automatic approver invites. #1920</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
     <div class="layer"><div class="ic">5</div><div><h4>Actions 0.2 and approving with the device</h4><p><code>vtc/admin/actions/*/0.2</code> with <code>coolingOff</code> and <code>landsAt</code>, the reduction-pending notice, the <code>offline-write/0.1</code> record, the plugin's <code>approveDecision</code>. #1922, plugin #293</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
     <div class="layer"><div class="ic">6</div><div><h4>Role-based administration</h4><p>Capabilities, qualifiers, built-in roles, explicit act scope, granting bounds, <code>acl/*/0.2</code> and the boot migration (#1924); custom roles, approve-scope approver sets, the departed-granter review, restore consent, <code>acl/swap-key</code> and a capability-driven console (#1927).</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
-    <div class="layer"><div class="ic">7</div><div><h4>Single-administrator mode</h4><p><code>vtc setup --single-admin</code>, the waiver on an empty approver set, the banner, and <code>Critical</code> audit (VTI-APV-022). #1925</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
+    <div class="layer"><div class="ic">7</div><div><h4>Single-administrator mode</h4><p><code>vtc setup --single-admin</code>, the waiver whatever the approver set, the banner, and <code>Critical</code> audit (VTI-APV-022). #1925</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
     <div class="layer"><div class="ic">8</div><div><h4>git-ns rights as capabilities</h4><p>One authority model: git rights are resource grants on the entry, the bridge holds an <code>application</code> entry, the old rights store migrated and removed (VTI-VTC-020). #1930</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
     <div class="layer"><div class="ic">9</div><div><h4>cnm per-community identities</h4><p><code>cnm community add</code> / <code>continue</code> / <code>rotate</code>: a key per community, rotated over <code>acl/swap-key</code>. #1923, #1927</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
     <div class="layer"><div class="ic">10</div><div><h4>Console at a glance</h4><p>The join-request badge, Members and Join requests tiles, and the list-limit guard. #1929</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>

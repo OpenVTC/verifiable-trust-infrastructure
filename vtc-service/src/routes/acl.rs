@@ -183,6 +183,11 @@ pub(crate) fn render_v0_2(e: &VtcAclEntry, review: Option<&DelegationReview>) ->
         map.insert("expiresAt".into(), json!(epoch_to_rfc3339(at)));
     }
     let mut ours = json!({ "communityRole": e.role.to_string() });
+    // VTI-ACL-052 item 2: a label its subject set is shown as self-set to
+    // every other party that reads it.
+    if e.label.is_some() && e.label_set_by_subject {
+        ours[LABEL_SET_BY_SUBJECT] = json!(true);
+    }
     // Resource grants (phase C3): the git rights this entry holds, each a
     // qualified capability with its own granter. A granter's free-text reason
     // is shown only to those who govern the resource (`git-ns/view`), never
@@ -618,6 +623,84 @@ pub(crate) struct GrantPlan {
     reduces: bool,
     event: PlanEvent,
     reason: Option<String>,
+    /// Whether, and under which exception, the writer is the subject
+    /// (**VTI-ACL-052**).
+    pub(crate) self_edit: SelfEdit,
+}
+
+/// A subject writing its own entry, under one of the exceptions
+/// **VTI-ACL-052** makes to "a subject MUST NOT modify its own entry". The
+/// first, the self-service rotation, is `acl/swap-key` ([`swap_key`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SelfEdit {
+    /// The writer is not the subject.
+    No,
+    /// Item 2: the label and nothing else. The label confers no authority
+    /// (VTI-ACL-001), so nothing gates it; it is audited and marked self-set.
+    Label,
+    /// Item 3: single-administrator mode (VTI-APV-022), the writer's entry
+    /// unrestricted. Authorized by the writer's step-up bound to this
+    /// operation (VTI-APV-015), audited at `Critical`
+    /// ([`crate::acl::single_admin::authorize_self_edit`]); the write never
+    /// leaves the community without an unrestricted entry.
+    UnrestrictedInSingleAdminMode,
+}
+
+/// Whether `next` differs from `prev` in its label alone — every axis of
+/// authority, the community role and the expiry as they were (VTI-ACL-052
+/// item 2).
+#[must_use]
+pub(crate) fn only_label_differs(prev: &VtcAclEntry, next: &VtcAclEntry) -> bool {
+    prev.role == next.role && prev.admin == next.admin && prev.expires_at == next.expires_at
+}
+
+/// How many live entries other than `did`'s have unrestricted act scope — a
+/// `community-admin` acting everywhere with its full ceiling
+/// ([`granting::is_unrestricted`]). VTI-ACL-052 item 3 refuses a self-edit
+/// that would leave none at all.
+pub(crate) async fn other_unrestricted(
+    state: &AppState,
+    did: &str,
+    now: u64,
+) -> Result<usize, AppError> {
+    Ok(list_acl_entries(&state.acl_ks)
+        .await?
+        .iter()
+        .filter(|e| e.did != did && granting::is_unrestricted(e, now))
+        .count())
+}
+
+/// The refusal for a subject changing its own entry beyond what VTI-ACL-052
+/// lets it — saying what it may do instead.
+pub(crate) fn self_edit_refusal(what: &str, single_admin_mode: bool) -> AppError {
+    let mode = if single_admin_mode {
+        " In single-administrator mode an administrator whose entry is unrestricted (a \
+         community-admin acting everywhere with its full ceiling) may edit its own entry with \
+         a passkey gesture bound to the change; yours is not."
+    } else {
+        ""
+    };
+    AppError::Forbidden(format!(
+        "you cannot {what} (VTI-ACL-052) — you may change your entry's label yourself, but \
+         any other change must be made by another administrator holding vtc.roles.assign.{mode}"
+    ))
+}
+
+/// The refusal for a subject moving its own role on a door that carries
+/// neither exception of VTI-ACL-052 (`acl/change-role/0.1`,
+/// `vtc/members/update`), naming the doors that do.
+pub(crate) fn own_role_refusal(single_admin_mode: bool) -> AppError {
+    let mode = if single_admin_mode {
+        " In single-administrator mode, an administrator whose entry is unrestricted edits its \
+         own entry with acl/update/0.2 or acl/change-role/0.2, on a passkey gesture bound to \
+         the change."
+    } else {
+        " Another administrator holding vtc.roles.assign can make this change."
+    };
+    AppError::Forbidden(format!(
+        "you cannot change your own role here (VTI-ACL-052) — you may change your entry's label \
+         yourself.{mode}"
+    ))
 }
 
 /// The task a [`GrantPlan`] was made for, for the audit row.
@@ -673,12 +756,7 @@ pub(crate) async fn plan_write(
     // VTI-ACL-052 / VTI-OPS-050, before anything that would leak whether the
     // caller's own entry is coverable.
     if next.did == actor_did {
-        return Err(AppError::Forbidden(
-            "you cannot write your own ACL entry (VTI-ACL-052) — another administrator holding \
-             vtc.roles.assign must make this change"
-                .into(),
-        )
-        .into());
+        return plan_self_write(state, next, existing, event, reason, now).await;
     }
     let actor = actor_entry(state, actor_did).await?;
     if let Some(prev) = existing.as_ref()
@@ -702,6 +780,11 @@ pub(crate) async fn plan_write(
     // A grant is a delegation (§6.3): the writer is the granter it is bounded
     // by. An entry with no administrative authority derives from nobody.
     next.delegated_by = next.admin.is_administrator().then(|| actor.did.clone());
+    // Anyone but the subject setting the label clears its self-set mark
+    // (VTI-ACL-052 item 2); a write that leaves the label alone keeps it.
+    next.label_set_by_subject = existing
+        .as_ref()
+        .is_some_and(|p| p.label == next.label && p.label_set_by_subject);
 
     let prior_live = existing.as_ref().filter(|p| !p.is_expired(now));
     let conferred = crate::acl::admin_consent::newly_conferred(prior_live, &next, now);
@@ -743,6 +826,104 @@ pub(crate) async fn plan_write(
         reduces,
         event,
         reason,
+        self_edit: SelfEdit::No,
+    })
+}
+
+/// [`plan_write`] for a subject writing its own entry: refused unless one of
+/// the exceptions **VTI-ACL-052** makes applies.
+///
+/// - Item 2 — the label and nothing else ([`SelfEdit::Label`]). Nothing about
+///   authority moves, so nothing is bounded or gated; the label is marked
+///   self-set.
+/// - Item 3 — single-administrator mode, the subject's entry unrestricted
+///   ([`SelfEdit::UnrestrictedInSingleAdminMode`]). A holder of every axis
+///   cannot widen itself past anyone, and the mode states that every
+///   administrator is the same person (VTI-APV-022), so there is nobody else
+///   to make the edit. The entry must still fit its role's ceiling, and the
+///   write is refused if it would leave no unrestricted entry: where no other
+///   is live, the subject's must stay unrestricted and its life may not
+///   shorten. Ending the subject's `vtc.roles.assign` is attrition, checked
+///   under the admin-set lock like any other. The gesture and the `Critical`
+///   audit row are the door's
+///   ([`crate::acl::single_admin::authorize_self_edit`]).
+///
+/// Anything else is refused, naming what the subject may do instead.
+async fn plan_self_write(
+    state: &AppState,
+    mut next: VtcAclEntry,
+    existing: Option<VtcAclEntry>,
+    event: PlanEvent,
+    reason: Option<String>,
+    now: u64,
+) -> Result<GrantPlan, WriteError> {
+    let mode = crate::acl::admin_consent::single_admin_mode(state).await;
+    // A caller always has an entry of its own to amend; one that has none
+    // creates nothing for itself.
+    let Some(prev) = existing else {
+        return Err(self_edit_refusal("write your own ACL entry", mode).into());
+    };
+    let actor = actor_entry(state, &next.did).await?;
+    crate::acl::roles::resolve(&state.acl_ks, &mut next).await?;
+
+    // A rewrite that changes nothing is no label change: refused as before.
+    let self_edit = if prev.label != next.label && only_label_differs(&prev, &next) {
+        SelfEdit::Label
+    } else if mode && granting::is_unrestricted(&prev, now) {
+        SelfEdit::UnrestrictedInSingleAdminMode
+    } else {
+        return Err(self_edit_refusal("change your own ACL entry beyond its label", mode).into());
+    };
+
+    if self_edit == SelfEdit::UnrestrictedInSingleAdminMode {
+        next.admin
+            .validate_against_ceiling()
+            .map_err(|e| WriteError::Refused(GrantRefusal::Ceiling(e)))?;
+        let shortens_life = match (prev.expires_at, next.expires_at) {
+            (None, Some(_)) => true,
+            (Some(was), Some(will)) => will < was,
+            (_, None) => false,
+        };
+        if (!granting::is_unrestricted(&next, now) || shortens_life)
+            && other_unrestricted(state, &actor.did, now).await? == 0
+        {
+            return Err(AppError::Forbidden(format!(
+                "this change would leave the community with no entry holding unrestricted act \
+                 scope (VTI-ACL-052 item 3): yours is its only one, so it must stay a \
+                 community-admin acting everywhere with its full ceiling, and its life may not \
+                 shorten. It would become: {}. Make another community administrator first",
+                crate::acl_cli::describe_authority(&next.admin)
+            ))
+            .into());
+        }
+    }
+
+    next.created_at = prev.created_at;
+    next.created_by = prev.created_by.clone();
+    next.updated_at = Some(now);
+    next.updated_by = Some(actor.did.clone());
+    // Not a delegation: the subject derives nothing from itself.
+    next.delegated_by = prev.delegated_by.clone();
+    next.label_set_by_subject = if prev.label == next.label {
+        prev.label_set_by_subject
+    } else {
+        next.label.is_some()
+    };
+    let reduces = next.admin.narrows_from(&prev.admin);
+    let ends_assigner = crate::acl::admin_consent::is_live_role_assigner(&prev, now)
+        && !crate::acl::admin_consent::is_live_role_assigner(&next, now);
+    Ok(GrantPlan {
+        entry: next,
+        prior: Some(prev),
+        status: StatusCode::OK,
+        conferred: Vec::new(),
+        widens: false,
+        reduces_admin: None,
+        ends_assigner,
+        reduces,
+        event,
+        reason,
+        self_edit,
     })
 }
 
@@ -761,6 +942,7 @@ pub(crate) async fn commit_grant(
         ends_assigner,
         reduces,
         event,
+        self_edit,
         ..
     } = plan;
     // Taking `vtc.roles.assign` away is attrition like any removal, checked and
@@ -806,30 +988,35 @@ pub(crate) async fn commit_grant(
     crate::admin_actions::record_effect(state).await;
     drop(_admin_set);
 
-    // A reduced entry must bind now: the subject's live sessions go.
-    if reduces {
+    // A reduced entry must bind now: the subject's live sessions go — unless
+    // the subject asked for it itself, from the session it is acting in.
+    if reduces && self_edit == SelfEdit::No {
         let revoked = super::auth::revoke_sessions_for_did(&state.sessions_ks, &entry.did).await?;
         info!(did = %entry.did, revoked, "subject sessions revoked after ACL privilege reduction");
     }
     // A write by a covering administrator re-affirms a delegation under review
-    // (§6.3); a narrowed granter's own grants may no longer be covered.
-    delegation::clear(state, &entry.did).await?;
+    // (§6.3); a narrowed granter's own grants may no longer be covered. A
+    // subject's write to its own entry (VTI-ACL-052) re-affirms nothing: a
+    // review is another administrator's to settle, never the subject's.
+    if self_edit == SelfEdit::No {
+        delegation::clear(state, &entry.did).await?;
+    }
     if reduces {
         delegation::on_granter_changed(state, &entry.did, Some(&entry)).await?;
     }
 
     if let Some(writer) = state.audit_writer.as_ref() {
-        let data = audit_data(&entry);
-        writer
-            .write(
-                actor_did,
-                Some(&entry.did),
-                match event {
-                    PlanEvent::Granted => AuditEvent::AclGranted(data),
-                    PlanEvent::Updated => AuditEvent::AclUpdated(data),
-                },
-            )
-            .await?;
+        let event = if self_edit == SelfEdit::Label {
+            // VTI-ACL-052 item 2: recorded as the subject's own label.
+            AuditEvent::MemberUpdated(self_label_audit(prior.as_ref(), &entry))
+        } else {
+            let data = audit_data(&entry);
+            match event {
+                PlanEvent::Granted => AuditEvent::AclGranted(data),
+                PlanEvent::Updated => AuditEvent::AclUpdated(data),
+            }
+        };
+        writer.write(actor_did, Some(&entry.did), event).await?;
     }
     info!(
         caller = %actor_did,
@@ -844,6 +1031,42 @@ pub(crate) async fn commit_grant(
     );
     Ok((status, entry))
 }
+
+/// The audit row for a subject's change to its own label (**VTI-ACL-052**
+/// item 2): the label before and after, and the self-set mark, so the row says
+/// in itself that the subject set it.
+pub(crate) fn self_label_audit(
+    prior: Option<&VtcAclEntry>,
+    entry: &VtcAclEntry,
+) -> vti_common::audit::MemberUpdatedData {
+    use vti_common::audit::{FieldChange, MemberUpdatedData};
+    let old_label = prior.and_then(|p| p.label.clone());
+    let old_mark = prior.is_some_and(|p| p.label_set_by_subject);
+    let mut fields_changed = Vec::new();
+    let mut changes = Vec::new();
+    if old_label != entry.label {
+        fields_changed.push("label".to_string());
+        changes.push(FieldChange {
+            field: "label".into(),
+            old: old_label.map(Value::String),
+            new: entry.label.clone().map(Value::String),
+        });
+    }
+    fields_changed.push(LABEL_SET_BY_SUBJECT.to_string());
+    changes.push(FieldChange {
+        field: LABEL_SET_BY_SUBJECT.into(),
+        old: Some(Value::Bool(old_mark)),
+        new: Some(Value::Bool(entry.label_set_by_subject)),
+    });
+    MemberUpdatedData {
+        fields_changed,
+        changes,
+    }
+}
+
+/// The name the self-set mark goes by on the wire (`ext["org.openvtc"]`) and
+/// in audit rows.
+pub(crate) const LABEL_SET_BY_SUBJECT: &str = "labelSetBySubject";
 
 /// The audit row's view of an entry: its administrative role (or community
 /// role, with none) and the capabilities it holds, in the slot that used to
@@ -975,14 +1198,7 @@ pub(crate) async fn plan_update(
     req: UpdateEntryRequest,
 ) -> Result<GrantPlan, WriteError> {
     use trust_tasks_rs::specs::acl::update::v0_1::error_codes;
-    if req.subject == actor.did {
-        return Err(AppError::Forbidden(
-            "you cannot update your own ACL entry (VTI-ACL-052) — another administrator must \
-             make this change"
-                .into(),
-        )
-        .into());
-    }
+    // A subject's own entry is decided by `plan_write` (VTI-ACL-052).
     let existing = existing_for_update(state, &req.subject, error_codes::NOT_FOUND.code).await?;
     if let Some(scopes) = req.scopes.as_ref() {
         refuse_scopes(scopes)?;
@@ -1210,16 +1426,7 @@ pub(crate) async fn plan_update_v0_2(
 ) -> Result<GrantPlan, UpdateV02Error> {
     use trust_tasks_rs::specs::acl::update::v0_2::error_codes;
     let subject = payload["subject"].as_str().unwrap_or_default().to_string();
-    if subject == actor_did {
-        return Err(UpdateV02Error::Write(WriteError::Task(
-            AppError::Forbidden(
-                "you cannot update your own ACL entry (VTI-ACL-052) — another administrator \
-                 must make this change"
-                    .into(),
-            )
-            .into(),
-        )));
-    }
+    // A subject's own entry is decided by `plan_write` (VTI-ACL-052).
     let existing = existing_for_update(state, &subject, error_codes::NOT_FOUND.code)
         .await
         .map_err(|e| UpdateV02Error::Write(e.into()))?;
@@ -1331,12 +1538,13 @@ pub(crate) async fn change_role_inner(
     source: crate::ceremony::StepUpSource<'_>,
 ) -> Result<ChangeRoleOutcome, AppError> {
     let did = did.to_string();
-    // VTI-ACL-052: in either direction.
+    // VTI-ACL-052: in either direction. A role move is not a label (item 2),
+    // and item 3 is carried by `acl/update/0.2` and `acl/change-role/0.2`,
+    // whose shared plan (`plan_self_write`) holds the unrestricted-entry
+    // invariant; this door runs the role-change ceremony, which does not.
     if actor.did == did {
-        return Err(AppError::Forbidden(
-            "you cannot change your own role (VTI-ACL-052) — another administrator must make \
-             this change"
-                .into(),
+        return Err(own_role_refusal(
+            crate::acl::admin_consent::single_admin_mode(state).await,
         ));
     }
     let op_payload = {
@@ -2062,6 +2270,7 @@ mod tests {
             updated_by: None,
             expires_at: Some(1_800_000_000),
             resource_grants: Vec::new(),
+            label_set_by_subject: false,
         }
     }
 

@@ -28,6 +28,8 @@ import {
   grantAcl,
   grantLabel,
   grantRequest,
+  labelSelfSet,
+  ownEntryEdits,
   revokeAcl,
   updateAcl,
   type AclEntry,
@@ -46,6 +48,8 @@ import { Field } from "@/components/Field";
 import { formatIso, shorten, shortenDid } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 import { SessionTimeoutCard } from "@/plugins/SessionTimeoutCard";
+import { useSingleAdminMode } from "@/lib/action-badge";
+import { useViewerDid } from "@/lib/viewer";
 
 // The ACL verbs are signed documents (`lib/acl.ts`); the invites are REST.
 const TRUST_TASK_INVITES_LIST =
@@ -78,7 +82,8 @@ const deleteAcl = (subject: string, confirmGesture: ConfirmGesture): Promise<voi
   revokeAcl(subject, confirmGesture);
 
 // A label edit is an `acl/update/0.2` that replaces the label and nothing
-// else, so it widens nothing and asks for no gesture.
+// else, so it widens nothing and asks for no gesture — on your own entry too
+// (VTI-ACL-052 item 2), where the VTC marks it self-set.
 async function patchAclLabel(args: {
   entry: AclEntry;
   label: string;
@@ -138,6 +143,8 @@ export function Acl() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const confirm = useConfirm();
+  const me = useViewerDid();
+  const singleAdminMode = useSingleAdminMode();
 
   const query = useQuery({
     queryKey: ["acl", roleFilter],
@@ -260,10 +267,18 @@ export function Acl() {
             )}
             {query.data?.entries.map((e) => {
               const review = e.ext?.["org.openvtc"]?.delegationReview;
+              // Your own entry (VTI-ACL-052): the label always; anything else
+              // only where the VTC would allow it, explained otherwise.
+              const own = me !== null && e.subject === me ? ownEntryEdits(e, singleAdminMode) : null;
               return (
                 <tr key={e.subject}>
                   <td>
                     <code title={e.subject}>{shortenDid(e.subject)}</code>
+                    {own && (
+                      <span className="chip" title="This is the entry you are signed in as">
+                        you
+                      </span>
+                    )}
                   </td>
                   <td>
                     {e.role === NO_ADMIN_ROLE ? (
@@ -288,6 +303,14 @@ export function Acl() {
                   </td>
                   <td>
                     <EditableLabelCell entry={e} label={e.label ?? null} />
+                    {labelSelfSet(e) && (
+                      <span
+                        className="chip warning"
+                        title="Set by the entry's own subject, not by another administrator (VTI-ACL-052)"
+                      >
+                        self-set
+                      </span>
+                    )}
                   </td>
                   <td>
                     {e.expiresAt ? (
@@ -304,6 +327,14 @@ export function Acl() {
                         <button
                           type="button"
                           className="secondary"
+                          disabled={own !== null && !own.other}
+                          title={
+                            own === null
+                              ? undefined
+                              : own.other
+                                ? "Single-administrator mode: your passkey gesture, bound to this change, is asked for (VTI-ACL-052)"
+                                : (own.why ?? undefined)
+                          }
                           onClick={() => setEditing(e)}
                         >
                           Edit
@@ -312,7 +343,12 @@ export function Acl() {
                       <button
                         type="button"
                         className="secondary destructive"
-                        disabled={revoke.isPending}
+                        disabled={revoke.isPending || own !== null}
+                        title={
+                          own !== null
+                            ? "You cannot revoke your own entry (VTI-ACL-052) — another administrator can"
+                            : undefined
+                        }
                         onClick={async () => {
                           const ok = await confirm({
                             title: "Revoke ACL entry?",
@@ -326,6 +362,9 @@ export function Acl() {
                         Revoke
                       </button>
                     </div>
+                    {own && !own.other && e.role !== NO_ADMIN_ROLE && (
+                      <p className="muted own-entry-note">{own.why}</p>
+                    )}
                   </td>
                 </tr>
               );
@@ -834,7 +873,7 @@ function CapabilityPicker({
   const info = adminRoleInfo(role);
   if (!info || info.approveOnly) return null;
   return (
-    <fieldset className="field">
+    <fieldset className="field cap-picker">
       <legend className="field-label">
         {info.qualifiedOnly
           ? "Capabilities (each needs a resource)"
@@ -844,8 +883,8 @@ function CapabilityPicker({
         const meta = capabilityInfo(cap);
         const ticked = cap in selected;
         return (
-          <div key={cap} className="row-actions">
-            <label>
+          <div key={cap} className="cap-row">
+            <label className="checkbox">
               <input
                 type="checkbox"
                 aria-label={cap}
@@ -856,14 +895,15 @@ function CapabilityPicker({
                   else delete next[cap];
                   onChange(next);
                 }}
-              />{" "}
-              <code>{cap}</code>{" "}
-              <span className="muted">{meta?.gates}</span>
-              {meta?.conferring && (
-                <span className="chip warning" title="Granting it needs another holder's approval">
-                  confers authority
-                </span>
-              )}
+              />
+              <span className="checkbox-text">
+                <code>{cap}</code> <span className="muted">{meta?.gates}</span>
+                {meta?.conferring && (
+                  <span className="chip warning" title="Granting it needs another holder's approval">
+                    confers authority
+                  </span>
+                )}
+              </span>
             </label>
             {ticked && meta && meta.qualifiers.length > 0 && (
               <input
@@ -974,13 +1014,13 @@ function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
       </Field>
       <CapabilityPicker role={role} selected={selected} onChange={setSelected} />
       {info && !info.approveOnly && (
-        <label className="field">
+        <label className="checkbox">
           <input
             type="checkbox"
             checked={approve}
             onChange={(e) => setApprove(e.target.checked)}
-          />{" "}
-          May approve others' actions within this role
+          />
+          <span className="checkbox-text">May approve others' actions within this role</span>
         </label>
       )}
       <Field label="Label (optional)">

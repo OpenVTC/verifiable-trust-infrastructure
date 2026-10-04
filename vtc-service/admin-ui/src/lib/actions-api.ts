@@ -121,6 +121,8 @@ export interface ApproverInviteResult {
 
 export interface ActionExt {
   approverCount?: number;
+  /** The administrators who may decide this open action. */
+  approvers?: string[];
   requesterRecentActions?: number;
   burst?: boolean;
   closedMessage?: string;
@@ -134,8 +136,8 @@ export interface ActionExt {
   acknowledgedByMe?: boolean;
   approverInvite?: ApproverInviteResult;
   /** Present on an operation single-administrator mode let through on the
-   *  requester's own gesture, nobody else being eligible to consent
-   *  (VTI-APV-022). Completed at once; it carries no threshold. */
+   *  requester's own gesture in place of another's consent (VTI-APV-022).
+   *  Completed at once; it carries no threshold. */
   consentWaived?: ConsentWaived;
 }
 

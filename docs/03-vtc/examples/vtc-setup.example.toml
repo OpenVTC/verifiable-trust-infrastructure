@@ -63,16 +63,18 @@ context = "default"   # the VTA context this community provisions under
 # co_admin_did = "did:key:z6Mk…"
 
 # ── Single-administrator mode (optional) ────────────────────────────────
-# For a community run by one person (VTI-APV-022). Wherever nobody but the
-# requester could consent to an operation that ordinarily needs another
-# administrator's approval, the requester's step-up bound to that operation
-# (passkey or approver device) authorizes it instead — audited at the highest
-# severity and shown to every administrator in every session. The moment a
-# second eligible administrator exists, their consent is required again.
-# Removing or narrowing another administrator keeps its cooling-off. Writes
-# `[acl] single_admin_mode = true` to config.toml; it can be changed afterwards
-# only there, on the host, and by a restart — never online. `vtc setup
-# --single-admin` sets it too. Has no effect beside co_admin_did (setup warns).
+# For a community run by one person (VTI-APV-022), even one who administers it
+# under several identifiers (one per device). An operation that ordinarily
+# needs another administrator's approval is authorized by the requester's
+# step-up bound to that operation (passkey or approver device) instead —
+# whether or not other administrators' entries exist — audited at the highest
+# severity and shown to every administrator in every session. Turn it on only
+# where every administrator is the same person; if someone else joins as an
+# administrator, turn it off on the host. Removing or narrowing another
+# administrator keeps its cooling-off. Writes `[acl] single_admin_mode = true`
+# to config.toml; it can be changed afterwards only there, on the host, and by
+# a restart — never online. `vtc setup --single-admin` sets it too. Beside
+# co_admin_did, setup warns: keep it only if that DID is also yours.
 # Default false.
 # single_admin_mode = true
 

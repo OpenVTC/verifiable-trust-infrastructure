@@ -368,17 +368,19 @@ A community with a single community administrator has
 nobody to ask, which is why `vtc setup` takes an optional `co_admin_did`. A
 community that really is run by one person is installed in
 **single-administrator mode** instead (`vtc setup --single-admin`, or
-`single_admin_mode = true` in the setup TOML; VTI-APV-022): wherever nobody
-but you could consent, your step-up bound to the operation authorizes it, so
-you can add the second administrator online. Removals keep their cooling-off
-even then. It is host configuration
+`single_admin_mode = true` in the setup TOML; VTI-APV-022): your step-up
+bound to the operation stands in for another administrator's consent, so you
+can add your other identifiers (one per device) as administrators online —
+and consent stays waived beside them, since they are all you. Removals keep
+their cooling-off even then. Turn it on only where every administrator is the
+same person. It is host configuration
 (`[acl] single_admin_mode` in `config.toml`, changed only there and by a
 restart), every administrator sees a permanent banner while it is on, and each
 waived consent is audited at `Critical`
 ([`admin-access.md`](admin-access.md) §2.1a). The same goes for the git side:
 `cnm git adopt <resource> --owner <your DID>` and the other elevated
-self-grants run on your step-up while nobody else could grant them
-([`git-namespaces.md`](git-namespaces.md#single-administrator-mode-waives-it-where-nobody-else-could-grant)). If you installed with neither, add
+self-grants run on your step-up
+([`git-namespaces.md`](git-namespaces.md#single-administrator-mode-waives-it)). If you installed with neither, add
 the second offline with `vtc acl add`, daemon stopped.
 
 Every offline ACL change — `vtc acl add` and `remove`, `vtc create-did-key

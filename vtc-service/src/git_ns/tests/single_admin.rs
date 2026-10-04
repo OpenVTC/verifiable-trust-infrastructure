@@ -1,13 +1,12 @@
 //! **Single-administrator mode on the git side** (VTI-APV-022 applied to fixed
 //! rule 7 of `git-ns/right/grant/0.3`, `super::super::single_admin`).
 //!
-//! With `[acl] single_admin_mode` on and nobody but the requester able to make
-//! the grant, an elevated self-grant is waived — on the requester's
-//! operation-bound step-up, with a `Critical` `SingleAdminMode {
+//! With `[acl] single_admin_mode` on, an elevated self-grant is waived — on the
+//! requester's operation-bound step-up, with a `Critical` `SingleAdminMode {
 //! selfGrantWaived }` row written before the write, and the record and the
-//! answer marked — through every task rule 7 covers. With the mode off, or
-//! another eligible party present, it is refused `git-ns:selfGrantNotAllowed`
-//! as before.
+//! answer marked — through every task rule 7 covers, whether or not anyone
+//! else could make the grant (VTI-APV-022: every administrator is one person).
+//! With the mode off it is refused `git-ns:selfGrantNotAllowed` as before.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -193,10 +192,12 @@ async fn vti_apv_022_a_sole_administrator_adopts_for_themselves_on_step_up_audit
     );
 }
 
-/// Item 2 of VTI-APV-022: one other eligible administrator — here a second
-/// community administrator — and the refusal stands, gesture or not.
+/// VTI-APV-022: a second community administrator's entry does not bring
+/// separation of duties back — the mode waives it whether or not other
+/// administrators' entries exist (one person may hold one per device). The
+/// self-adopt runs on the gesture, audited at `Critical`.
 #[tokio::test]
-async fn vti_apv_022_another_administrator_keeps_separation_of_duties() {
+async fn vti_apv_022_another_administrators_entry_does_not_restore_separation_of_duties() {
     let f = fixture().await;
     single_admin_mode(&f, true).await;
     let dana = Party::new();
@@ -204,26 +205,24 @@ async fn vti_apv_022_another_administrator_keeps_separation_of_duties() {
     bind_manual(&f).await;
     let p = json!({ "resource": GADGETS, "owners": [f.admin.did] });
     gesture::<adopt::Payload>(&f, &f.admin, &p).await;
-    let out = send(&f.vtc.state, &f.admin, "repo/adopt", p).await;
-    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
-    assert!(waived_rows(&f).await.is_empty());
-    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
-    assert!(snap.repo_at(GADGETS).is_none());
+    let body = ok(&send(&f.vtc.state, &f.admin, "repo/adopt", p).await);
+    assert_eq!(body["repo"]["owners"], json!([f.admin.did]));
+    assert_eq!(waived_rows(&f).await.len(), 1);
 }
 
-/// A member whose git rights carry the authority to make the grant is
-/// eligible too: Bob owns `widgets`, so he could make the administrator an
-/// owner there, and the self-grant stays refused.
+/// VTI-APV-022: nor does a member whose git rights could make the grant —
+/// Bob owns `widgets`, and the administrator's self-grant there is waived all
+/// the same.
 #[tokio::test]
-async fn vti_apv_022_an_owner_who_could_grant_keeps_separation_of_duties() {
+async fn vti_apv_022_an_owner_who_could_grant_does_not_restore_separation_of_duties() {
     let f = fixture().await;
     single_admin_mode(&f, true).await;
     active_repo(&f).await;
     let p = json!({ "subject": f.admin.did, "right": "git.repo.own", "resource": "github.com/acme/widgets" });
     gesture::<grant3::Payload>(&f, &f.admin, &p).await;
     let out = send(&f.vtc.state, &f.admin, "right/grant", p).await;
-    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
-    assert!(waived_rows(&f).await.is_empty());
+    ok(&out);
+    assert_eq!(waived_rows(&f).await.len(), 1);
 }
 
 /// With the mode off nothing changes, even with a gesture recorded.

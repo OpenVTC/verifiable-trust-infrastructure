@@ -19,6 +19,7 @@ mod common;
 mod acl_boot_migration;
 mod acl_canonical;
 mod acl_cli;
+mod acl_self_edit;
 mod acl_trust_tasks;
 mod acl_vtc_client;
 mod action_list_a2;

@@ -32,8 +32,10 @@ import { AlertTriangle, RefreshCw } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
 import { NamedDid } from "@/components/NamedDid";
 import {
+  ABSENT,
   SUMMARY_REFUSED_MESSAGE,
   SummaryRefusal,
+  humanizeFieldName,
   matchCode,
   verifySummary,
   type VerifiedSummary,
@@ -296,9 +298,9 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
       {waived && (
         <p className="action-severity">
           <span className="chip warning">Consent waived</span>{" "}
-          <strong>Single-administrator mode</strong> — nobody but the requester could consent,
-          so their passkey gesture bound to this operation authorized it ({waived.requirement},
-          VTI-APV-022).
+          <strong>Single-administrator mode</strong> — every administrator is one person, so the
+          requester&rsquo;s passkey gesture bound to this operation authorized it in place of
+          another&rsquo;s consent ({waived.requirement}, VTI-APV-022).
         </p>
       )}
       {summary.state === "checking" && <p className="lead">Checking this action…</p>}
@@ -373,8 +375,9 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
               <>
                 <dt>Approvals</dt>
                 <dd>
-                  None needed — nobody but the requester and the administrator it reduces
-                  can consent to it.
+                  None needed — nobody but the requester and the administrator it reduces can
+                  consent to it, or single-administrator mode does not ask for consent. It waits
+                  out its cooling-off instead.
                 </dd>
               </>
             ) : (
@@ -386,6 +389,14 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
                     : action.approvals.length}
                   {action.approvals.length > 0 && <ApprovalList action={action} book={book} />}
                 </dd>
+                {open && (
+                  <>
+                    <dt>Who can approve</dt>
+                    <dd>
+                      <EligibleApprovers action={action} book={book} />
+                    </dd>
+                  </>
+                )}
               </>
             )}
             {open && cooling && (
@@ -471,7 +482,7 @@ function SummaryView({ summary }: { summary: VerifiedSummary }) {
         <dl className="action-fields">
           {summary.fields.map((f) => (
             <div key={f.name}>
-              <dt>{f.name}</dt>
+              <dt>{humanizeFieldName(f.name)}</dt>
               <dd>{f.format === "did" ? <code>{f.text}</code> : f.text}</dd>
             </div>
           ))}
@@ -491,6 +502,39 @@ const CLOSED_REASON_TEXT: Record<ClosedReason, string> = {
   acknowledged: "Every administrator acknowledged it",
   landedAfterCoolingOff: "It landed after its cooling-off, uncancelled",
 };
+
+/**
+ * The administrators who may still decide an open action — so a requester
+ * looking at "0 of 1" knows whom to ask. From `ext.org.openvtc.approvers`;
+ * an older VTC sends only the count.
+ */
+function EligibleApprovers({ action, book }: { action: Action; book: NameBook }) {
+  const ext = actionExt(action);
+  const approved = new Set(action.approvals.map((a) => a.subject));
+  const pending = (ext.approvers ?? []).filter((d) => !approved.has(d));
+  if (pending.length > 0) {
+    return (
+      <ul className="action-approvers" aria-label="Who can approve">
+        {pending.map((did) => (
+          <li key={did}>
+            <NamedDid book={book} did={did} />
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  if (ext.approverCount === 0) {
+    return <span className="muted">Nobody else is eligible yet.</span>;
+  }
+  if (ext.approverCount !== undefined) {
+    return (
+      <span>
+        {ext.approverCount} administrator{ext.approverCount === 1 ? "" : "s"}
+      </span>
+    );
+  }
+  return <span className="muted">{ABSENT}</span>;
+}
 
 function ApprovalList({ action, book }: { action: Action; book: NameBook }) {
   return (

@@ -251,6 +251,7 @@ async fn admit(
         updated_by: None,
         expires_at: None,
         resource_grants: prior_grants,
+        label_set_by_subject: false,
     };
     store_acl_entry(&state.acl_ks, &acl).await?;
     drop(_git);

@@ -148,10 +148,15 @@ pub struct AclConfig {
     pub consent_request_push: bool,
     /// **Single-administrator mode** (VTI-APV-022). When `true`, an operation
     /// that would wait for another administrator's consent (VTI-APV-018, -020,
-    /// VTI-VTC-022) and for which **no** eligible party but the requester
-    /// exists runs on the requester's operation-bound passkey gesture
-    /// (VTI-APV-015) instead, audited at `Critical`. Wherever another eligible
-    /// administrator exists, consent applies exactly as without the mode.
+    /// VTI-VTC-022) runs on the requester's operation-bound passkey gesture
+    /// (VTI-APV-015) instead, audited at `Critical` — whether or not other
+    /// administrators' entries exist. The mode is the host's statement that
+    /// every administrator is the same person, under as many identifiers (one
+    /// per device, say) as they hold (item 2); turn it off on the host and
+    /// ordinary consent applies again. A reduction of another administrator
+    /// (VTI-APV-019) keeps its gesture, notice, `Critical` row and
+    /// cooling-off. An administrator whose entry is unrestricted may also edit
+    /// its own entry, on the same gesture (VTI-ACL-052 item 3).
     ///
     /// Host configuration only (VTI-APV-022 item 1): read once at start, and
     /// deliberately absent from the runtime `config/patch` registry and from
