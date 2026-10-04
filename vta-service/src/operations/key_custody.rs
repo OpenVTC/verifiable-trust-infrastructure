@@ -23,7 +23,7 @@ use vti_common::store::KeyspaceHandle;
 
 use crate::audit;
 use crate::auth::AuthClaims;
-use crate::contexts::{get_context, list_contexts};
+use crate::contexts::{ContextRecord, get_context, list_contexts};
 use crate::error::AppError;
 use crate::keys::KeyRecord;
 use crate::keys::custody::{self, CustodyViolation, RecordKey};
@@ -99,8 +99,39 @@ pub async fn derive_record_key(
     record: &KeyRecord,
     channel: &str,
 ) -> Result<RecordKey, AppError> {
+    derive_record_key_in_context(
+        contexts_ks,
+        keys_ks,
+        seed_store,
+        audit_sink,
+        actor,
+        record,
+        None,
+        channel,
+    )
+    .await
+}
+
+/// [`derive_record_key`] with the record's context already read in this
+/// request. `context` is used only when its id is the record's context;
+/// otherwise the context is read here, so a wrong record can never supply the
+/// base path.
+#[allow(clippy::too_many_arguments)]
+pub async fn derive_record_key_in_context(
+    contexts_ks: &KeyspaceHandle,
+    keys_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    audit_sink: &vta_audit::SharedAuditSink,
+    actor: &str,
+    record: &KeyRecord,
+    context: Option<&ContextRecord>,
+    channel: &str,
+) -> Result<RecordKey, AppError> {
     let base = match record.context_id.as_deref() {
-        Some(ctx) => get_context(contexts_ks, ctx).await?.map(|c| c.base_path),
+        Some(ctx) => match context {
+            Some(c) if c.id == ctx => Some(c.base_path.clone()),
+            _ => get_context(contexts_ks, ctx).await?.map(|c| c.base_path),
+        },
         None => None,
     };
     let authorized = match custody::authorize_record_derivation(record, base.as_deref()) {
