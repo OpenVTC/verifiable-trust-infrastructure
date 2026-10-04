@@ -1783,6 +1783,36 @@ fn run_storage_thread(
     });
 }
 
+/// A vsock listener for `axum::serve`, for enclave builds. Every peer
+/// is reported as `127.0.0.1`, which is what the VTA saw through `socat`, so
+/// rate limiting and trusted `X-Forwarded-For` handling are unchanged.
+#[cfg(all(feature = "rest", feature = "vsock-store"))]
+struct VsockRestListener(tokio_vsock::VsockListener);
+
+#[cfg(all(feature = "rest", feature = "vsock-store"))]
+impl axum::serve::Listener for VsockRestListener {
+    type Io = tokio_vsock::VsockStream;
+    type Addr = std::net::SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            match self.0.accept().await {
+                Ok((stream, _)) => {
+                    return (stream, std::net::SocketAddr::from(([127, 0, 0, 1], 0)));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "REST vsock accept failed");
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        Ok(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+    }
+}
+
 /// REST thread: serves the Axum HTTP server.
 #[cfg(feature = "rest")]
 fn run_rest_thread(
@@ -1855,16 +1885,40 @@ fn run_rest_thread(
             traced_routes.merge(routes::health_router_with_cors(&cors_origins).with_state(state));
 
         let shutdown_rx = shutdown_rx.clone();
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .with_graceful_shutdown(async move {
+        let shutdown = async move {
             let mut rx = shutdown_rx;
             let _ = rx.changed().await;
-        })
-        .await
-        .expect("axum serve failed");
+        };
+        let make_service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+
+        // Enclave builds serve REST on vsock directly when the entrypoint sets
+        // `VTA_REST_VSOCK_PORT`, instead of behind a per-connection `socat`
+        // (vsock → TCP). The TCP listener above is then unused.
+        #[cfg(feature = "vsock-store")]
+        if let Some(port) = std::env::var("VTA_REST_VSOCK_PORT")
+            .ok()
+            .and_then(|p| p.parse::<u32>().ok())
+        {
+            let vsock = tokio_vsock::VsockListener::bind(tokio_vsock::VsockAddr::new(
+                tokio_vsock::VMADDR_CID_ANY,
+                port,
+            ))
+            .expect("failed to bind REST vsock listener");
+            info!(port, "REST listening on vsock");
+            // `tap_io` only to get axum's `Connected` impl for `L::Addr`.
+            let vsock = axum::serve::ListenerExt::tap_io(VsockRestListener(vsock), |_| {});
+            axum::serve(vsock, make_service)
+                .with_graceful_shutdown(shutdown)
+                .await
+                .expect("axum serve failed");
+            info!("REST thread shutting down");
+            return;
+        }
+
+        axum::serve(listener, make_service)
+            .with_graceful_shutdown(shutdown)
+            .await
+            .expect("axum serve failed");
 
         info!("REST thread shutting down");
     });

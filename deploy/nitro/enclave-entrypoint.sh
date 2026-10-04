@@ -14,7 +14,7 @@
 # Network Architecture (inside enclave):
 #
 #   Inbound (clients → VTA):
-#     vsock listen :5100 → socat → VTA REST :8100
+#     vsock listen :5100 → VTA REST (the VTA binds vsock itself)
 #
 #   Outbound (VTA → mediator):
 #     VTA → localhost:4443 → socat → vsock connect parent:5200
@@ -72,10 +72,12 @@ ip link set lo up 2>/dev/null || true
 # ---------------------------------------------------------------------------
 # Start inbound proxy: vsock → VTA REST API
 # ---------------------------------------------------------------------------
-echo "Starting inbound proxy: vsock:${VSOCK_INBOUND_PORT} → localhost:${VTA_PORT}"
-socat VSOCK-LISTEN:${VSOCK_INBOUND_PORT},reuseaddr,fork \
-    TCP-CONNECT:127.0.0.1:${VTA_PORT} &
-INBOUND_PID=$!
+# The VTA listens on vsock itself (`VTA_REST_VSOCK_PORT`): a per-connection
+# socat in front of it cost a fork per connection, and new connections timed
+# out under load while it forked.
+echo "Inbound: the VTA serves REST on vsock:${VSOCK_INBOUND_PORT} directly"
+export VTA_REST_VSOCK_PORT="${VSOCK_INBOUND_PORT}"
+INBOUND_PID=
 
 # ---------------------------------------------------------------------------
 # Start outbound proxy: VTA mediator → parent (for DIDComm WebSocket)
