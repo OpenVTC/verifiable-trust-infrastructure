@@ -121,12 +121,13 @@ impl ConnectionPool {
 async fn round_trip(stream: &mut BoxStream, payload: &[u8]) -> Result<Vec<u8>, AppError> {
     let len = u32::try_from(payload.len())
         .map_err(|_| AppError::Internal("storage request too large".into()))?;
+    // One write per frame: on an unbuffered vsock stream every write is its
+    // own packet across the enclave boundary.
+    let mut frame = Vec::with_capacity(4 + payload.len());
+    frame.extend_from_slice(&len.to_be_bytes());
+    frame.extend_from_slice(payload);
     stream
-        .write_u32(len)
-        .await
-        .map_err(AppError::vsock("vsock write"))?;
-    stream
-        .write_all(payload)
+        .write_all(&frame)
         .await
         .map_err(AppError::vsock("vsock write"))?;
     stream
