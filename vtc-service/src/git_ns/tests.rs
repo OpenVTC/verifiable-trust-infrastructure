@@ -164,6 +164,7 @@ async fn seed_acl(state: &AppState, did: &str, role: VtcRole) {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            label_set_by_subject: false,
         },
     )
     .await
@@ -2513,6 +2514,7 @@ async fn finding_4_the_console_reads_refuse_a_context_scoped_admin() {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            label_set_by_subject: false,
         },
     )
     .await

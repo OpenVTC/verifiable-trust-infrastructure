@@ -396,10 +396,63 @@ export function formatValue(
     case "text":
       if (typeof value === "string") return value;
       if (typeof value === "number" || typeof value === "boolean") return String(value);
-      return JSON.stringify(value);
+      return readableValue(value);
     default:
       return null;
   }
+}
+
+/**
+ * A field's name for a reader: `expiresAt` → `Expires at`. The summary
+ * template names its fields in the wire's camelCase.
+ */
+export function humanizeFieldName(name: string): string {
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * A structured value in words rather than JSON — what a `text` field holding
+ * an object shows (an authority scope, a capability set, an entry). Display
+ * only: the verification above compares the raw value, never this text.
+ */
+export function readableValue(value: unknown): string {
+  if (value === null || value === undefined) return ABSENT;
+  if (typeof value === "string") return value === "" ? ABSENT : value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    return value.length === 0 ? "none" : value.map(readableValue).join(", ");
+  }
+  if (typeof value === "object") {
+    const o = value as Record<string, unknown>;
+    if (typeof o.capability === "string") {
+      const at = typeof o.resource === "string" ? ` at ${o.resource}` : "";
+      return `${o.capability}${at}${o.additive === true ? " (additive)" : ""}`;
+    }
+    if (typeof o.scope === "string") {
+      switch (o.scope) {
+        case "all":
+          return "all";
+        case "none":
+          return "none";
+        case "ceiling":
+          return "the role's full set of capabilities";
+        case "listed":
+          return Array.isArray(o.grants) ? readableValue(o.grants) : "none";
+        case "contexts":
+          return Array.isArray(o.contexts) ? readableValue(o.contexts) : "none";
+      }
+    }
+    const parts = Object.entries(o).map(
+      ([k, v]) => `${humanizeFieldName(k)}: ${readableValue(v)}`,
+    );
+    return parts.length === 0 ? ABSENT : parts.join("; ");
+  }
+  return String(value);
 }
 
 // ── Digests ─────────────────────────────────────────────────────────

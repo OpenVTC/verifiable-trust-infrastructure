@@ -113,16 +113,17 @@ invite after the bootstrap, or a passkey (`admin-access.md` §4, step 5).
 
 `single_admin_mode = true` in the setup TOML — or `vtc setup --from <toml>
 --single-admin` — installs the community in **single-administrator mode**
-(VTI-APV-022): wherever nobody but the requester could consent to an operation
-that ordinarily needs another administrator's approval, the requester's
-step-up bound to that operation (a passkey gesture, or their approver device)
-authorizes it instead, audited at `Critical`. Removing or narrowing another
+(VTI-APV-022): an operation that ordinarily needs another administrator's
+approval is authorized by the requester's step-up bound to that operation (a
+passkey gesture, or their approver device) instead, audited at `Critical` —
+whether or not other administrators' entries exist, since the mode states they
+are all one person. Removing or narrowing another
 administrator keeps its cooling-off in the mode.
 Setup writes `[acl] single_admin_mode = true` to the generated `config.toml`,
 and only then; the key is host configuration, changed afterwards only by
 editing `config.toml` and restarting — `config/patch` and `vtc/config/import`
-refuse it. Given together with `co_admin_did` it is accepted with a warning: it
-waives nothing while that second administrator is eligible to consent. See
+refuse it. Given together with `co_admin_did` it is accepted with a warning:
+keep it only if that DID is another of your own identifiers. See
 [`admin-access.md`](admin-access.md) §2.1a.
 
 **The VTC's ACL is still empty at this point.** `admin_did` cannot

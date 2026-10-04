@@ -196,8 +196,10 @@ function CapChecklist({
             onChange={(e) =>
               onChange(e.target.checked ? [...selected, c.id] : selected.filter((x) => x !== c.id))
             }
-          />{" "}
-          <code>{c.id}</code> <span className="muted">— {c.gates}</span>
+          />
+          <span className="checkbox-text">
+            <code>{c.id}</code> <span className="muted">— {c.gates}</span>
+          </span>
         </label>
       ))}
     </fieldset>

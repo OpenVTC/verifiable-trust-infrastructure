@@ -130,13 +130,14 @@ pub(crate) async fn update_member_inner(
 
     // The role and the label live on the ACL row, and a subject may not modify
     // its own entry (VTI-ACL-052) — on this door any more than on
-    // `acl/change-role`. The member-row fields (publish consent, departure
-    // preference, extensions) are not authority and stay editable.
-    if auth.did == did && (req.role.is_some() || req.label.is_some()) {
-        return Err(AppError::Forbidden(
-            "you cannot change the role or label of your own ACL entry (VTI-ACL-052) — another \
-             administrator must make this change"
-                .into(),
+    // `acl/change-role` — except its label, which confers no authority (item
+    // 2): that is written below, marked self-set and audited as such. The
+    // member-row fields (publish consent, departure preference, extensions)
+    // are not authority and stay editable.
+    let self_edit = auth.did == did;
+    if self_edit && req.role.is_some() {
+        return Err(crate::routes::acl::own_role_refusal(
+            crate::acl::admin_consent::single_admin_mode(state).await,
         )
         .into());
     }
@@ -258,7 +259,20 @@ pub(crate) async fn update_member_inner(
                 new: new_label.clone().map(JsonValue::String),
             });
             let mut updated = acl.clone();
+            // Set by the subject: marked self-set, wherever it is shown to
+            // another party; set by anyone else: the mark goes (VTI-ACL-052
+            // item 2).
+            let self_set = self_edit && new_label.is_some();
+            if self_set || acl.label_set_by_subject {
+                changes.push(FieldChange {
+                    field: crate::routes::acl::LABEL_SET_BY_SUBJECT.into(),
+                    old: Some(JsonValue::Bool(acl.label_set_by_subject)),
+                    new: Some(JsonValue::Bool(self_set)),
+                });
+                fields_changed.push(crate::routes::acl::LABEL_SET_BY_SUBJECT.into());
+            }
             updated.label = new_label;
+            updated.label_set_by_subject = self_set;
             updated.updated_at = Some(now_epoch());
             updated.updated_by = Some(auth.did.clone());
             crate::acl::store_acl_entry(&state.acl_ks, &updated).await?;

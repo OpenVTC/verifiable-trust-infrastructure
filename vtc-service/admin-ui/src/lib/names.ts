@@ -34,7 +34,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { fetchAllAcl } from "@/lib/acl";
+import { fetchAllAcl, labelSelfSet } from "@/lib/acl";
 import { postSignedRead } from "@/lib/api";
 import { shortenDid } from "@/lib/format";
 
@@ -70,6 +70,9 @@ export interface DisplayName {
   name: string;
   source: NameSource;
 }
+
+/** Marker appended to a label its own subject set (VTI-ACL-052 item 2). */
+export const SELF_SET_SUFFIX = " (self-set)";
 
 /** Marker appended to an unverified name. Restyle it if you like; do not
  *  drop it. */
@@ -154,14 +157,22 @@ export function useNameBook(): NameBook {
         fetchAllAcl(),
       ]);
 
+      // The ACL first: its listing says which labels their own subject set,
+      // and such a label is shown as self-set wherever it is shown
+      // (VTI-ACL-052 item 2). The member list carries the same label without
+      // the mark, and the first insert of a source wins.
+      if (acl.status === "fulfilled") {
+        for (const e of acl.value) {
+          book.insert(
+            e.subject,
+            e.label && labelSelfSet(e) ? `${e.label}${SELF_SET_SUFFIX}` : e.label,
+            "acl-label",
+          );
+        }
+      }
       if (members.status === "fulfilled") {
         for (const m of members.value.items ?? []) {
           book.insert(m.did, m.label, "acl-label");
-        }
-      }
-      if (acl.status === "fulfilled") {
-        for (const e of acl.value) {
-          book.insert(e.subject, e.label, "acl-label");
         }
       }
       return book;

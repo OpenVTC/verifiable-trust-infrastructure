@@ -76,6 +76,15 @@ pub struct VtcAclEntry {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub resource_grants: Vec<super::resource_grant::ResourceGrant>,
+    /// Whether the subject set `label` itself (**VTI-ACL-052** item 2). The
+    /// label confers no authority (VTI-ACL-001), so a subject may change it on
+    /// its own entry; what it can do is mislead, so wherever the label is
+    /// shown to another party it is shown as self-set. Cleared whenever
+    /// anyone else sets the label; carried by every write that leaves it as
+    /// it is. Provenance, not authority: absent on every row written before
+    /// it existed, which reads as `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub label_set_by_subject: bool,
 }
 
 impl VtcAclEntry {
@@ -99,6 +108,7 @@ impl VtcAclEntry {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            label_set_by_subject: false,
         }
     }
 
@@ -340,6 +350,7 @@ mod tests {
             updated_by: None,
             expires_at,
             resource_grants: Vec::new(),
+            label_set_by_subject: false,
         }
     }
 }

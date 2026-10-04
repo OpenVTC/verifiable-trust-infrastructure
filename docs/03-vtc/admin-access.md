@@ -222,8 +222,9 @@ never accept it as a second factor or as an approval.
 
 `acl/swap-key/0.1` moves **your own** entry to a new key, with its authority
 exactly as it was — role, capabilities, approve scope, label, expiry and
-provenance (VTI-CLT-025 – 032). It is the one change you may make to your own
-entry (VTI-ACL-052), and it confers nothing, so it needs no approval:
+provenance (VTI-CLT-025 – 032). It is one of the three changes you may make to
+your own entry (VTI-ACL-052, §1.4a), and it confers nothing, so it needs no
+approval:
 
 - the document is signed by the entry's current key, never a console key;
 - it carries a **link proof**: a short-lived (at most 15 minutes) VP-JWT
@@ -233,6 +234,39 @@ entry (VTI-ACL-052), and it confers nothing, so it needs no approval:
   move is one atomic write: concurrent rotations of one entry, one wins;
 - the old key's sessions end; your membership row, your git rights and the
   entries you granted follow the new key.
+
+### 1.4a Your own label — and, in single-administrator mode, your own entry
+
+A subject may not modify its own entry (VTI-ACL-052). Besides rolling it to a
+new key (§1.4) there are two exceptions:
+
+- **The label, and nothing else.** The label is a name, not authority
+  (VTI-ACL-001), so you can change your own on any door that writes it — the
+  label cell on **Access control**, `acl/update` (0.1 or 0.2) with only
+  `label`, or `vtc/members/update` with only `label` — with no step-up. The
+  change is audited (a `MemberUpdated` row naming the old and new label and
+  `labelSetBySubject`), and the label is marked **self-set**: the console shows
+  it with a *self-set* tag, the ACL listing carries
+  `ext["org.openvtc"].labelSetBySubject: true`, and the name the console shows
+  for your DID elsewhere ends in "(self-set)". The mark goes when another
+  administrator sets the label. A request that changes the label **and**
+  anything else is refused whole.
+- **In single-administrator mode, an unrestricted administrator's own entry**
+  (§2.1a). If your entry has unrestricted act scope — a `community-admin`
+  acting everywhere with its full ceiling — you may change the rest of it too:
+  your approve scope, community role, expiry, even narrow your own
+  capabilities. Each such edit takes your step-up **bound to that one
+  operation** (§3.1), is audited at `Critical` (a `SingleAdminMode` row,
+  `event: selfEditWaived`, naming the task and its digest, written before the
+  change), and is refused if it would leave the community with **no** entry
+  holding unrestricted act scope: while yours is the only one, it must stay
+  unrestricted and its expiry may not come sooner. Narrowing yourself out of
+  `vtc.roles.assign` is checked like any removal (§3.4).
+
+Anything else on your own entry is refused, and the refusal says what you may
+do instead. The console does not offer it: on your own row (*you*), **Edit**
+is disabled with the reason, unless the mode is on and your entry is
+unrestricted, in which case it asks for your step-up when you save.
 
 ### 1.5 `cnm`: one identity per community
 
@@ -297,14 +331,17 @@ administrators.**
 
 ### 2.1a Single-administrator mode
 
-Second-party consent presupposes a second party (VTI-APV-022). In
-single-administrator mode, wherever **nobody but you** is eligible to consent
-to an operation that ordinarily needs another administrator's approval —
-granting an authority-conferring capability or inviting an administrator
-(VTI-APV-018), lowering the consent threshold (VTI-APV-020), replacing a policy
-that decides authority (VTI-VTC-022), defining or deleting a custom role,
-committing a restore — your step-up **bound to that one operation** (§3.1)
-authorizes it instead. The operation runs at once; nothing waits in Actions.
+Second-party consent presupposes a second party (VTI-APV-022). A community
+run by one person has none — even where that person administers it under
+several identifiers, one per device. In single-administrator mode, an
+operation that ordinarily needs another administrator's approval — granting an
+authority-conferring capability or inviting an administrator (VTI-APV-018),
+lowering the consent threshold (VTI-APV-020), replacing a policy that decides
+authority (VTI-VTC-022), defining or deleting a custom role, committing a
+restore — is authorized by your step-up **bound to that one operation** (§3.1)
+instead, **whether or not other administrators' entries exist**. The
+operation runs at once; nothing waits in Actions. An administrator whose entry
+is unrestricted may also edit its own entry (§1.4a).
 
 - **Set it on the host, at install.** `vtc setup --single-admin` (interactive
   or `--from`), `single_admin_mode = true` in the setup TOML, or answer *Yes* to
@@ -314,30 +351,32 @@ authorizes it instead. The operation runs at once; nothing waits in Actions.
   `config/patch` and `vtc/config/import` refuse `acl.single_admin_mode` by
   name, so nobody holding only an administrator's credentials can turn it on or
   off.
-- **It never overrides an eligible administrator.** The moment a second
-  administrator who can approve the operation exists, consent applies again
-  exactly as in §3.2 — nothing about the mode needs changing. Grant a colleague
-  `community-admin` (on your step-up alone, since nobody else is eligible yet)
-  and every later grant waits for their approval. Setting it together with
-  `co_admin_did` is allowed, but setup warns that it has no effect while that
-  administrator is eligible.
-- **It does not change a reduction.** Removing or narrowing another
-  administrator (VTI-APV-019) proceeds without a third party's consent wherever
-  none exists, with or without the mode — and keeps its cooling-off (§3.4).
-  That subject is another administrator, and taking them out at once would let
-  one credential remove the only other eligible party and then act on the
-  waiver. A community that wants no cooling-off sets
-  `acl.removal_cooling_off = 0`, a visible, audited configuration change.
+- **It is a statement that every administrator is you.** The VTC cannot tell
+  one person's identifiers from two people's, so it does not count entries:
+  another administrator entry — your phone's, your laptop's — is no second
+  party, and consent stays waived however many there are. Turn the mode on
+  **only** where every administrator is the same person. If someone else
+  becomes an administrator, turn it off on the host (edit `config.toml`,
+  restart) and consent applies again exactly as in §3.2. Setting it together
+  with `co_admin_did` is allowed, but setup warns you to keep it only if that
+  DID is another of your own identifiers.
+- **A reduction cools off rather than waiting for consent.** Removing or
+  narrowing another administrator (VTI-APV-019) is not parked for a third
+  party's consent in this mode, even where one exists: it takes your step-up,
+  the subject is notified, it is audited at `Critical`, and it keeps its
+  cooling-off (§3.4) — a delay, not a consent, so the subject sees it coming. A
+  community that wants no cooling-off sets `acl.removal_cooling_off = 0`, a
+  visible, audited configuration change.
 - **It covers git separation of duties the same way.** Nobody records an
   elevated git right (`git.ns.admin`, `git.repo.create`, `git.repo.own`) for
   themselves (git-namespaces *Separation of duties*), and break-glass needs
-  another administrator to ratify — so in this mode, where nobody else could
-  make the grant or decide the break-glass, such a self-grant (`cnm git grant`,
-  `create`, `adopt --owner <you>`, `reseat` to yourself, a drift adoption for
-  your own account) runs on your step-up bound to that operation instead. The
-  record is marked, counts toward the last-owner and last-admin invariants, and
-  needs no ratification; a second administrator, or an owner who could make the
-  grant, and the refusal applies again ([git-namespaces](git-namespaces.md#single-administrator-mode-waives-it-where-nobody-else-could-grant)).
+  another administrator to ratify — so in this mode such a self-grant (`cnm git
+  grant`, `create`, `adopt --owner <you>`, `reseat` to yourself, a drift
+  adoption for your own account) runs on your step-up bound to that operation
+  instead, whoever else holds an administrator entry or a right that could make
+  the grant. The record is marked, counts toward the last-owner and last-admin
+  invariants, and needs no ratification
+  ([git-namespaces](git-namespaces.md#single-administrator-mode-waives-it)).
 - **It is never quiet.** Every administrator sees a permanent *SINGLE ADMIN
   MODE* banner on every console page and a dashboard tile; `cnm actions list`
   prints the same notice. Each waived operation is entered in the Actions
@@ -622,8 +661,12 @@ place to decide it at the next sweep.
 ### 3.3 Separation of duties
 
 - No one can grant themselves admin, promote themselves, change their own entry
-  or role, or revoke their own entry. The one change you may make to your own
-  entry is rolling it to a new key (§1.4).
+  or role, or revoke their own entry (VTI-ACL-052), except: rolling it to a new
+  key (§1.4); changing its label and nothing else, which is audited and shown
+  as self-set (§1.4a); and, in single-administrator mode, an unrestricted
+  administrator's edit of its own entry on its operation-bound step-up,
+  audited at `Critical`, never leaving the community without an unrestricted
+  entry (§1.4a).
 - No one can write an entry that outlives their own.
 - Every promotion goes through the role-change policy and its host checks; no
   path skips them.
@@ -654,8 +697,9 @@ is left to approve. The VTC cannot tell a removal of a compromised co-admin
 from a compromised admin removing the other, and must not make the first
 impossible. So, after the requester's step-up, the operation is parked as an
 action with no approvers and a **cooling-off** (`acl.removal_cooling_off`,
-default 24 hours, 0 to 7 days, read live; `0` lands it at once). This holds in
-single-administrator mode too (§2.1a):
+default 24 hours, 0 to 7 days, read live; `0` lands it at once). In
+single-administrator mode every reduction of another administrator takes this
+path, whoever else could have approved it (§2.1a):
 
 - The requester sees it under **Requested by me** and can **Cancel** it until
   it lands.

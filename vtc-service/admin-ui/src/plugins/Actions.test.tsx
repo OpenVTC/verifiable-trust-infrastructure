@@ -168,6 +168,24 @@ describe("the Actions page", () => {
     expect(within(card).getByText("3")).toBeTruthy();
   });
 
+  it("shows who can approve an open action, not only a count", async () => {
+    const parked: Action = {
+      ...mine,
+      ext: {
+        "org.openvtc": {
+          approverCount: 2,
+          approvers: ["did:example:approver-one", "did:example:approver-two"],
+        },
+      },
+    };
+    routes([parked]);
+    render(undefined, "/actions?tab=requestedByMe");
+    const card = await screen.findByRole("article", { name: "Action act-2" });
+    const who = await within(card).findByRole("list", { name: "Who can approve" });
+    expect(who.textContent).toContain("approver-one");
+    expect(who.textContent).toContain("approver-two");
+  });
+
   it("refuses a card whose summary does not match its payload, and offers no Approve", async () => {
     const tampered: Action = {
       ...waiting,

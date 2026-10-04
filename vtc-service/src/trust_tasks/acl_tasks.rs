@@ -929,6 +929,32 @@ pub(super) async fn settle_signed_gate(
     };
     let subject = &plan.entry.did;
 
+    // A subject's own entry (VTI-ACL-052): the label alone needs nothing; an
+    // unrestricted administrator's edit in single-administrator mode needs its
+    // gesture bound to this document and a `Critical` row, and no consent —
+    // the mode states there is nobody else to give one (VTI-APV-022).
+    match plan.self_edit {
+        ops::SelfEdit::No => {}
+        ops::SelfEdit::Label => return Ok(None),
+        ops::SelfEdit::UnrestrictedInSingleAdminMode => {
+            use crate::acl::single_admin::{SelfEditGate, authorize_self_edit};
+            return match authorize_self_edit(
+                state,
+                &actor.did,
+                crate::acl::admin_consent::Operation {
+                    type_uri: &type_uri,
+                    payload: &doc.payload,
+                },
+            )
+            .await
+            {
+                Ok(SelfEditGate::Authorized) => Ok(None),
+                Ok(SelfEditGate::StepUpRequired(request)) => Err(step_up_refusal(&request)),
+                Err(e) => Err(app_error_to_reject(doc, &e)),
+            };
+        }
+    }
+
     if !plan.conferred.is_empty() {
         use crate::acl::admin_consent::{self, Operation, SignedGate};
         let gate = admin_consent::gesture_then_consent(
@@ -1172,6 +1198,7 @@ mod tests {
                 updated_by: None,
                 expires_at: None,
                 resource_grants: Vec::new(),
+                label_set_by_subject: false,
             },
         )
         .await
@@ -1414,6 +1441,98 @@ mod tests {
                     .is_some(),
                 "{t:?}"
             );
+        }
+    }
+
+    /// VTI-ACL-052 item 2 on every transport: a subject relabels its own entry,
+    /// marked self-set; any other change to its own entry is refused, saying
+    /// the label is what it may change (single-administrator mode off).
+    #[tokio::test]
+    async fn vti_acl_052_subject_may_relabel_own_entry_on_every_transport() {
+        for t in TRANSPORTS {
+            let fix = fixture().await;
+            let out = send(
+                &fix.vtc,
+                t,
+                &fix.admin,
+                ACL_UPDATE_V0_2_TYPE,
+                json!({ "subject": fix.admin.did, "label": "my laptop" }),
+            )
+            .await;
+            assert!(out.status.is_success(), "{t:?}: {}", payload_of(&out));
+            let entry = get_acl_entry(&fix.vtc.state.acl_ks, &fix.admin.did)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(entry.label.as_deref(), Some("my laptop"), "{t:?}");
+            assert!(entry.label_set_by_subject, "{t:?}");
+            assert_eq!(
+                payload_of(&out)["entry"]["ext"]["org.openvtc"]["labelSetBySubject"],
+                true,
+                "{t:?}"
+            );
+            assert_conforms::<super::acl_update_v0_2::Response>(&out);
+
+            let out = send(
+                &fix.vtc,
+                t,
+                &fix.admin,
+                ACL_UPDATE_V0_2_TYPE,
+                json!({ "subject": fix.admin.did, "label": "x", "approve": {"scope": "none"} }),
+            )
+            .await;
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("permissionDenied"),
+                "{t:?}"
+            );
+            assert!(
+                payload_of(&out)["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("VTI-ACL-052") && m.contains("label yourself")),
+                "{t:?}: {}",
+                payload_of(&out)
+            );
+        }
+    }
+
+    /// VTI-ACL-052 item 3 on every transport: in single-administrator mode an
+    /// unrestricted administrator's edit of its own entry asks for its gesture
+    /// bound to the document, and writes nothing without it.
+    #[tokio::test]
+    async fn vti_acl_052_single_admin_self_edit_asks_for_a_bound_gesture_on_every_transport() {
+        for t in TRANSPORTS {
+            let fix = fixture().await;
+            fix.vtc.state.config.write().await.acl.single_admin_mode = true;
+            let out = send(
+                &fix.vtc,
+                t,
+                &fix.admin,
+                ACL_UPDATE_V0_2_TYPE,
+                json!({
+                    "subject": fix.admin.did,
+                    "approve": {"scope": "none"},
+                    "approveCapabilities": {"scope": "none"},
+                }),
+            )
+            .await;
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("permissionDenied"),
+                "{t:?}"
+            );
+            assert!(
+                payload_of(&out)["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("step-up required")),
+                "{t:?}: {}",
+                payload_of(&out)
+            );
+            let entry = get_acl_entry(&fix.vtc.state.acl_ks, &fix.admin.did)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(entry.admin, AdminAuthority::community_admin(), "{t:?}");
         }
     }
 }

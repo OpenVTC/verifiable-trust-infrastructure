@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  ABSENT,
   KIND_OPERATOR_WRITE,
   OPERATOR_ACL_MIGRATION_URI,
   OPERATOR_OFFLINE_WRITE_URI,
@@ -16,8 +17,10 @@ import {
   digestBytesOf,
   formatDidInline,
   formatValue,
+  humanizeFieldName,
   matchCode,
   payloadDigestOf,
+  readableValue,
   resolvePointer,
   verifySummary,
   wireDigest,
@@ -417,5 +420,32 @@ describe("role-based administration templates", () => {
     expect(PINNED_TEMPLATE_DIGESTS[`${t.kind}\n${t.typeUri}`]).toBe(
       nodeMultihash(Buffer.from(jcsCanonicalize(t), "utf8")),
     );
+  });
+});
+
+// An action's fields read as words: no raw `{"scope":"ceiling"}` JSON, no
+// camelCase key names, a dash for an empty expiry.
+describe("readable action fields", () => {
+  it("names fields in words", () => {
+    expect(humanizeFieldName("expiresAt")).toBe("Expires at");
+    expect(humanizeFieldName("approveCapabilities")).toBe("Approve capabilities");
+    expect(humanizeFieldName("subject")).toBe("Subject");
+  });
+
+  it("renders authority scopes and capability sets as words", () => {
+    expect(formatValue("text", { scope: "ceiling" })).toBe("the role's full set of capabilities");
+    expect(formatValue("text", { scope: "none" })).toBe("none");
+    expect(formatValue("text", { scope: "all" })).toBe("all");
+    expect(
+      formatValue("text", {
+        scope: "listed",
+        grants: [{ capability: "git.repo.manage", resource: "git-ns:acme" }, { capability: "vtc.members.manage" }],
+      }),
+    ).toBe("git.repo.manage at git-ns:acme, vtc.members.manage");
+    expect(formatValue("text", null)).toBe(ABSENT);
+    expect(readableValue({ expiresAt: null, act: { scope: "all" } })).toBe(
+      `Expires at: ${ABSENT}; Act: all`,
+    );
+    expect(formatValue("text", { scope: "ceiling" })).not.toContain("{");
   });
 });

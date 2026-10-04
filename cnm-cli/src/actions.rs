@@ -294,8 +294,8 @@ pub fn render(v: &VerifiedAction) {
     }
     if consent_waived(a) {
         println!(
-            "  {YELLOW}! consent waived — single-administrator mode (VTI-APV-022): nobody but \
-             the requester could consent, so their passkey gesture authorized it{RESET}"
+            "  {YELLOW}! consent waived — single-administrator mode (VTI-APV-022): every \
+             administrator is one person, so the requester's passkey gesture authorized it{RESET}"
         );
     }
     if a["ext"]["org.openvtc"]["burst"] == true {

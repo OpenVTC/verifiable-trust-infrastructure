@@ -105,8 +105,9 @@ pub fn check_write(
     }
     if granter.did == next.did {
         return Err(GrantRefusal::PermissionDenied(
-            "you cannot grant yourself anything (VTI-OPS-050, VTI-ACL-052) — another \
-             administrator holding vtc.roles.assign must make this change"
+            "you cannot grant yourself anything (VTI-OPS-050, VTI-ACL-052) — you may change \
+             your own entry's label, but any other change must be made by another \
+             administrator holding vtc.roles.assign"
                 .into(),
         ));
     }
@@ -261,6 +262,7 @@ mod tests {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            label_set_by_subject: false,
         }
     }
 

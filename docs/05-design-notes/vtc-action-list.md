@@ -49,13 +49,13 @@ Builds on `vtc-operation-bound-step-up.md` §4 (the APV-014 consent as built,
 Deviations recorded during implementation, beside the two above:
 
 - **Removals keep their cooling-off in single-administrator mode.** The mode
-  waives a consent nobody but the requester could give; it never lands a
-  reduction of another administrator at once, because the subject is an
-  eligible approver of every grant of the stake (§8.5).
+  waives consent; it never lands a reduction of another administrator at once
+  — the cooling-off is a delay the subject sees, not a consent (§8.5).
 - **Consent is a SHOULD.** VTI-APV-014 and -018 – -020 are SHOULD, and
   VTI-APV-022 is the one way this VTC does not apply them: single-administrator
-  mode, host-configured, judged per act from the same approver set. Without
-  the mode an empty approver set is refused before any gesture.
+  mode, host-configured, waiving consent whatever the approver set (one
+  person, many identifiers — dtgwg-vti-spec#55). Without the mode an empty
+  approver set is refused before any gesture.
 - **Console approvals are signed with the wallet.** An approval is always a
   `task-consent/decision` signed by the approver's own DID — through the
   browser wallet in the console, or by `cnm` — never a console key. A passkey
@@ -610,9 +610,7 @@ node may not apply them: **single-administrator mode**, `[acl]
 single_admin_mode` in `config.toml` (`crate::acl::single_admin`).
 
 **Semantics.** At the consent gate (`admin_consent::gesture_then_consent_for`),
-after the approver set is computed exactly as without the mode: if it is
-**empty** — nobody but the requester (and, for a reduction, the subject) holds
-and may approve the stake — and the mode is on, the gate does not refuse
+when the mode is on — **whatever the approver set** — the gate does not refuse
 (`refuse_if_unmeetable`) and does not park. It asks for the requester's gesture
 bound to the operation (VTI-APV-015) as it always does, and once that is spent
 hands back a `ReadyGrant` that is a **waiver** rather than an approval. Spending
@@ -625,23 +623,33 @@ history: an `approval`-category record created closed (`completed`,
 `ext.org.openvtc.consentWaived = {mode: "singleAdministrator", requirement}`.
 The action-list limits (§7a.1) are skipped with the park: nothing waits.
 
-If **anyone** is eligible — even fewer than the threshold — the mode does
-nothing (item 2): the operation parks, or is refused as unmeetable, exactly as
-before. So a sole administrator in the mode grants a colleague
-`community-admin` on their own step-up, and from then on every grant waits for
-that colleague. No change to the mode is needed in either direction.
+Other administrators' entries do **not** bring consent back. The
+specification's VTI-APV-022 (as amended by dtgwg-vti-spec#55) waives consent
+"whether or not other administrators' entries exist": one person may hold an
+administrator entry per device, and asking them to approve their own request
+from another of their own devices is ceremony without a second mind. The node
+cannot tell one person's identifiers from two people's, so it does not count
+them; the mode is the host's statement that every administrator is the same
+person (item 2, a SHOULD), and an administrator who is not sees the banner in
+every session (item 3) and can have it turned off on the host.
 
-**Reductions are unchanged.** VTI-APV-019 already lets a reduction proceed
-without a third party's consent wherever none exists — requester's step-up,
-notice to the subject, `Critical` audit — with or without the mode. The mode
-does **not** also skip the §8.2 cooling-off. The subject of a reduction is
-another administrator who holds what is being taken away, which makes them, for
-every grant of that stake, an eligible approver; letting one credential remove
-them at once and then act on the waiver is a two-step way around item 2 — the
-same "attack the control without granting anything" that VTI-APV-019's
-rationale names. A community that wants no cooling-off sets
-`acl.removal_cooling_off = 0`, which is a visible, audited configuration change
-rather than a property of the mode.
+**Reductions take the unopposed path.** VTI-APV-019 asks a third party's
+consent "wherever such a party exists", and requires the requester's step-up,
+a notice to the subject and a `Critical` audit wherever none is obtained —
+"none exists, or the node does not require it under VTI-APV-022". In the mode
+`gate_reduction` counts no third party, so every reduction of another
+administrator takes that path. It keeps the §8.2 **cooling-off**: a delay, not
+a consent — the subject is told and sees it coming, and the first-to-act rule
+(`refuse_if_reduced_first`) still settles a counter-request. A community that
+wants no cooling-off sets `acl.removal_cooling_off = 0`, which is a visible,
+audited configuration change rather than a property of the mode.
+
+**Self-edits (VTI-ACL-052 item 3).** In the mode, an administrator whose entry
+has unrestricted act scope (`granting::is_unrestricted`) may modify its own
+entry, on its step-up bound to the operation and a `Critical`
+`SingleAdminMode { event: selfEditWaived }` row written before the write
+(`acl::single_admin::authorize_self_edit`); the write is refused if it would
+leave no live unrestricted entry.
 
 **Host-only (item 1).** The key is not in `config_store::REGISTRY`;
 `config/patch` and `vtc/config/import` refuse `acl.single_admin_mode` by name

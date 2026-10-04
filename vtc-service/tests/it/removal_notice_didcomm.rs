@@ -67,6 +67,7 @@ async fn seed_member(mock: &MockVtcTransport, did: &str, role: VtcRole) {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            label_set_by_subject: false,
         },
     )
     .await

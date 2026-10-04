@@ -15,14 +15,12 @@
 //! operation under exactly the discipline the consent waiver keeps
 //! ([`crate::acl::admin_consent::gesture_then_consent_for`]):
 //!
-//! 1. **only where nobody else is eligible** ([`others_eligible`]) — no other
-//!    live entry that could decide the break-glass this would otherwise be
-//!    (the namespace's administrators and the community-wide `git.ns.admin`
-//!    holders, [`Act::BreakGlassReview`]), none that could approve a grant of
-//!    `git.ns.admin` on the namespace ([`Act::GrantUnrestricted`]'s approve
-//!    scope), and no other member whose git rights carry the authority to make
-//!    this grant (fixed rules 1 and 2). One such party and the refusal stands,
-//!    exactly as with the mode off;
+//! 1. **whether or not other administrators' entries exist** — the mode is the
+//!    host's statement that every administrator is the same person, under as
+//!    many identifiers (one per device, say) as they hold (VTI-APV-022). The
+//!    node cannot tell one person's identifiers from two people's, so it does
+//!    not count them: another of the person's own entries is no second party
+//!    to grant this or ratify a break-glass;
 //! 2. **on the requester's operation-bound step-up** (VTI-APV-015,
 //!    [`crate::acl::bound_step_up`]) — the same passkey gesture break-glass
 //!    takes, bound by digest to the document as sent, asked for after every
@@ -46,20 +44,18 @@
 //! one-administrator community it is how rights are normally held, and there is
 //! nobody else whose revocation the invariants would need to make room for.
 
-use std::collections::BTreeSet;
-
 use serde_json::{Value, json};
 use tracing::warn;
 use vti_common::audit::{AuditEvent, SingleAdminModeData};
 use vti_common::error::AppError;
 
-use crate::acl::admin_consent::{self, Act};
+use crate::acl::admin_consent;
 use crate::acl::bound_step_up::{self, EvidencedGate};
 use crate::server::AppState;
 
 use super::model::{Namespace, Resource, Right, RightRow, SingleAdminMark};
-use super::ops::{self, Audit, OpError, OpResult, Standing, standing};
-use super::rules::{self, RuleSettings};
+use super::ops::{self, Audit, OpError, OpResult, Standing};
+use super::rules::RuleSettings;
 use super::store::Snapshot;
 
 /// The rule the waiver lifts, as the audit row names it.
@@ -107,72 +103,23 @@ impl Waivable {
     }
 }
 
-/// Everyone but `actor` who could stand in for them here: who could make this
-/// grant, or decide the break-glass it would otherwise be.
-///
-/// The consent gate's own notion of eligibility
-/// ([`admin_consent::approvers_for`]) over the namespace's `git.ns.admin` —
-/// both the deciders of a break-glass on it ([`Act::BreakGlassReview`]: its
-/// administrators and the community-wide holders) and whoever's approve scope
-/// reaches it ([`Act::GrantUnrestricted`]) — together with every other member
-/// whose git rights carry the authority to grant `right` on `target` (fixed
-/// rules 1 and 2: an owner of an existing repository can make another owner).
-pub async fn others_eligible(
-    state: &AppState,
-    snap: &Snapshot,
-    ns: &Namespace,
-    actor: &str,
-    right: Right,
-    target: &Resource,
-    settings: RuleSettings,
-) -> Result<Vec<String>, AppError> {
-    let now_epoch = crate::auth::session::now_epoch();
-    let stake = vec![super::break_glass::review_stake(ns)];
-    let mut out = BTreeSet::new();
-    for act in [Act::BreakGlassReview, Act::GrantUnrestricted] {
-        out.extend(
-            admin_consent::approvers_for(state, act, &stake, actor, actor, now_epoch).await?,
-        );
-    }
-    let t = ops::now();
-    let mut seen = BTreeSet::new();
-    for set in snap.rights.values() {
-        for row in &set.rows {
-            if row.subject == actor || out.contains(&row.subject) {
-                continue;
-            }
-            if !seen.insert(row.subject.clone()) {
-                continue;
-            }
-            if rules::authority_to_grant(snap, &row.subject, right, target, settings, t).is_ok()
-                && standing(state, &row.subject).await?.member
-            {
-                out.insert(row.subject.clone());
-            }
-        }
-    }
-    Ok(out.into_iter().collect())
-}
-
 /// Leave to record `right` on `target` for `actor` themselves, or `None` — the
-/// refusal stands — when the mode is off, the actor is not a current member,
-/// or anyone else is eligible ([`others_eligible`]).
+/// refusal stands — when the mode is off or the actor is not a current member.
+///
+/// Whether anyone else could make the grant is not asked: in this mode every
+/// administrator is the same person (VTI-APV-022), whatever the entries say.
+/// The namespace, snapshot and rule settings are kept in the signature for the
+/// callers, which decide every other rule from them first.
 pub async fn waivable(
     state: &AppState,
-    snap: &Snapshot,
-    ns: &Namespace,
+    _snap: &Snapshot,
+    _ns: &Namespace,
     actor: &Standing,
     right: Right,
     target: &Resource,
-    settings: RuleSettings,
+    _settings: RuleSettings,
 ) -> Result<Option<Waivable>, AppError> {
     if !admin_consent::single_admin_mode(state).await || !actor.member {
-        return Ok(None);
-    }
-    if !others_eligible(state, snap, ns, &actor.did, right, target, settings)
-        .await?
-        .is_empty()
-    {
         return Ok(None);
     }
     Ok(Some(Waivable {

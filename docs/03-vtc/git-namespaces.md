@@ -578,9 +578,8 @@ admin record ended. The subject is never the administrator reseating:
 reseating a namespace to yourself is a self-grant of `git.ns.admin`, refused
 with `git-ns:selfGrantNotAllowed` (separation of duties) — another community
 administrator reseats it to you, or (once this VTC serves it) you record it
-explicitly with `git-ns/right/break-glass`. In single-administrator mode, with
-no other administrator who could reseat it, it is waived on your passkey
-gesture instead ([below](#single-administrator-mode-waives-it-where-nobody-else-could-grant)).
+explicitly with `git-ns/right/break-glass`. In single-administrator mode it
+is waived on your passkey gesture instead ([below](#single-administrator-mode-waives-it)).
 
 ## Separation of duties and break-glass
 
@@ -607,8 +606,8 @@ someone else, or a break-glass). A `git.repo.create` implied by `git.ns.admin`
 carries no creator ownership: a namespace admin names another member with
 `owners` (`cnm git create --owner <did>`), or is refused
 `git-ns:selfGrantNotAllowed`. A community in single-administrator mode has
-these self-grants waived on a passkey gesture where nobody else could make them
-([below](#single-administrator-mode-waives-it-where-nobody-else-could-grant));
+these self-grants waived on a passkey gesture
+([below](#single-administrator-mode-waives-it));
 one with a single git administrator but not in that mode breaks the glass once
 for `git.repo.create` on the namespace, not once per repository.
 
@@ -677,25 +676,23 @@ it: `break_glass` (`"enabled"` by default, or `"disabled"`),
 revocable meanwhile), `break_glass_min_justification_chars`, and any deny
 decision on `input.action == "right.breakGlass"` (or `"right.ratify"`).
 
-### Single-administrator mode waives it where nobody else could grant
+### Single-administrator mode waives it
 
 A community run by one person (`[acl] single_admin_mode`, set at install —
 [admin-access §2.1a](admin-access.md#21a-single-administrator-mode)) has nobody
 to make its administrator's elevated grants and nobody to ratify a
 break-glass, so separation of duties would make ordinary work impossible:
 `cnm git adopt github.com/<login>/<repo> --owner <your DID>` would be refused,
-and every break-glass would stay unratified forever. In that mode, and **only
-where nobody but the requester is eligible**, rule 7 is waived for the one
-operation under the same discipline as the consent waiver (VTI-APV-022):
+and every break-glass would stay unratified forever. In that mode rule 7 is
+waived for the one operation under the same discipline as the consent waiver
+(VTI-APV-022):
 
-- **Who counts as eligible** (`git_ns::single_admin::others_eligible`): the
-  consent gate's own test (`admin_consent::approvers_for`) over the namespace's
-  `git.ns.admin` — every other live entry that could decide a break-glass on
-  it (its administrators and the community-wide holders) or whose approve scope
-  reaches it — and every other member whose git rights carry the authority to
-  make this grant (rules 1 and 2: an owner of an existing repository could make
-  another owner). One such party and the refusal stands, gesture or not; the
-  mode off, it always stands.
+- **Whoever else holds an entry.** The mode states that every administrator
+  is one person, under as many identifiers as they hold (one per device, say),
+  and the VTC cannot tell one person's identifiers from two people's — so it
+  does not count them. Another administrator entry, or a member whose git
+  rights could make the grant, does not bring the refusal back; turning the
+  mode off on the host does.
 - **Every path the rule covers**: `git-ns/right/grant`, `repo/create` naming
   the requester owner on an implied `git.repo.create` (or by default),
   `repo/adopt` naming the requester owner, `namespace/reseat` to the requester,
@@ -727,8 +724,8 @@ operation under the same discipline as the consent waiver (VTI-APV-022):
   counts toward the last-owner and last-admin invariants — in such a community
   it is how rights are normally held. There is nothing to ratify.
 
-The moment a second administrator (or an owner who could make the grant)
-exists, self-grants are refused again and go through them or break-glass.
+With the mode off, self-grants are refused and go through another
+administrator or break-glass.
 
 **Specification status.** `git-ns/right/grant/0.3` states rule 7 as a MUST
 and names break-glass as "the one way" to self-grant; it does not yet carve out

@@ -59,9 +59,11 @@ enum Commands {
         /// command. Must match `context` in the phase-2 setup TOML.
         #[arg(long, default_value = "default", requires = "setup_key_out")]
         context: String,
-        /// Run the community in single-administrator mode (VTI-APV-022):
-        /// where nobody but the requester could consent, the requester's
-        /// passkey gesture bound to the operation authorizes it instead.
+        /// Run the community in single-administrator mode (VTI-APV-022): every
+        /// administrator is one person, under as many identifiers as they
+        /// hold, so wherever another administrator's consent would be asked,
+        /// the requester's passkey gesture bound to the operation authorizes
+        /// it instead.
         /// Writes `[acl] single_admin_mode = true` to config.toml; with
         /// `--from`, the same as `single_admin_mode = true` in the file.
         #[arg(long, conflicts_with = "setup_key_out")]
@@ -605,6 +607,7 @@ async fn run_invite_cli(
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            label_set_by_subject: false,
         };
         store_acl_entry(&acl_ks, &entry).await?;
         // An unrestricted admin made offline, without the consent the daemon

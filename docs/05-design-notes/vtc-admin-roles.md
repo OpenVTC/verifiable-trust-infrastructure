@@ -322,15 +322,11 @@ can't create a second one alone; a `community-admin` can, because their ceiling
 covers it. That is VTI-APV-009 applied at raise time, as APV-014 already does.
 
 **Single-administrator mode** (VTI-APV-022, `vtc-action-list.md` §8.5) is the
-one exception: on a node configured for it on the host, an empty approver set
-— nobody but the requester holds and may approve the stake — waives the
-consent instead of refusing, and the requester's operation-bound step-up
-authorizes the act, audited at `Critical`. It is judged per act, from the same
-approver set: a non-empty set always parks, so a `repo-manager @ acme` beside a
-`community-admin` still needs the `community-admin`'s approval for anything the
-`community-admin` may approve. Rows 2 (reductions) are unaffected — they
-already proceed without a third party where none exists (VTI-APV-019) and keep
-their cooling-off.
+one exception: on a node configured for it on the host, the consent is waived
+whatever the approver set — every administrator is taken to be the same person
+— and the requester's operation-bound step-up authorizes the act, audited at
+`Critical`. Rows 2 (reductions) take VTI-APV-019's unopposed path in the mode
+— step-up, notice, `Critical` row — and keep their cooling-off.
 
 ## 8. Act scope and contexts
 

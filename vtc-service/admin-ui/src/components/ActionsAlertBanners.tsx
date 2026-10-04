@@ -75,7 +75,7 @@ export function CoolingOffBanner({ items }: { items: readonly CoolingOffAgainstM
 /** The banner's headline and sentence (VTI-APV-022). */
 export const SINGLE_ADMIN_MODE_HEADLINE = "SINGLE ADMIN MODE";
 export const SINGLE_ADMIN_MODE_SENTENCE =
-  "Approvals are by your own step-up; another administrator's consent is not required.";
+  "Approvals are by your own step-up; another administrator's consent is not required, even where other administrator entries exist — they are taken to be yours.";
 
 /**
  * Single-administrator mode (VTI-APV-022 item 3): reported to every

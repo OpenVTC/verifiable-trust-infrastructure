@@ -60,6 +60,9 @@ export interface AclEntry {
     "org.openvtc"?: {
       communityRole?: string;
       delegationReview?: { granter: string; deadline: string };
+      /** The subject set its own label (VTI-ACL-052 item 2): show it as
+       *  self-set to everyone else. */
+      labelSetBySubject?: boolean;
     };
   };
 }
@@ -219,6 +222,45 @@ export function describeAuthority(e: AclEntry): string {
     case "listed":
       return e.capabilities.grants.map(grantLabel).join(", ");
   }
+}
+
+/**
+ * Whether an entry has unrestricted act scope at this community: a
+ * `community-admin` acting everywhere with its full ceiling. The server's
+ * `granting::is_unrestricted`, read off the wire's explicit axes.
+ */
+export function isUnrestricted(e: AclEntry): boolean {
+  if (e.expiresAt && Date.parse(e.expiresAt) <= Date.now()) return false;
+  return (
+    e.role === "community-admin" && e.act.scope === "all" && e.capabilities.scope === "ceiling"
+  );
+}
+
+/** Whether the label was set by the entry's own subject (VTI-ACL-052). */
+export const labelSelfSet = (e: AclEntry): boolean =>
+  !!e.label && e.ext?.["org.openvtc"]?.labelSetBySubject === true;
+
+/**
+ * What the signed-in administrator may change on their own entry
+ * (VTI-ACL-052): always the label (item 2); everything else only in
+ * single-administrator mode, and only while their entry is unrestricted
+ * (item 3) — through the step-up the VTC asks for. `why` explains a refusal
+ * for the UI, instead of letting the VTC answer 403.
+ */
+export function ownEntryEdits(
+  e: AclEntry,
+  singleAdminMode: boolean,
+): { label: true; other: boolean; why: string | null } {
+  if (singleAdminMode && isUnrestricted(e)) {
+    return { label: true, other: true, why: null };
+  }
+  return {
+    label: true,
+    other: false,
+    why: singleAdminMode
+      ? "This is your own entry. In single-administrator mode you can edit it only while it is unrestricted (a community administrator acting everywhere with its full ceiling); you can still change its label."
+      : "This is your own entry. You can change its label; any other change must be made by another administrator (VTI-ACL-052).",
+  };
 }
 
 /** The community role an entry's membership carries. */

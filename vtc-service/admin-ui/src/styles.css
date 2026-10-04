@@ -1116,6 +1116,68 @@ select {
   text-decoration: underline;
 }
 
+/* A checkbox and its label on one line, left-aligned, the text wrapping
+ * beside the box rather than under it. `.field` is a column, so a checkbox
+ * inside one stacked above its text; and the capability picker borrowed
+ * `.row-actions`, whose `justify-content: flex-end` pushed every row right.
+ * Shared by the ACL capability picker, the approve toggle and the role
+ * ceiling pickers. */
+.checkbox {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.checkbox > input[type="checkbox"] {
+  flex: none;
+  width: auto;
+  height: auto;
+  margin: 0.2em 0 0;
+}
+
+.checkbox-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.checkbox-text .chip {
+  margin: 0 0 0 var(--space-1);
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+
+/* The capability picker: one row per capability, its resource input (when
+ * ticked) under the label, indented to the text. */
+.cap-picker {
+  gap: var(--space-2);
+}
+
+.cap-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-1);
+}
+
+.cap-row > input[type="text"] {
+  margin-left: calc(1em + var(--space-2));
+  width: calc(100% - 1em - var(--space-2));
+}
+
+.own-entry-note {
+  font-size: var(--text-xs);
+  margin: var(--space-1) 0 0;
+  max-width: 22rem;
+  text-align: right;
+  margin-left: auto;
+}
+
 /* Row actions: visible at all viewports for clarity. Hidden-until-
  * hover is great on a pointer device but hostile on touch + a11y;
  * we use opacity-on-row-hover for *secondary* actions only. */

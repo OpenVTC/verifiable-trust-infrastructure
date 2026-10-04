@@ -128,10 +128,11 @@ pub(crate) struct VtcWizardInputs {
     pub co_admin_did: Option<String>,
 
     /// Run the community in **single-administrator mode** (VTI-APV-022):
-    /// where nobody but the requester could consent to an operation that
-    /// ordinarily needs another administrator's consent, the requester's
-    /// passkey gesture bound to it authorizes it instead, audited at
-    /// `Critical`. Writes `[acl] single_admin_mode = true` to the generated
+    /// every administrator is one person, under as many identifiers as they
+    /// hold, so an operation that ordinarily needs another administrator's
+    /// consent is authorized by the requester's passkey gesture bound to it
+    /// instead, audited at `Critical`, whether or not other administrators'
+    /// entries exist. Writes `[acl] single_admin_mode = true` to the generated
     /// `config.toml`; changeable afterwards only on the host. `vtc setup
     /// --single-admin` sets it too. Default `false`.
     #[serde(default)]

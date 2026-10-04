@@ -708,8 +708,7 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
              repo.create or ns.admin) on your own authority. Ask another community \
              administrator to do it, or use break-glass (`cnm git break-glass`), which is \
              audited and must be ratified. (A community set up in single-administrator mode \
-             waives this with your passkey gesture, but only while nobody else could grant \
-             it.)"
+             waives this with your passkey gesture.)"
             .to_string(),
         "git-ns/right/break-glass:disabled" => "\nThis community's policy has turned \
              break-glass off: another administrator must grant the right."
@@ -1105,7 +1104,7 @@ async fn send_with_step_up(
 fn single_admin_step_up_note(message: &str) -> Option<String> {
     message.contains("single-administrator mode").then(|| {
         format!(
-            "{BOLD}Single-administrator mode:{RESET} this would record an elevated right for              you, which separation of duties normally leaves to another administrator. This              community has none who could grant it, so your passkey gesture stands in for one,              and the VTC audits it at Critical."
+            "{BOLD}Single-administrator mode:{RESET} this would record an elevated right for              you, which separation of duties normally leaves to another administrator. This              community runs as one administrator, so your passkey gesture stands in for another,              and the VTC audits it at Critical."
         )
     })
 }
@@ -2226,8 +2225,7 @@ mod tests {
                 "\nThis would give you an elevated right (own, repo.create or ns.admin) on your \
                  own authority. Ask another community administrator to do it, or use break-glass \
                  (`cnm git break-glass`), which is audited and must be ratified. (A community set \
-                 up in single-administrator mode waives this with your passkey gesture, but only \
-                 while nobody else could grant it.)"
+                 up in single-administrator mode waives this with your passkey gesture.)"
             ),
             "{g}"
         );
@@ -2243,7 +2241,7 @@ mod tests {
                 "single-administrator mode: nobody else can grant git.repo.own on \
                  github.com/acme/gadgets, so recording it for yourself needs a passkey gesture"
             )
-            .is_some_and(|n| n.contains("stands in for one"))
+            .is_some_and(|n| n.contains("stands in for another"))
         );
         assert!(single_admin_step_up_note("a passkey gesture bound to this break-glass").is_none());
 

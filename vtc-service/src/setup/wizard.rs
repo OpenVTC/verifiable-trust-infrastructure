@@ -327,14 +327,15 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
 }
 
 /// The warning for single-administrator mode chosen beside a second
-/// administrator: allowed, but it has no effect while that administrator is
-/// eligible to consent (VTI-APV-022 item 2).
+/// administrator: allowed, but the mode should be on only where every
+/// administrator is the same person (VTI-APV-022 item 2).
 pub(crate) fn single_admin_warning(inputs: &WizardInputs) -> Option<String> {
     (inputs.single_admin_mode && inputs.co_admin_did.is_some()).then(|| {
         "warning: single-administrator mode is set, and a second administrator \
          (co_admin_did) is installed too. The mode waives another administrator's consent \
-         only where nobody but the requester could give it, so it has no effect while the \
-         second administrator is eligible to consent (VTI-APV-022)."
+         whether or not other administrators exist, so neither administrator's operations will \
+         wait for the other. Keep it only if co_admin_did is another of your own identifiers \
+         (VTI-APV-022)."
             .to_string()
     })
 }
@@ -458,9 +459,9 @@ pub(crate) struct WizardInputs {
     /// consent, since a decision is a document its DID signs.
     pub(crate) co_admin_did: Option<String>,
     /// Run the community in **single-administrator mode** (VTI-APV-022):
-    /// where nobody but the requester could consent to an operation that
-    /// ordinarily needs another administrator's consent, the requester's
-    /// passkey gesture bound to it authorizes it, audited at `Critical`. Host
+    /// every administrator is one person, so an operation that ordinarily
+    /// needs another administrator's consent is authorized by the requester's
+    /// passkey gesture bound to it, audited at `Critical`. Host
     /// configuration — written to `config.toml` as `[acl] single_admin_mode =
     /// true`, only when chosen, and never settable online.
     pub(crate) single_admin_mode: bool,
@@ -660,12 +661,12 @@ fn prompt_inputs(single_admin: bool) -> Result<WizardInputs, AppError> {
     } else {
         println!();
         println!("A community run by one person has nobody to give that consent. In");
-        println!("single-administrator mode, wherever no administrator but you could");
-        println!("consent, your own passkey gesture bound to the operation authorizes it");
-        println!("instead — audited at the highest severity, and shown to every");
-        println!("administrator in every session. The moment a second eligible");
-        println!("administrator exists, their consent is required again. It can be");
-        println!("changed only on this host, in config.toml (VTI-APV-022).");
+        println!("single-administrator mode, your own passkey gesture bound to the");
+        println!("operation authorizes it instead — even if you administer from several");
+        println!("identifiers, one per device — audited at the highest severity, and");
+        println!("shown to every administrator in every session. Turn it on only if every");
+        println!("administrator is you. It can be changed only on this host, in");
+        println!("config.toml (VTI-APV-022).");
         println!();
         Confirm::new()
             .with_prompt("Run as a single-administrator community?")
@@ -2129,7 +2130,8 @@ mod tests {
     }
 
     /// Chosen beside a second administrator: allowed, with a warning that it
-    /// has no effect while that administrator can consent.
+    /// keep it only where that administrator is another of the same person's
+    /// identifiers, since the mode waives consent regardless.
     #[test]
     fn vti_apv_022_single_admin_beside_a_co_admin_warns() {
         let inputs = |single, co: Option<&str>| WizardInputs {
@@ -2144,7 +2146,7 @@ mod tests {
         assert!(single_admin_warning(&inputs(true, None)).is_none());
         assert!(single_admin_warning(&inputs(false, Some("did:key:z6MkCo"))).is_none());
         let w = single_admin_warning(&inputs(true, Some("did:key:z6MkCo"))).unwrap();
-        assert!(w.contains("no effect"), "{w}");
+        assert!(w.contains("another of your own identifiers"), "{w}");
         assert!(w.contains("VTI-APV-022"), "{w}");
     }
 

@@ -1,12 +1,12 @@
 //! **Single-administrator mode** — **VTI-APV-022**.
 //!
-//! With `[acl] single_admin_mode = true` and nobody but the requester eligible
-//! to consent, an operation that would wait in the action list for another
-//! administrator's approval (VTI-APV-018, -020, VTI-VTC-022) runs on the
-//! requester's operation-bound gesture (VTI-APV-015) instead, audited at
-//! `Critical` and entered in the history marked `consentWaived`. With another
-//! eligible administrator, it parks exactly as without the mode (item 2).
-//! Design: `docs/05-design-notes/vtc-action-list.md` §8.5.
+//! With `[acl] single_admin_mode = true`, an operation that would wait in the
+//! action list for another administrator's approval (VTI-APV-018, -020,
+//! VTI-VTC-022) runs on the requester's operation-bound gesture (VTI-APV-015)
+//! instead, audited at `Critical` and entered in the history marked
+//! `consentWaived` — whether or not other administrators' entries exist: the
+//! mode states they are all one person (VTI-APV-022). Design:
+//! `docs/05-design-notes/vtc-action-list.md` §8.5.
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
@@ -73,6 +73,7 @@ async fn admin(fix: &Fixture) -> Party {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            label_set_by_subject: false,
         },
     )
     .await
@@ -288,12 +289,14 @@ async fn vti_apv_022_a_sole_admin_changes_an_authority_policy() {
     assert_eq!(rows[0].requirement.as_deref(), Some("VTI-VTC-022"));
 }
 
-// ─── not where anyone else is eligible (item 2) ──────────────────────────
+// ─── one person, many identifiers ─────────────────────────────────────────
 
-/// VTI-APV-022 item 2: with a second eligible administrator, the mode waives
-/// nothing — the grant parks for their approval exactly as without it.
+/// VTI-APV-022: a second administrator's entry does not bring consent back —
+/// the mode waives it whether or not other administrators' entries exist,
+/// since one person may hold one per device. The grant runs on the
+/// requester's gesture, audited at `Critical`.
 #[tokio::test]
-async fn vti_apv_022_a_second_eligible_admin_still_has_to_approve() {
+async fn vti_apv_022_a_second_admins_entry_does_not_bring_consent_back() {
     let mut fix = fixture(true).await;
     let a = requester(&mut fix).await;
     let _b = admin(&fix).await;
@@ -309,10 +312,11 @@ async fn vti_apv_022_a_second_eligible_admin_still_has_to_approve() {
         .await,
     )
     .await;
-    assert_eq!(status, StatusCode::ACCEPTED, "parked: {reply}");
-    assert!(parked_action(&reply).is_some(), "{reply}");
-    assert!(entry(&fix, &subject.did).await.is_none());
-    assert!(waived(&fix).await.is_empty());
+    assert_eq!(status, StatusCode::OK, "executes at once: {reply}");
+    assert!(parked_action(&reply).is_none(), "{reply}");
+    assert!(entry(&fix, &subject.did).await.is_some());
+    assert_nothing_open(&fix, &a).await;
+    assert_eq!(waived(&fix).await.len(), 1);
 }
 
 /// Without the mode, a sole administrator is refused as before, told how to
@@ -340,10 +344,9 @@ async fn without_the_mode_a_sole_admin_is_refused_as_before() {
     assert!(waived(&fix).await.is_empty());
 }
 
-/// A reduction (VTI-APV-019) is not changed by the mode: its subject is
-/// another administrator, so it keeps its cooling-off — removing them at once
-/// would let a single requester first remove the only other eligible party and
-/// then act on the waiver (`vtc-action-list.md` §8.5).
+/// A reduction (VTI-APV-019) keeps its cooling-off in the mode: its subject is
+/// another administrator, who is told and sees it coming. The cooling-off is a
+/// delay, not a consent (`vtc-action-list.md` §8.5).
 #[tokio::test]
 async fn vti_apv_022_a_reduction_keeps_its_cooling_off() {
     let mut fix = fixture(true).await;

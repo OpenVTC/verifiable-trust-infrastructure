@@ -836,15 +836,21 @@ new flow, update both this section and the relevant `docs/*.md`.
   `docs/05-design-notes/approvals-convergence.md` (why one model).
 - **VTC single-administrator mode** (VTI-APV-022): `[acl] single_admin_mode`,
   host-only (setup writes it; `config/patch`/import refuse it), waives a VTC
-  consent only when the approver set is empty, on the requester's
-  operation-bound step-up, always `Critical`-audited and bannered — never widen
-  it to a non-empty set or make it patchable (`vtc-action-list.md` §8.5). It
-  also waives git separation of duties (rule 7) on the same terms
-  (`git_ns::single_admin`): only when nobody else is eligible
-  (`others_eligible` reuses `approvers_for`), step-up bound to the signed
-  document, `SingleAdminMode{selfGrantWaived}` written before the record or the
-  operation is refused; the record is marked `singleAdmin` and counts for the
-  invariants.
+  consent **whether or not other administrators' entries exist** — the mode
+  states every administrator is one person, under as many identifiers as they
+  hold (dtgwg-vti-spec#55) — on the requester's operation-bound step-up,
+  always `Critical`-audited and bannered; never make it patchable
+  (`vtc-action-list.md` §8.5). A reduction of another administrator
+  (VTI-APV-019) is not consented in the mode: it takes the unopposed path
+  (gesture, notice, `Critical` row) and keeps its cooling-off. It also waives
+  git separation of duties (rule 7) on the same terms (`git_ns::single_admin`):
+  step-up bound to the signed document, `SingleAdminMode{selfGrantWaived}`
+  written before the record or the operation is refused; the record is marked
+  `singleAdmin` and counts for the invariants. And it lets an unrestricted
+  administrator edit its own entry (VTI-ACL-052 item 3,
+  `acl::single_admin::authorize_self_edit`, `SingleAdminMode{selfEditWaived}`),
+  never leaving no unrestricted entry; any subject may change its own label
+  alone (item 2, `VtcAclEntry::label_set_by_subject`).
 - **The VTC differs: it parks, the VTA re-sends.** A consent-gated VTC
   operation is stored as an action and runs itself on the N-th approval — see
   *VTC administrator action list* below. The VTC has no rule list yet; its
