@@ -277,19 +277,38 @@ async fn bridge_receives_role_withdrawal_on_suspension_and_reprojection_on_cance
         .expect("Carol's account is projected");
     assert_eq!(carol_role["right"], "git.repo.maintain");
     let sent = sent_jobs(&f);
+    // The jobs already queued, so the one the suspension queues is found by
+    // what is new rather than by `created_at`, which two jobs queued in quick
+    // succession can share.
+    let before: std::collections::HashSet<String> =
+        super::super::bridge::list_jobs(&f.vtc.state.git_ns.jobs_ks)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|j| j.job_id)
+            .collect();
 
     suspend(&f, &f.carol).await;
     super::super::bridge::project_roles(&f.vtc.state, false)
         .await
         .unwrap();
     // Queued first — a job the bridge has not acknowledged is retried.
-    let queued = super::super::bridge::list_jobs(&f.vtc.state.git_ns.jobs_ks)
+    let new_jobs: Vec<_> = super::super::bridge::list_jobs(&f.vtc.state.git_ns.jobs_ks)
         .await
         .unwrap()
         .into_iter()
-        .filter(|j| j.kind == JobKind::ProjectRoles && j.payload["repo"] == RES)
-        .max_by_key(|j| j.created_at)
-        .unwrap();
+        .filter(|j| {
+            j.kind == JobKind::ProjectRoles
+                && j.payload["repo"] == RES
+                && !before.contains(&j.job_id)
+        })
+        .collect();
+    assert_eq!(
+        new_jobs.len(),
+        1,
+        "one role job for the suspension: {new_jobs:?}"
+    );
+    let queued = &new_jobs[0];
     assert!(!names_account(
         queued.payload["desiredRoles"].as_array().unwrap(),
         "5550001"
