@@ -2,6 +2,60 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.16.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.16.0...vtc-client-v0.16.1) — 2026-10-04
+
+
+### Added
+
+- **vtc**: A cooling-off suspends its subject, and single-administrator mode can remove now (VTI-APV-019, VTI-APV-022) ([#1944](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1944))
+
+* feat(vtc): a cooling-off suspends its subject, and single-administrator mode can remove now (VTI-APV-019, VTI-APV-022)
+
+  Removing another unrestricted administrator when nobody else can consent
+  waits out a cooling-off (acl.removal_cooling_off, default 24 h). Until now
+  the subject kept full authority for that whole window, and in
+  single-administrator mode there was no way past it.
+
+  Suspension (vtc-action-list.md §8.2). From the moment a cooling-off
+  reduction is raised until it lands or is cancelled, the subject's entry
+  authorizes nothing. The suspension is set on the entry wherever it is read
+  (acl::storage::get_acl_entry / list_acl_entries), and VtcAclEntry::can,
+  can_any and can_approve answer false for it, so every gate refuses without a
+  per-handler check. The signed administrative door (resolve_admin_claims,
+  console keys included), the git-ns door (acting_as), require_capability and
+  ACL reads refuse with a message naming the action and when it lands. The
+  subject can still sign in, read the action list (callerRole: subject) and
+  cancel a request of its own; its event stream carries only actions and the
+  mode banner. It approves and decides nothing, acknowledges nothing, and is no
+  role assigner for the attrition guard; raising a cooling-off checks the guard
+  as though the subject were already gone, and only one cooling-off runs on a
+  subject at a time. Its sessions are revoked at suspension, as any reduction's
+  are. The row is never changed, so cancelling restores it exactly. A
+  suspended subject cannot raise a counter-removal, so the first to act wins
+  outright; refuse_if_reduced_first stays as a backstop.
+
+  The suspension is derived from the open action and kept beside the entry as
+  a marker (suspended:<did> in the ACL keyspace). admin_actions::save writes
+  it before an action that suspends and lifts it after one that no longer does
+  (R2.1), so a crash can only over-restrict, and reconcile_suspensions settles
+  either half at start (before serving), on every sweep, and after a restore.
+
+  Remove now (vtc-action-list.md §8.5, single-administrator mode only). No new
+  task: a reduction's payload carries ext["org.openvtc"].immediate =
+  {confirm, actionId?}. confirm must be the subject's DID (or the action id
+  being landed), checked before any gesture; the gesture is bound to the
+  payload digest, which includes `immediate`, so a gesture for the delayed
+  removal is never spent on the immediate one or the reverse (VTI-APV-015).
+  Sending the same operation with `immediate` naming an open cooling-off lands
+  it now. Refused without the mode (naming the cooling-off and that the mode
+  is host-set), on a mismatched confirmation, without the gesture, and by the
+  attrition guard. Audited Critical as SingleAdminMode reductionImmediate
+  before the write, then AuthorityReducedUnopposed, and the subject is told.
+  The landed cooling-off closes landedAfterCoolingOff with ext landedNow; a
+  reduction that never waited enters the history with the same marker.
+
+
+
 ## [0.16.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.15.0...vtc-client-v0.16.0) — 2026-10-04
 
 
