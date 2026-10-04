@@ -175,6 +175,26 @@ impl ProjectionView {
     pub fn repos(&self) -> &[Repo] {
         &self.records.repos
     }
+
+    /// `did`'s git rights on `target`, explicit or implied, as projected:
+    /// none while `did` is suspended ([`super::rules::effective_on`] over the
+    /// filtered records). For readers that project rights outward — the
+    /// pull-request gate — never for an authorization decision of the VTC's
+    /// own, which reads the stored records and refuses a suspended signer at
+    /// the door.
+    pub fn effective_on(
+        &self,
+        did: &str,
+        target: &Resource,
+        t: DateTime<Utc>,
+    ) -> std::collections::BTreeSet<Right> {
+        super::rules::effective_on(&self.records, did, target, t)
+    }
+
+    /// Whether `did` is suspended, so that its entry authorizes nothing.
+    pub fn is_withheld(&self, did: &str) -> bool {
+        self.withheld.contains_key(did)
+    }
 }
 
 /// What a published record says it asserts (VTI-REG-002): the rights model

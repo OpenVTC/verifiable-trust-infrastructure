@@ -45,6 +45,16 @@
 //! bridge's own app account, whose `<slug>[bot]` login GitHub reserves for the
 //! app.
 //!
+//! # A suspended holder counts for nothing
+//!
+//! While a cooling-off reduction holds a member's entry suspended
+//! (`vtc-action-list.md` §8.2, VTI-APV-019) the entry authorizes nothing, so
+//! nothing it holds lets a pull request through: its git rights are read
+//! through the projection's [`ProjectionView`], which withholds them, and its
+//! VTC role does not count toward a `roles` level. It is still a member until
+//! the removal lands, so a `members` level still admits it — membership is
+//! not authority. Nothing stored changes; cancelling counts it all again.
+//!
 //! # What a close carries
 //!
 //! The message is public once posted, so it is rendered from the template and
@@ -67,7 +77,7 @@ use crate::server::AppState;
 use super::bridge::{self, BridgeJob, JobKind, JobState, NewJob, PullRequestClose};
 use super::model::{ForgeAccount, Mode, Namespace, Repo, RepoState, Resource, Right};
 use super::ops::{self, Audit, OpResult, audit, now};
-use super::rules;
+use super::projection::ProjectionView;
 use super::store::Snapshot;
 
 /// The longest message a `closePullRequest` job may carry
@@ -548,7 +558,7 @@ fn is_bridge_account(ns: &Namespace, acct: &ForgeAccount) -> bool {
 /// id, never login) to the member it belongs to.
 async fn account_facts(
     state: &AppState,
-    snap: &Snapshot,
+    view: &ProjectionView,
     ns: &Namespace,
     repo: &Resource,
     acct: &ForgeAccount,
@@ -570,10 +580,13 @@ async fn account_facts(
         .find(|m| bridge::holds_account(m, &acct.forge, &acct.id))
     {
         let standing = ops::standing(state, &m.did).await?;
+        // A suspended holder's rights and role count for nothing here
+        // (module docs, *A suspended holder counts for nothing*).
+        let suspended = view.is_withheld(&m.did);
         facts.linked = Some(LinkedFacts {
             member: standing.member,
-            role: standing.role,
-            rights: rules::effective_on(snap, &m.did, repo, t),
+            role: standing.role.filter(|_| !suspended),
+            rights: view.effective_on(&m.did, repo, t),
         });
     }
     Ok(facts)
@@ -606,13 +619,16 @@ pub async fn on_pull_request_opened(
     }
     let t = now();
     let members = crate::members::list_members(&state.members_ks).await?;
+    // The rights the gate counts are what is projected: a suspended holder's
+    // withheld. Read only — the caller's `snap` stays the records.
+    let view = ProjectionView::over(state, snap.clone()).await?;
     let author = account_facts(
-        state, snap, ns, &repo_res, &pr.author, &settings, &members, t,
+        state, &view, ns, &repo_res, &pr.author, &settings, &members, t,
     )
     .await?;
     let actor = if pr.action == PrAction::Reopened {
         account_facts(
-            state, snap, ns, &repo_res, &pr.actor, &settings, &members, t,
+            state, &view, ns, &repo_res, &pr.actor, &settings, &members, t,
         )
         .await?
     } else {

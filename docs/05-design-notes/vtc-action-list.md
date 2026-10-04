@@ -506,7 +506,11 @@ is **suspended**: it authorizes nothing. As built:
   rights stay recorded; cancelling republishes them from the stored rows, and
   a landed removal leaves nothing to withdraw again. The view is a function
   of the stored rights and the markers, recomputed by every projector pass,
-  so it is crash-safe the same way the markers are. Audited as
+  so it is crash-safe the same way the markers are (and the markers are
+  reconciled at start before the projector is spawned). The pull-request gate
+  reads the same view, so a suspended owner or maintainer is not always
+  allowed, its reopen is no override, and its role counts toward no `roles`
+  level. Audited as
   `gitNs.projection.{withheld,restored,released}` with the action id
   (`docs/03-vtc/git-namespaces.md`, *While its holder is suspended*).
 - **Kept, not deleted.** The row is untouched until the reduction lands, and

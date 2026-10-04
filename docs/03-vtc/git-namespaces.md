@@ -227,7 +227,11 @@ holding **nothing**:
 - its linked accounts leave every repository's `desiredRoles`, so the bridge
   takes off the forge roles it gave them, as for an unlinked account;
 - a repository created meanwhile gives it no role, and a drift revert never
-  re-sends one.
+  re-sends one;
+- the pull-request gate counts none of its git rights and not its VTC role:
+  an owner or maintainer who is suspended is not always allowed, and their
+  reopen is no override. It is still a member until the removal lands, so a
+  `members` level still admits it.
 
 Nothing is deleted: every right stays recorded on its entry, and the rows the
 grant, revoke and sweep paths read and write still hold it. The projection
@@ -241,7 +245,9 @@ twice.
 The view is a function of the stored rights and the suspension markers alone,
 recomputed by every projector pass (the first one at start included), so a
 crash between the marker and the withdrawal — or between lifting it and
-republishing — converges on the next pass. Role jobs go through the job queue
+republishing — converges on the next pass. At start the markers are
+reconciled with the action list before the projector is spawned, so its first
+pass never reads a marker the list does not hold. Role jobs go through the job queue
 and are retried until the bridge answers. Each change is audited as a
 `GitNsOperation` naming the subject and the action:
 `gitNs.projection.withheld` when a holder of git rights is suspended, then
@@ -449,6 +455,11 @@ app account (`<slug>[bot]`, once the bridge has reported its app), and a login
 in `pr_exempt`. An account linked to nobody is allowed only under `"anyone"`.
 `pr_exempt` matches logins, which a forge can reassign after a rename; use it
 for bot accounts (`[bot]` logins are reserved on GitHub), not people.
+
+A member suspended while their removal cools off counts as holding no git
+right and no role here (the rights are read through the projection's view —
+[While its holder is suspended](#while-its-holder-is-suspended)); a
+cancellation counts them again.
 
 **Reopening.** When an owner or maintainer of the repository (or the bridge)
 reopens a pull request the gate closed, that is an **override**: the VTC
