@@ -862,10 +862,10 @@ pub(crate) async fn ensure_may_sign(
     acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     what: &str,
-) -> Result<(), AppError> {
+) -> Result<Option<vti_common::acl::AclEntry>, AppError> {
     let entry = entry_for_capability_gate(acl_ks, auth, what, "sign").await?;
     if entry_or_role_has(entry.as_ref(), auth, Capability::Sign) {
-        return Ok(());
+        return Ok(entry);
     }
     Err(AppError::Forbidden(format!(
         "{what} denied: {} does not carry the sign capability",
@@ -1619,12 +1619,20 @@ pub async fn get_key_secret_internal(
 ///
 /// [`KeyScope`]: vti_common::acl::KeyScope
 /// [`AclEntry::key_scope`]: vti_common::acl::AclEntry::key_scope
+///
+/// `entry` is the caller's row when this request has already read it (gate 0
+/// in [`sign_payload`]); reading it once also keeps both gates on one version.
 async fn require_key_in_caller_scope(
     acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
+    entry: Option<Option<vti_common::acl::AclEntry>>,
     key_id: &str,
 ) -> Result<(), AppError> {
-    let Some(entry) = vti_common::acl::get_acl_entry(acl_ks, &auth.did).await? else {
+    let entry = match entry {
+        Some(entry) => entry,
+        None => vti_common::acl::get_acl_entry(acl_ks, &auth.did).await?,
+    };
+    let Some(entry) = entry else {
         return Ok(());
     };
     if entry.key_scope().allows(key_id) {
@@ -1668,9 +1676,11 @@ pub async fn sign_payload(
     // instance) — and VTI-VTA-007 is precisely that such a grant must not have
     // to carry the general one. Before any lookup, so a refused caller learns
     // nothing about which key ids exist.
-    if domain == SigningDomain::Opaque {
-        ensure_may_sign(acl_ks, auth, "keys/sign").await?;
-    }
+    let acl_entry = if domain == SigningDomain::Opaque {
+        Some(ensure_may_sign(acl_ks, auth, "keys/sign").await?)
+    } else {
+        None
+    };
 
     // Scope before existence: an out-of-scope caller gets the same refusal for
     // a key that exists and one that does not.
@@ -1690,7 +1700,7 @@ pub async fn sign_payload(
         // contexts by naming it here — the filter intersects with the context
         // scope, never widens it. Placed BEFORE the policy quota so a refused
         // call burns none of the context's daily sign budget.
-        require_key_in_caller_scope(acl_ks, auth, key_id).await?;
+        require_key_in_caller_scope(acl_ks, auth, acl_entry, key_id).await?;
         // Context policy is a resource-bound guardrail: it constrains the key's
         // context regardless of the actor — even the super-admin. This is what
         // lets a higher authority (e.g. a VTC/fleet-pushed policy) or the
@@ -1717,7 +1727,7 @@ pub async fn sign_payload(
         // Gate 4 applies to unscoped keys too: the filter can only ever
         // *narrow* whatever the context dimension allowed, and a super-admin
         // whose entry names specific keys asked to be bound to them.
-        require_key_in_caller_scope(acl_ks, auth, key_id).await?;
+        require_key_in_caller_scope(acl_ks, auth, acl_entry, key_id).await?;
     }
 
     // What gets signed, which is not always what was handed in: an opaque
