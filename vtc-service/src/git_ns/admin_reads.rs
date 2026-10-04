@@ -13,7 +13,7 @@
 //!   role-derived, across every namespace ([`right_list`]);
 //! - `git-ns/right/issued-by-departed/0.1` — recorded rights whose granter has
 //!   since left, grouped by granter ([`right_issued_by_departed`]);
-//! - `git-ns/bridge/job/list/0.1` — bridge jobs in the namespaces the caller
+//! - `git-ns/bridge/job/list/0.1` and `0.2` — bridge jobs in the namespaces the caller
 //!   administers, with kind, queue state and last error
 //!   ([`bridge_job_list`]);
 //! - `git-ns/projection/show/0.1` — what is published to the Trust Registry,
@@ -83,6 +83,7 @@ use serde_json::{Value, json};
 pub(crate) use trust_tasks_rs::specs::git_ns::account::list::v0_1 as account_list_v0_1;
 pub(crate) use trust_tasks_rs::specs::git_ns::activity::list::v0_1 as activity_list_v0_1;
 pub(crate) use trust_tasks_rs::specs::git_ns::bridge::job::list::v0_1 as bridge_job_list_v0_1;
+pub(crate) use trust_tasks_rs::specs::git_ns::bridge::job::list::v0_2 as bridge_job_list_v0_2;
 pub(crate) use trust_tasks_rs::specs::git_ns::namespace::list::v0_1 as namespace_list_v0_1;
 pub(crate) use trust_tasks_rs::specs::git_ns::projection::show::v0_1 as projection_show_v0_1;
 pub(crate) use trust_tasks_rs::specs::git_ns::repo::list::v0_1 as repo_list_v0_1;
@@ -991,13 +992,17 @@ pub struct GitNsJobRow {
     pub namespace: String,
     pub bridge_did: String,
     /// `projectRoles` | `createRepo` | `bootstrap` | `archive` | `inspect` |
-    /// `beginBind` | `beginAccountLink`.
+    /// `beginBind` | `beginAccountLink` | `closePullRequest` (0.2 only).
     pub kind: String,
     /// `pending` | `accepted` | `succeeded` | `partial` | `failed` |
     /// `cancelled`.
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    /// The pull request a `closePullRequest` job closes, in `repo`. Absent for
+    /// every other kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number: Option<u64>,
     pub attempts: u32,
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1033,6 +1038,9 @@ fn job_row(j: &BridgeJob) -> GitNsJobRow {
             .get("repo")
             .and_then(Value::as_str)
             .map(str::to_string),
+        number: (j.kind == bridge::JobKind::ClosePullRequest)
+            .then(|| j.payload.get("number").and_then(Value::as_u64))
+            .flatten(),
         attempts: j.attempts,
         created_at: wire::timestamp(j.created_at),
         accepted_at: j.accepted_at.map(wire::timestamp),
@@ -1040,25 +1048,29 @@ fn job_row(j: &BridgeJob) -> GitNsJobRow {
     }
 }
 
-/// `git-ns/bridge/job/list/0.1`.
-pub(crate) async fn bridge_job_list(
+/// The administrator's job list, as `git-ns/bridge/job/list` 0.1 and 0.2
+/// both answer it. `with_pull_requests` is 0.2: 0.1's `JobKind` is job 0.4's
+/// seven kinds, so a 0.1 answer MUST leave `closePullRequest` jobs out
+/// (`git-ns/bridge/job/list/0.2`, *Which version a VTC answers*) — before
+/// paging, so `limit` and `nextCursor` still apply to the jobs it returns.
+async fn job_list(
     state: &AppState,
     actor: &str,
-    p: bridge_job_list_v0_1::Payload,
-) -> OpResult<bridge_job_list_v0_1::Response> {
+    namespace: Option<String>,
+    state_filter: Option<String>,
+    cursor: Option<&str>,
+    limit: Option<std::num::NonZeroU64>,
+    not_administrator: &'static str,
+    with_pull_requests: bool,
+) -> OpResult<GitNsJobList> {
     let snap = Snapshot::load(&state.git_ns).await?;
     let admin = administered(state, &snap, actor).await?;
-    let named = p.namespace.as_ref().map(|n| n.to_string());
-    let covered = covered(
-        &admin,
-        named.as_deref(),
-        bridge_job_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
-    )?;
-    let state_filter = p.state.as_ref().map(|s| s.to_string());
+    let covered = covered(&admin, namespace.as_deref(), not_administrator)?;
     let mut jobs: Vec<BridgeJob> = bridge::list_jobs(&state.git_ns.jobs_ks)
         .await?
         .into_iter()
         .filter(|j| covered.contains(&j.namespace_id))
+        .filter(|j| with_pull_requests || j.kind != bridge::JobKind::ClosePullRequest)
         .filter(|j| {
             state_filter
                 .as_deref()
@@ -1067,12 +1079,54 @@ pub(crate) async fn bridge_job_list(
         .collect();
     jobs.sort_by_key(|j| std::cmp::Reverse(j.created_at));
     let rows: Vec<GitNsJobRow> = jobs.iter().map(job_row).collect();
-    let filters = json!({ "namespace": named, "state": state_filter });
-    let (page, next_cursor) = page_of(rows, &filters, p.cursor.as_deref(), p.limit)?;
-    let list = GitNsJobList {
+    let filters = json!({ "namespace": namespace, "state": state_filter });
+    let (page, next_cursor) = page_of(rows, &filters, cursor, limit)?;
+    Ok(GitNsJobList {
         jobs: page,
         next_cursor,
-    };
+    })
+}
+
+/// `git-ns/bridge/job/list/0.1` — every job but `closePullRequest`.
+pub(crate) async fn bridge_job_list(
+    state: &AppState,
+    actor: &str,
+    p: bridge_job_list_v0_1::Payload,
+) -> OpResult<bridge_job_list_v0_1::Response> {
+    let list = job_list(
+        state,
+        actor,
+        p.namespace.as_ref().map(|n| n.to_string()),
+        p.state.as_ref().map(|s| s.to_string()),
+        p.cursor.as_deref(),
+        p.limit,
+        bridge_job_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
+        false,
+    )
+    .await?;
+    Ok(wire::into(
+        serde_json::to_value(&list).map_err(vti_common::error::AppError::from)?,
+    )?)
+}
+
+/// `git-ns/bridge/job/list/0.2` — every job, `closePullRequest` with its
+/// pull request's `number`.
+pub(crate) async fn bridge_job_list_v2(
+    state: &AppState,
+    actor: &str,
+    p: bridge_job_list_v0_2::Payload,
+) -> OpResult<bridge_job_list_v0_2::Response> {
+    let list = job_list(
+        state,
+        actor,
+        p.namespace.as_ref().map(|n| n.to_string()),
+        p.state.as_ref().map(|s| s.to_string()),
+        p.cursor.as_deref(),
+        p.limit,
+        bridge_job_list_v0_2::error_codes::NOT_ADMINISTRATOR.code,
+        true,
+    )
+    .await?;
     Ok(wire::into(
         serde_json::to_value(&list).map_err(vti_common::error::AppError::from)?,
     )?)

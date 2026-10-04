@@ -27,7 +27,8 @@ use trust_tasks_rs::specs::git_ns::account::{
     link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,
 };
 use trust_tasks_rs::specs::git_ns::bridge::{
-    event::v0_1 as event, event::v0_2 as event2, event::v0_3 as event3, result::v0_1 as result,
+    event::v0_1 as event, event::v0_2 as event2, event::v0_3 as event3, event::v0_4 as event4,
+    result::v0_1 as result,
 };
 use trust_tasks_rs::specs::git_ns::drift::resolve::{
     v0_1 as drift_resolve, v0_3 as drift_resolve3,
@@ -48,8 +49,8 @@ use trust_tasks_rs::specs::git_ns::view::{v0_1 as view, v0_2 as view2, v0_4 as v
 use trust_tasks_rs::{AsyncDispatcher, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 
 use super::admin_reads::{
-    account_list_v0_1, activity_list_v0_1, bridge_job_list_v0_1, projection_show_v0_1,
-    right_issued_by_departed_v0_1, right_list_v0_1,
+    account_list_v0_1, activity_list_v0_1, bridge_job_list_v0_1, bridge_job_list_v0_2,
+    projection_show_v0_1, right_issued_by_departed_v0_1, right_list_v0_1,
 };
 
 use crate::server::AppState;
@@ -144,12 +145,19 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<GitNsCtx, TrustTaskOutcome> {
         .on_async(handle_event)
         .on_async(handle_event_v2)
         .on_async(handle_event_v3)
+        // `git-ns/bridge/event/0.4` (`pullRequestOpened`): served — and so
+        // listed in `trust-task-discovery` — beside 0.1 to 0.3, which is what
+        // tells a bridge it may report pull requests here.
+        .on_async(handle_event_v4)
         // The six community-administrator and administrator reads that once
         // had only bearer REST (`super::admin_reads`, trust-tasks-rs 0.24.7,
         // trustoverip/dtgwg-trust-tasks-tf#686).
         .on_async(handle_right_list)
         .on_async(handle_right_issued_by_departed)
         .on_async(handle_bridge_job_list)
+        // 0.2 (trust-tasks-rs 0.27.4, trust-tasks-tf #727): 0.1 plus
+        // `closePullRequest` jobs and their `number`.
+        .on_async(handle_bridge_job_list_v2)
         .on_async(handle_projection_show)
         .on_async(handle_account_list)
         .on_async(handle_activity_list)
@@ -364,6 +372,11 @@ signed_handler!(
     super::admin_reads::bridge_job_list
 );
 signed_handler!(
+    handle_bridge_job_list_v2,
+    bridge_job_list_v0_2::Payload,
+    super::admin_reads::bridge_job_list_v2
+);
+signed_handler!(
     handle_projection_show,
     projection_show_v0_1::Payload,
     super::admin_reads::projection_show
@@ -384,13 +397,14 @@ signed_handler!(
     super::reproject::roles_reproject
 );
 
-/// `git-ns/bridge/event` 0.1 and 0.2, read as 0.3. The three share every
-/// event type but 0.3's `roleMapReported`, and 0.2 changed only what the VTC
-/// does with a transfer, a reused name and a resource outside the namespace —
-/// rules this VTC applies to a 0.1 event too. So an older payload is carried
-/// as 0.3 (which it is a valid instance of) into the one handler, and its
-/// acknowledgement goes back in the version it was sent.
-async fn event_as_v3<P, R>(
+/// `git-ns/bridge/event` 0.1, 0.2 and 0.3, read as 0.4. The four share every
+/// event type but 0.3's `roleMapReported` and 0.4's `pullRequestOpened`, and
+/// 0.2 changed only what the VTC does with a transfer, a reused name and a
+/// resource outside the namespace — rules this VTC applies to a 0.1 event too.
+/// So an older payload is carried as 0.4 (which it is a valid instance of)
+/// into the one handler, and its acknowledgement goes back in the version it
+/// was sent.
+async fn event_as_v4<P, R>(
     state: &crate::server::AppState,
     issuer: &str,
     issued_at: chrono::DateTime<chrono::Utc>,
@@ -400,11 +414,11 @@ where
     P: serde::Serialize,
     R: serde::de::DeserializeOwned,
 {
-    let v3: event3::Payload = serde_json::from_value(
+    let v4: event4::Payload = serde_json::from_value(
         serde_json::to_value(&p).map_err(vti_common::error::AppError::from)?,
     )
     .map_err(|e| OpError::Malformed(format!("bridge/event payload: {e}")))?;
-    let ack = super::bridge::handle_event(state, issuer, issued_at, v3).await?;
+    let ack = super::bridge::handle_event(state, issuer, issued_at, v4).await?;
     Ok(serde_json::from_value(
         serde_json::to_value(&ack).map_err(vti_common::error::AppError::from)?,
     )
@@ -416,7 +430,7 @@ async fn event_v1(
     issued_at: chrono::DateTime<chrono::Utc>,
     p: event::Payload,
 ) -> Result<event::Response, OpError> {
-    event_as_v3(state, issuer, issued_at, p).await
+    event_as_v4(state, issuer, issued_at, p).await
 }
 async fn event_v2(
     state: &crate::server::AppState,
@@ -424,7 +438,15 @@ async fn event_v2(
     issued_at: chrono::DateTime<chrono::Utc>,
     p: event2::Payload,
 ) -> Result<event2::Response, OpError> {
-    event_as_v3(state, issuer, issued_at, p).await
+    event_as_v4(state, issuer, issued_at, p).await
+}
+async fn event_v3(
+    state: &crate::server::AppState,
+    issuer: &str,
+    issued_at: chrono::DateTime<chrono::Utc>,
+    p: event3::Payload,
+) -> Result<event3::Response, OpError> {
+    event_as_v4(state, issuer, issued_at, p).await
 }
 
 /// As [`bridge_handler`], passing the document's `issuedAt` too: it orders
@@ -449,9 +471,10 @@ macro_rules! event_handler {
 }
 event_handler!(handle_event, event::Payload, event_v1);
 event_handler!(handle_event_v2, event2::Payload, event_v2);
+event_handler!(handle_event_v3, event3::Payload, event_v3);
 event_handler!(
-    handle_event_v3,
-    event3::Payload,
+    handle_event_v4,
+    event4::Payload,
     super::bridge::handle_event
 );
 

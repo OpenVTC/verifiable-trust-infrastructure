@@ -24,7 +24,8 @@
 //! Taking a role the bridge does not manage off a repository (`roleAdded`) is
 //! a `projectRoles` job with `removeAccounts`, sent in-line, because a bridge
 //! that refuses it must be answered `notRevertible` rather than reported as
-//! done. Every other revert is queued. Every job is `git-ns/bridge/job` 0.4.
+//! done. Every other revert is queued. Every job is `git-ns/bridge/job` 0.4,
+//! or 0.5 to a bridge that lists 0.5 (`bridge::send_versioned`).
 
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::git_ns::drift::resolve::{v0_1 as resolve1, v0_3 as resolve};
