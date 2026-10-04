@@ -717,6 +717,51 @@ pub fn presents_credential(headers: &axum::http::HeaderMap) -> bool {
         || cookie_value(headers, ADMIN_SESSION_COOKIE).is_some()
 }
 
+/// Record user activity on the browser session named by the request's
+/// [`ADMIN_SESSION_COOKIE`], provided that session belongs to `did`.
+///
+/// For requests that authenticate some other way — a signed Trust Task
+/// document, whose proof is its authentication — but come from a console
+/// that also holds a session. Without this, a console whose reads and writes
+/// are all signed documents never advances `last_seen`, and the idle timeout
+/// signs out an operator who is working.
+///
+/// The cookie's token is authenticated exactly as the extractors do it
+/// (signature, session state, `jti` pin), and the session's DID must be
+/// `did`. That rule stops a document signed by one identity from keeping
+/// another identity's session alive. Best-effort, like the extractor's
+/// touch: a request with no cookie, a cookie that does not authenticate, or
+/// a failed write leaves `last_seen` alone. Returns whether it was written.
+///
+/// The caller decides whether the request is user activity at all; see
+/// [`touch_last_seen`] for why a timer must never reach this.
+pub async fn touch_cookie_session_for<S: AuthState>(
+    headers: &axum::http::HeaderMap,
+    state: &S,
+    did: &str,
+) -> bool {
+    let Some(token) = cookie_value(headers, ADMIN_SESSION_COOKIE) else {
+        return false;
+    };
+    let Ok((claims, session)) = authenticate_token(&token, state).await else {
+        return false;
+    };
+    if claims.did != did {
+        return false;
+    }
+    match touch_last_seen(state.sessions_ks(), &session, now_epoch()).await {
+        Ok(written) => written,
+        Err(e) => {
+            warn!(
+                session_id = %session.session_id,
+                error = %e,
+                "failed to record session activity; session may idle out early",
+            );
+            false
+        }
+    }
+}
+
 fn cookie_token(parts: &Parts, name: &str) -> Option<String> {
     cookie_value(&parts.headers, name)
 }
@@ -1134,5 +1179,98 @@ mod tests {
             ..Default::default()
         };
         assert!(!wrong_did.is_local_cli_principal());
+    }
+
+    /// A session for `did` whose `last_seen` is ten minutes old, and request
+    /// headers carrying its token in the admin session cookie.
+    async fn stale_cookie_session(state: &TestState, did: &str) -> axum::http::HeaderMap {
+        let claims = state.keys.new_claims(
+            did.to_string(),
+            did.to_string(),
+            "admin".to_string(),
+            Vec::new(),
+            900,
+            false,
+        );
+        let token = state.keys.encode(&claims).expect("encode jwt");
+        let stale = now_epoch() - 600;
+        let session = Session {
+            session_id: did.to_string(),
+            did: did.to_string(),
+            challenge: String::new(),
+            state: SessionState::Authenticated,
+            created_at: stale,
+            last_seen: stale,
+            refresh_token: None,
+            refresh_expires_at: None,
+            tee_attested: false,
+            amr: Vec::new(),
+            acr: "aal1".to_string(),
+            acr_expires_at: None,
+            token_id: None,
+            session_pubkey_b58btc: None,
+        };
+        store_session(&state.sessions, &session)
+            .await
+            .expect("store session");
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            format!("csrf=x; {ADMIN_SESSION_COOKIE}={token}")
+                .parse()
+                .expect("cookie header"),
+        );
+        headers
+    }
+
+    async fn last_seen(state: &TestState, session_id: &str) -> u64 {
+        get_session(&state.sessions, session_id)
+            .await
+            .expect("read session")
+            .expect("session exists")
+            .last_seen
+    }
+
+    #[tokio::test]
+    async fn cookie_session_touch_records_activity_for_its_own_did() {
+        let (state, _dir) = test_state();
+        let did = "did:key:zConsole";
+        let headers = stale_cookie_session(&state, did).await;
+        let before = last_seen(&state, did).await;
+
+        assert!(touch_cookie_session_for(&headers, &state, did).await);
+        assert!(last_seen(&state, did).await > before);
+    }
+
+    #[tokio::test]
+    async fn cookie_session_touch_ignores_another_identitys_session() {
+        // A document signed by one identity must not keep a different
+        // identity's browser session alive.
+        let (state, _dir) = test_state();
+        let did = "did:key:zConsole";
+        let headers = stale_cookie_session(&state, did).await;
+        let before = last_seen(&state, did).await;
+
+        assert!(!touch_cookie_session_for(&headers, &state, "did:key:zSomeoneElse").await);
+        assert_eq!(last_seen(&state, did).await, before);
+    }
+
+    #[tokio::test]
+    async fn cookie_session_touch_needs_a_cookie_that_authenticates() {
+        let (state, _dir) = test_state();
+        let did = "did:key:zConsole";
+        let _ = stale_cookie_session(&state, did).await;
+        let before = last_seen(&state, did).await;
+
+        assert!(!touch_cookie_session_for(&axum::http::HeaderMap::new(), &state, did).await);
+        let mut forged = axum::http::HeaderMap::new();
+        forged.insert(
+            axum::http::header::COOKIE,
+            format!("{ADMIN_SESSION_COOKIE}=not-a-jwt")
+                .parse()
+                .expect("cookie header"),
+        );
+        assert!(!touch_cookie_session_for(&forged, &state, did).await);
+        assert_eq!(last_seen(&state, did).await, before);
     }
 }
