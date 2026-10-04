@@ -427,8 +427,9 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
                 <dt>Subject</dt>
                 <dd data-testid="suspended-subject">
                   {suspended ? <NamedDid book={book} did={suspended} /> : "The administrator it reduces"}{" "}
-                  is <strong>suspended</strong> until it lands: their entry authorizes nothing,
-                  though it is kept, and cancelling restores it.
+                  is <strong>suspended</strong> until it lands: their entry authorizes nothing and
+                  their git rights are withdrawn from the forge and the Trust Registry, though
+                  everything is kept, and cancelling restores it.
                 </dd>
               </>
             )}

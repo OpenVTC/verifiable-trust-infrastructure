@@ -717,11 +717,15 @@ path, whoever else could have approved it (§2.1a):
   sends — signed by its own key or a console key, over TSP, DIDComm or REST,
   git-ns included — is refused with a message naming the action and when it
   lands, it approves and decides nothing, and it no longer counts as an
-  administrator for the attrition guard. Its sessions are revoked. It can still
-  sign in, see the action about itself and cancel a request of its own, but
-  nothing more. Its entry is kept as it was; the Access control page marks it
-  *suspended — removal lands T*. Cancelling lifts the suspension and restores
-  the entry exactly. The suspension survives a restart.
+  administrator for the attrition guard. Its git rights stop being published:
+  the Trust Registry records (and so the commit check) and the forge roles are
+  withdrawn, while the rights themselves stay recorded
+  (`git-namespaces.md`, *While its holder is suspended*). Its sessions are
+  revoked. It can still sign in, see the action about itself and cancel a
+  request of its own, but nothing more. Its entry is kept as it was; the
+  Access control page marks it *suspended — removal lands T*. Cancelling lifts
+  the suspension, restores the entry exactly and publishes its git rights
+  again. The suspension survives a restart.
 - The requester sees it under **Requested by me** and can **Cancel** it until
   it lands. In single-administrator mode they can also **Land now** (§2.1a).
 - The subject is sent `vtc/members/authority-reduction-pending-notice/0.1`

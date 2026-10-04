@@ -212,6 +212,47 @@ once: the unbind queues a relay grant for each, and the projector drops them
 from its mirror without withdrawing them, so no member loses a v0.1 right
 while waiting for their next membership event.
 
+### While its holder is suspended
+
+An administrator whose removal is cooling off is **suspended** until it lands
+or is cancelled (`docs/05-design-notes/vtc-action-list.md` §8.2): the entry
+authorizes nothing, and every git-ns operation it signs is refused. The
+projection treats it the same way — a suspended holder is projected as
+holding **nothing**:
+
+- its records are withdrawn from the Trust Registry, the implied
+  `git.commit.sign` of every `own`, `maintain` and `ns.admin` among them, and
+  any role-derived grant this projection publishes for it — so the
+  community's commit check stops passing its commits;
+- its linked accounts leave every repository's `desiredRoles`, so the bridge
+  takes off the forge roles it gave them, as for an unlinked account;
+- a repository created meanwhile gives it no role, and a drift revert never
+  re-sends one.
+
+Nothing is deleted: every right stays recorded on its entry, and the rows the
+grant, revoke and sweep paths read and write still hold it. The projection
+reads the records through its own view (`projection::ProjectionView`), which
+leaves a suspended holder's rows out and cannot be written back. Cancelling
+the cooling-off lifts the suspension, and the next pass publishes again —
+from the stored rights — exactly what they still give; a removal that lands
+takes the rights with the entry, and nothing already withdrawn is withdrawn
+twice.
+
+The view is a function of the stored rights and the suspension markers alone,
+recomputed by every projector pass (the first one at start included), so a
+crash between the marker and the withdrawal — or between lifting it and
+republishing — converges on the next pass. Role jobs go through the job queue
+and are retried until the bridge answers. Each change is audited as a
+`GitNsOperation` naming the subject and the action:
+`gitNs.projection.withheld` when a holder of git rights is suspended, then
+`gitNs.projection.restored` (cancelled, rights republished) or
+`gitNs.projection.released` (landed, nothing left to publish).
+`git-ns/projection/show` counts a suspended holder's outstanding withdrawals
+among its `pendingChanges`.
+
+Rights published by the v0.1 hook relay outside every bound namespace are not
+the projection's, and are not withheld.
+
 ## Membership
 
 A member who leaves loses every git right. A repository they owned alone

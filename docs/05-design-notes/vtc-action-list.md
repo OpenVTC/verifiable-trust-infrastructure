@@ -46,6 +46,7 @@ Builds on `vtc-operation-bound-step-up.md` §4 (the APV-014 consent as built,
 | #1929 | the join-request badge and the dashboard's count tiles beside the Actions badge |
 | #1931 | the existing queues as `queue` items (§8.2): break-glass ratification, join review, vetting withdrawal review; listings that filter before paging and count exactly |
 | #1944 | the subject of a cooling-off is **suspended** until it lands or is cancelled (§8.2); in single-administrator mode a reduction can be made **now**, and an open cooling-off landed now, on a typed confirmation and a gesture bound to the immediate variant (§8.5) |
+| this PR | a suspended subject's git rights are withdrawn from the Trust Registry and the forge for the cooling-off and republished on cancel, without touching the stored rights (§8.2) |
 
 Deviations recorded during implementation, beside the two above:
 
@@ -496,6 +497,18 @@ is **suspended**: it authorizes nothing. As built:
   `singleAdminMode`. Nothing else: no act, no approval or queue decision (it
   is no approver, `may_decide`), no acknowledgement (it is no expected
   acknowledger), no git-ns operation.
+- **Its git rights are not projected.** The git-ns projection reads the
+  records through `git_ns::projection::ProjectionView`, which leaves every
+  row of a suspended subject out: its Trust Registry records (the implied
+  `git.commit.sign` included) are withdrawn and its linked accounts leave
+  every `desiredRoles`, so the forge drops its roles and the commit check its
+  commits. The view is a separate type the write paths never see, so the
+  rights stay recorded; cancelling republishes them from the stored rows, and
+  a landed removal leaves nothing to withdraw again. The view is a function
+  of the stored rights and the markers, recomputed by every projector pass,
+  so it is crash-safe the same way the markers are. Audited as
+  `gitNs.projection.{withheld,restored,released}` with the action id
+  (`docs/03-vtc/git-namespaces.md`, *While its holder is suspended*).
 - **Kept, not deleted.** The row is untouched until the reduction lands, and
   the suspension is never written to it; cancelling restores the entry
   exactly. Its sessions are revoked when it is suspended, as any reduction's

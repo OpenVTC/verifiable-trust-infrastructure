@@ -67,6 +67,31 @@
 //! `GitNsOperation` or a membership change wakes a reconciliation at once. A
 //! pass also runs at least once a minute, which is what heals a lost audit row
 //! and publishes the lapse of an expiring grant.
+//!
+//! # A suspended subject is projected as holding nothing
+//!
+//! While a cooling-off reduction of an entry is open, the entry authorizes
+//! nothing (`vtc-action-list.md` §8.2, VTI-APV-019) — and that includes what
+//! the forge and the community's commit check believe of it. So the projection
+//! reads the records through a [`ProjectionView`]: the stored rights with
+//! every row of a suspended subject left out. Its tuples (the implied
+//! `git.commit.sign` and any role-derived grant with them) are withdrawn by the
+//! next pass, and its forge roles leave every `desiredRoles` it was in
+//! ([`super::bridge::project_roles`]); nothing stored changes. Cancelling the
+//! cooling-off lifts the marker, and the next pass publishes again, from the
+//! stored rights, exactly what they still give; a removal that lands leaves
+//! nothing to publish.
+//!
+//! The view is a pure function of the stored records and the suspension
+//! markers, recomputed by every pass, so there is no event to lose: a crash
+//! anywhere between a marker's write and the registry's delete — or between
+//! the marker's removal and the republish — converges on the next pass,
+//! including the first one after a start. The view is a separate type from
+//! [`Snapshot`], holding no [`super::model::RightsSet`] and lending no
+//! `Snapshot`, so a write path — every one of which loads its own `Snapshot`
+//! and writes with [`super::store::put_rights`] — cannot be handed it and
+//! write the filtered rows back, dropping a suspended subject's rights before
+//! the removal has landed.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -83,10 +108,74 @@ use vti_common::error::AppError;
 use crate::registry::{RegistryError, TrustRegistryClient};
 use crate::server::AppState;
 
-use super::model::{NamespaceState, RepoState, Resource, Right, RightRow, Scope};
+use super::model::{Namespace, NamespaceState, Repo, RepoState, Resource, Right, RightRow, Scope};
 use super::ops::now;
 use super::store::Snapshot;
 use super::{bridge, lifecycle, wire};
+
+// ── the projection view ─────────────────────────────────────────────────────
+
+/// The records as they are projected: the stored rights less every row held
+/// by a subject who is suspended pending a cooling-off reduction
+/// (`vtc-action-list.md` §8.2). See the module docs, *A suspended subject is
+/// projected as holding nothing*.
+///
+/// Read-only by construction: the filtered records never leave it as a
+/// [`Snapshot`] or a [`super::model::RightsSet`] — only as row slices and the
+/// namespace and repository records, which it does not filter — so nothing
+/// can persist it. Every write path loads its own [`Snapshot`].
+#[derive(Debug, Clone)]
+pub struct ProjectionView {
+    records: Snapshot,
+    withheld: BTreeMap<String, crate::acl::Suspension>,
+}
+
+impl ProjectionView {
+    /// The view now: every record, every suspension marker.
+    pub async fn load(state: &AppState) -> Result<ProjectionView, AppError> {
+        let snap = Snapshot::load(&state.git_ns).await?;
+        Self::over(state, snap).await
+    }
+
+    /// The view of records already loaded, with the suspension markers now.
+    pub async fn over(state: &AppState, snap: Snapshot) -> Result<ProjectionView, AppError> {
+        let marks = crate::acl::storage::list_suspensions(&state.acl_ks).await?;
+        Ok(Self::of(snap, marks.into_iter().collect()))
+    }
+
+    /// The pure function: `records` with every row of a `withheld` subject
+    /// left out.
+    pub fn of(
+        mut records: Snapshot,
+        withheld: BTreeMap<String, crate::acl::Suspension>,
+    ) -> ProjectionView {
+        if !withheld.is_empty() {
+            for set in records.rights.values_mut() {
+                set.rows.retain(|r| !withheld.contains_key(&r.subject));
+            }
+        }
+        ProjectionView { records, withheld }
+    }
+
+    /// The subjects whose rights are withheld, with the suspension holding
+    /// each.
+    pub fn withheld(&self) -> &BTreeMap<String, crate::acl::Suspension> {
+        &self.withheld
+    }
+
+    /// The rows projected on `scope`.
+    pub fn rows(&self, scope: &Scope) -> &[RightRow] {
+        self.records.rows(scope)
+    }
+
+    pub fn namespaces(&self) -> &[Namespace] {
+        &self.records.namespaces
+    }
+
+    pub fn repos(&self) -> &[Repo] {
+        &self.records.repos
+    }
+}
 
 /// What a published record says it asserts (VTI-REG-002): the rights model
 /// of the `git-ns` family.
@@ -190,8 +279,10 @@ fn merge(into: &mut Tuple, other: Tuple) {
     }
 }
 
-/// Everything the registry should hold, from the records at `t`.
-pub fn desired(snap: &Snapshot, t: DateTime<Utc>) -> BTreeMap<String, Tuple> {
+/// Everything the registry should hold, from the records at `t` as the
+/// projection sees them (a suspended subject holds nothing).
+pub fn desired(view: &ProjectionView, t: DateTime<Utc>) -> BTreeMap<String, Tuple> {
+    let snap = &view.records;
     let mut out: BTreeMap<String, Tuple> = BTreeMap::new();
     let mut add = |tuple: Tuple| {
         let key = tuple.key();
@@ -257,21 +348,28 @@ pub fn desired(snap: &Snapshot, t: DateTime<Utc>) -> BTreeMap<String, Tuple> {
 /// namespace — which this projection, not the hook relay, then owns.
 pub async fn desired_all(
     state: &AppState,
-    snap: &Snapshot,
+    view: &ProjectionView,
     t: DateTime<Utc>,
 ) -> Result<BTreeMap<String, Tuple>, AppError> {
     let mapped = role_mapped(state).await?;
-    Ok(desired_with(snap, t, &mapped))
+    Ok(desired_with(view, t, &mapped))
 }
 
-/// [`desired_all`] over a role mapping already read — one read per pass.
+/// [`desired_all`] over a role mapping already read — one read per pass. A
+/// suspended subject's role-derived grant is withheld with its records: it
+/// is a `git.commit.sign` like any other to the verifier.
 fn desired_with(
-    snap: &Snapshot,
+    view: &ProjectionView,
     t: DateTime<Utc>,
     mapped: &[(String, String)],
 ) -> BTreeMap<String, Tuple> {
-    let mut out = desired(snap, t);
-    for tuple in role_derived(snap, mapped) {
+    let mut out = desired(view, t);
+    let mapped: Vec<(String, String)> = mapped
+        .iter()
+        .filter(|(did, _)| !view.withheld.contains_key(did))
+        .cloned()
+        .collect();
+    for tuple in role_derived(&view.records, &mapped) {
         let key = tuple.key();
         match out.get_mut(&key) {
             Some(existing) => merge(existing, tuple),
@@ -394,7 +492,10 @@ pub async fn withdrawal_pending(
     except: Option<&str>,
 ) -> Result<bool, AppError> {
     let mapped = role_mapped(state).await?;
-    let want = desired_with(snap, now(), &mapped);
+    // What the projector wants, exactly — a suspended subject's tuples
+    // included among the ones on their way out.
+    let view = ProjectionView::over(state, snap.clone()).await?;
+    let want = desired_with(&view, now(), &mapped);
     let relay = relay_wants(snap, &mapped);
     Ok(published(state).await?.iter().any(|(key, p)| {
         p.tuple.resource == resource
@@ -493,10 +594,10 @@ pub async fn reconcile(
     backoff: &mut Backoff,
 ) -> Result<PassReport, AppError> {
     let t = now();
-    let snap = Snapshot::load(&state.git_ns).await?;
+    let view = ProjectionView::load(state).await?;
     let mapped = role_mapped(state).await?;
-    let want = desired_with(&snap, t, &mapped);
-    let relay = relay_wants(&snap, &mapped);
+    let want = desired_with(&view, t, &mapped);
+    let relay = relay_wants(&view.records, &mapped);
     let have = published(state).await?;
     let mut report = PassReport::default();
 
@@ -683,6 +784,147 @@ pub async fn verify(
     reconcile(state, client, authority, backoff).await.map(Some)
 }
 
+// ── suspensions, as the projection records them ─────────────────────────────
+
+const WITHHELD_PREFIX: &str = "withheld:";
+
+/// A suspended subject whose rights the projection withholds, as last
+/// recorded: kept beside the mirror so that the start and the end of each
+/// withholding are audited once (and, after a crash between the audit row and
+/// this record, at most twice — never not at all).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Withheld {
+    action_id: String,
+    since: DateTime<Utc>,
+}
+
+/// Audit each change in whose rights the projection withholds
+/// (`vtc-action-list.md` §8.2): `gitNs.projection.withheld` when a subject
+/// holding git rights is suspended, then `gitNs.projection.restored` when the
+/// suspension lifts with rights still recorded for them (a cancelled
+/// cooling-off), or `gitNs.projection.released` when it lifts with none left
+/// (the removal landed). Each row names the action holding the suspension and
+/// the subject, and counts the recorded rights — never which, nor anything a
+/// grant's `reason` says.
+///
+/// Only the record of it lives here: what is published follows from the
+/// markers by itself ([`ProjectionView`]), and this runs before the pass that
+/// withdraws or republishes, so the audit row precedes the effect. Returns
+/// whether anything changed, which wakes that pass.
+pub async fn note_withheld(state: &AppState) -> Result<bool, AppError> {
+    let marks = crate::acl::storage::list_suspensions(&state.acl_ks).await?;
+    let ks = &state.git_ns.projection_ks;
+    let mut noted: BTreeMap<String, Withheld> = BTreeMap::new();
+    for (k, v) in ks
+        .prefix_iter_raw(WITHHELD_PREFIX.as_bytes().to_vec())
+        .await?
+    {
+        if let Ok(w) = serde_json::from_slice::<Withheld>(&v) {
+            let did = String::from_utf8_lossy(&k[WITHHELD_PREFIX.len()..]).into_owned();
+            noted.insert(did, w);
+        }
+    }
+    if marks.is_empty() && noted.is_empty() {
+        return Ok(false);
+    }
+    // The stored rights, unfiltered: what is withheld, and what is restored.
+    let snap = Snapshot::load(&state.git_ns).await?;
+    let mapped = role_mapped(state).await?;
+    let holds = |did: &str| -> usize {
+        snap.rights
+            .values()
+            .flat_map(|s| s.rows.iter())
+            .filter(|r| r.subject == did)
+            .count()
+            + mapped
+                .iter()
+                .filter(|(d, r)| d == did && in_bound_namespace(&snap, r))
+                .count()
+    };
+    let actor = lifecycle::vtc_actor(state).await;
+    let mut changed = false;
+    for (did, s) in &marks {
+        if noted.get(did).is_some_and(|w| w.action_id == s.action_id) {
+            continue;
+        }
+        let rights = holds(did);
+        if rights == 0 {
+            continue;
+        }
+        super::ops::audit(
+            state,
+            &actor,
+            Some(did),
+            super::ops::Audit {
+                action: "gitNs.projection.withheld",
+                namespace: None,
+                resource: None,
+                right: None,
+                policy_version: None,
+                detail: Some(
+                    json!({
+                        "actionId": s.action_id,
+                        "landsAt": s.lands_at_rfc3339(),
+                        "rights": rights,
+                    })
+                    .to_string(),
+                ),
+            },
+        )
+        .await;
+        ks.insert(
+            format!("{WITHHELD_PREFIX}{did}"),
+            &Withheld {
+                action_id: s.action_id.clone(),
+                since: now(),
+            },
+        )
+        .await?;
+        info!(
+            subject = %did,
+            action = %s.action_id,
+            rights,
+            "git-ns projection withholds a suspended subject's rights until its cooling-off closes"
+        );
+        changed = true;
+    }
+    for (did, w) in &noted {
+        if marks.contains_key(did) {
+            continue;
+        }
+        let rights = holds(did);
+        let action = if rights > 0 {
+            "gitNs.projection.restored"
+        } else {
+            "gitNs.projection.released"
+        };
+        super::ops::audit(
+            state,
+            &actor,
+            Some(did),
+            super::ops::Audit {
+                action,
+                namespace: None,
+                resource: None,
+                right: None,
+                policy_version: None,
+                detail: Some(json!({ "actionId": w.action_id, "rights": rights }).to_string()),
+            },
+        )
+        .await;
+        ks.remove(format!("{WITHHELD_PREFIX}{did}")).await?;
+        info!(
+            subject = %did,
+            action = %w.action_id,
+            rights,
+            "git-ns projection: a suspension ended; {action}"
+        );
+        changed = true;
+    }
+    Ok(changed)
+}
+
 // ── the audit tail ──────────────────────────────────────────────────────────
 
 /// Whether the audit log has anything new that changes what is projected,
@@ -769,8 +1011,18 @@ impl Projector {
     /// One pass of everything. Errors are logged, not returned: one failing
     /// half must not stop the others.
     pub async fn run_once(&mut self) {
+        // Before the tail, so the rows it writes wake this very pass: a
+        // suspension is withdrawn — or a lifted one republished — on the pass
+        // that first sees its marker change, not a minute later.
+        let noted = match note_withheld(&self.state).await {
+            Ok(n) => n,
+            Err(e) => {
+                warn!(error = %e, "git-ns could not record a suspension's effect on the projection");
+                false
+            }
+        };
         let woke = match tail(&self.state).await {
-            Ok(w) => w,
+            Ok(w) => w || noted,
             Err(e) => {
                 warn!(error = %e, "git-ns audit tail failed");
                 true
