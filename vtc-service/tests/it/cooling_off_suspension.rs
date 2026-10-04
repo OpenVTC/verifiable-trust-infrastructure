@@ -756,3 +756,186 @@ async fn land_now_on_open_cooling_off() {
     assert_eq!(rows[0].resource.as_deref(), Some(id.as_str()), "names it");
     assert_eq!(unopposed_rows(&fix).await, 1);
 }
+
+// ─── the git projection during a cooling-off (§8.2) ───────────────────────
+
+const GIT_BIND: &str = "https://trusttasks.org/spec/git-ns/namespace/bind/0.1";
+const GIT_GRANT: &str = "https://trusttasks.org/spec/git-ns/right/grant/0.3";
+const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
+
+/// A removal policy that allows every removal, tombstoning the member.
+async fn allow_every_removal(fix: &Fixture) {
+    use vtc_service::policy::{Policy, PolicyPurpose, set_active_policy_id, store_policy};
+    let src = "package vtc.removal\nimport rego.v1\n\
+               default decision := {\"effect\": \"allow\", \"with\": {\"disposition\": \"tombstone\"}}\n";
+    let id = uuid::Uuid::new_v4();
+    let sha: [u8; 32] = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(src.as_bytes()).into()
+    };
+    store_policy(
+        &fix.vtc.state.policies_ks,
+        &Policy {
+            id,
+            purpose: PolicyPurpose::Removal,
+            rego_source: src.into(),
+            sha256: sha,
+            activated_at: Some(chrono::Utc::now()),
+            author_did: "did:key:test".into(),
+            created_at: chrono::Utc::now(),
+            version: 99,
+            name: None,
+            description: None,
+        },
+    )
+    .await
+    .unwrap();
+    set_active_policy_id(
+        &fix.vtc.state.active_policies_ks,
+        PolicyPurpose::Removal,
+        id,
+    )
+    .await
+    .unwrap();
+}
+
+/// `a` asks to remove member-administrator `b` from the community; it parks
+/// for its cooling-off.
+async fn cool_off_member(fix: &mut Fixture, a: &Party, b: &Party) -> String {
+    allow_every_removal(fix).await;
+    let (status, reply) = submit(
+        fix,
+        a,
+        &signed(a, ADMIN_REMOVE, json!({ "did": b.did })).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{reply}");
+    parked_action(&reply).expect("parked")
+}
+
+/// `a` binds `github.com/acme` (manual mode) and grants `b`
+/// `git.commit.sign` on it; one projection pass publishes it. Returns the
+/// published record's key.
+async fn git_right_for(
+    fix: &Fixture,
+    a: &Party,
+    b: &Party,
+    registry: &vtc_service::registry::MockRegistryClient,
+) -> String {
+    vtc_service::members::store_member(
+        &fix.vtc.state.members_ks,
+        &vtc_service::members::Member::fresh(&b.did),
+    )
+    .await
+    .unwrap();
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(
+            a,
+            GIT_BIND,
+            json!({ "forge": "github.com", "owner": "acme", "mode": "manual" }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(
+            a,
+            GIT_GRANT,
+            json!({ "subject": b.did, "right": "git.commit.sign", "resource": "github.com/acme" }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    project(fix, registry).await;
+    let key =
+        vtc_service::git_ns::projection::tuple_key(&b.did, "git.commit.sign", "github.com/acme");
+    assert!(registry.trust_records().await.contains_key(&key));
+    key
+}
+
+/// One projection pass against `registry`.
+async fn project(
+    fix: &Fixture,
+    registry: &vtc_service::registry::MockRegistryClient,
+) -> vtc_service::git_ns::projection::PassReport {
+    vtc_service::git_ns::projection::reconcile(
+        &fix.vtc.state,
+        registry,
+        vtc_service::test_support::TEST_VTC_DID,
+        &mut vtc_service::git_ns::projection::Backoff::default(),
+    )
+    .await
+    .unwrap()
+}
+
+/// While the cooling-off is open the subject's commit right is not published
+/// — the community's commit check stops passing its commits — and the right
+/// stays recorded; cancelling publishes it again.
+#[tokio::test]
+async fn cooling_off_withdraws_the_subjects_git_projection_and_cancel_restores_it() {
+    let mut fix = fixture(false).await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let registry = vtc_service::registry::MockRegistryClient::new();
+    let key = git_right_for(&fix, &a, &b, &registry).await;
+    let grants = entry(&fix, &b.did).await.unwrap().resource_grants;
+
+    let id = cool_off_member(&mut fix, &a, &b).await;
+    project(&fix, &registry).await;
+    assert!(
+        !registry.trust_records().await.contains_key(&key),
+        "withdrawn"
+    );
+    assert_eq!(
+        entry(&fix, &b.did).await.unwrap().resource_grants,
+        grants,
+        "the right stays recorded"
+    );
+
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(&a, CANCEL_V0_2, json!({ "actionId": id })).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let report = project(&fix, &registry).await;
+    assert_eq!(report.put, 1, "{report:?}");
+    assert!(
+        registry.trust_records().await.contains_key(&key),
+        "republished"
+    );
+}
+
+/// When the removal lands the right goes with the entry — and the
+/// projection, which already withdrew it, deletes nothing a second time.
+#[tokio::test]
+async fn landed_cooling_off_leaves_nothing_to_withdraw_twice() {
+    let mut fix = fixture(false).await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let registry = vtc_service::registry::MockRegistryClient::new();
+    let key = git_right_for(&fix, &a, &b, &registry).await;
+
+    let id = cool_off_member(&mut fix, &a, &b).await;
+    let withdrawn = project(&fix, &registry).await;
+    assert_eq!(withdrawn.deleted, 1, "{withdrawn:?}");
+
+    let mut rec = record(&fix, &id).await;
+    rec.cooling_off_until = Some(1);
+    put_record(&fix, &rec).await;
+    vtc_service::admin_actions::sweep_once(&fix.vtc.state)
+        .await
+        .unwrap();
+    assert!(entry(&fix, &b.did).await.is_none(), "landed");
+    let after = project(&fix, &registry).await;
+    assert_eq!(
+        (after.put, after.deleted, after.failed),
+        (0, 0, 0),
+        "{after:?}"
+    );
+    assert!(!registry.trust_records().await.contains_key(&key));
+}

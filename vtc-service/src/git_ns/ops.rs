@@ -1316,7 +1316,10 @@ pub async fn repo_create(
         if let Some(d) = &repo.description {
             spec["description"] = json!(d);
         }
-        let roles = bridge::desired_roles_for_repo(state, &snap, &ns, &repo, &owners).await?;
+        // The roles it is created with are a projection: read through the
+        // view (a suspended namespace committer gets none), never written.
+        let view = super::projection::ProjectionView::over(state, snap.clone()).await?;
+        let roles = bridge::desired_roles_for_repo(state, &view, &ns, &repo, &owners).await?;
         let mut payload = json!({
             "namespace": ns.id,
             "kind": "createRepo",

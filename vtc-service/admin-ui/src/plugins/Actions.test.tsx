@@ -608,6 +608,7 @@ describe("a cooling-off", () => {
     const line = within(card).getByTestId("suspended-subject");
     expect(line.textContent).toMatch(/suspended until it lands/);
     expect(line.textContent).toMatch(/cancelling restores it/);
+    expect(line.textContent).toMatch(/git rights are withdrawn/);
     expect(within(card).queryByRole("button", { name: "Land now" })).toBeNull();
   });
 

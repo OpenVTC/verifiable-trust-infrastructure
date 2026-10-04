@@ -1250,6 +1250,15 @@ pub async fn run(
         });
     }
 
+    // Suspensions first, before anything is served and before the git-ns
+    // projector's first pass: a crash between an action's write and its
+    // marker's is settled from the action list, so no request is answered —
+    // and no git right projected or withheld — from a marker the list does
+    // not hold (`vtc-action-list.md` §8.2). Bounded local-store work (one
+    // pass over the action list and the markers), no network and no wait on
+    // another task, so the startup path still reaches its shutdown select.
+    crate::admin_actions::reconcile_suspensions(&state).await?;
+
     // Git namespaces: the projector — lifecycle sweeps, forge role projection
     // and bridge job dispatch always; the registry projection when a registry
     // and this community's DID are both configured. Supervised like the hook
@@ -1300,11 +1309,7 @@ pub async fn run(
     // first pass, at startup, the reconciliation of any action a crash left
     // `executing` (R2.1): nothing is running in this new process, so every one
     // is settled from the effect it recorded.
-    // Suspensions first, before anything is served: a crash between an
-    // action's write and its marker's is settled from the action list, so no
-    // request is ever answered from a marker the list does not hold
-    // (`vtc-action-list.md` §8.2).
-    crate::admin_actions::reconcile_suspensions(&state).await?;
+    // (Suspensions were reconciled above, before the git-ns projector.)
     crate::admin_actions::spawn_sweeper(state.clone(), shutdown_rx.clone());
     crate::join::retention::RetentionSweeper::spawn(
         state.join_requests_ks.clone(),

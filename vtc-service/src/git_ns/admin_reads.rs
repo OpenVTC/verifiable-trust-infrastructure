@@ -1183,8 +1183,8 @@ pub(crate) async fn projection_show(
     };
     let registry_configured =
         state.registry_client.is_some() && state.config.read().await.vtc_did.is_some();
-    let snap = Snapshot::load(&state.git_ns).await?;
-    let want = projection::desired_all(state, &snap, now()).await?;
+    let view = projection::ProjectionView::load(state).await?;
+    let want = projection::desired_all(state, &view, now()).await?;
     let have = projection::published(state).await?;
     let pending_changes = want
         .iter()

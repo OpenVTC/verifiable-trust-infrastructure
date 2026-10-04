@@ -57,6 +57,7 @@ use super::model::{
     SyncState, SyncStatus, Visibility, new_id,
 };
 use super::ops::{self, Audit, OpError, OpResult, audit, now};
+use super::projection::ProjectionView;
 use super::rules;
 use super::store::{self, Snapshot};
 use super::wire;
@@ -1168,10 +1169,12 @@ fn desired_role_json(subject: &str, right: Right, account: &ForgeAccount) -> Val
 }
 
 /// The desired forge roles for a repository being created, before it is in
-/// the snapshot: its owners plus everyone the namespace's rows reach.
+/// the snapshot: its owners plus everyone the namespace's rows reach — as
+/// the projection sees them, so a suspended subject's namespace right gives
+/// it no role on the new repository (`vtc-action-list.md` §8.2).
 pub async fn desired_roles_for_repo(
     state: &AppState,
-    snap: &Snapshot,
+    view: &ProjectionView,
     ns: &Namespace,
     repo: &Repo,
     owners: &[String],
@@ -1199,7 +1202,7 @@ pub async fn desired_roles_for_repo(
         .collect();
     let rights = highest_repo_rights(
         &ns.resource(),
-        snap.rows(&Scope::Namespace(ns.id.clone())),
+        view.rows(&Scope::Namespace(ns.id.clone())),
         &repo_res,
         &owner_rows,
         t,
@@ -1208,10 +1211,11 @@ pub async fn desired_roles_for_repo(
 }
 
 /// The complete desired forge roles for a recorded repository, as the
-/// projector would send them now.
+/// projector would send them now — from the [`ProjectionView`], so a
+/// suspended subject is in none of them.
 pub async fn desired_roles_now(
     state: &AppState,
-    snap: &Snapshot,
+    view: &ProjectionView,
     ns: &Namespace,
     repo: &Repo,
 ) -> Result<Vec<Value>, AppError> {
@@ -1221,9 +1225,9 @@ pub async fn desired_roles_now(
     };
     let rights = highest_repo_rights(
         &ns.resource(),
-        snap.rows(&Scope::Namespace(ns.id.clone())),
+        view.rows(&Scope::Namespace(ns.id.clone())),
         &repo_res,
-        snap.rows(&Scope::Repo(repo.id.clone())),
+        view.rows(&Scope::Repo(repo.id.clone())),
         now(),
     );
     Ok(render_roles(&rights, &ns.forge, &accounts))
@@ -1289,9 +1293,12 @@ fn digest(roles: &[Value]) -> String {
 /// changed since the last one was queued.
 ///
 /// The desired set is recomputed from the records every time — never
-/// patched — so a departed member, a revoked right, an unlinked account or a
-/// renamed repository all reach the forge the same way: the next set simply
-/// does not contain them.
+/// patched — so a departed member, a revoked right, an unlinked account, a
+/// renamed repository or a subject suspended pending a cooling-off
+/// reduction (`vtc-action-list.md` §8.2, through the [`ProjectionView`]) all
+/// reach the forge the same way: the next set simply does not contain them.
+/// A cancelled cooling-off reaches it the same way too: the next set, read
+/// from the stored rights, contains them again.
 pub async fn project_roles(state: &AppState, force: bool) -> Result<(), AppError> {
     // The projector ticks every few seconds on every VTC, and most bind no
     // namespace. `linked_accounts` lists and decodes every member record, so
@@ -1309,8 +1316,10 @@ pub async fn project_roles(state: &AppState, force: bool) -> Result<(), AppError
     let accounts = linked_accounts(state).await?;
     let t = now();
     let _guard = store::write_lock().await;
-    let snap = Snapshot::load(&state.git_ns).await?;
-    for ns in snap.namespaces.iter().filter(|n| projects_roles(n)) {
+    // Read through the projection view; the only write below is each
+    // repository's `roles_digest`, on its own (unfiltered) record.
+    let view = ProjectionView::load(state).await?;
+    for ns in view.namespaces().iter().filter(|n| projects_roles(n)) {
         let ns_scope = Scope::Namespace(ns.id.clone());
         let ns_res = ns.resource();
 
@@ -1318,7 +1327,7 @@ pub async fn project_roles(state: &AppState, force: bool) -> Result<(), AppError
         // (`git-ns/bridge/job`, `desiredRoles`), so nothing projects to the
         // organisation's own roles, and a bridge refuses one `notCapable`.
 
-        for repo in snap.repos.iter().filter(|r| {
+        for repo in view.repos().iter().filter(|r| {
             r.namespace_id == ns.id && matches!(r.state, RepoState::Active | RepoState::Orphaned)
         }) {
             let Some(repo_res) = repo.resource() else {
@@ -1326,9 +1335,9 @@ pub async fn project_roles(state: &AppState, force: bool) -> Result<(), AppError
             };
             let rights = highest_repo_rights(
                 &ns_res,
-                snap.rows(&ns_scope),
+                view.rows(&ns_scope),
                 &repo_res,
-                snap.rows(&Scope::Repo(repo.id.clone())),
+                view.rows(&Scope::Repo(repo.id.clone())),
                 t,
             );
             let roles = render_roles(&rights, &ns.forge, &accounts);

@@ -612,8 +612,10 @@ async fn revert(state: &AppState, actor: &ops::Standing, d: &Decided) -> OpResul
     match d.selector.kind.as_str() {
         "roleAdded" => {
             // `removeAccounts`, and only here.
-            let snap = Snapshot::load(&state.git_ns).await?;
-            let roles = bridge::desired_roles_now(state, &snap, &d.ns, &d.repo).await?;
+            // What the projection gives — a suspended subject nothing — so a
+            // revert never re-sends a role the suspension withdrew.
+            let view = super::projection::ProjectionView::load(state).await?;
+            let roles = bridge::desired_roles_now(state, &view, &d.ns, &d.repo).await?;
             let account = item.get("account").cloned().unwrap_or(Value::Null);
             let (forge, id) = d.selector.account.clone().unwrap_or_default();
             // An account listed at `git.ns.admin` — a namespace admin with no

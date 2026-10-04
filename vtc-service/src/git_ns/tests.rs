@@ -694,8 +694,10 @@ async fn create_in_a_manual_namespace_reserves_and_returns_manual_steps() {
     assert_eq!(code(&again), "git-ns/repo/create:nameTaken");
 
     // A reservation publishes nothing.
-    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
-    let want = projection::desired(&snap, super::ops::now());
+    let view = projection::ProjectionView::load(&f.vtc.state)
+        .await
+        .unwrap();
+    let want = projection::desired(&view, super::ops::now());
     assert!(want.keys().all(|k| !k.contains("gadgets")));
 }
 
@@ -1028,8 +1030,10 @@ async fn archive_revokes_every_commit_right_and_is_idempotent() {
     assert_eq!(body["rightsRevoked"], 0);
 
     // The owner record is kept; no commit right is published for it.
-    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
-    let want = projection::desired(&snap, super::ops::now());
+    let view = projection::ProjectionView::load(&f.vtc.state)
+        .await
+        .unwrap();
+    let want = projection::desired(&view, super::ops::now());
     assert!(want.contains_key(&projection::tuple_key(&f.bob.did, "git.repo.own", &res)));
     assert!(!want.contains_key(&projection::tuple_key(&f.bob.did, "git.commit.sign", &res)));
 }
@@ -1360,9 +1364,11 @@ async fn a_lapsed_right_is_withdrawn_and_recorded() {
     store::put_rights(&f.vtc.state.git_ns, &scope, &set)
         .await
         .unwrap();
-    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
+    let view = projection::ProjectionView::load(&f.vtc.state)
+        .await
+        .unwrap();
     assert!(
-        !projection::desired(&snap, super::ops::now()).contains_key(&projection::tuple_key(
+        !projection::desired(&view, super::ops::now()).contains_key(&projection::tuple_key(
             &f.carol.did,
             "git.commit.sign",
             &res
@@ -2174,8 +2180,10 @@ async fn reconcile(f: &Fixture, registry: &MockRegistryClient) -> projection::Pa
 }
 
 async fn desired_now(f: &Fixture) -> std::collections::BTreeMap<String, projection::Tuple> {
-    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
-    projection::desired_all(&f.vtc.state, &snap, super::ops::now())
+    let view = projection::ProjectionView::load(&f.vtc.state)
+        .await
+        .unwrap();
+    projection::desired_all(&f.vtc.state, &view, super::ops::now())
         .await
         .unwrap()
 }
@@ -7624,3 +7632,4 @@ mod break_glass_queue;
 mod c3;
 mod pr_gate;
 mod single_admin;
+mod suspension;

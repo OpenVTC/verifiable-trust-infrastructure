@@ -495,7 +495,7 @@ pub async fn sweep_departed_links(state: &AppState) -> Result<bool, AppError> {
 }
 
 /// The DID a sweep's audit rows name as actor: the community itself.
-async fn vtc_actor(state: &AppState) -> String {
+pub(super) async fn vtc_actor(state: &AppState) -> String {
     state
         .config
         .read()

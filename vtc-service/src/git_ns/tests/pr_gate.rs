@@ -472,3 +472,84 @@ async fn an_earlier_event_version_still_works_under_0_4() {
     )
     .await);
 }
+
+// ── a suspended holder (vtc-action-list.md §8.2) ────────────────────────────
+
+async fn suspend(f: &Fixture, who: &Party) {
+    crate::acl::storage::put_suspension(
+        &f.vtc.state.acl_ks,
+        &who.did,
+        &crate::acl::Suspension {
+            action_id: "act-gate".into(),
+            lands_at: 4_102_444_800,
+            requester: f.admin.did.clone(),
+        },
+    )
+    .await
+    .unwrap();
+}
+
+async fn lift(f: &Fixture, who: &Party) {
+    crate::acl::storage::remove_suspension(&f.vtc.state.acl_ks, &who.did)
+        .await
+        .unwrap();
+}
+
+/// While Bob's removal cools off, his ownership of `widgets` lets nothing
+/// through: his own pull request is closed under `committers`, and his reopen
+/// of somebody else's is no override. Nothing he holds is changed.
+#[tokio::test]
+async fn pr_gate_ignores_a_suspended_holders_rights() {
+    let (f, ns) = gate_fixture(r#"{"pr_open": "committers"}"#).await;
+    take_v0_5(&f).await;
+    ok(&pr_event(&f, &ns, 1, "opened", BOB, BOB).await);
+    assert!(close_jobs(&f).await.is_empty(), "an owner, before");
+
+    suspend(&f, &f.bob).await;
+    ok(&pr_event(&f, &ns, 2, "opened", BOB, BOB).await);
+    let closed = close_jobs(&f).await;
+    assert_eq!(closed.len(), 1, "his ownership counts for nothing");
+    assert_eq!(closed[0].payload["number"], 2);
+    // His reopen of Eve's is no override: Eve is checked, and closed.
+    ok(&pr_event(&f, &ns, 3, "reopened", EVE, BOB).await);
+    assert_eq!(close_jobs(&f).await.len(), 2);
+    // The rights are still recorded.
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
+    assert!(
+        super::super::rules::effective_on(
+            &snap,
+            &f.bob.did,
+            &super::super::model::Resource::parse(RES).unwrap(),
+            super::super::ops::now()
+        )
+        .contains(&super::super::model::Right::RepoOwn)
+    );
+}
+
+/// A suspended member's role counts for nothing under a `roles` level either.
+#[tokio::test]
+async fn pr_gate_ignores_a_suspended_holders_role() {
+    let (f, ns) = gate_fixture(r#"{"pr_open": {"roles": ["member"]}}"#).await;
+    take_v0_5(&f).await;
+    ok(&pr_event(&f, &ns, 1, "opened", CAROL, CAROL).await);
+    assert!(close_jobs(&f).await.is_empty());
+    suspend(&f, &f.carol).await;
+    ok(&pr_event(&f, &ns, 2, "opened", CAROL, CAROL).await);
+    assert_eq!(close_jobs(&f).await.len(), 1);
+}
+
+/// Cancelling the cooling-off counts it all again: his pull request stays
+/// open and his reopen is an override once more.
+#[tokio::test]
+async fn pr_gate_counts_the_rights_again_after_cancel() {
+    let (f, ns) = gate_fixture(r#"{"pr_open": "committers"}"#).await;
+    take_v0_5(&f).await;
+    suspend(&f, &f.bob).await;
+    ok(&pr_event(&f, &ns, 1, "opened", BOB, BOB).await);
+    assert_eq!(close_jobs(&f).await.len(), 1);
+
+    lift(&f, &f.bob).await;
+    ok(&pr_event(&f, &ns, 2, "opened", BOB, BOB).await);
+    ok(&pr_event(&f, &ns, 3, "reopened", EVE, BOB).await);
+    assert_eq!(close_jobs(&f).await.len(), 1, "nothing more closed");
+}
