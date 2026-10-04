@@ -2,6 +2,100 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.37.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.37.0...vti-common-v0.37.1) — 2026-10-04
+
+
+### Added
+
+- **vtc**: A cooling-off suspends its subject, and single-administrator mode can remove now (VTI-APV-019, VTI-APV-022) ([#1944](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1944))
+
+* feat(vtc): a cooling-off suspends its subject, and single-administrator mode can remove now (VTI-APV-019, VTI-APV-022)
+
+  Removing another unrestricted administrator when nobody else can consent
+  waits out a cooling-off (acl.removal_cooling_off, default 24 h). Until now
+  the subject kept full authority for that whole window, and in
+  single-administrator mode there was no way past it.
+
+  Suspension (vtc-action-list.md §8.2). From the moment a cooling-off
+  reduction is raised until it lands or is cancelled, the subject's entry
+  authorizes nothing. The suspension is set on the entry wherever it is read
+  (acl::storage::get_acl_entry / list_acl_entries), and VtcAclEntry::can,
+  can_any and can_approve answer false for it, so every gate refuses without a
+  per-handler check. The signed administrative door (resolve_admin_claims,
+  console keys included), the git-ns door (acting_as), require_capability and
+  ACL reads refuse with a message naming the action and when it lands. The
+  subject can still sign in, read the action list (callerRole: subject) and
+  cancel a request of its own; its event stream carries only actions and the
+  mode banner. It approves and decides nothing, acknowledges nothing, and is no
+  role assigner for the attrition guard; raising a cooling-off checks the guard
+  as though the subject were already gone, and only one cooling-off runs on a
+  subject at a time. Its sessions are revoked at suspension, as any reduction's
+  are. The row is never changed, so cancelling restores it exactly. A
+  suspended subject cannot raise a counter-removal, so the first to act wins
+  outright; refuse_if_reduced_first stays as a backstop.
+
+  The suspension is derived from the open action and kept beside the entry as
+  a marker (suspended:<did> in the ACL keyspace). admin_actions::save writes
+  it before an action that suspends and lifts it after one that no longer does
+  (R2.1), so a crash can only over-restrict, and reconcile_suspensions settles
+  either half at start (before serving), on every sweep, and after a restore.
+
+  Remove now (vtc-action-list.md §8.5, single-administrator mode only). No new
+  task: a reduction's payload carries ext["org.openvtc"].immediate =
+  {confirm, actionId?}. confirm must be the subject's DID (or the action id
+  being landed), checked before any gesture; the gesture is bound to the
+  payload digest, which includes `immediate`, so a gesture for the delayed
+  removal is never spent on the immediate one or the reverse (VTI-APV-015).
+  Sending the same operation with `immediate` naming an open cooling-off lands
+  it now. Refused without the mode (naming the cooling-off and that the mode
+  is host-set), on a mismatched confirmation, without the gesture, and by the
+  attrition guard. Audited Critical as SingleAdminMode reductionImmediate
+  before the write, then AuthorityReducedUnopposed, and the subject is told.
+  The landed cooling-off closes landedAfterCoolingOff with ext landedNow; a
+  reduction that never waited enters the history with the same marker.
+
+- **vtc**: A subject may relabel its own entry; single-administrator mode is one person under many identifiers (VTI-ACL-052, VTI-APV-022) ([#1941](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1941))
+
+Implements trustoverip/dtgwg-vti-spec#54 and #55 (both merged).
+
+  VTI-ACL-052 item 2 — a subject may change its own entry's label and
+  nothing else, on every door that writes it (acl/update 0.1 and 0.2,
+  acl/grant re-stating the same entry, vtc/members/update). No step-up: the
+  label confers no authority (VTI-ACL-001). The change is audited as a
+  MemberUpdated row naming the old and new label and `labelSetBySubject`,
+  and the entry carries `label_set_by_subject` (serde-default false,
+  cleared when anyone else sets the label), shown to other parties as
+  `ext["org.openvtc"].labelSetBySubject` on acl/list and acl/show 0.2 — an
+  ext member, so the published response schemas are untouched. A request
+  that changes the label and anything else is refused whole. A subject's
+  own write never re-affirms a delegation under review.
+
+  VTI-ACL-052 item 3 (as widened by #55) — in single-administrator mode a
+  subject whose entry has unrestricted act scope (granting::is_unrestricted:
+  a community-admin acting everywhere with its full ceiling) may modify its
+  own entry on acl/update/0.2 and acl/change-role/0.2. It takes the
+  subject's step-up bound to the operation (VTI-APV-015) and a Critical
+  SingleAdminMode{event: selfEditWaived} row written before the write
+  (acl::single_admin::authorize_self_edit), and is refused if it would leave
+  no live unrestricted entry (narrowing, demoting or shortening the life of
+  the only one). Ending the subject's vtc.roles.assign is attrition-checked
+  like any removal. Every other self-edit is refused as before, and the
+  refusals now say what the subject may do instead.
+
+  VTI-APV-022 ([#55](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/55)) — single-administrator mode waives second-party consent
+  whether or not other administrators' entries exist: one person may hold
+  an administrator entry per device, and the node cannot tell one person's
+  identifiers from two people's. gesture_then_consent_for and the session
+  door's require() no longer test for an empty approver set; git-ns rule 7
+  is waived the same way (others_eligible is gone). A reduction of another
+  administrator (VTI-APV-019) is not parked for a third party's consent in
+  the mode: it takes the unopposed path — step-up, notice to the subject,
+  Critical row — and keeps its cooling-off, which now lands in the mode even
+  with a third administrator present (recheck_cooling_off and the sweeper's
+  invalidation skip the "a third party can now consent" check).
+
+
+
 ## [0.37.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.36.0...vti-common-v0.37.0) — 2026-10-04
 
 
