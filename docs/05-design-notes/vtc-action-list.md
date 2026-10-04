@@ -46,7 +46,7 @@ Builds on `vtc-operation-bound-step-up.md` §4 (the APV-014 consent as built,
 | #1929 | the join-request badge and the dashboard's count tiles beside the Actions badge |
 | #1931 | the existing queues as `queue` items (§8.2): break-glass ratification, join review, vetting withdrawal review; listings that filter before paging and count exactly |
 | #1944 | the subject of a cooling-off is **suspended** until it lands or is cancelled (§8.2); in single-administrator mode a reduction can be made **now**, and an open cooling-off landed now, on a typed confirmation and a gesture bound to the immediate variant (§8.5) |
-| this PR | a suspended subject's git rights are withdrawn from the Trust Registry and the forge for the cooling-off and republished on cancel, without touching the stored rights (§8.2) |
+| #1945 | a suspended subject's git rights are withdrawn from the Trust Registry and the forge for the cooling-off and republished on cancel, without touching the stored rights (§8.2) |
 
 Deviations recorded during implementation, beside the two above:
 
