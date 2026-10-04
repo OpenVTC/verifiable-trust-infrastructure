@@ -280,6 +280,43 @@ sequenceDiagram
   audit envelope's actor is the cryptographically-proven VP holder (the
   signer), never an unverified DID lifted from the credential body.
 
+## Capability modules (`governance/capability/*`)
+
+A capability module is a pluggable governance capability a community turns on
+— `git-trust` (commit-signing trust for CI) is the first. It is not an ACL
+capability on an administrator's entry; those are `vtc.*` / `git.*` and say who
+may do what. A module says what the community does.
+
+**The VTC decides; the registry follows.** Which modules are enabled, with
+which version and config, when and by whom, is held by the VTC (one row in the
+`community` keyspace, backed up with it). The registry's own
+`governance/capability/enable|disable` are admin-only and only switch which
+record families (`git-trust/grant|revoke`) it accepts, so the VTC projects
+each decision there as the registry's administrator, over the same transport
+selection as everything else above.
+
+| Task | Who | What |
+|---|---|---|
+| `governance/capability/list/0.1` | any member or administrator (signed; an `application` entry is refused) | the modules the community has enabled (`status` absent or `enabled`), could enable (`available`), or both (`all`); administrators also get each decision's projection status in `ext["org.openvtc"].projection` |
+| `governance/capability/enable/0.1` | an administrator holding `vtc.config.admin`, with a step-up bound to the document | persists the decision, then projects it; `config.authority` defaults to the VTC's DID and may name nothing else |
+| `governance/capability/disable/0.1` | the same | the same; disable is not delete — the decision row and the registry's records stay |
+
+An accepted enable or disable answers at once, with
+`ext["org.openvtc"].projection.status` `pending`. The projector then sends
+it to the registry until the registry answers that it holds the same state
+(`alreadyEnabled` / `notEnabled` count as holding it). A transient failure
+backs off (5 s doubling to an hour, jittered); a refusal — most often the
+VTC's DID missing from the registry's `ADMIN_DIDS` — marks the projection
+`failed`, writes a `CapabilityModuleChanged{projectionFailed}` audit row, and
+is retried hourly, so fixing the registry side converges without re-sending
+the enable. Without a `[registry]` configured, decisions are held with the
+projection pending and projected once one is.
+
+The VTC only projects decisions it has made: a module an operator enabled on
+the registry by hand before this existed is never disabled behind their back.
+The module's enablement does not (yet) gate `[hooks.git-trust]` or the
+git-namespace projection, which keep their own switches.
+
 ## Configuration
 
 ```toml
