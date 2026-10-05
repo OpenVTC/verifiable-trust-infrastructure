@@ -230,12 +230,72 @@ pub const JOIN_REQUEST_SUPPLEMENT_ERR_ALREADY_DECIDED: &str =
 /// community (`pending`) or on them (`deferred`), and `requestId` is what they
 /// pass to [`JOIN_REQUEST_WITHDRAW_TYPE`] to clear it.
 ///
-/// The one literal left in this file: because the specification does not
-/// declare it, there is no generated `error_codes` constant to read. The VTC's
-/// error-code census lists it as consumer-minted and fails the day the
-/// specification declares it, asking for the generated constant instead.
+/// A literal, like the hidden-vetting challenge codes below: because the
+/// specification does not declare it, there is no generated `error_codes`
+/// constant to read. The VTC's error-code census lists every such code as
+/// consumer-minted and fails the day the specification declares one, asking
+/// for the generated constant instead.
 pub const JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN: &str =
     "vtc/join-requests/submit:requestAlreadyOpen";
+
+// ─── Hidden-vetting challenge refusals ──────────────────────────────────────
+//
+// A hidden-vetting proof is bound to a single-use challenge the community
+// issued over `vtc/vetting/pcs-challenge/0.1`, and the community spends that
+// challenge when the proof arrives. These codes say which of the four ways the
+// spend failed, so a client can tell the applicant what happened rather than
+// "the submission was malformed". The remedy is the same for all four — ask
+// for a fresh challenge, build the proof over it, and send it again — but the
+// explanation is not, and only one of them (`challengeMismatch`) points at a
+// client bug rather than at timing.
+//
+// Consumer-minted under the slug of the request being processed (SPEC §8.5):
+// neither `vtc/join-requests/submit` nor `vtc/join-requests/supplement`
+// declares a code for a challenge yet. A client that does not recognise one
+// falls back to `taskFailed` by the same rule, and `details.reason` carries the
+// generic marker ([`super::trust_task_reject_reasons`]) so it still recovers a
+// typed error. The submission's challenge is spent whichever code is sent.
+
+/// `vtc/join-requests/submit:challengeNotIssued` — the community holds no
+/// challenge for this applicant: none was asked for, or the one asked for
+/// expired and has since been cleared. `details.reason` is `not_found`.
+pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_NOT_ISSUED: &str =
+    "vtc/join-requests/submit:challengeNotIssued";
+
+/// `vtc/join-requests/submit:challengeAlreadyUsed` — the challenge was spent
+/// by an earlier submission; each is accepted once. `details.reason` is
+/// `gone`.
+pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_ALREADY_USED: &str =
+    "vtc/join-requests/submit:challengeAlreadyUsed";
+
+/// `vtc/join-requests/submit:challengeExpired` — the challenge's window
+/// (`expiresAt` on the `pcs-challenge` response) had passed. `details` carries
+/// `expiredAt` (RFC 3339); `details.reason` is `gone`.
+pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_EXPIRED: &str =
+    "vtc/join-requests/submit:challengeExpired";
+
+/// `vtc/join-requests/submit:challengeMismatch` — the proof is bound to a
+/// challenge other than the one the community holds for this applicant:
+/// usually an older one, replaced when a newer challenge was asked for.
+/// `details.reason` is `conflict`.
+pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_MISMATCH: &str =
+    "vtc/join-requests/submit:challengeMismatch";
+
+/// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_NOT_ISSUED`], answering a supplement.
+pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_NOT_ISSUED: &str =
+    "vtc/join-requests/supplement:challengeNotIssued";
+
+/// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_ALREADY_USED`], answering a supplement.
+pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_ALREADY_USED: &str =
+    "vtc/join-requests/supplement:challengeAlreadyUsed";
+
+/// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_EXPIRED`], answering a supplement.
+pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_EXPIRED: &str =
+    "vtc/join-requests/supplement:challengeExpired";
+
+/// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_MISMATCH`], answering a supplement.
+pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_MISMATCH: &str =
+    "vtc/join-requests/supplement:challengeMismatch";
 
 /// `vtc/join-requests/submit:attributesMissing` — a required requested
 /// attribute was not answered. `details.types` names them.

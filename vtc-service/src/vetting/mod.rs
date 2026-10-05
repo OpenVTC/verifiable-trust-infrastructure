@@ -36,6 +36,8 @@
 //! separately signed (VTI-CMP-070): distinct vetters are distinct *members*.
 
 pub mod auto_grant;
+/// Why a hidden-vetting submission's challenge was refused, as the applicant is told it.
+pub mod challenge_refusal;
 /// The member of a join submission's `extensions` a hidden-vetting proof rides in.
 ///
 /// Spelled here rather than imported so that [`redact_hidden_submission`] runs whether or not
@@ -182,6 +184,32 @@ pub struct VettingStatementFact {
     pub failures: Vec<String>,
 }
 
+/// Why [`vetting_facts`] could not count a submission.
+#[derive(Debug)]
+pub enum FactsError {
+    /// The hidden-vetting challenge the proof is bound to was refused. Kept apart from
+    /// [`Self::App`] so the join spine can answer it with its own code rather than as a malformed
+    /// request.
+    Challenge(challenge_refusal::ChallengeRefusal),
+    /// Everything else, as before.
+    App(AppError),
+}
+
+impl From<AppError> for FactsError {
+    fn from(e: AppError) -> Self {
+        Self::App(e)
+    }
+}
+
+impl From<FactsError> for AppError {
+    fn from(e: FactsError) -> Self {
+        match e {
+            FactsError::Challenge(r) => r.into(),
+            FactsError::App(e) => e,
+        }
+    }
+}
+
 /// Build the vetting facts for a join presentation under `criterion` — the
 /// criterion the submission is decided under — or `None` when that criterion
 /// requires no vetting.
@@ -199,7 +227,7 @@ pub async fn vetting_facts(
     criterion: &ServedCriterion,
     cited: bool,
     now: DateTime<Utc>,
-) -> Result<Option<VettingFacts>, AppError> {
+) -> Result<Option<VettingFacts>, FactsError> {
     let Some(requirements) = criterion.stored.vetting.clone() else {
         return Ok(None);
     };
@@ -405,7 +433,7 @@ async fn hidden_facts(
     requirements: &VettingRequirements,
     extensions: &JsonValue,
     now: DateTime<Utc>,
-) -> Result<Option<VettingFacts>, AppError> {
+) -> Result<Option<VettingFacts>, FactsError> {
     let Some(raw) = selected.hidden_vetting.clone() else {
         return Ok(None);
     };
@@ -422,7 +450,14 @@ async fn hidden_facts(
         now,
     )
     .await
-    .map_err(|e| AppError::Validation(format!("hidden vetting: {e}")))?;
+    .map_err(|e| match e {
+        // The applicant is told which way, under a code of its own.
+        crate::vetting::pcs::DecideError::Challenge(r) => FactsError::Challenge(r),
+        crate::vetting::pcs::DecideError::Store(e) => FactsError::App(e),
+        crate::vetting::pcs::DecideError::Proof(e) => {
+            FactsError::App(AppError::Validation(format!("hidden vetting: {e}")))
+        }
+    })?;
     let Some(decision) = decision else {
         return Ok(None);
     };

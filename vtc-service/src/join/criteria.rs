@@ -47,6 +47,7 @@ use crate::schemas::accepts::{
 };
 use crate::server::AppState;
 use crate::vetting::VettingFacts;
+use crate::vetting::challenge_refusal::ChallengeRefusal;
 
 /// The DCQL `format` of a W3C Verifiable Credential secured with a Data
 /// Integrity proof — what a join presentation's `verifiableCredential` carries.
@@ -122,6 +123,9 @@ pub enum CriterionRefusal {
     /// The cited digest names no criterion the community publishes, nor a
     /// superseded version within its grace (`submit:criterionUnknown`).
     Unknown(String),
+    /// The hidden-vetting challenge the submission's proof is bound to was refused
+    /// (`submit:challenge*` / `supplement:challenge*`).
+    Challenge(ChallengeRefusal),
     /// Everything else.
     Other(AppError),
 }
@@ -129,6 +133,15 @@ pub enum CriterionRefusal {
 impl From<AppError> for CriterionRefusal {
     fn from(e: AppError) -> Self {
         Self::Other(e)
+    }
+}
+
+impl From<crate::vetting::FactsError> for CriterionRefusal {
+    fn from(e: crate::vetting::FactsError) -> Self {
+        match e {
+            crate::vetting::FactsError::Challenge(r) => Self::Challenge(r),
+            crate::vetting::FactsError::App(e) => Self::Other(e),
+        }
     }
 }
 
@@ -182,14 +195,14 @@ pub async fn govern(
         for stored in &published {
             let served = manifest_criterion(stored.clone())?;
             if served.digest == digest {
-                return Ok(ctx.evaluate(served, true, false).await?);
+                return ctx.evaluate(served, true, false).await;
             }
         }
         if let Some(version) = superseded_version(&state.schemas_ks, digest).await?
             && version.within_grace(now)
         {
             let served = manifest_criterion(version.criterion)?;
-            return Ok(ctx.evaluate(served, true, true).await?);
+            return ctx.evaluate(served, true, true).await;
         }
         return Err(CriterionRefusal::Unknown(digest.to_string()));
     }
@@ -224,7 +237,7 @@ pub async fn govern_by_id(
     };
     let served = manifest_criterion(stored)?;
     let mut ctx = Evaluator::new(state, applicant_did, presented, now).await;
-    Ok(ctx.evaluate(served, true, false).await?)
+    ctx.evaluate(served, true, false).await
 }
 
 /// Re-decide a request under the criterion it was first decided under — a
@@ -247,19 +260,19 @@ pub async fn govern_again(
     if let Some(stored) = current.clone() {
         let served = manifest_criterion(stored)?;
         if served.digest == digest {
-            return Ok(ctx.evaluate(served, true, false).await?);
+            return ctx.evaluate(served, true, false).await;
         }
     }
     if let Some(version) = superseded_version(&state.schemas_ks, digest).await?
         && version.within_grace(now)
     {
         let served = manifest_criterion(version.criterion)?;
-        return Ok(ctx.evaluate(served, true, true).await?);
+        return ctx.evaluate(served, true, true).await;
     }
     match current {
         Some(stored) => {
             let served = manifest_criterion(stored)?;
-            Ok(ctx.evaluate(served, false, false).await?)
+            ctx.evaluate(served, false, false).await
         }
         None => Err(CriterionRefusal::Unknown(digest.to_string())),
     }
@@ -300,7 +313,7 @@ impl<'a> Evaluator<'a> {
         served: ServedCriterion,
         cited: bool,
         superseded: bool,
-    ) -> Result<Governing, AppError> {
+    ) -> Result<Governing, CriterionRefusal> {
         let stored = &served.stored;
         let mut needs = Vec::new();
 
