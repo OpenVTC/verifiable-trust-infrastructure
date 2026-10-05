@@ -2,6 +2,91 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.38.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.37.2...vti-common-v0.38.0) — 2026-10-05
+
+
+### Added
+
+- **keys**: Serve keys/sign-sshsig — git commit signing without key export ([#1957](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1957))
+
+did-git-sign exported its persona's key with keys/export-secret on every
+  commit, because keys/sign cannot produce an SSHSIG signature: it frames
+  caller bytes under the opaque-signing domain tag (VTI-VTA-003/007), which
+  is the point of that hardening.
+
+  keys/sign-sshsig/0.1 (trust-tasks-tf #732, trust-tasks-rs 0.27.6) takes a
+  digest, a namespace and a hash algorithm. The VTA builds the
+  PROTOCOL.sshsig signed data itself and signs it as ProtocolDefined, so the
+  signature verifies as an SSHSIG statement in that namespace and as nothing
+  else. It is gated on a new constrained capability under VTI-VTA-007,
+  `sign-sshsig` (registered upstream as signSshsig), derived wherever `sign`
+  is; `sign` is accepted in its place, and an entry narrowed to sign-sshsig
+  alone cannot reach the generic oracle. Scope, the context signing policy
+  and its daily quota apply through the same chokepoint as keys/sign, and
+  the success is audited once as keys.sign-sshsig with the namespace and
+  digest. The spec's declared codes are rendered: keys:invalidArgument for a
+  digest of the wrong length or an algorithm the key cannot perform,
+  keys/sign-sshsig:failedPrecondition for an inactive key.
+
+- **vtc**: Hidden vetting (PCS) is turned off, read back and run with events from the console ([#1956](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1956))
+
+* feat(vtc): hidden vetting (PCS) is turned off, read back and run with events from the console
+
+  Completes the console's hidden-vetting surface on top of #1955, with the
+  three tasks trust-tasks-tf #729 specified (trust-tasks-rs 0.27.5):
+
+  - `vtc/vetting/hidden/withdraw/0.1` turns hidden vetting off for a criterion.
+    Named vetting is untouched; enrolment rows and the spent-token ledger stay,
+    so a later publish works with the same keys. Withdrawing a criterion with
+    none is `withdrawn: false`, not an error.
+  - `vtc/vetting/hidden/show/0.1` answers an administrator with the stored
+    configuration — each event's `approvedBy` and `graceDays`, which the
+    manifest leaves out — plus how many members are enrolled under each live
+    vetter label and each event's demand against its floor. Counts only, never
+    which members.
+  - `vtc/vetting/hidden/publish/0.1` now holds the approval rules its draft
+    states: a new or changed `approvedBy` must be the publishing signer
+    (`approverNotSigner`) — it was an unchecked string, so an administrator
+    could approve in anyone's name — and an approver who has asked to vet at the
+    event is refused (`approverInEvent`). An approval already stored may be
+    re-sent by anyone, so a re-publish keeps it.
+  - Every publish and withdrawal is audited as `HiddenVettingChanged` (new
+    `vti-common` audit variant; the enum is `#[non_exhaustive]`).
+
+
+
+### Fixed
+
+- **vtc**: Working in the admin console counts toward the idle timeout ([#1953](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1953))
+
+The console signed out operators who were using it. The idle timeout
+  (`auth.admin_idle_timeout`, 900s) is measured from `Session::last_seen`, and
+  only a cookie-authenticated request through the `AuthClaims` extractor
+  advanced it. Most of what the console sends is now a signed Trust Task
+  document to `/v1/trust-tasks`, which authenticates by its proof and reads no
+  session, so a busy operator stopped producing activity. Fifteen minutes after
+  the last cookie-borne call the renewal was refused and the session-deadline
+  watcher showed Login.
+
+  Counting every signed document would be wrong the other way: the action
+  badge, counts and banners post signed reads on timers, and an unattended tab
+  would never time out. Only the console can tell input from a poll, so:
+
+  - The console notes real input (pointerdown, keydown, wheel, touchstart) and
+    sends `X-VTC-User-Activity` on a document posted within 60s of some
+    (`admin-ui/src/lib/user-activity.ts`). Timers in an idle tab send none.
+  - The route records activity only for a document that ran successfully, was
+    verified as a known signer, and whose principal (the signer, or the
+    administrator its console key acts for) owns the session the cookie names
+    (`vti_common::auth::touch_cookie_session_for`, which authenticates the
+    cookie exactly as the extractors do). A document signed by one identity
+    cannot keep another's session alive, and a refused one counts for nothing.
+
+  Renewals and timer-driven reads still never count, so the daemon still
+  decides when an operator who walked away is signed out.
+
+
+
 ## [0.37.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.37.1...vti-common-v0.37.2) — 2026-10-04
 
 

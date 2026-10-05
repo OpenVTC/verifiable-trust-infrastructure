@@ -2,6 +2,34 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.54.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.53.1...vta-service-v0.54.0) — 2026-10-05
+
+
+### Added
+
+- **keys**: Serve keys/sign-sshsig — git commit signing without key export ([#1957](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1957))
+
+did-git-sign exported its persona's key with keys/export-secret on every
+  commit, because keys/sign cannot produce an SSHSIG signature: it frames
+  caller bytes under the opaque-signing domain tag (VTI-VTA-003/007), which
+  is the point of that hardening.
+
+  keys/sign-sshsig/0.1 (trust-tasks-tf #732, trust-tasks-rs 0.27.6) takes a
+  digest, a namespace and a hash algorithm. The VTA builds the
+  PROTOCOL.sshsig signed data itself and signs it as ProtocolDefined, so the
+  signature verifies as an SSHSIG statement in that namespace and as nothing
+  else. It is gated on a new constrained capability under VTI-VTA-007,
+  `sign-sshsig` (registered upstream as signSshsig), derived wherever `sign`
+  is; `sign` is accepted in its place, and an entry narrowed to sign-sshsig
+  alone cannot reach the generic oracle. Scope, the context signing policy
+  and its daily quota apply through the same chokepoint as keys/sign, and
+  the success is audited once as keys.sign-sshsig with the namespace and
+  digest. The spec's declared codes are rendered: keys:invalidArgument for a
+  digest of the wrong length or an algorithm the key cannot perform,
+  keys/sign-sshsig:failedPrecondition for an inactive key.
+
+
+
 ## [0.53.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.53.0...vta-service-v0.53.1) — 2026-10-04
 
 
