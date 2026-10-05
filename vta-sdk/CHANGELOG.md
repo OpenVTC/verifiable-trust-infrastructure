@@ -2,6 +2,90 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.63.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.63.1...vta-sdk-v0.63.2) — 2026-10-05
+
+
+### Added
+
+- **keys**: Serve keys/sign-sshsig — git commit signing without key export ([#1957](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1957))
+
+did-git-sign exported its persona's key with keys/export-secret on every
+  commit, because keys/sign cannot produce an SSHSIG signature: it frames
+  caller bytes under the opaque-signing domain tag (VTI-VTA-003/007), which
+  is the point of that hardening.
+
+  keys/sign-sshsig/0.1 (trust-tasks-tf #732, trust-tasks-rs 0.27.6) takes a
+  digest, a namespace and a hash algorithm. The VTA builds the
+  PROTOCOL.sshsig signed data itself and signs it as ProtocolDefined, so the
+  signature verifies as an SSHSIG statement in that namespace and as nothing
+  else. It is gated on a new constrained capability under VTI-VTA-007,
+  `sign-sshsig` (registered upstream as signSshsig), derived wherever `sign`
+  is; `sign` is accepted in its place, and an entry narrowed to sign-sshsig
+  alone cannot reach the generic oracle. Scope, the context signing policy
+  and its daily quota apply through the same chokepoint as keys/sign, and
+  the success is audited once as keys.sign-sshsig with the namespace and
+  digest. The spec's declared codes are rendered: keys:invalidArgument for a
+  digest of the wrong length or an algorithm the key cannot perform,
+  keys/sign-sshsig:failedPrecondition for an inactive key.
+
+
+
+### Fixed
+
+- **vti-common**: The secret-Debug census knows hidden-vetting token labels are public ([#1958](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1958))
+
+#1956 added `HiddenVettingChangedData.token_labels` (the hidden-vetting audit
+  row), and the workspace census in `vta-sdk/tests/secret_debug_census.rs`
+  flags any `Debug`-deriving field whose name contains "token". The field holds
+  label names (`token/2026-10`, `token/event/<id>`) that every applicant and
+  vetter reads from the join manifest, not tokens, so it joins NOT_SECRET with
+  what it holds. This turned main's `Test (workspace)` job red.
+
+- **vtc**: Say why a PCS challenge was refused ([#1954](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1954))
+
+A hidden-vetting proof is bound to a single-use challenge the community
+  issues over vtc/vetting/pcs-challenge/0.1, and the community spends it
+  when the proof arrives. Every way that spend could fail - the challenge
+  expired, was already used, was never issued, or is not the one the proof
+  was built over - reached the applicant as one `malformedRequest` with the
+  cause in a sentence. A client could not tell "you took too long" from
+  "your proof was built over the wrong challenge", which is the difference
+  between "try again" and "your client has a bug".
+
+  Each failure is now a typed `ChallengeRefusal` that travels from
+  `pcs_challenge::consume` through `pcs::decide`, the vetting facts and the
+  criterion evaluation to the join spine, and goes out on the Trust Task
+  path under a code of its own:
+
+  - `vtc/join-requests/submit:challengeNotIssued` (details.reason `not_found`)
+  - `vtc/join-requests/submit:challengeAlreadyUsed` (details.reason `gone`)
+  - `vtc/join-requests/submit:challengeExpired` (details.reason `gone`,
+    plus `details.expiredAt`)
+  - `vtc/join-requests/submit:challengeMismatch` (details.reason `conflict`)
+
+  and the same four local parts under `vtc/join-requests/supplement:` when
+  a supplement carries the proof. Neither specification declares a
+  challenge code yet, so they are consumer-minted under the task's own slug
+  (SPEC 8.5), as `requestAlreadyOpen` is; the constants live in
+  `vta_sdk::protocols::join_requests` for clients to match on, and the
+  error-code census lists them as consumer-minted so it fails the day the
+  specification adopts them. Surfaces that carry no code keep the same 400
+  `Validation`, now with a sentence that says which failure it was. The
+  message never contains the challenge value.
+
+  Single-use is unchanged: a submission still spends the challenge whether
+  or not it is accepted, including on a mismatch. The row is now taken
+  atomically (`take_raw`) rather than read then removed, and a spent marker
+  holding no challenge - only the expiry - is left in its place so a second
+  attempt is told "already used" rather than "never issued". An expired
+  challenge is put back as it was so repeated attempts keep saying
+  "expired". Both go at the retention sweep after `expires_at`, as the
+  challenge always did; both writes are `insert_if_absent`, so a challenge
+  asked for in the meantime is never overwritten. Each refusal is logged
+  with its kind and the applicant, never the challenge.
+
+
+
 ## [0.63.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.63.0...vta-sdk-v0.63.1) — 2026-10-04
 
 
