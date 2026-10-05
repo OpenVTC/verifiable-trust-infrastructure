@@ -2396,6 +2396,10 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_0_1 => keys::handle_sign
         [ None None true ],
+    // Matches the spec's declarations (none / none / actsAsSubject), as
+    // `keys/sign` beside it does.
+    vta_sdk::trust_tasks::TASK_KEYS_SIGN_SSHSIG_0_1 => keys::handle_sign_sshsig
+        [ None None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1 => keys::handle_derive_and_sign
         [ Mutating None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1 => keys::handle_derive_and_sign_document

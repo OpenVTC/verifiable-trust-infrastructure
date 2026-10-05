@@ -3451,7 +3451,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -7602,7 +7602,7 @@ dependencies = [
  "aes-gcm 0.10.3",
  "aes-kw",
  "argon2 0.5.3",
- "base64 0.21.7",
+ "base64 0.22.1",
  "bitfields",
  "block-padding 0.3.3",
  "blowfish",
@@ -9184,7 +9184,7 @@ checksum = "7bd22781911de0ca6debda95f073c8f18bec65d1a94f1fa9573f3102e514cea4"
 dependencies = [
  "ahash",
  "annotate-snippets",
- "base64 0.21.7",
+ "base64 0.22.1",
  "encoding_rs_io",
  "getrandom 0.3.4",
  "granit-parser",
@@ -10569,9 +10569,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.27.4"
+version = "0.27.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0f704127a6b694b2706c1e9cde3154ad69d00e9ac0f176eec911abacba5eca4"
+checksum = "39aa8b045305e75e24f1ec6071fa0a0fb8b7036ef120b2ccd28118b9aed06452"
 dependencies = [
  "async-trait",
  "chrono",

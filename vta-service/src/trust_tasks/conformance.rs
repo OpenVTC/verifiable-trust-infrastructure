@@ -1210,6 +1210,41 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_KEYS_SIGN_SSHSIG_0_1,
+            // Built from the generated types the SDK producer and the handler
+            // themselves build, not transcribed.
+            checked!(
+                specs::keys::sign_sshsig::v0_1::Payload,
+                specs::keys::sign_sshsig::v0_1::Response,
+                to_v(
+                    specs::keys::sign_sshsig::v0_1::Payload::try_from(
+                        specs::keys::sign_sshsig::v0_1::Payload::builder()
+                            .key_id("git-signing-key")
+                            .algorithm(specs::keys::sign_sshsig::v0_1::PayloadAlgorithm::EdDsa)
+                            .namespace("git")
+                            .hash_algorithm(
+                                specs::keys::sign_sshsig::v0_1::PayloadHashAlgorithm::Sha512
+                            )
+                            .message_hash(
+                                "ZNK6UR4HwIpHXYznMreGQrxQYoYkXyEqA9lXghSB8x0qCebX7kzmrrWkvpd-TTFuFZ7HD5DBVT80O19QxSt8FA"
+                            ),
+                    )
+                    .expect("a valid keys/sign-sshsig request")
+                ),
+                to_v(
+                    specs::keys::sign_sshsig::v0_1::Response::try_from(
+                        specs::keys::sign_sshsig::v0_1::Response::builder()
+                            .key_id("git-signing-key")
+                            .algorithm(specs::keys::sign_sshsig::v0_1::ResponseAlgorithm::EdDsa)
+                            .signature(
+                                "qQkWdYdoux5DnKSW0G1nIGQMrGC2L1RJkfuq9nrNuuAlU8hFazUPwKWlS3A68WWHs0DQxVbPl2GXjPUJdSIPBQ"
+                            ),
+                    )
+                    .expect("a valid keys/sign-sshsig response")
+                )
+            ),
+        ),
+        (
             uris::TASK_KEYS_DERIVE_AND_SIGN_0_1,
             checked!(
                 specs::keys::derive_and_sign::v0_1::Payload,

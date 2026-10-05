@@ -45,3 +45,4 @@ pub const SIGN_RESULT: &str =
 pub const IMPORT_KEY: &str = "https://firstperson.network/protocols/key-management/1.0/import-key";
 pub const IMPORT_KEY_RESULT: &str =
     "https://firstperson.network/protocols/key-management/1.0/import-key-result";
+pub mod sign_sshsig;

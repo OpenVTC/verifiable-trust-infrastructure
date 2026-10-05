@@ -196,6 +196,45 @@ impl VtaClient {
         .await
     }
 
+    /// `keys/sign-sshsig/0.1` — an SSHSIG signature over `message_hash` (the
+    /// format git verifies for SSH commit signing), made by a key that never
+    /// leaves the VTA.
+    ///
+    /// The VTA builds the signed data from `namespace`, `hash_algorithm` and
+    /// the digest — see
+    /// [`signed_data`](crate::protocols::key_management::sign_sshsig::signed_data)
+    /// — and returns the raw signature. The caller assembles the armoured
+    /// SSHSIG blob from it and the public key it already holds, and should
+    /// verify the signature over the same signed data before using it.
+    ///
+    /// Needs the `sign-sshsig` capability (or `sign`, which confers more).
+    pub async fn sign_sshsig(
+        &self,
+        key_id: &str,
+        algorithm: crate::protocols::key_management::sign_sshsig::SignSshsigAlgorithm,
+        namespace: &str,
+        hash_algorithm: crate::protocols::key_management::sign_sshsig::SshsigHashAlgorithm,
+        message_hash: &[u8],
+    ) -> Result<crate::protocols::key_management::sign_sshsig::SignSshsigResponse, VtaError> {
+        use crate::protocols::key_management::sign_sshsig::SignSshsigPayload;
+        use base64::Engine;
+        let payload = SignSshsigPayload::builder()
+            .key_id(key_id)
+            .algorithm(algorithm)
+            .namespace(namespace)
+            .hash_algorithm(hash_algorithm)
+            .message_hash(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(message_hash));
+        let payload = SignSshsigPayload::try_from(payload)
+            .map_err(|e| VtaError::Validation(format!("keys/sign-sshsig request: {e}")))?;
+        self.rpc_tt(
+            trust_tasks::TASK_KEYS_SIGN_SSHSIG_0_1,
+            serde_json::to_value(payload)
+                .map_err(|e| VtaError::Protocol(format!("encode keys/sign-sshsig: {e}")))?,
+            30,
+        )
+        .await
+    }
+
     /// Ephemerally derive a key at `derivation_path` and sign `payload` —
     /// **without persisting a key record**. Super-admin only, and the path must
     /// lie inside `m/26'/9'` (the VTA's delegated-identity subtree). Returns the

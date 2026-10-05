@@ -220,6 +220,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Signing is a pure function of key + payload; the same request signs the
     // same bytes. No durable effect beyond the audit row.
     (trust_tasks::TASK_KEYS_SIGN_0_1, ReadOnly),
+    // The same digest under the same key signs the same bytes (Ed25519 is
+    // deterministic; an ES256 retry yields another valid signature). Nothing
+    // durable beyond the audit row.
+    (trust_tasks::TASK_KEYS_SIGN_SSHSIG_0_1, ReadOnly),
     (trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1, ReadOnly),
     (
         trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
