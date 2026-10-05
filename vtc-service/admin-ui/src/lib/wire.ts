@@ -537,7 +537,7 @@ export interface components {
              *     VTA-wallet SIOP login, which returns it in `tokens.accessToken`.
              */
             accessToken: string;
-            ext?: null | components["schemas"]["Value"];
+            ext?: components["schemas"]["Value"] | null;
         };
         /**
          * @description `POST /v1/auth/admin-session` — exchange a bearer access token for the
@@ -577,7 +577,7 @@ export interface components {
             sessionId: string;
         };
         AttachPersonaBody: {
-            pop?: null | components["schemas"]["Value"];
+            pop?: components["schemas"]["Value"] | null;
             /**
              * @description The self-issued VPC, in the DTG Credentials wire form:
              *     `type` including `PersonaCredential`, `issuer` the P-DID
@@ -659,7 +659,7 @@ export interface components {
         AutoGrantStatus: {
             /** @description Whether the sweep runs. */
             enabled: boolean;
-            lastSweep?: null | components["schemas"]["AutoGrantSweep"];
+            lastSweep?: components["schemas"]["AutoGrantSweep"] | null;
             /**
              * Format: int32
              * @description Minutes between sweeps.
@@ -909,12 +909,12 @@ export interface components {
         DecideResponse: {
             /** Format: uuid */
             requestId: string;
-            roleVac?: null | components["schemas"]["Value"];
+            roleVac?: components["schemas"]["Value"] | null;
             status: string;
-            vmc?: null | components["schemas"]["Value"];
+            vmc?: components["schemas"]["Value"] | null;
         };
         DetachPersonaBody: {
-            pop?: null | components["schemas"]["Value"];
+            pop?: components["schemas"]["Value"] | null;
         };
         /**
          * @description The `ext` envelope on the diagnostics response.
@@ -1007,7 +1007,7 @@ export interface components {
             /** Format: int64 */
             queueDepth: number;
             registryStatus: string;
-            registryTransport?: null | components["schemas"]["RegistryTransport"];
+            registryTransport?: components["schemas"]["RegistryTransport"] | null;
             /** Format: int64 */
             rtbfBatchedCount: number;
             /**
@@ -1058,9 +1058,9 @@ export interface components {
         /** @description One member whose two views disagree. */
         DriftEntry: {
             disagreement: components["schemas"]["Disagreement"];
-            localStatus?: null | components["schemas"]["RegistryStatus"];
+            localStatus?: components["schemas"]["RegistryStatus"] | null;
             memberDid: string;
-            registryStatus?: null | components["schemas"]["RegistryStatus"];
+            registryStatus?: components["schemas"]["RegistryStatus"] | null;
         };
         /** @description The result of one comparison. */
         DriftSnapshot: {
@@ -1150,7 +1150,7 @@ export interface components {
          *     verbatim; the registrar route enforces validation at insert time.
          */
         EndorsementType: {
-            claimSchema?: null | components["schemas"]["Value"];
+            claimSchema?: components["schemas"]["Value"] | null;
             /** Format: date-time */
             createdAt: string;
             /**
@@ -1221,7 +1221,7 @@ export interface components {
             key: string;
             label: string;
             options?: components["schemas"]["FieldOption"][] | null;
-            showWhen?: null | components["schemas"]["ShowWhen"];
+            showWhen?: components["schemas"]["ShowWhen"] | null;
             type: string;
         };
         FieldOption: {
@@ -1487,7 +1487,7 @@ export interface components {
             /** @description The active policy's `cascade_on_departure` setting in effect. */
             cascadeOnDeparture: boolean;
             forge: string;
-            forgeStatus?: null | components["schemas"]["GitNsForgeStatus"];
+            forgeStatus?: components["schemas"]["GitNsForgeStatus"] | null;
             /**
              * @description Bound, with no live admin: its last admin left or lapsed. Nobody can
              *     grant in it until it is unbound and bound again.
@@ -1511,7 +1511,7 @@ export interface components {
              *     `enforce`.
              */
             roleDrift: string;
-            roleMap?: null | components["schemas"]["GitNsRoleMap"];
+            roleMap?: components["schemas"]["GitNsRoleMap"] | null;
             /** @description The `issuedAt` of the report held, on the bridge's clock. */
             roleMapReportedAt?: string | null;
             /**
@@ -1573,13 +1573,13 @@ export interface components {
              */
             guard?: string | null;
             id: string;
-            lastCheck?: null | components["schemas"]["GitNsLastCheck"];
+            lastCheck?: components["schemas"]["GitNsLastCheck"] | null;
             lastError?: string | null;
             maintainers: number;
             namespace: string;
             owners: string[];
             resource: string;
-            roleMap?: null | components["schemas"]["GitNsRoleMap"];
+            roleMap?: components["schemas"]["GitNsRoleMap"] | null;
             /**
              * @description The bridge last projected this repository's roles under an earlier
              *     role map; a re-projection is queued and has not yet succeeded.
@@ -1608,7 +1608,7 @@ export interface components {
          *     otherwise identical row for row).
          */
         GitNsRightRow: {
-            breakGlass?: null | components["schemas"]["GitNsBreakGlassMark"];
+            breakGlass?: components["schemas"]["GitNsBreakGlassMark"] | null;
             expiresAt?: string | null;
             grantedAt?: string | null;
             grantedBy?: string | null;
@@ -2020,7 +2020,7 @@ export interface components {
              *     policy. Absent when none were asked for or given.
              */
             attributes?: components["schemas"]["SubmittedAttribute"][];
-            decision?: null | components["schemas"]["JoinDecision"];
+            decision?: components["schemas"]["JoinDecision"] | null;
             /**
              * @description Community-defined extensions slot (spec §3-M). Bounded by
              *     `JOIN_REQUEST_EXTENSIONS_MAX_BYTES` (16 KiB) at the route
@@ -2034,7 +2034,7 @@ export interface components {
             extensions?: components["schemas"]["Value"];
             /** Format: uuid */
             id: string;
-            policyDecision?: null | components["schemas"]["Value"];
+            policyDecision?: components["schemas"]["Value"] | null;
             /**
              * @description Whether the applicant consents to being published in the
              *     community's trust-registry record (spec §8). Default
@@ -2112,7 +2112,7 @@ export interface components {
              * @description The join request.
              */
             requestId: string;
-            vetting?: null | components["schemas"]["JoinRequestVetting"];
+            vetting?: components["schemas"]["JoinRequestVetting"] | null;
         };
         /** @description One presented statement, as the community saw it at the decision. */
         JoinRequestVettingStatement: {
@@ -2241,7 +2241,7 @@ export interface components {
              *     the part an operator wants.
              */
             failedJobs: components["schemas"]["FailedSyncJob"][];
-            registryDrift?: null | components["schemas"]["DriftSnapshot"];
+            registryDrift?: components["schemas"]["DriftSnapshot"] | null;
             /**
              * @description What the document-versus-binary comparison actually *means*, from
              *     [`transport_capability::findings_for_build`](crate::transport_capability::findings_for_build)
@@ -2313,7 +2313,7 @@ export interface components {
          */
         Paginated_EndorsementType: {
             items: {
-                claimSchema?: null | components["schemas"]["Value"];
+                claimSchema?: components["schemas"]["Value"] | null;
                 /** Format: date-time */
                 createdAt: string;
                 /**
@@ -2351,7 +2351,7 @@ export interface components {
                  *     policy. Absent when none were asked for or given.
                  */
                 attributes?: components["schemas"]["SubmittedAttribute"][];
-                decision?: null | components["schemas"]["JoinDecision"];
+                decision?: components["schemas"]["JoinDecision"] | null;
                 /**
                  * @description Community-defined extensions slot (spec §3-M). Bounded by
                  *     `JOIN_REQUEST_EXTENSIONS_MAX_BYTES` (16 KiB) at the route
@@ -2365,7 +2365,7 @@ export interface components {
                 extensions?: components["schemas"]["Value"];
                 /** Format: uuid */
                 id: string;
-                policyDecision?: null | components["schemas"]["Value"];
+                policyDecision?: components["schemas"]["Value"] | null;
                 /**
                  * @description Whether the applicant consents to being published in the
                  *     community's trust-registry record (spec §8). Default
@@ -2735,7 +2735,7 @@ export interface components {
             registryConfigured: boolean;
         };
         RegisterBody: {
-            claimSchema?: null | components["schemas"]["Value"];
+            claimSchema?: components["schemas"]["Value"] | null;
             description?: string | null;
             typeUri: string;
         };
@@ -3055,7 +3055,7 @@ export interface components {
          *     matches `truthy`).
          */
         ShowWhen: {
-            eq?: null | components["schemas"]["Value"];
+            eq?: components["schemas"]["Value"] | null;
             field: string;
             truthy?: boolean | null;
         };
@@ -3148,7 +3148,7 @@ export interface components {
             memberDid: string;
             /** @description Issued by the automatic sweep or by an admin. */
             origin: components["schemas"]["GrantOrigin"];
-            profile?: null | components["schemas"]["VetterProfileSummary"];
+            profile?: components["schemas"]["VetterProfileSummary"] | null;
             /** @description The grant has been revoked. */
             revoked: boolean;
             /**
@@ -4385,7 +4385,7 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": null | components["schemas"]["AdminPasskeyLoginStartRequest"];
+                "application/json": components["schemas"]["AdminPasskeyLoginStartRequest"] | null;
             };
         };
         responses: {
