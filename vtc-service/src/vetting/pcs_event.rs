@@ -172,6 +172,24 @@ pub async fn group_size(state: &AppState, event_id: &str) -> Result<usize, AppEr
         .len())
 }
 
+/// Whether `member_did` has asked to vet at `event_id` — the self-approval check publish makes
+/// before it stores an approval, the same one [`gate`] makes at every draw.
+///
+/// # Errors
+///
+/// Whatever the store returns.
+pub async fn has_asked(
+    state: &AppState,
+    event_id: &str,
+    member_did: &str,
+) -> Result<bool, AppError> {
+    Ok(state
+        .vetting_pcs_issue_ks
+        .get::<EventRequestRecord>(request_key(event_id, member_did))
+        .await?
+        .is_some())
+}
+
 /// Whether `label` is an event label, and if so which event it names.
 #[must_use]
 pub fn event_of<'a>(

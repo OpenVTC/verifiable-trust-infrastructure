@@ -22,12 +22,16 @@ use serde_json::Value;
 use vti_common::error::AppError;
 
 use crate::error::TaskError;
+use crate::schemas::accepts::AcceptsCriterion;
 use crate::schemas::accepts::{get_accepts, store_accepts};
 use crate::server::AppState;
 use crate::vetting::pcs::{HiddenVettingConfig, HiddenVettingEvent};
 use crate::vetting::pcs_tasks::{
+    HIDDEN_PUBLISH_ERR_APPROVER_IN_EVENT, HIDDEN_PUBLISH_ERR_APPROVER_NOT_SIGNER,
     HIDDEN_PUBLISH_ERR_NO_SUCH_CRITERION, HIDDEN_PUBLISH_ERR_NO_VETTING,
+    HIDDEN_SHOW_ERR_NO_SUCH_CRITERION, HIDDEN_WITHDRAW_ERR_NO_SUCH_CRITERION,
 };
+use vti_common::audit::{AuditEvent, HiddenVettingChangedData};
 
 /// What an operator asks for when they turn hidden vetting on for a criterion.
 ///
@@ -98,6 +102,7 @@ fn this_month() -> String {
 /// two doors cannot drift.
 pub(crate) async fn publish_hidden_vetting_core(
     state: &AppState,
+    signer: &str,
     criterion_id: String,
     live_periods: Option<Vec<String>>,
     live_token_labels: Option<Vec<String>>,
@@ -147,10 +152,37 @@ pub(crate) async fn publish_hidden_vetting_core(
             .map_err(|e| AppError::Validation(format!("events: {e}")))?;
     }
 
+    let previous: Vec<HiddenVettingEvent> = criterion
+        .hidden_vetting
+        .as_ref()
+        .and_then(|v| serde_json::from_value::<HiddenVettingConfig>(v.clone()).ok())
+        .map(|c| c.events)
+        .unwrap_or_default();
+    let approved_events = check_approvals(state, signer, &previous, &config.events).await?;
+
     let stored = serde_json::to_value(&config)
         .map_err(|e| AppError::Internal(format!("encode hidden-vetting parameters: {e}")))?;
     criterion.hidden_vetting = Some(stored.clone());
     store_accepts(&state.schemas_ks, &criterion).await?;
+
+    audit_change(
+        state,
+        signer,
+        HiddenVettingChangedData {
+            criterion_id: criterion_id.clone(),
+            change: "published".into(),
+            vetter_labels: config
+                .live_periods
+                .iter()
+                .map(|p| format!("vetter/{p}"))
+                .collect(),
+            token_labels: config.live_token_labels.clone(),
+            drip_per_tick: Some(config.drip_per_tick),
+            events: config.events.iter().map(|e| e.event_id.clone()).collect(),
+            approved_events,
+        },
+    )
+    .await?;
 
     // Read the digest back off the criterion as the manifest will serve it, rather than
     // computing it here a second way. Two computations of one digest is how they come to
@@ -167,6 +199,204 @@ pub(crate) async fn publish_hidden_vetting_core(
             .and_then(Value::as_str)
             .map(str::to_string),
     })
+}
+
+/// The approval rules publish/0.1 states (items 9 and 10): an event's `approvedBy`, when it is
+/// newly set or changed against what is stored, must be the administrator publishing it — an
+/// approver names themselves — and no approver may be someone who asked to vet at the event.
+/// An unchanged stored approval may be re-sent by anyone, so a re-publish keeps it.
+///
+/// Returns the ids of the events this publish approves.
+async fn check_approvals(
+    state: &AppState,
+    signer: &str,
+    previous: &[HiddenVettingEvent],
+    events: &[HiddenVettingEvent],
+) -> Result<Vec<String>, TaskError> {
+    let mut approved = Vec::new();
+    for event in events {
+        let Some(approver) = event.approved_by.as_deref() else {
+            continue;
+        };
+        let stored = previous
+            .iter()
+            .find(|p| p.event_id == event.event_id)
+            .and_then(|p| p.approved_by.as_deref());
+        if stored != Some(approver) {
+            if approver != signer {
+                return Err(TaskError::declared(
+                    HIDDEN_PUBLISH_ERR_APPROVER_NOT_SIGNER,
+                    AppError::Forbidden(format!(
+                        "event `{}` would be approved by {approver}, but an approver names \
+                         themselves — set `approvedBy` to your own DID ({signer})",
+                        event.event_id
+                    )),
+                ));
+            }
+            approved.push(event.event_id.clone());
+        }
+        if crate::vetting::pcs_event::has_asked(state, &event.event_id, approver).await? {
+            return Err(TaskError::declared(
+                HIDDEN_PUBLISH_ERR_APPROVER_IN_EVENT,
+                AppError::Forbidden(format!(
+                    "{approver} has asked to vet at event `{}`, so cannot approve it — \
+                     another administrator has to",
+                    event.event_id
+                )),
+            ));
+        }
+    }
+    Ok(approved)
+}
+
+/// Record a hidden-vetting change against the administrator who made it. Written after the
+/// store, so the log never claims a change the criterion does not hold.
+async fn audit_change(
+    state: &AppState,
+    actor: &str,
+    data: HiddenVettingChangedData,
+) -> Result<(), AppError> {
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(actor, None, AuditEvent::HiddenVettingChanged(data))
+            .await?;
+    }
+    Ok(())
+}
+
+/// The criterion's `requirementsDigest` as the manifest serves it.
+fn served_digest(criterion: AcceptsCriterion) -> Result<Option<String>, AppError> {
+    let served = crate::routes::join_requests::manifest::manifest_criterion(criterion)?;
+    Ok(served
+        .json
+        .get("requirementsDigest")
+        .and_then(Value::as_str)
+        .map(str::to_string))
+}
+
+/// Turn hidden-vetter admission off for one criterion (`vtc/vetting/hidden/withdraw/0.1`).
+///
+/// Removes the stored parameters and republishes the criterion without them; its named vetting
+/// is untouched. Enrolment rows and the spent-token ledger stay: withdrawing unmasks nothing, and
+/// a later publish derives the same keys, so enrolments under still-live labels work again.
+/// Withdrawing a criterion that has none is a success that says so (`withdrawn: false`).
+pub(crate) async fn withdraw_hidden_vetting_core(
+    state: &AppState,
+    signer: &str,
+    criterion_id: String,
+) -> Result<Value, TaskError> {
+    let mut criterion = get_accepts(&state.schemas_ks, &criterion_id)
+        .await?
+        .ok_or_else(|| {
+            TaskError::declared(
+                HIDDEN_WITHDRAW_ERR_NO_SUCH_CRITERION,
+                AppError::NotFound(format!("no criterion `{criterion_id}`")),
+            )
+        })?;
+    let withdrawn = criterion.hidden_vetting.take().is_some();
+    if withdrawn {
+        store_accepts(&state.schemas_ks, &criterion).await?;
+        audit_change(
+            state,
+            signer,
+            HiddenVettingChangedData {
+                criterion_id: criterion_id.clone(),
+                change: "withdrawn".into(),
+                vetter_labels: Vec::new(),
+                token_labels: Vec::new(),
+                drip_per_tick: None,
+                events: Vec::new(),
+                approved_events: Vec::new(),
+            },
+        )
+        .await?;
+    }
+    let response = serde_json::json!({
+        "criterionId": criterion_id,
+        "withdrawn": withdrawn,
+        "requirementsDigest": served_digest(criterion)?,
+    });
+    // Built as JSON and read through the generated type, so the answer is the specification's
+    // shape or nothing.
+    let typed: trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Response =
+        serde_json::from_value(response)
+            .map_err(|e| AppError::Internal(format!("withdraw response: {e}")))?;
+    serde_json::to_value(typed)
+        .map_err(|e| AppError::Internal(format!("withdraw response: {e}")).into())
+}
+
+/// Read one criterion's stored hidden-vetting configuration (`vtc/vetting/hidden/show/0.1`):
+/// what an edit has to start from, since publish replaces `events` wholesale and the manifest
+/// omits each event's `approvedBy` and `graceDays`. With it, the counts an administrator needs —
+/// members enrolled under each live vetter label, and each event's demand against its floor —
+/// as counts only, never which members.
+pub(crate) async fn show_hidden_vetting_core(
+    state: &AppState,
+    criterion_id: String,
+) -> Result<Value, TaskError> {
+    let criterion = get_accepts(&state.schemas_ks, &criterion_id)
+        .await?
+        .ok_or_else(|| {
+            TaskError::declared(
+                HIDDEN_SHOW_ERR_NO_SUCH_CRITERION,
+                AppError::NotFound(format!("no criterion `{criterion_id}`")),
+            )
+        })?;
+    let config = match criterion.hidden_vetting.as_ref() {
+        Some(v) => Some(
+            serde_json::from_value::<HiddenVettingConfig>(v.clone())
+                .map_err(|e| AppError::Internal(format!("stored hidden vetting: {e}")))?,
+        ),
+        None => None,
+    };
+    let mut response = serde_json::json!({
+        "criterionId": criterion_id,
+        "enabled": config.is_some(),
+        "requirementsDigest": served_digest(criterion)?,
+    });
+    if let Some(config) = config {
+        let labels: Vec<String> = config
+            .live_periods
+            .iter()
+            .map(|p| format!("vetter/{p}"))
+            .collect();
+        let enrolled = crate::vetting::pcs_issue::enrolled_counts(state, &labels).await?;
+        let today = Utc::now().date_naive();
+        let mut status = Vec::with_capacity(config.events.len());
+        for event in &config.events {
+            let size = crate::vetting::pcs_event::group_size(state, &event.event_id).await?;
+            let approver_in_event = match event.approved_by.as_deref() {
+                Some(a) => crate::vetting::pcs_event::has_asked(state, &event.event_id, a).await?,
+                None => false,
+            };
+            let approved = event.approved_by.is_some() && !approver_in_event;
+            status.push(serde_json::json!({
+                "eventId": event.event_id,
+                "groupFloor": event.group_floor,
+                "groupSize": size,
+                "approved": approved,
+                "live": approved && size >= event.group_floor && today <= event.closes_after(),
+            }));
+        }
+        let map = response.as_object_mut().expect("object literal");
+        map.insert(
+            "stored".into(),
+            serde_json::to_value(&config)
+                .map_err(|e| AppError::Internal(format!("encode stored: {e}")))?,
+        );
+        map.insert("published".into(), config.published());
+        map.insert(
+            "enrolledVetters".into(),
+            serde_json::to_value(enrolled)
+                .map_err(|e| AppError::Internal(format!("encode counts: {e}")))?,
+        );
+        map.insert("eventStatus".into(), Value::Array(status));
+    }
+    let typed: trust_tasks_rs::specs::vtc::vetting::hidden::show::v0_1::Response =
+        serde_json::from_value(response)
+            .map_err(|e| AppError::Internal(format!("show response: {e}")))?;
+    serde_json::to_value(typed)
+        .map_err(|e| AppError::Internal(format!("show response: {e}")).into())
 }
 
 // `POST /vetting/hidden` was a REST route here — always admin-only, and its

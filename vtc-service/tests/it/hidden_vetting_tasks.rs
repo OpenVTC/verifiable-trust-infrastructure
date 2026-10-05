@@ -1153,3 +1153,254 @@ async fn a_refused_challenge_says_which_way() {
         (issued_at + Duration::minutes(15)).timestamp()
     );
 }
+
+const ACCEPTS_REGISTER_TYPE: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2";
+
+/// An administrator, and a criterion `vetted-member` that asks for vetting, registered the way
+/// the console registers it.
+async fn vetted_criterion(h: &Harness, seed: u8) -> (String, Secret) {
+    vtc_service::endorsement_types::seed_defaults(&h.tv.state.endorsement_types_ks)
+        .await
+        .expect("seed the default predicates");
+    let (did, key) = identity(seed);
+    crate::common::signed::seed_role(&h.tv, &did, vtc_service::acl::VtcRole::Admin, &[]).await;
+    let (status, body) = h
+        .post(
+            &key,
+            ACCEPTS_REGISTER_TYPE,
+            json!({
+                "id": "vetted-member",
+                "admission": "automatic",
+                "vetting": {
+                    "version": "0.1",
+                    "statementType": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
+                    "minStatements": 1,
+                    "acceptedMethods": ["inPerson", "video"],
+                    "eligibleVetters": { "role": "vetter" },
+                },
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    (did, key)
+}
+
+/// The summit as publish/0.1 carries it, approved by `approved_by`.
+fn summit_json(approved_by: Option<&str>) -> Value {
+    let mut event = serde_json::to_value(summit(approved_by)).unwrap();
+    if approved_by.is_none() {
+        event.as_object_mut().unwrap().remove("approvedBy");
+    }
+    event
+}
+
+fn publish_with_summit(approved_by: Option<&str>) -> Value {
+    json!({
+        "criterionId": "vetted-member",
+        "liveTokenLabels": [format!("token/{}", Utc::now().format("%Y-%m")), EVENT_LABEL],
+        "events": [summit_json(approved_by)],
+    })
+}
+
+/// publish/0.1 items 9 and 10: an approver names themselves, so an approval naming anyone but
+/// the publishing administrator is refused — and an administrator who has asked to vet at the
+/// event cannot approve it. An approval already stored survives a re-publish by somebody else,
+/// which is what lets a console edit the event list without un-approving it.
+#[tokio::test]
+async fn an_event_approval_names_its_approver_and_never_one_of_its_vetters() {
+    let h = Harness::start().await;
+    let (a_did, a) = vetted_criterion(&h, 0x72).await;
+    let (b_did, b) = identity(0x73);
+    crate::common::signed::seed_role(&h.tv, &b_did, vtc_service::acl::VtcRole::Admin, &[]).await;
+
+    let (status, body) = h
+        .post(
+            &a,
+            pcs_tasks::HIDDEN_PUBLISH_TYPE,
+            publish_with_summit(None),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // A approving in B's name.
+    let (status, body) = h
+        .post(
+            &a,
+            pcs_tasks::HIDDEN_PUBLISH_TYPE,
+            publish_with_summit(Some(&b_did)),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        pcs_tasks::HIDDEN_PUBLISH_ERR_APPROVER_NOT_SIGNER,
+        "{body}"
+    );
+
+    // A vetter who is also an administrator asks to vet at the summit, then tries to approve it.
+    let (v_did, v) = identity(0x74);
+    h.grant_vetter(&v_did).await;
+    crate::common::signed::seed_role(&h.tv, &v_did, vtc_service::acl::VtcRole::Admin, &[]).await;
+    let (status, body) = h
+        .post(
+            &v,
+            pcs_tasks::EVENT_MODE_TYPE,
+            json!({ "eventId": EVENT, "tier": "desk", "window": window() }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = h
+        .post(
+            &v,
+            pcs_tasks::HIDDEN_PUBLISH_TYPE,
+            publish_with_summit(Some(&v_did)),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        pcs_tasks::HIDDEN_PUBLISH_ERR_APPROVER_IN_EVENT,
+        "{body}"
+    );
+
+    // A approves in their own name; B re-publishes the same events and the approval stands.
+    let (status, body) = h
+        .post(
+            &a,
+            pcs_tasks::HIDDEN_PUBLISH_TYPE,
+            publish_with_summit(Some(&a_did)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = h
+        .post(
+            &b,
+            pcs_tasks::HIDDEN_PUBLISH_TYPE,
+            publish_with_summit(Some(&a_did)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body.pointer("/payload/stored/events/0/approvedBy"),
+        Some(&json!(a_did)),
+        "{body}"
+    );
+}
+
+/// `vtc/vetting/hidden/{withdraw,show}/0.1`: what is stored can be read back, approvals and
+/// counts included, and hidden vetting can be turned off and on again. Each change is audited.
+#[tokio::test]
+async fn hidden_vetting_turns_off_and_shows_what_it_stores() {
+    let h = Harness::start().await;
+    let (a_did, a) = vetted_criterion(&h, 0x75).await;
+
+    let missing = json!({ "criterionId": "no-such-criterion" });
+    let (_, body) = h
+        .post(&a, pcs_tasks::HIDDEN_SHOW_TYPE, missing.clone())
+        .await;
+    assert_eq!(
+        tt_error_code(&body),
+        pcs_tasks::HIDDEN_SHOW_ERR_NO_SUCH_CRITERION,
+        "{body}"
+    );
+    let (_, body) = h.post(&a, pcs_tasks::HIDDEN_WITHDRAW_TYPE, missing).await;
+    assert_eq!(
+        tt_error_code(&body),
+        pcs_tasks::HIDDEN_WITHDRAW_ERR_NO_SUCH_CRITERION,
+        "{body}"
+    );
+
+    let criterion = json!({ "criterionId": "vetted-member" });
+    let (status, body) = h
+        .post(&a, pcs_tasks::HIDDEN_SHOW_TYPE, criterion.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body.pointer("/payload/enabled"),
+        Some(&json!(false)),
+        "{body}"
+    );
+
+    let (status, body) = h
+        .post(
+            &a,
+            pcs_tasks::HIDDEN_PUBLISH_TYPE,
+            publish_with_summit(Some(&a_did)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (v_did, v) = identity(0x76);
+    h.grant_vetter(&v_did).await;
+    let (status, body) = h
+        .post(
+            &v,
+            pcs_tasks::EVENT_MODE_TYPE,
+            json!({ "eventId": EVENT, "tier": "desk", "window": window() }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = h
+        .post(&a, pcs_tasks::HIDDEN_SHOW_TYPE, criterion.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let p = &body["payload"];
+    assert_eq!(p["enabled"], json!(true), "{body}");
+    // The stored configuration carries the approval the manifest leaves out.
+    assert_eq!(
+        p["stored"]["events"][0]["approvedBy"],
+        json!(a_did),
+        "{body}"
+    );
+    assert!(
+        p["published"]["events"][0].get("approvedBy").is_none(),
+        "{body}"
+    );
+    let label = format!("vetter/{}", Utc::now().format("%Y-%m"));
+    assert_eq!(p["enrolledVetters"][&label], json!(0), "{body}");
+    // One vetter has asked; the floor is three. Counts only — no DID of theirs anywhere.
+    assert_eq!(
+        p["eventStatus"][0],
+        json!({ "eventId": EVENT, "groupFloor": 3, "groupSize": 1, "approved": true, "live": false }),
+        "{body}"
+    );
+    assert!(!body.to_string().contains(&v_did), "{body}");
+
+    let (status, body) = h
+        .post(&a, pcs_tasks::HIDDEN_WITHDRAW_TYPE, criterion.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body.pointer("/payload/withdrawn"),
+        Some(&json!(true)),
+        "{body}"
+    );
+    let (status, body) = h
+        .post(&a, pcs_tasks::HIDDEN_WITHDRAW_TYPE, criterion.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body.pointer("/payload/withdrawn"),
+        Some(&json!(false)),
+        "{body}"
+    );
+    let (_, body) = h.post(&a, pcs_tasks::HIDDEN_SHOW_TYPE, criterion).await;
+    assert_eq!(
+        body.pointer("/payload/enabled"),
+        Some(&json!(false)),
+        "{body}"
+    );
+
+    // Both changes reached the audit log.
+    let rows =
+        h.tv.state
+            .audit_ks
+            .prefix_iter_raw(Vec::new())
+            .await
+            .unwrap();
+    let changes = rows
+        .iter()
+        .filter(|(_, v)| String::from_utf8_lossy(v).contains("HiddenVettingChanged"))
+        .count();
+    assert_eq!(changes, 2, "one publish and one withdrawal are audited");
+}

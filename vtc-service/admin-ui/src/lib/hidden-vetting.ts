@@ -7,14 +7,19 @@
 // routes: the same answer a client gets, never a guess from the version string.
 //
 // A criterion's hidden-vetting parameters are written by
-// `vtc/vetting/hidden/publish/0.1`, and read back from the join manifest, under the criterion's
-// `vetting.ext["org.openvtc.hidden-vetting"]`: that is what applicants and
-// vetters receive, so it is what the console shows.
+// `vtc/vetting/hidden/publish/0.1` and removed by `vtc/vetting/hidden/withdraw/0.1`.
+// What applicants and vetters receive is the join manifest's
+// `vetting.ext["org.openvtc.hidden-vetting"]`; what an edit starts from is
+// `vtc/vetting/hidden/show/0.1`, the stored configuration, because publish
+// replaces the events wholesale and the manifest leaves out each event's
+// `approvedBy` and `graceDays`.
 
 import { postSignedRead, postSignedTrustTask } from "@/lib/api";
 
 export const TASK_DISCOVERY = "https://trusttasks.org/spec/trust-task-discovery/0.3";
 export const TASK_HIDDEN_PUBLISH = "https://trusttasks.org/spec/vtc/vetting/hidden/publish/0.1";
+export const TASK_HIDDEN_WITHDRAW = "https://trusttasks.org/spec/vtc/vetting/hidden/withdraw/0.1";
+export const TASK_HIDDEN_SHOW = "https://trusttasks.org/spec/vtc/vetting/hidden/show/0.1";
 
 /** The `vetting.ext` namespace the parameters are published under
  * (`vetting::pcs::HIDDEN_VETTING_NS`). */
@@ -24,10 +29,16 @@ export const HIDDEN_VETTING_NS = "org.openvtc.hidden-vetting";
 export interface HiddenVettingSupport {
   /** The build routes `vtc/vetting/hidden/publish`, so it can turn PCS on. */
   publish: boolean;
+  /** It routes `vtc/vetting/hidden/withdraw`, so it can turn PCS off. */
+  withdraw: boolean;
+  /** It routes `vtc/vetting/hidden/show`, the stored configuration an edit
+   * with events has to start from. */
+  show: boolean;
 }
 
 export const hiddenVettingKeys = {
   support: ["hidden-vetting", "support"] as const,
+  show: (criterionId: string) => ["hidden-vetting", "show", criterionId] as const,
 };
 
 /** Read support from discovery, narrowed to the hidden-vetting family. */
@@ -40,6 +51,8 @@ export async function fetchHiddenVettingSupport(): Promise<HiddenVettingSupport>
   );
   return {
     publish: served.has(TASK_HIDDEN_PUBLISH),
+    withdraw: served.has(TASK_HIDDEN_WITHDRAW),
+    show: served.has(TASK_HIDDEN_SHOW),
   };
 }
 
@@ -93,6 +106,73 @@ export interface PublishHiddenResult {
 
 export const publishHiddenVetting = (input: PublishHiddenInput): Promise<PublishHiddenResult> =>
   postSignedTrustTask<PublishHiddenResult>(TASK_HIDDEN_PUBLISH, input);
+
+export interface WithdrawHiddenResult {
+  criterionId: string;
+  withdrawn: boolean;
+  requirementsDigest: string | null;
+}
+
+export const withdrawHiddenVetting = (criterionId: string): Promise<WithdrawHiddenResult> =>
+  postSignedTrustTask<WithdrawHiddenResult>(TASK_HIDDEN_WITHDRAW, { criterionId });
+
+/** The configuration as stored: the bare periods, and events with their approvals. */
+export interface StoredHiddenVetting {
+  suite: string;
+  hvk: string;
+  tvk: string;
+  livePeriods: string[];
+  liveTokenLabels: string[];
+  dripPerTick: number;
+  events: (EventInput & { graceDays: number; groupFloor: number })[];
+}
+
+/** One event's demand and standing, as counts. */
+export interface EventStatus {
+  eventId: string;
+  groupFloor: number;
+  groupSize: number;
+  approved: boolean;
+  live: boolean;
+}
+
+export interface ShowHiddenResult {
+  criterionId: string;
+  enabled: boolean;
+  requirementsDigest: string | null;
+  stored?: StoredHiddenVetting;
+  published?: PublishedHiddenVetting;
+  /** Members enrolled under each live vetter label, e.g. `{"vetter/2026-10": 4}`. */
+  enrolledVetters?: Record<string, number>;
+  eventStatus?: EventStatus[];
+}
+
+export const showHiddenVetting = (criterionId: string): Promise<ShowHiddenResult> =>
+  postSignedRead<ShowHiddenResult>(TASK_HIDDEN_SHOW, { criterionId });
+
+/**
+ * A publish that changes only what `patch` names, starting from what is
+ * stored — so labels, the drip rate and every event, approvals included, are
+ * sent back as they are. Publish replaces the whole configuration, so leaving
+ * any of them out would remove it.
+ */
+export function republish(
+  criterionId: string,
+  stored: StoredHiddenVetting,
+  patch: Partial<Omit<PublishHiddenInput, "criterionId">> = {},
+): PublishHiddenInput {
+  return {
+    criterionId,
+    livePeriods: stored.livePeriods,
+    liveTokenLabels: stored.liveTokenLabels,
+    dripPerTick: stored.dripPerTick,
+    events: stored.events,
+    ...patch,
+  };
+}
+
+/** The token label an event unlocks (`vetting::pcs::HiddenVettingEvent::label`). */
+export const eventLabel = (eventId: string) => `token/event/${eventId}`;
 
 /** A manifest criterion's published hidden-vetting parameters, if any. */
 export function publishedHiddenVetting(

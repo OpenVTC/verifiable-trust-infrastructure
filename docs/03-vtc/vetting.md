@@ -496,6 +496,39 @@ key revoked later does not revoke the grant — revoke it with
   dashboard counts pending requests with vetting facts and withdrawals to
   review.
 
+### Hidden vetting (PCS)
+
+A VTC built with the `vetting-pcs` feature can also accept a zero-knowledge
+proof that enough of its vetters vetted an applicant, without the community
+learning which. The dashboard's **Hidden vetting (PCS)** tile says whether this
+build supports it (read from `trust-task-discovery/0.3`).
+
+On a supporting build, each criterion that asks for vetting has a **Hidden
+vetting (PCS)** section on its card under **Vetting → Requirements**:
+
+- **Turn on / turn off** — `vtc/vetting/hidden/{publish,withdraw}/0.1`. Named
+  vetting keeps counting either way. Turning it off keeps vetters' enrolments,
+  so turning it back on works with the same keys. Use one criterion for hidden
+  vetting: vetters enrol and draw under the first criterion that has it on.
+- **What is published and stored** — labels, drip rate, suite and keys from the
+  join manifest, and from `vtc/vetting/hidden/show/0.1` the stored configuration
+  with how many members are enrolled under each vetter label and how many have
+  asked to vet at each event. Counts only — never which members.
+- **Drip rate** — how many attestation tokens a vetter's client may draw per
+  tick. Vetters pull their own tokens at that rate whether or not they vetted
+  anyone; there is no schedule to run.
+- **Roll labels to this month** — the live labels never advance on their own.
+  The section warns when they are behind.
+- **Events** — add one (name, dates, grace days, the number of vetters needed
+  before it opens, a tier and its rate), approve it, or remove it. An approval
+  is recorded in the approving administrator's own name
+  (`hidden/publish:approverNotSigner` otherwise), and an administrator who has
+  asked to vet at an event cannot approve it
+  (`hidden/publish:approverInEvent`). Every edit starts from the stored
+  configuration, so a change never drops another event's approval.
+
+Each publish and withdrawal is audited as `HiddenVettingChanged`.
+
 ## What the community checks at submit
 
 For every Vetting Statement in the join presentation — every credential whose

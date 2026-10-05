@@ -515,6 +515,14 @@ pub enum AuditEvent {
     /// the community signed.
     HiddenVetterTokensIssued(HiddenVetterTokensIssuedData),
 
+    /// An administrator turned hidden vetting on for a criterion, changed what
+    /// it publishes (labels, drip rate, events, an event's approval), or turned
+    /// it off (`vtc/vetting/hidden/{publish,withdraw}/0.1`).
+    ///
+    /// The actor is the administrator. Carries what changed, never a reason and
+    /// never which vetters enrolled or asked to vet at an event.
+    HiddenVettingChanged(HiddenVettingChangedData),
+
     VetterProfileUpdated(VetterProfileUpdatedData),
 
     /// A vetter's profile was deleted because they no longer hold a live grant —
@@ -938,6 +946,7 @@ impl AuditEvent {
             Self::VetterAutoGranted(..) => "VetterAutoGranted",
             Self::HiddenVetterEnrolled(..) => "HiddenVetterEnrolled",
             Self::HiddenVetterTokensIssued(..) => "HiddenVetterTokensIssued",
+            Self::HiddenVettingChanged(..) => "HiddenVettingChanged",
             Self::VetterProfileUpdated(..) => "VetterProfileUpdated",
             Self::VetterProfileDeleted(..) => "VetterProfileDeleted",
             Self::VetterGrantResent(..) => "VetterGrantResent",
@@ -2253,6 +2262,32 @@ pub struct HiddenVetterTokensIssuedData {
     pub tick: u32,
     /// How many tokens were signed. Never more than the published drip rate.
     pub issued: usize,
+}
+
+/// Payload for [`AuditEvent::HiddenVettingChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenVettingChangedData {
+    /// The criterion whose hidden vetting changed.
+    pub criterion_id: String,
+    /// `"published"` or `"withdrawn"`.
+    pub change: String,
+    /// The vetter class labels live after the change; empty when withdrawn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vetter_labels: Vec<String>,
+    /// The token labels live after the change; empty when withdrawn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub token_labels: Vec<String>,
+    /// The drip rate after the change; absent when withdrawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drip_per_tick: Option<usize>,
+    /// The events configured after the change, by id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<String>,
+    /// Events this change approved. The approver is always the actor: an
+    /// approver names themselves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approved_events: Vec<String>,
 }
 
 /// Payload for [`AuditEvent::VetterProfileUpdated`].
