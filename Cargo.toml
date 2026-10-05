@@ -634,7 +634,7 @@ ipnetwork = { version = "0.21", features = ["serde"] }
 # The SDK gates its `ToSchema` derives behind its own `openapi` feature so the
 # published artifact stays slim; the services depend on utoipa unconditionally.
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
-utoipa-axum = "0.2"
+utoipa-axum = "0.3"
 
 # Used by every CLI (operator config) and both services (config-from-toml).
 toml = "1"
