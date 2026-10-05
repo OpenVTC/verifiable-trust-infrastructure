@@ -769,6 +769,17 @@ const EMBEDDED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/admin/events/event/0.1",
 ];
 
+/// Document types the console sends that the spine dispatches only in a build
+/// with a feature on, paired with whether this test binary was built with it.
+const FEATURE_GATED_DOCUMENT_TYPES: &[(&str, bool)] = &[
+    // Hidden vetting (`vetting-pcs`): turned on, and its labels and drip rate
+    // changed, from a criterion's card (`HiddenVettingCard.tsx`).
+    (
+        "https://trusttasks.org/spec/vtc/vetting/hidden/publish/0.1",
+        cfg!(feature = "vetting-pcs"),
+    ),
+];
+
 /// Document types the console sends that the *spine* dispatches rather than
 /// the git-ns family: the answer to an operation-bound step-up
 /// (`trust_tasks::handle_step_up_approve_response`), which the console sends
@@ -778,6 +789,9 @@ const EMBEDDED_DOCUMENT_TYPES: &[&str] = &[
 /// of a redemption the member's `cnm` started; and the admin verbs whose REST
 /// routes are gone.
 const SPINE_DOCUMENT_TYPES: &[&str] = &[
+    // What this VTC serves (`trust_tasks::discovery`): the dashboard reads it
+    // to say whether the build does hidden vetting.
+    "https://trusttasks.org/spec/trust-task-discovery/0.3",
     // The administrator action list (`trust_tasks::action_tasks`): its reads
     // and withdrawal, signed by the console key, and an approver's decision,
     // signed by the approver's own DID through the wallet.
@@ -993,6 +1007,23 @@ fn every_admin_ui_task_is_enforced_by_a_route() {
              it — remove it from SPINE_DOCUMENT_TYPES"
         );
     }
+    // Document types the spine dispatches only in a build with a feature on.
+    // The console sends each one only after discovery has said this build
+    // serves it, so it is dispatched exactly when its feature is compiled in —
+    // never missing from a build that has the feature, never present in one
+    // that does not.
+    for (uri, feature_on) in FEATURE_GATED_DOCUMENT_TYPES {
+        assert_eq!(
+            dispatched.contains(uri),
+            *feature_on,
+            "`{uri}` should be dispatched exactly when its feature is on (on: {feature_on})"
+        );
+        assert!(
+            sent.contains(*uri),
+            "`{uri}` is allowlisted as a feature-gated console document type but the console \
+             no longer sends it — remove it from FEATURE_GATED_DOCUMENT_TYPES"
+        );
+    }
     for uri in EMBEDDED_DOCUMENT_TYPES {
         assert!(
             !dispatched.contains(uri) && !enforced.contains(*uri),
@@ -1007,6 +1038,7 @@ fn every_admin_ui_task_is_enforced_by_a_route() {
     let documents: BTreeSet<String> = SIGNED_DOCUMENT_TYPES
         .iter()
         .chain(SPINE_DOCUMENT_TYPES)
+        .chain(FEATURE_GATED_DOCUMENT_TYPES.iter().map(|(uri, _)| uri))
         .chain(EMBEDDED_DOCUMENT_TYPES)
         .chain(SIOP_BODY_DISCRIMINATOR_TYPES)
         .map(|u| u.to_string())
