@@ -18,6 +18,7 @@ use tracing::{debug, error, info, warn};
 
 use serde_json::json;
 use vti_common::outbox_store::VtiOutboxStore;
+use vti_common::sender_order::{FrameOrder, SenderOrder};
 
 use vta_sdk::protocols::{PROBLEM_REPORT_TYPE, problem_report_codes as codes};
 
@@ -674,8 +675,69 @@ pub async fn run_didcomm_service(
     info!("VTC messaging connected to mediator — inbound messages will be processed");
 
     let vtc_did_owned = vtc_did.to_string();
-    let mut stream = service.subscribe();
+    let stream = service.subscribe();
 
+    // Handlers run concurrently, bounded by a semaphore — as the VTA's inbound
+    // loop does (`vta_service::messaging::service::run_inbound_loop`).
+    //
+    // This loop used to `await` each frame's handler inline, so the VTC worked
+    // one inbound frame at a time across both protocols (one mediator socket
+    // carries DIDComm and TSP). That is a deadlock, not only a slowdown, for
+    // any operation that arrives by messaging and then waits on a messaging
+    // reply: `git-ns/namespace/bind` from `cnm` over TSP sends the bridge a
+    // `beginBind` job and waits up to 30 s for its answer — and the answer
+    // arrives on this same stream, unread until the handler gives up. The
+    // bridge replied in ~20 ms; the VTC read it 30 s later and dropped it as
+    // having no waiter.
+    //
+    // Bounded, and ordered where TSP needs it: see `run_inbound_loop`.
+    run_inbound_loop(stream, shutdown_rx, move |inbound| {
+        let state = state.clone();
+        let atm = atm.clone();
+        let service = service.clone();
+        let vtc_did = vtc_did_owned.clone();
+        #[cfg(feature = "tsp")]
+        let tsp_messaging = tsp_messaging.clone();
+        #[cfg(feature = "tsp")]
+        let mediator_did = mediator_did.clone();
+        async move {
+            #[cfg(feature = "tsp")]
+            if inbound.message.protocol == Protocol::TSP {
+                handle_tsp(inbound, &tsp_messaging, &state, &mediator_did).await;
+                return;
+            }
+            handle_inbound_frame(inbound, &state, &atm, &service, &vtc_did).await;
+        }
+    })
+    .await;
+
+    catch_up.abort();
+    info!("VTC messaging stopped");
+}
+
+/// The most inbound handlers in flight at once.
+const MAX_INFLIGHT_INBOUND: usize = 32;
+
+/// Read `stream` in arrival order and run `handle` for each frame on its own
+/// task, at most [`MAX_INFLIGHT_INBOUND`] at a time, until the stream ends or
+/// `shutdown_rx` fires.
+///
+/// Concurrent so a handler that waits on a later frame — a reply to a job it
+/// sent — is not waiting on itself. Bounded so a burst cannot grow tasks
+/// without limit: at the cap the reader waits for a permit. Ordered where TSP
+/// needs it: each frame's [`SenderOrder`] ticket is taken here, on the reader,
+/// where arrival order is known, and the task waits on it before handling.
+async fn run_inbound_loop<S, H, Fut>(
+    mut stream: S,
+    shutdown_rx: &mut watch::Receiver<bool>,
+    handle: H,
+) where
+    S: futures_util::Stream<Item = Inbound> + Unpin,
+    H: Fn(Inbound) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let inflight = Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_INBOUND));
+    let sender_order = SenderOrder::new();
     loop {
         tokio::select! {
             maybe = stream.next() => {
@@ -683,94 +745,26 @@ pub async fn run_didcomm_service(
                     warn!("VTC inbound stream ended — messaging dispatcher stopping");
                     break;
                 };
-                // The reply goes to whoever reached us: the authenticated sender
-                // when present, else the plaintext `from` (the manifest public
-                // read may arrive anoncrypt). Captured before `inbound` moves
-                // into `dispatch`. NOTE: we do NOT ack — `MessagingService`'s
-                // own dispatcher acks after handing the message to `subscribe`.
-                // TSP frames arrive off the SAME mediator socket (the transport
-                // tags which via `message.protocol`) and carry Trust-Task bytes
-                // rather than a DIDComm plaintext, so they take their own path:
-                // the DIDComm branch below would fail to parse the payload and
-                // drop the frame silently, which is what happened before this.
-                match inbound.message.protocol {
-                    Protocol::DIDComm => {}
-                    #[cfg(feature = "tsp")]
-                    Protocol::TSP => {
-                        handle_tsp(inbound, &tsp_messaging, &state, &mediator_did).await;
-                        continue;
+                // Acquire before spawning so the cap bounds in-flight work; the
+                // permit is released when the handler task ends.
+                let permit = match Arc::clone(&inflight).acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => {
+                        warn!("inbound concurrency semaphore closed — stopping");
+                        break;
                     }
-                    #[cfg(not(feature = "tsp"))]
-                    Protocol::TSP => {
-                        warn!(
-                            "received an inbound TSP frame but the `tsp` feature is disabled — \
-                             dropping"
-                        );
-                        continue;
-                    }
-                    // DIDComm v1 (Aries RFC 0019) shares no wire format,
-                    // algorithms or identifier scheme with v2.1, so it must
-                    // `continue` rather than fall through — the branch below
-                    // would try to parse it as a v2.1 plaintext and drop it
-                    // silently, which is the exact failure the note above
-                    // describes for TSP.
-                    Protocol::DIDCommV1 => {
-                        warn!(
-                            "received an inbound DIDComm v1 frame; this VTC speaks v2.1 only — \
-                             dropping"
-                        );
-                        continue;
-                    }
-                    // `Protocol` is `#[non_exhaustive]` upstream. Drop rather
-                    // than fall through, for the reason above, and never panic:
-                    // this runs on every inbound frame, so an unknown protocol
-                    // must not be a remotely triggerable crash.
-                    other => {
-                        warn!(
-                            protocol = ?other,
-                            "received an inbound frame in a protocol this VTC does not implement \
-                             — dropping"
-                        );
-                        continue;
-                    }
-                }
-
-                let reply_to = inbound.message.sender.clone().or_else(|| {
-                    serde_json::from_slice::<Message>(&inbound.message.payload)
-                        .ok()
-                        .and_then(|m| m.from)
+                };
+                let ticket = sender_order
+                    .admit(inbound.message.sender.as_deref(), frame_order(&inbound));
+                let work = handle(inbound);
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    // Held to the end of the handler: dropping a barrier's
+                    // ticket releases the frames queued behind it.
+                    ticket.ready().await;
+                    let _ticket = ticket;
+                    work.await;
                 });
-
-                if let Some(reply) = dispatch(inbound, &state).await {
-                    let Some(to) = reply_to else {
-                        warn!(
-                            reply_type = %reply.type_,
-                            "computed a DIDComm reply but the inbound message had no sender/from \
-                             to reply to — dropping"
-                        );
-                        continue;
-                    };
-                    let reply_id = uuid::Uuid::new_v4().to_string();
-                    let reply_msg = Message::build(reply_id, reply.type_, reply.body)
-                        .from(vtc_did_owned.clone())
-                        .to(to.clone())
-                        .thid(reply.thid)
-                        .finalize();
-                    match atm
-                        .pack_encrypted(&reply_msg, &to, Some(&vtc_did_owned), Some(&vtc_did_owned))
-                        .await
-                    {
-                        Ok((packed, _)) => {
-                            if let Err(e) = service
-                                .send(&to, packed.into_bytes(), Delivery::BestEffort)
-                                .await
-                            {
-                                warn!(recipient = %to, error = %e, "failed to send DIDComm reply");
-                            }
-                        }
-                        Err(e) => warn!(recipient = %to, error = %e, "failed to pack DIDComm reply"),
-                    }
-                }
             }
             _ = shutdown_rx.changed() => {
                 info!("VTC messaging stopping (shutdown signalled)");
@@ -778,9 +772,105 @@ pub async fn run_didcomm_service(
             }
         }
     }
+}
 
-    catch_up.abort();
-    info!("VTC messaging stopped");
+/// How one inbound frame takes part in per-sender ordering: a TSP
+/// relationship-control frame is a barrier, other TSP traffic follows it, and
+/// DIDComm frames are unordered (there is no handshake a reply can overtake).
+fn frame_order(inbound: &Inbound) -> FrameOrder {
+    match inbound.message.protocol {
+        Protocol::TSP => match inbound.kind {
+            InboundKind::RelationshipControl { .. } => FrameOrder::Barrier,
+            _ => FrameOrder::Follower,
+        },
+        _ => FrameOrder::Unordered,
+    }
+}
+
+/// Handle one inbound frame that is not TSP: dispatch a DIDComm v2.1 message
+/// and send any reply authcrypt to whoever reached us; drop anything else with
+/// a reason.
+async fn handle_inbound_frame(
+    inbound: Inbound,
+    state: &AppState,
+    atm: &Arc<ATM>,
+    service: &Arc<MessagingService>,
+    vtc_did: &str,
+) {
+    // TSP frames arrive off the SAME mediator socket (the transport tags which
+    // via `message.protocol`) and carry Trust-Task bytes rather than a DIDComm
+    // plaintext, so they take their own path; the DIDComm branch below would
+    // fail to parse the payload and drop the frame silently.
+    match inbound.message.protocol {
+        Protocol::DIDComm => {}
+        #[cfg(not(feature = "tsp"))]
+        Protocol::TSP => {
+            warn!("received an inbound TSP frame but the `tsp` feature is disabled — dropping");
+            return;
+        }
+        // DIDComm v1 (Aries RFC 0019) shares no wire format, algorithms or
+        // identifier scheme with v2.1, so it must return rather than fall
+        // through — the branch below would try to parse it as a v2.1 plaintext
+        // and drop it silently.
+        Protocol::DIDCommV1 => {
+            warn!("received an inbound DIDComm v1 frame; this VTC speaks v2.1 only — dropping");
+            return;
+        }
+        // `Protocol` is `#[non_exhaustive]` upstream (and TSP lands here only
+        // when the caller did not route it first). Drop rather than fall
+        // through, and never panic: this runs on every inbound frame, so an
+        // unknown protocol must not be a remotely triggerable crash.
+        other => {
+            warn!(
+                protocol = ?other,
+                "received an inbound frame in a protocol this VTC does not implement — dropping"
+            );
+            return;
+        }
+    }
+
+    // The reply goes to whoever reached us: the authenticated sender when
+    // present, else the plaintext `from` (the manifest public read may arrive
+    // anoncrypt). Captured before `inbound` moves into `dispatch`. We do NOT
+    // ack — `MessagingService`'s own dispatcher acks after handing the message
+    // to `subscribe`.
+    let reply_to = inbound.message.sender.clone().or_else(|| {
+        serde_json::from_slice::<Message>(&inbound.message.payload)
+            .ok()
+            .and_then(|m| m.from)
+    });
+
+    let Some(reply) = dispatch(inbound, state).await else {
+        return;
+    };
+    let Some(to) = reply_to else {
+        warn!(
+            reply_type = %reply.type_,
+            "computed a DIDComm reply but the inbound message had no sender/from to reply to — \
+             dropping"
+        );
+        return;
+    };
+    let reply_id = uuid::Uuid::new_v4().to_string();
+    let reply_msg = Message::build(reply_id, reply.type_, reply.body)
+        .from(vtc_did.to_string())
+        .to(to.clone())
+        .thid(reply.thid)
+        .finalize();
+    match atm
+        .pack_encrypted(&reply_msg, &to, Some(vtc_did), Some(vtc_did))
+        .await
+    {
+        Ok((packed, _)) => {
+            if let Err(e) = service
+                .send(&to, packed.into_bytes(), Delivery::BestEffort)
+                .await
+            {
+                warn!(recipient = %to, error = %e, "failed to send DIDComm reply");
+            }
+        }
+        Err(e) => warn!(recipient = %to, error = %e, "failed to pack DIDComm reply"),
+    }
 }
 
 /// Answer one inbound TSP frame: dispatch its Trust Task on the shared spine and
@@ -1561,6 +1651,119 @@ pub(crate) fn parse_disposition(s: &str) -> Result<Disposition, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ── run_inbound_loop ────────────────────────────────────────────
+
+    fn frame(id: &str, sender: &str, protocol: Protocol) -> Inbound {
+        Inbound::new(
+            affinidi_messaging_core::ReceivedMessage {
+                id: id.into(),
+                sender: Some(sender.into()),
+                recipient: "did:example:vtc".into(),
+                payload: Vec::new(),
+                protocol,
+                verified: true,
+                encrypted: true,
+            },
+            None,
+            affinidi_messaging_core::InboundAck(id.into()),
+        )
+    }
+
+    /// The deadlock this loop had: a handler that waits on a frame arriving
+    /// *after* its own — `git-ns/namespace/bind` from `cnm` waiting on the
+    /// bridge's answer to the job it sent. Read and handled one at a time, the
+    /// answer is never read until the handler gives up (30 s in production).
+    /// Here the request waits for the answer without a timeout, so a serial
+    /// loop hangs the test and a concurrent one completes it at once.
+    #[tokio::test]
+    async fn a_handler_waiting_on_a_later_frame_is_not_waiting_on_itself() {
+        let (answered_tx, answered_rx) = tokio::sync::oneshot::channel::<()>();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+        let answered_tx = Arc::new(std::sync::Mutex::new(Some(answered_tx)));
+        let answered_rx = Arc::new(std::sync::Mutex::new(Some(answered_rx)));
+        let done_tx = Arc::new(std::sync::Mutex::new(Some(done_tx)));
+
+        // The member's request over TSP, then the bridge's reply over TSP.
+        let stream = futures_util::stream::iter(vec![
+            frame("request", "did:key:zMember", Protocol::TSP),
+            frame("reply", "did:webvh:bridge", Protocol::TSP),
+        ])
+        .chain(futures_util::stream::pending());
+        let (_shutdown_tx, mut shutdown_rx) = watch::channel(false);
+
+        let loop_task = tokio::spawn(async move {
+            run_inbound_loop(Box::pin(stream), &mut shutdown_rx, move |inbound| {
+                let answered_tx = answered_tx.clone();
+                let answered_rx = answered_rx.clone();
+                let done_tx = done_tx.clone();
+                async move {
+                    if inbound.message.id == "request" {
+                        let rx = answered_rx.lock().unwrap().take().unwrap();
+                        rx.await.unwrap();
+                        let _ = done_tx.lock().unwrap().take().unwrap().send(());
+                    } else {
+                        let _ = answered_tx.lock().unwrap().take().unwrap().send(());
+                    }
+                }
+            })
+            .await;
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), done_rx)
+            .await
+            .expect("the request completed once its later reply was read")
+            .unwrap();
+        loop_task.abort();
+    }
+
+    /// A TSP relationship-control frame is a barrier for its sender's later
+    /// traffic (Keyring VTI-43), and that survives handling concurrently: the
+    /// application frame from the same sender is not handled until the invite's
+    /// handler has finished.
+    #[tokio::test]
+    async fn a_relationship_frame_is_handled_before_its_senders_later_traffic() {
+        let invite = frame("invite", "did:key:zPeer", Protocol::TSP).with_kind(
+            InboundKind::RelationshipControl {
+                request: affinidi_messaging_core::RelationshipRequest::Invite,
+                thread_digest: [0; 32],
+                reply_expected: false,
+                introduces: None,
+            },
+        );
+        let stream =
+            futures_util::stream::iter(vec![invite, frame("task", "did:key:zPeer", Protocol::TSP)])
+                .chain(futures_util::stream::pending());
+        let order = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let (done_tx, done_rx) = tokio::sync::mpsc::channel::<()>(2);
+        let (_shutdown_tx, mut shutdown_rx) = watch::channel(false);
+
+        let seen = order.clone();
+        let loop_task = tokio::spawn(async move {
+            run_inbound_loop(Box::pin(stream), &mut shutdown_rx, move |inbound| {
+                let seen = seen.clone();
+                let done_tx = done_tx.clone();
+                async move {
+                    if inbound.message.id == "invite" {
+                        // The accept resolves and POSTs before it is done.
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    seen.lock().unwrap().push(inbound.message.id.clone());
+                    let _ = done_tx.send(()).await;
+                }
+            })
+            .await;
+        });
+
+        let mut done_rx = done_rx;
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(5), done_rx.recv())
+                .await
+                .expect("both frames handled");
+        }
+        loop_task.abort();
+        assert_eq!(*order.lock().unwrap(), vec!["invite", "task"]);
+    }
 
     fn inbox(
         message_count: u32,

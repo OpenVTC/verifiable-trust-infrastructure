@@ -23,6 +23,10 @@ pub mod rate_limit;
 pub mod relationship_store;
 pub mod secure_file;
 pub mod seed_store;
+/// Per-sender arrival ordering for a concurrent inbound loop: a TSP
+/// relationship-control frame is a barrier for its sender's later traffic
+/// (Keyring VTI-43). Shared by the VTA and the VTC.
+pub mod sender_order;
 #[cfg(feature = "setup")]
 pub mod setup;
 pub mod slip10;
