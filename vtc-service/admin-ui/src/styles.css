@@ -3436,7 +3436,10 @@ a.button.primary:hover {
 }
 .gitns-nsr {
   display: grid;
-  grid-template-columns: minmax(9rem, max-content) 1fr max-content;
+  /* `minmax(0, 1fr)`, not `1fr`: a bare `1fr` track's minimum is its content's
+     width, so a holder's DID (one unbreakable word) pushed the track — and the
+     Grant button after it — past the card's edge in the three-up row. */
+  grid-template-columns: minmax(9rem, max-content) minmax(0, 1fr) max-content;
   gap: var(--space-3) var(--space-4);
   align-items: center;
 }
@@ -3450,6 +3453,22 @@ a.button.primary:hover {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1) var(--space-3);
+  min-width: 0;
+}
+.gitns-holder {
+  min-width: 0;
+  max-width: 100%;
+}
+/* In a narrow card the name and the shortened DID stack rather than run on,
+   and the DID ellipsises if even its own line is too short (hover shows it). */
+.gitns-holder .named-did {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.gitns-holder .named-did-id {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .gitns-departed.warn {
   border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
