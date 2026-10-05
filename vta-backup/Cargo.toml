@@ -2,7 +2,7 @@
 name = "vta-backup"
 description = "VTA backup/restore subsystem — encrypted full-state export/import, the sealed backup-bundle store, and its TTL sweeper"
 readme = "README.md"
-version = "0.13.1"
+version = "0.14.0"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -33,10 +33,10 @@ vti-common = { path = "../vti-common", version = "0.38" }
 # own and was borrowing one from its cipher.
 rand = { workspace = true }
 vta-sdk = { path = "../vta-sdk", version = "0.63" }
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.10" }
-vta-keys = { path = "../vta-keys", version = "0.14" }
-vta-config = { path = "../vta-config", version = "0.14", features = ["tee"] }
-vta-support = { path = "../vta-support", version = "0.11" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.11" }
+vta-keys = { path = "../vta-keys", version = "0.15" }
+vta-config = { path = "../vta-config", version = "0.15", features = ["tee"] }
+vta-support = { path = "../vta-support", version = "0.12" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
