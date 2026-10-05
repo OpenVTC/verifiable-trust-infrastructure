@@ -1137,6 +1137,24 @@ fn pcs_witnesses() -> Vec<Witness> {
             "an_event_approval_names_its_approver_and_never_one_of_its_vetters"
         ),
         witness!(
+            s::vetting::hidden::publish::v0_1::error_codes::SIGNER_CHANGED,
+            pcs::HIDDEN_PUBLISH_ERR_SIGNER_CHANGED,
+            "hidden_vetting_tasks.rs",
+            "publish_refuses_a_second_criterion_and_keys_its_signer_no_longer_derives"
+        ),
+        witness!(
+            s::vetting::hidden::publish::v0_1::error_codes::OTHER_CRITERION,
+            pcs::HIDDEN_PUBLISH_ERR_OTHER_CRITERION,
+            "hidden_vetting_tasks.rs",
+            "publish_refuses_a_second_criterion_and_keys_its_signer_no_longer_derives"
+        ),
+        witness!(
+            s::vetting::vetters::pcs_tokens::v0_1::error_codes::TICK_NOT_YET,
+            pcs::TOKENS_ERR_TICK_NOT_YET,
+            "hidden_vetting_tasks.rs",
+            "an_approved_event_opens_its_label_at_the_tier_rate"
+        ),
+        witness!(
             s::vetting::hidden::withdraw::v0_1::error_codes::NO_SUCH_CRITERION,
             pcs::HIDDEN_WITHDRAW_ERR_NO_SUCH_CRITERION,
             "hidden_vetting_tasks.rs",

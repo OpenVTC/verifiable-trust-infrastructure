@@ -506,6 +506,7 @@ mod tests {
             live_periods: vec!["2026-09".into()],
             live_token_labels: vec!["token/2026-09".into()],
             drip_per_tick: 3,
+            tick_length: crate::vetting::pcs::DEFAULT_TICK_LENGTH.into(),
             events: Vec::new(),
         }
     }

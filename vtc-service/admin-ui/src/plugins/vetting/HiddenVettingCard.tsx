@@ -18,6 +18,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useConfirm } from "@/components/ConfirmDialog";
 import {
+  DEFAULT_TICK_LENGTH,
+  describeTickLength,
+  tickLengthHours,
   type EventInput,
   type EventStatus,
   eventLabel,
@@ -78,6 +81,7 @@ export function HiddenVettingCard({
   const toast = useToast();
   const confirm = useConfirm();
   const [drip, setDrip] = useState<string | null>(null);
+  const [tick, setTick] = useState<string | null>(null);
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: vettingKeys.manifest });
@@ -91,6 +95,7 @@ export function HiddenVettingCard({
     onSuccess: (_res, input) => {
       refresh();
       setDrip(null);
+      setTick(null);
       toast.push("success", input.done);
     },
   });
@@ -116,6 +121,11 @@ export function HiddenVettingCard({
   const behind = published ? labelsBehind(published) : false;
   const dripText = drip ?? String(published?.dripPerTick ?? 3);
   const dripValue = parsePositive(dripText);
+  const publishedTick = published?.tickLength ?? DEFAULT_TICK_LENGTH;
+  const tickText = (tick ?? publishedTick).trim();
+  const tickValid = tickLengthHours(tickText) !== null;
+  const rateChanged =
+    (dripValue !== null && dripValue !== published?.dripPerTick) || tickText !== publishedTick;
   const thisMonth = periodOf();
 
   /** The publish an edit sends: from the stored configuration when there is one. */
@@ -127,6 +137,7 @@ export function HiddenVettingCard({
           livePeriods: published!.vetterLabels.map((l) => l.replace(/^vetter\//, "")),
           liveTokenLabels: published!.tokenLabels,
           dripPerTick: published!.dripPerTick,
+          ...(published!.tickLength ? { tickLength: published!.tickLength } : {}),
           ...patch,
         };
 
@@ -162,10 +173,10 @@ export function HiddenVettingCard({
   };
 
   const onSaveDrip = () => {
-    if (dripValue === null) return;
+    if (dripValue === null || !tickValid) return;
     publish.mutate({
-      body: body({ dripPerTick: dripValue }),
-      done: `Vetters may now draw ${dripValue} token${dripValue === 1 ? "" : "s"} a tick.`,
+      body: body({ dripPerTick: dripValue, tickLength: tickText }),
+      done: `Vetters may now draw ${dripValue} token${dripValue === 1 ? "" : "s"} every ${describeTickLength(tickText)}.`,
     });
   };
 
@@ -237,12 +248,11 @@ export function HiddenVettingCard({
           {otherHiddenCriterion && asksForVetting && (
             <div className="finding warn" role="status">
               <strong>
-                Hidden vetting is already on for <code>{otherHiddenCriterion}</code>.
+                Hidden vetting is on for <code>{otherHiddenCriterion}</code>.
               </strong>{" "}
               <span className="muted">
-                Vetters enrol and draw under the first criterion that has it, so
-                this one would accept proofs that nobody can mint for. Use one
-                criterion for hidden vetting.
+                A community runs it on one criterion: vetters enrol and draw
+                under a single configuration. Turn it off there to move it here.
               </span>
             </div>
           )}
@@ -251,7 +261,7 @@ export function HiddenVettingCard({
               <button
                 type="button"
                 className="secondary"
-                disabled={busy}
+                disabled={busy || Boolean(otherHiddenCriterion)}
                 onClick={() => void onEnable()}
               >
                 {publish.isPending ? "Turning on…" : "Turn on hidden vetting"}
@@ -288,6 +298,8 @@ export function HiddenVettingCard({
             </dd>
             <dt>Tokens a vetter may draw per tick</dt>
             <dd>{published.dripPerTick}</dd>
+            <dt>Tick length</dt>
+            <dd>{describeTickLength(publishedTick)}</dd>
             <dt>Suite</dt>
             <dd>
               <code>{published.suite}</code>
@@ -345,11 +357,29 @@ export function HiddenVettingCard({
                   onChange={(e) => setDrip(e.target.value)}
                 />
               </FormField>
+              <FormField
+                id={`pcs-tick-${criterionId}`}
+                label="Tick length"
+                hint={
+                  tickValid
+                    ? `${describeTickLength(tickText)}. A vetter draws once per tick, never ahead; a tick it missed can still be drawn later. An ISO 8601 duration in days and/or hours, like P3D or PT12H.`
+                    : "An ISO 8601 duration in days and/or hours, like P3D or PT12H."
+                }
+                error={tickValid ? undefined : "Days and/or hours, at least one hour."}
+              >
+                <input
+                  id={`pcs-tick-${criterionId}`}
+                  type="text"
+                  spellCheck={false}
+                  value={tickText}
+                  onChange={(e) => setTick(e.target.value)}
+                />
+              </FormField>
               <div className="form-actions">
                 <button
                   type="button"
                   className="secondary"
-                  disabled={busy || dripValue === null || dripValue === published.dripPerTick}
+                  disabled={busy || dripValue === null || !tickValid || !rateChanged}
                   onClick={onSaveDrip}
                 >
                   Save drip rate

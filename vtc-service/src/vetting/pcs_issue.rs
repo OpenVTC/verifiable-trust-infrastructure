@@ -172,6 +172,7 @@ pub fn publish(
         live_periods,
         live_token_labels,
         drip_per_tick,
+        tick_length: super::pcs::DEFAULT_TICK_LENGTH.to_string(),
         // None. Event mode is the exception a community adds to a criterion it is already
         // running (§5.1), never a state it is published into.
         events: Vec::new(),
@@ -347,6 +348,26 @@ pub async fn drip(
     // window — and a member who never asked to be in the event is not in it
     // ([`super::pcs_event::gate`]).
     super::pcs_event::gate(state, config, member_did, &batch.label, now).await?;
+
+    // A tick is a window of time, not a counter the vetter chooses (pcs-tokens/0.1): without
+    // this, a vetter could draw ticks 0, 1, 2, … back to back and the drip would cap nothing.
+    // Earlier ticks not yet served stay drawable once each, so a device that was off catches
+    // up — never ahead.
+    match config.current_tick(&batch.label, now) {
+        Some(current) if u64::from(batch.tick) <= current => {}
+        Some(current) => {
+            return Err(AppError::Validation(format!(
+                "tick {} of `{}` has not begun: it is tick {current} now, and each lasts {}",
+                batch.tick, batch.label, config.tick_length
+            )));
+        }
+        None => {
+            return Err(AppError::Validation(format!(
+                "tick {} of `{}` has not begun: the label's first tick is still to come",
+                batch.tick, batch.label
+            )));
+        }
+    }
 
     let key = drip_key(member_did, &batch.label, batch.tick);
     if let Some(row) = state

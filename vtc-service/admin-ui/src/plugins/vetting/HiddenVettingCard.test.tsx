@@ -154,7 +154,69 @@ describe("hidden vetting on a criterion", () => {
         livePeriods: [THIS_MONTH],
         liveTokenLabels: [`token/${THIS_MONTH}`],
         dripPerTick: 5,
+        tickLength: "P3D",
       }),
+    );
+  });
+
+  it("will not turn hidden vetting on for a second criterion", async () => {
+    const row = (id: string) => ({
+      id,
+      admission: "automatic",
+      vetting: VETTING,
+      createdAt: "2026-01-01T00:00:00Z",
+      createdByDid: "did:key:zAdmin",
+    });
+    mockFetch([
+      taskRoute(TASK_DISCOVERY, { supportedTypes: [TASK_HIDDEN_PUBLISH] }),
+      taskRoute(ACCEPTS_LIST_TASK, { items: [row("vetted-member"), row("second-route")] }),
+      taskRoute(MANIFEST_TASK, {
+        communityDid: "did:web:vtc.example.org",
+        criteria: [
+          {
+            id: "vetted-member",
+            admission: "automatic",
+            vetting: { ...VETTING, ext: { "org.openvtc.hidden-vetting": published() } },
+            requirementsDigest: "zQmA",
+          },
+          { id: "second-route", admission: "automatic", vetting: VETTING, requirementsDigest: "zQmB" },
+        ],
+      }),
+      taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", { items: [] }),
+    ]);
+    renderWithProviders(<RequirementsPanel />);
+    const second = (
+      await screen.findByRole("heading", { name: "2. Criterion second-route" })
+    ).closest("section")!;
+    const button = (await within(second).findByRole("button", {
+      name: "Turn on hidden vetting",
+    })) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(within(second).getByText(/Turn it off there to move it here/)).toBeTruthy();
+  });
+
+  it("saves a new tick length, and refuses one that is not days or hours", async () => {
+    const requests = mockFetch(
+      routes({
+        served: [TASK_HIDDEN_PUBLISH],
+        hidden: published({ tickLength: "P3D" }),
+        extra: [taskRoute(TASK_HIDDEN_PUBLISH, publishAnswer)],
+      }),
+    );
+    renderWithProviders(<RequirementsPanel />);
+    const c = await card();
+    expect(await within(c).findByText("3 days")).toBeTruthy();
+    const field = within(c).getByLabelText("Tick length") as HTMLInputElement;
+    fireEvent.change(field, { target: { value: "P1W" } });
+    expect(
+      (within(c).getByRole("button", { name: "Save drip rate" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    fireEvent.change(field, { target: { value: "PT12H" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Save drip rate" }));
+    await waitFor(() =>
+      expect(sentPayloads(requests, TASK_HIDDEN_PUBLISH)).toContainEqual(
+        expect.objectContaining({ dripPerTick: 3, tickLength: "PT12H" }),
+      ),
     );
   });
 
