@@ -64,6 +64,17 @@ updates:
       # CryptoRng is not satisfied`. The workspace itself is already on 0.10,
       # and that copy is unaffected. Lift this when the OpenPGP stack moves.
       - dependency-name: "rand"
+      # `vti-vetting-pcs` drives arkworks, which takes its RNG through the
+      # rand 0.8 / rand_core 0.6 traits, and `Issuer::derive` seeds a
+      # `ChaCha20Rng` to generate every community's PCS keys. rand_chacha
+      # 0.10 implements rand_core 0.10's traits instead, so it cannot be
+      # handed to arkworks (#1969: `no function or associated item named
+      # from_seed found for ChaCha20Rng`), and bridging the two would risk
+      # changing the stream the derived keys come from — which re-keys every
+      # deployment. Majors only: 0.3 patches still come through. Lift this
+      # when arkworks moves off rand 0.8.
+      - dependency-name: "rand_chacha"
+        update-types: ["version-update:semver-major"]
 
   # ── GitHub Actions ────────────────────────────────────────────────────
   # Every `uses:` in this repo is a full 40-hex commit SHA with the version in
