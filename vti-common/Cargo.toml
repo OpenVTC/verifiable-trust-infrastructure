@@ -101,6 +101,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util"] }
+# `CancellationToken` in `sender_order`.
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }

@@ -3,11 +3,12 @@
 //!
 //! # The bug this exists for
 //!
-//! [`run_inbound_loop`](super::service::run_inbound_loop) reads frames in
-//! arrival order but spawns each onto its own task, so two frames from one peer
-//! race. A phone sent a TSP relationship invite (`XRFI`) and, 16 ms later, a
-//! Trust Task. The task's reply (a ~2 ms `permissionDenied`) was sent ~328 ms
-//! *before* the VTA finished answering the invite with `XRFA` — the accept
+//! A node's inbound loop (the VTA's `run_inbound_loop`, the VTC's
+//! `run_didcomm_service`) reads frames in arrival order but spawns each onto its
+//! own task, so two frames from one peer race. A phone sent a TSP relationship
+//! invite (`XRFI`) and, 16 ms later, a Trust Task. The task's reply (a ~2 ms
+//! `permissionDenied`) was sent ~328 ms *before* the VTA finished answering the
+//! invite with `XRFA` — the accept
 //! resolves the peer's VID and POSTs, and only then is the relationship
 //! `Bidirectional`. The phone admits application messages only on a
 //! bidirectional relationship, so it received a reply on a relationship it did

@@ -30,8 +30,9 @@ pub mod registry;
 #[cfg(feature = "didcomm")]
 pub mod router;
 /// Per-sender arrival ordering for the inbound loop: a relationship-control
-/// frame is a barrier for its sender's later traffic (Keyring VTI-43).
-pub mod sender_order;
+/// frame is a barrier for its sender's later traffic (Keyring VTI-43). Lives
+/// in `vti-common` so the VTC's inbound loop shares it.
+pub use vti_common::sender_order;
 /// Delivery-layer construction + protocol-routed inbound loop (D2 P2a).
 pub mod service;
 /// Local replacements for the `affinidi-messaging-didcomm-service` types the
