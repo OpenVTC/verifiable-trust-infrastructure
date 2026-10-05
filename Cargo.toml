@@ -243,7 +243,7 @@ dtg-credentials = "0.13"
 # `idna` is kept: it is the `hostname`/`idn-hostname` format check, pure
 # computation and no I/O. `tls-aws-lc-rs` goes with `resolve-http` — it exists
 # only to fetch over HTTPS.
-jsonschema = { version = "0.56", default-features = false, features = ["idna"] }
+jsonschema = { version = "0.58", default-features = false, features = ["idna"] }
 
 # Async runtime. 1.49 stabilised `runtime::Id`, which
 # `vta_sdk::resolver::shared_did_resolver` keys on.
