@@ -778,6 +778,15 @@ const FEATURE_GATED_DOCUMENT_TYPES: &[(&str, bool)] = &[
         "https://trusttasks.org/spec/vtc/vetting/hidden/publish/0.1",
         cfg!(feature = "vetting-pcs"),
     ),
+    // Turned off, and the stored configuration and its counts read back.
+    (
+        "https://trusttasks.org/spec/vtc/vetting/hidden/withdraw/0.1",
+        cfg!(feature = "vetting-pcs"),
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/vetting/hidden/show/0.1",
+        cfg!(feature = "vetting-pcs"),
+    ),
 ];
 
 /// Document types the console sends that the *spine* dispatches rather than

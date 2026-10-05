@@ -37,6 +37,13 @@ pub const PCS_CHALLENGE_TYPE: &str = "https://trusttasks.org/spec/vtc/vetting/pc
 /// `vtc/vetting/hidden/publish/0.1` — an admin turns on (or rotates) hidden-vetter admission for
 /// a criterion. Was `POST /vetting/hidden`, served by `crate::trust_tasks::handle_hidden_publish`.
 pub const HIDDEN_PUBLISH_TYPE: &str = "https://trusttasks.org/spec/vtc/vetting/hidden/publish/0.1";
+/// `vtc/vetting/hidden/withdraw/0.1` — an admin turns hidden-vetter admission off for a criterion.
+pub const HIDDEN_WITHDRAW_TYPE: &str =
+    <trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `vtc/vetting/hidden/show/0.1` — an admin reads a criterion's stored hidden-vetting
+/// configuration, with the enrolment and event-demand counts it needs to run it.
+pub const HIDDEN_SHOW_TYPE: &str =
+    <trust_tasks_rs::specs::vtc::vetting::hidden::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 // --- declared error codes --------------------------------------------------------------------
 //
@@ -79,6 +86,21 @@ pub const HIDDEN_PUBLISH_ERR_NO_SUCH_CRITERION: &str =
 /// `vtc/vetting/hidden/publish:noVetting`, read from the generated bindings.
 pub const HIDDEN_PUBLISH_ERR_NO_VETTING: &str =
     trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::NO_VETTING.code;
+/// `vtc/vetting/hidden/publish:approverNotSigner`: a new or changed `approvedBy` names someone
+/// other than the administrator publishing it.
+pub const HIDDEN_PUBLISH_ERR_APPROVER_NOT_SIGNER: &str =
+    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::APPROVER_NOT_SIGNER
+        .code;
+/// `vtc/vetting/hidden/publish:approverInEvent`: the approver has asked to vet at the event.
+pub const HIDDEN_PUBLISH_ERR_APPROVER_IN_EVENT: &str =
+    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::APPROVER_IN_EVENT.code;
+/// `vtc/vetting/hidden/withdraw:noSuchCriterion`
+pub const HIDDEN_WITHDRAW_ERR_NO_SUCH_CRITERION: &str =
+    trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::error_codes::NO_SUCH_CRITERION
+        .code;
+/// `vtc/vetting/hidden/show:noSuchCriterion`
+pub const HIDDEN_SHOW_ERR_NO_SUCH_CRITERION: &str =
+    trust_tasks_rs::specs::vtc::vetting::hidden::show::v0_1::error_codes::NO_SUCH_CRITERION.code;
 /// `vtc/vetting/vetters/event-mode:alreadyRequested`
 pub const EVENT_ERR_ALREADY_REQUESTED: &str = "vtc/vetting/vetters/event-mode:alreadyRequested";
 /// `vtc/vetting/vetters/event-mode:eventClosed`
