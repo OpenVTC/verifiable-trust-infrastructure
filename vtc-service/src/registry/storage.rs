@@ -119,8 +119,9 @@ pub async fn list_sync_jobs(ks: &KeyspaceHandle) -> Result<Vec<SyncJob>, AppErro
 }
 
 /// Reap `Failed` sync jobs older than `retention_days`. A job flips to `Failed`
-/// only after exhausting its retry budget (`DEFAULT_MAX_ATTEMPTS`) and has
-/// surfaced in `/health/diagnostics` for operator intervention; past the
+/// after exhausting its retry budget (`DEFAULT_MAX_ATTEMPTS`), or at once on a
+/// permanent refusal, and has surfaced in the console's failed-jobs list for
+/// an operator to retry or discard; past the
 /// retention window it is terminal clutter holding a plaintext `member_did`.
 /// Age is measured from `last_attempted_at` (when it gave up), falling back to
 /// `created_at`. Active / in-flight / retrying jobs are never touched. Returns

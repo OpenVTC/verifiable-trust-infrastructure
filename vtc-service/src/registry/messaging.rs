@@ -710,7 +710,17 @@ impl TrustRegistryClient for MessagingRegistryClient {
                     "resource": TRUST_GRAPH_RESOURCE,
                 });
                 let reply = self.round_trip(RECORD_DELETE, payload, protocol).await?;
-                classify(&reply, "registry/record/delete")
+                match classify(&reply, "registry/record/delete") {
+                    // Already absent is the effect a delete wants — the same
+                    // tolerance `delete_trust_record` gives. Without it, a
+                    // record already gone failed the job permanently.
+                    Err(RegistryError::Permanent(m))
+                        if m.contains("registry/record/delete:notFound") =>
+                    {
+                        Ok(())
+                    }
+                    other => other,
+                }
             }
         }
     }

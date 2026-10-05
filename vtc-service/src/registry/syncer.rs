@@ -106,8 +106,18 @@ pub struct MembershipSyncer {
 enum SyncAction {
     /// Write this record (an `Active` publication or a `Departed` update).
     Publish(RegistryRecord),
-    /// Remove the member's record — a `DeleteMember` job.
+    /// Remove the member's record — a `DeleteMember` job for a member the
+    /// mirror says was published.
     Delete,
+    /// A `DeleteMember` job for a member the mirror holds no record of: ask
+    /// the registry whether it holds one, and delete only if it does.
+    ///
+    /// Not a plain skip, because a purge is an erasure (right to be
+    /// forgotten): if the mirror were ever wrong, skipping would leave a
+    /// published membership in the registry. Not a plain delete either: for a
+    /// member who never consented there is nothing to remove, and the
+    /// registry's refusal used to fail the job outright.
+    DeleteIfPresent,
     /// Remove the record of a live member who does not (or no longer)
     /// consent to publication. The same registry call as [`Self::Delete`];
     /// kept distinct so the log says why.
@@ -492,7 +502,13 @@ impl MembershipSyncer {
     async fn resolve(&self, job: &SyncJob) -> Result<SyncAction, AppError> {
         let did = job.member_did.as_str();
         match job.kind {
-            SyncJobKind::DeleteMember => Ok(SyncAction::Delete),
+            SyncJobKind::DeleteMember => Ok(
+                if get_record(&self.registry_records_ks, did).await?.is_some() {
+                    SyncAction::Delete
+                } else {
+                    SyncAction::DeleteIfPresent
+                },
+            ),
             SyncJobKind::MarkDeparted => {
                 // A departure re-publishes the record as `Departed`. For a
                 // member who was never published — they did not consent, or
@@ -574,6 +590,26 @@ impl MembershipSyncer {
             SyncAction::Delete | SyncAction::Withdraw => {
                 self.client.delete_member(&job.member_did).await
             }
+            SyncAction::DeleteIfPresent => match self.client.read_member(&job.member_did).await {
+                Ok(None) => {
+                    debug!(
+                        job_id = %job.id,
+                        did = %job.member_did,
+                        "member was never published; nothing to delete from the registry"
+                    );
+                    Ok(())
+                }
+                Ok(Some(_)) => self.client.delete_member(&job.member_did).await,
+                // A failure worth retrying is retried as the read, so the
+                // decision is made again on the next attempt.
+                Err(e) if e.is_retriable() => Err(e),
+                // A registry that cannot answer the read at all: fall back to
+                // the delete, which treats "not found" as done.
+                Err(e) => {
+                    debug!(error = %e, did = %job.member_did, "registry read refused; deleting instead");
+                    self.client.delete_member(&job.member_did).await
+                }
+            },
             // `dispatch_one` returns before dispatching a skip.
             SyncAction::Skip(_) => Ok(()),
         }
@@ -588,7 +624,7 @@ impl MembershipSyncer {
                     warn!(error = %e, did = %job.member_did, "failed to update registry_records mirror");
                 }
             }
-            SyncAction::Delete | SyncAction::Withdraw => {
+            SyncAction::Delete | SyncAction::Withdraw | SyncAction::DeleteIfPresent => {
                 if let Err(e) =
                     super::storage::delete_record(&self.registry_records_ks, &job.member_did).await
                 {
@@ -1279,5 +1315,82 @@ default publish_on_join := false
             .await
             .unwrap();
         assert!(mirror.is_none(), "mirror row should be deleted");
+    }
+
+    /// A member who never consented was never published, so their purge has
+    /// nothing to remove. It used to send the delete anyway, and the
+    /// registry's refusal failed the job outright, leaving a Failed row an
+    /// operator had to clear by hand.
+    #[tokio::test]
+    async fn deleting_a_member_who_was_never_published_completes_without_a_delete() {
+        let (syncer, mock, _dir) = fixture().await;
+        let job = SyncJob::fresh(SyncJobKind::DeleteMember, "did:key:zNeverPublished");
+        store_sync_job(&syncer.sync_queue_ks, &job).await.unwrap();
+
+        syncer.tick().await.unwrap();
+
+        let counts = mock.call_counts().await;
+        assert_eq!(
+            counts.read, 1,
+            "the registry is asked whether it holds a record"
+        );
+        assert_eq!(counts.delete, 0, "and nothing is deleted when it does not");
+        assert!(
+            list_sync_jobs(&syncer.sync_queue_ks)
+                .await
+                .unwrap()
+                .is_empty(),
+            "the job completes rather than failing"
+        );
+    }
+
+    /// The mirror is what this community believes it published; a purge is an
+    /// erasure, so when the mirror has lost a record the registry still holds,
+    /// the record is deleted all the same.
+    #[tokio::test]
+    async fn a_purge_deletes_a_record_the_mirror_lost() {
+        let (syncer, mock, _dir) = fixture().await;
+        mock.publish_member(&RegistryRecord::fresh_active("did:key:zLostMirror"))
+            .await
+            .unwrap();
+        let job = SyncJob::fresh(SyncJobKind::DeleteMember, "did:key:zLostMirror");
+        store_sync_job(&syncer.sync_queue_ks, &job).await.unwrap();
+
+        syncer.tick().await.unwrap();
+
+        assert_eq!(mock.call_counts().await.delete, 1);
+        assert!(
+            mock.read_member("did:key:zLostMirror")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            list_sync_jobs(&syncer.sync_queue_ks)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A registry that cannot answer the read is not taken as "absent": the
+    /// delete is sent, which is what erasure needs.
+    #[tokio::test]
+    async fn a_refused_read_falls_back_to_the_delete() {
+        let (syncer, mock, _dir) = fixture().await;
+        mock.fail_next_read(RegistryError::Permanent("unsupported".into()))
+            .await;
+        let job = SyncJob::fresh(SyncJobKind::DeleteMember, "did:key:zNoRead");
+        store_sync_job(&syncer.sync_queue_ks, &job).await.unwrap();
+
+        syncer.tick().await.unwrap();
+
+        assert_eq!(mock.call_counts().await.delete, 1);
+        assert!(
+            list_sync_jobs(&syncer.sync_queue_ks)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

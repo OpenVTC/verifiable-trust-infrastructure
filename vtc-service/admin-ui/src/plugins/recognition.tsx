@@ -337,8 +337,7 @@ export function Recognition() {
                   deployed registry does not serve that task at all — not a
                   rejection of anything we sent, so nothing about this
                   community&rsquo;s configuration will fix it. Upgrade the trust
-                  registry, then requeue with{" "}
-                  <code>vtc sync-jobs retry --all</code> on a stopped daemon.
+                  registry, then use <strong>Retry all failed</strong> below.
                 </span>
               </p>
             )}
@@ -352,7 +351,9 @@ export function Recognition() {
                   absent or stale in the registry until an operator acts — or
                   until the retention sweeper purges the row, which clears the
                   failure without fixing it. Fix the cause, then{" "}
-                  <code>vtc sync-jobs retry</code> on a stopped daemon.
+                  <strong>Retry</strong> the job. <strong>Discard</strong> one
+                  whose effect is no longer wanted, or already true — a delete
+                  of a record the registry never held, for instance.
                 </p>
                 <div className="table-scroll">
                   <table className="data-table">
