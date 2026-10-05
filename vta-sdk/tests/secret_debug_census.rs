@@ -113,10 +113,18 @@ const NOT_SECRET: &[(&str, &str, &str, &str)] = &[
          public metadata (its doc comment says so) bound into the attestation, not the token's \
          secret",
     ),
+    (
+        "vti-common/src/audit/event.rs",
+        "HiddenVettingChangedData",
+        "token_labels",
+        "the hidden-vetting token labels live after a change (`token/2026-10`, \
+         `token/event/<id>`), public values every applicant and vetter reads from the join \
+         manifest — names of labels, not tokens",
+    ),
 ];
 
 /// The size of [`NOT_SECRET`], asserted so the list cannot grow quietly.
-const NOT_SECRET_COUNT: usize = 11;
+const NOT_SECRET_COUNT: usize = 12;
 
 /// Field names that are exactly one of these are record or index keys, not
 /// key material.
