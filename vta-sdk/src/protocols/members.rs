@@ -53,6 +53,22 @@ pub const AUTHORITY_CREDENTIAL_TYPE: &str = "AuthorityCredential";
 /// statement carries this one type.
 pub const STATEMENT_CREDENTIAL_TYPE: &str = "StatementCredential";
 
+/// `vtc/members/update`'s refusal of an administrator's `publishConsent: true`
+/// for a member who has not consented to trust-registry publication.
+///
+/// That consent is the member's own decision, given with `registryConsent` on
+/// `vtc/join-requests/submit` (and again on a rejoin). An administrator may
+/// withdraw it — a takedown — but never grant it. Re-stating the current value
+/// is a no-op, not a refusal.
+///
+/// A literal, like `join_requests::JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN`:
+/// `vtc/members/update/0.1` declares no code for it, so it is minted under the
+/// task's own namespace (Trust Tasks SPEC §8.5). A client that does not
+/// recognise it treats it as `taskFailed`. The VTC's error-code census lists it
+/// as consumer-minted and fails the day the specification declares it.
+pub const MEMBER_UPDATE_ERR_CONSENT_GRANT_FORBIDDEN: &str =
+    "vtc/members/update:consentGrantForbidden";
+
 /// VTC → member: request that the member issue and send their reciprocal VMC.
 pub const MEMBER_REQUEST_VMC_TYPE: &str = "https://trusttasks.org/spec/vtc/members/request-vmc/0.1";
 

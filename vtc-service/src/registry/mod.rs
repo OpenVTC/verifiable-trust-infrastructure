@@ -12,8 +12,11 @@
 //! A member is published only while their
 //! [`crate::members::Member::publish_consent`] is `true` — the
 //! applicant's `registryConsent` on `vtc/join-requests/submit`
-//! (spec: *Consent/purpose*), or an admin `members/update` since.
-//! The syncer reads it at dispatch time and enforces it in code;
+//! (spec: *Consent/purpose*). An administrator may withdraw it
+//! through `members/update` but never grant it
+//! (`vtc/members/update:consentGrantForbidden`): consent is the
+//! member's to give. The syncer reads it at dispatch time and
+//! enforces it in code;
 //! `registry.rego`'s `publish_on_join` can narrow publication
 //! further but can never publish a member who did not consent.
 //! Withdrawing consent removes the member's record from the

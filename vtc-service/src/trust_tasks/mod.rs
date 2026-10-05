@@ -6861,6 +6861,99 @@ mod members_admin_tests {
         assert_eq!(acl.role, VtcRole::Member, "and nothing was changed");
     }
 
+    /// Registry consent is the member's to give: an administrator's
+    /// `publishConsent: true` for a member who has not consented is refused
+    /// with `consentGrantForbidden`, and nothing in the request is applied.
+    #[tokio::test]
+    async fn update_refuses_to_grant_registry_consent() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            MEMBER_UPDATE_TYPE,
+            json!({ "did": TARGET, "publishConsent": true, "label": "Ada Lovelace" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some(crate::routes::members::update::UPDATE_ERR_CONSENT_GRANT_FORBIDDEN),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        let member = get_member(&fix.vtc.state.members_ks, TARGET)
+            .await
+            .expect("read member")
+            .expect("row");
+        assert!(!member.publish_consent, "consent was not granted");
+        let acl = get_acl_entry(&fix.vtc.state.acl_ks, TARGET)
+            .await
+            .expect("read ACL")
+            .expect("row");
+        assert_eq!(
+            acl.label, None,
+            "and nothing else in the request was applied"
+        );
+    }
+
+    /// Withdrawing consent (`true → false`) is an administrator's to make, and
+    /// re-stating the current value is a no-op rather than a grant.
+    #[tokio::test]
+    async fn update_withdraws_registry_consent_and_accepts_a_no_op() {
+        let fix = fixture().await;
+        let mut member = Member::fresh(TARGET);
+        member.publish_consent = true;
+        store_member(&fix.vtc.state.members_ks, &member)
+            .await
+            .expect("seed consent");
+
+        // `true → true`: nothing changes, nothing is refused.
+        let doc = signed(
+            &fix.admin,
+            MEMBER_UPDATE_TYPE,
+            json!({ "did": TARGET, "publishConsent": true }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+
+        // `true → false`: the takedown.
+        let doc = signed(
+            &fix.admin,
+            MEMBER_UPDATE_TYPE,
+            json!({ "did": TARGET, "publishConsent": false }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        let after = get_member(&fix.vtc.state.members_ks, TARGET)
+            .await
+            .expect("read member")
+            .expect("row");
+        assert!(!after.publish_consent, "consent was withdrawn");
+
+        // `false → false`: still a no-op.
+        let doc = signed(
+            &fix.admin,
+            MEMBER_UPDATE_TYPE,
+            json!({ "did": TARGET, "publishConsent": false }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
     /// A metadata update a signed document really does apply.
     #[tokio::test]
     async fn update_applies_a_metadata_change_from_a_signed_document() {
@@ -6868,7 +6961,7 @@ mod members_admin_tests {
         let doc = signed(
             &fix.admin,
             MEMBER_UPDATE_TYPE,
-            json!({ "did": TARGET, "label": "Ada Lovelace", "publishConsent": true }),
+            json!({ "did": TARGET, "label": "Ada Lovelace", "departurePreference": "purge" }),
         )
         .await;
         let out = dispatch(&fix.vtc, &doc).await;
@@ -6908,7 +7001,7 @@ mod members_admin_tests {
         let doc = signed(
             &fix.admin,
             MEMBER_UPDATE_TYPE,
-            json!({ "did": TARGET, "publishConsent": true }),
+            json!({ "did": TARGET, "departurePreference": "purge" }),
         )
         .await;
         let out = dispatch(&fix.vtc, &doc).await;

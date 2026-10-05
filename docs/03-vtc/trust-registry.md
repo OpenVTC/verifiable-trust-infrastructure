@@ -120,8 +120,13 @@ A member is published **only if they consented**. The consent is the
 member's `publishConsent` flag, set at admission from the applicant's
 `registryConsent` on `vtc/join-requests/submit` (the spec's
 *Consent/purpose* section: it is the applicant's consent to
-trust-registry publication) and changeable afterwards by an admin
-through `vtc/members/update`.
+trust-registry publication). It is the member's own privacy decision,
+so an administrator may **withdraw** it through `vtc/members/update`
+but never **grant** it: `publishConsent: true` for a member whose
+consent is `false` is refused with
+`vtc/members/update:consentGrantForbidden`, and nothing else in that
+request is applied. Re-stating the current value (either way) is a
+no-op.
 
 The syncer reads the flag when it dispatches each job, not when the job
 was queued, and enforces it in code:
@@ -138,14 +143,18 @@ applicant's to give, not the community's. The rule receives
 `input.member.publishConsent` (with `input.member.did` and
 `input.action == "publish"`) if a policy wants to state it.
 
-Consent can change after admission:
+Consent can change after admission only one way:
 
-- **Withdrawn** (`true → false`): the member's record is **removed**
-  from the registry on the next sync tick (a delete, not a
-  `Departed` record: the member has not left, they have stopped
-  agreeing to be listed).
-- **Granted** (`false → true`): the member is published on the next
-  tick, subject to `publish_on_join`.
+- **Withdrawn** (`true → false`), by an administrator's
+  `vtc/members/update` — a takedown: the member's record is
+  **removed** from the registry on the next sync tick (a delete, not
+  a `Departed` record: the member has not left, they have stopped
+  being listed).
+- **Granted** (`false → true`): never by an administrator. The only
+  way consent becomes `true` is the member's own `registryConsent:
+  true` on a join submit — including a rejoin, which writes a fresh
+  member record. The member is then published, subject to
+  `publish_on_join`.
 
 A departure (`MemberRemoved` with `tombstone` / `historical`) updates
 the record to `Departed` only if the member was published. A member who
@@ -162,20 +171,15 @@ Upgrading does not remove them all at once: the syncer acts per member
 when something re-decides that member (a role change, a consent change,
 a retried job, or a replay of the audit log). At that point a
 non-consenting member who holds a registry record is removed. That is
-the intended result, since they never consented. If you need them listed,
-record their consent (with their agreement) before it happens:
+the intended result, since they never consented.
 
-```bash
-# For each member who has agreed to be listed:
-curl -X PATCH "$VTC/v1/members/$MEMBER_DID" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"publishConsent": true}'
-```
-
-(or the `vtc/members/update` Trust Task with `{"did": …,
-"publishConsent": true}`). The next tick publishes the member if they
-are not already listed.
+An administrator cannot record consent on a member's behalf:
+`vtc/members/update` refuses `publishConsent: true` for a member whose
+consent is `false` (`vtc/members/update:consentGrantForbidden`), even
+with the member's agreement, because the community has no way to show
+that agreement. A member who wants to be listed gives consent
+themselves, with `registryConsent: true` on a join submit — for an
+existing member, by rejoining.
 
 ## RTBF batching
 

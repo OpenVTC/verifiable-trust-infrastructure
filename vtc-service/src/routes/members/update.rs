@@ -1,7 +1,9 @@
 //! `PATCH /v1/members/{did}` — M1.5.1.
 //!
 //! Non-role fields (publish consent, departure preference, extensions)
-//! are written directly. A **role change** is the role-change ceremony:
+//! are written directly. Publish consent only goes **down** here: an
+//! administrator may withdraw a member's trust-registry consent but never
+//! grant it ([`UPDATE_ERR_CONSENT_GRANT_FORBIDDEN`]). A **role change** is the role-change ceremony:
 //! it runs through the decision pipeline ([`crate::ceremony`]) —
 //! assemble Facts → decide the active `roleChange` policy → apply via
 //! the `Remint` executor arm (which updates the ACL role in place,
@@ -47,6 +49,18 @@ pub const UPDATE_ERR_NOT_FOUND: &str =
 /// `vtc/members/update:adminRoleForbidden` — `role` was `admin`.
 pub const UPDATE_ERR_ADMIN_ROLE_FORBIDDEN: &str =
     trust_tasks_rs::specs::vtc::members::update::v0_1::error_codes::ADMIN_ROLE_FORBIDDEN.code;
+/// `vtc/members/update:consentGrantForbidden` — `publishConsent: true` for a
+/// member whose consent is `false`.
+///
+/// Consent to trust-registry publication is the member's own decision: they
+/// give it with `registryConsent` on `vtc/join-requests/submit` (and again on a
+/// rejoin, which writes a fresh member row). An administrator may **withdraw**
+/// it — a takedown, which the registry syncer turns into a delete of the
+/// member's record — but never grant it, or an administrator could publish
+/// someone who said no. Minted under the task's namespace (SPEC §8.5); see
+/// [`vta_sdk::protocols::members::MEMBER_UPDATE_ERR_CONSENT_GRANT_FORBIDDEN`].
+pub const UPDATE_ERR_CONSENT_GRANT_FORBIDDEN: &str =
+    vta_sdk::protocols::members::MEMBER_UPDATE_ERR_CONSENT_GRANT_FORBIDDEN;
 use crate::members::{Disposition, Member, get_member, store_member};
 use crate::routes::members::read::{MemberEnvelope, MemberResponse};
 use crate::server::AppState;
@@ -65,6 +79,10 @@ pub struct UpdateMemberRequest {
     /// `acl/grant` — a whole re-grant to correct a typo in a display name.
     /// An empty string clears it; omitting the field leaves it unchanged.
     pub label: Option<String>,
+    /// Trust-registry publication consent. Only `false` changes anything: an
+    /// administrator may withdraw a member's consent, never grant it —
+    /// `true` for a member who has not consented is refused with
+    /// `vtc/members/update:consentGrantForbidden`.
     pub publish_consent: Option<bool>,
     pub departure_preference: Option<Disposition>,
     pub extensions: Option<JsonValue>,
@@ -164,6 +182,21 @@ pub(crate) async fn update_member_inner(
     let mut member = get_member(&state.members_ks, did)
         .await?
         .ok_or_else(not_found)?;
+
+    // Registry consent only goes down from here. Refused before anything is
+    // written, so a request that also carries other fields changes nothing.
+    // Setting it to what it already is (either value) is a no-op, not a grant.
+    if req.publish_consent == Some(true) && !member.publish_consent {
+        return Err(TaskError::declared(
+            UPDATE_ERR_CONSENT_GRANT_FORBIDDEN,
+            AppError::Validation(format!(
+                "{did} has not consented to trust-registry publication, and that consent is \
+                 theirs to give, not an administrator's: an administrator may withdraw it \
+                 (`publishConsent: false`) but never grant it. The member gives it with \
+                 `registryConsent: true` on vtc/join-requests/submit"
+            )),
+        ));
+    }
 
     // Non-role field updates — written directly (not a ceremony).
     // Persisted *before* any role change so the Remint executor (which

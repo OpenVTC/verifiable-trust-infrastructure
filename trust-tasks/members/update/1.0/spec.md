@@ -41,6 +41,12 @@ Every field is optional; a body with no fields is a no-op
   operator-facing hint pointing at
   `POST /v1/members/{did}/promote-to-admin`. The promote-to-admin
   endpoint runs the required step-up UV ceremony (spec §10.4).
+- `400 Bad Request` — `publishConsent: true` for a member whose
+  consent is `false` — refused with
+  `vtc/members/update:consentGrantForbidden`. Registry consent is the
+  member's own (`registryConsent` on a join submit); an admin may
+  withdraw it (`true → false`), never grant it. Re-stating the current
+  value is a no-op.
 - `401 Unauthorized`, `403 Forbidden` — auth.
 - `404 Not Found` — member or matching ACL row absent.
 
