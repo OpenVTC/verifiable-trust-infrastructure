@@ -507,6 +507,13 @@ pub enum AuditEvent {
     /// period" reads these rows, and no later ones.
     HiddenVetterEnrolled(HiddenVetterEnrolledData),
 
+    /// A vetter was re-issued the hidden-vetting class credential they
+    /// already held under a label, because their client lost the answer
+    /// before it could unblind it. Same member, same label, same PCS
+    /// identifier as the enrolment it repeats — a re-issue adds no vetter,
+    /// and is a distinct event so an auditor can count enrolments without it.
+    HiddenVetterReissued(HiddenVetterReissuedData),
+
     /// A vetter drew a tick of the attestation-token drip.
     ///
     /// The drip is deliberately constant — a vetter asks whether or not they
@@ -945,6 +952,7 @@ impl AuditEvent {
             Self::VetterGranted(..) => "VetterGranted",
             Self::VetterAutoGranted(..) => "VetterAutoGranted",
             Self::HiddenVetterEnrolled(..) => "HiddenVetterEnrolled",
+            Self::HiddenVetterReissued(..) => "HiddenVetterReissued",
             Self::HiddenVetterTokensIssued(..) => "HiddenVetterTokensIssued",
             Self::HiddenVettingChanged(..) => "HiddenVettingChanged",
             Self::VetterProfileUpdated(..) => "VetterProfileUpdated",
@@ -2252,6 +2260,22 @@ pub struct HiddenVetterEnrolledData {
     pub rotation: bool,
 }
 
+/// Payload for [`AuditEvent::HiddenVetterReissued`].
+///
+/// Carries no PCS identifier, for the same reason
+/// [`HiddenVetterEnrolledData`] does not.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenVetterReissuedData {
+    /// The class label re-issued under, e.g. `vetter/2026-10` — one this
+    /// member already held.
+    pub label: String,
+    /// Which re-issue under this label this was, counting from 1. Bounded by
+    /// the community; a row near the bound is a client that keeps losing its
+    /// answer, or a vetter asking for signatures it does not need.
+    pub reissue: u32,
+}
+
 /// Payload for [`AuditEvent::HiddenVetterTokensIssued`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -3336,6 +3360,23 @@ mod tests {
         assert_eq!(v["type"], "VetterGranted");
         assert_eq!(v["data"]["endorsementId"], "end-1");
         assert_eq!(v["data"]["statusListIndex"], 9);
+        round_trip(&e);
+    }
+
+    /// A re-issue is its own event, carrying the label and which re-issue it
+    /// was — never the PCS identifier.
+    #[test]
+    fn hidden_vetter_reissued_round_trip() {
+        let e = AuditEvent::HiddenVetterReissued(HiddenVetterReissuedData {
+            label: "vetter/2026-10".into(),
+            reissue: 2,
+        });
+        let v = wire_value(&e);
+        assert_eq!(v["type"], "HiddenVetterReissued");
+        assert_eq!(e.variant_name(), "HiddenVetterReissued");
+        assert_eq!(v["data"]["label"], "vetter/2026-10");
+        assert_eq!(v["data"]["reissue"], 2);
+        assert_eq!(v["data"].as_object().unwrap().len(), 2, "{v}");
         round_trip(&e);
     }
 

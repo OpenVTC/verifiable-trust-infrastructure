@@ -260,7 +260,82 @@ async fn a_vetter_enrols_draws_and_an_applicant_gets_a_challenge() {
         )
         .expect("the answer unblinds under the published key");
 
-    // Twice under one label is what makes distinct tags distinct people.
+    // Asking again under the label, with the same identifier and fresh blinding, is a client
+    // that lost the answer: it is re-issued, in the same shape as the first answer.
+    let (again, again_blinding) = issuer
+        .open()
+        .root_request(issuer.hvk(), &f, &id, &usk, &mut rng)
+        .unwrap();
+    let (status, body) = h
+        .post(
+            &vetter_key,
+            pcs_tasks::PCS_ROOT_TYPE,
+            json!({
+                "label": format!("vetter/{PERIOD}"),
+                "id": point_text(&id).unwrap(),
+                "request": serde_json::to_value(&again).unwrap(),
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "a lost answer is re-issued: {body}");
+    let pre = body
+        .pointer("/payload/preCredential")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("no pre-credential in {body}"));
+    issuer
+        .open()
+        .unblind(
+            issuer.hvk(),
+            &usk,
+            &f,
+            &vti_vetting_pcs::scheme::dec(pre).unwrap(),
+            &again_blinding,
+        )
+        .expect("the re-issued answer unblinds");
+
+    // Another identifier under the same label is a second key, and is refused: a member
+    // holding two would count twice in one proof.
+    let (other_id, other_usk) = issuer.open().user_keygen(&mut rng).unwrap();
+    let (other, _) = issuer
+        .open()
+        .root_request(issuer.hvk(), &f, &other_id, &other_usk, &mut rng)
+        .unwrap();
+    let (status, body) = h
+        .post(
+            &vetter_key,
+            pcs_tasks::PCS_ROOT_TYPE,
+            json!({
+                "label": format!("vetter/{PERIOD}"),
+                "id": point_text(&other_id).unwrap(),
+                "request": serde_json::to_value(&other).unwrap(),
+            }),
+        )
+        .await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a second identifier must be refused"
+    );
+    assert_eq!(tt_error_code(&body), pcs_tasks::ROOT_ERR_IDENTIFIER_REBOUND);
+
+    // Re-issues are bounded; past the bound the answer is `alreadyEnrolled`, as it always was.
+    // The unit tests walk the bound one re-issue at a time; here the row is brought to it
+    // directly, because every post spends the unauthenticated limiter's burst.
+    {
+        use vtc_service::vetting::pcs_issue::{
+            EnrolmentRecord, MAX_REISSUES_PER_LABEL, ReissueRecord,
+        };
+        let key = format!("pcs-enrol:{vetter_did}").into_bytes();
+        let ks = &h.tv.state.vetting_pcs_issue_ks;
+        let mut record: EnrolmentRecord = ks.get(key.clone()).await.unwrap().unwrap();
+        assert_eq!(record.reissued(&format!("vetter/{PERIOD}")), 1);
+        record.reissues = vec![ReissueRecord {
+            label: format!("vetter/{PERIOD}"),
+            count: MAX_REISSUES_PER_LABEL,
+            last_at: Utc::now(),
+        }];
+        ks.insert(key, &record).await.unwrap();
+    }
     let (status, body) = h
         .post(
             &vetter_key,
@@ -272,7 +347,11 @@ async fn a_vetter_enrols_draws_and_an_applicant_gets_a_challenge() {
             }),
         )
         .await;
-    assert_ne!(status, StatusCode::OK, "a second enrolment must be refused");
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "re-issues past the bound must be refused"
+    );
     assert_eq!(tt_error_code(&body), pcs_tasks::ROOT_ERR_ALREADY_ENROLLED);
 
     // A member with no grant is refused before any crypto happens.
