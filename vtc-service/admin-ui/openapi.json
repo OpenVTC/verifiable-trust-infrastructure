@@ -1454,11 +1454,11 @@
           "inboxCollection": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/InboxHealth",
                 "description": "Whether the VTC is **collecting** its mediator inbox — the receive leg,\nwhich `messaging_status` (a socket signal) cannot see. A connected\nsocket whose mediator has stopped delivering to it reads `notDelivering`\nhere; a backlog redelivery does not clear (frames the VTC cannot unpack)\nreads `backlogged` with its age. `None` before messaging has started or\nwhen it is unconfigured."
+              },
+              {
+                "type": "null"
               }
             ]
           },

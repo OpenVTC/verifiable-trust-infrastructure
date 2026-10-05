@@ -977,7 +977,7 @@ export interface components {
             ext: components["schemas"]["DiagnosticsExt"];
             /** Format: int64 */
             failedCount: number;
-            inboxCollection?: null | components["schemas"]["InboxHealth"];
+            inboxCollection?: components["schemas"]["InboxHealth"] | null;
             lastError?: string | null;
             /** Format: date-time */
             lastFailureAt?: string | null;
