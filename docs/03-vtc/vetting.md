@@ -516,6 +516,16 @@ vetting (PCS)** section on its card under **Vetting → Requirements**:
   join manifest, and from `vtc/vetting/hidden/show/0.1` the stored configuration
   with how many members are enrolled under each vetter label and how many have
   asked to vet at each event. Counts only — never which members.
+- **Enrolment, and a lost answer** — a vetter enrols once per vetter label
+  (`vtc/vetting/vetters/pcs-root/0.1`), bound to one PCS identifier for good.
+  If their client loses the answer before opening it, asking again under the
+  same label with the same identifier is re-issued, up to three times per label
+  (audited as `HiddenVetterReissued`, and not counted as another enrolled
+  vetter); after that the answer is `pcs-root:alreadyEnrolled` until the next
+  label. A different identifier is always refused (`pcs-root:identifierRebound`).
+  A re-issue gives the vetter no second vote and no extra tokens: every
+  credential is on the same key, so it attests with the same tag, and tokens
+  are drawn per member per tick whatever the vetter holds.
 - **Drip rate and tick length** — how many attestation tokens a vetter's
   client may draw per tick, and how long a tick lasts (`tickLength`, default
   `P3D`). Vetters pull their own tokens whether or not they vetted anyone. A

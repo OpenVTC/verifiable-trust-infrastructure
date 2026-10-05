@@ -49,7 +49,7 @@ pub use event::{
     ConfigSource, CredentialIssuedData, CrossCommunitySessionMintedData,
     CustomEndorsementIssuedData, CustomEndorsementRevokedData, DidRotatedData, DidRotationReason,
     EmergencyBootstrapData, EndorsementTypeDeletedData, EndorsementTypeRegisteredData, FieldChange,
-    GitNsBreakGlassData, GitNsOperationData, HiddenVetterEnrolledData,
+    GitNsBreakGlassData, GitNsOperationData, HiddenVetterEnrolledData, HiddenVetterReissuedData,
     HiddenVetterTokensIssuedData, HiddenVettingChangedData, InvitationDeliveredData,
     InvitationIssuedData, InvitationRevokedData, JoinRequestData, JoinRequestRejectedData,
     JoinRequestSupplementedData, JoinRequestWithdrawnData, MemberAddedData,

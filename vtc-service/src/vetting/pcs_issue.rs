@@ -6,7 +6,9 @@
 //!
 //! - **Enrolment** ([`enrol`]) — once per member per class label. What the vetter unblinds is a
 //!   credential for `vetter/<period>`; what the community keeps is a row saying that this
-//!   member enrolled, and which PCS identifier they are bound to.
+//!   member enrolled, and which PCS identifier they are bound to. A vetter whose client lost
+//!   the answer before unblinding it may ask again under the same label with the *same*
+//!   identifier, and is re-issued — a bounded number of times ([`MAX_REISSUES_PER_LABEL`]).
 //! - **The drip** ([`drip`]) — at most the published rate per tick, whether or not the vetter
 //!   has vetted anyone. Constant by design (§5.1): a fetch that happened only when someone was
 //!   busy would announce that they were busy.
@@ -31,7 +33,9 @@ use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use vti_common::audit::{AuditEvent, HiddenVetterEnrolledData, HiddenVetterTokensIssuedData};
+use vti_common::audit::{
+    AuditEvent, HiddenVetterEnrolledData, HiddenVetterReissuedData, HiddenVetterTokensIssuedData,
+};
 use vti_common::error::AppError;
 
 use vti_vetting_pcs::{
@@ -50,6 +54,24 @@ use crate::server::AppState;
 /// vetter class, which is a deliberate act and never a side effect.
 const KEY_INFO: &[u8] = b"vtc-vetting-pcs-secret/v1";
 
+/// How many times one member may be re-issued the credential they already hold under one
+/// label. A re-issue exists for a client that lost the answer before it could unblind it (a
+/// restart, a dropped message); a client that keeps losing it has a bug no further signature
+/// fixes, and an unbounded re-issue would be a blind-signing oracle any vetter could drive at
+/// will. Three covers a lost answer and the retries after it with room to spare; past it the
+/// member is refused `alreadyEnrolled` until the next label, as every repeat was before.
+pub const MAX_REISSUES_PER_LABEL: u32 = 3;
+
+/// Serialises enrolment, from reading a member's record to writing it back.
+///
+/// Every check [`enrol`] makes is a read of that record, and the write comes after the
+/// signature. Without this, two requests for one member in flight together both read the
+/// record before either wrote it: two first enrolments under *different* identifiers would
+/// both be signed — two class credentials, counted twice in one proof (§13 C2) — and two
+/// re-issues would both pass the bound. Held across store and signing work only, never a
+/// network call (R1.3). Enrolment is once a month per vetter; it is not a path that contends.
+static ENROL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// What the community recorded when a member enrolled. One row per member, covering every
 /// label they have ever enrolled under.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +83,48 @@ pub struct EnrolmentRecord {
     pub id: String,
     /// Class labels this member already holds a credential under, with when it was issued.
     pub labels: Vec<(String, DateTime<Utc>)>,
+    /// Re-issues under a label the member already held, one entry per label that has had any.
+    /// Absent from a row written before re-issue existed, which reads as none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reissues: Vec<ReissueRecord>,
+}
+
+/// How often one member has been re-issued the credential they hold under one label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReissueRecord {
+    /// The class label re-issued under, e.g. `vetter/2026-10`.
+    pub label: String,
+    /// How many re-issues under it so far. Never more than [`MAX_REISSUES_PER_LABEL`].
+    pub count: u32,
+    /// When the last one was signed.
+    pub last_at: DateTime<Utc>,
+}
+
+impl EnrolmentRecord {
+    /// How many times this member has been re-issued under `label`.
+    #[must_use]
+    pub fn reissued(&self, label: &str) -> u32 {
+        self.reissues
+            .iter()
+            .find(|r| r.label == label)
+            .map_or(0, |r| r.count)
+    }
+
+    /// Count one more re-issue under `label`, returning the new count.
+    fn record_reissue(&mut self, label: &str, now: DateTime<Utc>) -> u32 {
+        if let Some(r) = self.reissues.iter_mut().find(|r| r.label == label) {
+            r.count += 1;
+            r.last_at = now;
+            return r.count;
+        }
+        self.reissues.push(ReissueRecord {
+            label: label.to_string(),
+            count: 1,
+            last_at: now,
+        });
+        1
+    }
 }
 
 /// What the community recorded when it served a tick of the drip.
@@ -209,18 +273,41 @@ pub fn issuer(
 
 /// Issue a vetter their root credential for the current class label.
 ///
-/// The order is: is this member a vetter *now*, is this the label we are issuing, have they
-/// enrolled under it already, is this the identifier they are bound to — and only then a
+/// The order is: is this member a vetter *now*, is this the label we are issuing, is this the
+/// identifier they are bound to, have they enrolled under this label already — and only then a
 /// signature. The record is written **after** the signature is produced, so a signing failure
 /// does not consume the member's one enrolment; the window in between can only lose an
 /// issuance, never duplicate one, because a lost record is a re-enrolment the vetter asks for.
 ///
+/// # Re-issue under a label already held
+///
+/// A member who already holds `label` and asks again with the identifier they are bound to is
+/// signed again rather than refused, at most [`MAX_REISSUES_PER_LABEL`] times. The community
+/// keeps only *that* the member enrolled, never the answer, so a client that lost the answer
+/// before unblinding it (a restart, a dropped message) had no way back until the next label.
+///
+/// A second credential under the same `(member, label, identifier)` adds nothing the first did
+/// not give:
+///
+/// - the root request proves its commitment is to the `usk` behind `id` (`R_issue`), and `id`
+///   is checked against the one this member is bound to, so every credential this member holds
+///   is on one key;
+/// - every tag that key makes for an applicant is `Tag(usk, H₀(applicant id))` — the same tag
+///   whichever credential produced the attestation;
+/// - a proof needs pairwise-distinct tags (`CheckAtts_P`), so a second attestation from one
+///   vetter is refused as a duplicate attester, never counted;
+/// - attestation tokens are drawn per `(member, label, tick)` by [`drip`], which reads nothing
+///   this function writes.
+///
+/// The answer is the same shape as a first enrolment's; only the audit row tells them apart
+/// ([`AuditEvent::HiddenVetterReissued`]).
+///
 /// # Errors
 ///
 /// - [`AppError::Forbidden`] if the member holds no live vetter grant.
-/// - [`AppError::Validation`] if the label is not this community's current one, if the member
-///   has already enrolled under it, or if they present a different PCS identifier than the one
-///   they are bound to.
+/// - [`AppError::Validation`] if the label is not this community's current one, if they present
+///   a different PCS identifier than the one they are bound to, or if they already hold a
+///   credential under this label and have used up its re-issues.
 /// - [`AppError::Internal`] if the request does not verify, or the store fails.
 pub async fn enrol(
     state: &AppState,
@@ -246,20 +333,29 @@ pub async fn enrol(
         )));
     }
 
+    let _serial = ENROL_LOCK.lock().await;
     let mut record: EnrolmentRecord = state
         .vetting_pcs_issue_ks
         .get(enrol_key(member_did))
         .await?
         .unwrap_or_default();
-    if record.labels.iter().any(|(l, _)| *l == label) {
-        return Err(AppError::Validation(format!(
-            "{member_did} already holds a credential under `{label}`"
-        )));
-    }
+    // The identifier first: every answer below depends on it. A member asking under a label
+    // they hold, with another identifier, has not lost an answer — they have a second key, and
+    // a second key is the thing that would count twice.
     if !record.id.is_empty() && record.id != request.id {
         return Err(AppError::Validation(format!(
             "{member_did} is bound to another PCS identifier; a member holds one"
         )));
+    }
+    let reissue = record.labels.iter().any(|(l, _)| *l == label);
+    if reissue {
+        let used = record.reissued(&label);
+        if used >= MAX_REISSUES_PER_LABEL {
+            return Err(AppError::Validation(format!(
+                "{member_did} already holds a credential under `{label}`, and has been re-issued \
+                 it {used} time(s), which is as many as one label allows"
+            )));
+        }
     }
 
     let id = point_from_text(&request.id)
@@ -279,9 +375,22 @@ pub async fn enrol(
     >(&pre)
     .map_err(|e| AppError::Internal(format!("encode pre-credential: {e}")))?;
 
-    let rotation = !record.labels.is_empty();
-    record.id = request.id.clone();
-    record.labels.push((label.clone(), now));
+    let event = if reissue {
+        // The label stays recorded once: `enrolled_counts` counts members, not signatures.
+        let reissue = record.record_reissue(&label, now);
+        AuditEvent::HiddenVetterReissued(HiddenVetterReissuedData {
+            label: label.clone(),
+            reissue,
+        })
+    } else {
+        let rotation = !record.labels.is_empty();
+        record.id = request.id.clone();
+        record.labels.push((label.clone(), now));
+        AuditEvent::HiddenVetterEnrolled(HiddenVetterEnrolledData {
+            label: label.clone(),
+            rotation,
+        })
+    };
     state
         .vetting_pcs_issue_ks
         .insert(enrol_key(member_did), &record)
@@ -291,14 +400,7 @@ pub async fn enrol(
     // The payload carries the label, never the identifier: the enrolment row is already one
     // half of a future deanonymisation (design §18) and the audit log holds no second copy.
     audit(state)?
-        .write(
-            community_did,
-            Some(member_did),
-            AuditEvent::HiddenVetterEnrolled(HiddenVetterEnrolledData {
-                label: label.clone(),
-                rotation,
-            }),
-        )
+        .write(community_did, Some(member_did), event)
         .await?;
 
     Ok(RootCredentialWire {
@@ -547,6 +649,14 @@ mod tests {
         }
     }
 
+    /// The same secret key again. `UserSecretKey` is deliberately not `Clone`; a test that plays
+    /// one vetter asking twice needs it twice, so it goes through its canonical encoding.
+    fn copy_usk(
+        usk: &predicate_credential_system::pcs::UserSecretKey<E>,
+    ) -> predicate_credential_system::pcs::UserSecretKey<E> {
+        vti_vetting_pcs::scheme::dec(&vti_vetting_pcs::scheme::enc(usk).unwrap()).unwrap()
+    }
+
     fn root_request(issuer: &Issuer, period: &str, rng: &mut StdRng) -> VetterSide {
         let (id, usk) = issuer.open().user_keygen(rng).unwrap();
         VetterSide::again(issuer, period, id, usk, rng)
@@ -618,13 +728,17 @@ mod tests {
             )
             .expect("what the community signed unblinds into a usable credential");
 
-        // Twice under one label is the rule that makes distinct tags distinct people.
-        let err = enrol(&state, COMMUNITY, &config, VETTER, req, Utc::now())
+        // Twice under one label, with the same identifier, is a re-issue — a client that lost
+        // the answer — and adds no vetter: the enrolment count is still one.
+        enrol(&state, COMMUNITY, &config, VETTER, req, Utc::now())
             .await
-            .expect_err("already enrolled");
-        assert!(
-            format!("{err}").contains("already holds a credential"),
-            "{err}"
+            .expect("the same identifier is re-issued under a label it holds");
+        let label = format!("vetter/{PERIOD}");
+        assert_eq!(
+            enrolled_counts(&state, std::slice::from_ref(&label))
+                .await
+                .unwrap()[&label],
+            1
         );
 
         // Next period, the same member may enrol again — and only with the identifier they
@@ -729,6 +843,145 @@ mod tests {
         .await
         .expect_err("over the drip rate");
         assert!(format!("{err}").contains("drips 3 a tick"), "{err}");
+    }
+
+    /// A vetter whose client lost the enrolment answer asks again under the label it holds.
+    /// Same identifier: re-issued, with fresh blinding, in the same answer shape, a bounded
+    /// number of times. Another identifier: still refused. And the drip does not notice.
+    #[tokio::test]
+    async fn a_lost_enrolment_answer_is_reissued_to_the_same_identifier_only() {
+        let tv = TestVtc::builder()
+            .vtc_did(COMMUNITY)
+            .with_signers(true)
+            .with_audit(true)
+            .build()
+            .await;
+        let state = tv.state;
+        let mut rng = StdRng::seed_from_u64(0x2026_1005);
+        let config = publish(
+            &state,
+            COMMUNITY,
+            vec![PERIOD.to_string()],
+            vec![TOKEN_LABEL.to_string()],
+            3,
+        )
+        .unwrap();
+        let issuer = issuer(&state, COMMUNITY, &config).unwrap();
+        grant_vetter(&state, VETTER).await;
+        let label = format!("vetter/{PERIOD}");
+
+        // A first enrolment, whose answer the client then loses.
+        let first = root_request(&issuer, PERIOD, &mut rng);
+        enrol(&state, COMMUNITY, &config, VETTER, &first.wire, Utc::now())
+            .await
+            .expect("first enrolment");
+        // The tick the vetter drew before losing it.
+        let mut wallet = TokenWallet::new(COMMUNITY).unwrap();
+        let tick = |wallet: &mut TokenWallet, tick: u32, n: usize, rng: &mut StdRng| {
+            let requests = wallet
+                .prepare(issuer.tvk(), TOKEN_LABEL, VETTER, tick, n, rng)
+                .unwrap();
+            TokenBatchRequestWire {
+                label: TOKEN_LABEL.to_string(),
+                tick,
+                requests: requests
+                    .iter()
+                    .map(|r| TokenRequestWire::of(r).unwrap())
+                    .collect(),
+            }
+        };
+        let tick1 = tick(&mut wallet, 1, 3, &mut rng);
+        drip(&state, COMMUNITY, &config, VETTER, &tick1, Utc::now())
+            .await
+            .expect("tick 1");
+
+        // Another identifier under the held label is a second key, not a lost answer.
+        let other = root_request(&issuer, PERIOD, &mut rng);
+        let err = enrol(&state, COMMUNITY, &config, VETTER, &other.wire, Utc::now())
+            .await
+            .expect_err("a member holds one identifier");
+        assert!(
+            format!("{err}").contains("bound to another PCS identifier"),
+            "{err}"
+        );
+
+        // The same identifier, fresh blinding: re-issued, and it unblinds into a credential on
+        // the same key — so every tag it makes is the tag the first one would have made.
+        for n in 1..=MAX_REISSUES_PER_LABEL {
+            let again =
+                VetterSide::again(&issuer, PERIOD, first.id, copy_usk(&first.usk), &mut rng);
+            let answer = enrol(&state, COMMUNITY, &config, VETTER, &again.wire, Utc::now())
+                .await
+                .unwrap_or_else(|e| panic!("re-issue {n}: {e}"));
+            assert_eq!(answer.label, label);
+            {
+                use trust_tasks_rs::specs::vtc::vetting::vetters::pcs_root::v0_1 as spec;
+                use trust_tasks_rs::validate::ValidatedPayload;
+                spec::Response::validate_value(&serde_json::to_value(&answer).unwrap())
+                    .expect("a re-issue answers in the first enrolment's shape");
+            }
+            let pre = vti_vetting_pcs::scheme::dec(&answer.pre_credential).unwrap();
+            issuer
+                .open()
+                .unblind(
+                    issuer.hvk(),
+                    &again.usk,
+                    &vetter_predicate(PERIOD),
+                    &pre,
+                    &again.blinding,
+                )
+                .expect("the re-issued answer unblinds");
+
+            let record: EnrolmentRecord = state
+                .vetting_pcs_issue_ks
+                .get(enrol_key(VETTER))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(record.reissued(&label), n, "the count is the store's");
+            assert_eq!(record.labels.len(), 1, "the label is recorded once");
+            assert_eq!(record.id, first.wire.id);
+        }
+
+        // The bound: past it, the member is refused as before, under the declared code.
+        let again = VetterSide::again(&issuer, PERIOD, first.id, copy_usk(&first.usk), &mut rng);
+        let err = enrol(&state, COMMUNITY, &config, VETTER, &again.wire, Utc::now())
+            .await
+            .expect_err("re-issues are bounded");
+        assert!(
+            format!("{err}").contains("already holds a credential"),
+            "{err}"
+        );
+        assert!(format!("{err}").contains("re-issued"), "{err}");
+        assert_eq!(
+            enrolled_counts(&state, std::slice::from_ref(&label))
+                .await
+                .unwrap()[&label],
+            1,
+            "re-issues count no extra vetter"
+        );
+
+        // The drip is untouched: the tick already served stays served, and the next one is
+        // still capped at the published rate.
+        let err = drip(&state, COMMUNITY, &config, VETTER, &tick1, Utc::now())
+            .await
+            .expect_err("once a tick, re-issue or not");
+        assert!(format!("{err}").contains("already served"), "{err}");
+        let greedy = tick(&mut wallet, 2, 4, &mut rng);
+        let err = drip(&state, COMMUNITY, &config, VETTER, &greedy, Utc::now())
+            .await
+            .expect_err("over the drip rate");
+        assert!(format!("{err}").contains("drips 3 a tick"), "{err}");
+    }
+
+    /// A row written before re-issue existed reads as none, and one without re-issues is
+    /// stored exactly as it was.
+    #[test]
+    fn an_enrolment_row_without_reissues_reads_and_writes_as_before() {
+        let old = json!({ "id": "zId", "labels": [["vetter/2026-09", "2026-09-01T00:00:00Z"]] });
+        let record: EnrolmentRecord = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(record.reissued("vetter/2026-09"), 0);
+        assert_eq!(serde_json::to_value(&record).unwrap(), old);
     }
 
     /// The stop that protects a deployment whose master secret changed under it.
