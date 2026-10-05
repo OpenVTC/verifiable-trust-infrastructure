@@ -45,6 +45,25 @@ use crate::routing::trust_task_admission::{Admission, ClientAddress, TrustTaskLi
 use crate::server::AppState;
 use crate::trust_tasks::{JoinAuthCtx, dispatch_trust_task_core_admitted};
 
+/// Sent by the admin console on a document it posts while its operator is
+/// interacting with it, and never on one a timer posts.
+///
+/// The console's reads and writes are signed documents, and this route reads
+/// no session, so without this nothing an operator did in the console counted
+/// toward the session's idle timeout (`auth.admin_idle_timeout`). Fifteen
+/// minutes after the last cookie-authenticated request, the session could no
+/// longer renew and the console signed out someone who was working.
+///
+/// Only the console can tell a click from a poll. Its action badge, counts and
+/// banners post signed reads on timers, so counting every signed document
+/// would keep an unattended tab signed in forever, which is the case the idle
+/// timeout exists for. The header is the console's claim, accepted only for a
+/// document that ran successfully, was verified as a known signer, and whose
+/// principal (the signer, or the administrator its console key acts for) owns
+/// the session named by the request's cookie. Anyone able to send it already
+/// holds that session and could just click.
+pub const USER_ACTIVITY_HEADER: &str = "x-vtc-user-activity";
+
 /// POST /trust-tasks — dispatch a Trust Task document. Public: the holder's
 /// document proof (or, over DIDComm, the authcrypt sender) IS the auth.
 ///
@@ -107,6 +126,12 @@ pub async fn dispatch(
             address,
         )))
         .await;
+    if outcome.status == StatusCode::OK
+        && headers.contains_key(USER_ACTIVITY_HEADER)
+        && let Some(principal) = admission.verified_principal()
+    {
+        vti_common::auth::touch_cookie_session_for(&headers, &state, principal).await;
+    }
     match admission.finish() {
         Ok(()) => match slot.take() {
             // A granted stream behind a success: the signed `#response` is

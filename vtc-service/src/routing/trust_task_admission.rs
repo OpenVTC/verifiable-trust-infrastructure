@@ -227,6 +227,16 @@ impl Admission {
         false
     }
 
+    /// The principal this document was verified as: the signer itself, or
+    /// the administrator a console key acts for. `None` until the proof has
+    /// verified as the known signer the document claimed.
+    pub fn verified_principal(&self) -> Option<&str> {
+        self.claimed
+            .as_ref()
+            .filter(|_| self.verified.load(Ordering::SeqCst))
+            .map(|claimed| claimed.principal.as_str())
+    }
+
     /// Settle the document once the spine is done with it: the refusal the
     /// spine stopped on, or — for a document that claimed a known signer and
     /// never verified as it — the strict governor's charge, which may itself
@@ -376,6 +386,26 @@ mod tests {
             .finish()
             .unwrap_err();
         assert_eq!(refused.limiter(), UNAUTH_LIMITER);
+    }
+
+    #[test]
+    fn the_verified_principal_is_known_only_once_the_proof_verifies() {
+        let limits = limits(10, 10);
+        // A console key acting for its administrator.
+        let mut a = admission(&limits, Some("did:key:zConsoleKey"));
+        a.claimed.as_mut().expect("claimed").principal = "did:key:zAdmin".to_string();
+        assert_eq!(
+            a.verified_principal(),
+            None,
+            "a claim is not a verification"
+        );
+        assert!(a.admit_verified("did:key:zConsoleKey"));
+        assert_eq!(a.verified_principal(), Some("did:key:zAdmin"));
+
+        let other = admission(&limits, Some("did:key:zAdmin"));
+        assert!(other.admit_verified("did:key:zSomeoneElse"));
+        assert_eq!(other.verified_principal(), None);
+        assert_eq!(admission(&limits, None).verified_principal(), None);
     }
 
     #[test]

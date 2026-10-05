@@ -650,3 +650,169 @@ async fn the_idle_timeout_is_in_the_effective_config() {
     assert_eq!(field["value"], 900);
     assert_eq!(field["requiresRestart"], false);
 }
+
+// ─── Signed console documents ────────────────────────────────────────
+
+/// A console session for `did` whose `last_seen` is ten minutes old.
+/// Returns `(access_token, session_id)`.
+async fn seed_console_session(vtc: &TestVtc, did: &str) -> (String, String) {
+    let session_id = format!("sess-{}", uuid::Uuid::new_v4());
+    let stale = now_epoch() - 600;
+    let claims = vtc.jwt_keys.new_claims(
+        did.to_string(),
+        session_id.clone(),
+        "admin".to_string(),
+        vec![],
+        900,
+        false,
+    );
+    let token_id = claims.jti.clone();
+    let access = vtc.jwt_keys.encode(&claims).expect("encode");
+    store_session(
+        &vtc.state.sessions_ks,
+        &Session {
+            session_id: session_id.clone(),
+            did: did.into(),
+            challenge: String::new(),
+            state: SessionState::Authenticated,
+            created_at: stale,
+            last_seen: stale,
+            refresh_token: None,
+            refresh_expires_at: None,
+            tee_attested: false,
+            amr: vec!["passkey".into()],
+            acr: "aal1".into(),
+            acr_expires_at: None,
+            token_id: Some(token_id),
+            session_pubkey_b58btc: None,
+        },
+    )
+    .await
+    .expect("store session");
+    (access, session_id)
+}
+
+/// Post `doc` to the Trust Task door as the console does: the session
+/// cookie and CSRF pair along, and the activity header when `active`.
+async fn post_from_console(
+    vtc: &TestVtc,
+    doc: &serde_json::Value,
+    access: &str,
+    active: bool,
+) -> StatusCode {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/v1/trust-tasks")
+        .header("content-type", "application/json")
+        .header(
+            "cookie",
+            format!("{ADMIN_SESSION_COOKIE}={access}; csrf=tok"),
+        )
+        .header("x-csrf-token", "tok");
+    if active {
+        req = req.header(vtc_service::routes::trust_tasks::USER_ACTIVITY_HEADER, "1");
+    }
+    let mut req = req
+        .body(Body::from(serde_json::to_vec(doc).unwrap()))
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [10, 9, 9, 9],
+            40_000,
+        ))));
+    vtc.router.clone().oneshot(req).await.unwrap().status()
+}
+
+async fn console_last_seen(vtc: &TestVtc, session_id: &str) -> u64 {
+    get_session(&vtc.state.sessions_ks, session_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .last_seen
+}
+
+const CONFIG_SHOW: &str = "https://trusttasks.org/spec/config/show/0.1";
+
+/// The console's reads and writes are signed documents signed by a console
+/// key. Without this, working in the console never advanced `last_seen`, and
+/// the session idled out under an operator who was using it.
+#[tokio::test]
+async fn a_console_document_sent_while_the_operator_is_active_records_activity() {
+    let vtc = TestVtc::builder().build().await;
+    let admin = crate::common::signed::admin(&vtc).await;
+    let console = vti_rooms_dtg::test_support::Party::new();
+    vtc_service::acl::console_key::enrol_delegation(
+        &vtc.state.console_keys_ks,
+        &vtc.state.acl_ks,
+        &console.did,
+        &admin.did,
+        Some("test browser".into()),
+        None,
+    )
+    .await
+    .unwrap();
+    let (access, session_id) = seed_console_session(&vtc, &admin.did).await;
+    let before = console_last_seen(&vtc, &session_id).await;
+
+    let doc = crate::common::signed::signed(&console, CONFIG_SHOW, json!({})).await;
+    assert_eq!(
+        post_from_console(&vtc, &doc, &access, true).await,
+        StatusCode::OK
+    );
+    assert!(
+        console_last_seen(&vtc, &session_id).await > before,
+        "a console key acts for its administrator, so its document counts \
+         for the administrator's session"
+    );
+}
+
+/// The console's badges and banners post signed reads on timers. Counting
+/// those would keep an unattended tab signed in forever.
+#[tokio::test]
+async fn a_console_document_without_the_activity_header_does_not() {
+    let vtc = TestVtc::builder().build().await;
+    let admin = crate::common::signed::admin(&vtc).await;
+    let (access, session_id) = seed_console_session(&vtc, &admin.did).await;
+    let before = console_last_seen(&vtc, &session_id).await;
+
+    let doc = crate::common::signed::signed(&admin, CONFIG_SHOW, json!({})).await;
+    assert_eq!(
+        post_from_console(&vtc, &doc, &access, false).await,
+        StatusCode::OK
+    );
+    assert_eq!(console_last_seen(&vtc, &session_id).await, before);
+}
+
+/// A document signed by one administrator does not keep another's session
+/// alive, whatever cookie rides along with it.
+#[tokio::test]
+async fn a_document_signed_by_someone_else_does_not_touch_the_session() {
+    let vtc = TestVtc::builder().build().await;
+    let owner = crate::common::signed::admin(&vtc).await;
+    let other = crate::common::signed::admin(&vtc).await;
+    let (access, session_id) = seed_console_session(&vtc, &owner.did).await;
+    let before = console_last_seen(&vtc, &session_id).await;
+
+    let doc = crate::common::signed::signed(&other, CONFIG_SHOW, json!({})).await;
+    assert_eq!(
+        post_from_console(&vtc, &doc, &access, true).await,
+        StatusCode::OK
+    );
+    assert_eq!(console_last_seen(&vtc, &session_id).await, before);
+}
+
+/// A refused document is not activity either.
+#[tokio::test]
+async fn a_refused_document_does_not_touch_the_session() {
+    let vtc = TestVtc::builder().build().await;
+    let member = crate::common::signed::party_with_role(&vtc, VtcRole::Member, &[]).await;
+    let (access, session_id) = seed_console_session(&vtc, &member.did).await;
+    let before = console_last_seen(&vtc, &session_id).await;
+
+    let doc = crate::common::signed::signed(&member, CONFIG_SHOW, json!({})).await;
+    assert_ne!(
+        post_from_console(&vtc, &doc, &access, true).await,
+        StatusCode::OK
+    );
+    assert_eq!(console_last_seen(&vtc, &session_id).await, before);
+}

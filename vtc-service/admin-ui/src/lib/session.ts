@@ -12,9 +12,10 @@
 //
 //  1. **The daemon decides, not us.** It refuses to renew a session whose
 //     `last_seen` is older than the configured idle timeout. `last_seen`
-//     advances on cookie-borne API calls — real console traffic — and
-//     explicitly *not* on renewals. So a tab left open overnight keeps
-//     asking and starts being told no.
+//     advances on cookie-borne API calls and on signed documents posted
+//     while the operator is giving input (`lib/user-activity.ts`) — real
+//     console use — and explicitly *not* on renewals or timer-driven reads.
+//     So a tab left open overnight keeps asking and starts being told no.
 //  2. **A renewal is never the reason for a renewal.** `renewIfNeeded` is
 //     called before authenticated requests, and the renewal request itself
 //     bypasses it. Without that the first renewal would recurse.

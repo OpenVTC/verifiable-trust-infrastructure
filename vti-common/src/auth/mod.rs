@@ -21,6 +21,7 @@ pub use backend::{
 pub use didcomm::{AuthcryptError, bind_authcrypt_sender, verify_authcrypt_header};
 pub use extractor::{
     AdminAuth, AuthClaims, AuthState, ManageAuth, StepUpAuth, SuperAdminAuth, WriteAuth,
+    touch_cookie_session_for,
 };
 pub use siop::{SiopError, VerifiedSiopIdToken, parse_unverified_iss, verify_siop_id_token};
 pub use vta_sdk::trust_task_proof::TrustTaskVmResolver;

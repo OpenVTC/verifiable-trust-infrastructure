@@ -15,6 +15,11 @@ import {
   setSessionExpiry,
   watchSessionDeadline,
 } from "@/lib/session";
+import {
+  installUserActivityTracking,
+  operatorIsActive,
+  USER_ACTIVITY_HEADER,
+} from "@/lib/user-activity";
 // `GET /health` is unauth and deliberately minimal: it carries only
 // `{status, version, vtc_did}`. The `vta_did` / `mediator_url` /
 // `mediator_did` infrastructure detail moved to the administrator's signed
@@ -630,6 +635,9 @@ async function postDocument<T>(
   const headers = new Headers({ "Content-Type": "application/json" });
   const csrf = csrfTokenFromCookie();
   if (csrf) headers.set("X-CSRF-Token", csrf);
+  // Counts toward the session's idle timeout only when the operator is at the
+  // console; a timer's read must not keep an unattended tab signed in.
+  if (operatorIsActive()) headers.set(USER_ACTIVITY_HEADER, "1");
   const send = () =>
     fetch("/v1/trust-tasks", {
       method: "POST",
@@ -1099,15 +1107,20 @@ export const checkRecognition = (did: string): Promise<RecognitionCheck> =>
  * and raise `vtc-session-expired` once the deadline passes with renewal
  * refused — so an idle console shows Login instead of waiting for the
  * operator's next click to fail. See `watchSessionDeadline`.
+ *
+ * Also starts noting the operator's input, so the signed documents posted
+ * while they work count toward the idle timeout (`lib/user-activity.ts`).
  */
-export const watchSession = (): (() => void) =>
-  watchSessionDeadline(renewSession, () => {
+export const watchSession = (): (() => void) => {
+  installUserActivityTracking();
+  return watchSessionDeadline(renewSession, () => {
     window.dispatchEvent(
       new CustomEvent("vtc-session-expired", {
         detail: { path: "(deadline)", status: 401 },
       }),
     );
   });
+};
 
 /** Probe: returns the whoami response when signed in, null when not. */
 export async function probeSession(): Promise<WhoamiResponse | null> {
