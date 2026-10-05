@@ -22,7 +22,7 @@ rand = { version = "0.8", features = ["std", "std_rng", "getrandom"] }
 # Pairs with rand 0.8. Used for ONE thing: deriving a community's keys from a
 # secret over a specified stream, so the same secret gives the same keys on any
 # build (`issuer::Issuer::derive`).
-rand_chacha = "0.3"
+rand_chacha = "0.10"
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
