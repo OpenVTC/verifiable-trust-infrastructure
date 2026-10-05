@@ -375,7 +375,7 @@ aws-lc-rs = "1.16"
 # **Remove this the moment `aws-config` ships a release on json 0.64.** The
 # bound is `< 1.7` rather than `= 1.6.3` so patch releases in the working line
 # are still picked up; it is an exclusion of the break, not a freeze.
-aws-smithy-types = ">=1.6.1, <1.7"
+aws-smithy-types = ">=1.6.1, <1.9"
 
 # Trust-Tasks framework — wire-envelope for the trust-task migration
 # initiative (docs/05-design-notes/trust-task-uri-registry.md). On
