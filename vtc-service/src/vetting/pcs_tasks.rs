@@ -382,6 +382,23 @@ where
         .collect()
 }
 
+/// The refusal a declared code carries, without a second `validation error:` in front of it.
+///
+/// The codes are matched on the error's rendered text, and that text already starts with the
+/// variant's own prefix. Wrapping it as a new `Validation` rendered it twice — "validation error:
+/// validation error: … already holds a credential" — in the message a vetter reads. The reason
+/// the store gave is carried as it was, under the one prefix.
+fn declared_reason(e: vti_common::error::AppError) -> vti_common::error::AppError {
+    use vti_common::error::AppError;
+    match e {
+        AppError::Validation(reason)
+        | AppError::Forbidden(reason)
+        | AppError::NotFound(reason)
+        | AppError::Conflict(reason) => AppError::Validation(reason),
+        other => AppError::Validation(other.to_string()),
+    }
+}
+
 /// Map an enrolment refusal onto the code the specification declares for it.
 ///
 /// The text is matched rather than a typed error because `pcs_issue` answers in `AppError`,
@@ -402,7 +419,7 @@ fn root_error(e: vti_common::error::AppError) -> TaskError {
     } else {
         return TaskError::from(e);
     };
-    TaskError::declared(code, vti_common::error::AppError::Validation(text))
+    TaskError::declared(code, declared_reason(e))
 }
 
 /// The same for the drip.
@@ -427,7 +444,7 @@ fn tokens_error(e: vti_common::error::AppError) -> TaskError {
     } else {
         return TaskError::from(e);
     };
-    TaskError::declared(code, vti_common::error::AppError::Validation(text))
+    TaskError::declared(code, declared_reason(e))
 }
 
 /// The same for an event-mode request.
@@ -448,7 +465,7 @@ fn event_error(e: vti_common::error::AppError) -> TaskError {
     } else {
         return TaskError::from(e);
     };
-    TaskError::declared(code, vti_common::error::AppError::Validation(text))
+    TaskError::declared(code, declared_reason(e))
 }
 
 /// How long a challenge stands, re-exported so a client can show it.
@@ -458,4 +475,34 @@ pub use pcs_challenge::DEFAULT_CHALLENGE_TTL as CHALLENGE_TTL;
 #[must_use]
 pub fn challenge_window() -> Duration {
     CHALLENGE_TTL
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vti_common::error::AppError;
+
+    /// A declared refusal says `validation error:` once. It said it twice, because the code was
+    /// matched on the rendered text and that text was wrapped as a new `Validation`.
+    #[test]
+    fn a_declared_refusal_names_its_reason_once() {
+        let e = root_error(AppError::Validation(
+            "did:example:v already holds a credential under `vetter/2026-10`".into(),
+        ));
+        assert_eq!(e.code(), Some(ROOT_ERR_ALREADY_ENROLLED));
+        assert_eq!(
+            e.to_string(),
+            "validation error: did:example:v already holds a credential under `vetter/2026-10`"
+        );
+
+        let e = tokens_error(AppError::Forbidden(
+            "did:example:v holds no live vetter grant in this community".into(),
+        ));
+        assert_eq!(e.code(), Some(TOKENS_ERR_NOT_A_VETTER));
+        assert_eq!(e.to_string().matches("error:").count(), 1, "{e}");
+
+        let e = event_error(AppError::NotFound("no event `summit`".into()));
+        assert_eq!(e.code(), Some(EVENT_ERR_UNKNOWN_EVENT));
+        assert_eq!(e.to_string().matches("error:").count(), 1, "{e}");
+    }
 }
