@@ -2,6 +2,44 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.63.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.63.2...vta-sdk-v0.63.3) — 2026-10-05
+
+
+### Fixed
+
+- **vtc**: An administrator may withdraw a member's registry consent, never grant it ([#1962](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1962))
+
+A member's consent to be published in the community's trust registry is
+  their own privacy decision, given with `registryConsent` on
+  `vtc/join-requests/submit` and copied onto the member record as
+  `publish_consent`. `vtc/members/update` let an administrator set it either
+  way, so an administrator could publish someone who had said no.
+
+  `vtc/members/update` now only lowers it. `publishConsent: true` for a
+  member whose consent is `false` is refused with
+  `vtc/members/update:consentGrantForbidden` before anything is written, so
+  no other field in the request is applied either. `true -> false` (a
+  takedown) and re-stating the current value still succeed. The only way
+  consent becomes `true` is the member's own `registryConsent` on a join
+  submit, including a rejoin, which writes a fresh member record.
+
+  The specification declares no code for this, so it is minted under the
+  task's namespace (Trust Tasks SPEC §8.5) as
+  `vta_sdk::protocols::members::MEMBER_UPDATE_ERR_CONSENT_GRANT_FORBIDDEN`
+  and listed as consumer-minted in the VTC's error-code census, which fails
+  the day the specification declares it.
+
+  A withdrawal already reaches the registry: the `MemberUpdated` naming
+  `publishConsent` enqueues an `UpdateMember` job, and the syncer deletes the
+  member's record (a delete, not `Departed`). An integration test now drives
+  that end to end through the route.
+
+  docs/03-vtc/trust-registry.md no longer tells operators to record consent
+  for pre-#1682 members with `publishConsent: true`; that is refused now, and
+  such a member gives consent by rejoining.
+
+
+
 ## [0.63.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.63.1...vta-sdk-v0.63.2) — 2026-10-05
 
 
