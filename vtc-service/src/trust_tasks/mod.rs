@@ -3247,6 +3247,13 @@ async fn handle_submit(
                 Some(details),
             );
         }
+        Err(crate::join::SubmitRefusal::Challenge(r)) => {
+            return challenge_reject(
+                &doc,
+                crate::vetting::challenge_refusal::ChallengeTask::Submit,
+                &r,
+            );
+        }
         Err(crate::join::SubmitRefusal::Other(e)) => return app_error_to_reject(&doc, &e),
     };
 
@@ -3254,6 +3261,30 @@ async fn handle_submit(
         Ok(v) => verdict_response(&doc, v),
         Err(e) => app_error_to_reject(&doc, &e),
     }
+}
+
+/// A refused hidden-vetting challenge, answered under its own code.
+///
+/// Until these codes existed every way a challenge could fail went out as one
+/// `malformedRequest`, and a client could not tell an applicant whether they
+/// had simply taken too long or were sending a proof built over the wrong
+/// challenge. Neither `submit` nor `supplement` declares a code for it, so the
+/// codes are consumer-minted under the task's own slug (SPEC §8.5, as
+/// `requestAlreadyOpen` is), with the generic `details.reason` marker beside
+/// them for a client that does not know the code, and `expiredAt` for an
+/// expired one. The message never carries the challenge value.
+fn challenge_reject<P>(
+    doc: &TrustTask<P>,
+    task: crate::vetting::challenge_refusal::ChallengeTask,
+    refusal: &crate::vetting::challenge_refusal::ChallengeRefusal,
+) -> TrustTaskOutcome {
+    reject_with_code_because(
+        doc,
+        extended_code(refusal.code(task)),
+        refusal.to_string(),
+        refusal.details(),
+        refusal.marker(),
+    )
 }
 
 /// Map the ceremony spine's [`JoinSubmitOutcome`] onto the wire
@@ -3970,6 +4001,13 @@ async fn handle_supplement(
                     "status": status.to_string(),
                 })),
                 reasons::GONE,
+            );
+        }
+        Err(SupplementRefusal::Challenge(r)) => {
+            return challenge_reject(
+                &doc,
+                crate::vetting::challenge_refusal::ChallengeTask::Supplement,
+                &r,
             );
         }
         Err(SupplementRefusal::Other(e)) => return app_error_to_reject(&doc, &e),

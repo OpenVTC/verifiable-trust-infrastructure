@@ -124,6 +124,7 @@ pub async fn present_and_decide_join(
         crate::join::criteria::CriterionRefusal::Unknown(id) => AppError::Validation(format!(
             "the join criterion `{id}` this presentation answers is no longer published"
         )),
+        crate::join::criteria::CriterionRefusal::Challenge(r) => r.into(),
         crate::join::criteria::CriterionRefusal::Other(e) => e,
     }
             })?;

@@ -32,6 +32,7 @@ use vti_vetting_pcs::{
     wire::SubmissionWire,
 };
 
+use super::pcs_challenge::{ChallengeRefusal, ConsumeError};
 use crate::server::AppState;
 
 /// Domain separation for spent-token keys.
@@ -371,6 +372,40 @@ impl SpentLedger for PreloadedLedger {
     fn forget_label(&mut self, _label: &str) {}
 }
 
+/// Why [`decide`] did not produce a decision.
+#[derive(Debug)]
+pub enum DecideError {
+    /// The challenge the proof is bound to was refused, and the applicant is told which way
+    /// ([`ChallengeRefusal`]). Checked before the proof, so a refusal here says nothing about it.
+    Challenge(ChallengeRefusal),
+    /// The proof, or the parameters it is checked under, did not verify or would not parse.
+    Proof(ProtoError),
+    /// A keyspace failed. Nothing the applicant did.
+    Store(vti_common::error::AppError),
+}
+
+impl From<ProtoError> for DecideError {
+    fn from(e: ProtoError) -> Self {
+        Self::Proof(e)
+    }
+}
+
+impl From<predicate_credential_system::Error> for DecideError {
+    fn from(e: predicate_credential_system::Error) -> Self {
+        Self::Proof(e.into())
+    }
+}
+
+impl std::fmt::Display for DecideError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Challenge(r) => r.fmt(f),
+            Self::Proof(e) => e.fmt(f),
+            Self::Store(e) => e.fmt(f),
+        }
+    }
+}
+
 /// Verify the `hiddenVetting` member of a submission's `extensions` and count it.
 ///
 /// `Ok(None)` when the member is absent: that is every submission of a community that does not
@@ -384,7 +419,7 @@ pub async fn decide(
     config: &HiddenVettingConfig,
     extensions: &serde_json::Value,
     now: DateTime<Utc>,
-) -> Result<Option<Decision>, ProtoError> {
+) -> Result<Option<Decision>, DecideError> {
     use predicate_credential_system::serialization::{from_bytes, from_multibase};
 
     let Some(wire) = SubmissionWire::from_extensions(extensions)? else {
@@ -394,7 +429,8 @@ pub async fn decide(
         return Err(ProtoError::Serialization(format!(
             "unknown hidden-vetting suite {}",
             config.suite
-        )));
+        ))
+        .into());
     }
     let submission: Submission = wire.to_submission()?;
 
@@ -408,7 +444,10 @@ pub async fn decide(
         now,
     )
     .await
-    .map_err(|e| ProtoError::Serialization(e.to_string()))?;
+    .map_err(|e| match e {
+        ConsumeError::Refused(r) => DecideError::Challenge(r),
+        ConsumeError::Store(e) => DecideError::Store(e),
+    })?;
 
     // 1. Read what is already spent, for exactly the serials this submission presents.
     let mask_key = mask_key(state)?;
@@ -471,7 +510,8 @@ pub async fn decide(
         if !inserted {
             return Err(ProtoError::Serialization(format!(
                 "token {serial} under {label} was spent concurrently; the submission is refused"
-            )));
+            ))
+            .into());
         }
     }
     Ok(Some(decision))
@@ -540,7 +580,7 @@ mod tests {
         .await
         .expect_err("this community issued no challenge");
         assert!(
-            format!("{err}").contains("no open hidden-vetting challenge"),
+            matches!(err, DecideError::Challenge(ChallengeRefusal::NotIssued)),
             "{err}"
         );
 
@@ -601,8 +641,11 @@ mod tests {
             now,
         )
         .await
-        .expect_err("the challenge is gone");
-        assert!(format!("{err}").contains("already used"), "{err}");
+        .expect_err("the challenge is spent");
+        assert!(
+            matches!(err, DecideError::Challenge(ChallengeRefusal::AlreadyUsed)),
+            "{err}"
+        );
     }
 
     /// The mask has to be a pseudonym, not an encoding: stable where equality is needed, and

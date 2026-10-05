@@ -39,6 +39,7 @@ use crate::join::{
 };
 use crate::policy::{PolicyPurpose, extract::extract_vp_claims, load_active_compiled};
 use crate::server::AppState;
+use crate::vetting::challenge_refusal::ChallengeRefusal;
 
 pub const JOIN_REQUEST_SUBMIT_DOMAIN_TAG: &[u8] = b"vtc-join-request/v1\0";
 
@@ -98,6 +99,9 @@ pub enum SubmitRefusal {
     /// superseded version within its grace (`submit:criterionUnknown`).
     /// Carries the digest.
     CriterionUnknown(String),
+    /// The hidden-vetting challenge the proof is bound to was refused
+    /// (`submit:challenge*`). The challenge is spent either way.
+    Challenge(ChallengeRefusal),
     /// Everything else, unchanged.
     Other(AppError),
 }
@@ -107,6 +111,7 @@ impl From<CriterionRefusal> for SubmitRefusal {
         match r {
             CriterionRefusal::NotAccepting => Self::NotAccepting,
             CriterionRefusal::Unknown(digest) => Self::CriterionUnknown(digest),
+            CriterionRefusal::Challenge(r) => Self::Challenge(r),
             CriterionRefusal::Other(e) => Self::Other(e),
         }
     }
@@ -147,6 +152,7 @@ impl From<SubmitRefusal> for AppError {
                 "criterion {digest} names no join criterion this community publishes; read \
                  vtc/join-requests/manifest/0.3 again and resubmit under a current one"
             )),
+            SubmitRefusal::Challenge(r) => r.into(),
             SubmitRefusal::Other(e) => e,
         }
     }
@@ -1102,6 +1108,9 @@ pub enum SupplementRefusal {
         request_id: Uuid,
         status: JoinStatus,
     },
+    /// The hidden-vetting challenge the supplement's proof is bound to was
+    /// refused (`supplement:challenge*`). The challenge is spent either way.
+    Challenge(ChallengeRefusal),
     /// Everything else, unchanged.
     Other(AppError),
 }
@@ -1125,6 +1134,7 @@ impl From<SupplementRefusal> for AppError {
             SupplementRefusal::AlreadyDecided { request_id, status } => AppError::Gone(format!(
                 "join request {request_id} is already {status} and cannot be supplemented"
             )),
+            SupplementRefusal::Challenge(r) => r.into(),
             SupplementRefusal::Other(e) => e,
         }
     }
@@ -1282,6 +1292,7 @@ pub async fn supplement_inner(
                 "this community is no longer accepting applications".into(),
             )));
         }
+        Err(CriterionRefusal::Challenge(r)) => return Err(SupplementRefusal::Challenge(r)),
         Err(CriterionRefusal::Other(e)) => return Err(e.into()),
     };
     let consume_invitation_id = consume_invitation_id.filter(|_| uses_invitation(&governing));

@@ -1011,3 +1011,145 @@ async fn saving_a_criterion_keeps_its_hidden_vetting_until_it_stops_asking_for_v
             .expect("the criterion");
     assert!(stored.hidden_vetting.is_none());
 }
+
+// --- the challenge a submission is bound to ----------------------------------------------------
+
+/// The submission the openvtc client produced (`vti-vetting-pcs`'s cross-repo fixture). Its proof
+/// does not verify under this harness's keys, and does not need to: the challenge is spent before
+/// the proof is read, so every refusal below is reached by a well-formed submission whatever its
+/// proof says.
+const SUBMISSION_FIXTURE: &str =
+    include_str!("../../../vti-vetting-pcs/tests/fixtures/submission.json");
+
+/// A join submission carrying the fixture's hidden-vetting proof, from `secret`'s holder.
+async fn submit_hidden(h: &Harness, secret: &Secret) -> (StatusCode, Value) {
+    let f: Value = serde_json::from_str(SUBMISSION_FIXTURE).unwrap();
+    h.post(
+        secret,
+        vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_TYPE,
+        json!({
+            "vp": { "type": "VerifiablePresentation" },
+            "registryConsent": false,
+            "extensions": f["extensions"],
+        }),
+    )
+    .await
+}
+
+/// Every way the community can refuse the challenge a hidden-vetting proof is bound to reaches the
+/// applicant as a code of its own, with the generic marker beside it — rather than the single
+/// `malformedRequest` all four used to be, which left a client unable to say whether the
+/// applicant had taken too long or was sending a proof built over the wrong challenge.
+#[tokio::test]
+async fn a_refused_challenge_says_which_way() {
+    use vta_sdk::protocols::join_requests::{
+        JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_ALREADY_USED, JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_EXPIRED,
+        JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_MISMATCH, JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_NOT_ISSUED,
+    };
+    use vta_sdk::protocols::trust_task_reject_reasons as reasons;
+
+    let h = Harness::start().await;
+    h.publish().await;
+    // The criterion counts vetting, so a submission's proof is read at all.
+    let f: Value = serde_json::from_str(SUBMISSION_FIXTURE).unwrap();
+    let mut criterion =
+        vtc_service::schemas::accepts::get_accepts(&h.tv.state.schemas_ks, "hidden-criterion")
+            .await
+            .unwrap()
+            .unwrap();
+    criterion.vetting = Some(serde_json::from_value(f["requirements"].clone()).unwrap());
+    vtc_service::schemas::accepts::store_accepts(&h.tv.state.schemas_ks, &criterion)
+        .await
+        .unwrap();
+    // And it is the only one, so the submission is decided under it rather than under a seeded
+    // default it happens to meet first.
+    for other in vtc_service::schemas::accepts::list_accepts(&h.tv.state.schemas_ks)
+        .await
+        .unwrap()
+    {
+        if other.id != "hidden-criterion" {
+            vtc_service::schemas::accepts::delete_accepts(&h.tv.state.schemas_ks, &other.id)
+                .await
+                .unwrap();
+        }
+    }
+    let reason = |body: &Value| {
+        body.pointer("/payload/details/reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    // 1. Nothing asked for.
+    let (applicant, key) = identity(0xD1);
+    let (status, body) = submit_hidden(&h, &key).await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_NOT_ISSUED,
+        "{body}"
+    );
+    assert_eq!(reason(&body), reasons::NOT_FOUND, "{body}");
+
+    // 2. A challenge asked for, and a proof built over another — the fixture's.
+    let (status, body) = h
+        .post(
+            &key,
+            pcs_tasks::PCS_CHALLENGE_TYPE,
+            json!({ "criterionId": "hidden-criterion" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let issued = body["payload"]["challenge"].as_str().unwrap().to_string();
+    let (_, body) = submit_hidden(&h, &key).await;
+    assert_eq!(
+        tt_error_code(&body),
+        JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_MISMATCH,
+        "{body}"
+    );
+    assert_eq!(reason(&body), reasons::CONFLICT, "{body}");
+    // The message says what to do and never echoes the challenge.
+    let message = body.to_string();
+    assert!(message.contains("vtc/vetting/pcs-challenge/0.1"), "{body}");
+    assert!(!message.contains(&issued), "{body}");
+
+    // 3. The attempt spent it: the next is told so, not that nothing was issued.
+    let (_, body) = submit_hidden(&h, &key).await;
+    assert_eq!(
+        tt_error_code(&body),
+        JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_ALREADY_USED,
+        "{body}"
+    );
+    assert_eq!(reason(&body), reasons::GONE, "{body}");
+
+    // 4. A challenge whose window has closed, with when.
+    let issued_at = Utc::now() - Duration::hours(1);
+    vtc_service::vetting::pcs_challenge::record(
+        &h.tv.state.join_requests_ks,
+        &applicant,
+        f["extensions"]["hiddenVetting"]["challenge"]
+            .as_str()
+            .unwrap(),
+        Duration::minutes(15),
+        issued_at,
+    )
+    .await
+    .unwrap();
+    let (_, body) = submit_hidden(&h, &key).await;
+    assert_eq!(
+        tt_error_code(&body),
+        JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_EXPIRED,
+        "{body}"
+    );
+    assert_eq!(reason(&body), reasons::GONE, "{body}");
+    let expired_at: chrono::DateTime<Utc> = body
+        .pointer("/payload/details/expiredAt")
+        .and_then(Value::as_str)
+        .expect("an expired challenge says when")
+        .parse()
+        .unwrap();
+    assert_eq!(
+        expired_at.timestamp(),
+        (issued_at + Duration::minutes(15)).timestamp()
+    );
+}

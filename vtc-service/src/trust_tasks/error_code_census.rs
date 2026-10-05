@@ -1290,10 +1290,51 @@ const UNWITNESSED_CEILING: usize = 9;
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.
 /// `(request Type URI, code)`.
-const CONSUMER_MINTED: &[(&str, &str)] = &[(
-    vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_TYPE,
-    vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN,
-)];
+///
+/// The `challenge*` codes say which way a hidden-vetting proof's challenge was
+/// refused (`crate::vetting::challenge_refusal`); `tests/it/hidden_vetting_tasks.rs`
+/// drives the service into each.
+const CONSUMER_MINTED: &[(&str, &str)] = {
+    use vta_sdk::protocols::join_requests as jr;
+    &[
+        (
+            jr::JOIN_REQUEST_SUBMIT_TYPE,
+            jr::JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN,
+        ),
+        (
+            jr::JOIN_REQUEST_SUBMIT_TYPE,
+            jr::JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_NOT_ISSUED,
+        ),
+        (
+            jr::JOIN_REQUEST_SUBMIT_TYPE,
+            jr::JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_ALREADY_USED,
+        ),
+        (
+            jr::JOIN_REQUEST_SUBMIT_TYPE,
+            jr::JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_EXPIRED,
+        ),
+        (
+            jr::JOIN_REQUEST_SUBMIT_TYPE,
+            jr::JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_MISMATCH,
+        ),
+        (
+            jr::JOIN_REQUEST_SUPPLEMENT_TYPE,
+            jr::JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_NOT_ISSUED,
+        ),
+        (
+            jr::JOIN_REQUEST_SUPPLEMENT_TYPE,
+            jr::JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_ALREADY_USED,
+        ),
+        (
+            jr::JOIN_REQUEST_SUPPLEMENT_TYPE,
+            jr::JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_EXPIRED,
+        ),
+        (
+            jr::JOIN_REQUEST_SUPPLEMENT_TYPE,
+            jr::JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_MISMATCH,
+        ),
+    ]
+};
 
 /// Every declared code in scope, keyed by code, with the URI declaring it.
 fn declared_in_scope() -> BTreeMap<&'static str, (String, DeclaredErrorCode)> {
