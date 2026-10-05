@@ -1125,6 +1125,30 @@ fn pcs_witnesses() -> Vec<Witness> {
             "publishing_hidden_vetting_refuses_with_the_codes_it_declares"
         ),
         witness!(
+            s::vetting::hidden::publish::v0_1::error_codes::APPROVER_NOT_SIGNER,
+            pcs::HIDDEN_PUBLISH_ERR_APPROVER_NOT_SIGNER,
+            "hidden_vetting_tasks.rs",
+            "an_event_approval_names_its_approver_and_never_one_of_its_vetters"
+        ),
+        witness!(
+            s::vetting::hidden::publish::v0_1::error_codes::APPROVER_IN_EVENT,
+            pcs::HIDDEN_PUBLISH_ERR_APPROVER_IN_EVENT,
+            "hidden_vetting_tasks.rs",
+            "an_event_approval_names_its_approver_and_never_one_of_its_vetters"
+        ),
+        witness!(
+            s::vetting::hidden::withdraw::v0_1::error_codes::NO_SUCH_CRITERION,
+            pcs::HIDDEN_WITHDRAW_ERR_NO_SUCH_CRITERION,
+            "hidden_vetting_tasks.rs",
+            "hidden_vetting_turns_off_and_shows_what_it_stores"
+        ),
+        witness!(
+            s::vetting::hidden::show::v0_1::error_codes::NO_SUCH_CRITERION,
+            pcs::HIDDEN_SHOW_ERR_NO_SUCH_CRITERION,
+            "hidden_vetting_tasks.rs",
+            "hidden_vetting_turns_off_and_shows_what_it_stores"
+        ),
+        witness!(
             s::vetting::vetters::pcs_root::v0_1::error_codes::ALREADY_ENROLLED,
             pcs::ROOT_ERR_ALREADY_ENROLLED,
             "hidden_vetting_tasks.rs",

@@ -10,6 +10,8 @@ import {
   periodOf,
   TASK_DISCOVERY,
   TASK_HIDDEN_PUBLISH,
+  TASK_HIDDEN_SHOW,
+  TASK_HIDDEN_WITHDRAW,
   type PublishedHiddenVetting,
 } from "@/lib/hidden-vetting";
 import { RequirementsPanel } from "@/plugins/vetting/RequirementsPanel";
@@ -170,16 +172,17 @@ describe("hidden vetting on a criterion", () => {
     fireEvent.click(within(c).getByRole("button", { name: `Roll labels to ${THIS_MONTH}` }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: `Roll to ${THIS_MONTH}` }));
-    // No labels sent: the daemon defaults them to the current month.
     await waitFor(() =>
       expect(sentPayloads(requests, TASK_HIDDEN_PUBLISH)).toContainEqual({
         criterionId: "vetted-member",
+        livePeriods: [THIS_MONTH],
+        liveTokenLabels: [`token/${THIS_MONTH}`],
         dripPerTick: 3,
       }),
     );
   });
 
-  it("does not re-publish a criterion with events, which would drop their approvals", async () => {
+  it("does not re-publish a criterion with events on a build that cannot read them back", async () => {
     mockFetch(
       routes({
         served: [TASK_HIDDEN_PUBLISH],
@@ -191,11 +194,178 @@ describe("hidden vetting on a criterion", () => {
     renderWithProviders(<RequirementsPanel />);
     const c = await card();
     expect(
-      await within(c).findByText("This criterion runs events, so it is not edited here yet."),
+      await within(c).findByText("This criterion runs events, so it is not edited here."),
     ).toBeTruthy();
     expect(within(c).queryByRole("button", { name: "Save drip rate" })).toBeNull();
   });
+});
 
+// ── With `show` and `withdraw` served ───────────────────────────────────
+
+const ADMIN = "did:key:z6MkAdmin";
+
+const SUMMIT = {
+  eventId: "summit-2026",
+  startDate: "2026-10-01",
+  endDate: "2026-10-03",
+  graceDays: 14,
+  groupFloor: 3,
+  tiers: [{ name: "desk", dripPerTick: 10 }],
+};
+
+function stored(events: Record<string, unknown>[] = []) {
+  return {
+    suite: "ps-ddh-bls12381",
+    hvk: "zHelper",
+    tvk: "zToken",
+    livePeriods: [THIS_MONTH],
+    liveTokenLabels: [`token/${THIS_MONTH}`, ...events.map((e) => `token/event/${String(e.eventId)}`)],
+    dripPerTick: 3,
+    events,
+  };
+}
+
+function showAnswer(events: Record<string, unknown>[], groupSize = 1) {
+  return {
+    criterionId: "vetted-member",
+    enabled: true,
+    requirementsDigest: "zQmDigest",
+    stored: stored(events),
+    published: published(),
+    enrolledVetters: { [`vetter/${THIS_MONTH}`]: 4 },
+    eventStatus: events.map((e) => ({
+      eventId: e.eventId,
+      groupFloor: 3,
+      groupSize,
+      approved: Boolean(e.approvedBy),
+      live: false,
+    })),
+  };
+}
+
+const whoami = {
+  session: { id: "s", subject: ADMIN, issuedAt: "2026-10-05T10:00:00Z", expiresAt: "2099-01-01T00:00:00Z" },
+  roles: ["admin"],
+  scopes: [],
+  capabilities: [],
+} as unknown as import("@/lib/api").WhoamiResponse;
+
+function fullRoutes(events: Record<string, unknown>[], extra: MockRoute[] = []) {
+  return routes({
+    served: [TASK_HIDDEN_PUBLISH, TASK_HIDDEN_WITHDRAW, TASK_HIDDEN_SHOW],
+    hidden: published({ events: events.map((e) => ({ ...e, approvedBy: undefined }) as never) }),
+    extra: [
+      taskRoute(TASK_HIDDEN_SHOW, showAnswer(events)),
+      taskRoute(TASK_HIDDEN_PUBLISH, publishAnswer),
+      ...extra,
+    ],
+  });
+}
+
+describe("hidden vetting with its stored configuration", () => {
+  it("shows enrolment and event demand as counts", async () => {
+    mockFetch(fullRoutes([SUMMIT]));
+    renderWithProviders(<RequirementsPanel />, { whoami });
+    const c = await card();
+    expect(await within(c).findByText("(4 enrolled)")).toBeTruthy();
+    expect(within(c).getByText("1 of 3 needed")).toBeTruthy();
+    expect(within(c).getByText("Needs approval")).toBeTruthy();
+  });
+
+  it("approves an event in the viewer's own name, keeping everything else as stored", async () => {
+    const requests = mockFetch(fullRoutes([SUMMIT]));
+    renderWithProviders(<RequirementsPanel />, { whoami });
+    const c = await card();
+    fireEvent.click(await within(c).findByRole("button", { name: "Approve" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Approve event" }));
+    await waitFor(() =>
+      expect(sentPayloads(requests, TASK_HIDDEN_PUBLISH)).toContainEqual({
+        criterionId: "vetted-member",
+        livePeriods: [THIS_MONTH],
+        liveTokenLabels: [`token/${THIS_MONTH}`, "token/event/summit-2026"],
+        dripPerTick: 3,
+        events: [{ ...SUMMIT, approvedBy: ADMIN }],
+      }),
+    );
+  });
+
+  it("keeps an approval when the drip rate changes", async () => {
+    const approved = { ...SUMMIT, approvedBy: "did:key:zOtherAdmin" };
+    const requests = mockFetch(fullRoutes([approved]));
+    renderWithProviders(<RequirementsPanel />, { whoami });
+    const c = await card();
+    await within(c).findByText("1 of 3 needed");
+    fireEvent.change(within(c).getByLabelText("Tokens a vetter may draw per tick"), {
+      target: { value: "4" },
+    });
+    fireEvent.click(within(c).getByRole("button", { name: "Save drip rate" }));
+    await waitFor(() =>
+      expect(sentPayloads(requests, TASK_HIDDEN_PUBLISH)).toContainEqual(
+        expect.objectContaining({ dripPerTick: 4, events: [approved] }),
+      ),
+    );
+  });
+
+  it("adds an event with its label live", async () => {
+    const requests = mockFetch(fullRoutes([]));
+    renderWithProviders(<RequirementsPanel />, { whoami });
+    const c = await card();
+    fireEvent.click(await within(c).findByRole("button", { name: "Add an event" }));
+    fireEvent.change(within(c).getByLabelText("Event name"), { target: { value: "summit-2026" } });
+    fireEvent.change(within(c).getByLabelText("First day"), { target: { value: "2026-10-01" } });
+    fireEvent.change(within(c).getByLabelText("Last day"), { target: { value: "2026-10-03" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Add event" }));
+    await waitFor(() =>
+      expect(sentPayloads(requests, TASK_HIDDEN_PUBLISH)).toContainEqual(
+        expect.objectContaining({
+          liveTokenLabels: [`token/${THIS_MONTH}`, "token/event/summit-2026"],
+          events: [SUMMIT],
+        }),
+      ),
+    );
+  });
+
+  it("removes an event and its label", async () => {
+    const requests = mockFetch(fullRoutes([SUMMIT]));
+    renderWithProviders(<RequirementsPanel />, { whoami });
+    const c = await card();
+    await within(c).findByText("1 of 3 needed");
+    const row = within(c).getByText("summit-2026").closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Remove" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove event" }));
+    await waitFor(() =>
+      expect(sentPayloads(requests, TASK_HIDDEN_PUBLISH)).toContainEqual(
+        expect.objectContaining({ liveTokenLabels: [`token/${THIS_MONTH}`], events: [] }),
+      ),
+    );
+  });
+
+  it("turns hidden vetting off", async () => {
+    const requests = mockFetch(
+      fullRoutes(
+        [],
+        [
+          taskRoute(TASK_HIDDEN_WITHDRAW, {
+            criterionId: "vetted-member",
+            withdrawn: true,
+            requirementsDigest: "zQmOff",
+          }),
+        ],
+      ),
+    );
+    renderWithProviders(<RequirementsPanel />, { whoami });
+    const c = await card();
+    fireEvent.click(await within(c).findByRole("button", { name: "Turn off hidden vetting" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Turn off hidden vetting" }));
+    await waitFor(() =>
+      expect(sentPayloads(requests, TASK_HIDDEN_WITHDRAW)).toContainEqual({
+        criterionId: "vetted-member",
+      }),
+    );
+  });
 });
 
 describe("labelsBehind", () => {

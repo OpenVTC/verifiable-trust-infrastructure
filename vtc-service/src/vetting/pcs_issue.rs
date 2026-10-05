@@ -75,6 +75,42 @@ fn enrol_key(member_did: &str) -> Vec<u8> {
     format!("pcs-enrol:{member_did}").into_bytes()
 }
 
+/// How many members hold an enrolment under each of `labels` (`vetter/<period>`).
+///
+/// A count, never a list: which members can vet anonymously under a label is exactly what the
+/// enrolment table must not hand out (design §18). An administrator needs the number to know
+/// whether a label has enough vetters for a proof of `k` to be possible at all.
+///
+/// # Errors
+///
+/// Whatever the store returns.
+pub async fn enrolled_counts(
+    state: &AppState,
+    labels: &[String],
+) -> Result<std::collections::HashMap<String, usize>, AppError> {
+    let mut counts: std::collections::HashMap<String, usize> =
+        labels.iter().map(|l| (l.clone(), 0)).collect();
+    for key in state
+        .vetting_pcs_issue_ks
+        .prefix_keys(b"pcs-enrol:".to_vec())
+        .await?
+    {
+        let Some(record) = state
+            .vetting_pcs_issue_ks
+            .get::<EnrolmentRecord>(key)
+            .await?
+        else {
+            continue;
+        };
+        for (label, _) in &record.labels {
+            if let Some(n) = counts.get_mut(label) {
+                *n += 1;
+            }
+        }
+    }
+    Ok(counts)
+}
+
 fn drip_key(member_did: &str, label: &str, tick: u32) -> Vec<u8> {
     // Length-framed, so a member DID ending in digits cannot read as part of a tick.
     format!(

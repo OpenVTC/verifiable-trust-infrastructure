@@ -1120,6 +1120,15 @@ fn dispatch_typed<'a>(
         crate::vetting::pcs_tasks::HIDDEN_PUBLISH_TYPE => {
             Box::pin(async move { handle_hidden_publish(state, ctx, doc).await })
         }
+        // Turning it off again, and reading what is stored before an edit.
+        #[cfg(feature = "vetting-pcs")]
+        crate::vetting::pcs_tasks::HIDDEN_WITHDRAW_TYPE => {
+            Box::pin(async move { handle_hidden_withdraw(state, ctx, doc).await })
+        }
+        #[cfg(feature = "vetting-pcs")]
+        crate::vetting::pcs_tasks::HIDDEN_SHOW_TYPE => {
+            Box::pin(async move { handle_hidden_show(state, ctx, doc).await })
+        }
         // The rooms family. Note what these still do not take: no `ctx`, and no auth
         // claims. A room operation is authorized by the authority chain the room itself
         // issued, never by this service's ACL, roster, or the caller's session —
@@ -2706,6 +2715,11 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // The admin publish that turns hidden vetting on. Was `POST /vetting/hidden`.
     #[cfg(feature = "vetting-pcs")]
     crate::vetting::pcs_tasks::HIDDEN_PUBLISH_TYPE,
+    // And the admin's off switch and stored-configuration read.
+    #[cfg(feature = "vetting-pcs")]
+    crate::vetting::pcs_tasks::HIDDEN_WITHDRAW_TYPE,
+    #[cfg(feature = "vetting-pcs")]
+    crate::vetting::pcs_tasks::HIDDEN_SHOW_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
     // The admin-facing member verbs (#1641 phase 2): the binding that holds the
@@ -3512,8 +3526,8 @@ async fn handle_hidden_publish(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    // The capability check is the whole gate; the signer is not needed after it.
-    if let Err(reject) = capable_signer(
+    // The signer is kept: an event approval it adds must name it (publish/0.1 item 9).
+    let signer = match capable_signer(
         state,
         ctx,
         &doc,
@@ -3522,8 +3536,9 @@ async fn handle_hidden_publish(
     )
     .await
     {
-        return reject;
-    }
+        Ok(claims) => claims.did,
+        Err(reject) => return reject,
+    };
     let payload: trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::Payload =
         match parse_spec_payload(&doc) {
             Ok(p) => p,
@@ -3554,6 +3569,7 @@ async fn handle_hidden_publish(
     };
     match crate::routes::vetting_hidden::publish_hidden_vetting_core(
         state,
+        &signer,
         payload.criterion_id.to_string(),
         if live_periods.is_empty() {
             None
@@ -3567,6 +3583,79 @@ async fn handle_hidden_publish(
         },
         payload.drip_per_tick.map(|n| n.get() as usize),
         events,
+    )
+    .await
+    {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/hidden/withdraw/0.1` — turn hidden-vetter admission off for a criterion. The
+/// same gate as publish, `VettingManage`, read from the signer's ACL entry.
+#[cfg(feature = "vetting-pcs")]
+async fn handle_hidden_withdraw(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let signer = match capable_signer(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::VettingManage,
+        None,
+    )
+    .await
+    {
+        Ok(claims) => claims.did,
+        Err(reject) => return reject,
+    };
+    let payload: trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Payload =
+        match parse_spec_payload(&doc) {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        };
+    match crate::routes::vetting_hidden::withdraw_hidden_vetting_core(
+        state,
+        &signer,
+        payload.criterion_id.to_string(),
+    )
+    .await
+    {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/hidden/show/0.1` — a criterion's stored hidden-vetting configuration, with the
+/// enrolment and event-demand counts. Administrators only (`VettingManage`): it names who
+/// approved each event.
+#[cfg(feature = "vetting-pcs")]
+async fn handle_hidden_show(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(reject) = capable_signer(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::VettingManage,
+        None,
+    )
+    .await
+    {
+        return reject;
+    }
+    let payload: trust_tasks_rs::specs::vtc::vetting::hidden::show::v0_1::Payload =
+        match parse_spec_payload(&doc) {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        };
+    match crate::routes::vetting_hidden::show_hidden_vetting_core(
+        state,
+        payload.criterion_id.to_string(),
     )
     .await
     {

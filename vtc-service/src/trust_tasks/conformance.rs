@@ -2625,6 +2625,69 @@ fn pcs_witnesses() -> Vec<Conformance> {
                 },
             })
         ),
+        // Turning it off again: what `withdraw_hidden_vetting_core` answers.
+        checked!(
+            s::vetting::hidden::withdraw::v0_1::Payload,
+            s::vetting::hidden::withdraw::v0_1::Response,
+            json!({ "criterionId": "vetting-hidden-pilot" }),
+            json!({
+                "criterionId": "vetting-hidden-pilot",
+                "withdrawn": true,
+                "requirementsDigest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+            })
+        ),
+        // The stored configuration and its counts: the shape
+        // `show_hidden_vetting_core` builds, an approved event included.
+        checked!(
+            s::vetting::hidden::show::v0_1::Payload,
+            s::vetting::hidden::show::v0_1::Response,
+            json!({ "criterionId": "vetting-hidden-pilot" }),
+            json!({
+                "criterionId": "vetting-hidden-pilot",
+                "enabled": true,
+                "requirementsDigest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+                "stored": {
+                    "suite": "pcs-bls12-381-g1",
+                    "hvk": MB,
+                    "tvk": MB,
+                    "livePeriods": ["2026-09"],
+                    "liveTokenLabels": ["token/2026-09", "token/event/summit-2026"],
+                    "dripPerTick": 3,
+                    "events": [{
+                        "eventId": "summit-2026",
+                        "startDate": "2026-09-01",
+                        "endDate": "2026-09-03",
+                        "graceDays": 14,
+                        "groupFloor": 3,
+                        "tiers": [{ "name": "desk", "dripPerTick": 10 }],
+                        "approvedBy": "did:key:z6MkAdmin",
+                    }],
+                },
+                "published": {
+                    "suite": "pcs-bls12-381-g1",
+                    "helperKey": MB,
+                    "tokenKey": MB,
+                    "tokenLabels": ["token/2026-09", "token/event/summit-2026"],
+                    "vetterLabels": ["vetter/2026-09"],
+                    "dripPerTick": 3,
+                    "events": [{
+                        "eventId": "summit-2026",
+                        "startDate": "2026-09-01",
+                        "endDate": "2026-09-03",
+                        "groupFloor": 3,
+                        "tiers": [{ "name": "desk", "dripPerTick": 10 }],
+                    }],
+                },
+                "enrolledVetters": { "vetter/2026-09": 4 },
+                "eventStatus": [{
+                    "eventId": "summit-2026",
+                    "groupFloor": 3,
+                    "groupSize": 1,
+                    "approved": true,
+                    "live": false,
+                }],
+            })
+        ),
     ]
 }
 

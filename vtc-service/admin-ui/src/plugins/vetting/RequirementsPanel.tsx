@@ -76,6 +76,9 @@ export function RequirementsPanel() {
   const hidden = new Map(
     (manifest.data?.criteria ?? []).map((c) => [c.id, publishedHiddenVetting(c)]),
   );
+  // Vetters enrol and draw under the first criterion with hidden vetting on
+  // (`pcs_tasks::config_for`), so turning it on for a second is worth a word.
+  const firstHidden = (manifest.data?.criteria ?? []).find((c) => publishedHiddenVetting(c))?.id;
 
   const remove = useMutation({
     mutationFn: deleteCriterion,
@@ -168,6 +171,7 @@ export function RequirementsPanel() {
           criterion={criterion}
           digest={digests.get(criterion.id)}
           hidden={hidden.get(criterion.id) ?? null}
+          otherHiddenCriterion={firstHidden !== criterion.id ? firstHidden : undefined}
           busy={remove.isPending || editing.kind !== "none"}
           onEdit={() => setEditing({ kind: "edit", id: criterion.id })}
           onRemove={() => void onRemove(criterion)}
@@ -182,6 +186,7 @@ function CriterionCard({
   criterion,
   digest,
   hidden,
+  otherHiddenCriterion,
   busy,
   onEdit,
   onRemove,
@@ -190,6 +195,7 @@ function CriterionCard({
   criterion: AcceptsCriterion;
   digest: string | null | undefined;
   hidden: PublishedHiddenVetting | null;
+  otherHiddenCriterion?: string;
   busy: boolean;
   onEdit: () => void;
   onRemove: () => void;
@@ -298,6 +304,7 @@ function CriterionCard({
         criterionId={criterion.id}
         asksForVetting={Boolean(vetting)}
         published={hidden}
+        otherHiddenCriterion={otherHiddenCriterion}
       />
 
       <div className="form-actions">
