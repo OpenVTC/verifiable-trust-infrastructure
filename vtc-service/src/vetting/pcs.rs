@@ -536,7 +536,8 @@ pub async fn decide(
     // 2. Decide against those.
     let hvk = from_bytes(&from_multibase(&config.hvk)?)?;
     let tvk = from_bytes(&from_multibase(&config.tvk)?)?;
-    let tokens = TokenVerifier::new(community_did, tvk, accepted_token_labels(config, now))?;
+    let accepted_labels = accepted_token_labels(config, now);
+    let tokens = TokenVerifier::new(community_did, tvk, accepted_labels.clone())?;
     let mut verifier = Verifier::new(
         VerifierParams {
             community: community_did.to_string(),
@@ -552,6 +553,13 @@ pub async fn decide(
     let ledger = Box::new(ledger);
     verifier.tokens.set_ledger(ledger);
     let mut decision = verifier.submit(&submission, now)?;
+    explain_statements(
+        applicant_did,
+        requirements_digest,
+        &accepted_labels,
+        &submission,
+        &mut decision,
+    )?;
     // What leaves this function is what gets stored and shown. The tag does not leave.
     for statement in &mut decision.statements {
         statement.issuer = mask(&mask_key, applicant_did, &statement.issuer)?;
@@ -581,6 +589,80 @@ pub async fn decide(
         }
     }
     Ok(Some(decision))
+}
+
+/// The failure code for a statement whose token was drawn under a label this community no
+/// longer accepts. The verifier reports it as `no-token`, the same code as a forged token, and
+/// those two call for different things: one is an operator rotating labels under an applicant who
+/// was vetted before the rotation, the other is an attack.
+pub const TOKEN_LABEL_NOT_LIVE: &str = "token-label-not-live";
+
+/// Say why each statement the verifier would not count was refused, where the verifier's own
+/// code is ambiguous, and put the cause on the operator's log (R6.4).
+///
+/// Two refusals look alike from outside and are the usual result of a community changing its
+/// published hidden-vetting parameters under an applicant who already holds attestations:
+///
+/// - **a token label that is no longer live** (`no-token` from the verifier) is relabelled
+///   [`TOKEN_LABEL_NOT_LIVE`];
+/// - **an attestation made under another version of the criterion**
+///   (`requirements-digest-mismatch`): the criterion's digest covers its published parameters,
+///   so changing the drip rate, the tick length, a live label or an event moves it, and every
+///   attestation made before the change binds the old one.
+///
+/// Logged: the labels and digests involved, which are public parameters of the community.
+/// Never a tag, never anything that tells one vetter from another.
+fn explain_statements(
+    applicant_did: &str,
+    requirements_digest: &str,
+    accepted_labels: &[String],
+    submission: &Submission,
+    decision: &mut Decision,
+) -> Result<(), ProtoError> {
+    let mut stale_labels = HashMap::new();
+    let mut stale_digests = Vec::new();
+    for (meta, spend) in &submission.statements {
+        if !accepted_labels.contains(&spend.label) {
+            stale_labels.insert(meta.digest()?, spend.label.clone());
+        }
+        if meta.requirements_digest != requirements_digest
+            && !stale_digests.contains(&meta.requirements_digest)
+        {
+            stale_digests.push(meta.requirements_digest.clone());
+        }
+    }
+    for statement in &mut decision.statements {
+        if stale_labels.contains_key(&statement.id) {
+            for failure in &mut statement.failures {
+                if failure == "no-token" {
+                    *failure = TOKEN_LABEL_NOT_LIVE.to_string();
+                }
+            }
+        }
+    }
+    if !stale_labels.is_empty() {
+        let mut labels: Vec<&String> = stale_labels.values().collect();
+        labels.sort();
+        labels.dedup();
+        tracing::info!(
+            applicant = %applicant_did,
+            labels = ?labels,
+            accepted = ?accepted_labels,
+            "hidden-vetting proof spends tokens under labels this community no longer accepts — \
+             those attestations are not counted"
+        );
+    }
+    if !stale_digests.is_empty() {
+        tracing::info!(
+            applicant = %applicant_did,
+            attested_under = ?stale_digests,
+            criterion_digest = %requirements_digest,
+            "hidden-vetting proof carries attestations made under another version of the \
+             criterion (its published parameters changed since) — those attestations are not \
+             counted"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -713,6 +795,83 @@ mod tests {
             matches!(err, DecideError::Challenge(ChallengeRefusal::AlreadyUsed)),
             "{err}"
         );
+    }
+
+    /// A proof whose tokens were drawn under a label the community has since stopped accepting
+    /// verifies, and its attestations are not counted — under a code that says why, not the
+    /// verifier's `no-token`, which reads the same as a forged token.
+    #[tokio::test]
+    async fn a_token_under_a_label_no_longer_live_is_named_as_such() {
+        use crate::test_support::TestVtc;
+        use chrono::Duration;
+
+        let f: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture parses");
+        let community = f["community"].as_str().unwrap();
+        let requirements = serde_json::from_value(f["requirements"].clone()).unwrap();
+        let digest = f["requirementsDigest"].as_str().unwrap();
+        let now: DateTime<Utc> = f["now"].as_str().unwrap().parse().unwrap();
+        let extensions = f["extensions"].clone();
+        let hidden = &extensions["hiddenVetting"];
+        let applicant = hidden["joinDid"].as_str().unwrap();
+        let challenge = hidden["challenge"].as_str().unwrap();
+        let config = HiddenVettingConfig {
+            suite: hidden["suite"].as_str().unwrap().to_string(),
+            hvk: f["hvk"].as_str().unwrap().to_string(),
+            tvk: f["tvk"].as_str().unwrap().to_string(),
+            live_periods: serde_json::from_value(f["livePeriods"].clone()).unwrap(),
+            // The month moved on: the label the fixture's tokens were drawn under is gone.
+            live_token_labels: vec!["token/1999-01".into()],
+            drip_per_tick: default_drip_per_tick(),
+            tick_length: default_tick_length(),
+            events: Vec::new(),
+        };
+        let tv = TestVtc::builder()
+            .vtc_did(community)
+            .with_signers(true)
+            .build()
+            .await;
+        super::super::pcs_challenge::record(
+            &tv.state.join_requests_ks,
+            applicant,
+            challenge,
+            Duration::minutes(15),
+            now,
+        )
+        .await
+        .unwrap();
+
+        let decision = decide(
+            &tv.state,
+            community,
+            applicant,
+            &requirements,
+            digest,
+            &config,
+            &extensions,
+            now,
+        )
+        .await
+        .expect("the proof itself verifies")
+        .expect("the submission carries a proof");
+        assert!(
+            !decision.evaluation.satisfied(),
+            "{:?}",
+            decision.evaluation
+        );
+        assert!(!decision.statements.is_empty());
+        for s in &decision.statements {
+            assert!(!s.counted);
+            assert!(
+                s.failures.iter().any(|f| f == TOKEN_LABEL_NOT_LIVE),
+                "{:?}",
+                s.failures
+            );
+            assert!(
+                !s.failures.iter().any(|f| f == "no-token"),
+                "{:?}",
+                s.failures
+            );
+        }
     }
 
     /// The mask has to be a pseudonym, not an encoding: stable where equality is needed, and

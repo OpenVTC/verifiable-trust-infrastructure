@@ -129,6 +129,19 @@ pub const NEED_VETTING: &str = "vetting";
 /// presented.
 pub const NEED_INVITATION: &str = "vetting:invitation";
 
+/// Prefix of the needs that say why a hidden-vetting criterion's vetting did not count:
+/// `vetting:hidden:<code>`, where `<code>` is a statement failure code
+/// (`requirements-digest-mismatch`, `token-label-not-live`, `expired`, …) or one of
+/// [`HIDDEN_NO_PROOF`] / [`HIDDEN_UNSUPPORTED`]. It is not a `Need` the SDK parses, so a client
+/// that does not know it shows it as it came.
+pub const NEED_HIDDEN_PREFIX: &str = "vetting:hidden:";
+
+/// The criterion counts vetting from a hidden-vetting proof, and the submission carried none.
+pub const HIDDEN_NO_PROOF: &str = "no-proof";
+
+/// The criterion counts vetting from a hidden-vetting proof, and this build does not verify one.
+pub const HIDDEN_UNSUPPORTED: &str = "unsupported";
+
 /// What the host established about the vetting evidence of one join request.
 /// Every member is a host verdict; policy reads it and decides.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -397,6 +410,29 @@ pub async fn vetting_facts(
         }
     }
 
+    let mut needs: Vec<String> = evaluation.needs.iter().map(|n| n.to_wire()).collect();
+    // A criterion that counts vetting from a hidden-vetting proof reaches the named count only
+    // when the submission carried no proof (or this build cannot read one). Its applicant was
+    // never going to present named statements, so "one more statement" is the wrong thing to
+    // tell them — and the operator should see that no proof arrived, not infer it from silence.
+    if selected.hidden_vetting.is_some() && !evaluation.satisfied() {
+        let reason = if cfg!(feature = "vetting-pcs") {
+            HIDDEN_NO_PROOF
+        } else {
+            HIDDEN_UNSUPPORTED
+        };
+        tracing::info!(
+            applicant = %applicant_did,
+            criterion = %selected.criterion_id,
+            digest = %selected.digest,
+            reason,
+            named_statements = statements.len(),
+            "criterion counts hidden vetting, but no hidden-vetting proof was counted for this \
+             submission"
+        );
+        needs.push(format!("{NEED_HIDDEN_PREFIX}{reason}"));
+    }
+
     Ok(Some(VettingFacts {
         criterion_id: selected.criterion_id,
         requirements_digest: selected.digest,
@@ -415,8 +451,33 @@ pub async fn vetting_facts(
             Some(VettingRequirementsInvitation::Required)
         ),
         satisfied: evaluation.satisfied(),
-        needs: evaluation.needs.iter().map(|n| n.to_wire()).collect(),
+        needs,
     }))
+}
+
+/// Why a hidden-vetting proof's attestations did not count, as the `needs` codes an applicant
+/// is sent: each distinct failure code of a statement that was not counted, in the order first
+/// seen.
+///
+/// `issuer-not-vetter` is dropped when a more specific code is present. On the hidden path the
+/// verifier marks a statement ineligible *because* of its own finding (a stale token label, a
+/// digest from another version of the criterion), and the counting rule then reports that
+/// ineligibility as `issuer-not-vetter` — which would tell the applicant their vetter is not a
+/// vetter, when the vetter is fine and the parameters moved.
+#[cfg_attr(not(feature = "vetting-pcs"), allow(dead_code))]
+fn hidden_reasons(statements: &[VettingStatementFact]) -> Vec<String> {
+    let mut reasons: Vec<String> = Vec::new();
+    for fact in statements.iter().filter(|f| !f.counted) {
+        for failure in &fact.failures {
+            if !reasons.contains(failure) {
+                reasons.push(failure.clone());
+            }
+        }
+    }
+    if reasons.iter().any(|r| r != "issuer-not-vetter") {
+        reasons.retain(|r| r != "issuer-not-vetter");
+    }
+    reasons
 }
 
 /// The hidden-vetter path (development branch `zkp-pcs`).
@@ -462,7 +523,7 @@ async fn hidden_facts(
         return Ok(None);
     };
     let evaluation = &decision.evaluation;
-    Ok(Some(VettingFacts {
+    let mut facts = VettingFacts {
         criterion_id: selected.criterion_id.clone(),
         requirements_digest: selected.digest.clone(),
         applicant_digest_matches: selected.applicant_digest_matches,
@@ -497,7 +558,29 @@ async fn hidden_facts(
         ),
         satisfied: evaluation.satisfied(),
         needs: evaluation.needs.iter().map(|n| n.to_wire()).collect(),
-    }))
+    };
+    // R6.4: say on the operator's log what the proof counted for, and when it fell short, why
+    // — failure codes and counts only, never a tag. And tell the applicant the same codes, so
+    // "one more statement" is not all they hear about a proof that arrived and was refused.
+    let reasons = hidden_reasons(&facts.statements);
+    tracing::info!(
+        applicant = %applicant_did,
+        criterion = %facts.criterion_id,
+        digest = %facts.requirements_digest,
+        attestations = facts.statements.len(),
+        counted = facts.statements.iter().filter(|s| s.counted).count(),
+        distinct_vetters = facts.distinct_counted_vetters,
+        satisfied = facts.satisfied,
+        needs = ?facts.needs,
+        not_counted_because = ?reasons,
+        "hidden-vetting proof verified and counted"
+    );
+    if !facts.satisfied {
+        facts
+            .needs
+            .extend(reasons.iter().map(|r| format!("{NEED_HIDDEN_PREFIX}{r}")));
+    }
+    Ok(Some(facts))
 }
 
 /// Replace a policy's generic [`NEED_VETTING`] with the precise shortfall the
@@ -631,6 +714,61 @@ mod tests {
         // And a submission that is not an object at all is not a panic.
         let mut odd = json!("not an object");
         assert!(!redact_hidden_submission(&mut odd));
+    }
+
+    #[cfg(feature = "vetting-pcs")]
+    fn hidden_fact(counted: bool, failures: &[&str]) -> VettingStatementFact {
+        VettingStatementFact {
+            id: Some("s".into()),
+            issuer: Some("zMasked".into()),
+            verified: true,
+            eligible: failures.is_empty(),
+            revoked: false,
+            method: None,
+            declared_relationship: None,
+            counted,
+            failures: failures.iter().map(|f| (*f).to_string()).collect(),
+        }
+    }
+
+    /// The reasons a hidden proof did not count are the specific codes, once each, and never
+    /// the counting rule's `issuer-not-vetter` echo of an ineligibility the verifier caused.
+    #[cfg(feature = "vetting-pcs")]
+    #[test]
+    fn hidden_reasons_name_the_specific_cause() {
+        let reasons = hidden_reasons(&[
+            hidden_fact(
+                false,
+                &["requirements-digest-mismatch", "issuer-not-vetter"],
+            ),
+            hidden_fact(false, &["token-label-not-live", "issuer-not-vetter"]),
+            hidden_fact(false, &["requirements-digest-mismatch"]),
+            hidden_fact(true, &[]),
+        ]);
+        assert_eq!(
+            reasons,
+            ["requirements-digest-mismatch", "token-label-not-live"]
+        );
+        // With nothing more specific, the counting rule's own code is all there is, and stays.
+        assert_eq!(
+            hidden_reasons(&[hidden_fact(false, &["issuer-not-vetter"])]),
+            ["issuer-not-vetter"]
+        );
+        assert!(hidden_reasons(&[hidden_fact(true, &[])]).is_empty());
+    }
+
+    /// The hidden needs are outside the SDK's `Need` grammar on purpose, so a client that does
+    /// not know them shows them as they came rather than misreading them as a count.
+    #[test]
+    fn a_hidden_need_is_not_a_count() {
+        for code in [
+            HIDDEN_NO_PROOF,
+            HIDDEN_UNSUPPORTED,
+            "requirements-digest-mismatch",
+        ] {
+            let need = format!("{NEED_HIDDEN_PREFIX}{code}");
+            assert!(vta_sdk::vetting::requirements::Need::parse(&need).is_none());
+        }
     }
 
     fn facts_with_needs(needs: &[&str]) -> VettingFacts {
