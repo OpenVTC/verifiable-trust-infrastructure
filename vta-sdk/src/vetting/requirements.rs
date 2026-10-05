@@ -30,9 +30,38 @@ use crate::protocols::vetting::{
 /// digest.
 pub const REQUIREMENTS_DIGEST_MEMBER: &str = "requirementsDigest";
 
+/// The `vetting.ext` namespace a community publishes its hidden-vetting (PCS)
+/// parameters under — suite, keys, live labels, the token drip, tick length,
+/// events.
+pub const HIDDEN_VETTING_EXT: &str = "org.openvtc.hidden-vetting";
+
+/// The hidden-vetting parameters left out of the digest: how the community
+/// *runs* its vetting, which it may change while applicants are gathering. The
+/// suite and keys stay in — a proof is built under them, so an applicant must
+/// never bind to keys it was not shown. Named rather than kept by allow-list,
+/// so a parameter added later is covered until someone decides it need not be.
+pub const HIDDEN_VETTING_OPERATIONAL: [&str; 5] = [
+    "vetterLabels",
+    "tokenLabels",
+    "dripPerTick",
+    "tickLength",
+    "events",
+];
+
 /// `digestMultibase` over a manifest criterion without its own
-/// `requirementsDigest`. An applicant records it when it starts gathering; a
-/// changed digest means the requirements changed.
+/// `requirementsDigest`, nor the operational hidden-vetting parameters
+/// ([`HIDDEN_VETTING_OPERATIONAL`] under `vetting.ext["org.openvtc.hidden-vetting"]`).
+/// An applicant records it when it starts gathering; a changed digest means the
+/// requirements changed.
+///
+/// The operational parameters say how this community runs its vetting — how
+/// fast vetters draw tokens, which labels are live, its events — not what an
+/// applicant must show. A hidden vetter's attestation is bound to this digest,
+/// so with them inside it every such change (a new drip rate, a new live
+/// period) silently voided every attestation in flight: the proof still
+/// verified and none of it counted. Whether a token's label is still live is
+/// checked on its own when a proof is read, so leaving them out gives nothing
+/// away. The suite and keys remain covered.
 ///
 /// Pass the criterion as received: a parsed criterion re-serialised drops any
 /// member its generated type does not name, and so digests to something else.
@@ -44,6 +73,16 @@ pub fn requirements_digest(criterion: &Value) -> Result<String, VettingError> {
     let mut criterion = criterion.clone();
     if let Some(map) = criterion.as_object_mut() {
         map.remove(REQUIREMENTS_DIGEST_MEMBER);
+        if let Some(hidden) = map
+            .get_mut("vetting")
+            .and_then(|v| v.get_mut("ext"))
+            .and_then(|e| e.get_mut(HIDDEN_VETTING_EXT))
+            .and_then(Value::as_object_mut)
+        {
+            for member in HIDDEN_VETTING_OPERATIONAL {
+                hidden.remove(member);
+            }
+        }
     }
     digest(&criterion)
 }
@@ -326,6 +365,54 @@ mod tests {
     use crate::protocols::vetting::VETTED_PREDICATE;
     use chrono::Duration;
     use serde_json::json;
+
+    /// Republishing how hidden vetting runs — a new drip rate, a new live
+    /// period — leaves the digest, and so every attestation made under it, as
+    /// it was. New keys, or new requirements, still move it.
+    #[test]
+    fn operational_hidden_vetting_parameters_are_outside_the_digest() {
+        let criterion = |key: &str, drip: u32, periods: &[&str], min: u32| {
+            json!({
+                "id": "vetted-member",
+                "admission": "automatic",
+                "vetting": {
+                    "version": "0.1",
+                    "minStatements": min,
+                    "ext": { HIDDEN_VETTING_EXT: {
+                        "suite": "pcs-1",
+                        "tokenKey": key,
+                        "vetterLabels": periods.iter().map(|p| format!("vetter/{p}")).collect::<Vec<_>>(),
+                        "tokenLabels": ["token/2026-10"],
+                        "dripPerTick": drip,
+                        "tickLength": "P3D",
+                        "events": [],
+                    }},
+                },
+            })
+        };
+        let d = |c: Value| requirements_digest(&c).unwrap();
+        let base = d(criterion("zKey", 100, &["2026-10"], 1));
+        assert_eq!(
+            base,
+            d(criterion("zKey", 20, &["2026-10"], 1)),
+            "a new drip rate"
+        );
+        assert_eq!(
+            base,
+            d(criterion("zKey", 100, &["2026-10b", "2026-10"], 1)),
+            "a new live period"
+        );
+        assert_ne!(
+            base,
+            d(criterion("zOtherKey", 100, &["2026-10"], 1)),
+            "new keys"
+        );
+        assert_ne!(
+            base,
+            d(criterion("zKey", 100, &["2026-10"], 2)),
+            "new requirements"
+        );
+    }
 
     fn requirements() -> VettingRequirements {
         serde_json::from_value(json!({
