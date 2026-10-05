@@ -16,6 +16,7 @@ import {
   useMemberCount,
 } from "@/lib/community-counts";
 import { formatDuration } from "@/lib/format";
+import { fetchHiddenVettingSupport, hiddenVettingKeys } from "@/lib/hidden-vetting";
 import { useCapabilities } from "@/lib/viewer";
 import {
   fetchPendingWithVetting,
@@ -66,6 +67,15 @@ export function Dashboard() {
     queryFn: countPendingJoinRequests,
     enabled: showJoins,
     retry: false,
+  });
+  // Whether this build can do hidden vetting at all — nothing else in the
+  // console says, and a criterion offering it on a build that cannot would be
+  // refused only when an applicant tried.
+  const hiddenVetting = useQuery({
+    queryKey: hiddenVettingKeys.support,
+    queryFn: fetchHiddenVettingSupport,
+    retry: false,
+    staleTime: Infinity,
   });
   const needsReview = withdrawals.data?.filter(
     (r) => r.reviewState === "needsReview",
@@ -307,6 +317,29 @@ export function Dashboard() {
                 : "neutral"
           }
           to="/join-requests"
+        />
+        <StatTile
+          label="Hidden vetting (PCS)"
+          value={
+            hiddenVetting.data
+              ? hiddenVetting.data.publish
+                ? "Supported"
+                : "Not in this build"
+              : hiddenVetting.error
+                ? "—"
+                : "…"
+          }
+          foot={
+            hiddenVetting.error
+              ? "Could not ask this VTC what it serves"
+              : hiddenVetting.data
+                ? hiddenVetting.data.publish
+                  ? "zero-knowledge vetter proofs can be turned on per criterion"
+                  : "built without the vetting-pcs feature; vetting is by named vetters only"
+                : undefined
+          }
+          tone={hiddenVetting.error ? "warn" : hiddenVetting.data?.publish ? "ok" : "neutral"}
+          to={hiddenVetting.data?.publish ? "/vetting/requirements" : undefined}
         />
         <StatTile
           label="Withdrawn statements"

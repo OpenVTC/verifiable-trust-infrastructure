@@ -937,3 +937,77 @@ async fn publishing_hidden_vetting_refuses_with_the_codes_it_declares() {
         "{body}"
     );
 }
+
+/// Saving a criterion keeps its hidden vetting on. `vtc/schemas/accepts/register/0.2` carries no
+/// member for the parameters, so a replacement built from it always arrives without them, and
+/// every edit an administrator made in the console used to turn hidden vetting off unannounced.
+/// Dropped only when the replacement asks for no vetting at all, which publish refuses anyway.
+#[tokio::test]
+async fn saving_a_criterion_keeps_its_hidden_vetting_until_it_stops_asking_for_vetting() {
+    const ACCEPTS_REGISTER: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2";
+    const MANIFEST: &str = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3";
+    let h = Harness::start().await;
+    vtc_service::endorsement_types::seed_defaults(&h.tv.state.endorsement_types_ks)
+        .await
+        .expect("seed the default predicates");
+    let (admin_did, admin) = identity(0x71);
+    crate::common::signed::seed_role(&h.tv, &admin_did, vtc_service::acl::VtcRole::Admin, &[])
+        .await;
+
+    let criterion = |min: u32| {
+        json!({
+            "id": "vetted-member",
+            "admission": "automatic",
+            "vetting": {
+                "version": "0.1",
+                "statementType": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
+                "minStatements": min,
+                "acceptedMethods": ["inPerson", "video"],
+                "eligibleVetters": { "role": "vetter" },
+            },
+        })
+    };
+    let hidden_in_manifest = |manifest: &Value| {
+        manifest["payload"]["criteria"]
+            .as_array()
+            .and_then(|cs| cs.iter().find(|c| c["id"] == "vetted-member"))
+            .map(|c| c["vetting"]["ext"]["org.openvtc.hidden-vetting"].is_object())
+            .unwrap_or(false)
+    };
+
+    let (status, body) = h.post(&admin, ACCEPTS_REGISTER, criterion(1)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = h
+        .post(
+            &admin,
+            pcs_tasks::HIDDEN_PUBLISH_TYPE,
+            json!({ "criterionId": "vetted-member" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // An ordinary edit: the requirements change, hidden vetting stays on.
+    let (status, body) = h.post(&admin, ACCEPTS_REGISTER, criterion(2)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, manifest) = h.post(&admin, MANIFEST, json!({})).await;
+    assert!(
+        hidden_in_manifest(&manifest),
+        "an edit kept hidden vetting: {manifest}"
+    );
+
+    // The criterion stops asking for vetting: nothing left for the parameters to qualify.
+    let (status, body) = h
+        .post(
+            &admin,
+            ACCEPTS_REGISTER,
+            json!({ "id": "vetted-member", "admission": "review" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored =
+        vtc_service::schemas::accepts::get_accepts(&h.tv.state.schemas_ks, "vetted-member")
+            .await
+            .unwrap()
+            .expect("the criterion");
+    assert!(stored.hidden_vetting.is_none());
+}

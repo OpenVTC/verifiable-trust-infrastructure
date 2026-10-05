@@ -655,6 +655,10 @@ function VettingFields({
         A vetter is a member you have named one. Do that on the{" "}
         <Link to={VETTING_PATH}>Vetters</Link> page.
       </p>
+      <p className="muted">
+        Hidden vetting (PCS), where this VTC supports it, is turned on from the
+        criterion&rsquo;s card once it is saved. Saving changes here keeps it on.
+      </p>
     </>
   );
 }

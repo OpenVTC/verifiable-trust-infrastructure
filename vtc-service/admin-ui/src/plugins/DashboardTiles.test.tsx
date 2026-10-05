@@ -15,6 +15,7 @@ const reads = vi.hoisted(() => ({
   members: 7,
   pending: 2,
   failMembers: false,
+  served: [] as string[],
 }));
 
 vi.mock("@/lib/api", async (original) => ({
@@ -33,6 +34,7 @@ vi.mock("@/lib/api", async (original) => ({
     if (type === JOINS)
       return { items: rows(reads.pending, "pending"), nextCursor: null, totalEstimate: reads.pending };
     if (type.includes("/vetting/show/")) return { requestId: "x", vetting: null };
+    if (type.endsWith("/trust-task-discovery/0.3")) return { supportedTypes: reads.served };
     return {
       actions: [],
       counts: { waitingForMe: 0, requestedByMe: 0 },
@@ -60,6 +62,7 @@ beforeEach(() => {
   reads.members = 7;
   reads.pending = 2;
   reads.failMembers = false;
+  reads.served = [];
 });
 
 describe("the dashboard's community tiles", () => {
@@ -105,5 +108,27 @@ describe("the dashboard's community tiles", () => {
     reads.failMembers = true;
     renderWithProviders(<Dashboard />, { whoami: viewer(["vtc.members.manage"]) });
     await waitFor(() => expect(tile("Members")?.textContent).toContain("Could not count members"));
+  });
+});
+
+describe("the hidden-vetting tile", () => {
+  const PUBLISH = "https://trusttasks.org/spec/vtc/vetting/hidden/publish/0.1";
+
+  it("says a build serving hidden/publish supports PCS, and links to the criteria", async () => {
+    reads.served = [PUBLISH];
+    renderWithProviders(<Dashboard />, { whoami: viewer([]) });
+    await waitFor(() => expect(tile("Hidden vetting (PCS)")?.textContent).toContain("Supported"));
+    expect(tile("Hidden vetting (PCS)")?.getAttribute("href")).toBe("/vetting/requirements");
+    expect(reads.calls).toContainEqual([
+      "https://trusttasks.org/spec/trust-task-discovery/0.3",
+      { patterns: ["vtc/vetting/hidden/*"] },
+    ]);
+  });
+
+  it("says a build without it is named-vetter only", async () => {
+    renderWithProviders(<Dashboard />, { whoami: viewer([]) });
+    await waitFor(() =>
+      expect(tile("Hidden vetting (PCS)")?.textContent).toContain("Not in this build"),
+    );
   });
 });

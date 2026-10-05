@@ -88,9 +88,9 @@ fn mask_key(state: &AppState) -> Result<[u8; 32], ProtoError> {
 /// check one. Public values only: the helper verification key, the token verification key, and
 /// which labels are live.
 ///
-/// It hangs off the stored criterion. It does NOT reach the 0.2 manifest — `Criterion` is a
-/// generated `deny_unknown_fields` type and `VettingRequirements` drops members it does not
-/// name — so a client gets these out of band until the spec carries them (design §8).
+/// It hangs off the stored criterion, and reaches the join manifest as
+/// [`Self::published`] under the criterion's `vetting.ext[HIDDEN_VETTING_NS]`
+/// (`routes::join_requests::manifest::manifest_criterion`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HiddenVettingConfig {

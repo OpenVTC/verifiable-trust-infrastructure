@@ -40,7 +40,10 @@ import {
   fetchManifest,
   vettingKeys,
 } from "./api";
+import { publishedHiddenVetting, type PublishedHiddenVetting } from "@/lib/hidden-vetting";
+
 import { CriterionEditor } from "./CriterionEditor";
+import { HiddenVettingCard } from "./HiddenVettingCard";
 import { StatementTypesCard } from "./StatementTypesCard";
 import { errorMessage, LoadError } from "./ui";
 
@@ -69,6 +72,9 @@ export function RequirementsPanel() {
   const rows = [...(criteria.data ?? [])].sort((a, b) => rank(a.id) - rank(b.id));
   const digests = new Map(
     (manifest.data?.criteria ?? []).map((c) => [c.id, c.requirementsDigest]),
+  );
+  const hidden = new Map(
+    (manifest.data?.criteria ?? []).map((c) => [c.id, publishedHiddenVetting(c)]),
   );
 
   const remove = useMutation({
@@ -161,6 +167,7 @@ export function RequirementsPanel() {
           position={index + 1}
           criterion={criterion}
           digest={digests.get(criterion.id)}
+          hidden={hidden.get(criterion.id) ?? null}
           busy={remove.isPending || editing.kind !== "none"}
           onEdit={() => setEditing({ kind: "edit", id: criterion.id })}
           onRemove={() => void onRemove(criterion)}
@@ -174,6 +181,7 @@ function CriterionCard({
   position,
   criterion,
   digest,
+  hidden,
   busy,
   onEdit,
   onRemove,
@@ -181,6 +189,7 @@ function CriterionCard({
   position: number;
   criterion: AcceptsCriterion;
   digest: string | null | undefined;
+  hidden: PublishedHiddenVetting | null;
   busy: boolean;
   onEdit: () => void;
   onRemove: () => void;
@@ -284,6 +293,12 @@ function CriterionCard({
           </details>
         </>
       )}
+
+      <HiddenVettingCard
+        criterionId={criterion.id}
+        asksForVetting={Boolean(vetting)}
+        published={hidden}
+      />
 
       <div className="form-actions">
         <button type="button" className="secondary" disabled={busy} onClick={onEdit}>

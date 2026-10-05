@@ -161,6 +161,27 @@ pub(crate) async fn register_accepts_inner(
     criterion.id = id.clone();
     criterion.created_at = Utc::now();
     criterion.created_by_did = actor.to_string();
+    // The register payload has no member for the hidden-vetting parameters —
+    // they are written by `vtc/vetting/hidden/publish` and removed by
+    // withdrawing them — so a replacement built from it always arrives without
+    // them. Kept, like `position`, or every edit made in the console would
+    // silently turn hidden vetting off. Dropped only when the replacement asks
+    // for no vetting, since the parameters qualify a criterion's vetting and
+    // publish refuses a criterion without it (`hidden/publish:noVetting`).
+    if criterion.hidden_vetting.is_none()
+        && let Some(existing) = crate::schemas::accepts::get_accepts(&state.schemas_ks, &id).await?
+        && let Some(hidden) = existing.hidden_vetting
+    {
+        if criterion.vetting.is_some() {
+            criterion.hidden_vetting = Some(hidden);
+        } else {
+            info!(
+                id = %id,
+                by = %actor,
+                "accepts criterion no longer asks for vetting; its hidden-vetting parameters are dropped with it"
+            );
+        }
+    }
     let criterion = store_accepts(&state.schemas_ks, &criterion).await?;
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
