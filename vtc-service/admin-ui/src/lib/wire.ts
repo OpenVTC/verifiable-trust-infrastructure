@@ -977,6 +977,7 @@ export interface components {
             ext: components["schemas"]["DiagnosticsExt"];
             /** Format: int64 */
             failedCount: number;
+            inboxCollection?: null | components["schemas"]["InboxHealth"];
             lastError?: string | null;
             /** Format: date-time */
             lastFailureAt?: string | null;
@@ -1897,6 +1898,54 @@ export interface components {
             /** Format: int64 */
             updatedAt: number;
             visibility: string;
+        };
+        /**
+         * @description Whether a node is collecting its mediator inbox, as last observed.
+         * @enum {string}
+         */
+        InboxCollection: "unknown" | "collecting" | "backlogged" | "notDelivering";
+        /**
+         * @description What a health endpoint reports about inbox collection. A snapshot, driven by
+         *     a signal that can go false again (R6.2) — every field is re-observed each
+         *     check.
+         */
+        InboxHealth: {
+            /**
+             * Format: int64
+             * @description Unix seconds of the last answered status request.
+             */
+            lastAnsweredAt?: number | null;
+            /**
+             * Format: int64
+             * @description Age of the oldest of them, in seconds.
+             */
+            longestWaitedSecs?: number | null;
+            state: components["schemas"]["InboxCollection"];
+            /**
+             * Format: int32
+             * @description Status requests in a row that went unanswered while connected.
+             */
+            unansweredStatusRequests: number;
+            /**
+             * Format: int64
+             * @description Of those, the ones deleted from the mediator.
+             */
+            unprocessableDeleted: number;
+            /**
+             * Format: int64
+             * @description Inbound frames this node could not unpack, since start.
+             */
+            unprocessableSeen: number;
+            /**
+             * Format: int32
+             * @description Redelivery requests in a row that left the same oldest message waiting.
+             */
+            unproductiveRedeliveries: number;
+            /**
+             * Format: int32
+             * @description Messages waiting at the mediator at the last answered check.
+             */
+            waiting?: number | null;
         };
         /** @description One row of the invitation list (the registry record, body-free). */
         InvitationListItem: {

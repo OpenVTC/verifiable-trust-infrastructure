@@ -275,6 +275,90 @@ pub struct VtaClient {
     >,
     /// Whether an unsigned reply is refused. See [`VtaClient::trusting_unsigned_replies`].
     pub(super) require_signed_replies: bool,
+    /// Whether replies are reaching this client. Shared by clones, because the
+    /// receive leg belongs to the session they share. See
+    /// [`VtaClient::receive_health`].
+    pub(super) receive_leg: std::sync::Arc<ReceiveLeg>,
+}
+
+/// Reply timeouts in a row after which a client stops re-forming its TSP
+/// relationship and resending (the §7.2.2 D4 self-repair), and returns
+/// [`VtaError::RepliesNotArriving`] instead.
+///
+/// D4 exists for one failure: a peer that lost the relationship and silently
+/// drops our frames. One re-form and one resend answer it. It was never meant
+/// for a client whose *own* inbox has stopped being collected — there the VTA
+/// answers every request, each answer queues in the client's mediator inbox,
+/// and each D4 round added two more (the accept of the re-form, and the reply
+/// to the resend). With no limit across calls, a panel refreshing every few
+/// seconds filled the mediator's per-peer cap in minutes and the VTA's every
+/// reply was refused `limits.queue.peer` (2026-10-05). Two timeouts in a row is
+/// the first point at which "the peer dropped it" is no longer the likelier
+/// story: D4 has had its one attempt.
+pub const REPLY_TIMEOUT_BREAKER: u32 = 2;
+
+/// Whether replies are reaching this client — the receive leg, which a
+/// successful send says nothing about.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReceiveLegHealth {
+    /// Requests in a row whose reply did not arrive within the timeout. Reset
+    /// by any reply. At [`REPLY_TIMEOUT_BREAKER`] the client reports
+    /// [`VtaError::RepliesNotArriving`] and stops re-forming the relationship.
+    pub consecutive_reply_timeouts: u32,
+    /// Time since the last reply (an inbound frame answering one of this
+    /// client's requests) arrived. `None` before the first.
+    pub since_last_reply: Option<std::time::Duration>,
+    /// Time since the last reply timeout. `None` if there has been none.
+    pub since_last_timeout: Option<std::time::Duration>,
+}
+
+impl ReceiveLegHealth {
+    /// Whether replies have stopped arriving (the breaker has tripped).
+    pub fn replies_not_arriving(&self) -> bool {
+        self.consecutive_reply_timeouts >= REPLY_TIMEOUT_BREAKER
+    }
+}
+
+/// The counters behind [`ReceiveLegHealth`].
+#[derive(Debug, Default)]
+pub(crate) struct ReceiveLeg {
+    consecutive_timeouts: std::sync::atomic::AtomicU32,
+    last_reply: std::sync::Mutex<Option<std::time::Instant>>,
+    last_timeout: std::sync::Mutex<Option<std::time::Instant>>,
+}
+
+// Only the TSP request path records into it today; without `tsp` the counters
+// stay at rest and `receive_health` reports no timeouts.
+#[cfg_attr(not(feature = "tsp"), allow(dead_code))]
+impl ReceiveLeg {
+    /// A reply arrived: the receive leg works.
+    pub(crate) fn record_reply(&self) {
+        self.consecutive_timeouts
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        *self.last_reply.lock().expect("receive-leg mutex") = Some(std::time::Instant::now());
+    }
+
+    /// A reply timed out. Returns the timeouts in a row, this one included.
+    pub(crate) fn record_timeout(&self) -> u32 {
+        *self.last_timeout.lock().expect("receive-leg mutex") = Some(std::time::Instant::now());
+        self.consecutive_timeouts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .saturating_add(1)
+    }
+
+    pub(crate) fn snapshot(&self) -> ReceiveLegHealth {
+        let since = |at: &std::sync::Mutex<Option<std::time::Instant>>| {
+            at.lock().expect("receive-leg mutex").map(|t| t.elapsed())
+        };
+        ReceiveLegHealth {
+            consecutive_reply_timeouts: self
+                .consecutive_timeouts
+                .load(std::sync::atomic::Ordering::Relaxed),
+            since_last_reply: since(&self.last_reply),
+            since_last_timeout: since(&self.last_timeout),
+        }
+    }
 }
 
 // ── Protocol response aliases ──────────────────────────────────────
@@ -427,6 +511,7 @@ impl VtaClient {
             // Refusing an unsigned reply is the default because a reply that
             // attests to nothing is what this exists to stop being acceptable.
             require_signed_replies: true,
+            receive_leg: Default::default(),
             identity: None,
             transport: Transport::Rest {
                 client: crate::http::rest_client(),
@@ -477,6 +562,7 @@ impl VtaClient {
             // Refusing an unsigned reply is the default because a reply that
             // attests to nothing is what this exists to stop being acceptable.
             require_signed_replies: true,
+            receive_leg: Default::default(),
             identity: Some(std::sync::Arc::new(identity)),
             transport: Transport::Rest {
                 client: http,
@@ -582,6 +668,7 @@ impl VtaClient {
             // Refusing an unsigned reply is the default because a reply that
             // attests to nothing is what this exists to stop being acceptable.
             require_signed_replies: true,
+            receive_leg: Default::default(),
             identity: identity.map(std::sync::Arc::new),
             transport: Transport::DIDComm {
                 session,
@@ -888,6 +975,7 @@ impl VtaClient {
             // Refusing an unsigned reply is the default because a reply that
             // attests to nothing is what this exists to stop being acceptable.
             require_signed_replies: true,
+            receive_leg: Default::default(),
             identity: identity.map(std::sync::Arc::new),
             transport: Transport::Tsp {
                 session: std::sync::Arc::new(session),
@@ -1802,6 +1890,90 @@ impl VtaClient {
         crate::retry_safety::retry_safety(type_uri).is_some_and(|c| c.is_blind_retry_safe())
     }
 
+    /// Whether replies are reaching this client: reply timeouts in a row, and
+    /// how long since the last reply. A send that succeeds says nothing about
+    /// this — the request reached the mediator; whether its answer comes back
+    /// depends on this client's inbox being collected.
+    ///
+    /// A consumer showing connection state should show this beside it. A
+    /// session with `replies_not_arriving()` is one to rebuild, not retry.
+    pub fn receive_health(&self) -> ReceiveLegHealth {
+        self.receive_leg.snapshot()
+    }
+
+    /// Send a TSP request, with the §7.2.2 D4 self-repair on a reply timeout —
+    /// unless replies have stopped arriving altogether.
+    ///
+    /// `send` makes one request; `reform` re-forms the relationship and reports
+    /// whether it did. On a reply timeout the relationship is re-formed and, for
+    /// a retry-safe task, the request is sent once more — the D4 behaviour this
+    /// replaced, unchanged while the breaker is closed. Once
+    /// [`REPLY_TIMEOUT_BREAKER`] timeouts have happened in a row (across calls,
+    /// on any clone of this client) neither happens: the result is
+    /// [`VtaError::RepliesNotArriving`], and nothing more is queued for a
+    /// client that is not collecting. Any reply closes the breaker.
+    #[cfg(feature = "tsp")]
+    async fn tsp_request_with_self_repair<T, S, SF, R, RF>(
+        &self,
+        type_uri: &str,
+        mut send: S,
+        reform: R,
+    ) -> Result<T, VtaError>
+    where
+        S: FnMut() -> SF,
+        SF: std::future::Future<Output = Result<T, VtaError>>,
+        R: FnOnce() -> RF,
+        RF: std::future::Future<Output = bool>,
+    {
+        // `observe_tsp_reply` returns `Ok(Err(..))` only for a reply timeout
+        // below the breaker.
+        let first_err = match self.observe_tsp_reply(send().await)? {
+            Ok(reply) => return Ok(reply),
+            Err(e) => e,
+        };
+        if !reform().await || !Self::tsp_resend_after_reform(type_uri) {
+            return Err(first_err);
+        }
+        self.observe_tsp_reply(send().await)?
+    }
+
+    /// Record the receive-leg outcome of one TSP request.
+    ///
+    /// `Err(e)` for anything that is final now — a non-timeout failure, or
+    /// [`VtaError::RepliesNotArriving`] once the breaker trips. `Ok(Err(e))`
+    /// for a reply timeout below the breaker, which D4 may repair. `Ok(Ok(v))`
+    /// for a reply.
+    #[cfg(feature = "tsp")]
+    fn observe_tsp_reply<T>(
+        &self,
+        outcome: Result<T, VtaError>,
+    ) -> Result<Result<T, VtaError>, VtaError> {
+        match outcome {
+            Ok(v) => {
+                self.receive_leg.record_reply();
+                Ok(Ok(v))
+            }
+            Err(e) if e.is_tsp_reply_timeout() => {
+                let consecutive_timeouts = self.receive_leg.record_timeout();
+                if consecutive_timeouts >= REPLY_TIMEOUT_BREAKER {
+                    tracing::warn!(
+                        consecutive_timeouts,
+                        "replies from the VTA are not reaching this client; not re-forming the \
+                         TSP relationship or resending (each would queue another reply in an \
+                         inbox that is not being collected)"
+                    );
+                    Err(VtaError::RepliesNotArriving {
+                        consecutive_timeouts,
+                    })
+                } else {
+                    Ok(Err(e))
+                }
+            }
+            // A transport failure says nothing about the receive leg.
+            Err(e) => Err(e),
+        }
+    }
+
     pub async fn dispatch_trust_task(
         &self,
         type_uri: &str,
@@ -1970,28 +2142,26 @@ impl VtaClient {
             } => {
                 let body = Self::address_trust_task(doc, session.client_did(), vta_did)?;
                 let timeout = std::time::Duration::from_secs(timeout);
-                let mut reply = session
-                    .request(vta_did, mediator_did, &body, timeout)
-                    .await
-                    .map_err(|e| VtaError::TspTransport(e.to_string()));
                 // §7.2.2 D4 self-repair: a reply-timeout may be a silent drop
                 // from a peer that lost the relationship. Re-form it (safe vs a
                 // false positive via the peer's reconcile transition); resend
                 // once only for a retry-safe task — a keyed one is healed for the
                 // next attempt but its resend is left to `idempotent`'s key.
-                if reply
-                    .as_ref()
-                    .err()
-                    .is_some_and(VtaError::is_tsp_reply_timeout)
-                    && session.force_relate(vta_did).await.is_ok()
-                    && Self::tsp_resend_after_reform(type_uri)
-                {
-                    reply = session
-                        .request(vta_did, mediator_did, &body, timeout)
-                        .await
-                        .map_err(|e| VtaError::TspTransport(e.to_string()));
-                }
-                self.verified_reply(Self::decode_trust_task_reply(&reply?)?)
+                // Not once replies have stopped arriving: see
+                // `REPLY_TIMEOUT_BREAKER`.
+                let reply = self
+                    .tsp_request_with_self_repair(
+                        type_uri,
+                        || async {
+                            session
+                                .request(vta_did, mediator_did, &body, timeout)
+                                .await
+                                .map_err(|e| VtaError::TspTransport(e.to_string()))
+                        },
+                        || async { session.force_relate(vta_did).await.is_ok() },
+                    )
+                    .await?;
+                self.verified_reply(Self::decode_trust_task_reply(&reply)?)
                     .await
             }
             #[cfg(feature = "session")]
@@ -2018,40 +2188,32 @@ impl VtaClient {
                         // Rides the DIDComm session's own socket — no second
                         // websocket for this DID (#803).
                         TspLeg::Multiplexed => {
-                            let mut reply =
-                                session.request_tsp(&session.vta_did, &body, timeout).await;
-                            if reply
-                                .as_ref()
-                                .err()
-                                .is_some_and(VtaError::is_tsp_reply_timeout)
-                                && session.force_relate_tsp(&session.vta_did).await.is_ok()
-                                && Self::tsp_resend_after_reform(type_uri)
-                            {
-                                reply = session.request_tsp(&session.vta_did, &body, timeout).await;
-                            }
-                            reply?
+                            self.tsp_request_with_self_repair(
+                                type_uri,
+                                || session.request_tsp(&session.vta_did, &body, timeout),
+                                || async {
+                                    session.force_relate_tsp(&session.vta_did).await.is_ok()
+                                },
+                            )
+                            .await?
                         }
                         TspLeg::Separate {
                             session: tsp_session,
                             mediator_did,
                         } => {
-                            let mut reply = tsp_session
-                                .request(&session.vta_did, mediator_did, &body, timeout)
-                                .await
-                                .map_err(|e| VtaError::TspTransport(e.to_string()));
-                            if reply
-                                .as_ref()
-                                .err()
-                                .is_some_and(VtaError::is_tsp_reply_timeout)
-                                && tsp_session.force_relate(&session.vta_did).await.is_ok()
-                                && Self::tsp_resend_after_reform(type_uri)
-                            {
-                                reply = tsp_session
-                                    .request(&session.vta_did, mediator_did, &body, timeout)
-                                    .await
-                                    .map_err(|e| VtaError::TspTransport(e.to_string()));
-                            }
-                            reply?
+                            self.tsp_request_with_self_repair(
+                                type_uri,
+                                || async {
+                                    tsp_session
+                                        .request(&session.vta_did, mediator_did, &body, timeout)
+                                        .await
+                                        .map_err(|e| VtaError::TspTransport(e.to_string()))
+                                },
+                                || async {
+                                    tsp_session.force_relate(&session.vta_did).await.is_ok()
+                                },
+                            )
+                            .await?
                         }
                     };
                     return self
@@ -4156,5 +4318,181 @@ mod client_identity_tests {
         let without = build_task_document(TYPE, serde_json::json!({}), None);
         assert!(without.get("issuer").is_none());
         assert!(without.get("recipient").is_none());
+    }
+}
+
+/// The receive-leg breaker over the §7.2.2 D4 self-repair (2026-10-05: an
+/// OpenVTC admin session that had stopped collecting its inbox re-formed and
+/// resent after every reply timeout, adding two queued VTA replies per call
+/// until the mediator refused the VTA `limits.queue.peer`).
+#[cfg(all(test, feature = "tsp"))]
+mod receive_leg_tests {
+    use super::*;
+    use crate::trust_tasks;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    const READ: &str = trust_tasks::TASK_AUTH_WHOAMI_0_1;
+    const KEYED: &str = trust_tasks::TASK_AUTH_REFRESH_0_2;
+
+    fn timeout() -> VtaError {
+        VtaError::TspTransport(format!(
+            "{} after 30s",
+            crate::error::TSP_REPLY_TIMEOUT_PREFIX
+        ))
+    }
+
+    /// One request through the self-repair, with every send answered by
+    /// `answer(n)` (n = send number across the whole test) and the re-form
+    /// succeeding. Counts sends and re-forms.
+    async fn call(
+        client: &VtaClient,
+        type_uri: &str,
+        sends: &AtomicU32,
+        reforms: &AtomicU32,
+        answer: impl Fn(u32) -> Result<&'static str, VtaError>,
+    ) -> Result<&'static str, VtaError> {
+        client
+            .tsp_request_with_self_repair(
+                type_uri,
+                || {
+                    let n = sends.fetch_add(1, Ordering::SeqCst);
+                    let reply = answer(n);
+                    async move { reply }
+                },
+                || async {
+                    reforms.fetch_add(1, Ordering::SeqCst);
+                    true
+                },
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn d4_still_repairs_one_silent_drop() {
+        let client = VtaClient::new("https://vta.example");
+        let (sends, reforms) = (AtomicU32::new(0), AtomicU32::new(0));
+        let got = call(&client, READ, &sends, &reforms, |n| {
+            if n == 0 { Err(timeout()) } else { Ok("reply") }
+        })
+        .await
+        .expect("the resend after the re-form is answered");
+        assert_eq!(got, "reply");
+        assert_eq!((sends.into_inner(), reforms.into_inner()), (2, 1));
+        assert_eq!(client.receive_health().consecutive_reply_timeouts, 0);
+        assert!(client.receive_health().since_last_reply.is_some());
+    }
+
+    #[tokio::test]
+    async fn replies_not_arriving_stops_the_re_form_and_resend() {
+        let client = VtaClient::new("https://vta.example");
+        let (sends, reforms) = (AtomicU32::new(0), AtomicU32::new(0));
+
+        // First call: D4 has its one attempt, and the resend times out too.
+        let err = call(&client, READ, &sends, &reforms, |_| Err(timeout()))
+            .await
+            .expect_err("nothing answers");
+        assert!(
+            matches!(
+                err,
+                VtaError::RepliesNotArriving {
+                    consecutive_timeouts: 2
+                }
+            ),
+            "{err:?}"
+        );
+        assert_eq!(
+            (sends.load(Ordering::SeqCst), reforms.load(Ordering::SeqCst)),
+            (2, 1)
+        );
+
+        // Every later call: one send, no re-form, no resend — nothing more is
+        // queued for a client that is not collecting.
+        for expected in 3..6 {
+            let err = call(&client, READ, &sends, &reforms, |_| Err(timeout()))
+                .await
+                .expect_err("still nothing");
+            assert!(
+                matches!(err, VtaError::RepliesNotArriving { consecutive_timeouts } if consecutive_timeouts == expected),
+                "{err:?}"
+            );
+        }
+        assert_eq!(sends.into_inner(), 2 + 3, "one send per later call");
+        assert_eq!(
+            reforms.into_inner(),
+            1,
+            "no re-form once the breaker is open"
+        );
+        assert!(client.receive_health().replies_not_arriving());
+    }
+
+    #[tokio::test]
+    async fn a_reply_closes_the_breaker() {
+        let client = VtaClient::new("https://vta.example");
+        let (sends, reforms) = (AtomicU32::new(0), AtomicU32::new(0));
+        let _ = call(&client, READ, &sends, &reforms, |_| Err(timeout())).await;
+        assert!(client.receive_health().replies_not_arriving());
+
+        // The session was rebuilt and replies flow again.
+        call(&client, READ, &sends, &reforms, |_| Ok("reply"))
+            .await
+            .expect("answered");
+        assert!(!client.receive_health().replies_not_arriving());
+
+        // A later single timeout gets D4 again.
+        let before = reforms.load(Ordering::SeqCst);
+        let n0 = sends.load(Ordering::SeqCst);
+        call(&client, READ, &sends, &reforms, move |n| {
+            if n == n0 { Err(timeout()) } else { Ok("reply") }
+        })
+        .await
+        .expect("repaired");
+        assert_eq!(reforms.into_inner(), before + 1);
+    }
+
+    #[tokio::test]
+    async fn a_keyed_task_is_re_formed_but_not_resent() {
+        let client = VtaClient::new("https://vta.example");
+        let (sends, reforms) = (AtomicU32::new(0), AtomicU32::new(0));
+        let err = call(&client, KEYED, &sends, &reforms, |_| Err(timeout()))
+            .await
+            .expect_err("timed out");
+        assert!(err.is_tsp_reply_timeout(), "below the breaker: {err:?}");
+        assert_eq!((sends.into_inner(), reforms.into_inner()), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn a_transport_failure_says_nothing_about_the_receive_leg() {
+        let client = VtaClient::new("https://vta.example");
+        let (sends, reforms) = (AtomicU32::new(0), AtomicU32::new(0));
+        let err = call(&client, READ, &sends, &reforms, |_| {
+            Err(VtaError::TspTransport("TSP send failed: refused".into()))
+        })
+        .await
+        .expect_err("send failed");
+        assert!(matches!(err, VtaError::TspTransport(_)));
+        assert_eq!((sends.into_inner(), reforms.into_inner()), (1, 0));
+        assert_eq!(client.receive_health().consecutive_reply_timeouts, 0);
+    }
+
+    #[tokio::test]
+    async fn the_breaker_is_shared_by_clones() {
+        let client = VtaClient::new("https://vta.example");
+        let clone = client.clone();
+        let (sends, reforms) = (AtomicU32::new(0), AtomicU32::new(0));
+        let _ = call(&client, READ, &sends, &reforms, |_| Err(timeout())).await;
+        assert!(clone.receive_health().replies_not_arriving());
+    }
+
+    #[test]
+    fn replies_not_arriving_is_not_retried_and_says_what_to_do() {
+        let err = VtaError::RepliesNotArriving {
+            consecutive_timeouts: 2,
+        };
+        assert!(!crate::idempotency::is_transient(&err));
+        assert!(err.suggested_fix().is_some_and(|f| f.contains("Reconnect")));
+        assert!(
+            err.to_string()
+                .contains("replies are not reaching this client")
+        );
     }
 }

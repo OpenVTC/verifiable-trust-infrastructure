@@ -1626,6 +1626,40 @@ mod transport_harness {
             Some(r.body)
         }
 
+        /// Send `to` a frame it cannot read: a message **anoncrypted** to it,
+        /// forwarded through the mediator like any other. The mediator stores
+        /// and delivers it, counted against this client's per-peer quota; the
+        /// recipient's secure unpack policy (authcrypt only) refuses it. For
+        /// tests of what a node does with a frame it cannot unpack.
+        pub async fn send_unreadable(&self, to: &str) {
+            let msg = Message::build(
+                uuid::Uuid::new_v4().to_string(),
+                "https://example.org/unreadable/1.0".to_string(),
+                serde_json::json!({}),
+            )
+            .to(to.to_string())
+            .finalize();
+            let (jwe, _) = self
+                .atm
+                .pack_encrypted(&msg, to, None, None)
+                .await
+                .expect("anoncrypt pack");
+            self.atm
+                .forward_and_send_message(
+                    &self.profile,
+                    false,
+                    &jwe,
+                    Some(&msg.id),
+                    &self.mediator_did,
+                    to,
+                    None,
+                    None,
+                    false,
+                )
+                .await
+                .expect("forward_and_send_message");
+        }
+
         async fn send(&self, msg: &Message, to: &str) {
             let (jwe, _) = self
                 .atm
