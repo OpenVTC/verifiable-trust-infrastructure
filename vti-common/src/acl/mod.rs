@@ -163,6 +163,19 @@ pub enum Capability {
     /// operators grant proxy-login without sign-trust-task to limit
     /// blast radius on Service consumers (AI agents, etc.).
     SignTrustTask,
+    /// SSHSIG signing — `keys/sign-sshsig/0.1`, the format git uses for SSH
+    /// commit and tag signing (`gpg.format = ssh`).
+    ///
+    /// Registered upstream as `signSshsig`. Deliberately **not**
+    /// [`Capability::Sign`]: the VTA builds the SSHSIG signed data itself, so a
+    /// holder of this capability can obtain a signature that verifies as an
+    /// SSHSIG statement and as nothing else — never one over bytes of its own
+    /// choosing. That is what lets a commit signer (`did-git-sign`) be narrowed
+    /// to it, instead of exporting the key or holding the general oracle.
+    ///
+    /// Derived by every role that derives `Sign`, which already confers strictly
+    /// more; the gate accepts either.
+    SignSshsig,
     /// Mutating the **archival lifecycle** of a stored credential — the
     /// `vault/credentials/{archive,unarchive,delete,restore,purge}/0.1`
     /// tasks. Distinct from `VaultWrite` (which gates `vault/credentials/
@@ -355,6 +368,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::PolicyAdmin,
             Capability::DeviceAdmin,
             Capability::Sign,
+            Capability::SignSshsig,
             Capability::SignTrustTask,
             Capability::KeyMint,
             Capability::KeyExport,
@@ -371,6 +385,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::FillRelease,
             Capability::DeviceAdmin,
             Capability::Sign,
+            Capability::SignSshsig,
             Capability::SignTrustTask,
             Capability::KeyMint,
         ],
@@ -399,6 +414,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::ProxyLogin,
             Capability::FillRelease,
             Capability::Sign,
+            Capability::SignSshsig,
             Capability::SignTrustTask,
             Capability::MemoryRead,
             Capability::MemoryWrite,
@@ -1743,6 +1759,37 @@ mod tests {
         entry.capabilities = vec![Capability::Sign, Capability::KeyExport];
         assert!(!entry_has_capability(&entry, Capability::KeyExport));
         assert!(!is_additive(Capability::KeyExport));
+    }
+
+    /// `sign-sshsig` follows `sign`: a role that can reach the general oracle can
+    /// reach the constrained one, so no entry loses a commit signer it had.
+    #[test]
+    fn every_role_that_derives_sign_derives_sign_sshsig() {
+        for role in [
+            Role::Admin,
+            Role::Initiator,
+            Role::Application,
+            Role::Reader,
+            Role::Monitor,
+        ] {
+            assert_eq!(
+                role_has_capability(&role, Capability::Sign),
+                role_has_capability(&role, Capability::SignSshsig),
+                "{role:?}"
+            );
+        }
+        assert!(!is_additive(Capability::SignSshsig));
+    }
+
+    /// The narrowing a commit signer is provisioned with: SSHSIG only. It must
+    /// not carry the general oracle along with it.
+    #[test]
+    fn narrowing_to_sign_sshsig_drops_the_general_oracle() {
+        let mut entry = AclEntry::new("did:key:zGitSigner", Role::Application, "did:key:zRoot");
+        entry.capabilities = vec![Capability::SignSshsig];
+        assert!(entry_has_capability(&entry, Capability::SignSshsig));
+        assert!(!entry_has_capability(&entry, Capability::Sign));
+        assert!(!entry_has_capability(&entry, Capability::VaultRead));
     }
 
     // ── Additive capabilities ───────────────────────────────────────

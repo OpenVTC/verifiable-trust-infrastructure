@@ -26,7 +26,8 @@ use crate::operations;
 use crate::server::AppState;
 
 use super::helpers::{
-    TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, reject_with, success_response,
+    TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, reject_declared, reject_with,
+    success_response,
 };
 
 /// Handler for `keys/list/0.1`.
@@ -340,6 +341,92 @@ pub(super) async fn handle_sign(
     {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// Handler for `keys/sign-sshsig/0.1` — git's SSH commit-signing format, signed
+/// by a key that never leaves the VTA.
+///
+/// Parsed into the generated payload, answered with the generated response.
+/// The two refusals the specification declares a code for are rendered with
+/// it; every other refusal is the usual mapping.
+pub(super) async fn handle_sign_sshsig(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use operations::keys::SshsigRefusal;
+    use vta_sdk::protocols::key_management::sign::SignAlgorithm;
+    use vta_sdk::protocols::key_management::sign_sshsig::{
+        SignSshsigAlgorithm, SignSshsigPayload, SignSshsigResponse, SignSshsigResponseAlgorithm,
+        digest_len, error_codes, hash_algorithm_name,
+    };
+
+    if let Err(e) = auth.require_write() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: SignSshsigPayload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let invalid = |reason: String| reject_declared(&doc, error_codes::INVALID_ARGUMENT, reason);
+
+    let (algorithm, response_algorithm) = match req.algorithm {
+        SignSshsigAlgorithm::EdDsa => (SignAlgorithm::EdDSA, SignSshsigResponseAlgorithm::EdDsa),
+        SignSshsigAlgorithm::Es256 => (SignAlgorithm::ES256, SignSshsigResponseAlgorithm::Es256),
+        other => return invalid(format!("unsupported algorithm {other}")),
+    };
+    let (Some(hash_name), Some(hash_len)) = (
+        hash_algorithm_name(&req.hash_algorithm),
+        digest_len(&req.hash_algorithm),
+    ) else {
+        return invalid(format!("unsupported hashAlgorithm {}", req.hash_algorithm));
+    };
+    let message_hash =
+        match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(req.message_hash.as_str()) {
+            Ok(b) => b,
+            Err(e) => return invalid(format!("messageHash is not base64url: {e}")),
+        };
+
+    match operations::keys::sign_sshsig(
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.internal_ks,
+        &state.contexts_ks,
+        &state.acl_ks,
+        &state.seed_store,
+        &state.audit_sink,
+        auth,
+        req.key_id.as_str(),
+        &algorithm,
+        req.namespace.as_str(),
+        hash_name,
+        hash_len,
+        &message_hash,
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(body) => {
+            let response = SignSshsigResponse::builder()
+                .key_id(body.key_id)
+                .algorithm(response_algorithm)
+                .signature(body.signature);
+            match SignSshsigResponse::try_from(response) {
+                Ok(r) => success_response(&doc, r),
+                Err(e) => reject_with(
+                    &doc,
+                    RejectReason::InternalError {
+                        reason: format!("keys/sign-sshsig response: {e}"),
+                    },
+                ),
+            }
+        }
+        Err(SshsigRefusal::KeyNotActive(m)) => {
+            reject_declared(&doc, error_codes::FAILED_PRECONDITION, m)
+        }
+        Err(SshsigRefusal::InvalidArgument(m)) => invalid(m),
+        Err(SshsigRefusal::App(e)) => app_error_to_reject(&doc, e),
     }
 }
 

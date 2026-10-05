@@ -194,6 +194,13 @@ let secret = client.get_key_secret(&key.key_id).await?;
 // Server-side signing (key never leaves VTA)
 let sig = client.sign(&key.key_id, b"hello", "EdDSA").await?;
 
+// An SSHSIG signature (git's SSH commit-signing format) over a digest. The VTA
+// builds the signed data itself, so this needs only `sign-sshsig`, not `sign`.
+let sig = client
+    .sign_sshsig(&key.key_id, SignSshsigAlgorithm::EdDsa, "git",
+                 SshsigHashAlgorithm::Sha512, &sha512_of_commit)
+    .await?;
+
 // Fetch all secrets for a context as a portable bundle
 let bundle = client.fetch_did_secrets_bundle("my-app").await?;
 ```
@@ -205,6 +212,14 @@ take private keys **out** of the VTA, and VTI-VTA-003 requires every such
 export to be gated by a capability separate from the one to *use* the key.
 Both are gated on `key-export`, which **only `admin` derives**. The signing
 oracle (`sign`) is the use-the-key path and needs only `sign`.
+
+A commit signer needs neither. `keys/sign-sshsig/0.1` signs an SSHSIG statement
+— the VTA builds the bytes from a digest and a namespace — so its result verifies
+as an SSHSIG signature and as nothing else, and it is gated on its own narrow
+capability, `sign-sshsig` (every role that derives `sign` derives it, and `sign`
+is accepted in its place). `did-git-sign` uses it; narrow its credential to it
+with `pnm acl update <did> --capabilities sign-sshsig`. Each signature is audited
+as `keys.sign-sshsig` with the namespace and the digest.
 
 So an integration that operates its context's DID, and loads that DID's keys
 at startup (a mediator, a room host, anything using

@@ -1660,6 +1660,64 @@ pub async fn sign_payload(
     domain: SigningDomain,
     channel: &str,
 ) -> Result<SignResultBody, AppError> {
+    sign_payload_recorded(
+        keys_ks,
+        imported_ks,
+        internal_ks,
+        contexts_ks,
+        acl_ks,
+        seed_store,
+        audit,
+        auth,
+        key_id,
+        payload,
+        algorithm,
+        domain,
+        channel,
+        SignAuditRow::GENERIC,
+    )
+    .await
+}
+
+/// The audit row a successful signature writes: the action, and a detail line
+/// for an operation that knows what it signed.
+#[derive(Debug, Clone, Copy)]
+struct SignAuditRow<'a> {
+    action: &'a str,
+    detail: Option<&'a str>,
+}
+
+impl SignAuditRow<'_> {
+    /// The generic oracle's row. It records no detail: the payload is the
+    /// caller's bytes and the VTA cannot say what they are.
+    const GENERIC: SignAuditRow<'static> = SignAuditRow {
+        action: "keys.sign",
+        detail: None,
+    };
+}
+
+/// [`sign_payload`], recording the success under `row`.
+///
+/// Every gate, the key-type check and the zeroization are the same; only the
+/// audit row differs, so an operation that built the bytes itself
+/// ([`sign_sshsig`]) can say what it signed without a second row.
+#[allow(clippy::too_many_arguments)]
+async fn sign_payload_recorded(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    internal_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
+    auth: &AuthClaims,
+    key_id: &str,
+    payload: &[u8],
+    algorithm: &SignAlgorithm,
+    domain: SigningDomain,
+    channel: &str,
+    row: SignAuditRow<'_>,
+) -> Result<SignResultBody, AppError> {
     // Gate 0 — the generic oracle needs `Sign` (VTI-VTA-003, VTI-VTA-007).
     // Only for `Opaque`: those bytes came from a caller, which is the generic
     // signing request `Sign` names. `ProtocolDefined` input is built inside the
@@ -1858,14 +1916,15 @@ pub async fn sign_payload(
     // what transport", not "what did it say". The action name matches
     // `keys.derive-and-sign`, the sibling oracle, rather than this module's
     // older `key.*` rows.
-    audit::record_best_effort(
+    audit::record_with_detail_best_effort(
         audit,
-        "keys.sign",
+        row.action,
         &auth.did,
         Some(key_id),
         "success",
         Some(channel),
         record.context_id.as_deref(),
+        row.detail,
     )
     .await;
 
@@ -1874,6 +1933,134 @@ pub async fn sign_payload(
         signature,
         algorithm: algorithm.clone(),
     })
+}
+
+/// Why [`sign_sshsig`] refused, where `keys/sign-sshsig/0.1` declares a code for
+/// it. Every other refusal is an [`AppError`], rendered as usual.
+#[derive(Debug)]
+pub enum SshsigRefusal {
+    /// `keys/sign-sshsig:failedPrecondition` — the key exists, is the caller's
+    /// to use, and is not `active`.
+    KeyNotActive(String),
+    /// `keys:invalidArgument` — a digest that is not the length its algorithm
+    /// produces, or an algorithm the key cannot perform.
+    InvalidArgument(String),
+    /// Anything else: the capability gate, scope, policy, quota, storage.
+    App(AppError),
+}
+
+impl From<AppError> for SshsigRefusal {
+    fn from(e: AppError) -> Self {
+        SshsigRefusal::App(e)
+    }
+}
+
+/// The SSHSIG gate: the caller must hold [`Capability::SignSshsig`], or
+/// [`Capability::Sign`], which confers strictly more.
+///
+/// `keys/sign-sshsig/0.1` forbids requiring `sign` here — that would put the
+/// general oracle in every commit signer's hands, the grant this task exists to
+/// avoid — and lets a custodian accept it. An entry narrowed to `sign-sshsig`
+/// alone is the shape `did-git-sign` is provisioned with.
+pub(crate) async fn ensure_may_sign_sshsig(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+) -> Result<(), AppError> {
+    let entry = entry_for_capability_gate(acl_ks, auth, "keys/sign-sshsig", "sign-sshsig").await?;
+    if entry_or_role_has(entry.as_ref(), auth, Capability::SignSshsig)
+        || entry_or_role_has(entry.as_ref(), auth, Capability::Sign)
+    {
+        return Ok(());
+    }
+    Err(AppError::Forbidden(format!(
+        "keys/sign-sshsig denied: {} carries neither the sign-sshsig nor the sign capability",
+        auth.did
+    )))
+}
+
+/// `keys/sign-sshsig/0.1`: an SSHSIG signature over `message_hash`.
+///
+/// The VTA builds the signed data itself
+/// ([`vta_sdk::protocols::key_management::sign_sshsig::signed_data`]) and signs
+/// that as [`SigningDomain::ProtocolDefined`] — never bytes the caller chose, so
+/// the result verifies as an SSHSIG statement in `namespace` and as nothing
+/// else. That is what makes the narrower capability safe to grant.
+///
+/// Order: capability, digest shape, then the key (scope before existence, as
+/// everywhere), then the signing chokepoint, which re-applies scope, the
+/// context's signing policy and its daily quota. The audit row names the
+/// namespace and the digest — enough to answer "who signed this commit" after a
+/// compromise, and nothing about the commit itself.
+#[allow(clippy::too_many_arguments)]
+pub async fn sign_sshsig(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    internal_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
+    auth: &AuthClaims,
+    key_id: &str,
+    algorithm: &SignAlgorithm,
+    namespace: &str,
+    hash_algorithm: &str,
+    expected_digest_len: usize,
+    message_hash: &[u8],
+    channel: &str,
+) -> Result<SignResultBody, SshsigRefusal> {
+    use vta_sdk::protocols::key_management::sign_sshsig::signed_data;
+
+    ensure_may_sign_sshsig(acl_ks, auth).await?;
+
+    if message_hash.len() != expected_digest_len {
+        return Err(SshsigRefusal::InvalidArgument(format!(
+            "messageHash is {} bytes; {hash_algorithm} produces {expected_digest_len}",
+            message_hash.len()
+        )));
+    }
+
+    let record = load_record_in_caller_scope(keys_ks, auth, key_id).await?;
+    if record.status != KeyStatus::Active {
+        return Err(SshsigRefusal::KeyNotActive(format!(
+            "key {key_id} is not active and cannot sign"
+        )));
+    }
+    if !matches!(
+        (algorithm, &record.key_type),
+        (SignAlgorithm::EdDSA, KeyType::Ed25519) | (SignAlgorithm::ES256, KeyType::P256)
+    ) {
+        return Err(SshsigRefusal::InvalidArgument(format!(
+            "algorithm {algorithm} incompatible with key type {}",
+            record.key_type
+        )));
+    }
+
+    let data = signed_data(namespace, hash_algorithm, message_hash);
+    let detail = format!(
+        "namespace={namespace} {hash_algorithm}={}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(message_hash)
+    );
+    Ok(sign_payload_recorded(
+        keys_ks,
+        imported_ks,
+        internal_ks,
+        contexts_ks,
+        acl_ks,
+        seed_store,
+        audit,
+        auth,
+        key_id,
+        &data,
+        algorithm,
+        SigningDomain::ProtocolDefined,
+        channel,
+        SignAuditRow {
+            action: "keys.sign-sshsig",
+            detail: Some(&detail),
+        },
+    )
+    .await?)
 }
 
 /// Ephemeral derive-and-sign: derive an Ed25519 key at `derivation_path` from
@@ -4893,5 +5080,194 @@ mod tests {
                 "{channel:?}: {err:?}"
             );
         }
+    }
+
+    // ── keys/sign-sshsig ───────────────────────────────────────────
+
+    /// An application of `test-ctx` narrowed to `sign-sshsig` alone — the
+    /// shape `did-git-sign` is provisioned with.
+    async fn git_signer(h: &TestHarness) -> AuthClaims {
+        let auth = AuthClaims {
+            did: "did:key:z6MkGitSigner".to_string(),
+            role: Role::Application,
+            allowed_contexts: vec!["test-ctx".to_string()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            issued_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        };
+        store_narrowed(h, &auth, vec![Capability::SignSshsig]).await;
+        auth
+    }
+
+    async fn sshsig(
+        h: &TestHarness,
+        audit: &vta_audit::SharedAuditSink,
+        auth: &AuthClaims,
+        key_id: &str,
+        message_hash: &[u8],
+    ) -> Result<SignResultBody, SshsigRefusal> {
+        sign_sshsig(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            audit,
+            auth,
+            key_id,
+            &SignAlgorithm::EdDSA,
+            "git",
+            "sha512",
+            64,
+            message_hash,
+            "test",
+        )
+        .await
+    }
+
+    /// The signature verifies over the SSHSIG signed data — and over nothing
+    /// the caller sent. That is the property that makes `sign-sshsig` safe to
+    /// grant where `sign` is not.
+    #[tokio::test]
+    async fn sign_sshsig_verifies_as_sshsig_and_as_nothing_else() {
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+        use vta_sdk::protocols::key_management::sign_sshsig::signed_data;
+
+        let h = TestHarness::new().await;
+        let key = mint_derived(&h, "git-key").await;
+        let auth = git_signer(&h).await;
+        let digest = [0x5Au8; 64];
+
+        let out = sshsig(&h, &h.audit, &auth, "git-key", &digest)
+            .await
+            .expect("a sign-sshsig holder signs");
+        assert_eq!(out.algorithm, SignAlgorithm::EdDSA);
+
+        let (_, pk) = multibase::decode(&key.public_key).expect("multibase public key");
+        let vk = VerifyingKey::from_bytes(pk[2..].try_into().unwrap()).unwrap();
+        let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&out.signature)
+            .unwrap();
+        let sig = Signature::from_slice(&sig).unwrap();
+        vk.verify(&signed_data("git", "sha512", &digest), &sig)
+            .expect("verifies over the SSHSIG signed data");
+        assert!(
+            vk.verify(&digest, &sig).is_err(),
+            "not over the bare digest"
+        );
+        assert!(
+            vk.verify(&signed_data("file", "sha512", &digest), &sig)
+                .is_err(),
+            "not under another namespace"
+        );
+    }
+
+    /// The narrowing holds: a commit signer cannot reach the general oracle.
+    #[tokio::test]
+    async fn a_sign_sshsig_entry_cannot_use_the_generic_oracle() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "git-key").await;
+        let auth = git_signer(&h).await;
+        let denied = sign_payload(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &h.audit,
+            &auth,
+            "git-key",
+            b"anything at all",
+            &SignAlgorithm::EdDSA,
+            SigningDomain::Opaque,
+            "test",
+        )
+        .await;
+        assert!(
+            matches!(denied, Err(AppError::Forbidden(ref m)) if m.contains("sign capability")),
+            "{denied:?}"
+        );
+    }
+
+    /// `sign` confers strictly more, so the spec lets a custodian accept it;
+    /// an entry with neither is refused before any key is looked up.
+    #[tokio::test]
+    async fn sign_sshsig_takes_either_capability_and_refuses_neither() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "git-key").await;
+        let auth = git_signer(&h).await;
+
+        store_narrowed(&h, &auth, vec![Capability::Sign]).await;
+        sshsig(&h, &h.audit, &auth, "git-key", &[1u8; 64])
+            .await
+            .expect("sign is accepted in place of sign-sshsig");
+
+        store_narrowed(&h, &auth, vec![Capability::VaultRead]).await;
+        let denied = sshsig(&h, &h.audit, &auth, "no-such-key", &[1u8; 64]).await;
+        assert!(
+            matches!(denied, Err(SshsigRefusal::App(AppError::Forbidden(ref m))) if m.contains("sign-sshsig")),
+            "refused at the capability gate, before the key is looked up: {denied:?}"
+        );
+    }
+
+    /// The two refusals the specification declares codes for.
+    #[tokio::test]
+    async fn sign_sshsig_declared_refusals() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "git-key").await;
+        let auth = git_signer(&h).await;
+
+        let short = sshsig(&h, &h.audit, &auth, "git-key", &[1u8; 32]).await;
+        assert!(
+            matches!(short, Err(SshsigRefusal::InvalidArgument(_))),
+            "a sha256-length digest under sha512: {short:?}"
+        );
+
+        let mut record: KeyRecord = h
+            .keys_ks
+            .get(keys::store_key("git-key"))
+            .await
+            .unwrap()
+            .unwrap();
+        record.status = KeyStatus::Revoked;
+        h.keys_ks
+            .insert(keys::store_key("git-key"), &record)
+            .await
+            .unwrap();
+        let revoked = sshsig(&h, &h.audit, &auth, "git-key", &[1u8; 64]).await;
+        assert!(
+            matches!(revoked, Err(SshsigRefusal::KeyNotActive(_))),
+            "{revoked:?}"
+        );
+    }
+
+    /// One row per signature, under its own action, naming the namespace and
+    /// the digest — what a post-compromise review asks for.
+    #[tokio::test]
+    async fn sign_sshsig_audits_namespace_and_digest() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "git-key").await;
+        let auth = git_signer(&h).await;
+        let sink = recording_sink(false);
+        let audit: vta_audit::SharedAuditSink = sink.clone();
+
+        sshsig(&h, &audit, &auth, "git-key", &[7u8; 64])
+            .await
+            .expect("signs");
+
+        let rows = sink.rows.lock().await;
+        let signed: Vec<_> = rows
+            .iter()
+            .filter(|r| r.action.starts_with("keys.sign"))
+            .collect();
+        assert_eq!(signed.len(), 1, "exactly one signing row: {rows:?}");
+        assert_eq!(signed[0].action, "keys.sign-sshsig");
+        assert_eq!(signed[0].resource.as_deref(), Some("git-key"));
+        let detail = signed[0].detail.as_deref().unwrap_or_default();
+        assert!(detail.starts_with("namespace=git sha512="), "{detail}");
     }
 }

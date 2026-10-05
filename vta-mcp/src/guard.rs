@@ -97,6 +97,7 @@ impl fmt::Display for Risk {
 const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // Key authority, exercised.
     ("keys/sign", Risk::Sensitive),
+    ("keys/sign-sshsig", Risk::Sensitive),
     ("keys/derive-and-sign", Risk::Sensitive),
     ("keys/derive-and-sign-document", Risk::Sensitive),
     ("keys/import", Risk::Sensitive),

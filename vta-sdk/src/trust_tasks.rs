@@ -501,6 +501,15 @@ pub const TASK_KEYS_EXPORT_SECRET_0_1: &str = "https://trusttasks.org/spec/keys/
 /// Auth: write (Application or higher).
 pub const TASK_KEYS_SIGN_0_1: &str = "https://trusttasks.org/spec/keys/sign/0.1";
 
+/// `keys/sign-sshsig/0.1` — an SSHSIG signature (git's SSH commit-signing
+/// format) over a message digest. The VTA builds the signed data itself, so
+/// unlike [`TASK_KEYS_SIGN_0_1`] it is not a general oracle: the result verifies
+/// as an SSHSIG statement in the named namespace and as nothing else.
+/// Payload: [`crate::protocols::key_management::sign_sshsig::SignSshsigPayload`].
+/// Auth: write, plus the `sign-sshsig` (or `sign`) capability.
+pub const TASK_KEYS_SIGN_SSHSIG_0_1: &str =
+    <crate::protocols::key_management::sign_sshsig::SignSshsigPayload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/vta/keys/derive-and-sign/1.0` — derive a key at a BIP-32 path from the
 /// seed, sign a base64url payload, and return `{ public_key, signature }`
 /// WITHOUT persisting a key record (ephemeral signing oracle over the seed's
@@ -2202,6 +2211,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_KEYS_SET_EXPORTABILITY_0_1,
     TASK_KEYS_EXPORT_SECRET_0_1,
     TASK_KEYS_SIGN_0_1,
+    TASK_KEYS_SIGN_SSHSIG_0_1,
     TASK_KEYS_DERIVE_AND_SIGN_0_1,
     TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
     // Seeds slice

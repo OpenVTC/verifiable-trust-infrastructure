@@ -788,6 +788,12 @@ new flow, update both this section and the relevant `docs/*.md`.
   Derivation goes through `key_custody::derive_record_key`, which refuses a
   record whose path is outside its context's base.
 - **DIDComm**: `key-management/1.0/sign-request`.
+- **SSHSIG**: `keys/sign-sshsig/0.1` (git commit signing, `did-git-sign`) —
+  the VTA builds the PROTOCOL.sshsig signed data from a digest + namespace and
+  signs it as `SigningDomain::ProtocolDefined`, so it is not a general oracle
+  and is gated on its own `sign-sshsig` capability (`sign` also accepted).
+  Never let it sign caller-supplied bytes; that would make the narrow grant
+  equal to `sign`.
 - **Delegated identities**: `keys/derive-and-sign*` signs as a path without a
   key record. Super-admin only, confined to `m/26'/9'`, audited with a digest
   of what was signed.
