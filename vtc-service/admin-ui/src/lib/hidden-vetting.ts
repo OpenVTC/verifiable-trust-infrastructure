@@ -75,7 +75,33 @@ export interface PublishedHiddenVetting {
   vetterLabels: string[];
   tokenLabels: string[];
   dripPerTick: number;
+  /** How long one tick of the drip lasts, e.g. `P3D`. Absent from a VTC that
+   * predates tick windows. */
+  tickLength?: string;
   events: PublishedEvent[];
+}
+
+/** The default tick length (`vetting::pcs::DEFAULT_TICK_LENGTH`). */
+export const DEFAULT_TICK_LENGTH = "P3D";
+
+const TICK_LENGTH = /^P(?:(\d+)D)?(?:T(\d+)H)?$/;
+
+/** A tick length's hours, or `null` unless it is days and/or hours of at least one hour. */
+export function tickLengthHours(text: string): number | null {
+  const m = TICK_LENGTH.exec(text.trim());
+  if (!m || (m[1] === undefined && m[2] === undefined) || text.trim() === "PT") return null;
+  const hours = Number(m[1] ?? 0) * 24 + Number(m[2] ?? 0);
+  return hours >= 1 ? hours : null;
+}
+
+/** A tick length in words: "3 days", "12 hours", "1 day 6 hours". */
+export function describeTickLength(text: string): string {
+  const hours = tickLengthHours(text);
+  if (hours === null) return text;
+  const d = Math.floor(hours / 24);
+  const h = hours % 24;
+  const part = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+  return [d ? part(d, "day") : "", h ? part(h, "hour") : ""].filter(Boolean).join(" ");
 }
 
 /** An event as an administrator writes it into `vtc/vetting/hidden/publish`. */
@@ -94,6 +120,7 @@ export interface PublishHiddenInput {
   livePeriods?: string[];
   liveTokenLabels?: string[];
   dripPerTick?: number;
+  tickLength?: string;
   events?: EventInput[];
 }
 
@@ -124,6 +151,7 @@ export interface StoredHiddenVetting {
   livePeriods: string[];
   liveTokenLabels: string[];
   dripPerTick: number;
+  tickLength?: string;
   events: (EventInput & { graceDays: number; groupFloor: number })[];
 }
 
@@ -166,6 +194,7 @@ export function republish(
     livePeriods: stored.livePeriods,
     liveTokenLabels: stored.liveTokenLabels,
     dripPerTick: stored.dripPerTick,
+    ...(stored.tickLength ? { tickLength: stored.tickLength } : {}),
     events: stored.events,
     ...patch,
   };

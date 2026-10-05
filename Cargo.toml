@@ -551,8 +551,11 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # `vtc/vetting/hidden/{withdraw,show}/0.1` and publish/0.1's approver codes
 # (trust-tasks-tf #729), which the VTC's hidden vetting serves. 0.27.6 adds
 # `keys/sign-sshsig/0.1` and the `signSshsig` device capability
-# (trust-tasks-tf #732), which the VTA serves for git commit signing.
-trust-tasks-rs = { version = "0.27.6", default-features = false, features = [
+# (trust-tasks-tf #732), which the VTA serves for git commit signing. 0.27.7
+# makes a `pcs-tokens` tick a window of time (`tickNotYet`) and adds
+# publish/0.1's `tickLength`, `signerChanged` and `otherCriterion`
+# (trust-tasks-tf #734).
+trust-tasks-rs = { version = "0.27.7", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

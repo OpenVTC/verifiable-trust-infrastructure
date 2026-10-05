@@ -543,16 +543,6 @@ async fn an_approved_event_opens_its_label_at_the_tier_rate() {
     let issuer = vtc_service::vetting::pcs_issue::derive_issuer(&h.tv.state, &h.community).unwrap();
     let mut rng = StdRng::seed_from_u64(0x2026_1013);
     let mut wallet = TokenWallet::new(&h.community).unwrap();
-    let requests = wallet
-        .prepare(
-            issuer.tvk(),
-            EVENT_LABEL,
-            &vetters[0].0,
-            1,
-            EVENT_DRIP,
-            &mut rng,
-        )
-        .unwrap();
     let batch = |reqs: &[vti_vetting_pcs::token::TokenRequest], tick: u32| {
         json!({
             "label": EVENT_LABEL,
@@ -566,11 +556,62 @@ async fn an_approved_event_opens_its_label_at_the_tier_rate() {
                 .collect::<Vec<_>>(),
         })
     };
+
+    // The tier is the cap. A vetter asking for more than it is refused the batch, exactly as
+    // under the monthly label — and nothing is recorded, so the tick is still theirs to draw.
+    let greedy = wallet
+        .prepare(
+            issuer.tvk(),
+            EVENT_LABEL,
+            &vetters[0].0,
+            0,
+            EVENT_DRIP + 1,
+            &mut rng,
+        )
+        .unwrap();
+    let (status, body) = h
+        .post(&vetters[0].1, pcs_tasks::PCS_TOKENS_TYPE, batch(&greedy, 0))
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(tt_error_code(&body), pcs_tasks::TOKENS_ERR_OVER_QUOTA);
+
+    // A tick is a window of time (pcs-tokens/0.1): the event began today and ticks last three
+    // days, so tick 1 has not begun and cannot be drawn ahead.
+    let ahead = wallet
+        .prepare(
+            issuer.tvk(),
+            EVENT_LABEL,
+            &vetters[0].0,
+            1,
+            EVENT_DRIP,
+            &mut rng,
+        )
+        .unwrap();
+    let (status, body) = h
+        .post(&vetters[0].1, pcs_tasks::PCS_TOKENS_TYPE, batch(&ahead, 1))
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        pcs_tasks::TOKENS_ERR_TICK_NOT_YET,
+        "{body}"
+    );
+
+    let requests = wallet
+        .prepare(
+            issuer.tvk(),
+            EVENT_LABEL,
+            &vetters[0].0,
+            0,
+            EVENT_DRIP,
+            &mut rng,
+        )
+        .unwrap();
     let (status, body) = h
         .post(
             &vetters[0].1,
             pcs_tasks::PCS_TOKENS_TYPE,
-            batch(&requests, 1),
+            batch(&requests, 0),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -585,24 +626,6 @@ async fn an_approved_event_opens_its_label_at_the_tier_rate() {
         .receive(issuer.tvk(), &pres)
         .expect("event tokens verify under the same published key");
     assert_eq!(wallet.free(), EVENT_DRIP, "the tier's rate, not the drip's");
-
-    // The tier is the cap. A vetter asking for more than it is refused the batch, exactly as
-    // under the monthly label.
-    let greedy = wallet
-        .prepare(
-            issuer.tvk(),
-            EVENT_LABEL,
-            &vetters[0].0,
-            2,
-            EVENT_DRIP + 1,
-            &mut rng,
-        )
-        .unwrap();
-    let (status, body) = h
-        .post(&vetters[0].1, pcs_tasks::PCS_TOKENS_TYPE, batch(&greedy, 2))
-        .await;
-    assert_ne!(status, StatusCode::OK, "{body}");
-    assert_eq!(tt_error_code(&body), pcs_tasks::TOKENS_ERR_OVER_QUOTA);
 }
 
 /// The rule that makes the approval mean something: an approver who is in the group has approved
@@ -1403,4 +1426,98 @@ async fn hidden_vetting_turns_off_and_shows_what_it_stores() {
         .filter(|(_, v)| String::from_utf8_lossy(v).contains("HiddenVettingChanged"))
         .count();
     assert_eq!(changes, 2, "one publish and one withdrawal are audited");
+}
+
+/// publish/0.1 `otherCriterion` and `signerChanged`: hidden vetting runs on one criterion, and a
+/// configuration whose keys the community's signer no longer derives is never re-keyed by a
+/// publish — withdrawing it is how an administrator starts over.
+#[tokio::test]
+async fn publish_refuses_a_second_criterion_and_keys_its_signer_no_longer_derives() {
+    let h = Harness::start().await;
+    let (_, a) = vetted_criterion(&h, 0x77).await;
+    let (status, body) = h
+        .post(
+            &a,
+            ACCEPTS_REGISTER_TYPE,
+            json!({
+                "id": "second-route",
+                "admission": "review",
+                "vetting": {
+                    "version": "0.1",
+                    "statementType": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
+                    "minStatements": 2,
+                    "acceptedMethods": ["inPerson"],
+                    "eligibleVetters": { "role": "vetter" },
+                },
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = h
+        .post(
+            &a,
+            pcs_tasks::HIDDEN_PUBLISH_TYPE,
+            json!({ "criterionId": "vetted-member", "tickLength": "P1D" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body.pointer("/payload/published/tickLength"),
+        Some(&json!("P1D")),
+        "{body}"
+    );
+
+    let (_, body) = h
+        .post(
+            &a,
+            pcs_tasks::HIDDEN_PUBLISH_TYPE,
+            json!({ "criterionId": "second-route" }),
+        )
+        .await;
+    assert_eq!(
+        tt_error_code(&body),
+        pcs_tasks::HIDDEN_PUBLISH_ERR_OTHER_CRITERION,
+        "{body}"
+    );
+
+    // The stored keys stop matching what the signer derives, as after a signer rotation.
+    let mut criterion =
+        vtc_service::schemas::accepts::get_accepts(&h.tv.state.schemas_ks, "vetted-member")
+            .await
+            .unwrap()
+            .unwrap();
+    criterion.hidden_vetting.as_mut().unwrap()["hvk"] = json!("zSomeOtherHelperKey");
+    vtc_service::schemas::accepts::store_accepts(&h.tv.state.schemas_ks, &criterion)
+        .await
+        .unwrap();
+    let (_, body) = h
+        .post(
+            &a,
+            pcs_tasks::HIDDEN_PUBLISH_TYPE,
+            json!({ "criterionId": "vetted-member" }),
+        )
+        .await;
+    assert_eq!(
+        tt_error_code(&body),
+        pcs_tasks::HIDDEN_PUBLISH_ERR_SIGNER_CHANGED,
+        "{body}"
+    );
+
+    // Withdrawing is the way out: a publish after it derives fresh keys.
+    let (status, body) = h
+        .post(
+            &a,
+            pcs_tasks::HIDDEN_WITHDRAW_TYPE,
+            json!({ "criterionId": "vetted-member" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = h
+        .post(
+            &a,
+            pcs_tasks::HIDDEN_PUBLISH_TYPE,
+            json!({ "criterionId": "vetted-member" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }

@@ -114,10 +114,75 @@ pub struct HiddenVettingConfig {
     /// the minting half existed.
     #[serde(default = "default_drip_per_tick")]
     pub drip_per_tick: usize,
+    /// How long one tick of the drip lasts: an ISO 8601 duration in days and/or hours
+    /// (`P3D`, `PT12H`, `P1DT6H`). Tick `t` of a label is the window
+    /// `[start + t·tickLength, start + (t+1)·tickLength)`, so a vetter draws at most the drip
+    /// rate once per window (`vtc/vetting/vetters/pcs-tokens/0.1`). `default` covers a
+    /// configuration stored before ticks were windows.
+    #[serde(default = "default_tick_length")]
+    pub tick_length: String,
     /// Events this community is running, if any (§5.1). Empty is the ordinary case — event mode
     /// is the exception, not the setting.
     #[serde(default)]
     pub events: Vec<HiddenVettingEvent>,
+}
+
+/// Three days: the hidden-vetting design's kernel example, ten tokens a month at one a tick.
+pub const DEFAULT_TICK_LENGTH: &str = "P3D";
+
+fn default_tick_length() -> String {
+    DEFAULT_TICK_LENGTH.to_string()
+}
+
+/// A tick length as a duration: `P<d>D`, `PT<h>H` or `P<d>DT<h>H`, at least one hour.
+/// `None` for anything else.
+#[must_use]
+pub fn parse_tick_length(text: &str) -> Option<chrono::Duration> {
+    let rest = text.strip_prefix('P')?;
+    let (days, hours) = match rest.split_once('T') {
+        Some((d, h)) => (d, Some(h.strip_suffix('H')?)),
+        None => (rest, None),
+    };
+    let days: i64 = if days.is_empty() {
+        0
+    } else {
+        days.strip_suffix('D')?.parse().ok()?
+    };
+    let hours: i64 = match hours {
+        Some(h) => h.parse().ok()?,
+        None => 0,
+    };
+    let length = chrono::Duration::days(days) + chrono::Duration::hours(hours);
+    (length >= chrono::Duration::hours(1)).then_some(length)
+}
+
+impl HiddenVettingConfig {
+    /// When tick 0 of `label` begins: 00:00Z on the first day of the month for
+    /// `token/<YYYY-MM>`, and on the event's first day for `token/event/<id>`. `None` for a
+    /// label of neither shape, or an event this configuration does not run.
+    #[must_use]
+    pub fn label_start(&self, label: &str) -> Option<DateTime<Utc>> {
+        let day = if let Some(id) = label.strip_prefix("token/event/") {
+            self.events.iter().find(|e| e.event_id == id)?.start_date
+        } else {
+            let period = label.strip_prefix("token/")?;
+            NaiveDate::parse_from_str(&format!("{period}-01"), "%Y-%m-%d").ok()?
+        };
+        Some(day.and_hms_opt(0, 0, 0)?.and_utc())
+    }
+
+    /// The tick `label` is in at `now`, or `None` before tick 0 begins (or for a label with no
+    /// start). Ticks before it are begun, and may still be drawn once each.
+    #[must_use]
+    pub fn current_tick(&self, label: &str, now: DateTime<Utc>) -> Option<u64> {
+        let start = self.label_start(label)?;
+        let length = parse_tick_length(&self.tick_length)?;
+        if now < start {
+            return None;
+        }
+        let elapsed = (now - start).num_seconds();
+        u64::try_from(elapsed / length.num_seconds()).ok()
+    }
 }
 
 /// An event this community publishes, with the rates a vetter may ask for and the dates the
@@ -242,6 +307,7 @@ impl HiddenVettingConfig {
                 .collect::<Vec<_>>(),
             "tokenLabels": self.live_token_labels,
             "dripPerTick": self.drip_per_tick,
+            "tickLength": self.tick_length,
             "events": self
                 .events
                 .iter()
@@ -555,6 +621,7 @@ mod tests {
             live_periods: serde_json::from_value(f["livePeriods"].clone()).unwrap(),
             live_token_labels: serde_json::from_value(f["liveTokenLabels"].clone()).unwrap(),
             drip_per_tick: default_drip_per_tick(),
+            tick_length: default_tick_length(),
             events: Vec::new(),
         };
 
@@ -736,6 +803,7 @@ mod tests {
             live_periods: vec!["2026-09".into()],
             live_token_labels: labels.iter().map(|s| (*s).to_string()).collect(),
             drip_per_tick: 3,
+            tick_length: default_tick_length(),
             events,
         }
     }
@@ -802,6 +870,70 @@ mod tests {
             &["token/event/summit"],
         );
         assert!(accepted_token_labels(&closed, chrono::Utc::now()).is_empty());
+    }
+
+    #[test]
+    fn tick_lengths_are_days_and_hours_of_at_least_an_hour() {
+        assert_eq!(parse_tick_length("P3D"), Some(chrono::Duration::days(3)));
+        assert_eq!(
+            parse_tick_length("PT12H"),
+            Some(chrono::Duration::hours(12))
+        );
+        assert_eq!(
+            parse_tick_length("P1DT6H"),
+            Some(chrono::Duration::hours(30))
+        );
+        for bad in ["", "P", "PT0H", "P0D", "P1W", "P1M", "3D", "PT30M"] {
+            assert_eq!(parse_tick_length(bad), None, "{bad}");
+        }
+    }
+
+    /// pcs-tokens/0.1: tick `t` of a monthly label is `[month start + t·len, … + len)`, and an
+    /// event label's ticks start on the event's first day.
+    #[test]
+    fn a_label_is_in_the_tick_its_window_says() {
+        let at = |s: &str| DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc);
+        let config = config_with(Vec::new(), &["token/2026-10"]);
+        assert_eq!(
+            config.current_tick("token/2026-10", at("2026-10-01T00:00:00Z")),
+            Some(0)
+        );
+        assert_eq!(
+            config.current_tick("token/2026-10", at("2026-10-03T23:59:59Z")),
+            Some(0)
+        );
+        assert_eq!(
+            config.current_tick("token/2026-10", at("2026-10-04T00:00:00Z")),
+            Some(1)
+        );
+        assert_eq!(
+            config.current_tick("token/2026-10", at("2026-09-30T23:59:59Z")),
+            None
+        );
+
+        let summit = HiddenVettingEvent {
+            event_id: "summit".into(),
+            start_date: NaiveDate::from_ymd_opt(2026, 10, 14).unwrap(),
+            end_date: NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+            grace_days: 14,
+            group_floor: 3,
+            tiers: Vec::new(),
+            approved_by: None,
+        };
+        let mut config = config_with(vec![summit], &["token/event/summit"]);
+        config.tick_length = "PT12H".into();
+        assert_eq!(
+            config.current_tick("token/event/summit", at("2026-10-13T12:00:00Z")),
+            None
+        );
+        assert_eq!(
+            config.current_tick("token/event/summit", at("2026-10-14T13:00:00Z")),
+            Some(1)
+        );
+        assert_eq!(
+            config.current_tick("token/event/nope", at("2026-10-14T13:00:00Z")),
+            None
+        );
     }
 
     /// A label that names no event this community runs has nothing to expire against, and is

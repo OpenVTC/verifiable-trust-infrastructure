@@ -508,15 +508,26 @@ vetting (PCS)** section on its card under **Vetting → Requirements**:
 
 - **Turn on / turn off** — `vtc/vetting/hidden/{publish,withdraw}/0.1`. Named
   vetting keeps counting either way. Turning it off keeps vetters' enrolments,
-  so turning it back on works with the same keys. Use one criterion for hidden
-  vetting: vetters enrol and draw under the first criterion that has it on.
+  so turning it back on works with the same keys. A community runs hidden
+  vetting on one criterion — vetters enrol and draw under a single
+  configuration — so turning it on for a second is refused
+  (`hidden/publish:otherCriterion`) until it is off for the first.
 - **What is published and stored** — labels, drip rate, suite and keys from the
   join manifest, and from `vtc/vetting/hidden/show/0.1` the stored configuration
   with how many members are enrolled under each vetter label and how many have
   asked to vet at each event. Counts only — never which members.
-- **Drip rate** — how many attestation tokens a vetter's client may draw per
-  tick. Vetters pull their own tokens at that rate whether or not they vetted
-  anyone; there is no schedule to run.
+- **Drip rate and tick length** — how many attestation tokens a vetter's
+  client may draw per tick, and how long a tick lasts (`tickLength`, default
+  `P3D`). Vetters pull their own tokens whether or not they vetted anyone. A
+  tick is a window of time from the label's start (the first of the month, or
+  an event's first day): a vetter draws each tick once and never ahead
+  (`pcs-tokens:tickNotYet`), and may still draw a tick it missed, so a label
+  never issues more than the rate times the ticks elapsed.
+- **When the signing key changes** — the keys are derived from the community's
+  credential signer. If it changes (rotation, a restore from another key),
+  every enrolled vetter's credential stops verifying, and a publish is refused
+  (`hidden/publish:signerChanged`) rather than silently re-keying. Turn hidden
+  vetting off and on again under a new period; vetters enrol again.
 - **Roll labels to this month** — the live labels never advance on their own.
   The section warns when they are behind.
 - **Events** — add one (name, dates, grace days, the number of vetters needed

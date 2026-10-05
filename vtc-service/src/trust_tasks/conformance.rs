@@ -2598,6 +2598,7 @@ fn pcs_witnesses() -> Vec<Conformance> {
             json!({
                 "criterionId": "vetting-hidden-pilot",
                 "dripPerTick": 3,
+                "tickLength": "P1D",
                 "events": [],
                 "livePeriods": ["2026-09"],
                 "liveTokenLabels": ["token/2026-09"],
@@ -2612,6 +2613,7 @@ fn pcs_witnesses() -> Vec<Conformance> {
                     "tokenLabels": ["token/2026-09"],
                     "vetterLabels": ["vetter/2026-09"],
                     "dripPerTick": 3,
+                    "tickLength": "P1D",
                     "events": [],
                 },
                 "stored": {
@@ -2621,6 +2623,7 @@ fn pcs_witnesses() -> Vec<Conformance> {
                     "livePeriods": ["2026-09"],
                     "liveTokenLabels": ["token/2026-09"],
                     "dripPerTick": 3,
+                    "tickLength": "P1D",
                     "events": [],
                 },
             })
@@ -2653,6 +2656,7 @@ fn pcs_witnesses() -> Vec<Conformance> {
                     "livePeriods": ["2026-09"],
                     "liveTokenLabels": ["token/2026-09", "token/event/summit-2026"],
                     "dripPerTick": 3,
+                    "tickLength": "P3D",
                     "events": [{
                         "eventId": "summit-2026",
                         "startDate": "2026-09-01",
@@ -2670,6 +2674,7 @@ fn pcs_witnesses() -> Vec<Conformance> {
                     "tokenLabels": ["token/2026-09", "token/event/summit-2026"],
                     "vetterLabels": ["vetter/2026-09"],
                     "dripPerTick": 3,
+                    "tickLength": "P3D",
                     "events": [{
                         "eventId": "summit-2026",
                         "startDate": "2026-09-01",

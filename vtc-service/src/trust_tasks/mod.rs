@@ -3582,6 +3582,7 @@ async fn handle_hidden_publish(
             Some(live_token_labels)
         },
         payload.drip_per_tick.map(|n| n.get() as usize),
+        payload.tick_length.as_ref().map(|t| t.to_string()),
         events,
     )
     .await

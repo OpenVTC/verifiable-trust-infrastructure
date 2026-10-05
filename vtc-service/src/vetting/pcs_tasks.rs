@@ -70,6 +70,9 @@ pub const TOKENS_ERR_ALREADY_SERVED: &str = "vtc/vetting/vetters/pcs-tokens:alre
 pub const TOKENS_ERR_OVER_QUOTA: &str = "vtc/vetting/vetters/pcs-tokens:overQuota";
 /// `vtc/vetting/vetters/pcs-tokens:badOpeningProof`
 pub const TOKENS_ERR_BAD_OPENING_PROOF: &str = "vtc/vetting/vetters/pcs-tokens:badOpeningProof";
+/// `vtc/vetting/vetters/pcs-tokens:tickNotYet`: the tick named has not begun.
+pub const TOKENS_ERR_TICK_NOT_YET: &str =
+    trust_tasks_rs::specs::vtc::vetting::vetters::pcs_tokens::v0_1::error_codes::TICK_NOT_YET.code;
 /// `vtc/vetting/vetters/pcs-tokens:eventRefused`
 pub const TOKENS_ERR_EVENT_REFUSED: &str = "vtc/vetting/vetters/pcs-tokens:eventRefused";
 /// `vtc/vetting/vetters/event-mode:notAVetter`
@@ -94,6 +97,13 @@ pub const HIDDEN_PUBLISH_ERR_APPROVER_NOT_SIGNER: &str =
 /// `vtc/vetting/hidden/publish:approverInEvent`: the approver has asked to vet at the event.
 pub const HIDDEN_PUBLISH_ERR_APPROVER_IN_EVENT: &str =
     trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::APPROVER_IN_EVENT.code;
+/// `vtc/vetting/hidden/publish:signerChanged`: the stored keys are not what the community's
+/// signer derives now.
+pub const HIDDEN_PUBLISH_ERR_SIGNER_CHANGED: &str =
+    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::SIGNER_CHANGED.code;
+/// `vtc/vetting/hidden/publish:otherCriterion`: hidden vetting is on for another criterion.
+pub const HIDDEN_PUBLISH_ERR_OTHER_CRITERION: &str =
+    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::OTHER_CRITERION.code;
 /// `vtc/vetting/hidden/withdraw:noSuchCriterion`
 pub const HIDDEN_WITHDRAW_ERR_NO_SUCH_CRITERION: &str =
     trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::error_codes::NO_SUCH_CRITERION
@@ -406,6 +416,8 @@ fn tokens_error(e: vti_common::error::AppError) -> TaskError {
         TOKENS_ERR_NOT_A_VETTER
     } else if text.contains("not a live token label") {
         TOKENS_ERR_LABEL_NOT_LIVE
+    } else if text.contains("has not begun") {
+        TOKENS_ERR_TICK_NOT_YET
     } else if text.contains("already served") {
         TOKENS_ERR_ALREADY_SERVED
     } else if text.contains("drips") {

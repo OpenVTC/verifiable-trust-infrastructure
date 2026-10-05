@@ -29,6 +29,7 @@ use crate::vetting::pcs::{HiddenVettingConfig, HiddenVettingEvent};
 use crate::vetting::pcs_tasks::{
     HIDDEN_PUBLISH_ERR_APPROVER_IN_EVENT, HIDDEN_PUBLISH_ERR_APPROVER_NOT_SIGNER,
     HIDDEN_PUBLISH_ERR_NO_SUCH_CRITERION, HIDDEN_PUBLISH_ERR_NO_VETTING,
+    HIDDEN_PUBLISH_ERR_OTHER_CRITERION, HIDDEN_PUBLISH_ERR_SIGNER_CHANGED,
     HIDDEN_SHOW_ERR_NO_SUCH_CRITERION, HIDDEN_WITHDRAW_ERR_NO_SUCH_CRITERION,
 };
 use vti_common::audit::{AuditEvent, HiddenVettingChangedData};
@@ -107,6 +108,7 @@ pub(crate) async fn publish_hidden_vetting_core(
     live_periods: Option<Vec<String>>,
     live_token_labels: Option<Vec<String>>,
     drip_per_tick: Option<usize>,
+    tick_length: Option<String>,
     events: Option<Value>,
 ) -> Result<PublishHiddenVettingResponse, TaskError> {
     let community_did = state
@@ -136,6 +138,24 @@ pub(crate) async fn publish_hidden_vetting_core(
         ));
     }
 
+    // A community runs hidden vetting on one criterion: enrolment, the drip and the challenge
+    // are all served from a single configuration (`pcs_tasks::config_for` takes the first), so
+    // a second would accept proofs nobody could mint for (publish/0.1 `otherCriterion`).
+    if let Some(other) = crate::schemas::accepts::list_accepts(&state.schemas_ks)
+        .await?
+        .into_iter()
+        .find(|c| c.id != criterion_id && c.hidden_vetting.is_some())
+    {
+        return Err(TaskError::declared(
+            HIDDEN_PUBLISH_ERR_OTHER_CRITERION,
+            AppError::Conflict(format!(
+                "hidden vetting is already on for criterion `{}` — a community runs it on one \
+                 criterion; turn it off there first",
+                other.id
+            )),
+        ));
+    }
+
     let period = this_month();
     let live_periods = live_periods.unwrap_or_else(|| vec![period.clone()]);
     let live_token_labels = live_token_labels.unwrap_or_else(|| vec![format!("token/{period}")]);
@@ -147,6 +167,35 @@ pub(crate) async fn publish_hidden_vetting_core(
         live_token_labels,
         drip_per_tick.unwrap_or(3),
     )?;
+    // The keys are derived from the community's signer. If what is stored was derived from a
+    // different one — the signer rotated, or a restore brought another key — every enrolled
+    // vetter's credential has stopped verifying, and re-publishing would replace the keys
+    // without a word (publish/0.1 `signerChanged`). Re-keying is deliberate: withdraw, then
+    // publish under a new period.
+    if let Some(stored) = criterion
+        .hidden_vetting
+        .as_ref()
+        .and_then(|v| serde_json::from_value::<HiddenVettingConfig>(v.clone()).ok())
+        && (stored.hvk != config.hvk || stored.tvk != config.tvk)
+    {
+        return Err(TaskError::declared(
+            HIDDEN_PUBLISH_ERR_SIGNER_CHANGED,
+            AppError::Conflict(format!(
+                "criterion `{criterion_id}`'s hidden-vetting keys were derived from a signing key \
+                 this community no longer holds, so vetters' credentials no longer verify. Turn \
+                 hidden vetting off for it, then on again under a new period; vetters enrol again"
+            )),
+        ));
+    }
+    if let Some(tick_length) = tick_length {
+        if crate::vetting::pcs::parse_tick_length(&tick_length).is_none() {
+            return Err(AppError::Validation(format!(
+                "tickLength `{tick_length}`: an ISO 8601 duration in days and/or hours, at least PT1H"
+            ))
+            .into());
+        }
+        config.tick_length = tick_length;
+    }
     if let Some(events) = events {
         config.events = serde_json::from_value::<Vec<HiddenVettingEvent>>(events)
             .map_err(|e| AppError::Validation(format!("events: {e}")))?;
