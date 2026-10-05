@@ -35,6 +35,10 @@ const SHOW_ERR_NOT_FOUND: &str = members_spec::show::v0_1::error_codes::NOT_FOUN
 const UPDATE_ERR_NOT_FOUND: &str = members_spec::update::v0_1::error_codes::NOT_FOUND.code;
 const UPDATE_ERR_ADMIN_ROLE_FORBIDDEN: &str =
     members_spec::update::v0_1::error_codes::ADMIN_ROLE_FORBIDDEN.code;
+/// Consumer-minted (SPEC §8.5): the specification declares no code for an
+/// administrator granting registry consent, so the service's own constant.
+const UPDATE_ERR_CONSENT_GRANT_FORBIDDEN: &str =
+    vta_sdk::protocols::members::MEMBER_UPDATE_ERR_CONSENT_GRANT_FORBIDDEN;
 const ADMIN_REMOVE_ERR_NOT_FOUND: &str =
     members_spec::admin_remove::v0_1::error_codes::NOT_FOUND.code;
 const PURGE_ERR_NOT_FOUND: &str = members_spec::purge::v0_1::error_codes::NOT_FOUND.code;
@@ -891,6 +895,7 @@ async fn admin_role_forbidden_is_answered_before_the_member_is_looked_up() {
 async fn patch_member_profile_only_emits_member_updated() {
     let fix = build_fixture().await;
     seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
+    set_consent(&fix, "did:key:zM1", true).await;
 
     let (status, body) = send(
         &fix,
@@ -899,7 +904,7 @@ async fn patch_member_profile_only_emits_member_updated() {
         UPDATE_TASK,
         Some(&fix.admin_token),
         Some(json!({
-            "publishConsent": true,
+            "publishConsent": false,
             "departurePreference": "purge",
         })),
     )
@@ -907,10 +912,202 @@ async fn patch_member_profile_only_emits_member_updated() {
     assert_eq!(status, StatusCode::OK, "got {body}");
     // `update` wraps the row as `{member: …}` (#1094).
     let body = &body["member"];
-    assert_eq!(body["publishConsent"], true);
+    assert_eq!(body["publishConsent"], false);
     assert_eq!(body["departurePreference"], "purge");
     // Role unchanged.
     assert_eq!(body["role"], "member");
+}
+
+// ─── registry consent: an administrator may withdraw it, never grant it ───
+//
+// Consent to trust-registry publication is the member's own privacy decision,
+// given with `registryConsent` on `vtc/join-requests/submit`. An administrator
+// may take a member down (`true → false`); `false → true` is refused with the
+// consumer-minted `vtc/members/update:consentGrantForbidden` (SPEC §8.5).
+
+/// Write `publish_consent` on a seeded member directly — what an admission
+/// carrying `registryConsent` leaves behind.
+async fn set_consent(fix: &Fixture, did: &str, consent: bool) {
+    let mut m = vtc_service::members::get_member(&fix.members_ks, did)
+        .await
+        .unwrap()
+        .unwrap();
+    m.publish_consent = consent;
+    store_member(&fix.members_ks, &m).await.unwrap();
+}
+
+async fn consent_of(fix: &Fixture, did: &str) -> bool {
+    vtc_service::members::get_member(&fix.members_ks, did)
+        .await
+        .unwrap()
+        .unwrap()
+        .publish_consent
+}
+
+async fn patch_consent(fix: &Fixture, did: &str, body: Value) -> (StatusCode, Value) {
+    send(
+        fix,
+        "PATCH",
+        &format!("/v1/members/{did}"),
+        UPDATE_TASK,
+        Some(&fix.admin_token),
+        Some(body),
+    )
+    .await
+}
+
+/// `false → true` is refused with the code, and the request changes nothing —
+/// not the consent, and not the other fields it carried.
+#[tokio::test]
+async fn the_update_task_refuses_to_grant_registry_consent() {
+    let fix = build_fixture().await;
+    seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
+
+    let (status, body) = patch_consent(
+        &fix,
+        "did:key:zM1",
+        json!({ "publishConsent": true, "departurePreference": "purge" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "got {body}");
+    assert_eq!(
+        rest_error_code(&body),
+        UPDATE_ERR_CONSENT_GRANT_FORBIDDEN,
+        "{body}"
+    );
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("registryConsent"),
+        "the refusal must say where consent comes from: {body}"
+    );
+
+    assert!(
+        !consent_of(&fix, "did:key:zM1").await,
+        "consent not granted"
+    );
+    let m = vtc_service::members::get_member(&fix.members_ks, "did:key:zM1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        m.departure_preference,
+        vtc_service::members::Disposition::Purge,
+        "and nothing else in the request was applied"
+    );
+}
+
+/// `true → false` — the takedown — is the administrator's to make.
+#[tokio::test]
+async fn the_update_task_withdraws_registry_consent() {
+    let fix = build_fixture().await;
+    seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
+    set_consent(&fix, "did:key:zM1", true).await;
+
+    let (status, body) =
+        patch_consent(&fix, "did:key:zM1", json!({ "publishConsent": false })).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(body["member"]["publishConsent"], false);
+    assert!(!consent_of(&fix, "did:key:zM1").await);
+}
+
+/// Re-stating the current value is a no-op, not a grant, whichever value it
+/// is: `true` on a consenting member is accepted, as is `false` on one who
+/// has not consented.
+#[tokio::test]
+async fn restating_registry_consent_is_a_no_op() {
+    let fix = build_fixture().await;
+    seed_member(&fix, "did:key:zYes", VtcRole::Member).await;
+    set_consent(&fix, "did:key:zYes", true).await;
+    seed_member(&fix, "did:key:zNo", VtcRole::Member).await;
+
+    let (status, body) =
+        patch_consent(&fix, "did:key:zYes", json!({ "publishConsent": true })).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert!(consent_of(&fix, "did:key:zYes").await);
+
+    let (status, body) =
+        patch_consent(&fix, "did:key:zNo", json!({ "publishConsent": false })).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert!(!consent_of(&fix, "did:key:zNo").await);
+}
+
+/// The withdrawal reaches the registry: a published member whose consent an
+/// administrator withdraws is removed on the next sync tick, and a refused
+/// re-grant does not put them back.
+#[tokio::test]
+async fn withdrawn_registry_consent_unpublishes_the_member() {
+    use vtc_service::registry::{
+        MembershipSyncer, MockRegistryClient, RegistryHealth, SyncJob, SyncJobKind, get_record,
+        store_sync_job,
+    };
+
+    let fix = build_fixture().await;
+    let did = "did:key:zPublished";
+    seed_member(&fix, did, VtcRole::Member).await;
+    set_consent(&fix, did, true).await;
+
+    let state = &fix._vtc.state;
+    let mock = MockRegistryClient::new();
+    let syncer = MembershipSyncer::new(
+        state.audit_ks.clone(),
+        state.sync_queue_ks.clone(),
+        state.sync_cursor_ks.clone(),
+        state.registry_records_ks.clone(),
+        state.policies_ks.clone(),
+        state.active_policies_ks.clone(),
+        state.members_ks.clone(),
+        std::sync::Arc::new(mock.clone()),
+        RegistryHealth::new(),
+        state.audit_writer.clone(),
+        "did:webvh:vtc.example",
+    );
+
+    // Published, as an admission with consent would leave it.
+    store_sync_job(
+        &state.sync_queue_ks,
+        &SyncJob::fresh(SyncJobKind::PublishMember, did),
+    )
+    .await
+    .unwrap();
+    syncer.tick().await.unwrap();
+    assert!(mock.snapshot().await.contains_key(did), "published");
+    assert!(
+        get_record(&state.registry_records_ks, did)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // The takedown: the route writes `MemberUpdated { publishConsent }`, which
+    // the syncer's audit tail turns into a re-decision — and the record goes.
+    let (status, body) = patch_consent(&fix, did, json!({ "publishConsent": false })).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    syncer.tick().await.unwrap();
+    assert!(!mock.snapshot().await.contains_key(did), "unpublished");
+    assert!(
+        get_record(&state.registry_records_ks, did)
+            .await
+            .unwrap()
+            .is_none(),
+        "the local mirror no longer claims the record"
+    );
+    assert_eq!(mock.call_counts().await.delete, 1);
+
+    // An administrator cannot put them back.
+    let (status, body) = patch_consent(&fix, did, json!({ "publishConsent": true })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "got {body}");
+    assert_eq!(
+        rest_error_code(&body),
+        UPDATE_ERR_CONSENT_GRANT_FORBIDDEN,
+        "{body}"
+    );
+    syncer.tick().await.unwrap();
+    assert!(
+        !mock.snapshot().await.contains_key(did),
+        "still unpublished"
+    );
 }
 
 /// Re-review R2: a member's linked forge accounts are written only by

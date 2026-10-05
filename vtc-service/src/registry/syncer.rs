@@ -476,7 +476,8 @@ impl MembershipSyncer {
     ///
     /// 1. **The member's consent** — [`crate::members::Member::publish_consent`],
     ///    the applicant's `registryConsent` on `vtc/join-requests/submit`
-    ///    (spec: *Consent/purpose*) or an admin `members/update` since. A
+    ///    (spec: *Consent/purpose*), which an administrator's
+    ///    `members/update` may since have withdrawn but can never grant. A
     ///    hard floor enforced here, in code. Consent is the member's to
     ///    give, not the community's, so no policy can publish a member who
     ///    did not give it.
@@ -745,8 +746,9 @@ mod tests {
             .unwrap();
     }
 
-    /// An admin `members/update` of `publishConsent`: the row, then the
-    /// `MemberUpdated` envelope naming the field — the route's order.
+    /// A `members/update` of `publishConsent`: the row, then the
+    /// `MemberUpdated` envelope naming the field — the route's order. (The
+    /// route only lets an administrator lower it.)
     async fn update_consent(syncer: &MembershipSyncer, did: &str, publish_consent: bool) {
         seed_member(syncer, did, publish_consent).await;
         let w = test_writer(&syncer.audit_ks).await;
@@ -1169,6 +1171,11 @@ default publish_on_join := false
         );
     }
 
+    /// The syncer's half of a late grant. An administrator cannot make one
+    /// (`members/update` refuses `false → true` with `consentGrantForbidden`),
+    /// so no path reaches this today; it pins that a `MemberUpdated` naming
+    /// `publishConsent` re-decides from the current value whichever way it
+    /// moved, so a future member-driven grant needs nothing new here.
     #[tokio::test]
     async fn granting_consent_later_publishes_the_member() {
         let (syncer, mock, _dir) = fixture().await;

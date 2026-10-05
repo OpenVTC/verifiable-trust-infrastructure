@@ -1336,9 +1336,17 @@ const UNWITNESSED_CEILING: usize = 9;
 /// The `challenge*` codes say which way a hidden-vetting proof's challenge was
 /// refused (`crate::vetting::challenge_refusal`); `tests/it/hidden_vetting_tasks.rs`
 /// drives the service into each.
+///
+/// `consentGrantForbidden` is an administrator's `publishConsent: true` for a
+/// member who has not consented: registry consent is the member's to give, and
+/// an administrator may only withdraw it (`tests/it/members_crud.rs`).
 const CONSUMER_MINTED: &[(&str, &str)] = {
     use vta_sdk::protocols::join_requests as jr;
     &[
+        (
+            super::MEMBER_UPDATE_TYPE,
+            crate::routes::members::update::UPDATE_ERR_CONSENT_GRANT_FORBIDDEN,
+        ),
         (
             jr::JOIN_REQUEST_SUBMIT_TYPE,
             jr::JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN,

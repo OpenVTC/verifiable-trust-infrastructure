@@ -33,10 +33,11 @@
 //!   keeps the local mirror's `last_synced_at` fresh so drift
 //!   detection has something to anchor against.
 //! - `MemberUpdated` whose `fields_changed` names `publishConsent`
-//!   → `SyncJobKind::UpdateMember`. The member granted or withdrew
-//!   consent to publication; the syncer reads the new value at
-//!   dispatch and publishes (granted) or removes the record
-//!   (withdrawn). Other `MemberUpdated` fields do not reach the
+//!   → `SyncJobKind::UpdateMember`. Consent to publication changed
+//!   — today only ever withdrawn, since `members/update` lets an
+//!   administrator lower it and never raise it; the syncer reads
+//!   the new value at dispatch and removes the record (withdrawn)
+//!   or publishes it (granted). Other `MemberUpdated` fields do not reach the
 //!   registry record, so they enqueue nothing.
 //!
 //! Every other audit variant is ignored. Operator-action
