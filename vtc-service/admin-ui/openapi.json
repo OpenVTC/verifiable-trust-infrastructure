@@ -284,10 +284,10 @@
               "schema": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/AdminPasskeyLoginStartRequest"
                   },
                   {
-                    "$ref": "#/components/schemas/AdminPasskeyLoginStartRequest"
+                    "type": "null"
                   }
                 ]
               }
@@ -829,11 +829,11 @@
           "ext": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Value",
                 "description": "Extension members. Carries the optional refresh token this route\nneeds but the canonical payload has no top-level member for.\n\n`spec/vtc/auth/admin-session/0.1` types its payload as\n`{accessToken, ext}` and the conformance witness compares this\nstruct against it, so a top-level `refreshToken` would fail the\nbuild. `ext` is the schema's own escape hatch; see\n[`refresh_token_from_ext`]."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -867,11 +867,11 @@
           "pop": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Value",
                 "description": "Proof that the caller controls the key behind the edge's\n`issuerDid`, when that is not the caller's session DID.\nRequired for every pairwise edge, since a relationship\nDID is never the session DID by construction."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1022,11 +1022,11 @@
           "lastSweep": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AutoGrantSweep",
                 "description": "The last sweep, when one has run."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1373,11 +1373,11 @@
           "roleVac": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Value",
                 "description": "Issued role VAC. Same delivery story as `vmc`."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1387,11 +1387,11 @@
           "vmc": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Value",
                 "description": "Issued VMC (M2.12). Also pushed to the applicant's wallet over\nDIDComm on approve (best-effort); kept inline so the admin caller\ncan still hand it over out-of-band if that delivery doesn't land.\n`None` on the reject path."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -1403,11 +1403,11 @@
           "pop": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Value",
                 "description": "As for [`AttachPersonaBody::pop`], with\n`type: \"VpcDetachAuthorization\"` and no `vpc` field."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -1507,11 +1507,11 @@
           "registryTransport": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/RegistryTransport",
                 "description": "How this VTC reaches its **trust registry**: its DID, the protocols the\nregistry's own document advertises, and the one the last call actually\nchose. `None` when no registry is configured.\n\nAdvertised and active are reported separately on purpose. A registry\nthat advertises TSP while this VTC can only answer DIDComm is\n*configured* and *unreachable* at the same time, and one collapsed\n\"protocol\" field cannot say so — it would have to pick one of the two\nfacts and drop the other."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1603,11 +1603,11 @@
           "localStatus": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/RegistryStatus",
                 "description": "Our view's status, when we hold a record."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1617,11 +1617,11 @@
           "registryStatus": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/RegistryStatus",
                 "description": "The registry's view, when it holds a record."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -1800,11 +1800,11 @@
           "claimSchema": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Value",
                 "description": "Optional JSON Schema every claim of this predicate must satisfy — the\nstatement's `object.value`. Issuance validates the claim against it and\nrefuses a violation."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1920,10 +1920,10 @@
           "showWhen": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ShowWhen"
               },
               {
-                "$ref": "#/components/schemas/ShowWhen"
+                "type": "null"
               }
             ]
           },
@@ -2574,11 +2574,11 @@
           "forgeStatus": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/GitNsForgeStatus",
                 "description": "What the bridge last reported about its app and the owner's plan —\nabsent until it reports. Display only; it changes no decision."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -2631,11 +2631,11 @@
           "roleMap": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/GitNsRoleMap",
                 "description": "The forge role each right projects to on a repository without a map\nof its own, as the bridge serving the namespace reported it\n(`git-ns/bridge/event/0.3` `roleMapReported`). Absent while it has not\nreported: no map, the default included, is assumed."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -2802,11 +2802,11 @@
           "lastCheck": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/GitNsLastCheck",
                 "description": "The last verify-trust check run the bridge saw."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -2835,11 +2835,11 @@
           "roleMap": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/GitNsRoleMap",
                 "description": "The forge role each right projects to on this repository, under the\nbridge's reported map. Absent while the namespace's map is unknown\n(`roleMapSource`)."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -2903,11 +2903,11 @@
           "breakGlass": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/GitNsBreakGlassMark",
                 "description": "Present exactly when the subject gave themselves this right through\n`git-ns/right/break-glass/0.1`. Unratified while `ratifiedBy` is absent."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -3751,11 +3751,11 @@
           "decision": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/JoinDecision",
                 "description": "Why this request was refused, for the applicant.\n\nWritten by **both** rejection paths — the policy auto-deny at\nsubmit and the admin reject — so the status poll has one field\nto read rather than two shapes to reconcile. [`JoinDecision`]\nsays why that matters.\n\n`None` for a request that has not been rejected, and for one\nrejected before this field existed (see\n[`JoinRequest::decision_for_applicant`], which reconstructs what\nit can from [`Self::policy_decision`])."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -3770,11 +3770,11 @@
           "policyDecision": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Value",
                 "description": "Set by Phase 2's policy step on approve / reject. Always\n`None` in Phase 1.\n\nOmitted rather than sent as `null`: the canonical `JoinRequest`\ncomponent types this `object`, not `[\"object\", \"null\"]` as it does\nthe neighbouring `vpClaims` and `decision`. It is not required, so\nabsent is the conforming way to say \"no policy decision\" — `null` is\na type error. It went out as `null` until #1099."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -3911,11 +3911,11 @@
           "vetting": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/JoinRequestVetting",
                 "description": "What the community established about its vetting evidence. Absent when\nno criterion required vetting when it was decided, or the request\npredates recording."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -4157,11 +4157,11 @@
           "registryDrift": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/DriftSnapshot",
                 "description": "The latest comparison of the local `registry_records` mirror against\nwhat the trust registry actually holds, or `null` before the first\ncheck completes.\n\n`null` is \"not yet known\", **not** \"no drift\", and a consumer must not\nrender the two alike. The check runs on its own timer\n(`[registry] drift_check_interval_seconds`, default 900s), so a\nfreshly-booted VTC legitimately reports `null` for the first half\nminute.\n\nAnswers the question a failed sync job leaves open: a job that has\naged out of the queue is gone, and until this existed nothing in the\nservice could then say the member was still unpublished."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -4266,11 +4266,11 @@
                 "claimSchema": {
                   "oneOf": [
                     {
-                      "type": "null"
-                    },
-                    {
                       "$ref": "#/components/schemas/Value",
                       "description": "Optional JSON Schema every claim of this predicate must satisfy — the\nstatement's `object.value`. Issuance validates the claim against it and\nrefuses a violation."
+                    },
+                    {
+                      "type": "null"
                     }
                   ]
                 },
@@ -4345,11 +4345,11 @@
                 "decision": {
                   "oneOf": [
                     {
-                      "type": "null"
-                    },
-                    {
                       "$ref": "#/components/schemas/JoinDecision",
                       "description": "Why this request was refused, for the applicant.\n\nWritten by **both** rejection paths — the policy auto-deny at\nsubmit and the admin reject — so the status poll has one field\nto read rather than two shapes to reconcile. [`JoinDecision`]\nsays why that matters.\n\n`None` for a request that has not been rejected, and for one\nrejected before this field existed (see\n[`JoinRequest::decision_for_applicant`], which reconstructs what\nit can from [`Self::policy_decision`])."
+                    },
+                    {
+                      "type": "null"
                     }
                   ]
                 },
@@ -4364,11 +4364,11 @@
                 "policyDecision": {
                   "oneOf": [
                     {
-                      "type": "null"
-                    },
-                    {
                       "$ref": "#/components/schemas/Value",
                       "description": "Set by Phase 2's policy step on approve / reject. Always\n`None` in Phase 1.\n\nOmitted rather than sent as `null`: the canonical `JoinRequest`\ncomponent types this `object`, not `[\"object\", \"null\"]` as it does\nthe neighbouring `vpClaims` and `decision`. It is not required, so\nabsent is the conforming way to say \"no policy decision\" — `null` is\na type error. It went out as `null` until #1099."
+                    },
+                    {
+                      "type": "null"
                     }
                   ]
                 },
@@ -4833,10 +4833,10 @@
           "claimSchema": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Value"
               },
               {
-                "$ref": "#/components/schemas/Value"
+                "type": "null"
               }
             ]
           },
@@ -5388,10 +5388,10 @@
           "eq": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Value"
               },
               {
-                "$ref": "#/components/schemas/Value"
+                "type": "null"
               }
             ]
           },
@@ -5555,11 +5555,11 @@
           "profile": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/VetterProfileSummary",
                 "description": "The member's published profile, when they have one."
+              },
+              {
+                "type": "null"
               }
             ]
           },
