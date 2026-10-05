@@ -425,8 +425,9 @@ mod tests {
         assert!(served["vetting"].get("extCritical").is_none());
     }
 
-    /// The digest is what a proof binds to, so it has to cover the parameters
-    /// the proof was built under. Injected after the digest, a community could
+    /// The digest is what a proof binds to, so it has to cover the keys the
+    /// proof was built under (how it runs — rate, tick, live labels, events —
+    /// is left out; see `requirements_digest`). Injected after the digest, a community could
     /// change its keys without the digest moving, and an applicant would bind
     /// to a criterion it never saw.
     #[cfg(feature = "vetting-pcs")]
@@ -447,6 +448,27 @@ mod tests {
             served["requirementsDigest"].as_str().unwrap().to_string()
         };
         assert_ne!(digest_with("zTvk"), digest_with("zOtherTvk"));
+    }
+
+    /// A new drip rate keeps the digest, so attestations already made under it
+    /// still count — what held a live join at "needs more vetting" after the
+    /// operator lowered the rate.
+    #[cfg(feature = "vetting-pcs")]
+    #[test]
+    fn a_new_drip_rate_keeps_the_digest() {
+        let digest_with = |drip: usize| {
+            let mut c = stored(Some(requirements(3)));
+            let mut config = hidden_config();
+            config.drip_per_tick = drip;
+            c.hidden_vetting = Some(serde_json::to_value(config).unwrap());
+            let served = manifest_criterion(c).unwrap().json;
+            assert_eq!(
+                served["requirementsDigest"].as_str().unwrap(),
+                requirements_digest(&served).unwrap()
+            );
+            served["requirementsDigest"].as_str().unwrap().to_string()
+        };
+        assert_eq!(digest_with(100), digest_with(20));
     }
 
     /// Who approved an event is the community's record of its own decision.

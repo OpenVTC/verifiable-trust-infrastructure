@@ -95,7 +95,10 @@ criterion.
 ## Versions
 
 Each criterion's `requirementsDigest` covers everything about it — admission
-included — so any change to a criterion changes its digest. An applicant who
+included — so any change to a criterion changes its digest. The one exception
+is how hidden vetting runs: its drip rate, tick length, live vetter and token
+labels and events are left out, so republishing them does not void the
+attestations applicants already hold. Its suite and keys are covered. An applicant who
 cited an earlier digest is decided under that earlier version while its
 `vetting.requirementsGrace` lasts, measured from when it was replaced or
 removed; without a declared grace, the current version governs. A supplement
