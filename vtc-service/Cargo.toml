@@ -145,7 +145,7 @@ vti-vetting-pcs = { path = "../vti-vetting-pcs", optional = true }
 predicate-credential-system = { version = "0.1", optional = true }
 vti-rooms = { path = "../vti-rooms", version = "0.10" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg" }
-vti-common = { path = "../vti-common", version = "0.39", features = [
+vti-common = { path = "../vti-common", version = "0.40", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.

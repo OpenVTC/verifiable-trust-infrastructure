@@ -2,6 +2,9 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.12.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.12.0...vta-keyspaces-v0.12.1) — 2026-10-06
+
+
 ## [0.12.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.11.0...vta-keyspaces-v0.12.0) — 2026-10-06
 
 

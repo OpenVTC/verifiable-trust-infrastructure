@@ -2,7 +2,7 @@
 name = "vta-backup"
 description = "VTA backup/restore subsystem — encrypted full-state export/import, the sealed backup-bundle store, and its TTL sweeper"
 readme = "README.md"
-version = "0.15.0"
+version = "0.15.1"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -27,7 +27,7 @@ webvh = ["vta-keyspaces/webvh"]
 tee = ["vta-config/tee"]
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.39" }
+vti-common = { path = "../vti-common", version = "0.40" }
 # Nonce and bundle-id generation. Was reached through `aes_gcm::aead::OsRng`,
 # a re-export aes-gcm 0.11 dropped; this crate always needed a CSPRNG of its
 # own and was borrowing one from its cipher.
