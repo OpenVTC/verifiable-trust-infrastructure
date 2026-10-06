@@ -78,8 +78,8 @@ const SITES: Site[] = [
   { file: "lib/community-counts.ts", site: "limit: COUNT_PAGE_SIZE", uri: JOINS, from: ["COUNT_PAGE_SIZE"] },
   // Members.
   { file: "lib/community-counts.ts", site: "limit: COUNT_PAGE_SIZE", uri: MEMBERS, from: ["COUNT_PAGE_SIZE"] },
-  { file: "plugins/members.tsx", site: "limit: params.limit", uri: MEMBERS, from: ["limit"] },
-  { file: "plugins/members.tsx", site: "        limit,\n      }),", uri: MEMBERS, from: ["limit"] },
+  { file: "plugins/members.tsx", site: "limit: params.limit", uri: MEMBERS, from: ["MEMBERS_PAGE"] },
+  { file: "plugins/members.tsx", site: "limit: MEMBERS_PAGE", uri: MEMBERS, from: ["MEMBERS_PAGE"] },
   { file: "plugins/vetting/api.ts", site: "TASK_MEMBERS_LIST, {\n      limit: 200,", uri: MEMBERS, from: ["200"] },
   { file: "plugins/repos/api.ts", site: "limit: MEMBERS_PAGE", uri: MEMBERS, from: ["MEMBERS_PAGE"] },
   { file: "lib/names.ts", site: "(MEMBERS_TASK, { limit: 200 })", uri: MEMBERS, from: ["200"] },

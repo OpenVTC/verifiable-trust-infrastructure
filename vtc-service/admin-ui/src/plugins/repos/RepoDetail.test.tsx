@@ -214,6 +214,25 @@ describe("Repo detail", () => {
     expect(trust.textContent).toMatch(/Solo owner — workflow changes unreviewed/);
   });
 
+  it("summarises holders, commit trust, registry and drift, each linking to its section", async () => {
+    mockFetch(gitNsRoutes());
+    mount(WIDGETS.resource);
+
+    const summary = await screen.findByRole("group", { name: "Summary" });
+    const tile = (label: string) =>
+      within(summary).getByText(label).closest("a") as HTMLAnchorElement;
+    await waitFor(() => expect(tile("Owners").textContent).toBe("Owners1"));
+    expect(tile("Owners").getAttribute("href")).toBe("#gitns-people");
+    expect(tile("Commit trust").textContent).toMatch(/4\/4in place/);
+    expect(tile("Commit trust").getAttribute("href")).toBe("#gitns-trust");
+    await waitFor(() => expect(tile("Registry").textContent).toMatch(/\d+\/\d+/));
+    expect(tile("Registry").getAttribute("href")).toBe("#gitns-registry");
+    // Every href names an element on the page.
+    for (const a of within(summary).getAllByRole("link")) {
+      expect(document.querySelector(a.getAttribute("href")!)).not.toBeNull();
+    }
+  });
+
   it("previews the public registry records, implied commit rights included", async () => {
     mockFetch(gitNsRoutes());
     mount(WIDGETS.resource);

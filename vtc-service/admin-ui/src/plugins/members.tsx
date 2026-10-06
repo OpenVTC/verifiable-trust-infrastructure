@@ -1,9 +1,8 @@
 // Members plugin — list + detail (read-only).
 //
-// Reads `GET /v1/members` (paginated, optional role filter) and
-// `GET /v1/members/{did}` for the detail view. Mutations (promote,
-// admin-remove) land in a follow-up commit; this is the read
-// surface only.
+// The list reads every page of `vtc/members/list/0.1` and searches, filters
+// and sorts it in the browser (`members/list.ts`); the detail view reads
+// `vtc/members/show/0.1`.
 //
 // The detail view also answers "what does this member hold from us, and what
 // have they published?" — which nothing in this console could answer before.
@@ -29,7 +28,7 @@
 // forge accounts (design §7.1, `members/MemberGit.tsx`), read from the Repos
 // plugin's console projections under its query keys.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   useMutation,
   useQuery,
@@ -37,8 +36,11 @@ import {
 } from "@tanstack/react-query";
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import {
+  ArrowDown,
   ArrowLeft,
   ArrowRight,
+  ArrowUp,
+  ArrowUpDown,
   Check,
   Minus,
   Ticket,
@@ -96,7 +98,19 @@ const VETTER_ROLE = "vetter";
 // The endorsement list has no subject filter; walking it stops here.
 const MAX_ENDORSEMENT_PAGES = 50;
 
+import { useNameBook } from "@/lib/names";
 import { MemberGitCard, MemberGitCell, useMemberGit } from "@/plugins/members/MemberGit";
+import {
+  compareValues,
+  didHandle,
+  matchScore,
+  nextSort,
+  searchTerms,
+  type SortDir,
+  type SortState,
+  type SortValue,
+} from "@/plugins/members/list";
+import { rightLabel, rightRank } from "@/plugins/repos/model";
 import { ApproverDevicesCard } from "@/plugins/members/StepUpApprovers";
 import { StepUpPasskeysCard } from "@/plugins/members/StepUpPasskeys";
 import { readErrorMessage } from "@/plugins/repos/ui";
@@ -321,20 +335,49 @@ export function Members() {
   );
 }
 
+/** Members read per page, and the most pages read: the list is searched and
+ *  sorted in the browser, so it reads the whole community up to this cap. */
+const MEMBERS_PAGE = 200;
+const MAX_MEMBER_PAGES = 25;
+/** Rows rendered per page of the (already filtered and sorted) table. */
+const ROWS_PER_PAGE = 50;
+
+/** Every current member, page by page, and whether the cap cut it short. */
+async function fetchAllMembers(): Promise<{ items: MemberRow[]; truncated: boolean }> {
+  const items: MemberRow[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < MAX_MEMBER_PAGES; page++) {
+    const body = await fetchMembers({ cursor, role: null, limit: MEMBERS_PAGE });
+    items.push(...body.items);
+    cursor = body.nextCursor ?? null;
+    if (!cursor) return { items, truncated: false };
+  }
+  return { items, truncated: true };
+}
+
+type MemberSortKey = "name" | "did" | "role" | "joined" | "personhood" | "git";
+
+/** Joined and personhood read best newest / asserted first. */
+const INITIAL_DIR: Record<MemberSortKey, SortDir> = {
+  name: "asc",
+  did: "asc",
+  role: "asc",
+  joined: "desc",
+  personhood: "desc",
+  git: "asc",
+};
+
 function MembersList() {
-  const [roleFilter, setRoleFilter] = useState<string>("");
-  const [cursor, setCursor] = useState<string | null>(null);
-  const limit = 50;
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
+  // `null`: no column chosen — newest first, or best match while searching.
+  const [sort, setSort] = useState<SortState<MemberSortKey> | null>(null);
+  const [page, setPage] = useState(0);
+  const book = useNameBook();
 
   const query = useQuery({
-    queryKey: ["members", roleFilter, cursor, limit],
-    queryFn: () =>
-      fetchMembers({
-        cursor,
-        role: roleFilter || null,
-        limit,
-      }),
-    placeholderData: (prev) => prev,
+    queryKey: ["members", "all"],
+    queryFn: fetchAllMembers,
   });
 
   // Git rights and linked forge accounts (design §7.1). Read once for the
@@ -344,23 +387,102 @@ function MembersList() {
   const showGit = !git.error;
   const columns = showGit ? 6 : 5;
 
+  const all = useMemo(() => query.data?.items ?? [], [query.data]);
+  const roles = useMemo(() => [...new Set(all.map((m) => m.role))].sort(), [all]);
+
+  const rows = useMemo(() => {
+    const terms = searchTerms(search);
+    const nameOf = (m: MemberRow) => m.label ?? book.nameOf(m.did) ?? null;
+    const scored: { m: MemberRow; score: number }[] = [];
+    for (const m of all) {
+      if (roleFilter && m.role !== roleFilter) continue;
+      const rights = git.index.rights.get(m.did) ?? [];
+      const accounts = git.index.accounts.get(m.did) ?? [];
+      const score = matchScore(terms, {
+        short: [
+          nameOf(m) ?? "",
+          m.role,
+          didHandle(m.did),
+          ...accounts.map((a) => a.account.login),
+          ...rights.map((r) => rightLabel(r.right)),
+        ],
+        long: [m.did, ...rights.map((r) => r.resource)],
+      });
+      if (score !== null) scored.push({ m, score });
+    }
+    const value = (m: MemberRow, key: MemberSortKey): SortValue => {
+      switch (key) {
+        case "name":
+          return nameOf(m);
+        case "did":
+          return m.did;
+        case "role":
+          return m.role;
+        case "joined":
+          return Date.parse(m.joinedAt) || null;
+        case "personhood":
+          return m.personhood ? 1 : 0;
+        case "git": {
+          const top = git.index.rights.get(m.did)?.[0];
+          return top ? rightRank(top.right) : null;
+        }
+      }
+    };
+    const byJoined = (a: MemberRow, b: MemberRow) =>
+      compareValues(value(a, "joined"), value(b, "joined"), "desc");
+    scored.sort((a, b) =>
+      sort
+        ? compareValues(value(a.m, sort.key), value(b.m, sort.key), sort.dir) || byJoined(a.m, b.m)
+        : b.score - a.score || byJoined(a.m, b.m),
+    );
+    return scored.map((s) => s.m);
+  }, [all, roleFilter, search, sort, git.index, book]);
+
+  const pages = Math.max(1, Math.ceil(rows.length / ROWS_PER_PAGE));
+  const current = Math.min(page, pages - 1);
+  const visible = rows.slice(current * ROWS_PER_PAGE, (current + 1) * ROWS_PER_PAGE);
+  const onSort = (key: MemberSortKey) => {
+    setSort((s) => nextSort(s, key, INITIAL_DIR[key]));
+    setPage(0);
+  };
+  const header = (key: MemberSortKey, label: string) => (
+    <SortableHeader label={label} sortKey={key} sort={sort} onSort={onSort} />
+  );
+
   return (
     <section className="page">
       <h2>Members</h2>
 
       <section className="card">
-        <div className="toolbar">
-          <label className="field inline">
-            <span className="field-label">Filter by role</span>
+        <div className="toolbar members-toolbar">
+          <label className="field inline members-search">
+            <span className="field-label">Search</span>
             <input
               type="search"
-              placeholder="admin / moderator / custom:editor"
+              placeholder="Name, DID, role or forge login"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(0);
+              }}
+            />
+          </label>
+          <label className="field inline">
+            <span className="field-label">Role</span>
+            <select
               value={roleFilter}
               onChange={(e) => {
                 setRoleFilter(e.target.value);
-                setCursor(null);
+                setPage(0);
               }}
-            />
+            >
+              <option value="">All roles</option>
+              {roles.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
           </label>
         </div>
       </section>
@@ -378,126 +500,179 @@ function MembersList() {
             Git rights are not shown: {readErrorMessage(git.error)}.
           </p>
         )}
-        <table className="data-table">
-          <thead>
-            <tr>
-              {/* Name leads: it is what an operator is looking for. The DID
-                  stays in its own column rather than being replaced by the
-                  name — a member you cannot check against an identifier is a
-                  member you cannot audit. */}
-              <th>Name</th>
-              <th>DID</th>
-              <th>Role</th>
-              <th>Joined</th>
-              <th>Personhood</th>
-              {showGit && <th>Git</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {query.isPending && (
+        {query.data?.truncated && (
+          <p className="muted">
+            Only the first {MEMBERS_PAGE * MAX_MEMBER_PAGES} members were read; search and sort
+            cover those.
+          </p>
+        )}
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead>
               <tr>
-                <td colSpan={columns}>Loading…</td>
+                {/* Name leads: it is what an operator is looking for. The DID
+                    stays in its own column rather than being replaced by the
+                    name — a member you cannot check against an identifier is a
+                    member you cannot audit. */}
+                {header("name", "Name")}
+                {header("did", "DID")}
+                {header("role", "Role")}
+                {header("joined", "Joined")}
+                {header("personhood", "Personhood")}
+                {showGit && header("git", "Git")}
               </tr>
-            )}
-            {query.data?.items.length === 0 && (
-              <tr>
-                <td colSpan={columns}>
-                  <div className="empty-state">
-                    <span className="empty-icon" aria-hidden="true">
-                      <UsersIcon />
-                    </span>
-                    <h4>No members match this filter</h4>
-                    <p>
-                      Adjust the role filter to widen the result, or
-                      wait for join requests to be approved.
-                    </p>
-                  </div>
-                </td>
-              </tr>
-            )}
-            {query.data?.items.map((m) => (
-              <tr key={m.did}>
-                <td>
-                  {m.label ?? <span className="muted">—</span>}
-                  {m.joinedViaInvitation && (
-                    <Ticket
-                      size={14}
-                      strokeWidth={1.75}
-                      aria-label="Joined via invitation"
-                      className="status-icon ok"
-                      style={{ marginLeft: 6, verticalAlign: "middle" }}
-                    />
-                  )}
-                </td>
-                <td>
-                  <Link to={encodeURIComponent(m.did)}>
-                    <code className="truncate" title={m.did}>
-                      {shortenDid(m.did)}
-                    </code>
-                  </Link>
-                </td>
-                <td>
-                  <code>{m.role}</code>
-                </td>
-                <td>{formatDate(m.joinedAt)}</td>
-                <td>
-                  {m.personhood ? (
-                    <Check
-                      size={16}
-                      strokeWidth={1.75}
-                      aria-label="Asserted"
-                      className="status-icon ok"
-                    />
-                  ) : (
-                    <Minus
-                      size={16}
-                      strokeWidth={1.75}
-                      aria-label="Not asserted"
-                      className="status-icon muted"
-                    />
-                  )}
-                </td>
-                {showGit && (
+            </thead>
+            <tbody>
+              {query.isPending && (
+                <tr>
+                  <td colSpan={columns}>Loading…</td>
+                </tr>
+              )}
+              {query.isSuccess && rows.length === 0 && (
+                <tr>
+                  <td colSpan={columns}>
+                    <div className="empty-state">
+                      <span className="empty-icon" aria-hidden="true">
+                        <UsersIcon />
+                      </span>
+                      {all.length === 0 ? (
+                        <>
+                          <h4>No members yet</h4>
+                          <p>Members appear here once join requests are approved.</p>
+                        </>
+                      ) : (
+                        <>
+                          <h4>No members match</h4>
+                          <p>Clear the search or choose another role to widen the result.</p>
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              )}
+              {visible.map((m) => (
+                <tr key={m.did}>
                   <td>
-                    {git.isPending ? (
-                      <span className="muted">…</span>
-                    ) : (
-                      <MemberGitCell did={m.did} index={git.index} />
+                    {m.label ?? book.nameOf(m.did) ?? <span className="muted">—</span>}
+                    {m.joinedViaInvitation && (
+                      <Ticket
+                        size={14}
+                        strokeWidth={1.75}
+                        aria-label="Joined via invitation"
+                        className="status-icon ok"
+                        style={{ marginLeft: 6, verticalAlign: "middle" }}
+                      />
                     )}
                   </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-
-        <div className="pagination">
-          <button
-            type="button"
-            className="secondary"
-            disabled={cursor === null}
-            onClick={() => setCursor(null)}
-          >
-            First page
-          </button>
-          <button
-            type="button"
-            className="secondary"
-            disabled={!query.data?.nextCursor}
-            onClick={() => setCursor(query.data?.nextCursor ?? null)}
-          >
-            Next page <ArrowRight size={12} aria-hidden="true" />
-          </button>
-          {query.data?.totalEstimate !== undefined && (
-            <span className="muted">
-              ~{query.data.totalEstimate} total
-            </span>
-          )}
+                  <td>
+                    <Link to={encodeURIComponent(m.did)}>
+                      <code className="truncate" title={m.did}>
+                        {shortenDid(m.did)}
+                      </code>
+                    </Link>
+                  </td>
+                  <td>
+                    <code>{m.role}</code>
+                  </td>
+                  <td>{formatDate(m.joinedAt)}</td>
+                  <td>
+                    {m.personhood ? (
+                      <Check
+                        size={16}
+                        strokeWidth={1.75}
+                        aria-label="Asserted"
+                        className="status-icon ok"
+                      />
+                    ) : (
+                      <Minus
+                        size={16}
+                        strokeWidth={1.75}
+                        aria-label="Not asserted"
+                        className="status-icon muted"
+                      />
+                    )}
+                  </td>
+                  {showGit && (
+                    <td>
+                      {git.isPending ? (
+                        <span className="muted">…</span>
+                      ) : (
+                        <MemberGitCell did={m.did} index={git.index} />
+                      )}
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
+
+        {query.isSuccess && (
+          <div className="pagination">
+            <span className="muted" aria-live="polite">
+              {rows.length === all.length
+                ? `${all.length} member${all.length === 1 ? "" : "s"}`
+                : `${rows.length} of ${all.length} members`}
+              {pages > 1 &&
+                ` · showing ${current * ROWS_PER_PAGE + 1}–${Math.min(rows.length, (current + 1) * ROWS_PER_PAGE)}`}
+            </span>
+            {pages > 1 && (
+              <>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={current === 0}
+                  onClick={() => setPage(current - 1)}
+                >
+                  <ArrowLeft size={12} aria-hidden="true" /> Previous
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={current >= pages - 1}
+                  onClick={() => setPage(current + 1)}
+                >
+                  Next <ArrowRight size={12} aria-hidden="true" />
+                </button>
+              </>
+            )}
+          </div>
+        )}
       </section>
 
       <RemovedMembers />
     </section>
+  );
+}
+
+/** A column header that sorts the table: the button toggles, the `<th>`
+ *  carries `aria-sort` for assistive technology. */
+function SortableHeader<K extends string>({
+  label,
+  sortKey,
+  sort,
+  onSort,
+}: {
+  label: string;
+  sortKey: K;
+  sort: SortState<K> | null;
+  onSort: (key: K) => void;
+}) {
+  const active = sort?.key === sortKey;
+  const ariaSort = !active ? "none" : sort.dir === "asc" ? "ascending" : "descending";
+  const Icon = !active ? ArrowUpDown : sort.dir === "asc" ? ArrowUp : ArrowDown;
+  return (
+    <th scope="col" aria-sort={ariaSort}>
+      <button
+        type="button"
+        className="sortable-th"
+        title={`Sort by ${label.toLowerCase()}`}
+        onClick={() => onSort(sortKey)}
+      >
+        <span>{label}</span>
+        <Icon size={12} aria-hidden="true" />
+      </button>
+    </th>
   );
 }
 

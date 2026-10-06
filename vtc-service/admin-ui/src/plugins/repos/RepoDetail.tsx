@@ -186,14 +186,14 @@ function PeopleTable({
   const book = useNameBook();
   return (
     <div className="table-scroll">
-      <table className="data-table">
+      <table className="data-table gitns-table gitns-people-table">
         <thead>
           <tr>
             <th scope="col">Person</th>
-            <th scope="col">Right</th>
-            <th scope="col">{forge}</th>
-            <th scope="col">Granted by</th>
-            <th scope="col">
+            <th scope="col" className="gitns-col-right">Right</th>
+            <th scope="col" className="gitns-col-forge">{forge}</th>
+            <th scope="col" className="gitns-col-granted">Granted by</th>
+            <th scope="col" className="gitns-col-actions">
               <span className="visually-hidden">Actions</span>
             </th>
           </tr>
@@ -566,32 +566,140 @@ function CommitTrust({ ns, repo }: { ns: GitNsNamespaceRow; repo: GitNsRepoRow }
   );
 }
 
+/** The registry records this repository's rights call for — its own, and the
+ *  namespace-wide commit rights that also cover it — each marked published or
+ *  not. Shared by the summary strip and the registry section; react-query
+ *  reads the projection once for both. */
+function useRegistryTuples(
+  resource: string,
+  nsResource: string | undefined,
+  repos: GitNsRepoRow[],
+  namespaces: GitNsNamespaceRow[],
+  rights: GitNsRightRow[] | null,
+) {
+  const proj = useQuery({ queryKey: gitNsKeys.projection, queryFn: fetchProjection });
+  const tuples = useMemo(
+    () =>
+      desiredTuples(rights ?? [], namespaces, repos, proj.data?.published ?? [])
+        .filter(
+          (t) =>
+            t.resource === resource || (t.resource === nsResource && t.action === "git.commit.sign"),
+        )
+        // A person's records together, this repository's before the namespace's.
+        .sort(
+          (a, b) =>
+            a.entity.localeCompare(b.entity) ||
+            Number(a.resource !== resource) - Number(b.resource !== resource),
+        ),
+    [rights, namespaces, repos, proj.data, resource, nsResource],
+  );
+  return { proj, tuples };
+}
+
+type SummaryTone = "ok" | "warn" | "bad" | "neutral";
+
+/** One figure in the strip under the heading; a link to the section that
+ *  explains it. */
+function SummaryTile({
+  label,
+  value,
+  detail,
+  tone = "neutral",
+  href,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  tone?: SummaryTone;
+  href: string;
+}) {
+  return (
+    <a className={`gitns-summary-tile ${tone}`} href={href}>
+      <span className="gitns-summary-label">{label}</span>
+      <span className="gitns-summary-value">{value}</span>
+      {detail && <span className="gitns-summary-detail">{detail}</span>}
+    </a>
+  );
+}
+
+/** Who holds what, whether commit trust is in place, what is published and
+ *  whether the forge has drifted — at a glance, before the detail. */
+function RepoSummary({
+  people,
+  repo,
+  drift,
+  tuples,
+  projectionRead,
+  rightsRead,
+}: {
+  people: GitNsRightRow[];
+  repo: GitNsRepoRow;
+  drift: number;
+  tuples: { published: boolean }[];
+  projectionRead: boolean;
+  rightsRead: boolean;
+}) {
+  const holders = (right: GitNsRight) =>
+    new Set(people.filter((r) => r.right === right).map((r) => r.subject)).size;
+  const steps = bootstrapSteps(repo.bootstrap);
+  const done = steps.filter((s) => s.done).length;
+  const published = tuples.filter((t) => t.published).length;
+  const rightsValue = (right: GitNsRight) => (rightsRead ? String(holders(right)) : "…");
+  return (
+    <div className="gitns-summary" role="group" aria-label="Summary">
+      <SummaryTile
+        label="Owners"
+        value={rightsValue("git.repo.own")}
+        tone={rightsRead && holders("git.repo.own") === 0 ? "bad" : "neutral"}
+        href="#gitns-people"
+      />
+      <SummaryTile label="Maintainers" value={rightsValue("git.repo.maintain")} href="#gitns-people" />
+      <SummaryTile label="Committers" value={rightsValue("git.commit.sign")} href="#gitns-people" />
+      <SummaryTile
+        label="Commit trust"
+        value={`${done}/${steps.length}`}
+        detail={done === steps.length ? "in place" : `${steps.length - done} missing`}
+        tone={done === steps.length ? "ok" : "warn"}
+        href="#gitns-trust"
+      />
+      <SummaryTile
+        label="Registry"
+        value={rightsRead && projectionRead ? `${published}/${tuples.length}` : "…"}
+        detail={
+          rightsRead && projectionRead
+            ? published === tuples.length
+              ? "all published"
+              : `${tuples.length - published} pending`
+            : undefined
+        }
+        tone={rightsRead && projectionRead && published < tuples.length ? "warn" : "neutral"}
+        href="#gitns-registry"
+      />
+      <SummaryTile
+        label="Drift"
+        value={String(drift)}
+        detail={drift === 0 ? (repo.syncState === "drift" ? "reported" : "in sync") : "to resolve"}
+        tone={drift > 0 || repo.syncState === "drift" ? "bad" : "ok"}
+        href={drift > 0 || repo.syncState === "drift" ? "#drift" : "#gitns-trust"}
+      />
+    </div>
+  );
+}
+
 function RegistryPreview({
   resource,
-  ns,
-  repos,
-  namespaces,
   rights,
   rightsError,
+  proj,
+  tuples,
 }: {
   resource: string;
-  ns: GitNsNamespaceRow;
-  repos: GitNsRepoRow[];
-  namespaces: GitNsNamespaceRow[];
   /** `null` until the rights are read; the preview is built from them, so
    *  without them it says nothing about what is or is not published. */
   rights: GitNsRightRow[] | null;
   rightsError: unknown;
-}) {
+} & ReturnType<typeof useRegistryTuples>) {
   const book = useNameBook();
-  const proj = useQuery({ queryKey: gitNsKeys.projection, queryFn: fetchProjection });
-  const tuples = useMemo(
-    () =>
-      desiredTuples(rights ?? [], namespaces, repos, proj.data?.published ?? []).filter(
-        (t) => t.resource === resource || (t.resource === ns.resource && t.action === "git.commit.sign"),
-      ),
-    [rights, namespaces, repos, proj.data, resource, ns.resource],
-  );
   const pending = tuples.filter((t) => !t.published).length;
 
   return (
@@ -624,44 +732,46 @@ function RegistryPreview({
       ) : tuples.length === 0 ? (
         <p className="muted">Nothing on this repository is published.</p>
       ) : (
-        <table className="data-table gitns-tuples">
-          <caption className="visually-hidden">Registry records for {resource}</caption>
-          <thead>
-            <tr>
-              <th scope="col">Entity</th>
-              <th scope="col">Action</th>
-              <th scope="col">Resource</th>
-              <th scope="col">State</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tuples.map((t) => (
-              <tr key={`${t.entity}|${t.action}|${t.resource}`}>
-                <td>
-                  <NamedDid did={t.entity} book={book} />
-                </td>
-                <td>
-                  <code>{t.action}</code>
-                  {t.impliedBy && (
-                    <div className="muted gitns-small">implied by {t.impliedBy}</div>
-                  )}
-                </td>
-                <td>
-                  <code>{t.resource}</code>
-                </td>
-                <td>
-                  {proj.data ? (
-                    <ToneChip tone={t.published ? "success" : "accent"}>
-                      {t.published ? "Published" : "Pending"}
-                    </ToneChip>
-                  ) : (
-                    "—"
-                  )}
-                </td>
+        <div className="table-scroll">
+          <table className="data-table gitns-table gitns-tuples">
+            <caption className="visually-hidden">Registry records for {resource}</caption>
+            <thead>
+              <tr>
+                <th scope="col">Entity</th>
+                <th scope="col" className="gitns-col-action">Action</th>
+                <th scope="col" className="gitns-col-resource">Resource</th>
+                <th scope="col" className="gitns-col-state">State</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {tuples.map((t) => (
+                <tr key={`${t.entity}|${t.action}|${t.resource}`}>
+                  <td>
+                    <NamedDid did={t.entity} book={book} />
+                  </td>
+                  <td>
+                    <code>{t.action}</code>
+                    {t.impliedBy && (
+                      <div className="muted gitns-small">implied by {t.impliedBy}</div>
+                    )}
+                  </td>
+                  <td>
+                    <code>{t.resource}</code>
+                  </td>
+                  <td>
+                    {proj.data ? (
+                      <ToneChip tone={t.published ? "success" : "accent"}>
+                        {t.published ? "Published" : "Pending"}
+                      </ToneChip>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
       <p className="muted gitns-small">
         The CI check reads only <code>git.commit.sign</code>; the projector writes each
@@ -691,6 +801,13 @@ export function RepoDetail() {
   const allRights = rightsQ.data?.rights ?? [];
   const repo = repos.find((r) => r.resource === resource);
   const ns = repo ? namespaces.find((n) => n.id === repo.namespace) : undefined;
+  const registry = useRegistryTuples(
+    resource,
+    ns?.resource,
+    repos,
+    namespaces,
+    rightsQ.isSuccess ? allRights : null,
+  );
 
   const breadcrumb = (
     <nav aria-label="Breadcrumb" className="gitns-crumbs">
@@ -898,114 +1015,120 @@ export function RepoDetail() {
         </div>
       )}
 
+      <RepoSummary
+        people={people}
+        repo={repo}
+        drift={drift.length}
+        tuples={registry.tuples}
+        projectionRead={registry.proj.isSuccess}
+        rightsRead={rightsQ.isSuccess}
+      />
+
       <div className="gitns-detail">
-        <div className="gitns-col">
-          <section className="card" aria-labelledby="gitns-people">
-            <div className="gitns-section-head">
-              <h3 id="gitns-people">People and rights</h3>
-              <button
-                type="button"
-                className="primary sm"
-                disabled={!governed || archived}
-                onClick={() => setDialog({ kind: "grant" })}
-              >
-                <Plus aria-hidden="true" size={14} /> Add person
-              </button>
-            </div>
-            {rightsQ.isPending && <p>Loading rights…</p>}
-            {rightsQ.isError && (
-              <p className="muted">Rights could not be read: {readErrorMessage(rightsQ.error)}.</p>
+        {(drift.length > 0 || repo.syncState === "drift") && (
+          <section className="card" id="drift" aria-labelledby="gitns-drift">
+            <h3 id="gitns-drift">Drift</h3>
+            {driftQ.isError && (
+              <p className="muted">Drift could not be read: {readErrorMessage(driftQ.error)}.</p>
             )}
-            {rightsQ.isSuccess && people.length === 0 && (
-              <p className="muted">
-                {repo.state === "unmanaged"
-                  ? "Nobody holds a right here: adopt it to name an owner."
-                  : "No right is recorded on this repository itself."}
-              </p>
-            )}
-            {people.length > 0 && (
-              <PeopleTable
-                rows={people}
-                forge={ns.forge}
-                forges={forges}
-                vtcDid={vtcDid}
-                roleMap={repo.roleMap}
-                waived={driftQ.data?.waived}
-                readOnlyNote={(r) =>
-                  r.origin === "roleDerived"
-                    ? "Managed in configuration"
-                    : !isRight(r.right)
-                      ? "Unknown right"
-                      : lastOwner(r)
-                }
-                onRevoke={(r) => setDialog({ kind: "revoke", row: r })}
-              />
-            )}
-            <p className="muted gitns-small">
-              Owners can grant owner, maintainer and committer on this repository.
-              Committers need no forge access; they contribute through fork pull
-              requests.
-            </p>
+            <DriftList
+              items={drift}
+              forges={forges}
+              ns={ns}
+              repo={repo}
+              rights={rightsQ.isSuccess ? allRights : null}
+              onRevert={(item) => setDialog({ kind: "drift", item })}
+              onAdopt={(item, member, right) =>
+                setDialog({ kind: "drift", item, adopt: { member, right } })
+              }
+            />
           </section>
+        )}
 
-          {inherited.length > 0 && (
-            <section className="card" aria-labelledby="gitns-inherited">
-              <h3 id="gitns-inherited">Through the namespace</h3>
-              <p className="muted gitns-small">
-                Rights on {ns.resource} that reach this repository. Change them from the
-                namespace. <code>git.ns.admin</code> gives no role on the forge; a
-                namespace-level <code>git.commit.sign</code> is projected here as a committer
-                right on this repository would be.
-              </p>
-              <PeopleTable
-                rows={inherited}
-                forge={ns.forge}
-                forges={forges}
-                vtcDid={vtcDid}
-                roleMap={repo.roleMap}
-                waived={driftQ.data?.waived}
-                readOnlyNote={(r) =>
-                  isServiceGrant(r, ns)
-                    ? "Bridge service grant · Dependabot re-sign"
-                    : "On the namespace"
-                }
-              />
-            </section>
+        <section className="card" aria-labelledby="gitns-people">
+          <div className="gitns-section-head">
+            <h3 id="gitns-people">People and rights</h3>
+            <button
+              type="button"
+              className="primary sm"
+              disabled={!governed || archived}
+              onClick={() => setDialog({ kind: "grant" })}
+            >
+              <Plus aria-hidden="true" size={14} /> Add person
+            </button>
+          </div>
+          {rightsQ.isPending && <p>Loading rights…</p>}
+          {rightsQ.isError && (
+            <p className="muted">Rights could not be read: {readErrorMessage(rightsQ.error)}.</p>
           )}
-
-          {(drift.length > 0 || repo.syncState === "drift") && (
-            <section className="card" id="drift" aria-labelledby="gitns-drift">
-              <h3 id="gitns-drift">Drift</h3>
-              {driftQ.isError && (
-                <p className="muted">Drift could not be read: {readErrorMessage(driftQ.error)}.</p>
-              )}
-              <DriftList
-                items={drift}
-                forges={forges}
-                ns={ns}
-                repo={repo}
-                rights={rightsQ.isSuccess ? allRights : null}
-                onRevert={(item) => setDialog({ kind: "drift", item })}
-                onAdopt={(item, member, right) =>
-                  setDialog({ kind: "drift", item, adopt: { member, right } })
-                }
-              />
-            </section>
+          {rightsQ.isSuccess && people.length === 0 && (
+            <p className="muted">
+              {repo.state === "unmanaged"
+                ? "Nobody holds a right here: adopt it to name an owner."
+                : "No right is recorded on this repository itself."}
+            </p>
           )}
-        </div>
+          {people.length > 0 && (
+            <PeopleTable
+              rows={people}
+              forge={ns.forge}
+              forges={forges}
+              vtcDid={vtcDid}
+              roleMap={repo.roleMap}
+              waived={driftQ.data?.waived}
+              readOnlyNote={(r) =>
+                r.origin === "roleDerived"
+                  ? "Managed in configuration"
+                  : !isRight(r.right)
+                    ? "Unknown right"
+                    : lastOwner(r)
+              }
+              onRevoke={(r) => setDialog({ kind: "revoke", row: r })}
+            />
+          )}
+          <p className="muted gitns-small">
+            Owners can grant owner, maintainer and committer on this repository.
+            Committers need no forge access; they contribute through fork pull
+            requests.
+          </p>
+        </section>
 
-        <div className="gitns-col">
+        {inherited.length > 0 && (
+          <section className="card" aria-labelledby="gitns-inherited">
+            <h3 id="gitns-inherited">Through the namespace</h3>
+            <p className="muted gitns-small">
+              Rights on {ns.resource} that reach this repository. Change them from the
+              namespace. <code>git.ns.admin</code> gives no role on the forge; a
+              namespace-level <code>git.commit.sign</code> is projected here as a committer
+              right on this repository would be.
+            </p>
+            <PeopleTable
+              rows={inherited}
+              forge={ns.forge}
+              forges={forges}
+              vtcDid={vtcDid}
+              roleMap={repo.roleMap}
+              waived={driftQ.data?.waived}
+              readOnlyNote={(r) =>
+                isServiceGrant(r, ns)
+                  ? "Bridge service grant · Dependabot re-sign"
+                  : "On the namespace"
+              }
+            />
+          </section>
+        )}
+
+        <div className="gitns-pair">
           <CommitTrust ns={ns} repo={repo} />
-          <RegistryPreview
-            resource={repo.resource}
-            ns={ns}
-            repos={repos}
-            namespaces={namespaces}
-            rights={rightsQ.isSuccess ? allRights : null}
-            rightsError={rightsQ.error}
-          />
           <Activity ns={ns} resource={repo.resource} />
         </div>
+
+        <RegistryPreview
+          resource={repo.resource}
+          rights={rightsQ.isSuccess ? allRights : null}
+          rightsError={rightsQ.error}
+          {...registry}
+        />
       </div>
 
       {dialog?.kind === "grant" && (

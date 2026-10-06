@@ -1020,6 +1020,14 @@ select {
   margin: 0;
 }
 
+/* The Members search takes the width; the role picker stays compact. */
+.members-toolbar .field.inline {
+  flex: 0 1 12rem;
+}
+.members-toolbar .field.inline.members-search {
+  flex: 3 1 20rem;
+}
+
 .toolbar > .spacer {
   flex: 1 1 auto;
 }
@@ -1077,7 +1085,9 @@ select {
 }
 
 .sortable-th[aria-sort="ascending"],
-.sortable-th[aria-sort="descending"] {
+.sortable-th[aria-sort="descending"],
+th[aria-sort="ascending"] > .sortable-th,
+th[aria-sort="descending"] > .sortable-th {
   color: var(--text);
 }
 
@@ -3495,22 +3505,130 @@ a.button.primary:hover {
   flex-wrap: wrap;
   margin-top: var(--space-2);
 }
+/* A repository's page is one column of full-width sections: the people and
+   registry tables carry long DIDs and four or five columns, and in the old
+   two-up layout they were squeezed into a third of the page and spilled out
+   of their cards. Only the two short cards (commit trust, activity) pair up. */
 .gitns-detail {
-  display: grid;
-  grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr);
-  gap: var(--space-5);
-  align-items: start;
-}
-@media (max-width: 1100px) {
-  .gitns-detail {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-.gitns-col {
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
   min-width: 0;
+}
+.gitns-detail > * {
+  min-width: 0;
+}
+.gitns-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(24rem, 100%), 1fr));
+  gap: var(--space-5);
+  align-items: start;
+}
+.gitns-pair > * {
+  min-width: 0;
+}
+
+.gitns-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--space-3);
+}
+.gitns-summary-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  color: var(--text);
+  text-decoration: none;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+.gitns-summary-tile:hover {
+  background: var(--bg-hover);
+}
+.gitns-summary-tile:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+.gitns-summary-tile.ok {
+  border-left-color: var(--success);
+}
+.gitns-summary-tile.warn {
+  border-left-color: var(--warning);
+}
+.gitns-summary-tile.bad {
+  border-left-color: var(--danger);
+}
+.gitns-summary-label {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+.gitns-summary-value {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: 600;
+  line-height: 1.2;
+}
+.gitns-summary-detail {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+/* Tables on the repository page: a DID's name and its abbreviated
+   identifier stack in a narrow cell instead of being clipped, and the short
+   columns keep a stable width so the person column takes what is left. */
+.gitns-table td {
+  vertical-align: top;
+}
+.gitns-table .named-did {
+  flex-wrap: wrap;
+  column-gap: var(--space-2);
+  row-gap: 0;
+  max-width: 100%;
+}
+.gitns-table .named-did-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.gitns-table .named-did-id,
+.gitns-table .truncate {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gitns-table td > div + div,
+.gitns-table td > a + div {
+  margin-top: var(--space-1);
+}
+.gitns-col-right {
+  width: 9rem;
+}
+.gitns-col-forge {
+  width: 13rem;
+}
+.gitns-col-granted {
+  width: 15rem;
+}
+.gitns-col-actions {
+  width: 10rem;
+}
+.gitns-col-action {
+  width: 13rem;
+}
+.gitns-col-resource {
+  width: 18rem;
+}
+.gitns-col-state {
+  width: 7rem;
+}
+.gitns-tuples td code {
+  overflow-wrap: anywhere;
 }
 .gitns-checklist {
   list-style: none;
