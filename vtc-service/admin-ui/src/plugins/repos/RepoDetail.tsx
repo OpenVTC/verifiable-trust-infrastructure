@@ -905,7 +905,9 @@ function RegistryPreview({
         The CI check reads only <code>git.commit.sign</code>; the projector writes each
         owner's and maintainer's implied commit right explicitly. Anyone can query who
         owns or commits to this repository. Reasons are never published.
-        {pending > 0 && proj.data?.registryConfigured && ` ${pending} not yet published.`}
+        {pending > 0 && proj.data?.registryConfigured && ` ${pending} not yet published.`}{" "}
+        <Link to="/recognition">Every record this community publishes</Link> is listed,
+        searchable, on the Recognition page.
       </p>
     </section>
   );

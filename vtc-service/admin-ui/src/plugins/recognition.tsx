@@ -14,16 +14,17 @@ import {
   checkRecognition,
   discardSyncJob,
   fetchDiagnostics,
-  fetchRegistryRecords,
   retrySyncJob,
   type DriftEntry,
   type FailedSyncJob,
   type RecognitionCheck,
-  type RegistryRecordRow,
   type SyncJobsRetryResponse,
 } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { CopyButton } from "@/components/CopyButton";
+import { InfoTip } from "@/components/InfoTip";
+import { fetchAllRegistryRecords } from "@/plugins/recognition/records";
+import { TrustRecords } from "@/plugins/recognition/TrustRecords";
 import { formatDuration, formatIso } from "@/lib/format";
 
 /** Protocol names as the specs write them, not as the wire encodes them. */
@@ -68,7 +69,7 @@ export function Recognition() {
   // registry for a page someone left open. Refetch is an explicit act.
   const records = useQuery({
     queryKey: ["registry-records", source],
-    queryFn: () => fetchRegistryRecords(source),
+    queryFn: () => fetchAllRegistryRecords(source),
     refetchOnWindowFocus: false,
     retry: false,
   });
@@ -495,16 +496,26 @@ export function Recognition() {
       </section>
 
       <section className="card">
-        <h3>Trust records</h3>
-        <p className="muted">
-          The recognition graph itself. <strong>Registry</strong> asks the trust
-          registry what it holds; <strong>ours</strong> asks this community what
-          it believes it published. They are different questions — the drift
-          summary above is what happens when the answers disagree.
+        <h3>Trust Registry records</h3>
+        <p className="muted prose-measure">
+          Everything the Trust Registry holds under this community's authority:
+          memberships (this community recognises the member) and git rights (it
+          authorises a DID to own, maintain or commit to a repository).{" "}
+          <strong>Registry</strong> asks the trust registry what it holds;{" "}
+          <strong>ours</strong> asks this community what it believes it published.
+          They are different questions — the drift summary above is what happens
+          when the answers disagree.
         </p>
 
         <div className="field">
-          <span className="field-label">View</span>
+          <span className="field-label">
+            View
+            <InfoTip label="About the views">
+              Registry is the authoritative answer, read live from the trust registry
+              every time. Ours is this community's own record of what it published —
+              useful when the registry is unreachable, never a substitute for it.
+            </InfoTip>
+          </span>
           <div role="group" aria-label="Which view to enumerate">
             <button
               type="button"
@@ -568,35 +579,10 @@ export function Recognition() {
 
         {records.data && records.data.items.length > 0 && (
           <>
-            <div className="table-scroll">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Entity</th>
-                    <th>Authority</th>
-                    <th>Action</th>
-                    <th>Resource</th>
-                    <th>Type</th>
-                    <th>Assertion</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {records.data.items.map((r) => (
-                    <RecordRow
-                      key={`${r.entityId}:${r.action}:${r.resource}`}
-                      record={r}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <TrustRecords items={records.data.items} source={records.data.source} />
             <p className="muted">
-              {records.data.items.length} record
-              {records.data.items.length === 1 ? "" : "s"} from{" "}
-              <code>{records.data.source}</code>
-              {records.data.nextCursor
-                ? " — more pages exist; use `vtc sync-jobs`-style paging via the API for the rest."
-                : "."}
+              {records.data.truncated &&
+                "Only the first 5000 records were read; search and filters cover those."}
             </p>
           </>
         )}
@@ -703,51 +689,6 @@ function DriftRow({ entry }: { entry: DriftEntry }) {
       </td>
       <td>{entry.localStatus ?? "—"}</td>
       <td>{entry.registryStatus ?? "—"}</td>
-    </tr>
-  );
-}
-
-/**
- * One trust record.
- *
- * The assertion is rendered as three states, not two. The specification says
- * an absent member means the record makes no such assertion, and absence is
- * emphatically not `false` — a recognition record carries no `authorized`,
- * and showing "no" there would invent a refusal the registry never made.
- */
-function RecordRow({ record }: { record: RegistryRecordRow }) {
-  const assertion = record.recognized ?? record.authorized ?? null;
-  const which =
-    record.recognized != null
-      ? "recognised"
-      : record.authorized != null
-        ? "authorised"
-        : null;
-  return (
-    <tr>
-      <td>
-        <code>{record.entityId}</code>
-        <CopyButton
-          value={record.entityId}
-          label="Copy entity DID"
-          successMessage="Entity DID copied"
-        />
-      </td>
-      <td>
-        <code>{record.authorityId}</code>
-      </td>
-      <td>{record.action}</td>
-      <td>{record.resource}</td>
-      <td>{record.recordType}</td>
-      <td>
-        {which === null ? (
-          <span className="muted">&mdash; no assertion</span>
-        ) : (
-          <span className={assertion ? "chip success" : "chip danger"}>
-            {assertion ? which : `not ${which}`}
-          </span>
-        )}
-      </td>
     </tr>
   );
 }

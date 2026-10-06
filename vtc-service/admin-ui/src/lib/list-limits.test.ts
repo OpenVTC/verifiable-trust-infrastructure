@@ -41,6 +41,7 @@ const T = "https://trusttasks.org/spec";
 const ACTIONS = `${T}/vtc/admin/actions/list/0.2`;
 const JOINS = `${T}/vtc/join-requests/list/0.1`;
 const MEMBERS = `${T}/vtc/members/list/0.1`;
+const REGISTRY_RECORDS = `${T}/vtc/registry/records/list/0.1`;
 const ENDORSEMENTS = `${T}/vtc/endorsements/list/0.1`;
 const ENDORSEMENT_TYPES = `${T}/vtc/endorsement-types/list/0.1`;
 const ROOMS = `${T}/vtc/rooms/list/0.1`;
@@ -71,6 +72,8 @@ const SITES: Site[] = [
   // `listActions` passes its caller's limit through; each call is listed.
   { file: "lib/actions-api.ts", site: "payload.limit = query.limit", uri: ACTIONS, from: [] },
   { file: "lib/actions-api.ts", site: 'listActions({ view: "waitingForMe", limit: 1 })', uri: ACTIONS, from: ["1"] },
+  // Trust Registry records, every page (Recognition).
+  { file: "plugins/recognition/records.ts", site: "{ source, limit: REGISTRY_RECORDS_PAGE", uri: REGISTRY_RECORDS, from: ["REGISTRY_RECORDS_PAGE"] },
   // Join requests.
   { file: "plugins/joinRequests.tsx", site: "limit: params.limit", uri: JOINS, from: ["limit"] },
   { file: "plugins/joinRequests.tsx", site: "{ status, cursor, limit }", uri: JOINS, from: ["limit"] },
