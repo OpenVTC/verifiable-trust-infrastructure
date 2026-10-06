@@ -15,8 +15,9 @@ pub mod guards;
 pub mod idempotency;
 pub mod identifier;
 /// Keeping a node's mediator inbox collected: the catch-up watch (with
-/// receive-leg health), unprocessable-frame deletion, and the per-recipient
-/// "not collecting" report. Shared by the VTA and the VTC.
+/// receive-leg health and bounded socket reconnects), the unprocessable-frame
+/// count, and the per-recipient "not collecting" report. Shared by the VTA and
+/// the VTC.
 pub mod inbox;
 pub mod integrity;
 pub mod outbox_store;

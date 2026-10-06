@@ -1917,9 +1917,28 @@ export interface components {
             lastAnsweredAt?: number | null;
             /**
              * Format: int64
+             * @description Unix seconds of the last of them.
+             */
+            lastReconnectAt?: number | null;
+            /**
+             * Format: int64
              * @description Age of the oldest of them, in seconds.
              */
             longestWaitedSecs?: number | null;
+            /**
+             * Format: int64
+             * @description Unix seconds before which no further reconnect will be asked for
+             *     ([`ReconnectGovernor`]). `None` until the first.
+             */
+            nextReconnectNotBefore?: number | null;
+            receive?: components["schemas"]["ReceiveLegHealth"] | null;
+            /**
+             * Format: int64
+             * @description Socket reconnects the watch asked for because the receive leg was not
+             *     delivering, since start. The SDK's own probe reconnects are counted
+             *     separately, in [`ReceiveLegHealth::probe_reconnects`].
+             */
+            reconnectsRequested: number;
             state: components["schemas"]["InboxCollection"];
             /**
              * Format: int32
@@ -1928,12 +1947,10 @@ export interface components {
             unansweredStatusRequests: number;
             /**
              * Format: int64
-             * @description Of those, the ones deleted from the mediator.
-             */
-            unprocessableDeleted: number;
-            /**
-             * Format: int64
-             * @description Inbound frames this node could not unpack, since start.
+             * @description Inbound frames the messaging SDK reported it could not unpack, since
+             *     start — on the live stream and on a pickup drain. Whether each was
+             *     deleted is the SDK's decision; its count is
+             *     [`ReceiveLegHealth::unprocessable_deleted`].
              */
             unprocessableSeen: number;
             /**
@@ -2763,6 +2780,57 @@ export interface components {
              *     caller might act on.
              */
             transports: components["schemas"]["TransportStatus"][];
+        };
+        /**
+         * @description The messaging SDK's [`ReceiveHealth`], as a health endpoint reports it.
+         *
+         *     A mirror rather than the SDK type itself because it is a wire shape: it is
+         *     serialised, documented in the VTC's OpenAPI document and generated into the
+         *     admin console's types, and an SDK field added later must not change that
+         *     contract without a change here. Times are Unix seconds.
+         */
+        ReceiveLegHealth: {
+            /**
+             * Format: int64
+             * @description Set while frames have been held and not taken for longer than the SDK's
+             *     stall threshold: this node is not reading, so nothing is being deleted
+             *     at the mediator. A reconnect does not cure this.
+             */
+            consumerStalledSince?: number | null;
+            /**
+             * Format: int32
+             * @description Frames held by the transport waiting for this node to take them.
+             */
+            heldFrames: number;
+            /**
+             * Format: int64
+             * @description When the last data frame arrived on the socket (not a ping or pong,
+             *     which prove the socket and nothing about delivery).
+             */
+            lastDataFrameAt?: number | null;
+            /**
+             * Format: int64
+             * @description Set while the SDK's receive-leg probe (a live-delivery request written
+             *     after inbound went quiet) is waiting for any frame to arrive.
+             */
+            probeOutstandingSince?: number | null;
+            /**
+             * Format: int64
+             * @description Reconnects the SDK forced because its probe went unanswered.
+             */
+            probeReconnects: number;
+            /**
+             * Format: int64
+             * @description Frames the SDK could not unpack and deleted from the mediator, so they
+             *     stop counting against their sender's queue.
+             */
+            unprocessableDeleted: number;
+            /**
+             * Format: int32
+             * @description Frames that failed to unpack transiently, or for want of this node's
+             *     own key, and are being left at the mediator.
+             */
+            unprocessableRetained: number;
         };
         RecognitionCheck: {
             /** @description Echo of the queried DID. */

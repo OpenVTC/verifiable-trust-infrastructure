@@ -53,14 +53,15 @@ const MESSAGE_PICKUP_STATUS_TYPE: &str = "https://didcomm.org/messagepickup/3.0/
 // when something has waited longer than a live push takes. The watch is
 // bounded — a backlog that redelivery does not clear (a frame this VTC cannot
 // unpack) is asked for less and less often instead of every 30 s forever —
-// and it reports when the mediator stops answering while the socket says it
-// is connected, which is the VTC receiving nothing. Frames the VTC cannot
-// unpack are deleted by `run_unprocessable_quarantine`, each named in a
-// warning, so they stop counting against their sender's queue.
+// and when the mediator stops answering while the socket says it is
+// connected, which is the VTC receiving nothing, it reconnects the socket
+// (bounded by a `ReconnectGovernor`). Frames the VTC cannot unpack are deleted
+// by the messaging SDK (`with_delete_unprocessable`), which keeps one sent to
+// a key the VTC has not loaded; the VTC only counts them.
 
-/// Capacity of the SDK's unprocessable-frame channel. Reports only — a lagging
-/// reader loses a report, never a frame (the frame stays at the mediator and
-/// is reported again on its next delivery).
+/// Capacity of the SDK's unprocessable-frame channel. Reports only — the SDK
+/// decides each frame's fate whether or not anyone reads this, and a lagging
+/// reader still counts what it missed.
 const UNPROCESSABLE_CHANNEL_CAPACITY: usize = 64;
 
 /// The VTC's live messaging handle, published into
@@ -212,11 +213,15 @@ async fn build_messaging(
     // Rev 3 §7.2.2 — silently drops their traffic (and its own replies) until
     // each re-handshakes. Only the `tsp` build has a relationship store to
     // configure; the shared adapter lives in `vti_common::relationship_store`.
-    // Frames the SDK cannot unpack are reported here, so the VTC can name and
-    // delete them (`run_unprocessable_quarantine`). Without a channel they are
-    // only logged, and stay in the inbox counting against their sender.
-    let atm_config_builder =
-        ATMConfig::builder().with_unprocessable_message_channel(UNPROCESSABLE_CHANNEL_CAPACITY);
+    // Frames the SDK cannot unpack are deleted by the SDK itself — the one
+    // owner of that decision (see `vti_common::inbox`): at once when the bytes
+    // are bad, after an hour of repeats when the failure looked transient, and
+    // never when the frame was sent to a key the VTC has not loaded. Stated
+    // here rather than left to the default because the VTC relies on it. The
+    // channel only feeds the count `/diagnostics` reports.
+    let atm_config_builder = ATMConfig::builder()
+        .with_delete_unprocessable(true)
+        .with_unprocessable_message_channel(UNPROCESSABLE_CHANNEL_CAPACITY);
     #[cfg(feature = "tsp")]
     let atm_config_builder = atm_config_builder.with_relationship_store(
         vti_common::relationship_store::build_relationship_store(tsp_relationships_ks.clone()),
@@ -593,22 +598,26 @@ pub async fn run_didcomm_service(
     }
 
     // Collect what live delivery missed, without waiting for a reconnect
-    // (VTI-50), and report when nothing is being delivered at all. The VTC
-    // keeps watching rather than tearing its session down: its one socket is
-    // published set-once in `state.didcomm`, and the SDK transport already
-    // reconnects (and so re-registers for live delivery) on every token
-    // refresh, which bounds a lost registration to one refresh cycle.
+    // (VTI-50), and recover when nothing is being delivered at all.
+    //
+    // The VTC cannot tear its session down: its one socket is published
+    // set-once in `state.didcomm`. Until now that left a dead receive leg to
+    // the SDK transport's own reconnect on token refresh, ~12 minutes away.
+    // The watch now reconnects the socket itself (`reconnect_websocket`, which
+    // re-registers for live delivery and redelivers the inbox) — at most once
+    // per `RECONNECT_MIN_INTERVAL`, backing off while it does not help, and
+    // never escalating, because there is no supervisor to rebuild a session.
     let catch_up = tokio::spawn(vti_common::inbox::run_inbox_watch(
         atm.clone(),
         profile.clone(),
         service.primary_transport().map(|t| t.connection_state()),
         inbox.clone(),
-        false,
+        Arc::new(vti_common::inbox::ReconnectGovernor::new(
+            vti_common::inbox::Escalation::Never,
+        )),
     ));
-    let quarantine = atm.get_unprocessable_message_channel().map(|rx| {
-        tokio::spawn(vti_common::inbox::run_unprocessable_quarantine(
-            atm.clone(),
-            profile.clone(),
+    let unprocessable = atm.get_unprocessable_message_channel().map(|rx| {
+        tokio::spawn(vti_common::inbox::run_unprocessable_report(
             rx,
             inbox.clone(),
         ))
@@ -654,8 +663,8 @@ pub async fn run_didcomm_service(
     .await;
 
     catch_up.abort();
-    if let Some(quarantine) = quarantine {
-        quarantine.abort();
+    if let Some(unprocessable) = unprocessable {
+        unprocessable.abort();
     }
     info!("VTC messaging stopped");
 }

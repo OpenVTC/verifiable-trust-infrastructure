@@ -2457,8 +2457,16 @@ impl MockVta {
                 shutdown.clone(),
             );
             async move {
-                crate::messaging::service::run_inbound_loop(messaging, state, vta_did, shutdown)
-                    .await;
+                crate::messaging::service::run_inbound_loop(
+                    messaging,
+                    state,
+                    vta_did,
+                    shutdown,
+                    Arc::new(vti_common::inbox::ReconnectGovernor::new(
+                        vti_common::inbox::Escalation::EndSession,
+                    )),
+                )
+                .await;
             }
         });
 

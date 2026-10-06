@@ -123,8 +123,11 @@ pub struct DiagnosticsResponse {
     /// which `messaging_status` (a socket signal) cannot see. A connected
     /// socket whose mediator has stopped delivering to it reads `notDelivering`
     /// here; a backlog redelivery does not clear (frames the VTC cannot unpack)
-    /// reads `backlogged` with its age. `None` before messaging has started or
-    /// when it is unconfigured.
+    /// reads `backlogged` with its age. The reconnects the VTC asked for to
+    /// recover are counted here, and `receive` is the messaging SDK's own view
+    /// of the socket's receive side (last data frame, a stalled consumer, its
+    /// probe, frames it deleted or kept). `None` before messaging has started
+    /// or when it is unconfigured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inbox_collection: Option<vti_common::inbox::InboxHealth>,
     /// How this VTC reaches its **trust registry**: its DID, the protocols the
