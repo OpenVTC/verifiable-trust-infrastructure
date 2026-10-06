@@ -1455,7 +1455,7 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/InboxHealth",
-                "description": "Whether the VTC is **collecting** its mediator inbox — the receive leg,\nwhich `messaging_status` (a socket signal) cannot see. A connected\nsocket whose mediator has stopped delivering to it reads `notDelivering`\nhere; a backlog redelivery does not clear (frames the VTC cannot unpack)\nreads `backlogged` with its age. `None` before messaging has started or\nwhen it is unconfigured."
+                "description": "Whether the VTC is **collecting** its mediator inbox — the receive leg,\nwhich `messaging_status` (a socket signal) cannot see. A connected\nsocket whose mediator has stopped delivering to it reads `notDelivering`\nhere; a backlog redelivery does not clear (frames the VTC cannot unpack)\nreads `backlogged` with its age. The reconnects the VTC asked for to\nrecover are counted here, and `receive` is the messaging SDK's own view\nof the socket's receive side (last data frame, a stalled consumer, its\nprobe, frames it deleted or kept). `None` before messaging has started\nor when it is unconfigured."
               },
               {
                 "type": "null"
@@ -3556,7 +3556,7 @@
           "unansweredStatusRequests",
           "unproductiveRedeliveries",
           "unprocessableSeen",
-          "unprocessableDeleted"
+          "reconnectsRequested"
         ],
         "properties": {
           "lastAnsweredAt": {
@@ -3568,6 +3568,15 @@
             "description": "Unix seconds of the last answered status request.",
             "minimum": 0
           },
+          "lastReconnectAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds of the last of them.",
+            "minimum": 0
+          },
           "longestWaitedSecs": {
             "type": [
               "integer",
@@ -3575,6 +3584,32 @@
             ],
             "format": "int64",
             "description": "Age of the oldest of them, in seconds.",
+            "minimum": 0
+          },
+          "nextReconnectNotBefore": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds before which no further reconnect will be asked for\n([`ReconnectGovernor`]). `None` until the first.",
+            "minimum": 0
+          },
+          "receive": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReceiveLegHealth",
+                "description": "The messaging SDK's own view of the websocket's receive side, read when\nthe snapshot is taken. `None` when no websocket transport is running."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reconnectsRequested": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Socket reconnects the watch asked for because the receive leg was not\ndelivering, since start. The SDK's own probe reconnects are counted\nseparately, in [`ReceiveLegHealth::probe_reconnects`].",
             "minimum": 0
           },
           "state": {
@@ -3586,16 +3621,10 @@
             "description": "Status requests in a row that went unanswered while connected.",
             "minimum": 0
           },
-          "unprocessableDeleted": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Of those, the ones deleted from the mediator.",
-            "minimum": 0
-          },
           "unprocessableSeen": {
             "type": "integer",
             "format": "int64",
-            "description": "Inbound frames this node could not unpack, since start.",
+            "description": "Inbound frames the messaging SDK reported it could not unpack, since\nstart — on the live stream and on a pickup drain. Whether each was\ndeleted is the SDK's decision; its count is\n[`ReceiveLegHealth::unprocessable_deleted`].",
             "minimum": 0
           },
           "unproductiveRedeliveries": {
@@ -4880,6 +4909,69 @@
               "$ref": "#/components/schemas/TransportStatus"
             },
             "description": "How to reach this community, and whether each route currently works.\n\nEvery protocol is listed, each carrying `advertised` (the DID document\noffers it) and `serviceable` (this VTC can answer on it right now).\nReachable means both.\n\n**The DID document remains authoritative.** This is a *view* of it,\nresolved at request time, published so a visitor or a monitor can\nvalidate connectivity without resolving the DID themselves — never an\nindependent declaration. A client choosing a transport must still match\non the document's service `type`; if the two ever disagree, the document\nwins and this field is the thing that is wrong.\n\nEmpty when the community's own DID could not be resolved — reported as\nunknown rather than as \"advertises nothing\", which would be a lie a\ncaller might act on."
+          }
+        }
+      },
+      "ReceiveLegHealth": {
+        "type": "object",
+        "description": "The messaging SDK's [`ReceiveHealth`], as a health endpoint reports it.\n\nA mirror rather than the SDK type itself because it is a wire shape: it is\nserialised, documented in the VTC's OpenAPI document and generated into the\nadmin console's types, and an SDK field added later must not change that\ncontract without a change here. Times are Unix seconds.",
+        "required": [
+          "heldFrames",
+          "probeReconnects",
+          "unprocessableDeleted",
+          "unprocessableRetained"
+        ],
+        "properties": {
+          "consumerStalledSince": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Set while frames have been held and not taken for longer than the SDK's\nstall threshold: this node is not reading, so nothing is being deleted\nat the mediator. A reconnect does not cure this.",
+            "minimum": 0
+          },
+          "heldFrames": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Frames held by the transport waiting for this node to take them.",
+            "minimum": 0
+          },
+          "lastDataFrameAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the last data frame arrived on the socket (not a ping or pong,\nwhich prove the socket and nothing about delivery).",
+            "minimum": 0
+          },
+          "probeOutstandingSince": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Set while the SDK's receive-leg probe (a live-delivery request written\nafter inbound went quiet) is waiting for any frame to arrive.",
+            "minimum": 0
+          },
+          "probeReconnects": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Reconnects the SDK forced because its probe went unanswered.",
+            "minimum": 0
+          },
+          "unprocessableDeleted": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Frames the SDK could not unpack and deleted from the mediator, so they\nstop counting against their sender's queue.",
+            "minimum": 0
+          },
+          "unprocessableRetained": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Frames that failed to unpack transiently, or for want of this node's\nown key, and are being left at the mediator.",
+            "minimum": 0
           }
         }
       },

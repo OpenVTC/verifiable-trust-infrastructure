@@ -2537,6 +2537,13 @@ impl MessagingConnect {
         // blowing a 1-hour budget it exhausted six days ago.
         let mut window_started = tokio::time::Instant::now();
         let mut attempt: u32 = 0;
+        // What the inbox watch may do about a receive leg that stops
+        // delivering: reconnect the socket, or end the session so this loop
+        // rebuilds it. Held here, across sessions, so a rebuilt session keeps
+        // the same backoff instead of being allowed to reconnect at once.
+        let reconnects = std::sync::Arc::new(vti_common::inbox::ReconnectGovernor::new(
+            vti_common::inbox::Escalation::EndSession,
+        ));
 
         loop {
             if self.shutdown.is_cancelled() {
@@ -2563,6 +2570,7 @@ impl MessagingConnect {
                             self.app_state.clone(),
                             self.vta_did.clone(),
                             self.shutdown.clone(),
+                            reconnects.clone(),
                         )
                         .await;
 

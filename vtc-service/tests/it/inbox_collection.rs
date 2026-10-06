@@ -1,16 +1,19 @@
-//! A frame the VTC cannot unpack is deleted from its mediator inbox, and named.
+//! A frame the VTC cannot unpack is deleted from its mediator inbox — by the
+//! messaging SDK, once — and counted.
 //!
-//! What this pins: the messaging SDK reports a live frame it cannot unpack on
-//! its unprocessable channel and otherwise leaves it in the inbox. There it is
-//! redelivered on every catch-up for its whole life, and it counts against its
-//! **sender's** per-peer quota (`limits.queue.peer`) the whole time — so one
-//! unreadable frame becomes a sender that can no longer reach the VTC, and a
-//! catch-up loop that asks for redelivery every 30 s forever.
+//! What this pins: a frame left in the inbox is redelivered on every catch-up
+//! for its whole life, and it counts against its **sender's** per-peer quota
+//! (`limits.queue.peer`) the whole time — so one unreadable frame becomes a
+//! sender that can no longer reach the VTC.
 //!
-//! The VTC now deletes such a frame on its second delivery (the first may be a
-//! transient failure, and the catch-up is the retry), through the production
-//! listener (`run_didcomm_service`) on a real embedded mediator. Without the
-//! fix the three frames below are still waiting after the redelivery.
+//! From `affinidi-messaging-sdk` 0.33.2 the SDK's live stream deletes such a
+//! frame itself (`with_delete_unprocessable`), and the VTC only counts the
+//! SDK's reports; `vti_common::inbox` explains why there is one owner. The
+//! frames below are anoncrypt, which the VTC's unpack policy rejects, so the
+//! SDK deletes each on its first delivery, with no redelivery needed, through
+//! the production listener (`run_didcomm_service`) on a real embedded
+//! mediator. `/diagnostics` reports both halves: `unprocessableSeen` from the
+//! VTC and `receive.unprocessableDeleted` from the SDK.
 //!
 //! Requires `--features transport-harness`; CI runs it.
 
@@ -40,7 +43,7 @@ async fn eventually(limit: Duration, mut check: impl AsyncFnMut() -> bool) -> bo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_unreadable_frame_is_deleted_on_its_second_delivery() {
+async fn an_unreadable_frame_is_deleted_by_the_sdk_and_counted() {
     init_tracing();
     let t = MockVtcTransport::start().await;
     let vtc = t
@@ -56,31 +59,18 @@ async fn an_unreadable_frame_is_deleted_on_its_second_delivery() {
         t.client.send_unreadable(t.vtc_did()).await;
     }
 
-    // First delivery: reported and named, but kept — the failure might have
-    // been transient, and the catch-up's redelivery is the retry.
+    // Each is reported to the VTC, and deleted by the SDK on its first
+    // delivery: a policy rejection cannot become readable on a second one.
     assert!(
         eventually(Duration::from_secs(20), async || {
-            vtc.inbox.snapshot().unprocessable_seen >= FRAMES
+            let h = vtc.inbox.snapshot();
+            h.unprocessable_seen >= FRAMES
+                && h.receive
+                    .as_ref()
+                    .is_some_and(|r| r.unprocessable_deleted >= FRAMES)
         })
         .await,
-        "every unreadable frame was reported: {:?}",
-        vtc.inbox.snapshot()
-    );
-    assert_eq!(vtc.inbox.snapshot().unprocessable_deleted, 0);
-
-    // The redelivery the inbox watch asks for once a message has waited 30 s.
-    vtc.atm
-        .message_pickup()
-        .toggle_live_delivery(&vtc.profile, true)
-        .await
-        .expect("ask the mediator to redeliver the inbox");
-
-    assert!(
-        eventually(Duration::from_secs(20), async || {
-            vtc.inbox.snapshot().unprocessable_deleted >= FRAMES
-        })
-        .await,
-        "a frame that failed on two deliveries is deleted: {:?}",
+        "every unreadable frame was reported and deleted: {:?}",
         vtc.inbox.snapshot()
     );
 

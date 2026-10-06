@@ -71,9 +71,9 @@ pub struct VtaMessaging {
     pub uncollected: Arc<vti_common::inbox::UncollectedPeers>,
 }
 
-/// Capacity of the SDK's unprocessable-frame channel. Reports only — a lagging
-/// reader loses a report, never a frame (the frame stays at the mediator and is
-/// reported again on its next delivery).
+/// Capacity of the SDK's unprocessable-frame channel. Reports only — the SDK
+/// decides each frame's fate whether or not anyone reads this, and a lagging
+/// reader still counts what it missed.
 const UNPROCESSABLE_CHANNEL_CAPACITY: usize = 64;
 
 /// Build the delivery-layer [`MessagingService`] over a [`DidCommTransport`]
@@ -131,12 +131,15 @@ pub async fn build_messaging(
     // (design note `docs/05-design-notes/tsp-relationship-recovery.md`, D1). Only
     // the `tsp` build has a relationship store to configure; a DIDComm-only build
     // does not use the keyspace.
-    // Frames the SDK cannot unpack are reported on this channel so
-    // `run_unprocessable_quarantine` can name and delete them. Without it they
-    // are only logged, and stay in the inbox counting against their sender's
-    // per-peer quota for as long as they live.
-    let atm_config_builder =
-        ATMConfig::builder().with_unprocessable_message_channel(UNPROCESSABLE_CHANNEL_CAPACITY);
+    // Frames the SDK cannot unpack are deleted by the SDK itself — the one
+    // owner of that decision (see `vti_common::inbox`): at once when the bytes
+    // are bad, after an hour of repeats when the failure looked transient, and
+    // never when the frame was sent to a key the VTA has not loaded. Stated
+    // here rather than left to the default because the VTA relies on it. The
+    // channel only feeds the inbox health count.
+    let atm_config_builder = ATMConfig::builder()
+        .with_delete_unprocessable(true)
+        .with_unprocessable_message_channel(UNPROCESSABLE_CHANNEL_CAPACITY);
     #[cfg(feature = "tsp")]
     let atm_config_builder = atm_config_builder
         .with_relationship_store(Arc::new(
@@ -320,11 +323,16 @@ async fn connect_transport(
 /// authcrypt to the sender. TSP →
 /// [`super::tsp_inbound::dispatch_one`], sealing + routing the reply back over
 /// the same mediator socket.
+///
+/// `reconnects` bounds what the inbox watch does about a receive leg that is
+/// not delivering. It outlives the session (the supervisor holds it), so a
+/// rebuilt session inherits the backoff rather than starting a fresh budget.
 pub async fn run_inbound_loop(
     messaging: Arc<VtaMessaging>,
     app_state: AppState,
     vta_did: String,
     shutdown: CancellationToken,
+    reconnects: Arc<vti_common::inbox::ReconnectGovernor>,
 ) {
     // Handler state for the DIDComm dispatcher only — TSP's spine entry
     // (`tsp_inbound::dispatch_one`) takes `AppState` directly, so a TSP-only
@@ -368,10 +376,16 @@ pub async fn run_inbound_loop(
     // and a mediator that stopped delivering to a connected socket went
     // unnoticed while every peer's replies queued against this DID.
     //
-    // When the watch sees the receive leg dead it ends this session: the
-    // supervisor (`server::MessagingConnect`) then tears the socket down and
-    // reconnects, which re-registers it for live delivery and redelivers the
-    // stored inbox.
+    // When the watch sees the receive leg dead it first reconnects the socket
+    // (`reconnect_websocket`): that re-registers for live delivery and makes
+    // the mediator redeliver the inbox, and keeps this session — its published
+    // bridge, its in-memory TSP state, the requests in flight on other paths.
+    // Only when a reconnect did not help, or the transport would not take the
+    // request, does it end the session, so the supervisor
+    // (`server::MessagingConnect`) builds a new one. Ending the session used to
+    // be the only remedy, taken every time three checks in a row went
+    // unanswered — about every 90 s plus the supervisor's backoff, for as long
+    // as the mediator was not delivering. `reconnects` bounds both (R1.4).
     let mut watch = tokio::spawn(vti_common::inbox::run_inbox_watch(
         messaging.atm.clone(),
         messaging.profile.clone(),
@@ -380,12 +394,10 @@ pub async fn run_inbound_loop(
             .primary_transport()
             .map(|t| t.connection_state()),
         messaging.inbox.clone(),
-        true,
+        reconnects,
     ));
-    let quarantine = messaging.atm.get_unprocessable_message_channel().map(|rx| {
-        tokio::spawn(vti_common::inbox::run_unprocessable_quarantine(
-            messaging.atm.clone(),
-            messaging.profile.clone(),
+    let unprocessable = messaging.atm.get_unprocessable_message_channel().map(|rx| {
+        tokio::spawn(vti_common::inbox::run_unprocessable_report(
             rx,
             messaging.inbox.clone(),
         ))
@@ -396,8 +408,9 @@ pub async fn run_inbound_loop(
             exit = &mut watch => {
                 match exit {
                     Ok(vti_common::inbox::WatchExit::NotDelivering) => warn!(
-                        "ending the mediator session so it reconnects: the socket reports \
-                         connected but nothing is being delivered to it"
+                        "ending the mediator session so it is rebuilt: the socket reports \
+                         connected but nothing is being delivered to it, and reconnecting \
+                         the socket did not fix that"
                     ),
                     Err(e) => warn!(error = %e, "inbox watch ended unexpectedly; reconnecting"),
                 }
@@ -450,8 +463,8 @@ pub async fn run_inbound_loop(
         }
     }
     watch.abort();
-    if let Some(quarantine) = quarantine {
-        quarantine.abort();
+    if let Some(unprocessable) = unprocessable {
+        unprocessable.abort();
     }
     info!("VTA messaging stopped");
 }

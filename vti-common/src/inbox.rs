@@ -16,36 +16,50 @@
 //!   asked for again (the VTC's VTI-50 catch-up, now shared). A request that
 //!   goes **unanswered** while the socket reports connected is the receive leg
 //!   failing end to end — the reply rides the same live stream as every other
-//!   inbound message — and after [`UNANSWERED_ALARM`] in a row it is reported,
-//!   and optionally ends the session so the caller can reconnect.
+//!   inbound message — and after [`UNANSWERED_ALARM`] in a row it is reported
+//!   and the socket is reconnected ([`ATMProfile::reconnect_websocket`]),
+//!   at most once per [`RECONNECT_MIN_INTERVAL`] and backing off while
+//!   reconnects do not help ([`ReconnectGovernor`], R1.4).
 //! - The catch-up is **bounded** (R1.4). A message that survives a redelivery
 //!   is one the node cannot collect, and asking again every 30 s forever only
 //!   re-pushes it. The interval backs off to [`MAX_REDELIVERY_BACKOFF`] and the
 //!   condition is reported once.
-//! - [`run_unprocessable_quarantine`] deletes frames this node cannot unpack.
-//!   The messaging SDK reports them on its unprocessable channel and otherwise
-//!   leaves them in the inbox, where they are redelivered on every catch-up and
-//!   count against their sender's quota indefinitely. Each one is named in a
-//!   WARN (sender, envelope, type, reason) and deleted on its second delivery.
+//! - [`InboxHealth`] carries the messaging SDK's own view of the receive side
+//!   ([`ReceiveLegHealth`]: last data frame, frames held for the application,
+//!   a stalled consumer, its probe, and the frames it could not unpack), so a
+//!   health endpoint shows both what the mediator says and what the socket saw.
+//!
+//! # Who deletes a frame this node cannot unpack
+//!
+//! The messaging SDK, and only the SDK. From `affinidi-messaging-sdk` 0.33.2
+//! its live stream deletes a DIDComm frame that cannot be unpacked by the same
+//! rule its pickup drain already used: a failure that is a property of the
+//! bytes is deleted at once, a transient one only after three failures over at
+//! least an hour, and one for want of this node's own key (`SecretsError`)
+//! **never**. TSP frames were already deleted by its TSP adapter. This module
+//! used to delete such frames itself on their second delivery, which would now
+//! be a second owner with a weaker rule — it would delete a `SecretsError`
+//! frame, and a transient failure after a minute. So
+//! [`run_unprocessable_report`] only counts what the SDK reports; it is given
+//! no handle that could delete anything.
 //!
 //! Peers that do the same to *us* are handled by [`UncollectedPeers`]: a send
 //! refused `limits.queue.peer` means the recipient is not collecting, and it is
 //! reported once per recipient rather than once per reply.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use affinidi_messaging_core::{ConnState, MessagingError, QueueFullGate};
 use affinidi_tdk::messaging::ATM;
+use affinidi_tdk::messaging::ReceiveHealth;
 use affinidi_tdk::messaging::errors::ATMError;
 use affinidi_tdk::messaging::profiles::ATMProfile;
 use affinidi_tdk::messaging::protocols::message_pickup::{
     MessagePickupStatusReply, UnprocessableMessage,
 };
-use base64::Engine;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, watch};
 use tracing::{debug, info, warn};
 
@@ -115,17 +129,80 @@ pub struct InboxHealth {
     pub unproductive_redeliveries: u32,
     /// Unix seconds of the last answered status request.
     pub last_answered_at: Option<u64>,
-    /// Inbound frames this node could not unpack, since start.
+    /// Inbound frames the messaging SDK reported it could not unpack, since
+    /// start — on the live stream and on a pickup drain. Whether each was
+    /// deleted is the SDK's decision; its count is
+    /// [`ReceiveLegHealth::unprocessable_deleted`].
     pub unprocessable_seen: u64,
-    /// Of those, the ones deleted from the mediator.
+    /// Socket reconnects the watch asked for because the receive leg was not
+    /// delivering, since start. The SDK's own probe reconnects are counted
+    /// separately, in [`ReceiveLegHealth::probe_reconnects`].
+    pub reconnects_requested: u64,
+    /// Unix seconds of the last of them.
+    pub last_reconnect_at: Option<u64>,
+    /// Unix seconds before which no further reconnect will be asked for
+    /// ([`ReconnectGovernor`]). `None` until the first.
+    pub next_reconnect_not_before: Option<u64>,
+    /// The messaging SDK's own view of the websocket's receive side, read when
+    /// the snapshot is taken. `None` when no websocket transport is running.
+    pub receive: Option<ReceiveLegHealth>,
+}
+
+/// The messaging SDK's [`ReceiveHealth`], as a health endpoint reports it.
+///
+/// A mirror rather than the SDK type itself because it is a wire shape: it is
+/// serialised, documented in the VTC's OpenAPI document and generated into the
+/// admin console's types, and an SDK field added later must not change that
+/// contract without a change here. Times are Unix seconds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct ReceiveLegHealth {
+    /// When the last data frame arrived on the socket (not a ping or pong,
+    /// which prove the socket and nothing about delivery).
+    pub last_data_frame_at: Option<u64>,
+    /// Frames held by the transport waiting for this node to take them.
+    pub held_frames: u32,
+    /// Set while frames have been held and not taken for longer than the SDK's
+    /// stall threshold: this node is not reading, so nothing is being deleted
+    /// at the mediator. A reconnect does not cure this.
+    pub consumer_stalled_since: Option<u64>,
+    /// Set while the SDK's receive-leg probe (a live-delivery request written
+    /// after inbound went quiet) is waiting for any frame to arrive.
+    pub probe_outstanding_since: Option<u64>,
+    /// Reconnects the SDK forced because its probe went unanswered.
+    pub probe_reconnects: u64,
+    /// Frames the SDK could not unpack and deleted from the mediator, so they
+    /// stop counting against their sender's queue.
     pub unprocessable_deleted: u64,
+    /// Frames that failed to unpack transiently, or for want of this node's
+    /// own key, and are being left at the mediator.
+    pub unprocessable_retained: u32,
+}
+
+impl From<&ReceiveHealth> for ReceiveLegHealth {
+    fn from(h: &ReceiveHealth) -> Self {
+        Self {
+            last_data_frame_at: h.last_data_frame_at,
+            held_frames: h.held_frames,
+            consumer_stalled_since: h.consumer_stalled_since,
+            probe_outstanding_since: h.probe_outstanding_since,
+            probe_reconnects: h.probe_reconnects,
+            unprocessable_deleted: h.unprocessable_deleted,
+            unprocessable_retained: h.unprocessable_retained,
+        }
+    }
 }
 
 /// A shared handle on [`InboxHealth`], written by [`run_inbox_watch`] and
-/// [`run_unprocessable_quarantine`] and read by health endpoints.
+/// [`run_unprocessable_report`] and read by health endpoints.
 #[derive(Clone, Default)]
 pub struct InboxWatch {
     inner: Arc<Mutex<InboxHealth>>,
+    /// The SDK's receive-health channel, read at snapshot time so the report
+    /// is never older than the SDK's own last publish.
+    receive: Arc<Mutex<Option<watch::Receiver<ReceiveHealth>>>>,
 }
 
 impl InboxWatch {
@@ -133,9 +210,22 @@ impl InboxWatch {
         Self::default()
     }
 
-    /// The latest observation.
+    /// The latest observation, with the SDK's receive-side view as it stands.
     pub fn snapshot(&self) -> InboxHealth {
-        self.inner.lock().expect("inbox health mutex").clone()
+        let mut health = self.inner.lock().expect("inbox health mutex").clone();
+        health.receive = self
+            .receive
+            .lock()
+            .expect("receive health mutex")
+            .as_ref()
+            .map(|rx| ReceiveLegHealth::from(&*rx.borrow()));
+        health
+    }
+
+    /// Report the SDK's receive-side view ([`ATMProfile::receive_health`])
+    /// alongside the watch's own. [`run_inbox_watch`] does this itself.
+    pub fn attach_receive_health(&self, rx: watch::Receiver<ReceiveHealth>) {
+        *self.receive.lock().expect("receive health mutex") = Some(rx);
     }
 
     fn update(&self, f: impl FnOnce(&mut InboxHealth)) {
@@ -316,6 +406,14 @@ impl CatchUp {
         self.unproductive
     }
 
+    /// Start counting unanswered requests afresh, on a socket just reconnected.
+    /// The new socket earns its own [`UNANSWERED_ALARM`] strikes, and a
+    /// receive leg still dead after a reconnect is reported again.
+    pub fn restart_receive_leg(&mut self) {
+        self.unanswered = 0;
+        self.not_delivering_reported = false;
+    }
+
     /// Whether the stuck-backlog warning is due now (once per episode, from
     /// the second unproductive redelivery).
     fn take_stuck_report(&mut self) -> bool {
@@ -339,9 +437,164 @@ impl CatchUp {
 /// How [`run_inbox_watch`] ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatchExit {
-    /// The receive leg stopped delivering and the caller asked to be told, so
-    /// it can tear the session down and reconnect.
+    /// The receive leg stopped delivering, reconnecting the socket did not
+    /// restore it (or the socket could not be asked to), and the caller's
+    /// [`Escalation::EndSession`] asked to be told, so it can tear the session
+    /// down and build it again.
     NotDelivering,
+}
+
+// ─── receive-leg reconnects ──────────────────────────────────────────────
+
+/// The fewest minutes between two reconnects the watch asks for. A reconnect
+/// drops every request in flight on the socket and makes the mediator
+/// redeliver the whole inbox, so it is not free; and the SDK's own receive
+/// probe (60 s idle, 30 s to answer) usually reconnects first.
+pub const RECONNECT_MIN_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+/// The longest wait between reconnects that keep failing to restore delivery.
+pub const RECONNECT_MAX_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// How long asking the transport to reconnect may take. The request is a
+/// command queued to the transport's task; a task that does not take it in
+/// this long is wedged, which a reconnect request cannot fix (R1.2).
+pub const RECONNECT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Up to this fraction of the wait is added at random, so nodes whose receive
+/// legs died together (a mediator restart) do not reconnect together.
+const RECONNECT_JITTER: f64 = 0.1;
+
+/// The wait after `unproductive` remedies in a row that did not restore
+/// delivery: [`RECONNECT_MIN_INTERVAL`] after the first, doubling to
+/// [`RECONNECT_MAX_INTERVAL`].
+pub fn reconnect_backoff(unproductive: u32) -> Duration {
+    let factor = 1u32
+        .checked_shl(unproductive.saturating_sub(1))
+        .unwrap_or(u32::MAX);
+    RECONNECT_MIN_INTERVAL
+        .saturating_mul(factor)
+        .min(RECONNECT_MAX_INTERVAL)
+}
+
+/// What a node does when a reconnect has not restored delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Escalation {
+    /// Keep reconnecting the socket, backing off. For a node whose messaging
+    /// session is published once and cannot be rebuilt (the VTC).
+    Never,
+    /// Alternate: when a reconnect has not helped, the next remedy is to end
+    /// the session ([`WatchExit::NotDelivering`]) so the caller rebuilds it —
+    /// new ATM, new authentication — and the one after that is a reconnect
+    /// again. For a node with a session supervisor (the VTA).
+    EndSession,
+}
+
+/// What to do about a receive leg that is not delivering, now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Remedy {
+    /// Drop the socket and connect again ([`ATMProfile::reconnect_websocket`]).
+    Reconnect,
+    /// End the session so its supervisor rebuilds it.
+    EndSession,
+    /// The last remedy was too recent; report and wait.
+    Wait,
+}
+
+#[derive(Debug, Default)]
+struct GovernorState {
+    unproductive: u32,
+    last_at: Option<Instant>,
+    not_before: Option<Instant>,
+    last_remedy: Option<Remedy>,
+    requested: u64,
+}
+
+/// Bounds the reconnects [`run_inbox_watch`] asks for (R1.4): at most one per
+/// [`RECONNECT_MIN_INTERVAL`], backing off to [`RECONNECT_MAX_INTERVAL`] while
+/// they do not restore delivery, with jitter.
+///
+/// A reconnect that works — the mediator answers again — resets the backoff
+/// but not the floor, so a receive leg that keeps dying a minute after each
+/// reconnect is still reconnected at most every [`RECONNECT_MIN_INTERVAL`].
+///
+/// Shared (`Arc`) so a node that rebuilds its session keeps the same budget
+/// across sessions: a fresh session is not a reason to reconnect sooner.
+#[derive(Debug)]
+pub struct ReconnectGovernor {
+    escalation: Escalation,
+    state: Mutex<GovernorState>,
+}
+
+impl ReconnectGovernor {
+    pub fn new(escalation: Escalation) -> Self {
+        Self {
+            escalation,
+            state: Mutex::default(),
+        }
+    }
+
+    pub fn escalation(&self) -> Escalation {
+        self.escalation
+    }
+
+    /// The receive leg is not delivering at `now`. Say what to do, and if it is
+    /// a remedy, record it. `jitter` is a sample in `[0, 1]`.
+    pub fn decide(&self, now: Instant, jitter: f64) -> Remedy {
+        let mut s = self.state.lock().expect("reconnect governor mutex");
+        if s.not_before.is_some_and(|not_before| now < not_before) {
+            return Remedy::Wait;
+        }
+        let remedy = match (self.escalation, s.last_remedy) {
+            (Escalation::EndSession, Some(Remedy::Reconnect)) => Remedy::EndSession,
+            _ => Remedy::Reconnect,
+        };
+        s.unproductive = s.unproductive.saturating_add(1);
+        s.requested = s.requested.saturating_add(1);
+        s.last_at = Some(now);
+        s.last_remedy = Some(remedy);
+        let wait = reconnect_backoff(s.unproductive);
+        let spread = wait.mul_f64(RECONNECT_JITTER * jitter.clamp(0.0, 1.0));
+        s.not_before = Some(now + wait + spread);
+        remedy
+    }
+
+    /// The receive leg delivered again: the remedies so far worked. The next
+    /// episode starts from the cheapest remedy and the shortest wait, but no
+    /// sooner than [`RECONNECT_MIN_INTERVAL`] after the last one.
+    pub fn recovered(&self) {
+        let mut s = self.state.lock().expect("reconnect governor mutex");
+        if s.unproductive == 0 {
+            return;
+        }
+        s.unproductive = 0;
+        s.last_remedy = None;
+        s.not_before = s.last_at.map(|last| last + RECONNECT_MIN_INTERVAL);
+    }
+
+    /// Remedies asked for since start (reconnects and session ends).
+    pub fn requested(&self) -> u64 {
+        self.state
+            .lock()
+            .expect("reconnect governor mutex")
+            .requested
+    }
+
+    /// When the next remedy may be asked for, if one is being held off.
+    pub fn not_before(&self) -> Option<Instant> {
+        self.state
+            .lock()
+            .expect("reconnect governor mutex")
+            .not_before
+    }
+}
+
+/// `instant` as Unix seconds, by its distance from `now`.
+fn unix_at(instant: Instant, now: Instant, unix_now: u64) -> u64 {
+    if instant >= now {
+        unix_now.saturating_add(instant.duration_since(now).as_secs())
+    } else {
+        unix_now.saturating_sub(now.duration_since(instant).as_secs())
+    }
 }
 
 fn unix_now() -> u64 {
@@ -362,16 +615,27 @@ fn unix_now() -> u64 {
 /// inbound path (`DidCommTransport` → `MessagingService` → dispatch → ack) —
 /// no second socket, no delivery request bypassing the delivery layer's ack.
 ///
-/// With `exit_when_not_delivering`, returns [`WatchExit::NotDelivering`] once
-/// [`UNANSWERED_ALARM`] requests in a row go unanswered while connected, so the
-/// caller can reconnect; otherwise it keeps watching and reports.
+/// Once [`UNANSWERED_ALARM`] requests in a row go unanswered while connected,
+/// the receive leg is not delivering, and `reconnects` says what to do about
+/// it: reconnect the socket ([`ATMProfile::reconnect_websocket`], which
+/// re-registers for live delivery and redelivers the inbox), wait because the
+/// last remedy was too recent, or — under [`Escalation::EndSession`], when a
+/// reconnect has not helped or the transport would not take the request —
+/// return [`WatchExit::NotDelivering`] so the caller rebuilds the session.
+/// Under [`Escalation::Never`] it never returns.
+///
+/// The SDK's receive-side view ([`ATMProfile::receive_health`]) is attached
+/// to `health` here, so it is reported alongside.
 pub async fn run_inbox_watch(
     atm: Arc<ATM>,
     profile: Arc<ATMProfile>,
     conn: Option<watch::Receiver<ConnState>>,
     health: InboxWatch,
-    exit_when_not_delivering: bool,
+    reconnects: Arc<ReconnectGovernor>,
 ) -> WatchExit {
+    if let Some(rx) = profile.receive_health().await {
+        health.attach_receive_health(rx);
+    }
     let mut tick = tokio::time::interval(CHECK_INTERVAL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // The first tick fires at once; the connect has just redelivered the inbox.
@@ -403,6 +667,9 @@ pub async fn run_inbox_watch(
         let was_not_delivering = catch_up.unanswered() >= UNANSWERED_ALARM;
         let now = unix_now();
         let step = catch_up.step(probe, now);
+        if matches!(probe, Probe::Answered(_) | Probe::Refused) {
+            reconnects.recovered();
+        }
 
         health.update(|h| {
             h.unanswered_status_requests = catch_up.unanswered();
@@ -451,8 +718,72 @@ pub async fn run_inbox_watch(
                          will be refused `limits.queue.peer` once their queue to it fills"
                     );
                 }
-                if exit_when_not_delivering {
-                    return WatchExit::NotDelivering;
+                let at = Instant::now();
+                let remedy = reconnects.decide(at, rand::random::<f64>());
+                let not_before = reconnects
+                    .not_before()
+                    .map(|instant| unix_at(instant, at, now));
+                health.update(|h| {
+                    h.next_reconnect_not_before = not_before;
+                    if remedy != Remedy::Wait {
+                        h.reconnects_requested = h.reconnects_requested.saturating_add(1);
+                        h.last_reconnect_at = Some(now);
+                    }
+                });
+                match remedy {
+                    Remedy::Wait => {}
+                    Remedy::EndSession => {
+                        warn!(
+                            profile = %alias,
+                            "a reconnect did not restore delivery; ending the messaging \
+                             session so it is rebuilt"
+                        );
+                        return WatchExit::NotDelivering;
+                    }
+                    Remedy::Reconnect => {
+                        catch_up.restart_receive_leg();
+                        let failure = match tokio::time::timeout(
+                            RECONNECT_REQUEST_TIMEOUT,
+                            profile.reconnect_websocket(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(())) => {
+                                warn!(
+                                    profile = %alias,
+                                    next_not_before = ?not_before,
+                                    "reconnecting the mediator socket so it re-registers for \
+                                     live delivery and the mediator redelivers the inbox"
+                                );
+                                None
+                            }
+                            Ok(Err(e)) => Some(format!(
+                                "the messaging SDK has no websocket transport to reconnect \
+                                 for this profile: {e}"
+                            )),
+                            Err(_) => Some(format!(
+                                "the websocket transport did not take a reconnect request \
+                                 within {}s — its task is not running its command loop",
+                                RECONNECT_REQUEST_TIMEOUT.as_secs()
+                            )),
+                        };
+                        if let Some(failure) = failure {
+                            if reconnects.escalation() == Escalation::EndSession {
+                                warn!(
+                                    profile = %alias,
+                                    "could not reconnect the mediator socket ({failure}); \
+                                     ending the messaging session so it is rebuilt"
+                                );
+                                return WatchExit::NotDelivering;
+                            }
+                            warn!(
+                                profile = %alias,
+                                next_not_before = ?not_before,
+                                "could not reconnect the mediator socket ({failure}); the \
+                                 receive leg stays down until the transport reconnects itself"
+                            );
+                        }
+                    }
                 }
             }
             Step::Redeliver => {
@@ -465,8 +796,9 @@ pub async fn run_inbox_watch(
                             redeliveries = catch_up.unproductive(),
                             next_in_secs = redelivery_backoff(catch_up.unproductive()).as_secs(),
                             "messages are waiting in the mediator inbox that redelivery does not \
-                             collect — most likely frames this node cannot unpack (see the \
-                             'cannot unpack' warnings, which name their senders); backing off \
+                             collect — most likely frames this node cannot unpack and the \
+                             messaging SDK is keeping (see its 'could not unpack' warnings, \
+                             which name their senders and why each is kept); backing off \
                              redelivery requests"
                         );
                     } else {
@@ -497,268 +829,39 @@ pub async fn run_inbox_watch(
 
 // ─── unprocessable frames ────────────────────────────────────────────────
 
-/// Deliveries of one unprocessable frame before it is deleted. Two, not one:
-/// a failure on the first delivery may be transient — the sender's DID did not
-/// resolve for a moment — and the catch-up redelivers within a minute, which
-/// is the retry. A frame that fails twice, a catch-up interval apart, is not
-/// going to unpack.
-pub const UNPROCESSABLE_DELETE_AFTER: u32 = 2;
-
-/// Frames remembered for the sighting count. Bounds the memory a hostile
-/// sender can take here; the oldest is forgotten first.
-const UNPROCESSABLE_CAPACITY: usize = 1024;
-
-/// How long a sighting is remembered.
-const UNPROCESSABLE_TTL: Duration = Duration::from_secs(60 * 60);
-
-/// How long one delete may take to enqueue.
-const DELETE_ENQUEUE_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// What can be said about a frame without decrypting it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FrameDescription {
-    /// `authcrypt`, `anoncrypt`, `signed`, `plaintext`, or `unknown`.
-    pub envelope: &'static str,
-    /// The sender's key id or DID, where the envelope names one. Unverified —
-    /// it is the claim the frame makes, which is the point: it says whose queue
-    /// the frame was counting against.
-    pub sender: Option<String>,
-    /// The message type, readable only for plaintext and the JWE `typ`.
-    pub message_type: Option<String>,
-}
-
-fn b64_json(segment: &str) -> Option<serde_json::Value> {
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(segment.trim_end_matches('='))
-        .ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
-fn str_field(value: &serde_json::Value, key: &str) -> Option<String> {
-    value.get(key).and_then(|v| v.as_str()).map(str::to_string)
-}
-
-/// Describe a DIDComm frame from its outer envelope alone.
-pub fn describe_frame(raw: &str) -> FrameDescription {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
-        return FrameDescription {
-            envelope: "unknown",
-            ..Default::default()
-        };
-    };
-    // JWE (authcrypt / anoncrypt).
-    if value.get("ciphertext").is_some() {
-        let header = value
-            .get("protected")
-            .and_then(|p| p.as_str())
-            .and_then(b64_json)
-            .unwrap_or_default();
-        let alg = str_field(&header, "alg").unwrap_or_default();
-        let envelope = if alg.starts_with("ECDH-1PU") {
-            "authcrypt"
-        } else if alg.starts_with("ECDH-ES") {
-            "anoncrypt"
-        } else {
-            "unknown"
-        };
-        let sender = str_field(&header, "skid").or_else(|| {
-            str_field(&header, "apu").and_then(|apu| {
-                base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .decode(apu.trim_end_matches('='))
-                    .ok()
-                    .and_then(|b| String::from_utf8(b).ok())
-            })
-        });
-        return FrameDescription {
-            envelope,
-            sender,
-            message_type: str_field(&header, "typ"),
-        };
-    }
-    // JWS (signed).
-    if value.get("signatures").is_some() || value.get("signature").is_some() {
-        let first = value
-            .get("signatures")
-            .and_then(|s| s.as_array())
-            .and_then(|a| a.first())
-            .cloned()
-            .unwrap_or_else(|| value.clone());
-        let sender = first
-            .get("header")
-            .and_then(|h| str_field(h, "kid"))
-            .or_else(|| {
-                first
-                    .get("protected")
-                    .and_then(|p| p.as_str())
-                    .and_then(b64_json)
-                    .and_then(|h| str_field(&h, "kid"))
-            });
-        return FrameDescription {
-            envelope: "signed",
-            sender,
-            message_type: None,
-        };
-    }
-    // Plaintext.
-    if value.get("type").is_some() || value.get("body").is_some() {
-        return FrameDescription {
-            envelope: "plaintext",
-            sender: str_field(&value, "from"),
-            message_type: str_field(&value, "type"),
-        };
-    }
-    FrameDescription {
-        envelope: "unknown",
-        ..Default::default()
-    }
-}
-
-/// The mediator's id for a frame: the lowercase hex `sha256` of the bytes it
-/// stored and delivered.
-pub fn frame_id(raw: &str) -> String {
-    hex::encode(Sha256::digest(raw.as_bytes()))
-}
-
-/// Per-frame sighting counts, bounded in size and age.
-#[derive(Default)]
-pub struct Sightings {
-    counts: HashMap<String, (u32, Instant)>,
-    order: VecDeque<String>,
-}
-
-impl Sightings {
-    /// Record one delivery of `id` at `now` and return how many there have
-    /// been, this one included.
-    pub fn record(&mut self, id: &str, now: Instant) -> u32 {
-        self.expire(now);
-        if let Some((count, _)) = self.counts.get_mut(id) {
-            *count = count.saturating_add(1);
-            return *count;
-        }
-        self.counts.insert(id.to_string(), (1, now));
-        self.order.push_back(id.to_string());
-        while self.order.len() > UNPROCESSABLE_CAPACITY {
-            if let Some(evicted) = self.order.pop_front() {
-                self.counts.remove(&evicted);
-            }
-        }
-        1
-    }
-
-    /// Forget `id` (it has been deleted).
-    pub fn forget(&mut self, id: &str) {
-        self.counts.remove(id);
-        self.order.retain(|x| x != id);
-    }
-
-    fn expire(&mut self, now: Instant) {
-        while let Some(id) = self.order.front() {
-            match self.counts.get(id) {
-                Some((_, first)) if now.duration_since(*first) < UNPROCESSABLE_TTL => break,
-                _ => {
-                    let id = self.order.pop_front().expect("front was just observed");
-                    self.counts.remove(&id);
-                }
-            }
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.counts.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.counts.is_empty()
-    }
-}
-
-/// Delete inbound frames `profile` cannot unpack, reported on the SDK's
-/// unprocessable channel (`ATMConfigBuilder::with_unprocessable_message_channel`).
+/// Count the inbound frames the messaging SDK reports it could not unpack, on
+/// its unprocessable channel (`ATMConfigBuilder::with_unprocessable_message_channel`).
 ///
-/// # The tradeoff (R1.6)
-///
-/// This deletes a message that was never handled — ack-before-handoff,
-/// deliberately, as a poison-message defence. Left in the inbox, a frame that
-/// cannot be unpacked is redelivered on every catch-up for its whole life and
-/// counts against its sender's per-peer quota the whole time, so one bad frame
-/// becomes a sender who can no longer reach this node. A transient failure (the
-/// sender's DID briefly unresolvable) is not treated as poison: the first
-/// delivery is only reported, and the frame is deleted on its
-/// [`UNPROCESSABLE_DELETE_AFTER`]th, a catch-up interval or more later.
-pub async fn run_unprocessable_quarantine(
-    atm: Arc<ATM>,
-    profile: Arc<ATMProfile>,
+/// Reporting only. Deleting them is the SDK's (`with_delete_unprocessable`,
+/// on by default from 0.33.2; see the module documentation for why there is
+/// one owner). This function is not given the ATM or the profile, so it cannot
+/// delete anything — in particular not a frame sent to a key this node has not
+/// loaded (`SecretsError`), which the SDK keeps on purpose. The SDK names each
+/// frame in its own WARN; here it is counted, and logged at debug.
+pub async fn run_unprocessable_report(
     mut rx: broadcast::Receiver<UnprocessableMessage>,
     health: InboxWatch,
 ) {
-    let mut sightings = Sightings::default();
     loop {
-        let frame = match rx.recv().await {
-            Ok(frame) => frame,
-            Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                warn!(
-                    skipped,
-                    "unprocessable-frame reports were dropped before they could be counted; \
-                     those frames stay in the mediator inbox until they are redelivered"
+        match rx.recv().await {
+            Ok(frame) => {
+                health.update(|h| h.unprocessable_seen = h.unprocessable_seen.saturating_add(1));
+                debug!(
+                    frame = frame.attachment_id.as_deref().unwrap_or("<no id>"),
+                    reason = %frame.reason,
+                    "the messaging SDK could not unpack an inbound message"
                 );
-                continue;
+            }
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                health.update(|h| {
+                    h.unprocessable_seen = h.unprocessable_seen.saturating_add(skipped)
+                });
+                debug!(
+                    skipped,
+                    "unprocessable-frame reports lagged; counted, not described"
+                );
             }
             Err(broadcast::error::RecvError::Closed) => return,
-        };
-        let id = frame
-            .attachment_id
-            .clone()
-            .unwrap_or_else(|| frame_id(&frame.raw));
-        let described = describe_frame(&frame.raw);
-        let seen = sightings.record(&id, Instant::now());
-        health.update(|h| h.unprocessable_seen = h.unprocessable_seen.saturating_add(1));
-
-        if seen < UNPROCESSABLE_DELETE_AFTER {
-            warn!(
-                frame = %id,
-                sender = described.sender.as_deref().unwrap_or("<not named>"),
-                envelope = described.envelope,
-                message_type = described.message_type.as_deref().unwrap_or("<encrypted>"),
-                reason = %frame.reason,
-                "cannot unpack an inbound message; leaving it at the mediator for one more \
-                 delivery in case the failure is transient"
-            );
-            continue;
-        }
-
-        match tokio::time::timeout(
-            DELETE_ENQUEUE_TIMEOUT,
-            atm.delete_message_background(&profile, &id),
-        )
-        .await
-        {
-            Ok(Ok(())) => {
-                sightings.forget(&id);
-                health.update(|h| {
-                    h.unprocessable_deleted = h.unprocessable_deleted.saturating_add(1)
-                });
-                warn!(
-                    frame = %id,
-                    deliveries = seen,
-                    sender = described.sender.as_deref().unwrap_or("<not named>"),
-                    envelope = described.envelope,
-                    message_type = described.message_type.as_deref().unwrap_or("<encrypted>"),
-                    reason = %frame.reason,
-                    "cannot unpack an inbound message — deleting it from the mediator so it \
-                     stops being redelivered and stops counting against its sender's queue"
-                );
-            }
-            Ok(Err(e)) => warn!(
-                frame = %id,
-                error = %e,
-                "could not delete an unprocessable inbound message; it will be redelivered"
-            ),
-            Err(_) => warn!(
-                frame = %id,
-                timeout_secs = DELETE_ENQUEUE_TIMEOUT.as_secs(),
-                "timed out queueing the delete of an unprocessable inbound message; it will be \
-                 redelivered"
-            ),
         }
     }
 }
@@ -1014,89 +1117,223 @@ mod tests {
         assert_eq!(redelivery_backoff(40), MAX_REDELIVERY_BACKOFF);
     }
 
-    fn b64(v: &serde_json::Value) -> String {
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string())
+    // ─── reconnects (R1.4) ───────────────────────────────────────────────
+
+    #[test]
+    fn reconnect_backoff_starts_at_the_floor_and_doubles_to_its_cap() {
+        assert_eq!(reconnect_backoff(0), RECONNECT_MIN_INTERVAL);
+        assert_eq!(reconnect_backoff(1), RECONNECT_MIN_INTERVAL);
+        assert_eq!(reconnect_backoff(2), RECONNECT_MIN_INTERVAL * 2);
+        assert_eq!(reconnect_backoff(3), RECONNECT_MIN_INTERVAL * 4);
+        assert_eq!(reconnect_backoff(40), RECONNECT_MAX_INTERVAL);
     }
 
     #[test]
-    fn an_authcrypt_frame_names_its_sender_key() {
-        let protected = b64(&serde_json::json!({
-            "alg": "ECDH-1PU+A256KW",
-            "skid": "did:key:z6Mkexample#z6LSexample",
-            "typ": "application/didcomm-encrypted+json",
-        }));
-        let raw = serde_json::json!({"protected": protected, "ciphertext": "x"}).to_string();
-        let d = describe_frame(&raw);
-        assert_eq!(d.envelope, "authcrypt");
-        assert_eq!(d.sender.as_deref(), Some("did:key:z6Mkexample#z6LSexample"));
-    }
-
-    #[test]
-    fn an_authcrypt_frame_without_skid_names_its_sender_from_apu() {
-        let apu = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("did:web:a#k");
-        let protected = b64(&serde_json::json!({"alg": "ECDH-1PU+A256KW", "apu": apu}));
-        let raw = serde_json::json!({"protected": protected, "ciphertext": "x"}).to_string();
-        assert_eq!(describe_frame(&raw).sender.as_deref(), Some("did:web:a#k"));
-    }
-
-    #[test]
-    fn an_anoncrypt_frame_names_no_sender() {
-        let protected = b64(&serde_json::json!({"alg": "ECDH-ES+A256KW"}));
-        let raw = serde_json::json!({"protected": protected, "ciphertext": "x"}).to_string();
-        let d = describe_frame(&raw);
-        assert_eq!(d.envelope, "anoncrypt");
-        assert_eq!(d.sender, None);
-    }
-
-    #[test]
-    fn a_signed_and_a_plaintext_frame_are_described() {
-        let jws = serde_json::json!({
-            "payload": "x",
-            "signatures": [{"header": {"kid": "did:key:z6Mk#k"}, "signature": "s"}],
-        })
-        .to_string();
-        let d = describe_frame(&jws);
-        assert_eq!(
-            (d.envelope, d.sender.as_deref()),
-            ("signed", Some("did:key:z6Mk#k"))
-        );
-
-        let plain = serde_json::json!({
-            "id": "1", "type": "https://example/x", "from": "did:web:b", "body": {}
-        })
-        .to_string();
-        let d = describe_frame(&plain);
-        assert_eq!(d.envelope, "plaintext");
-        assert_eq!(d.sender.as_deref(), Some("did:web:b"));
-        assert_eq!(d.message_type.as_deref(), Some("https://example/x"));
-
-        assert_eq!(describe_frame("-ETSP...").envelope, "unknown");
-    }
-
-    #[test]
-    fn a_frame_id_is_the_hex_sha256_of_its_bytes() {
-        assert_eq!(
-            frame_id("abc"),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-    }
-
-    #[test]
-    fn sightings_count_and_stay_bounded() {
-        let mut s = Sightings::default();
+    fn a_dead_receive_leg_is_reconnected_at_most_once_per_interval() {
+        let g = ReconnectGovernor::new(Escalation::Never);
         let t = Instant::now();
-        assert_eq!(s.record("a", t), 1);
-        assert_eq!(s.record("a", t), 2);
-        s.forget("a");
-        assert_eq!(s.record("a", t), 1);
-        for i in 0..(UNPROCESSABLE_CAPACITY + 50) {
-            s.record(&format!("f{i}"), t);
+        assert_eq!(g.decide(t, 0.0), Remedy::Reconnect);
+        // Every check while it stays dead, up to the floor: wait.
+        let mut at = t;
+        while at < t + RECONNECT_MIN_INTERVAL {
+            assert_eq!(g.decide(at, 0.0), Remedy::Wait);
+            at += CHECK_INTERVAL;
         }
-        assert!(s.len() <= UNPROCESSABLE_CAPACITY);
-        // Expired entries are forgotten.
-        let later = t + UNPROCESSABLE_TTL + Duration::from_secs(1);
-        assert_eq!(s.record("f9999", later), 1);
-        assert_eq!(s.len(), 1);
+        assert_eq!(g.decide(t + RECONNECT_MIN_INTERVAL, 0.0), Remedy::Reconnect);
+        assert_eq!(g.requested(), 2);
+    }
+
+    #[test]
+    fn reconnects_that_do_not_help_back_off_to_the_cap() {
+        let g = ReconnectGovernor::new(Escalation::Never);
+        let start = Instant::now();
+        let mut now = start;
+        let mut asked = Vec::new();
+        // Twelve hours of a receive leg that never comes back, checked every 30 s.
+        while now < start + Duration::from_secs(12 * 3600) {
+            if g.decide(now, 1.0) == Remedy::Reconnect {
+                asked.push(now);
+            }
+            now += CHECK_INTERVAL;
+        }
+        let gaps: Vec<Duration> = asked.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(
+            gaps.iter().all(|g| *g >= RECONNECT_MIN_INTERVAL),
+            "{gaps:?}"
+        );
+        assert!(
+            gaps.windows(2).all(|w| w[1] >= w[0]),
+            "never shrinks: {gaps:?}"
+        );
+        assert!(
+            *gaps.last().unwrap() >= RECONNECT_MAX_INTERVAL,
+            "reaches the cap: {gaps:?}"
+        );
+        // Jitter adds at most 10%.
+        assert!(
+            *gaps.last().unwrap()
+                <= RECONNECT_MAX_INTERVAL + RECONNECT_MAX_INTERVAL / 10 + CHECK_INTERVAL,
+            "{gaps:?}"
+        );
+        assert!(asked.len() < 20, "12 h, {} reconnects", asked.len());
+    }
+
+    #[test]
+    fn a_reconnect_that_works_resets_the_backoff_but_not_the_floor() {
+        let g = ReconnectGovernor::new(Escalation::Never);
+        let t = Instant::now();
+        g.decide(t, 0.0);
+        let t2 = t + RECONNECT_MIN_INTERVAL;
+        g.decide(t2, 0.0);
+        // Two unproductive: the next is 10 min out.
+        assert_eq!(g.not_before(), Some(t2 + RECONNECT_MIN_INTERVAL * 2));
+        // Delivery comes back, then dies again a minute later.
+        g.recovered();
+        assert_eq!(g.not_before(), Some(t2 + RECONNECT_MIN_INTERVAL));
+        assert_eq!(g.decide(t2 + Duration::from_secs(60), 0.0), Remedy::Wait);
+        assert_eq!(
+            g.decide(t2 + RECONNECT_MIN_INTERVAL, 0.0),
+            Remedy::Reconnect
+        );
+    }
+
+    #[test]
+    fn a_node_that_cannot_rebuild_its_session_never_ends_it() {
+        let g = ReconnectGovernor::new(Escalation::Never);
+        let mut now = Instant::now();
+        for _ in 0..50 {
+            assert_ne!(g.decide(now, 0.0), Remedy::EndSession);
+            now += RECONNECT_MAX_INTERVAL * 2;
+        }
+    }
+
+    #[test]
+    fn a_node_with_a_supervisor_rebuilds_its_session_when_a_reconnect_did_not_help() {
+        let g = ReconnectGovernor::new(Escalation::EndSession);
+        let t = Instant::now();
+        // The cheap remedy first.
+        assert_eq!(g.decide(t, 0.0), Remedy::Reconnect);
+        // Still dead when the next is due: rebuild the session.
+        let t2 = t + reconnect_backoff(1);
+        assert_eq!(g.decide(t2, 0.0), Remedy::EndSession);
+        // Still dead in the new session: reconnect again before another rebuild.
+        let t3 = t2 + reconnect_backoff(2);
+        assert_eq!(g.decide(t3 - Duration::from_secs(1), 0.0), Remedy::Wait);
+        assert_eq!(g.decide(t3, 0.0), Remedy::Reconnect);
+        // Recovery puts it back at the start: the next episode reconnects first.
+        g.recovered();
+        assert_eq!(
+            g.decide(t3 + RECONNECT_MIN_INTERVAL, 0.0),
+            Remedy::Reconnect
+        );
+    }
+
+    #[test]
+    fn a_reconnected_socket_earns_its_own_strikes() {
+        let mut c = CatchUp::default();
+        for t in 0..3 {
+            c.step(Probe::Unanswered, t * 30);
+        }
+        assert!(c.take_not_delivering_report());
+        c.restart_receive_leg();
+        assert_eq!(c.step(Probe::Unanswered, 120), Step::Nothing);
+        assert_eq!(c.step(Probe::Unanswered, 150), Step::Nothing);
+        assert_eq!(c.step(Probe::Unanswered, 180), Step::NotDelivering);
+        assert!(
+            c.take_not_delivering_report(),
+            "reported again after a reconnect"
+        );
+    }
+
+    #[test]
+    fn instants_are_reported_as_unix_seconds() {
+        let now = Instant::now();
+        assert_eq!(unix_at(now + Duration::from_secs(300), now, 1_000), 1_300);
+        assert_eq!(unix_at(now, now, 1_000), 1_000);
+    }
+
+    // ─── what a health endpoint reports ──────────────────────────────────
+
+    #[test]
+    fn the_sdk_receive_view_is_reported_alongside_the_watch() {
+        let watch = InboxWatch::new();
+        assert_eq!(watch.snapshot().receive, None, "no transport, no view");
+
+        let mut sdk = ReceiveHealth::default();
+        sdk.last_data_frame_at = Some(1_000);
+        sdk.held_frames = 2;
+        sdk.probe_reconnects = 1;
+        sdk.unprocessable_deleted = 3;
+        sdk.unprocessable_retained = 1;
+        let (tx, rx) = watch::channel(sdk);
+        watch.attach_receive_health(rx);
+        let r = watch.snapshot().receive.expect("attached");
+        assert_eq!(r.held_frames, 2);
+        assert_eq!(r.unprocessable_deleted, 3);
+
+        // Read at snapshot time: the SDK's next publish shows up without the
+        // watch doing anything.
+        tx.send_modify(|h| h.consumer_stalled_since = Some(1_060));
+        assert_eq!(
+            watch.snapshot().receive.unwrap().consumer_stalled_since,
+            Some(1_060)
+        );
+    }
+
+    #[test]
+    fn inbox_health_serialises_in_the_shape_diagnostics_publish() {
+        let watch = InboxWatch::new();
+        let mut sdk = ReceiveHealth::default();
+        sdk.probe_outstanding_since = Some(5);
+        let (_tx, rx) = watch::channel(sdk);
+        watch.attach_receive_health(rx);
+        let v = serde_json::to_value(watch.snapshot()).unwrap();
+        for key in [
+            "state",
+            "unansweredStatusRequests",
+            "unprocessableSeen",
+            "reconnectsRequested",
+            "lastReconnectAt",
+            "nextReconnectNotBefore",
+            "receive",
+        ] {
+            assert!(v.get(key).is_some(), "missing {key}: {v}");
+        }
+        assert!(
+            v.get("unprocessableDeleted").is_none(),
+            "deletion is the SDK's, reported under `receive`: {v}"
+        );
+        let receive = &v["receive"];
+        for key in [
+            "lastDataFrameAt",
+            "heldFrames",
+            "consumerStalledSince",
+            "probeOutstandingSince",
+            "probeReconnects",
+            "unprocessableDeleted",
+            "unprocessableRetained",
+        ] {
+            assert!(receive.get(key).is_some(), "missing receive.{key}: {v}");
+        }
+        assert_eq!(receive["probeOutstandingSince"], 5);
+    }
+
+    #[tokio::test]
+    async fn unprocessable_frames_are_counted_and_nothing_else() {
+        let (tx, rx) = broadcast::channel(4);
+        let watch = InboxWatch::new();
+        let task = tokio::spawn(run_unprocessable_report(rx, watch.clone()));
+        for reason in ["SecretsError: no key", "DIDComm error: bad tag"] {
+            tx.send(UnprocessableMessage {
+                attachment_id: Some("f".into()),
+                raw: String::new(),
+                reason: reason.into(),
+            })
+            .unwrap();
+        }
+        drop(tx);
+        task.await.unwrap();
+        assert_eq!(watch.snapshot().unprocessable_seen, 2);
     }
 
     fn peer_refusal() -> ATMError {

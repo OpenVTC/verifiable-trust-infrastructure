@@ -174,7 +174,12 @@ affinidi-secrets-resolver = { version = "0.5.12", features = ["ml-dsa"] }
 # Reliable messaging delivery layer (durable outbox + drain + §5a confirmation)
 # over the MessageTransport contract — the D1 delivery layer the VTI cut-over
 # (D2) wires in. `VtiOutboxStore` (vti-common) backs its OutboxStore with fjall.
-affinidi-messaging-delivery = "0.1"
+#
+# 0.1.20 is the floor (affinidi-tdk-rs #927): each ack is bounded to 10 s and
+# parked for the retry pass when it runs long, where before one slow delete
+# stopped all inbound dispatch behind it — the node stopped collecting while
+# its socket stayed up. No API change.
+affinidi-messaging-delivery = "0.1.20"
 # Transport-agnostic messaging contract (`MessageTransport`, `Inbound`,
 # `ReceivedMessage`, `MessagingError`) the delivery layer builds on. Referenced
 # directly by services that demux `MessagingService::subscribe()` inbound.
@@ -218,7 +223,14 @@ affinidi-messaging-core = "0.1"
 #
 # 0.33.0 is the `trust-tasks-rs` 0.27 release: it shares the workspace's copy,
 # so `MediatorAcl` is one type again.
-affinidi-messaging-sdk = { version = "0.33.0", default-features = false }
+#
+# 0.33.2 is the floor (affinidi-tdk-rs #927): `ATMProfile::receive_health()` and
+# `reconnect_websocket()`, which `vti_common::inbox` reports and drives; the
+# receive-leg probe; bounded inbound awaits; and the live stream deleting
+# DIDComm frames it cannot unpack (never one sent to a key we have not
+# loaded). `vti_common::inbox` relies on that last one: it no longer deletes
+# such frames itself, so on 0.33.1 they would stay in the inbox again.
+affinidi-messaging-sdk = { version = "0.33.2", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
