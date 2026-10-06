@@ -9,7 +9,7 @@
 //! - `sync-jobs/list`    — what is queued, and what failed
 //! - `sync-jobs/retry`   — requeue an abandoned job
 //! - `sync-jobs/discard` — drop one that should not be
-//! - `records/list`      — enumerate the recognition graph
+//! - `records/list`      — enumerate every trust record under our authority
 //!
 //! ## Why these exist here rather than only on the CLI
 //!
@@ -341,19 +341,99 @@ pub(crate) async fn sync_jobs_discard(
 // records/list
 // ---------------------------------------------------------------------------
 
-fn record_wire(
-    r: &RegistryRecord,
-    authority: &str,
-) -> Result<records_list::v0_1::Record, AppError> {
-    records_list::v0_1::Record::builder()
-        .entity_id(r.member_did.clone())
-        .authority_id(authority.to_string())
-        .action(crate::registry::RECOGNISE_ACTION.to_string())
-        .resource(crate::registry::TRUST_GRAPH_RESOURCE.to_string())
-        .record_type("recognition".to_string())
-        .recognized(Some(r.status == RegistryStatus::Active))
-        .try_into()
-        .map_err(|e| AppError::Internal(format!("record does not fit its schema: {e}")))
+/// One trust record, before it is filtered and cut to a page.
+///
+/// Every record this community has under its authority, whatever its kind:
+/// a member's recognition (`recognise` on `trust-graph`) and each git right
+/// the git-namespace projection publishes (an authorization under the right's
+/// own action string, on the namespace or repository it covers). Until these
+/// were one list, the operator's Recognition page showed the memberships
+/// alone, and the git rights the Repos page reports as published were nowhere
+/// to be checked against the registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecordRow {
+    entity_id: String,
+    authority_id: String,
+    action: String,
+    resource: String,
+    record_type: String,
+    recognized: Option<bool>,
+    authorized: Option<bool>,
+}
+
+impl RecordRow {
+    /// A member's recognition, as the membership mirror holds it.
+    fn membership(r: &RegistryRecord, authority: &str) -> Self {
+        Self {
+            entity_id: r.member_did.clone(),
+            authority_id: authority.to_string(),
+            action: crate::registry::RECOGNISE_ACTION.to_string(),
+            resource: crate::registry::TRUST_GRAPH_RESOURCE.to_string(),
+            record_type: "recognition".to_string(),
+            recognized: Some(r.status == RegistryStatus::Active),
+            authorized: None,
+        }
+    }
+
+    /// A TRQP `TrustRecord` (snake_case, as `registry/record/query` answers
+    /// and `registry/record/put` writes). `None` when a required member is
+    /// missing or empty: such a record cannot be stated in the response
+    /// schema, and inventing a value for it would misreport the registry.
+    fn from_trqp(v: &serde_json::Value) -> Option<Self> {
+        let text = |k: &str| {
+            v.get(k)
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        Some(Self {
+            entity_id: text("entity_id")?,
+            authority_id: text("authority_id")?,
+            action: text("action")?,
+            resource: text("resource")?,
+            record_type: text("record_type")?,
+            recognized: v.get("recognized").and_then(serde_json::Value::as_bool),
+            authorized: v.get("authorized").and_then(serde_json::Value::as_bool),
+        })
+    }
+
+    fn key(&self) -> (&str, &str, &str) {
+        (&self.entity_id, &self.action, &self.resource)
+    }
+
+    fn wire(&self) -> Result<records_list::v0_1::Record, AppError> {
+        records_list::v0_1::Record::builder()
+            .entity_id(self.entity_id.clone())
+            .authority_id(self.authority_id.clone())
+            .action(self.action.clone())
+            .resource(self.resource.clone())
+            .record_type(self.record_type.clone())
+            .recognized(self.recognized)
+            .authorized(self.authorized)
+            .try_into()
+            .map_err(|e| AppError::Internal(format!("record does not fit its schema: {e}")))
+    }
+}
+
+/// The cursor is the last row's `(entity, action, resource)`, JSON-encoded
+/// and base64url'd: opaque to the caller, unambiguous whatever characters the
+/// three parts hold, and resumable even when that row has since gone (the
+/// page restarts after where it would have sorted).
+fn encode_cursor(row: &RecordRow) -> String {
+    use base64::Engine as _;
+    let (e, a, r) = row.key();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&[e, a, r]).unwrap_or_default())
+}
+
+fn decode_cursor(cursor: &str) -> Result<(String, String, String), AppError> {
+    use base64::Engine as _;
+    let bad = || AppError::Validation("`cursor` is not one this list issued".into());
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| bad())?;
+    let [e, a, r]: [String; 3] = serde_json::from_slice(&bytes).map_err(|_| bad())?;
+    Ok((e, a, r))
 }
 
 /// `vtc/registry/records/list/0.1`.
@@ -380,12 +460,33 @@ pub(crate) async fn records_list(
         .clone()
         .unwrap_or_default();
 
-    let mut rows = match source {
-        // Never served from the mirror. A stale local answer presented as the
-        // registry's is the exact fault this surface exists to detect, so an
-        // unreachable registry is an error rather than a substitution.
-        records_list::v0_1::Source::Registry => client.list_records().await?,
-        records_list::v0_1::Source::Local => list_records(&state.registry_records_ks).await?,
+    let mut rows: Vec<RecordRow> = match source {
+        // Never served from the mirrors. A stale local answer presented as
+        // the registry's is the exact fault this surface exists to detect, so
+        // an unreachable registry is an error rather than a substitution.
+        records_list::v0_1::Source::Registry => client
+            .list_all_trust_records()
+            .await?
+            .iter()
+            .filter_map(RecordRow::from_trqp)
+            .collect(),
+        // What this community believes it published: the membership mirror
+        // and the git-namespace projection's mirror, each rendered as the
+        // record its writer puts.
+        records_list::v0_1::Source::Local => {
+            let mut rows: Vec<RecordRow> = list_records(&state.registry_records_ks)
+                .await?
+                .iter()
+                .map(|r| RecordRow::membership(r, &authority))
+                .collect();
+            rows.extend(
+                crate::git_ns::projection::published(state)
+                    .await?
+                    .values()
+                    .filter_map(|p| RecordRow::from_trqp(&p.tuple.record(&authority))),
+            );
+            rows
+        }
         // The enum is `#[non_exhaustive]`, so a future spec release can add a
         // view this build does not serve. Refusing names it instead of
         // silently answering from whichever arm happened to be first.
@@ -396,48 +497,39 @@ pub(crate) async fn records_list(
         }
     };
 
-    if let Some(entity) = &q.entity_id {
-        rows.retain(|r| r.member_did.as_str() == entity.as_str());
-    }
-    // The remaining three filters are constants for every record this
-    // community publishes, so a non-matching value is an empty page rather
-    // than an error — the same answer the registry would give.
-    if q.authority_id
-        .as_ref()
-        .is_some_and(|a| a.as_str() != authority)
-    {
-        rows.clear();
-    }
-    if q.action
-        .as_deref()
-        .is_some_and(|a| a != crate::registry::RECOGNISE_ACTION)
-    {
-        rows.clear();
-    }
-    if q.resource
-        .as_deref()
-        .is_some_and(|r| r != crate::registry::TRUST_GRAPH_RESOURCE)
-    {
-        rows.clear();
-    }
+    // The four key filters, applied to every row alike.
+    rows.retain(|r| {
+        q.entity_id
+            .as_ref()
+            .is_none_or(|e| r.entity_id == e.as_str())
+            && q.authority_id
+                .as_ref()
+                .is_none_or(|a| r.authority_id == a.as_str())
+            && q.action.as_ref().is_none_or(|a| r.action == a.as_str())
+            && q.resource.as_ref().is_none_or(|x| r.resource == x.as_str())
+    });
 
-    rows.sort_by(|a, b| a.member_did.cmp(&b.member_did));
+    rows.sort_by(|a, b| a.key().cmp(&b.key()));
+    // A record the registry somehow states twice is listed once.
+    rows.dedup_by(|a, b| a.key() == b.key());
+
     let start = match &q.cursor {
         None => 0,
-        Some(c) => rows
-            .iter()
-            .position(|r| &r.member_did == c)
-            .map_or(0, |i| i + 1),
+        Some(c) => {
+            let (e, a, r) = decode_cursor(c)?;
+            let after = (e.as_str(), a.as_str(), r.as_str());
+            rows.partition_point(|row| row.key() <= after)
+        }
     };
     let limit = clamp(q.limit);
-    let page: Vec<_> = rows.iter().skip(start).take(limit).collect();
+    let page: Vec<&RecordRow> = rows.iter().skip(start).take(limit).collect();
     let next_cursor = (start + page.len() < rows.len())
-        .then(|| page.last().map(|r| r.member_did.clone()))
+        .then(|| page.last().map(|r| encode_cursor(r)))
         .flatten();
 
     let items = page
         .iter()
-        .map(|r| record_wire(r, &authority))
+        .map(|r| r.wire())
         .collect::<Result<Vec<_>, _>>()?;
 
     let response: records_list::v0_1::Response = records_list::v0_1::Response::builder()
@@ -449,4 +541,201 @@ pub(crate) async fn records_list(
             AppError::Internal(format!("records response does not fit its schema: {e}"))
         })?;
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use chrono::Utc;
+    use serde_json::json;
+
+    use super::*;
+    use crate::git_ns::projection::{Published, Tuple, mirror_put};
+    use crate::registry::{MockRegistryClient, TrustRegistryClient, store_record};
+    use crate::test_support::{TEST_VTC_DID, TestVtc};
+
+    const MEMBER: &str = "did:key:z6MkMember";
+    const OWNER: &str = "did:key:z6MkOwner";
+    const REPO: &str = "github.com/acme/widgets";
+
+    fn payload(v: serde_json::Value) -> records_list::v0_1::Payload {
+        serde_json::from_value(v).expect("payload fits its schema")
+    }
+
+    fn tuple(entity: &str, action: &str, resource: &str) -> Tuple {
+        Tuple {
+            entity: entity.into(),
+            action: action.into(),
+            resource: resource.into(),
+            context: json!({ "framework": crate::git_ns::projection::FRAMEWORK }),
+            repo_id: None,
+        }
+    }
+
+    /// A VTC with one member in the membership mirror and an owner's two git
+    /// records (the right and its implied commit right) in the projection's,
+    /// the registry holding all three.
+    async fn vtc() -> TestVtc {
+        let registry = Arc::new(MockRegistryClient::new());
+        let vtc = TestVtc::builder()
+            .with_registry_client(registry.clone())
+            .build()
+            .await;
+        store_record(
+            &vtc.state.registry_records_ks,
+            &RegistryRecord {
+                member_did: MEMBER.into(),
+                status: RegistryStatus::Active,
+                active_from: Utc::now(),
+                active_to: None,
+                last_synced_at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+        for t in [
+            tuple(OWNER, "git.repo.own", REPO),
+            tuple(OWNER, "git.commit.sign", REPO),
+        ] {
+            registry
+                .put_trust_record(&t.record(TEST_VTC_DID))
+                .await
+                .unwrap();
+            mirror_put(
+                &vtc.state,
+                &Published {
+                    tuple: t,
+                    published_at: Utc::now(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        registry
+            .put_trust_record(&json!({
+                "entity_id": MEMBER,
+                "authority_id": TEST_VTC_DID,
+                "action": crate::registry::RECOGNISE_ACTION,
+                "resource": crate::registry::TRUST_GRAPH_RESOURCE,
+                "record_type": "recognition",
+                "recognized": true,
+            }))
+            .await
+            .unwrap();
+        vtc
+    }
+
+    fn keys(r: &records_list::v0_1::Response) -> Vec<(String, String)> {
+        r.items
+            .iter()
+            .map(|i| (i.entity_id.to_string(), i.action.to_string()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn local_lists_git_rights_as_authorization_records_beside_memberships() {
+        let vtc = vtc().await;
+        let r = records_list(&vtc.state, payload(json!({ "source": "local" })))
+            .await
+            .unwrap();
+        assert_eq!(
+            keys(&r),
+            [
+                (MEMBER.to_string(), "recognise".to_string()),
+                (OWNER.to_string(), "git.commit.sign".to_string()),
+                (OWNER.to_string(), "git.repo.own".to_string()),
+            ]
+        );
+        let own = &r.items[2];
+        assert_eq!(own.record_type.as_str(), "authorization");
+        assert_eq!(own.authorized, Some(true));
+        assert_eq!(own.recognized, None);
+        assert_eq!(own.resource.as_str(), REPO);
+        assert_eq!(own.authority_id.as_str(), TEST_VTC_DID);
+        let member = &r.items[0];
+        assert_eq!(member.record_type.as_str(), "recognition");
+        assert_eq!(member.recognized, Some(true));
+        assert_eq!(member.authorized, None);
+    }
+
+    #[tokio::test]
+    async fn registry_lists_every_record_under_the_authority() {
+        let vtc = vtc().await;
+        let r = records_list(&vtc.state, payload(json!({ "source": "registry" })))
+            .await
+            .unwrap();
+        assert_eq!(r.items.len(), 3, "{r:?}");
+        assert!(
+            r.items
+                .iter()
+                .any(|i| i.action.as_str() == "git.repo.own" && i.authorized == Some(true))
+        );
+    }
+
+    #[tokio::test]
+    async fn action_entity_and_resource_filters_match_git_records() {
+        let vtc = vtc().await;
+        for source in ["local", "registry"] {
+            let r = records_list(
+                &vtc.state,
+                payload(json!({ "source": source, "action": "git.repo.own" })),
+            )
+            .await
+            .unwrap();
+            assert_eq!(keys(&r), [(OWNER.to_string(), "git.repo.own".to_string())]);
+
+            let r = records_list(
+                &vtc.state,
+                payload(json!({ "source": source, "resource": REPO })),
+            )
+            .await
+            .unwrap();
+            assert_eq!(r.items.len(), 2, "{source}: {r:?}");
+
+            let r = records_list(
+                &vtc.state,
+                payload(json!({ "source": source, "entityId": MEMBER })),
+            )
+            .await
+            .unwrap();
+            assert_eq!(keys(&r), [(MEMBER.to_string(), "recognise".to_string())]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cursor_pages_across_mixed_records() {
+        let vtc = vtc().await;
+        let mut seen = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..5 {
+            let mut p = json!({ "source": "local", "limit": 1 });
+            if let Some(c) = &cursor {
+                p["cursor"] = json!(c);
+            }
+            let r = records_list(&vtc.state, payload(p)).await.unwrap();
+            seen.extend(keys(&r));
+            cursor = r.next_cursor.clone();
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert!(cursor.is_none());
+        let mut sorted = seen.clone();
+        sorted.sort();
+        assert_eq!(seen, sorted);
+    }
+
+    #[tokio::test]
+    async fn a_cursor_this_list_did_not_issue_is_refused() {
+        let vtc = vtc().await;
+        let err = records_list(
+            &vtc.state,
+            payload(json!({ "source": "local", "cursor": "not-ours" })),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+    }
 }

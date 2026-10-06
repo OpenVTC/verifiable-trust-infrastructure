@@ -209,6 +209,19 @@ pub trait TrustRegistryClient: Send + Sync {
         ))
     }
 
+    /// Every record the registry holds under this community's authority, of
+    /// any action (`registry/record/query/0.1` keyed by `authority_id` alone,
+    /// paged to the end) — membership recognitions and git-namespace
+    /// authorizations alike, as the registry states them. What the operator's
+    /// records list (`vtc/registry/records/list/0.1`, `source: registry`)
+    /// shows.
+    ///
+    /// Defaults to [`super::drift::unsupported`], as [`Self::list_records`]
+    /// does, so a transport that cannot enumerate says "not supported here".
+    async fn list_all_trust_records(&self) -> Result<Vec<serde_json::Value>, RegistryError> {
+        Err(super::drift::unsupported())
+    }
+
     /// Delete one record by its TRQP key (`registry/record/delete/0.1`),
     /// under this community's authority. A record that is already absent is
     /// success: the effect wanted is its absence.
@@ -528,6 +541,21 @@ impl TrustRegistryClient for MockRegistryClient {
         Ok(s.trust_records
             .values()
             .filter(|r| r.get("action").and_then(|a| a.as_str()) == Some(action))
+            .cloned()
+            .collect())
+    }
+
+    /// The records written through `put_trust_record`. Members published
+    /// through `publish_member` are not listed: the mock keeps them as
+    /// [`RegistryRecord`]s and does not know the authority to render them
+    /// under.
+    async fn list_all_trust_records(&self) -> Result<Vec<serde_json::Value>, RegistryError> {
+        Ok(self
+            .inner
+            .lock()
+            .await
+            .trust_records
+            .values()
             .cloned()
             .collect())
     }
