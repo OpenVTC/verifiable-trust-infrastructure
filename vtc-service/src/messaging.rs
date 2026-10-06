@@ -1005,7 +1005,23 @@ async fn handle_tsp(
         // requires one.
         verified_signer: None,
     };
+    let start = std::time::Instant::now();
+    let task = serde_json::from_slice::<serde_json::Value>(document)
+        .ok()
+        .and_then(|d| d.get("type").and_then(|t| t.as_str()).map(str::to_string));
     let outcome = dispatch_trust_task_core(state, &ctx, document).await;
+    // The TSP twin of `didcomm_server::request`. Without it a request that
+    // came over TSP left no line at all, so an operator reading the log could
+    // not tell which of a member's requests reached the VTC, or on which
+    // transport.
+    info!(
+        target: "tsp_server::request",
+        task = task.as_deref().unwrap_or("-"),
+        sender = %sender_vid,
+        status = outcome.status.as_u16(),
+        latency = ?start.elapsed(),
+        "Request processed"
+    );
 
     // The spine returns the self-describing framework document (its own `type` +
     // status code), so an unauthorised caller gets a Trust-Task error envelope
@@ -1321,17 +1337,38 @@ async fn dispatch(inbound: Inbound, state: &AppState) -> Option<Reply> {
         .or_else(|| msg.from.clone())
         .unwrap_or_else(|| "<anon>".to_string());
 
+    // The envelope's own type says only "a Trust Task"; the task is the
+    // document's. Without it, two requests from one member (a profile ask and
+    // a git-ns view, say) log identically and cannot be told apart.
+    let task = request_task_type(&msg);
+    let request_id = msg.id.clone();
+
     let reply = route(&msg, auth_sender, state).await;
 
     info!(
         target: "didcomm_server::request",
         message_type = %message_type,
+        task = task.as_deref().unwrap_or("-"),
+        id = %request_id,
         sender = %sender_log,
         status = if reply.is_some() { "ok(response)" } else { "ok(empty)" },
+        reply_type = reply.as_ref().map(|r| r.type_.as_str()).unwrap_or("-"),
         latency = ?start.elapsed(),
         "Request processed"
     );
     reply
+}
+
+/// The Trust Task a DIDComm message carries: the document's `type` when the
+/// message is the binding envelope, `None` otherwise.
+fn request_task_type(msg: &Message) -> Option<String> {
+    if msg.typ != vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE {
+        return None;
+    }
+    msg.body
+        .get("type")
+        .and_then(|t| t.as_str())
+        .map(str::to_string)
 }
 
 /// The type-routed dispatch (was the framework `Router`). The `_` arm is the
@@ -1927,6 +1964,32 @@ mod tests {
         assert_eq!(code, "<none>");
         assert_eq!(comment, "<none>");
         assert_eq!(args, "<none>");
+    }
+
+    /// The request log names the task an envelope carries, so a member's
+    /// profile ask and its git-ns view can be told apart in the log.
+    #[test]
+    fn the_request_log_names_the_enveloped_task() {
+        const VIEW: &str = "https://trusttasks.org/spec/git-ns/view/0.4";
+        let enveloped = Message::build(
+            "m1".to_string(),
+            vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE.to_string(),
+            serde_json::json!({ "type": VIEW, "id": "urn:uuid:q" }),
+        )
+        .finalize();
+        assert_eq!(request_task_type(&enveloped).as_deref(), Some(VIEW));
+
+        let ping = Message::build(
+            "m2".to_string(),
+            "https://didcomm.org/trust-ping/2.0/ping".to_string(),
+            serde_json::json!({ "type": VIEW }),
+        )
+        .finalize();
+        assert_eq!(
+            request_task_type(&ping),
+            None,
+            "only an envelope carries a task"
+        );
     }
 
     #[test]
