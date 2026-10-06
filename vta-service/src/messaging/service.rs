@@ -62,7 +62,19 @@ pub struct VtaMessaging {
     /// arrangement replaced.
     #[cfg(feature = "tsp")]
     pub tsp: crate::messaging::tsp_transport::TspTransport,
+    /// Whether this session is collecting its mediator inbox (written by the
+    /// inbox watch [`run_inbound_loop`] runs alongside the dispatcher).
+    pub inbox: vti_common::inbox::InboxWatch,
+    /// Recipients the mediator refused `limits.queue.peer` for: reported once
+    /// each rather than once per reply, and not sent relationship accepts while
+    /// they stay refused.
+    pub uncollected: Arc<vti_common::inbox::UncollectedPeers>,
 }
+
+/// Capacity of the SDK's unprocessable-frame channel. Reports only — a lagging
+/// reader loses a report, never a frame (the frame stays at the mediator and is
+/// reported again on its next delivery).
+const UNPROCESSABLE_CHANNEL_CAPACITY: usize = 64;
 
 /// Build the delivery-layer [`MessagingService`] over a [`DidCommTransport`]
 /// bound to the VTA's single mediator websocket.
@@ -119,7 +131,12 @@ pub async fn build_messaging(
     // (design note `docs/05-design-notes/tsp-relationship-recovery.md`, D1). Only
     // the `tsp` build has a relationship store to configure; a DIDComm-only build
     // does not use the keyspace.
-    let atm_config_builder = ATMConfig::builder();
+    // Frames the SDK cannot unpack are reported on this channel so
+    // `run_unprocessable_quarantine` can name and delete them. Without it they
+    // are only logged, and stay in the inbox counting against their sender's
+    // per-peer quota for as long as they live.
+    let atm_config_builder =
+        ATMConfig::builder().with_unprocessable_message_channel(UNPROCESSABLE_CHANNEL_CAPACITY);
     #[cfg(feature = "tsp")]
     let atm_config_builder = atm_config_builder
         .with_relationship_store(Arc::new(
@@ -250,6 +267,8 @@ pub async fn build_messaging(
         profile,
         #[cfg(feature = "tsp")]
         tsp,
+        inbox: vti_common::inbox::InboxWatch::new(),
+        uncollected: Arc::new(vti_common::inbox::UncollectedPeers::new()),
     })
 }
 
@@ -343,8 +362,47 @@ pub async fn run_inbound_loop(
     // rather than a per-sender FIFO.
     let sender_order = SenderOrder::new();
 
+    // Collect what live delivery missed, and notice when nothing is being
+    // delivered at all. The VTA had no catch-up before this (the VTC has had
+    // one since VTI-50), so a missed live push waited for the next reconnect,
+    // and a mediator that stopped delivering to a connected socket went
+    // unnoticed while every peer's replies queued against this DID.
+    //
+    // When the watch sees the receive leg dead it ends this session: the
+    // supervisor (`server::MessagingConnect`) then tears the socket down and
+    // reconnects, which re-registers it for live delivery and redelivers the
+    // stored inbox.
+    let mut watch = tokio::spawn(vti_common::inbox::run_inbox_watch(
+        messaging.atm.clone(),
+        messaging.profile.clone(),
+        messaging
+            .service
+            .primary_transport()
+            .map(|t| t.connection_state()),
+        messaging.inbox.clone(),
+        true,
+    ));
+    let quarantine = messaging.atm.get_unprocessable_message_channel().map(|rx| {
+        tokio::spawn(vti_common::inbox::run_unprocessable_quarantine(
+            messaging.atm.clone(),
+            messaging.profile.clone(),
+            rx,
+            messaging.inbox.clone(),
+        ))
+    });
+
     loop {
         tokio::select! {
+            exit = &mut watch => {
+                match exit {
+                    Ok(vti_common::inbox::WatchExit::NotDelivering) => warn!(
+                        "ending the mediator session so it reconnects: the socket reports \
+                         connected but nothing is being delivered to it"
+                    ),
+                    Err(e) => warn!(error = %e, "inbox watch ended unexpectedly; reconnecting"),
+                }
+                break;
+            }
             maybe = stream.next() => {
                 let Some(inbound) = maybe else {
                     warn!("VTA inbound stream ended — messaging dispatcher stopping");
@@ -390,6 +448,10 @@ pub async fn run_inbound_loop(
                 break;
             }
         }
+    }
+    watch.abort();
+    if let Some(quarantine) = quarantine {
+        quarantine.abort();
     }
     info!("VTA messaging stopped");
 }
@@ -682,12 +744,21 @@ async fn handle_didcomm(
         .await
     {
         Ok((packed, _)) => {
-            if let Err(e) = messaging
+            match messaging
                 .service
                 .send(&to, packed.into_bytes(), Delivery::BestEffort)
                 .await
             {
-                warn!(recipient = %to, error = %e, "failed to send DIDComm reply");
+                Ok(_) => messaging.uncollected.observe_delivered(&to),
+                Err(e) => {
+                    if !messaging.uncollected.observe_send(
+                        &to,
+                        "DIDComm reply",
+                        vti_common::inbox::messaging_refused_recipient_not_collecting(&e),
+                    ) {
+                        warn!(recipient = %to, error = %e, "failed to send DIDComm reply");
+                    }
+                }
             }
         }
         Err(e) => warn!(recipient = %to, error = %e, "failed to pack DIDComm reply"),
@@ -749,8 +820,21 @@ async fn handle_tsp(inbound: Inbound, messaging: &Arc<VtaMessaging>, app_state: 
     // Routed through the sender's mediator when it is not ours — see
     // `vti_common::tsp_route::send_reply`. `send_to` routes `[ours, sender]`,
     // which a sender on another mediator never receives.
-    if let Err(e) = messaging.tsp.send_reply(&sender_vid, &reply).await {
-        warn!(recipient = %sender_vid, error = %e, "failed to send TSP reply");
+    match messaging.tsp.send_reply(&sender_vid, &reply).await {
+        Ok(()) => messaging.uncollected.observe_delivered(&sender_vid),
+        Err(e) => {
+            // A per-peer refusal is the client not collecting its own inbox —
+            // its replies queue at the mediator until the cap refuses more.
+            // One warning per recipient says so (R6.4); one per reply, every
+            // 30 s for as long as the client retried, said only "failed".
+            if !messaging.uncollected.observe_send(
+                &sender_vid,
+                "TSP reply",
+                vti_common::inbox::refused_recipient_not_collecting(&e),
+            ) {
+                warn!(recipient = %sender_vid, error = %e, "failed to send TSP reply");
+            }
+        }
     }
 }
 
@@ -781,21 +865,49 @@ async fn handle_tsp_control(
     let profile = messaging.profile.clone();
 
     match decide_control(request, reply_expected) {
+        // A peer refused `limits.queue.peer` moments ago is not collecting its
+        // inbox, so an accept cannot reach it either. Such a client re-invites
+        // after every reply timeout (vta-sdk's §7.2.2 D4 self-repair), and each
+        // answer was another refused send and another warning, every 30 s. The
+        // relationship is already recorded, so traffic still flows; the first
+        // invite after `UNCOLLECTED_WINDOW` is answered again.
+        ControlDecision::Accept
+            if messaging
+                .uncollected
+                .is_marked(sender_vid, std::time::Instant::now()) =>
+        {
+            tracing::debug!(
+                sender = %sender_vid, ?request,
+                "recorded an inbound TSP relationship request; not answering — the peer is not \
+                 collecting its mediator inbox",
+            );
+        }
         ControlDecision::Accept => {
             match atm
                 .tsp()
                 .accept_relationship(&profile, sender_vid, thread_digest)
                 .await
             {
-                Ok(state) => info!(
-                    sender = %sender_vid, ?request, ?state, introduced = ?introduces,
-                    "accepted an inbound TSP relationship request",
-                ),
-                Err(e) => warn!(
-                    sender = %sender_vid, error = %e,
-                    "could not send a TSP relationship accept; the relationship stays recorded, \
-                     so traffic still flows, but the peer sees no answer",
-                ),
+                Ok(state) => {
+                    messaging.uncollected.observe_delivered(sender_vid);
+                    info!(
+                        sender = %sender_vid, ?request, ?state, introduced = ?introduces,
+                        "accepted an inbound TSP relationship request",
+                    )
+                }
+                Err(e) => {
+                    if !messaging.uncollected.observe_send(
+                        sender_vid,
+                        "TSP relationship accept",
+                        vti_common::inbox::refused_recipient_not_collecting(&e),
+                    ) {
+                        warn!(
+                            sender = %sender_vid, error = %e,
+                            "could not send a TSP relationship accept; the relationship stays \
+                             recorded, so traffic still flows, but the peer sees no answer",
+                        )
+                    }
+                }
             }
         }
         // Reached only when the transport's own §7.3 answer failed to send

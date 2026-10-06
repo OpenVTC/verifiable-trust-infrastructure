@@ -119,6 +119,14 @@ pub struct DiagnosticsResponse {
     /// boot-time latch, per R6.2). `"disconnected"` when messaging is
     /// unconfigured.
     pub messaging_status: String,
+    /// Whether the VTC is **collecting** its mediator inbox — the receive leg,
+    /// which `messaging_status` (a socket signal) cannot see. A connected
+    /// socket whose mediator has stopped delivering to it reads `notDelivering`
+    /// here; a backlog redelivery does not clear (frames the VTC cannot unpack)
+    /// reads `backlogged` with its age. `None` before messaging has started or
+    /// when it is unconfigured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inbox_collection: Option<vti_common::inbox::InboxHealth>,
     /// How this VTC reaches its **trust registry**: its DID, the protocols the
     /// registry's own document advertises, and the one the last call actually
     /// chose. `None` when no registry is configured.
@@ -354,6 +362,8 @@ pub(crate) async fn diagnostics(state: &AppState) -> Result<DiagnosticsResponse,
     }
     .to_string();
 
+    let inbox_collection = state.didcomm.get().map(|m| m.inbox.snapshot());
+
     // Identity / mediator detail — folded down from the unauth
     // `/health` payload (P3.7), now only readable by an admin.
     let syncer = state.syncer_health.snapshot();
@@ -420,6 +430,7 @@ pub(crate) async fn diagnostics(state: &AppState) -> Result<DiagnosticsResponse,
         syncer_running: syncer.running,
         syncer_restarts: syncer.restarts,
         messaging_status,
+        inbox_collection,
         registry_transport,
         transports,
         ext: DiagnosticsExt {

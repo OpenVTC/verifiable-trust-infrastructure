@@ -1451,6 +1451,17 @@
             "format": "int64",
             "minimum": 0
           },
+          "inboxCollection": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/InboxHealth",
+                "description": "Whether the VTC is **collecting** its mediator inbox — the receive leg,\nwhich `messaging_status` (a socket signal) cannot see. A connected\nsocket whose mediator has stopped delivering to it reads `notDelivering`\nhere; a backlog redelivery does not clear (frames the VTC cannot unpack)\nreads `backlogged` with its age. `None` before messaging has started or\nwhen it is unconfigured."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "lastError": {
             "type": [
               "string",
@@ -3524,6 +3535,83 @@
           },
           "visibility": {
             "type": "string"
+          }
+        }
+      },
+      "InboxCollection": {
+        "type": "string",
+        "description": "Whether a node is collecting its mediator inbox, as last observed.",
+        "enum": [
+          "unknown",
+          "collecting",
+          "backlogged",
+          "notDelivering"
+        ]
+      },
+      "InboxHealth": {
+        "type": "object",
+        "description": "What a health endpoint reports about inbox collection. A snapshot, driven by\na signal that can go false again (R6.2) — every field is re-observed each\ncheck.",
+        "required": [
+          "state",
+          "unansweredStatusRequests",
+          "unproductiveRedeliveries",
+          "unprocessableSeen",
+          "unprocessableDeleted"
+        ],
+        "properties": {
+          "lastAnsweredAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds of the last answered status request.",
+            "minimum": 0
+          },
+          "longestWaitedSecs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Age of the oldest of them, in seconds.",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/InboxCollection"
+          },
+          "unansweredStatusRequests": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Status requests in a row that went unanswered while connected.",
+            "minimum": 0
+          },
+          "unprocessableDeleted": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Of those, the ones deleted from the mediator.",
+            "minimum": 0
+          },
+          "unprocessableSeen": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Inbound frames this node could not unpack, since start.",
+            "minimum": 0
+          },
+          "unproductiveRedeliveries": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Redelivery requests in a row that left the same oldest message waiting.",
+            "minimum": 0
+          },
+          "waiting": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Messages waiting at the mediator at the last answered check.",
+            "minimum": 0
           }
         }
       },

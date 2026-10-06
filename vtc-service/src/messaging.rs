@@ -39,115 +39,29 @@ const TRUST_PONG_TYPE: &str = "https://didcomm.org/trust-ping/2.0/ping-response"
 /// (was the framework's `ignore_handler`) and never logged.
 const MESSAGE_PICKUP_STATUS_TYPE: &str = "https://didcomm.org/messagepickup/3.0/status";
 
-// ─── inbox catch-up (VTI-50) ─────────────────────────────────────────────
+// ─── inbox collection (VTI-50) ───────────────────────────────────────────
 //
 // The VTC receives only by live delivery on its one mediator socket. The
 // mediator both pushes and stores every message, and redelivers the stored
 // inbox when a socket turns live delivery on — which the SDK does on every
 // (re)connect. Nothing redelivers it in between: a live push that does not
 // reach the VTC (a frame dropped under the mediator's send budget, one lost to
-// a socket flap) sits in the inbox until the next reconnect, roughly the
-// token-refresh cadence, and a message whose expiry is shorter than that is
-// swept uncollected.
+// a socket flap) sits in the inbox until the next reconnect.
 //
-// So the VTC asks. Every `INBOX_CATCH_UP_INTERVAL` it sends a Message Pickup
-// 3.0 status-request on the same socket; when the answer shows a message that
-// has waited longer than a live push takes, it re-sends live-delivery-change
-// `true`, which makes the mediator redeliver the stored inbox down the live
-// stream. That is the mechanism the connect already relies on, so every
-// redelivered message takes the one inbound path (`DidCommTransport` →
-// `MessagingService` → dispatch → ack), rather than a delivery-request whose
-// messages would bypass the delivery layer's ack. No second socket is opened —
-// the mediator permits one per DID.
+// So the VTC asks, through `vti_common::inbox::run_inbox_watch` (shared with
+// the VTA): every 30 s a status request on the same socket, and a redelivery
+// when something has waited longer than a live push takes. The watch is
+// bounded — a backlog that redelivery does not clear (a frame this VTC cannot
+// unpack) is asked for less and less often instead of every 30 s forever —
+// and it reports when the mediator stops answering while the socket says it
+// is connected, which is the VTC receiving nothing. Frames the VTC cannot
+// unpack are deleted by `run_unprocessable_quarantine`, each named in a
+// warning, so they stop counting against their sender's queue.
 
-/// How often the VTC checks its mediator inbox for messages live delivery
-/// missed. Well inside the shortest message expiry seen in practice (300 s), so
-/// a missed push is collected with most of its life left.
-const INBOX_CATCH_UP_INTERVAL: Duration = Duration::from_secs(30);
-
-/// How long a message may wait in the inbox, while the socket is live, before
-/// it counts as missed. A message pushed live is acked (and so deleted) within
-/// a second or two; one that has waited this long was not pushed, or the push
-/// did not arrive.
-const INBOX_STALE_AFTER_SECS: u64 = 30;
-
-/// Whether a status reply shows a message live delivery missed.
-///
-/// A status without `longest_waited_seconds` (a mediator that does not report
-/// ages) but with messages waiting is treated as missed: redelivery is
-/// at-least-once and idempotent at the mediator, so asking for it needlessly
-/// costs one redelivery, and not asking loses the message.
-fn inbox_needs_catch_up(
-    status: &affinidi_tdk::messaging::protocols::message_pickup::MessagePickupStatusReply,
-) -> bool {
-    status.message_count > 0
-        && status
-            .longest_waited_seconds
-            .is_none_or(|waited| waited >= INBOX_STALE_AFTER_SECS)
-}
-
-/// One catch-up check: ask for the inbox status and, when it shows a missed
-/// message, ask the mediator to redeliver the inbox. Returns whether a
-/// redelivery was requested.
-async fn inbox_catch_up_once(atm: &ATM, profile: &Arc<ATMProfile>) -> bool {
-    let status = match atm
-        .message_pickup()
-        .send_status_request(profile, true, Some(Duration::from_secs(10)))
-        .await
-    {
-        Ok(Some(status)) => status,
-        Ok(None) => return false,
-        Err(e) => {
-            // The socket may be mid-reconnect; the reconnect's own live-delivery
-            // toggle redelivers the inbox, and the next tick checks again.
-            debug!(error = %e, "inbox catch-up: status request failed; retrying next tick");
-            return false;
-        }
-    };
-    if !inbox_needs_catch_up(&status) {
-        return false;
-    }
-    info!(
-        waiting = status.message_count,
-        longest_waited_secs = ?status.longest_waited_seconds,
-        "mediator inbox holds messages live delivery did not bring; asking for redelivery"
-    );
-    match atm
-        .message_pickup()
-        .toggle_live_delivery(profile, true)
-        .await
-    {
-        Ok(_) => true,
-        Err(e) => {
-            warn!(error = %e, "inbox catch-up: could not ask the mediator to redeliver; retrying next tick");
-            false
-        }
-    }
-}
-
-/// Run [`inbox_catch_up_once`] every [`INBOX_CATCH_UP_INTERVAL`] while the
-/// socket is connected. A disconnected socket is skipped: its reconnect
-/// re-enables live delivery, which redelivers the inbox by itself.
-async fn inbox_catch_up_loop(
-    atm: Arc<ATM>,
-    profile: Arc<ATMProfile>,
-    conn: Option<watch::Receiver<affinidi_messaging_core::ConnState>>,
-) {
-    let mut tick = tokio::time::interval(INBOX_CATCH_UP_INTERVAL);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // The first tick fires at once; the connect has just redelivered the inbox.
-    tick.tick().await;
-    loop {
-        tick.tick().await;
-        if conn
-            .as_ref()
-            .is_some_and(|c| *c.borrow() != affinidi_messaging_core::ConnState::Connected)
-        {
-            continue;
-        }
-        inbox_catch_up_once(&atm, &profile).await;
-    }
-}
+/// Capacity of the SDK's unprocessable-frame channel. Reports only — a lagging
+/// reader loses a report, never a frame (the frame stays at the mediator and
+/// is reported again on its next delivery).
+const UNPROCESSABLE_CHANNEL_CAPACITY: usize = 64;
 
 /// The VTC's live messaging handle, published into
 /// [`AppState::didcomm`](crate::server::AppState) once the listener starts.
@@ -176,6 +90,11 @@ pub struct VtcMessaging {
     /// here rather than re-read from config so the routed hop is always the
     /// mediator the socket is actually on.
     pub mediator_did: String,
+    /// Whether the VTC is collecting its mediator inbox, for health surfaces.
+    pub inbox: vti_common::inbox::InboxWatch,
+    /// Recipients the mediator refused `limits.queue.peer` for: reported once
+    /// each rather than once per reply, and spared optional sends.
+    pub uncollected: Arc<vti_common::inbox::UncollectedPeers>,
 }
 
 /// The VTC's signing + key-agreement verification-method ids, read from its
@@ -293,7 +212,11 @@ async fn build_messaging(
     // Rev 3 §7.2.2 — silently drops their traffic (and its own replies) until
     // each re-handshakes. Only the `tsp` build has a relationship store to
     // configure; the shared adapter lives in `vti_common::relationship_store`.
-    let atm_config_builder = ATMConfig::builder();
+    // Frames the SDK cannot unpack are reported here, so the VTC can name and
+    // delete them (`run_unprocessable_quarantine`). Without a channel they are
+    // only logged, and stay in the inbox counting against their sender.
+    let atm_config_builder =
+        ATMConfig::builder().with_unprocessable_message_channel(UNPROCESSABLE_CHANNEL_CAPACITY);
     #[cfg(feature = "tsp")]
     let atm_config_builder = atm_config_builder.with_relationship_store(
         vti_common::relationship_store::build_relationship_store(tsp_relationships_ks.clone()),
@@ -599,12 +522,16 @@ pub async fn run_didcomm_service(
     // Publish the handle so any VTC component can send to a member over this
     // one connection (`AppState::send_to_member`). Set-once; it persists across
     // reconnects (the transport reconnects internally).
+    let inbox = vti_common::inbox::InboxWatch::new();
+    let uncollected = Arc::new(vti_common::inbox::UncollectedPeers::new());
     let messaging = Arc::new(VtcMessaging {
         service: service.clone(),
         atm: atm.clone(),
         vtc_did: vtc_did.to_string(),
         profile: profile.clone(),
         mediator_did: mediator_did.clone(),
+        inbox: inbox.clone(),
+        uncollected: uncollected.clone(),
     });
     #[cfg(feature = "tsp")]
     let tsp_messaging = messaging.clone();
@@ -665,12 +592,27 @@ pub async fn run_didcomm_service(
         });
     }
 
-    // Collect what live delivery missed, without waiting for a reconnect (VTI-50).
-    let catch_up = tokio::spawn(inbox_catch_up_loop(
+    // Collect what live delivery missed, without waiting for a reconnect
+    // (VTI-50), and report when nothing is being delivered at all. The VTC
+    // keeps watching rather than tearing its session down: its one socket is
+    // published set-once in `state.didcomm`, and the SDK transport already
+    // reconnects (and so re-registers for live delivery) on every token
+    // refresh, which bounds a lost registration to one refresh cycle.
+    let catch_up = tokio::spawn(vti_common::inbox::run_inbox_watch(
         atm.clone(),
         profile.clone(),
         service.primary_transport().map(|t| t.connection_state()),
+        inbox.clone(),
+        false,
     ));
+    let quarantine = atm.get_unprocessable_message_channel().map(|rx| {
+        tokio::spawn(vti_common::inbox::run_unprocessable_quarantine(
+            atm.clone(),
+            profile.clone(),
+            rx,
+            inbox.clone(),
+        ))
+    });
 
     info!("VTC messaging connected to mediator — inbound messages will be processed");
 
@@ -712,6 +654,9 @@ pub async fn run_didcomm_service(
     .await;
 
     catch_up.abort();
+    if let Some(quarantine) = quarantine {
+        quarantine.abort();
+    }
     info!("VTC messaging stopped");
 }
 
@@ -862,11 +807,26 @@ async fn handle_inbound_frame(
         .await
     {
         Ok((packed, _)) => {
-            if let Err(e) = service
+            match service
                 .send(&to, packed.into_bytes(), Delivery::BestEffort)
                 .await
             {
-                warn!(recipient = %to, error = %e, "failed to send DIDComm reply");
+                Ok(_) => {
+                    if let Some(m) = state.didcomm.get() {
+                        m.uncollected.observe_delivered(&to);
+                    }
+                }
+                Err(e) => {
+                    let not_collecting =
+                        vti_common::inbox::messaging_refused_recipient_not_collecting(&e);
+                    let reported = state.didcomm.get().is_some_and(|m| {
+                        m.uncollected
+                            .observe_send(&to, "DIDComm reply", not_collecting)
+                    });
+                    if !reported {
+                        warn!(recipient = %to, error = %e, "failed to send DIDComm reply");
+                    }
+                }
             }
         }
         Err(e) => warn!(recipient = %to, error = %e, "failed to pack DIDComm reply"),
@@ -981,6 +941,7 @@ async fn handle_tsp(
         handle_tsp_control(
             &messaging.atm,
             &messaging.profile,
+            &messaging.uncollected,
             &sender_vid,
             request,
             thread_digest,
@@ -1061,7 +1022,7 @@ async fn handle_tsp(
     // sender]` ended at a mediator that does not host a sender on another one,
     // which refused it: the request arrived and the answer never did — a join
     // stayed Pending, and every status poll it sent went unanswered.
-    if let Err(e) = vti_common::tsp_route::send_reply(
+    match vti_common::tsp_route::send_reply(
         &messaging.atm,
         &messaging.profile,
         mediator_did,
@@ -1070,7 +1031,18 @@ async fn handle_tsp(
     )
     .await
     {
-        warn!(recipient = %sender_vid, error = %e, "failed to send TSP reply");
+        Ok(()) => messaging.uncollected.observe_delivered(&sender_vid),
+        Err(e) => {
+            // A per-peer refusal is the sender not collecting its own inbox:
+            // reported once per recipient, not once per reply (R6.4).
+            if !messaging.uncollected.observe_send(
+                &sender_vid,
+                "TSP reply",
+                vti_common::inbox::refused_recipient_not_collecting(&e),
+            ) {
+                warn!(recipient = %sender_vid, error = %e, "failed to send TSP reply");
+            }
+        }
     }
 }
 
@@ -1143,27 +1115,52 @@ fn decide_control(
 async fn handle_tsp_control(
     atm: &Arc<ATM>,
     profile: &Arc<ATMProfile>,
+    uncollected: &vti_common::inbox::UncollectedPeers,
     sender_vid: &str,
     request: affinidi_messaging_core::RelationshipRequest,
     thread_digest: [u8; 32],
     reply_expected: bool,
 ) {
     match decide_control(request, reply_expected) {
+        // A peer refused `limits.queue.peer` moments ago is not collecting its
+        // inbox, so an accept cannot reach it either. A client that has
+        // stopped collecting re-invites after every reply timeout, and
+        // answering each one only added another refused send and another
+        // warning, every 30 s. The relationship is already recorded, so
+        // traffic still flows; the next invite after the window is answered.
+        ControlDecision::Accept if uncollected.is_marked(sender_vid, std::time::Instant::now()) => {
+            debug!(
+                sender = %sender_vid, ?request,
+                "recorded an inbound TSP relationship request; not answering — the peer is not \
+                 collecting its mediator inbox",
+            );
+        }
         ControlDecision::Accept => {
             match atm
                 .tsp()
                 .accept_relationship(profile, sender_vid, thread_digest)
                 .await
             {
-                Ok(state) => info!(
-                    sender = %sender_vid, ?request, ?state,
-                    "accepted an inbound TSP relationship request",
-                ),
-                Err(e) => warn!(
-                    sender = %sender_vid, error = %e,
-                    "could not send a TSP relationship accept; the relationship stays recorded, \
-                     so traffic still flows, but the peer sees no answer",
-                ),
+                Ok(state) => {
+                    uncollected.observe_delivered(sender_vid);
+                    info!(
+                        sender = %sender_vid, ?request, ?state,
+                        "accepted an inbound TSP relationship request",
+                    )
+                }
+                Err(e) => {
+                    if !uncollected.observe_send(
+                        sender_vid,
+                        "TSP relationship accept",
+                        vti_common::inbox::refused_recipient_not_collecting(&e),
+                    ) {
+                        warn!(
+                            sender = %sender_vid, error = %e,
+                            "could not send a TSP relationship accept; the relationship stays \
+                             recorded, so traffic still flows, but the peer sees no answer",
+                        )
+                    }
+                }
             }
         }
         // Reached only when the transport's own §7.3 answer failed to send.
@@ -1266,7 +1263,7 @@ async fn dispatch(inbound: Inbound, state: &AppState) -> Option<Reply> {
     // Message-pickup status heartbeat: dispatch silently (was `ignore_handler`)
     // — no handler, no log line. The one that lands here answers a
     // live-delivery-change, which already redelivers the inbox; acting on
-    // missed messages is `inbox_catch_up_loop`'s, whose status requests are
+    // missed messages is `vti_common::inbox::run_inbox_watch`'s, whose status requests are
     // answered to their own waiter and never reach this dispatcher.
     if msg.typ == MESSAGE_PICKUP_STATUS_TYPE {
         return None;
@@ -1768,13 +1765,15 @@ mod tests {
     fn inbox(
         message_count: u32,
         longest_waited_seconds: Option<u64>,
-    ) -> affinidi_tdk::messaging::protocols::message_pickup::MessagePickupStatusReply {
-        affinidi_tdk::messaging::protocols::message_pickup::MessagePickupStatusReply {
-            message_count,
-            longest_waited_seconds,
-            live_delivery: true,
-            ..Default::default()
-        }
+    ) -> vti_common::inbox::InboxStatus {
+        vti_common::inbox::InboxStatus::from(
+            &affinidi_tdk::messaging::protocols::message_pickup::MessagePickupStatusReply {
+                message_count,
+                longest_waited_seconds,
+                live_delivery: true,
+                ..Default::default()
+            },
+        )
     }
 
     /// VTI-50: a message that has sat in the inbox longer than a live push
@@ -1782,18 +1781,16 @@ mod tests {
     /// one whose messages are still in flight on the live stream, is left alone.
     #[test]
     fn vti_50_only_a_message_live_delivery_missed_triggers_catch_up() {
-        assert!(!inbox_needs_catch_up(&inbox(0, None)), "empty inbox");
+        use vti_common::inbox::STALE_AFTER_SECS;
+        assert!(!inbox(0, None).needs_catch_up(), "empty inbox");
         assert!(
-            !inbox_needs_catch_up(&inbox(1, Some(INBOX_STALE_AFTER_SECS - 1))),
+            !inbox(1, Some(STALE_AFTER_SECS - 1)).needs_catch_up(),
             "a message just pushed is still being acked"
         );
-        assert!(inbox_needs_catch_up(&inbox(
-            1,
-            Some(INBOX_STALE_AFTER_SECS)
-        )));
-        assert!(inbox_needs_catch_up(&inbox(3, Some(600))));
+        assert!(inbox(1, Some(STALE_AFTER_SECS)).needs_catch_up());
+        assert!(inbox(3, Some(600)).needs_catch_up());
         assert!(
-            inbox_needs_catch_up(&inbox(1, None)),
+            inbox(1, None).needs_catch_up(),
             "a mediator that reports no ages still gets a redelivery"
         );
     }
@@ -1815,7 +1812,8 @@ mod tests {
     /// (the shortest seen in the field) is collected with time to spare.
     #[test]
     fn vti_50_catch_up_runs_well_inside_a_short_message_expiry() {
-        let worst_case = INBOX_CATCH_UP_INTERVAL.as_secs() + INBOX_STALE_AFTER_SECS;
+        let worst_case =
+            vti_common::inbox::CHECK_INTERVAL.as_secs() + vti_common::inbox::STALE_AFTER_SECS;
         assert!(worst_case * 3 <= 300, "worst-case catch-up {worst_case}s");
     }
 

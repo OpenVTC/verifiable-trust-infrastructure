@@ -117,6 +117,7 @@ impl super::VtaClient {
             identity: None,
             reply_resolver: Arc::new(tokio::sync::OnceCell::new()),
             require_signed_replies: false,
+            receive_leg: Default::default(),
             transport: super::Transport::Rest {
                 client: crate::http::rest_client(),
                 base_url: "http://loopback.invalid".to_string(),

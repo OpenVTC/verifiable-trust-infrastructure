@@ -61,6 +61,30 @@ pub enum VtaError {
     #[error("tsp transport error: {0}")]
     TspTransport(String),
 
+    /// Requests are being sent, but their replies are not reaching this client.
+    ///
+    /// Raised once [`crate::client::REPLY_TIMEOUT_BREAKER`] reply timeouts have
+    /// happened in a row on one client — each request was accepted by the
+    /// mediator, and nothing came back. That is a receive leg that has stopped:
+    /// the replies are queueing in this client's mediator inbox, and once the
+    /// mediator's per-peer cap (`limits.queue.peer`) of them are waiting, the
+    /// VTA's further replies are refused outright.
+    ///
+    /// Kept apart from [`Self::TspTransport`] because the remedy is different
+    /// (R6.4): the VTA is reachable and answering, so retrying the request or
+    /// re-forming the TSP relationship only queues more replies. The client's
+    /// session has to be rebuilt — reconnected, so its inbox is collected — and
+    /// [`crate::idempotency::is_transient`] does not retry it.
+    #[error(
+        "the request was sent, but replies are not reaching this client \
+         ({consecutive_timeouts} reply timeouts in a row): its mediator inbox is not being \
+         collected — reconnect the session"
+    )]
+    RepliesNotArriving {
+        /// Reply timeouts in a row, this one included.
+        consecutive_timeouts: u32,
+    },
+
     /// Remote endpoint returned a DIDComm problem-report whose `code`
     /// did not match any of the standard `e.p.msg.*` taxonomy variants
     /// (which map to the typed REST-aligned variants above). Inspect
@@ -604,6 +628,13 @@ impl VtaError {
                 "The VTA's TSP mediator is unreachable or rejected the frame. Retry, or \
                  reach the VTA over another transport: `--transport didcomm` / \
                  `--transport rest`.",
+            ),
+            Self::RepliesNotArriving { .. } => Some(
+                "Requests reach the VTA but its replies do not reach this client: the \
+                 client's mediator inbox is not being collected. Reconnect the session \
+                 (rebuild the client) rather than retrying — a retry only queues another \
+                 reply. If it persists, check that no other process holds this DID's \
+                 mediator connection.",
             ),
             #[cfg(feature = "client")]
             Self::Network(_) => Some(
