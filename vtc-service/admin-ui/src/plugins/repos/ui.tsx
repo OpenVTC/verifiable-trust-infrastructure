@@ -13,7 +13,7 @@ import { signingAvailable, SigningUnavailableError } from "@/lib/api";
 import { answerableAtAll, answerStepUp, operationOf } from "@/lib/bound-step-up";
 import { useNameBook } from "@/lib/names";
 import { useToast } from "@/lib/toast";
-import type { GitNsBootstrapStatus, GitNsBreakGlassMark } from "@/lib/wire-types";
+import type { GitNsBreakGlassMark, GitNsNamespaceRow, GitNsRepoRow } from "@/lib/wire-types";
 
 import {
   CONSENT_LABEL,
@@ -25,10 +25,13 @@ import {
 } from "./actions";
 import { gitNsKeys } from "./api";
 import {
+  BOOTSTRAP_STEP_EXPLAINED,
   BREAK_GLASS_STATE_LABEL,
   bootstrapSteps,
-  bootstrapSummary,
+  bootstrapView,
+  bootstrapViewSummary,
   breakGlassState,
+  type StepState,
   type GitNsSelfGrantWaived,
   type Tone,
 } from "./model";
@@ -231,23 +234,61 @@ export function readErrorMessage(err: unknown): string {
   return errorMessage(err);
 }
 
+const STEP_STATE_LABEL: Record<StepState, string> = {
+  done: "in place",
+  missing: "missing",
+  failed: "failed",
+  notApplicable: "not applicable",
+};
+
 /**
- * Workflow · keyring · variables · required check, as four dots.
+ * Workflow · keyring · variables · required check, as four dots: filled in
+ * place, hollow missing, dashed not used by this repository's setup, red
+ * failed.
  *
- * Colour is never the only signal: the group carries a label naming what is
- * and is not in place, and each dot its own title, so the state survives a
- * screen reader and a colour-blind reader alike.
+ * Shape as well as colour carries the state, the group carries a label naming
+ * every step's state, and each dot its own title saying what the step is and
+ * why it stands where it does — so it survives a screen reader and a
+ * colour-blind reader alike.
  */
-export function BootstrapDots({ bootstrap }: { bootstrap: GitNsBootstrapStatus }) {
+export function BootstrapDots({ ns, repo }: { ns: GitNsNamespaceRow; repo: GitNsRepoRow }) {
+  const steps = bootstrapView(ns, repo);
   return (
-    <span className="gitns-dots" role="img" aria-label={bootstrapSummary(bootstrap)}>
-      {bootstrapSteps(bootstrap).map((s) => (
+    <span className="gitns-dots" role="img" aria-label={bootstrapViewSummary(steps)}>
+      {steps.map((s) => (
         <span
           key={s.key}
-          className={s.done ? "gitns-dot done" : "gitns-dot"}
-          title={`${s.label}: ${s.done ? "in place" : "missing"}`}
+          className={`gitns-dot ${s.state}`}
+          title={`${s.label}: ${STEP_STATE_LABEL[s.state]}. ${s.why}\n\n${BOOTSTRAP_STEP_EXPLAINED[s.key]}`}
         />
       ))}
+    </span>
+  );
+}
+
+/** What the dots mean, beside the table that shows them. */
+export function BootstrapLegend() {
+  const steps = bootstrapSteps({ workflow: false, keyring: false, variables: false, requiredCheck: false });
+  return (
+    <span className="gitns-legend gitns-small" aria-label="Commit trust legend">
+      <span className="muted">Commit trust, in order:</span>{" "}
+      {steps.map((s, i) => (
+        <span key={s.key} title={BOOTSTRAP_STEP_EXPLAINED[s.key]} className="gitns-legend-step">
+          {i + 1}. {s.label.toLowerCase()}
+        </span>
+      ))}
+      <span className="gitns-legend-key">
+        <span className="gitns-dot done" aria-hidden="true" /> in place
+      </span>
+      <span className="gitns-legend-key">
+        <span className="gitns-dot missing" aria-hidden="true" /> missing
+      </span>
+      <span className="gitns-legend-key">
+        <span className="gitns-dot notApplicable" aria-hidden="true" /> not applicable
+      </span>
+      <span className="gitns-legend-key">
+        <span className="gitns-dot failed" aria-hidden="true" /> failed
+      </span>
     </span>
   );
 }

@@ -2,11 +2,12 @@
 // what that puts in the public Trust Registry, where the forge has drifted, and
 // what happened to it lately.
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Check, Plus, X } from "lucide-react";
+import { AlertTriangle, Check, Minus, Plus, X } from "lucide-react";
 
+import { InfoTip } from "@/components/InfoTip";
 import { NamedDid } from "@/components/NamedDid";
 import { useSingleAdminMode } from "@/lib/action-badge";
 import { useNameBook } from "@/lib/names";
@@ -49,7 +50,9 @@ import {
 } from "./dialogs";
 import {
   activityVerb,
-  bootstrapSteps,
+  BOOTSTRAP_STEP_EXPLAINED,
+  bootstrapView,
+  commitTrustVerdict,
   countsTowardInvariant,
   desiredTuples,
   expiresWithin,
@@ -70,6 +73,8 @@ import {
   rightLabel,
   shortName,
   type GitNsSelfGrantWaived,
+  type StepState,
+  type Tone,
   waiverFor,
 } from "./model";
 import {
@@ -494,28 +499,83 @@ const OUTCOME_TONE: Record<string, "success" | "neutral" | "danger" | "accent"> 
   skipped: "accent",
 };
 
+const STEP_CHIP: Record<StepState, { tone: Tone; label: string }> = {
+  done: { tone: "success", label: "in place" },
+  missing: { tone: "warning", label: "missing" },
+  failed: { tone: "danger", label: "failed" },
+  notApplicable: { tone: "neutral", label: "not applicable" },
+};
+
+const STEP_ICON: Record<StepState, ReactNode> = {
+  done: <Check aria-hidden="true" size={16} />,
+  missing: <X aria-hidden="true" size={16} />,
+  failed: <AlertTriangle aria-hidden="true" size={16} />,
+  notApplicable: <Minus aria-hidden="true" size={16} />,
+};
+
+const VERDICT_CLASS: Record<Tone, string> = {
+  success: "ok",
+  accent: "",
+  neutral: "",
+  warning: "warn",
+  danger: "error",
+};
+
+/**
+ * Commit trust on one repository, answered first and explained after: a
+ * verdict (enforced, enforced with a caveat, or not — and what to do), then
+ * each setup step with whether it applies here and why, then what stops a
+ * pull request from passing its own check, then the latest check result.
+ */
 function CommitTrust({ ns, repo }: { ns: GitNsNamespaceRow; repo: GitNsRepoRow }) {
   const guard = guardFor(ns, repo);
   const check = lastCheckOf(repo);
+  const verdict = commitTrustVerdict(ns, repo);
+  const steps = bootstrapView(ns, repo);
   return (
     <section className="card" aria-labelledby="gitns-trust">
-      <h3 id="gitns-trust">Commit trust on {ns.forge}</h3>
-      <ul className="gitns-checklist">
-        {bootstrapSteps(repo.bootstrap).map((s) => (
-          <li key={s.key} className={s.done ? "done" : "missing"}>
-            {s.done ? (
-              <Check aria-hidden="true" size={16} />
-            ) : (
-              <X aria-hidden="true" size={16} />
-            )}
-            <span>
-              <b>{s.label}</b>{" "}
-              <span className="visually-hidden">{s.done ? "in place" : "missing"}</span>
-              <span className="muted gitns-small gitns-block">{s.detail}</span>
-            </span>
-          </li>
-        ))}
-      </ul>
+      <div className="gitns-section-head">
+        <h3 id="gitns-trust">Commit trust on {ns.forge}</h3>
+        <InfoTip label="About commit trust">
+          Commit trust means the forge refuses to merge a pull request unless every commit
+          in it is signed by a DID holding git.commit.sign on this repository in the Trust
+          Registry. The bridge sets it up; this card says whether it is in force.
+        </InfoTip>
+      </div>
+
+      <div className={`finding gitns-verdict ${VERDICT_CLASS[verdict.tone]}`} role="status">
+        <strong>{verdict.headline}</strong>
+        <span>{verdict.detail}</span>
+      </div>
+
+      <div>
+        <span className="field-label">
+          Setup steps
+          <InfoTip label="About setup steps">
+            What the bridge puts on the repository. Not every repository uses all four:
+            which apply depends on how the check runs (the guard below) and on the forge. A
+            step marked not applicable is neither missing nor a problem.
+          </InfoTip>
+        </span>
+        <ul className="gitns-checklist">
+          {steps.map((s) => (
+            <li key={s.key} className={s.state}>
+              {STEP_ICON[s.state]}
+              <span>
+                <b>{s.label}</b>{" "}
+                <ToneChip tone={STEP_CHIP[s.state].tone}>{STEP_CHIP[s.state].label}</ToneChip>
+                <InfoTip label={`About ${s.label.toLowerCase()}`}>
+                  {BOOTSTRAP_STEP_EXPLAINED[s.key]}
+                </InfoTip>
+                <span className="muted gitns-small gitns-block">
+                  {s.state === "done" ? s.detail : s.why}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
       {repo.failedStep && (
         <div className="finding error">
           <strong>Failed at: {repo.failedStep}</strong>
@@ -523,9 +583,55 @@ function CommitTrust({ ns, repo }: { ns: GitNsNamespaceRow; repo: GitNsRepoRow }
           <span className="muted">Every step is check-then-apply, so a retry is safe.</span>
         </div>
       )}
+
+      <div
+        className={`finding ${guard.tone === "danger" ? "error" : guard.tone === "warning" ? "warn" : guard.tone === "success" ? "ok" : ""}`}
+      >
+        <strong>
+          Guard: {guard.label}
+          <InfoTip label="About the guard">
+            A pull request's own workflow runs from its own files, so without a guard anyone
+            with write access could edit the check to pass. The guard is what stops that.
+          </InfoTip>
+        </strong>
+        <span>{guard.detail}</span>
+        <span className="muted gitns-small">
+          {guard.source === "reported"
+            ? "As the bridge last reported it."
+            : `Expected for a ${ns.mode}-mode ${ns.kind ?? "namespace"} (design §9); the bridge has not reported the guard in force.`}
+        </span>
+      </div>
+
+      <p className="gitns-small">
+        Latest check:{" "}
+        {check ? (
+          <>
+            <ToneChip
+              tone={check.conclusion === "success" ? "success" : check.conclusion === "failure" ? "danger" : "neutral"}
+            >
+              {check.conclusion}
+            </ToneChip>
+            {check.at && <> {formatDay(check.at)}</>}
+            {check.sha && (
+              <>
+                {" "}
+                on <code>{check.sha.slice(0, 12)}</code>
+              </>
+            )}
+          </>
+        ) : (
+          <span className="muted">none reported</span>
+        )}
+        <InfoTip label="About the latest check">
+          The verify-trust result on the most recent pull request the bridge saw. A failure
+          usually means it did its job — it refused an untrusted commit — not that the setup
+          is broken.
+        </InfoTip>
+      </p>
+
       {repo.steps.length > 0 && (
-        <div>
-          <span className="field-label">Last create, bootstrap or inspect</span>
+        <details className="gitns-last-run">
+          <summary className="gitns-small">The bridge's last run on this repository</summary>
           <ol className="gitns-step-outcomes">
             {repo.steps.map((s, i) => (
               <li key={`${s.step}-${i}`}>
@@ -535,33 +641,14 @@ function CommitTrust({ ns, repo }: { ns: GitNsNamespaceRow; repo: GitNsRepoRow }
               </li>
             ))}
           </ol>
-        </div>
+          <p className="muted gitns-small">
+            What its last create, bootstrap or inspection reported: <i>applied</i> changed
+            something, <i>unchanged</i> found it already right, <i>skipped</i> means the step
+            does not apply here. A step it did not report is not part of this repository's
+            setup.
+          </p>
+        </details>
       )}
-      <div
-        className={`finding ${guard.tone === "danger" ? "error" : guard.tone === "warning" ? "warn" : guard.tone === "success" ? "ok" : ""}`}
-      >
-        <strong>Guard: {guard.label}</strong>
-        <span>{guard.detail}</span>
-        <span className="muted gitns-small">
-          {guard.source === "reported"
-            ? "As the bridge last reported it."
-            : `Expected for a ${ns.mode}-mode ${ns.kind ?? "namespace"} (design §9); the bridge has not reported the guard in force.`}
-        </span>
-      </div>
-      <p className="gitns-small">
-        Last check:{" "}
-        {check ? (
-          <>
-            <ToneChip tone={check.conclusion === "success" ? "success" : check.conclusion === "failure" ? "danger" : "neutral"}>
-              {check.conclusion}
-            </ToneChip>
-            {check.at && <> {formatDay(check.at)}</>}
-            {check.sha && <> on <code>{check.sha.slice(0, 12)}</code></>}
-          </>
-        ) : (
-          <span className="muted">none reported</span>
-        )}
-      </p>
     </section>
   );
 }
@@ -598,33 +685,51 @@ function useRegistryTuples(
 
 type SummaryTone = "ok" | "warn" | "bad" | "neutral";
 
-/** One figure in the strip under the heading; a link to the section that
- *  explains it. */
+const VERDICT_SUMMARY_TONE: Record<Tone, SummaryTone> = {
+  success: "ok",
+  accent: "neutral",
+  neutral: "neutral",
+  warning: "warn",
+  danger: "bad",
+};
+
+/** One figure in the strip under the heading: a link to the section that
+ *  explains it, and an (i) saying what the figure means. */
 function SummaryTile({
   label,
   value,
   detail,
   tone = "neutral",
   href,
+  tip,
 }: {
   label: string;
   value: string;
   detail?: string;
   tone?: SummaryTone;
   href: string;
+  tip: string;
 }) {
   return (
-    <a className={`gitns-summary-tile ${tone}`} href={href}>
-      <span className="gitns-summary-label">{label}</span>
-      <span className="gitns-summary-value">{value}</span>
+    <div className={`gitns-summary-tile ${tone}`}>
+      <span className="gitns-summary-label">
+        {label}
+        <InfoTip label={`About ${label.toLowerCase()}`} side="bottom">
+          {tip}
+        </InfoTip>
+      </span>
+      <a className="gitns-summary-value" href={href} aria-label={`${label}: ${value}. Go to the section`}>
+        {value}
+      </a>
       {detail && <span className="gitns-summary-detail">{detail}</span>}
-    </a>
+    </div>
   );
 }
 
-/** Who holds what, whether commit trust is in place, what is published and
+/** Who holds what, whether commit trust is in force, what is published and
  *  whether the forge has drifted — at a glance, before the detail. */
 function RepoSummary({
+  ns,
   people,
   repo,
   drift,
@@ -632,6 +737,7 @@ function RepoSummary({
   projectionRead,
   rightsRead,
 }: {
+  ns: GitNsNamespaceRow;
   people: GitNsRightRow[];
   repo: GitNsRepoRow;
   drift: number;
@@ -641,10 +747,18 @@ function RepoSummary({
 }) {
   const holders = (right: GitNsRight) =>
     new Set(people.filter((r) => r.right === right).map((r) => r.subject)).size;
-  const steps = bootstrapSteps(repo.bootstrap);
-  const done = steps.filter((s) => s.done).length;
+  const steps = bootstrapView(ns, repo);
+  const applicable = steps.filter((s) => s.state !== "notApplicable");
+  const done = applicable.filter((s) => s.state === "done").length;
+  const verdict = commitTrustVerdict(ns, repo);
   const published = tuples.filter((t) => t.published).length;
   const rightsValue = (right: GitNsRight) => (rightsRead ? String(holders(right)) : "…");
+  const trustValue =
+    verdict.tone === "success" || verdict.tone === "accent"
+      ? "Enforced"
+      : verdict.tone === "danger"
+        ? "Not enforced"
+        : "Needs action";
   return (
     <div className="gitns-summary" role="group" aria-label="Summary">
       <SummaryTile
@@ -652,15 +766,27 @@ function RepoSummary({
         value={rightsValue("git.repo.own")}
         tone={rightsRead && holders("git.repo.own") === 0 ? "bad" : "neutral"}
         href="#gitns-people"
+        tip="People holding git.repo.own here. Owners grant owner, maintainer and committer on the repository; one with no expiry must always remain."
       />
-      <SummaryTile label="Maintainers" value={rightsValue("git.repo.maintain")} href="#gitns-people" />
-      <SummaryTile label="Committers" value={rightsValue("git.commit.sign")} href="#gitns-people" />
+      <SummaryTile
+        label="Maintainers"
+        value={rightsValue("git.repo.maintain")}
+        href="#gitns-people"
+        tip="People holding git.repo.maintain here: they may merge and get the forge's maintain role, but cannot grant rights."
+      />
+      <SummaryTile
+        label="Committers"
+        value={rightsValue("git.commit.sign")}
+        href="#gitns-people"
+        tip="People granted git.commit.sign on this repository itself. Owners and maintainers may commit too, as may anyone with a commit right on the whole namespace — see Through the namespace."
+      />
       <SummaryTile
         label="Commit trust"
-        value={`${done}/${steps.length}`}
-        detail={done === steps.length ? "in place" : `${steps.length - done} missing`}
-        tone={done === steps.length ? "ok" : "warn"}
+        value={trustValue}
+        detail={`${done} of ${applicable.length} steps in place${steps.length > applicable.length ? ` · ${steps.length - applicable.length} not applicable` : ""}`}
+        tone={VERDICT_SUMMARY_TONE[verdict.tone]}
         href="#gitns-trust"
+        tip={`Whether the forge refuses to merge commits not signed by an authorized DID. ${verdict.headline}.`}
       />
       <SummaryTile
         label="Registry"
@@ -674,6 +800,7 @@ function RepoSummary({
         }
         tone={rightsRead && projectionRead && published < tuples.length ? "warn" : "neutral"}
         href="#gitns-registry"
+        tip="The public Trust Registry records these rights call for, and how many are published. The commit-trust check reads these records, so a pending one is a right that does not work yet."
       />
       <SummaryTile
         label="Drift"
@@ -681,6 +808,7 @@ function RepoSummary({
         detail={drift === 0 ? (repo.syncState === "drift" ? "reported" : "in sync") : "to resolve"}
         tone={drift > 0 || repo.syncState === "drift" ? "bad" : "ok"}
         href={drift > 0 || repo.syncState === "drift" ? "#drift" : "#gitns-trust"}
+        tip="Changes made on the forge directly that differ from what the VTC projected — a role someone added, or protection someone weakened. Zero means the forge matches."
       />
     </div>
   );
@@ -1016,6 +1144,7 @@ export function RepoDetail() {
       )}
 
       <RepoSummary
+        ns={ns}
         people={people}
         repo={repo}
         drift={drift.length}

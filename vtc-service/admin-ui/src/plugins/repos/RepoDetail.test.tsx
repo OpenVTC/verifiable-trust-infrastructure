@@ -220,13 +220,18 @@ describe("Repo detail", () => {
 
     const summary = await screen.findByRole("group", { name: "Summary" });
     const tile = (label: string) =>
-      within(summary).getByText(label).closest("a") as HTMLAnchorElement;
-    await waitFor(() => expect(tile("Owners").textContent).toBe("Owners1"));
-    expect(tile("Owners").getAttribute("href")).toBe("#gitns-people");
-    expect(tile("Commit trust").textContent).toMatch(/4\/4in place/);
-    expect(tile("Commit trust").getAttribute("href")).toBe("#gitns-trust");
-    await waitFor(() => expect(tile("Registry").textContent).toMatch(/\d+\/\d+/));
-    expect(tile("Registry").getAttribute("href")).toBe("#gitns-registry");
+      within(summary).getByText(label).closest(".gitns-summary-tile") as HTMLElement;
+    const link = (label: string) => within(tile(label)).getByRole("link");
+    await waitFor(() => expect(link("Owners").textContent).toBe("1"));
+    expect(link("Owners").getAttribute("href")).toBe("#gitns-people");
+    // A verdict, not a fraction: every step this repository uses is in place.
+    expect(link("Commit trust").textContent).toBe("Enforced");
+    expect(tile("Commit trust").textContent).toMatch(/4 of 4 steps in place/);
+    expect(link("Commit trust").getAttribute("href")).toBe("#gitns-trust");
+    await waitFor(() => expect(link("Registry").textContent).toMatch(/\d+\/\d+/));
+    expect(link("Registry").getAttribute("href")).toBe("#gitns-registry");
+    // Each figure explains itself.
+    expect(within(tile("Owners")).getByRole("tooltip").textContent).toMatch(/git\.repo\.own/);
     // Every href names an element on the page.
     for (const a of within(summary).getAllByRole("link")) {
       expect(document.querySelector(a.getAttribute("href")!)).not.toBeNull();
@@ -589,7 +594,7 @@ describe("Repo detail", () => {
     expect(trust.textContent).toMatch(/Guard: Bridge-posted check/);
     expect(trust.textContent).toMatch(/As the bridge last reported it/);
     expect(trust.textContent).toMatch(/ruleset\s*failed\s*422 from the forge/);
-    expect(trust.textContent).toMatch(/Last check:\s*success/);
+    expect(trust.textContent).toMatch(/Latest check:\s*success/);
     expect(trust.textContent).toMatch(/abcdef012345/);
   });
 
@@ -599,7 +604,7 @@ describe("Repo detail", () => {
 
     const trust = await screen.findByRole("region", { name: "Commit trust on github.com" });
     expect(trust.textContent).toMatch(/Solo owner — workflow changes unreviewed/);
-    expect(trust.textContent).toMatch(/Last check:\s*none reported/);
+    expect(trust.textContent).toMatch(/Latest check:\s*none reported/);
   });
 
   it("shows the repository's activity from the namespace feed", async () => {

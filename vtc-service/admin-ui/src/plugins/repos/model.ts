@@ -344,6 +344,173 @@ export function bootstrapSteps(b: GitNsBootstrapStatus): BootstrapStep[] {
   ];
 }
 
+/** What each step is, for the operator who has never seen the design. */
+export const BOOTSTRAP_STEP_EXPLAINED: Record<keyof GitNsBootstrapStatus, string> = {
+  workflow:
+    "A forge Actions workflow (.github/workflows/verify-trust.yml) that runs verify-trust on every pull request and fails it when a commit is not signed by a DID holding git.commit.sign in the Trust Registry.",
+  keyring:
+    "The forge's own signing key (.github/trusted-platform-keys.asc), so verify-trust accepts the merge commits the forge signs when a pull request is merged in its web UI — only clean merges whose parents all verify.",
+  variables:
+    "Repository variables TRUST_REGISTRY_DID and VTC_DID: which Trust Registry verify-trust asks, and whose records count.",
+  requiredCheck:
+    "The ruleset making “Verify commit trust” a required check on the default branch with no bypass. This is the step that actually blocks merging untrusted commits.",
+};
+
+/** A step as it stands on one repository. `notApplicable`: this repository's
+ *  setup does not use it, so it is neither in place nor missing. */
+export type StepState = "done" | "missing" | "failed" | "notApplicable";
+
+export interface BootstrapStepView extends BootstrapStep {
+  state: StepState;
+  /** Why the step is in that state, in a sentence. */
+  why: string;
+}
+
+/**
+ * Each bootstrap step on `repo`, with whether it applies here.
+ *
+ * The VTC records each step as a bare in-place flag, so a step the bridge's
+ * plan never included reads exactly like a missing one. Two signals tell them
+ * apart, and this reads both:
+ *
+ *  - **The guard.** Where verify-trust runs from the org's required workflow,
+ *    or the bridge runs it and posts the check itself, the repository's own
+ *    workflow file is not used (design §9: "the Actions workflow is then not
+ *    needed in fallback mode").
+ *  - **The bridge's last run.** A step reported `skipped`, or left out of a
+ *    run that reported others, is outside the bridge's plan for this forge.
+ *
+ * A step the bridge reported `failed` is failed whatever the guard says.
+ */
+export function bootstrapView(ns: GitNsNamespaceRow, repo: GitNsRepoRow): BootstrapStepView[] {
+  const guard = guardFor(ns, repo);
+  const reported = new Map(repo.steps.map((s) => [s.step, s.outcome]));
+  return bootstrapSteps(repo.bootstrap).map((s) => {
+    const outcome = reported.get(s.key);
+    if (s.done) return { ...s, state: "done", why: "In place, as the bridge last reported." };
+    if (outcome === "failed") {
+      return {
+        ...s,
+        state: "failed",
+        why: "The bridge's last attempt at this step failed. Every step is check-then-apply, so a retry is safe.",
+      };
+    }
+    if (s.key === "workflow" && guard.mode === "requiredWorkflow") {
+      return {
+        ...s,
+        state: "notApplicable",
+        why: "Not needed here: verify-trust runs from the organization's required workflow in the bridge-managed .vgi repository, not from a file in this repository.",
+      };
+    }
+    if (s.key === "workflow" && guard.mode === "bridgePostedCheck") {
+      return {
+        ...s,
+        state: "notApplicable",
+        why: "Not needed here: the bridge runs verify-trust itself and posts the check under the community App's identity, so no workflow file is used.",
+      };
+    }
+    if (outcome === "skipped") {
+      return {
+        ...s,
+        state: "notApplicable",
+        why: "Not needed here: the bridge skipped this step, as its plan for this forge does not use it.",
+      };
+    }
+    if (repo.steps.length > 0 && outcome === undefined) {
+      return {
+        ...s,
+        state: "notApplicable",
+        why: "Not part of this repository's setup: the bridge's last run reported the other steps and not this one.",
+      };
+    }
+    return {
+      ...s,
+      state: "missing",
+      why: "Not in place, and the bridge has not said this repository does without it.",
+    };
+  });
+}
+
+export interface CommitTrustVerdict {
+  tone: Tone;
+  /** One line: is commit trust enforced? */
+  headline: string;
+  /** What that means, and what to do about it if anything. */
+  detail: string;
+}
+
+/**
+ * Commit trust on `repo` in one sentence: enforced, enforced with a caveat,
+ * or not — and what, if anything, the operator should do.
+ */
+export function commitTrustVerdict(ns: GitNsNamespaceRow, repo: GitNsRepoRow): CommitTrustVerdict {
+  const steps = bootstrapView(ns, repo);
+  const guard = guardFor(ns, repo);
+  const gaps = steps.filter((s) => s.state === "missing" || s.state === "failed");
+  const check = steps.find((s) => s.key === "requiredCheck");
+  if (check && (check.state === "missing" || check.state === "failed")) {
+    return {
+      tone: "danger",
+      headline: "Not enforced: untrusted commits can be merged",
+      detail:
+        "The required check is not in place, so nothing on the forge blocks a merge. The bridge re-applies a weakened ruleset by default; if this persists, see Drift below and the bridge's recent jobs.",
+    };
+  }
+  if (gaps.length > 0) {
+    return {
+      tone: "warning",
+      headline: `Action needed: ${gaps.map((s) => s.label.toLowerCase()).join(" and ")} ${gaps.length === 1 ? "is" : "are"} ${gaps.some((s) => s.state === "failed") ? "failing" : "missing"}`,
+      detail:
+        "Merges are blocked unless the check passes, but the check may fail every pull request until this is fixed. The bridge retries on its next inspection; a failure reason is shown below when it gave one.",
+    };
+  }
+  if (guard.tone === "danger") {
+    return {
+      tone: "danger",
+      headline: "Not guaranteed",
+      detail: `${guard.detail} Bind the namespace in bridge mode, or add the protection the guard names.`,
+    };
+  }
+  if (guard.tone === "warning") {
+    return { tone: "warning", headline: `Enforced, with a gap: ${guard.label.toLowerCase()}`, detail: guard.detail };
+  }
+  if (guard.tone === "accent") {
+    return {
+      tone: "accent",
+      headline: "Enforced, relying on reviewers",
+      detail: `${guard.detail} Nothing to do unless you need a stronger guarantee.`,
+    };
+  }
+  const na = steps.filter((s) => s.state === "notApplicable").length;
+  return {
+    tone: "success",
+    headline: "Enforced: only commits signed by authorized DIDs can merge",
+    detail: `Every step this repository uses is in place${na > 0 ? ` (${na} of ${steps.length} do not apply to its setup)` : ""}, and ${guard.label.toLowerCase()} stops a pull request from passing its own check. Nothing to do.`,
+  };
+}
+
+/** The dots' label: what is in place, missing, failed and not applicable. */
+export function bootstrapViewSummary(steps: BootstrapStepView[]): string {
+  const of = (state: StepState) => steps.filter((s) => s.state === state);
+  const names = (list: BootstrapStepView[]) => list.map((s) => s.label.toLowerCase()).join(", ");
+  const done = of("done");
+  const na = of("notApplicable");
+  const gaps = [...of("missing"), ...of("failed")];
+  if (gaps.length === 0 && na.length === 0) return "All four in place";
+  if (done.length === 0 && gaps.length > 0) return "Not bootstrapped";
+  if (gaps.length === 0) {
+    return `All that apply in place; ${names(na)} not applicable`;
+  }
+  return [
+    done.length > 0 ? `${done.map((s) => s.label).join(", ")} in place` : null,
+    of("missing").length > 0 ? `${names(of("missing"))} missing` : null,
+    of("failed").length > 0 ? `${names(of("failed"))} failed` : null,
+    na.length > 0 ? `${names(na)} not applicable` : null,
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
 export function bootstrapSummary(b: GitNsBootstrapStatus): string {
   const steps = bootstrapSteps(b);
   const done = steps.filter((s) => s.done);

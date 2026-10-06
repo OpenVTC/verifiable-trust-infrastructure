@@ -88,7 +88,7 @@ describe("Members — git rights (UI-13)", () => {
     mockFetch(routes());
     mount();
 
-    expect(await screen.findByRole("columnheader", { name: "Git" })).toBeTruthy();
+    expect(await screen.findByRole("columnheader", { name: /^Git/ })).toBeTruthy();
     // Alice: namespace admin on acme and owner of widgets; linked as @alicew.
     const alice = await rowOf("Alice Wong");
     expect(await within(alice).findByText("Namespace admin")).toBeTruthy();
@@ -111,7 +111,7 @@ describe("Members — git rights (UI-13)", () => {
       await screen.findByText(/Git rights are not shown: only a community administrator/),
     ).toBeTruthy();
     await rowOf("Alice Wong");
-    expect(screen.queryByRole("columnheader", { name: "Git" })).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: /^Git/ })).toBeNull();
   });
 
   it("lists a member's rights and linked accounts on their page", async () => {

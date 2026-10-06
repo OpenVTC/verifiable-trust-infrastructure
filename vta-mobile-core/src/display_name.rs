@@ -105,7 +105,7 @@ mod tests {
             ("alice", "alice"),
             (
                 "did:webvh:QmXkAbCdEfGhIjKlMnOp:webvh.storm.ws:glenn-vta",
-                "did:webvh:QmXkAbCdEf…:webvh.storm.ws:glenn-vta",
+                "did:webvh:QmXkAbCdEf…:…storm.ws:glenn-vta",
             ),
             (
                 "did:key:z6MkfrQjWzPQrTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZ4rT",

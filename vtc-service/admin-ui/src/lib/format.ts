@@ -46,7 +46,13 @@ export function shorten(value: string, head = 8, tail = 4): string {
  *
  *   "alice"                                        -> "alice"
  *   "did:webvh:QmXkAbCdEfGhIjKlMnOp:webvh.storm.ws:glenn-vta"
- *                          -> "did:webvh:QmXkAbCdEf…:webvh.storm.ws:glenn-vta"
+ *                          -> "did:webvh:QmXkAbCdEf…:…storm.ws:glenn-vta"
+ *   "did:webvh:QmXkAbCdEfGhIjKlMnOp:dids.firstperson.dev:stem-wall"
+ *                          -> "did:webvh:QmXkAbCdEf…:…firstperson.dev:stem-wall"
+ *   "did:webvh:QmXkAbCdEfGhIjKlMnOp:dids.ic3.dev:fruit-feel"
+ *                          -> "did:webvh:QmXkAbCdEf…:dids.ic3.dev:fruit-feel"
+ *   "did:webvh:QmXkAbCdEfGhIjKlMnOp:firstperson.network:a:b"
+ *                          -> "did:webvh:QmXkAbCdEf…:firstperson.network:a:b"
  *   "did:web:QmXkAbCdEfGhIjKlMnOp:example.com"
  *                                    -> "did:web:QmXkAbCdEf…:example.com"
  *   "did:webvh:Qm123:example.com"           -> "did:webvh:Qm123:example.com"
@@ -56,6 +62,19 @@ export function shorten(value: string, head = 8, tail = 4): string {
  *   "did:webvh:QmXkAbCdEfGhIjKlMnOpQrSt" -> "did:webvh:QmXkAbCdEf…OpQrSt"
  */
 export function shortenDid(did: string, keep = 10): string {
+  return shortenDidKeep(did, keep);
+}
+
+/** Hosts up to this many characters are shown whole. */
+const HOST_KEEP = 12;
+
+/** A host longer than `HOST_KEEP` with subdomains keeps its last two labels. */
+function shortenHost(host: string): string {
+  const labels = host.split(".");
+  return labels.length > 2 && host.length > HOST_KEEP ? `…${labels.slice(-2).join(".")}` : host;
+}
+
+function shortenDidKeep(did: string, keep: number): string {
   if (!did.startsWith("did:")) return did;
   const parts = did.split(":");
   if ((parts[1] === "webvh" || parts[1] === "web") && parts.length > 3) {
@@ -63,6 +82,9 @@ export function shortenDid(did: string, keep = 10): string {
     if (scid.length > keep + 1) {
       parts[2] = `${scid.slice(0, keep)}…`;
     }
+    // The path tells two DIDs on one host apart, so a long host gives up its
+    // subdomains first (`webvh.storm.ws` → `…storm.ws`).
+    if (parts[1] === "webvh") parts[3] = shortenHost(parts[3] ?? "");
     return parts.join(":");
   }
   // did:key and other `did:<method>:<id>` shapes: the id carries no human tail,

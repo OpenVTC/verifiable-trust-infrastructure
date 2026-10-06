@@ -34,13 +34,10 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { Route, Routes, useNavigate, useParams } from "react-router-dom";
 import {
-  ArrowDown,
   ArrowLeft,
   ArrowRight,
-  ArrowUp,
-  ArrowUpDown,
   Check,
   Minus,
   Ticket,
@@ -57,6 +54,8 @@ import {
   type RelationshipsGraph,
 } from "@/lib/api";
 import { CopyButton } from "@/components/CopyButton";
+import { DidText } from "@/components/DidText";
+import { SortableHeader } from "@/components/SortableHeader";
 import { ErrorOrParked } from "@/components/ParkedNotice";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate, shortenDid } from "@/lib/format";
@@ -109,7 +108,7 @@ import {
   type SortDir,
   type SortState,
   type SortValue,
-} from "@/plugins/members/list";
+} from "@/lib/table-sort";
 import { rightLabel, rightRank } from "@/plugins/repos/model";
 import { ApproverDevicesCard } from "@/plugins/members/StepUpApprovers";
 import { StepUpPasskeysCard } from "@/plugins/members/StepUpPasskeys";
@@ -367,6 +366,17 @@ const INITIAL_DIR: Record<MemberSortKey, SortDir> = {
   git: "asc",
 };
 
+/** What each column means, on hover of its (i). */
+const MEMBER_COLUMN_TIPS: Partial<Record<MemberSortKey, string>> = {
+  name: "The member's label in this community: set by an administrator, or by the member for themselves. Not an identity claim.",
+  did: "The member's decentralized identifier. The abbreviation drops the opaque hash and long host subdomains, never the path; hover for the whole DID, or copy it, or show it as a QR code for a phone.",
+  role: "The member's community role — what they may do here. Administrative authority is on the Access control page.",
+  joined: "When the member was admitted.",
+  personhood:
+    "Whether the member presented a personhood credential this community accepts (a proof that a unique person stands behind the DID). A dash means none was asserted.",
+  git: "The member's strongest git right in any namespace this community governs, how many more they hold, and the forge accounts they linked.",
+};
+
 function MembersList() {
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
@@ -446,7 +456,14 @@ function MembersList() {
     setPage(0);
   };
   const header = (key: MemberSortKey, label: string) => (
-    <SortableHeader label={label} sortKey={key} sort={sort} onSort={onSort} />
+    <SortableHeader
+      label={label}
+      sortKey={key}
+      sort={sort}
+      onSort={onSort}
+      tip={MEMBER_COLUMN_TIPS[key]}
+      className={key === "did" ? "members-did" : undefined}
+    />
   );
 
   return (
@@ -564,12 +581,8 @@ function MembersList() {
                       />
                     )}
                   </td>
-                  <td>
-                    <Link to={encodeURIComponent(m.did)}>
-                      <code className="truncate" title={m.did}>
-                        {shortenDid(m.did)}
-                      </code>
-                    </Link>
+                  <td className="members-did">
+                    <DidText did={m.did} to={encodeURIComponent(m.did)} />
                   </td>
                   <td>
                     <code>{m.role}</code>
@@ -642,37 +655,6 @@ function MembersList() {
 
       <RemovedMembers />
     </section>
-  );
-}
-
-/** A column header that sorts the table: the button toggles, the `<th>`
- *  carries `aria-sort` for assistive technology. */
-function SortableHeader<K extends string>({
-  label,
-  sortKey,
-  sort,
-  onSort,
-}: {
-  label: string;
-  sortKey: K;
-  sort: SortState<K> | null;
-  onSort: (key: K) => void;
-}) {
-  const active = sort?.key === sortKey;
-  const ariaSort = !active ? "none" : sort.dir === "asc" ? "ascending" : "descending";
-  const Icon = !active ? ArrowUpDown : sort.dir === "asc" ? ArrowUp : ArrowDown;
-  return (
-    <th scope="col" aria-sort={ariaSort}>
-      <button
-        type="button"
-        className="sortable-th"
-        title={`Sort by ${label.toLowerCase()}`}
-        onClick={() => onSort(sortKey)}
-      >
-        <span>{label}</span>
-        <Icon size={12} aria-hidden="true" />
-      </button>
-    </th>
   );
 }
 
