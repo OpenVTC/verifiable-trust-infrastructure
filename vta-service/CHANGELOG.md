@@ -2,6 +2,18 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.56.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.55.0...vta-service-v0.56.0) — 2026-10-06
+
+
+### Fixed
+
+- **messaging**: A receive leg that stops delivering is reconnected, and the SDK alone deletes frames we cannot unpack ([#1979](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1979))
+
+Adopt affinidi-messaging-sdk 0.33.2 and affinidi-messaging-delivery 0.1.20
+  (affinidi-tdk-rs #927).
+
+
+
 ## [0.55.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.54.0...vta-service-v0.55.0) — 2026-10-06
 
 
