@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { Members } from "@/plugins/members";
@@ -158,5 +158,63 @@ describe("Members — git rights (UI-13)", () => {
     expect(owner?.textContent).toContain("Break-glass · unratified");
     // The other right carries no flag.
     expect(rows[1]?.textContent).not.toContain("Break-glass");
+  });
+});
+
+describe("Members — search and sort", () => {
+  const names = () =>
+    screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((r) => r.querySelector("td")?.textContent ?? "");
+
+  it("narrows the list to rows that loosely match every term", async () => {
+    mockFetch(routes());
+    mount();
+    await rowOf("Alice Wong");
+
+    const search = screen.getByRole("searchbox", { name: "Search" });
+    // A forge login.
+    fireEvent.change(search, { target: { value: "hsato" } });
+    expect(names()).toEqual(["Hana Sato"]);
+    // Letters in order, as typed in a hurry.
+    fireEvent.change(search, { target: { value: "prnr" } });
+    expect(names()).toEqual(["Priya Nair"]);
+    // Every term must match.
+    fireEvent.change(search, { target: { value: "alice zzz" } });
+    expect(screen.getByText("No members match")).toBeTruthy();
+    expect(screen.getByText(/0 of 5 members/)).toBeTruthy();
+  });
+
+  it("sorts by a column, ascending then descending", async () => {
+    mockFetch(routes());
+    mount();
+    await rowOf("Alice Wong");
+
+    const name = screen.getByRole("button", { name: /^Name/ });
+    fireEvent.click(name);
+    expect(screen.getByRole("columnheader", { name: /^Name/ }).getAttribute("aria-sort")).toBe(
+      "ascending",
+    );
+    expect(names()).toEqual(["Alice Wong", "Bob Mensah", "Hana Sato", "No Rights", "Priya Nair"]);
+    fireEvent.click(name);
+    expect(screen.getByRole("columnheader", { name: /^Name/ }).getAttribute("aria-sort")).toBe(
+      "descending",
+    );
+    expect(names()).toEqual(["Priya Nair", "No Rights", "Hana Sato", "Bob Mensah", "Alice Wong"]);
+  });
+
+  it("reads every page of the listing", async () => {
+    mockFetch([
+      taskRoute(MEMBERS_LIST_TASK, (payload) =>
+        (payload as { cursor?: string }).cursor
+          ? { items: [member(NOBODY, "Second Page")], nextCursor: null }
+          : { items: MEMBERS, nextCursor: "next" },
+      ),
+      ...routes().slice(1),
+    ]);
+    mount();
+    expect(await rowOf("Second Page")).toBeTruthy();
+    expect(await rowOf("Alice Wong")).toBeTruthy();
   });
 });
