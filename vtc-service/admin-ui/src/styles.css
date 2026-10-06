@@ -3470,6 +3470,13 @@ a.button.primary:hover {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* A holder with no known name renders as a bare `.truncate` DID, whose own cap
+   (22rem) is wider than this column in the three-up row: it ran under the Grant
+   button and past the card's edge. Cap it at the column instead; it ellipsises
+   and the title still shows the whole DID on hover. */
+.gitns-holder .truncate {
+  max-width: 100%;
+}
 .gitns-departed.warn {
   border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
   background: color-mix(in srgb, var(--warning) 7%, var(--bg-elev));
