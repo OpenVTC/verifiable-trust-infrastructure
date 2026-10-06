@@ -2,6 +2,39 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.64.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.63.3...vta-sdk-v0.64.0) — 2026-10-06
+
+
+### Fixed
+
+- **messaging**: A node that stops collecting its inbox is noticed, and its peers stop paying for it ([#1978](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1978))
+
+* fix(messaging)!: a node that stops collecting its inbox is noticed, and its peers stop paying for it
+
+  A message waits in its recipient's mediator inbox until the recipient deletes
+  it, and while it waits it counts against its sender's per-peer quota
+  (`limits.queue.peer`, 50). On 2026-10-05 two OpenVTC admin sessions stopped
+  collecting: 49 VTA replies queued for each, and every further reply was refused
+  `503 e.p.limits.queue.peer` while the VTA logged a bare "failed to send TSP
+  reply" every 30 s. Sends worked; nothing came back. This makes that state
+  visible from both ends and stops the stack making it worse. It needs nothing
+  from an unreleased affinidi-tdk-rs.
+
+- **vetting**: A new drip rate or live period no longer voids hidden-vetting attestations ([#1977](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1977))
+
+requirementsDigest covered the whole hidden-vetting ext, so republishing how a
+  community runs hidden vetting (dripPerTick, tickLength, vetter/token labels,
+  events) moved the digest. A hidden vetter's attestation is bound to the digest,
+  so every attestation in flight silently stopped counting: the proof verified
+  and the join was decided request_more with nothing said. This held a live PCS
+  join after the operator lowered the drip rate.
+
+  requirements_digest now leaves those operational members out; the suite and
+  keys stay covered, so an applicant still never binds to keys it was not shown.
+  Label liveness is checked on its own when a proof is read.
+
+
+
 ## [0.63.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.63.2...vta-sdk-v0.63.3) — 2026-10-05
 
 

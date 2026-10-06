@@ -2,6 +2,51 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.55.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.54.0...vta-service-v0.55.0) — 2026-10-06
+
+
+### Fixed
+
+- **messaging**: A node that stops collecting its inbox is noticed, and its peers stop paying for it ([#1978](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1978))
+
+* fix(messaging)!: a node that stops collecting its inbox is noticed, and its peers stop paying for it
+
+  A message waits in its recipient's mediator inbox until the recipient deletes
+  it, and while it waits it counts against its sender's per-peer quota
+  (`limits.queue.peer`, 50). On 2026-10-05 two OpenVTC admin sessions stopped
+  collecting: 49 VTA replies queued for each, and every further reply was refused
+  `503 e.p.limits.queue.peer` while the VTA logged a bare "failed to send TSP
+  reply" every 30 s. Sends worked; nothing came back. This makes that state
+  visible from both ends and stops the stack making it worse. It needs nothing
+  from an unreleased affinidi-tdk-rs.
+
+- **vtc**: Handle inbound messages concurrently, so a bind's bridge reply is read ([#1973](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1973))
+
+The VTC's messaging loop awaited each inbound frame's handler before
+  reading the next. An operation that arrives by messaging and then waits
+  on a messaging reply therefore waited on itself: `cnm git namespace
+  bind` over TSP sends the bridge a beginBind job and waits up to 30 s for
+  the answer, which arrives on the same stream and is not read until the
+  handler gives up. Observed live: the bridge answered in ~20 ms, the
+  mediator relayed it in 0-1 ms, and the VTC read it 30.1 s after the
+  request — "TSP reply had no waiter" — while cnm reported "the bridge did
+  not answer". Any inline bridge job reached over DIDComm or TSP is hit the
+  same way.
+
+  The loop now spawns each frame's handler, bounded at 32 in flight, as
+  the VTA's inbound loop has since the same defect was fixed there. Per-
+  sender ordering is kept where TSP needs it (a relationship-control frame
+  is a barrier for its sender's later traffic, Keyring VTI-43): SenderOrder
+  moves from vta-service to vti-common so both nodes share it, and
+  vta-service re-exports it at its old path.
+
+  The reader is factored into run_inbound_loop so it can be tested: a
+  handler that waits on a later frame completes (it hangs, and the test
+  fails at its 5 s bound, with the loop made serial again), and an invite
+  is still handled before its sender's following task.
+
+
+
 ## [0.54.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.53.1...vta-service-v0.54.0) — 2026-10-05
 
 
