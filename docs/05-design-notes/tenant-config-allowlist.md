@@ -267,9 +267,9 @@ version of each is fail-*open*:
 | `tee.attestation_cache_ttl`, `tee.allowed_did_methods` | `vta_name` (optional) |
 | `tee.kms.admin_context_id` | `tee.kms.anchor.table_name` |
 | `resolver_url`, `server.*`, `store.*`, `log.*`, `services.*` | `tee.kms.anchor.writer_credential_ciphertext` (self-protecting — KMS-sealed) |
-| `policy.*`, `trusted_presentation_verifiers` | — |
+| `policy.*`, `trusted_presentation_verifiers` | `tee.bootstrap_claim_did` (Ed25519 `did:key`; authorizes who may claim Mode B, grants nothing itself) |
 | **`tee.kms.allowed_accounts`** (new, baked-only — see §3.5) | — |
-| `admin_did` — **never** in the overlay; established at runtime via Mode-B TOFU | — |
+| `admin_did` — **never** in the overlay; established at runtime via Mode B, claimable only by `bootstrap_claim_did` | — |
 
 ### 3.4 Envelope wire shape
 

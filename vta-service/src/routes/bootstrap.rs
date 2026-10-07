@@ -11,6 +11,11 @@
 //! removed: non-TEE clients now use `pnm setup`'s unified temp-did:key
 //! flow (client mints locally, admin grants via `vta acl create`, PNM
 //! rotates on first authenticated connect).
+//!
+//! Only the holder of the VTA's configured `tee.bootstrap_claim_did` may
+//! claim: the request must name it as `client_did` and be signed by its key.
+//! Anyone else is refused before anything is minted, even if the carve-out
+//! sentinel has gone missing (a host forging its absence, or a lost write).
 
 use axum::Json;
 use axum::extract::State;
@@ -75,6 +80,12 @@ pub struct BootstrapRequestBody {
     #[serde(default, deserialize_with = "deserialize_bounded_label")]
     #[cfg_attr(not(feature = "tee"), allow(dead_code))]
     pub label: Option<String>,
+    /// Ed25519 signature by `client_did` proving control of it,
+    /// base64url-no-pad (see `vta_sdk::sealed_transfer::claim_signing_input`).
+    /// Required on TEE builds.
+    #[serde(default)]
+    #[cfg_attr(not(feature = "tee"), allow(dead_code))]
+    pub claim_signature: Option<String>,
 }
 
 fn deserialize_bounded_label<'de, D>(de: D) -> Result<Option<String>, D::Error>
@@ -107,7 +118,7 @@ pub struct BootstrapResponseBody {
     responses(
         (status = 200, description = "Armored sealed admin bundle + digest", body = BootstrapResponseBody),
         (status = 400, description = "Unsupported version or malformed client_did/nonce"),
-        (status = 403, description = "TEE first-boot unavailable on this VTA build"),
+        (status = 403, description = "TEE first-boot unavailable, or caller is not the configured bootstrap claim DID"),
         (status = 410, description = "Carve-out already used — this VTA already has an admin"),
     ),
 )]
@@ -125,6 +136,9 @@ pub async fn request(
     let client_ed25519_pub = decode_client_did(&req.client_did)?;
     let bundle_id = decode_nonce(&req.nonce)?;
     let now = now_epoch();
+
+    #[cfg(feature = "tee")]
+    verify_claim_proof(&req)?;
 
     #[cfg(feature = "tee")]
     let bundle = mint_mode_b(&state, &client_ed25519_pub, bundle_id, now).await?;
@@ -202,7 +216,9 @@ async fn mint_mode_b(
     bundle_id: [u8; 16],
     now: u64,
 ) -> Result<vta_sdk::sealed_transfer::SealedBundle, AppError> {
-    use crate::tee::admin_bootstrap::{BOOTSTRAP_CARVEOUT_CLOSED_KEY, LEGACY_ADMIN_CREDENTIAL_KEY};
+    use crate::tee::admin_bootstrap::{
+        BOOTSTRAP_CARVEOUT_CLOSED_KEY, BOOTSTRAP_CLAIM_DID_BURNED_KEY, LEGACY_ADMIN_CREDENTIAL_KEY,
+    };
 
     let tee_state =
         state.tee.as_ref().map(|tc| &tc.state).ok_or_else(|| {
@@ -214,6 +230,12 @@ async fn mint_mode_b(
     // sentinel has been written (success path) or nothing has been written
     // (early-error path), so subsequent requests see a consistent view.
     let _carve_out_guard = MODE_B_LOCK.lock().await;
+
+    // Before the carve-out check, so a stranger learns nothing about its state.
+    authorize_claimant(
+        state.config.read().await.tee.bootstrap_claim_did.as_deref(),
+        client_ed25519_pub,
+    )?;
 
     // Carve-out active ⇔ neither the closed-sentinel nor the legacy
     // admin-credential row is present. (The latter is a transitional case —
@@ -228,6 +250,11 @@ async fn mint_mode_b(
         || state
             .keys_ks
             .get_raw(LEGACY_ADMIN_CREDENTIAL_KEY)
+            .await?
+            .is_some()
+        || state
+            .keys_ks
+            .get_raw(BOOTSTRAP_CLAIM_DID_BURNED_KEY)
             .await?
             .is_some()
     {
@@ -339,6 +366,14 @@ async fn mint_mode_b(
         return Err(carve_out_closed_error());
     }
 
+    // Burn the claim DID in the same persist as the sentinel. The bool is
+    // ignored: under MODE_B_LOCK an existing record was already refused above.
+    let claim_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(client_ed25519_pub);
+    state
+        .keys_ks
+        .insert_raw_if_absent(BOOTSTRAP_CLAIM_DID_BURNED_KEY, claim_did.into_bytes())
+        .await?;
+
     // Durability barrier: do not return the bundle until the carve-out
     // close is on disk.
     state.keys_ks.persist().await?;
@@ -365,6 +400,50 @@ async fn mint_mode_b(
 #[cfg(feature = "tee")]
 fn carve_out_closed_error() -> AppError {
     AppError::Gone("TEE first-boot carve-out has already been used".into())
+}
+
+/// Refuse a request not signed by its own `client_did`'s key.
+#[cfg(feature = "tee")]
+fn verify_claim_proof(req: &BootstrapRequestBody) -> Result<(), AppError> {
+    vta_sdk::sealed_transfer::BootstrapRequest {
+        version: req.version,
+        client_did: req.client_did.clone(),
+        nonce: req.nonce.clone(),
+        label: None,
+        claim_signature: req.claim_signature.clone(),
+    }
+    .verify_claim_signature()
+    .map_err(|e| {
+        AppError::Forbidden(format!(
+            "bootstrap claim must be signed by the client_did's key: {e}"
+        ))
+    })
+}
+
+/// Admit only the configured claim DID. Unset admits nobody (fail closed).
+#[cfg(feature = "tee")]
+fn authorize_claimant(
+    configured: Option<&str>,
+    client_ed25519_pub: &[u8; 32],
+) -> Result<(), AppError> {
+    let configured = configured.ok_or_else(|| {
+        AppError::Forbidden(
+            "this VTA has no tee.bootstrap_claim_did configured, so no first-boot admin claim \
+             is accepted"
+                .into(),
+        )
+    })?;
+    let authorized = affinidi_crypto::did_key::did_key_to_ed25519_pub(configured).map_err(|e| {
+        AppError::Internal(format!(
+            "configured tee.bootstrap_claim_did is not an Ed25519 did:key: {e}"
+        ))
+    })?;
+    if &authorized != client_ed25519_pub {
+        return Err(AppError::Forbidden(
+            "client_did is not this VTA's bootstrap claim DID".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Decode the consumer's `did:key` (Ed25519) to its raw 32-byte pubkey.
@@ -546,22 +625,12 @@ mod tests {
         );
     }
 
-    /// The API-contract regression this module exists to close: a consumed
-    /// Mode B carve-out must render **410 Gone**, not 403. A 403 tells the
-    /// caller "you specifically are not authorized" — which is wrong here,
-    /// since *no* caller, with *any* credentials, can ever succeed again.
-    /// Drives the real `mint_mode_b` end-to-end (simulated TEE provider,
-    /// real keyspaces) twice: the first mints an admin and closes the
-    /// carve-out; the second — from an entirely different client key and
-    /// nonce, so this isn't a replay-detection false positive — must be
-    /// refused as `AppError::Gone`, rendering HTTP 410.
-    #[tokio::test]
-    async fn consumed_carveout_returns_410_gone_not_403() {
+    /// Simulated-TEE app state whose configured claim DID is `claim_pub`'s.
+    async fn claim_state(claim_pub: Option<&[u8; 32]>) -> AppState {
         use crate::config::{TeeConfig, TeeMode};
         use crate::server::TeeContext;
 
         let (_app, ctx) = crate::test_support::build_test_app().await;
-
         let tee_state = crate::tee::init_tee(&TeeConfig {
             mode: TeeMode::Simulated,
             ..Default::default()
@@ -574,19 +643,44 @@ mod tests {
             state: tee_state,
             mnemonic_guard: None,
         });
+        state.config.write().await.tee.bootstrap_claim_did =
+            claim_pub.map(affinidi_crypto::did_key::ed25519_pub_to_did_key);
+        state
+    }
 
+    /// Nothing minted: no sentinel, no burn record.
+    async fn assert_nothing_minted(state: &AppState) {
+        use crate::tee::admin_bootstrap::{
+            BOOTSTRAP_CARVEOUT_CLOSED_KEY, BOOTSTRAP_CLAIM_DID_BURNED_KEY,
+        };
+        for key in [
+            BOOTSTRAP_CARVEOUT_CLOSED_KEY,
+            BOOTSTRAP_CLAIM_DID_BURNED_KEY,
+        ] {
+            assert!(
+                state.keys_ks.get_raw(key).await.unwrap().is_none(),
+                "{key} must not be written for a refused claim"
+            );
+        }
+    }
+
+    /// The API-contract regression this module exists to close: a consumed
+    /// Mode B carve-out must render **410 Gone**, not 403. A 403 tells the
+    /// caller "you specifically are not authorized" — which is wrong here,
+    /// since *no* caller, with *any* credentials, can ever succeed again.
+    /// The second request comes from the authorized claim key with a fresh
+    /// nonce, so it is neither a replay nor an unauthorized caller.
+    #[tokio::test]
+    async fn consumed_carveout_returns_410_gone_not_403() {
+        let (_seed, claim_pub) = generate_ed25519_keypair();
+        let state = claim_state(Some(&claim_pub)).await;
         let now = now_epoch();
 
-        // First request succeeds and closes the carve-out.
-        let (_seed_a, pub_a) = generate_ed25519_keypair();
-        mint_mode_b(&state, &pub_a, [1u8; 16], now)
+        mint_mode_b(&state, &claim_pub, [1u8; 16], now)
             .await
             .expect("first bootstrap mints an admin");
 
-        // Second request — different client key, different nonce — must be
-        // refused. The carve-out is consumed, not merely "not for you".
-        let (_seed_b, pub_b) = generate_ed25519_keypair();
-        let err = mint_mode_b(&state, &pub_b, [2u8; 16], now)
+        let err = mint_mode_b(&state, &claim_pub, [2u8; 16], now)
             .await
             .expect_err("second bootstrap must be refused");
 
@@ -599,5 +693,102 @@ mod tests {
             axum::http::StatusCode::GONE,
             "consumed carve-out must render as HTTP 410, not 403/409"
         );
+    }
+
+    #[tokio::test]
+    async fn caller_without_the_claim_did_is_refused_without_minting() {
+        let (_, claim_pub) = generate_ed25519_keypair();
+        let (_, stranger_pub) = generate_ed25519_keypair();
+        let state = claim_state(Some(&claim_pub)).await;
+
+        let err = mint_mode_b(&state, &stranger_pub, [1u8; 16], now_epoch())
+            .await
+            .expect_err("a stranger must not claim admin");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+        assert_nothing_minted(&state).await;
+    }
+
+    #[tokio::test]
+    async fn no_configured_claim_did_admits_nobody() {
+        let (_, caller_pub) = generate_ed25519_keypair();
+        let state = claim_state(None).await;
+
+        let err = mint_mode_b(&state, &caller_pub, [1u8; 16], now_epoch())
+            .await
+            .expect_err("without a claim DID no one may claim");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+        assert_nothing_minted(&state).await;
+    }
+
+    /// The carve-out sentinel vanishes after a successful claim (a host
+    /// forging its absence, or dropping its write). A stranger is still
+    /// refused, and the claim DID's own holder cannot claim twice either.
+    #[tokio::test]
+    async fn missing_sentinel_does_not_reopen_the_claim() {
+        use crate::tee::admin_bootstrap::BOOTSTRAP_CARVEOUT_CLOSED_KEY;
+
+        let (_, claim_pub) = generate_ed25519_keypair();
+        let (_, stranger_pub) = generate_ed25519_keypair();
+        let state = claim_state(Some(&claim_pub)).await;
+        let now = now_epoch();
+
+        mint_mode_b(&state, &claim_pub, [1u8; 16], now)
+            .await
+            .expect("first bootstrap mints an admin");
+        state
+            .keys_ks
+            .remove(BOOTSTRAP_CARVEOUT_CLOSED_KEY)
+            .await
+            .unwrap();
+
+        let err = mint_mode_b(&state, &stranger_pub, [2u8; 16], now)
+            .await
+            .expect_err("a stranger must not walk through a reopened window");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+
+        let err = mint_mode_b(&state, &claim_pub, [3u8; 16], now)
+            .await
+            .expect_err("a burned claim DID must not claim again");
+        assert!(matches!(err, AppError::Gone(_)), "got {err:?}");
+    }
+
+    fn body_from(req: vta_sdk::sealed_transfer::BootstrapRequest) -> BootstrapRequestBody {
+        BootstrapRequestBody {
+            version: req.version,
+            client_did: req.client_did,
+            nonce: req.nonce,
+            label: req.label,
+            claim_signature: req.claim_signature,
+        }
+    }
+
+    #[test]
+    fn claim_proof_requires_a_signature_by_client_did() {
+        use vta_sdk::sealed_transfer::BootstrapRequest;
+
+        let (seed, pubkey) = generate_ed25519_keypair();
+        verify_claim_proof(&body_from(BootstrapRequest::new_signed_claim(
+            &seed, [1u8; 16], None,
+        )))
+        .expect("signed claim verifies");
+
+        let unsigned = body_from(BootstrapRequest::new(pubkey, [1u8; 16], None));
+        assert!(matches!(
+            verify_claim_proof(&unsigned),
+            Err(AppError::Forbidden(_))
+        ));
+
+        // Someone who knows the public claim DID but not its key.
+        let (other_seed, _) = generate_ed25519_keypair();
+        let mut forged = body_from(BootstrapRequest::new_signed_claim(
+            &other_seed,
+            [1u8; 16],
+            None,
+        ));
+        forged.client_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&pubkey);
+        assert!(matches!(
+            verify_claim_proof(&forged),
+            Err(AppError::Forbidden(_))
+        ));
     }
 }
