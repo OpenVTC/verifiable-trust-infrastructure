@@ -874,55 +874,11 @@ impl TrustRegistryClient for MessagingRegistryClient {
     }
 
     async fn list_trust_records(&self, action: &str) -> Result<Vec<Value>, RegistryError> {
-        let authority = self.authority()?.to_string();
-        match self.select().await? {
-            Protocol::Rest => Err(crate::registry::drift::unsupported()),
-            protocol => {
-                let mut out = Vec::new();
-                let mut cursor: Option<String> = None;
-                // Bounded as `list_records` is, and for the same reason: a
-                // partial enumeration compared against the mirror would
-                // invent missing tuples, so running out of pages is an error.
-                const MAX_PAGES: usize = 50;
-                const PAGE: u32 = 200;
-                for page in 0..MAX_PAGES {
-                    let mut payload = json!({
-                        "authority_id": authority,
-                        "action": action,
-                        "limit": PAGE,
-                    });
-                    if let Some(c) = &cursor {
-                        payload["cursor"] = json!(c);
-                    }
-                    let reply = self.round_trip(RECORD_QUERY, payload, protocol).await?;
-                    classify(&reply, "registry/record/query")?;
-                    out.extend(
-                        reply
-                            .payload
-                            .get("records")
-                            .and_then(Value::as_array)
-                            .into_iter()
-                            .flatten()
-                            .cloned(),
-                    );
-                    cursor = reply
-                        .payload
-                        .get("nextCursor")
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
-                    if cursor.is_none() {
-                        return Ok(out);
-                    }
-                    if page + 1 == MAX_PAGES {
-                        return Err(RegistryError::Transient(format!(
-                            "the trust registry is still paginating `{action}` after \
-                             {MAX_PAGES} pages; refusing to verify against a partial list"
-                        )));
-                    }
-                }
-                Ok(out)
-            }
-        }
+        self.query_all_records(Some(action)).await
+    }
+
+    async fn list_all_trust_records(&self) -> Result<Vec<Value>, RegistryError> {
+        self.query_all_records(None).await
     }
 
     async fn delete_trust_record(
@@ -1068,6 +1024,70 @@ impl TrustRegistryClient for MessagingRegistryClient {
 }
 
 impl MessagingRegistryClient {
+    /// Every record the registry holds under this community's authority,
+    /// for one `action` or (with `None`) for all of them, paged to the end
+    /// with `registry/record/query/0.1`.
+    ///
+    /// Bounded as `list_records` is, and for the same reason: a partial
+    /// enumeration compared against the mirror would invent missing tuples,
+    /// and one shown to an operator would hide records, so running out of
+    /// pages is an error rather than a short list.
+    async fn query_all_records(&self, action: Option<&str>) -> Result<Vec<Value>, RegistryError> {
+        let authority = self.authority()?.to_string();
+        match self.select().await? {
+            // The REST arm is a TRQP query surface, not an enumeration one.
+            Protocol::Rest => Err(crate::registry::drift::unsupported()),
+            protocol => {
+                let mut out = Vec::new();
+                let mut cursor: Option<String> = None;
+                const MAX_PAGES: usize = 50;
+                const PAGE: u32 = 200;
+                for page in 0..MAX_PAGES {
+                    let mut payload = json!({
+                        "authority_id": authority,
+                        "limit": PAGE,
+                    });
+                    if let Some(a) = action {
+                        payload["action"] = json!(a);
+                    }
+                    if let Some(c) = &cursor {
+                        payload["cursor"] = json!(c);
+                    }
+                    let reply = self.round_trip(RECORD_QUERY, payload, protocol).await?;
+                    classify(&reply, "registry/record/query")?;
+                    out.extend(
+                        reply
+                            .payload
+                            .get("records")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .cloned(),
+                    );
+                    cursor = reply
+                        .payload
+                        .get("nextCursor")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    if cursor.is_none() {
+                        return Ok(out);
+                    }
+                    if page + 1 == MAX_PAGES {
+                        let what = action.map_or_else(
+                            || "this community's records".to_string(),
+                            |a| format!("`{a}`"),
+                        );
+                        return Err(RegistryError::Transient(format!(
+                            "the trust registry is still paginating {what} after \
+                             {MAX_PAGES} pages; refusing to answer from a partial list"
+                        )));
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+
     /// The REST arm, or a `Permanent` refusal when the registry advertises
     /// `TRQPRest` but no `registry.url` is configured.
     fn rest(&self) -> Result<&UpstreamRegistryClient, RegistryError> {

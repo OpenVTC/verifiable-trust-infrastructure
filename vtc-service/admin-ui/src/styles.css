@@ -380,9 +380,13 @@ button.primary:focus-visible {
   }
 }
 
+/* The console uses the whole window: its pages are mostly tables of DIDs,
+   and an 80rem cap left a third of a wide screen empty while those tables
+   abbreviated and wrapped. Running prose stays readable through its own
+   measure (`.prose-measure`), not the page's. */
 .content {
   padding: var(--space-8) var(--space-10);
-  max-width: 80rem;
+  max-width: none;
   /* The 1fr grid track is minmax(auto,1fr) by default; auto lets inner
      content (long code lines) expand it and scroll the page. Pin the
      floor to 0 so overflow stays inside the scrollable panels. */
@@ -4089,4 +4093,265 @@ a.button.primary:hover {
 }
 .action-link {
   margin: 0;
+}
+
+/* ── Explanations, DIDs ──────────────────────────────────────── */
+
+/* Prose under a card heading keeps a readable line length on a wide screen. */
+.prose-measure {
+  max-width: 110ch;
+}
+
+/* `InfoTip`: an (i) whose explanation opens on hover or keyboard focus. */
+.info-tip {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: var(--space-1);
+}
+.info-tip-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-faint, var(--text-muted));
+  cursor: help;
+}
+.info-tip-btn:hover,
+.info-tip-btn:focus-visible {
+  color: var(--brand);
+}
+.info-tip-btn:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+.info-tip-bubble {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  z-index: 30;
+  width: max-content;
+  max-width: min(22rem, 80vw);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  box-shadow: var(--elev-3);
+  color: var(--text);
+  font-family: var(--font-sans, inherit);
+  font-size: var(--text-sm);
+  font-weight: 400;
+  line-height: var(--text-sm-leading);
+  letter-spacing: normal;
+  text-transform: none;
+  text-align: left;
+  white-space: normal;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity var(--motion-fast);
+  pointer-events: none;
+}
+.info-tip.bottom .info-tip-bubble {
+  bottom: auto;
+  top: calc(100% + 6px);
+}
+.info-tip:hover .info-tip-bubble,
+.info-tip:focus-within .info-tip-bubble {
+  visibility: visible;
+  opacity: 1;
+}
+
+/* `DidText`: an abbreviated DID that wraps at its own colons rather than
+   being clipped, with copy and QR beside it. */
+.did-text {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+}
+.did-text-id {
+  overflow-wrap: anywhere;
+}
+.did-text-actions {
+  display: inline-flex;
+  white-space: nowrap;
+}
+.did-text-actions .copy-icon-btn {
+  margin-left: 0;
+}
+.did-qr-dialog {
+  width: min(24rem, 100%);
+  align-items: center;
+}
+.did-qr-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  align-self: stretch;
+}
+.did-qr-head h3 {
+  margin: 0;
+}
+.did-qr-img {
+  background: #fff;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+}
+.did-qr-text {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  align-self: stretch;
+}
+.did-qr-text code {
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+}
+
+/* Sortable header with an (i) beside its button. */
+.sortable-th-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+/* The DID column takes the spare width, so a webvh DID's path is never cut. */
+.members-did {
+  width: 40%;
+}
+
+/* Commit-trust dots: shape carries the state as well as colour. */
+.gitns-dot.notApplicable {
+  border-style: dashed;
+  border-color: var(--text-faint);
+  opacity: 0.7;
+}
+.gitns-dot.failed {
+  background: var(--danger);
+  border-color: var(--danger);
+  border-radius: 2px;
+}
+.gitns-legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  color: var(--text-muted);
+}
+.gitns-legend-step {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.gitns-legend-key {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* Namespace rights as a table: right, holders, grant. */
+.gitns-col-nsr-right {
+  width: 14rem;
+}
+.gitns-right-name {
+  font-weight: 600;
+}
+.gitns-holder-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+}
+.gitns-holder-chip .copy-icon-btn {
+  margin-left: 0;
+  width: 20px;
+  height: 20px;
+}
+.gitns-holders {
+  gap: var(--space-2);
+}
+
+/* Repo summary tiles: the figure is the link; the (i) explains it. */
+a.gitns-summary-value {
+  color: inherit;
+  text-decoration: none;
+}
+a.gitns-summary-value:hover {
+  color: var(--brand);
+}
+a.gitns-summary-value:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.gitns-summary-label {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Commit-trust step states. */
+.gitns-checklist li.failed > svg {
+  color: var(--danger);
+  flex-shrink: 0;
+}
+.gitns-checklist li.notApplicable > svg {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+.gitns-checklist li.notApplicable b {
+  color: var(--text-muted);
+}
+.gitns-checklist li .chip {
+  margin-left: var(--space-1);
+  vertical-align: middle;
+}
+.gitns-verdict strong {
+  font-size: var(--text-base);
+}
+.gitns-section-head h3 + .info-tip {
+  margin-right: auto;
+}
+.gitns-last-run summary {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+/* Recognition's records table: search takes the width; filters stay compact. */
+.records-toolbar .field.inline {
+  flex: 0 1 11rem;
+}
+.records-toolbar .field.inline.records-search {
+  flex: 3 1 20rem;
+}
+.records-toolbar > button {
+  align-self: flex-end;
+}
+.records-table td {
+  vertical-align: top;
+}
+.records-name {
+  font-weight: 500;
+}
+.records-entity {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.records-entity > .copy-icon-btn {
+  margin-left: 0;
+}
+.records-resource {
+  overflow-wrap: anywhere;
 }

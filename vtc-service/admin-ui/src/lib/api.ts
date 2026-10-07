@@ -47,7 +47,6 @@ export interface HealthResponse {
 import type {
   EffectiveConfig,
   DiagnosticsResponse,
-  RegistryRecordsResponse,
   SyncJobsDiscardResponse,
   SyncJobsListResponse,
   SyncJobsRetryResponse,
@@ -793,8 +792,6 @@ const SYNC_JOBS_RETRY_TASK =
   "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.1";
 const SYNC_JOBS_DISCARD_TASK =
   "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1";
-const REGISTRY_RECORDS_TASK =
-  "https://trusttasks.org/spec/vtc/registry/records/list/0.1";
 
 export const fetchSyncJobs = (
   state?: "pending" | "inFlight" | "failed",
@@ -818,10 +815,6 @@ export const discardSyncJob = (
 ): Promise<SyncJobsDiscardResponse> =>
   postSignedTrustTask<SyncJobsDiscardResponse>(SYNC_JOBS_DISCARD_TASK, { jobId });
 
-export const fetchRegistryRecords = (
-  source: "registry" | "local",
-): Promise<RegistryRecordsResponse> =>
-  postSignedRead<RegistryRecordsResponse>(REGISTRY_RECORDS_TASK, { source });
 
 /**
  * The canonical `Session` shape, as published by the `auth/whoami/0.1`

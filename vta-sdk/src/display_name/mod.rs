@@ -261,9 +261,12 @@ impl NameBook {
 ///
 /// A `did:webvh` / `did:web` carries its meaning in the *tail* — the domain
 /// and path, e.g. `…:webvh.storm.ws:glenn-vta` — and its noise in the middle:
-/// the SCID, a content hash. So the SCID is abbreviated and everything after
-/// it kept verbatim. That is the opposite of a CSS-style trailing ellipsis,
-/// which clips off precisely the informative half.
+/// the SCID, a content hash. So the SCID is abbreviated and the path kept
+/// verbatim. A `did:webvh` host longer than 12 characters with subdomains
+/// keeps only its last two labels (`webvh.storm.ws` → `…storm.ws`): the path
+/// is what tells two DIDs on one host apart, so the host yields first. That
+/// is the opposite of a CSS-style trailing ellipsis, which clips off
+/// precisely the informative half.
 ///
 /// Other methods (`did:key` and friends) have no human tail, so the opaque id
 /// is middle-truncated instead, keeping a head and a tail so an operator can
@@ -276,8 +279,8 @@ impl NameBook {
 /// `vtc-service/admin-ui/src/lib/format.ts`. The two must agree — an operator
 /// moves between a terminal and the admin console looking at the same
 /// community, and a DID abbreviated two ways is one they re-identify on every
-/// switch. The vector table in the tests below is the authority (the console
-/// has no test runner); it is reproduced in that file's doc comment.
+/// switch. The vector table in the tests below is reproduced in that file's
+/// doc comment and asserted by its `format.test.ts`.
 #[must_use]
 pub fn shorten_did(did: &str) -> String {
     shorten_did_keep(did, DEFAULT_KEEP)
@@ -298,13 +301,17 @@ pub fn shorten_did_keep(did: &str, keep: usize) -> String {
     let method = parts.get(1).copied().unwrap_or_default();
 
     if (method == "webvh" || method == "web") && parts.len() > 3 {
+        let mut out: Vec<String> = parts.iter().map(|p| (*p).to_string()).collect();
         let scid = parts[2];
-        if char_len(scid) <= keep + 1 {
-            return did.to_string();
+        if char_len(scid) > keep + 1 {
+            out[2] = format!("{}…", take_chars(scid, keep));
         }
-        let mut out = parts.clone();
-        let abbreviated = format!("{}…", take_chars(scid, keep));
-        out[2] = &abbreviated;
+        // The path after the host is what tells two DIDs on one host apart,
+        // so a long host gives up its subdomains before the path gives up
+        // anything.
+        if method == "webvh" {
+            out[3] = shorten_host(parts[3]);
+        }
         return out.join(":");
     }
 
@@ -320,6 +327,20 @@ pub fn shorten_did_keep(did: &str, keep: usize) -> String {
         take_chars(&id, keep),
         take_last_chars(&id, TAIL)
     )
+}
+
+/// Hosts up to this many characters are shown whole.
+const HOST_KEEP: usize = 12;
+
+/// `webvh.storm.ws` → `…storm.ws`: a host longer than [`HOST_KEEP`] with
+/// subdomains keeps its last two labels. A two-label host is left whole.
+fn shorten_host(host: &str) -> String {
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() > 2 && char_len(host) > HOST_KEEP {
+        format!("…{}", labels[labels.len() - 2..].join("."))
+    } else {
+        host.to_string()
+    }
 }
 
 fn char_len(s: &str) -> usize {
@@ -342,8 +363,8 @@ mod tests {
     // ── shorten_did ─────────────────────────────────────────────────
     //
     // These vectors are reproduced in the doc comment on `shortenDid` in
-    // `vtc-service/admin-ui/src/lib/format.ts`, which has no test runner of
-    // its own — this test is the authority for both. The Rust CLIs and the
+    // `vtc-service/admin-ui/src/lib/format.ts` and asserted there too, by
+    // `format.test.ts`. The Rust CLIs and the
     // React admin UI show the same operator the same DIDs; if they abbreviate
     // differently, the operator cannot tell whether two screens are showing
     // one identity or two. Change one side and you must change the other.
@@ -351,10 +372,24 @@ mod tests {
         // Not a DID — untouched.
         ("alice", "alice"),
         ("https://example.com/@alice", "https://example.com/@alice"),
-        // webvh: SCID abbreviated, domain + path tail kept in full.
+        // webvh: SCID abbreviated, a long host's subdomains dropped, the path
+        // kept in full.
         (
             "did:webvh:QmXkAbCdEfGhIjKlMnOp:webvh.storm.ws:glenn-vta",
-            "did:webvh:QmXkAbCdEf…:webvh.storm.ws:glenn-vta",
+            "did:webvh:QmXkAbCdEf…:…storm.ws:glenn-vta",
+        ),
+        (
+            "did:webvh:QmXkAbCdEfGhIjKlMnOp:dids.firstperson.dev:stem-wall",
+            "did:webvh:QmXkAbCdEf…:…firstperson.dev:stem-wall",
+        ),
+        // A short host, or one without subdomains, is kept whole.
+        (
+            "did:webvh:QmXkAbCdEfGhIjKlMnOp:dids.ic3.dev:fruit-feel",
+            "did:webvh:QmXkAbCdEf…:dids.ic3.dev:fruit-feel",
+        ),
+        (
+            "did:webvh:QmXkAbCdEfGhIjKlMnOp:firstperson.network:a:b",
+            "did:webvh:QmXkAbCdEf…:firstperson.network:a:b",
         ),
         // web: same rule.
         (

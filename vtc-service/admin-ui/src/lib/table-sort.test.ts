@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { compareValues, didHandle, matchScore, nextSort, searchTerms } from "./list";
+import { compareValues, didHandle, matchScore, nextSort, searchTerms } from "./table-sort";
 
 const DID = "did:webvh:QmNvpxDbHuAbCdEf:webvh.storm.ws:glance-arrow";
 const fields = (name: string, did = DID) => ({

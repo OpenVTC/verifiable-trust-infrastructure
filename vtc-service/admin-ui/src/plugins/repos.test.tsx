@@ -244,7 +244,7 @@ describe("Repos plugin — overview", () => {
     expect(
       within(section).getByRole("link", { name: "github.com/oldorg/tool" }).getAttribute("href"),
     ).toBe(`/repos/repo/${encodeURIComponent("github.com/oldorg/tool")}`);
-    const table = screen.getByRole("table");
+    const table = within(screen.getByRole("region", { name: /· repositories$/ })).getByRole("table");
     expect(within(table).queryByText("oldorg/tool")).toBeNull();
   });
 
@@ -406,7 +406,9 @@ describe("Repos plugin — overview", () => {
     mockFetch(gitNsRoutes());
     mount();
 
-    const table = await screen.findByRole("table");
+    const table = await within(
+      await screen.findByRole("region", { name: /· repositories$/ }),
+    ).findByRole("table");
     const row = (name: string) => within(table).getByText(name).closest("tr")!;
     await within(table).findByText("acme/widgets");
 

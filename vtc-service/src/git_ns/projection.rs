@@ -554,7 +554,7 @@ pub async fn published(state: &AppState) -> Result<BTreeMap<String, Published>, 
     Ok(out)
 }
 
-async fn mirror_put(state: &AppState, p: &Published) -> Result<(), AppError> {
+pub(crate) async fn mirror_put(state: &AppState, p: &Published) -> Result<(), AppError> {
     state
         .git_ns
         .projection_ks

@@ -7,6 +7,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { FolderGit2, Plus } from "lucide-react";
 
+import { CopyButton } from "@/components/CopyButton";
+import { InfoTip } from "@/components/InfoTip";
 import { NamedDid } from "@/components/NamedDid";
 import { fetchActivePolicy } from "@/lib/policies-api";
 import { useNameBook } from "@/lib/names";
@@ -44,6 +46,7 @@ import {
 import {
   BIND_PATH,
   BootstrapDots,
+  BootstrapLegend,
   BREAK_GLASS_PATH,
   DEPARTED_PATH,
   errorMessage,
@@ -360,11 +363,43 @@ function ReposTable({
         <thead>
           <tr>
             <th scope="col">Repository</th>
-            <th scope="col">Owners</th>
-            <th scope="col">Maintainers</th>
-            <th scope="col">Committers</th>
-            <th scope="col">VGI</th>
-            <th scope="col">Forge sync</th>
+            <th scope="col">
+              Owners
+              <InfoTip label="About owners" side="bottom">
+                Hold git.repo.own: may grant owner, maintainer and committer on the
+                repository, and get the forge role the bridge maps ownership to.
+              </InfoTip>
+            </th>
+            <th scope="col">
+              Maintainers
+              <InfoTip label="About maintainers" side="bottom">
+                Hold git.repo.maintain: may merge, and get the forge's maintain role. They
+                cannot grant rights.
+              </InfoTip>
+            </th>
+            <th scope="col">
+              Committers
+              <InfoTip label="About committers" side="bottom">
+                Hold git.commit.sign: their DID-signed commits pass the commit-trust check.
+                They need no forge access — they contribute through fork pull requests.
+              </InfoTip>
+            </th>
+            <th scope="col">
+              Commit trust
+              <InfoTip label="About commit trust" side="bottom">
+                The four setup steps that make the forge refuse unsigned or untrusted
+                commits: workflow, keyring, variables, required check. A filled dot is in
+                place, an empty one missing, a dashed one not used by this repository's
+                setup. Hover a dot for details.
+              </InfoTip>
+            </th>
+            <th scope="col">
+              Forge sync
+              <InfoTip label="About forge sync" side="bottom">
+                Whether the forge still matches what the VTC projected — roles and branch
+                protection. Drift means someone changed it on the forge directly.
+              </InfoTip>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -403,7 +438,7 @@ function ReposTable({
                 <td className="tabular">{unmanaged ? "—" : r.maintainers}</td>
                 <td className="tabular">{unmanaged ? "—" : r.committers}</td>
                 <td>
-                  <BootstrapDots bootstrap={r.bootstrap} />
+                  <BootstrapDots ns={ns} repo={r} />
                 </td>
                 <td>
                   <div className="gitns-sync">
@@ -472,8 +507,9 @@ function NamespaceRights({
       <span className="muted">Nobody</span>
     ) : (
       rows.map((r) => (
-        <span key={r.subject} className="gitns-holder">
+        <span key={r.subject} className="gitns-holder-chip">
           <NamedDid did={r.subject} book={book} />
+          <CopyButton value={r.subject} label="Copy DID" successMessage="DID copied" />
           {r.expiresAt && (
             <span className="muted gitns-small"> until {new Date(r.expiresAt).toLocaleDateString()}</span>
           )}
@@ -484,41 +520,84 @@ function NamespaceRights({
   return (
     <section className="card" aria-labelledby={`gitns-nsr-${ns.id}`}>
       <h3 id={`gitns-nsr-${ns.id}`}>Namespace rights in {ns.owner}</h3>
-      <div className="gitns-nsr">
-        <code className="gitns-right-admin">git.ns.admin</code>
-        <div className="gitns-holders">{list(admins)}</div>
-        <button
-          type="button"
-          className="secondary sm"
-          disabled={!bound}
-          onClick={() => onGrant("git.ns.admin")}
-        >
-          Grant
-        </button>
-
-        <code className="gitns-right-create">git.repo.create</code>
-        <div className="gitns-holders">
-          {isPersonal(ns) ? (
-            <span>
-              The account holder only — a personal account cannot let anyone else
-              create a repository.
-            </span>
-          ) : (
-            list(creators)
-          )}
-        </div>
-        {isPersonal(ns) ? (
-          <span />
-        ) : (
-          <button
-            type="button"
-            className="secondary sm"
-            disabled={!bound}
-            onClick={() => onGrant("git.repo.create")}
-          >
-            Grant
-          </button>
-        )}
+      <div className="table-scroll">
+        <table className="data-table gitns-table gitns-nsr-table">
+          <thead>
+            <tr>
+              <th scope="col" className="gitns-col-nsr-right">Right</th>
+              <th scope="col">Held by</th>
+              <th scope="col" className="gitns-col-actions">
+                <span className="visually-hidden">Actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <span className="gitns-right-name">Namespace admin</span>
+                <InfoTip label="About namespace admin">
+                  Can grant any right in {ns.resource} and manages its repositories —
+                  treat it like an org owner. Gives no role on the forge by itself.
+                  Granting it is destructive-class and needs a passkey step-up.
+                </InfoTip>
+                <div>
+                  <code className="gitns-right-admin gitns-small">git.ns.admin</code>
+                </div>
+              </td>
+              <td>
+                <div className="gitns-holders">{list(admins)}</div>
+              </td>
+              <td>
+                <button
+                  type="button"
+                  className="secondary sm"
+                  disabled={!bound}
+                  title="Grant namespace admin to a current member"
+                  onClick={() => onGrant("git.ns.admin")}
+                >
+                  Grant
+                </button>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <span className="gitns-right-name">Repo creator</span>
+                <InfoTip label="About repo creator">
+                  May create new repositories in {ns.resource} through the VTC and becomes
+                  their first owner. Cannot pass the right on.
+                </InfoTip>
+                <div>
+                  <code className="gitns-right-create gitns-small">git.repo.create</code>
+                </div>
+              </td>
+              <td>
+                <div className="gitns-holders">
+                  {isPersonal(ns) ? (
+                    <span>
+                      The account holder only — a personal account cannot let anyone else
+                      create a repository.
+                    </span>
+                  ) : (
+                    list(creators)
+                  )}
+                </div>
+              </td>
+              <td>
+                {!isPersonal(ns) && (
+                  <button
+                    type="button"
+                    className="secondary sm"
+                    disabled={!bound}
+                    title="Grant repo creator to a current member"
+                    onClick={() => onGrant("git.repo.create")}
+                  >
+                    Grant
+                  </button>
+                )}
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
       <p className="muted gitns-small">
         A namespace admin can grant anything in the namespace — treat it like org
@@ -762,9 +841,7 @@ export function Overview() {
         <section className="card" aria-labelledby="gitns-repos-title">
           <div className="gitns-section-head">
             <h3 id="gitns-repos-title">{selected.resource} · repositories</h3>
-            <span className="muted gitns-small">
-              VGI bootstrap: workflow · keyring · variables · required check
-            </span>
+            <BootstrapLegend />
           </div>
           {reposQ.isPending && <p>Loading repositories…</p>}
           {reposQ.isError && (
@@ -789,7 +866,7 @@ export function Overview() {
       )}
 
       {selected && (
-        <div className="gitns-two">
+        <>
           {rightsQ.isPending ? (
             <section className="card">
               <h3>Namespace rights</h3>
@@ -814,9 +891,11 @@ export function Overview() {
               }
             />
           )}
-          <BreakGlassCard />
-          <DepartedCard />
-        </div>
+          <div className="gitns-pair">
+            <BreakGlassCard />
+            <DepartedCard />
+          </div>
+        </>
       )}
 
       {detached.length > 0 && (
