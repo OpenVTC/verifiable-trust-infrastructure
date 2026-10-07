@@ -2,6 +2,17 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.64.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.64.1...vta-sdk-v0.64.2) — 2026-10-07
+
+
+### Added
+
+- **vtc**: The console explains itself, uses the full width, and Recognition lists every trust record ([#1984](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1984))
+
+* fix(vtc): the console explains what it shows, uses the full width, and marks setup steps a repository does not use
+
+
+
 ## [0.64.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.64.0...vta-sdk-v0.64.1) — 2026-10-06
 
 
