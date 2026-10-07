@@ -36,6 +36,8 @@ toml = { workspace = true }
 serde_ignored = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+# Validates the overlay-delivered bootstrap claim DID as an Ed25519 did:key.
+affinidi-crypto = { workspace = true }
 tracing = { workspace = true }
 ipnetwork = { workspace = true }
 

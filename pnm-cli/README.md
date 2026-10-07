@@ -88,12 +88,25 @@ Cold-start operators (running `vta` themselves) pair this with
 `vta import-did --did <pnm-did> --role admin` on the VTA host before
 phase 2. See `docs/02-vta/cold-start.md` for the full script.
 
-For a TEE-attested first-boot against a fresh Nitro Enclave VTA, the
-single-step path is:
+For a TEE-attested first-boot against a fresh Nitro Enclave VTA, first mint
+the claim DID **before** the VTA is created, and supply the printed DID at VTA
+creation — the enclave accepts a first-boot claim only from its holder:
 
 ```sh
-pnm bootstrap connect --vta-did "$VTA_DID" --expect-pcr0 "$EXPECTED_PCR0"
+pnm bootstrap claim-did create --slug my-vta
 ```
+
+The private key stays in the OS keyring (never on disk; a build or
+`VTI_SECURE_STORE=file` that would store it elsewhere is refused). Once the VTA
+is up, claim it with the same slug:
+
+```sh
+pnm bootstrap connect --slug my-vta --vta-did "$VTA_DID" --expect-pcr0 "$EXPECTED_PCR0"
+```
+
+The claim key is removed once a genuine enclave has minted for it. Use
+`claim-did show` to reprint the DID, or `claim-did discard` if its VTA is never
+created.
 
 This drives `POST /bootstrap/request`, opens the sealed admin bundle, and
 imports the resulting credential into the keyring. Set `VTA_DID` to the
@@ -226,7 +239,8 @@ url = "http://localhost:8100"
 | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `setup --name <slug> [--overwrite]`                      | Phase 1: mint an ephemeral `did:key`, park it in the keyring as a pending VTA binding under `<slug>`. |
 | `setup continue <slug> --vta-did <did>`                  | Phase 2: bind the VTA's DID to the entry from phase 1 and mark it ready to authenticate.                  |
-| `bootstrap connect --vta-did <did> --expect-pcr0 <hex>`   | DID-first TEE-attested first-boot; explicit `--vta-url` fallback. Drives `POST /bootstrap/request`.        |
+| `bootstrap claim-did create --slug <slug>`               | Mint the ephemeral DID (key kept in the OS keyring) that authorizes a TEE VTA's first-boot claim; supply it at VTA creation. `show` / `discard` reprint or remove it. |
+| `bootstrap connect --slug <slug> --vta-did <did> --expect-pcr0 <hex>` | DID-first TEE-attested first-boot, signed with the slug's claim DID; explicit `--vta-url` fallback. Drives `POST /bootstrap/request`. |
 | `auth login --credential-bundle <file>`                  | Apply a sealed admin credential bundle delivered out-of-band (e.g. a backup-restore handoff or a sealed transfer from another operator). |
 
 ### Authentication

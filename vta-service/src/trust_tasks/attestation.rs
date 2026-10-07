@@ -288,6 +288,7 @@ pub(super) async fn handle_mnemonic_export(
         client_did,
         nonce: payload.nonce.to_string(),
         label: payload.label.map(|l| l.to_string()),
+        claim_signature: None,
     };
     match operations::attestation::export_mnemonic_sealed(
         state,

@@ -7914,6 +7914,7 @@ dependencies = [
  "tracing-subscriber",
  "vta-cli-common",
  "vta-sdk",
+ "zeroize",
 ]
 
 [[package]]
@@ -11339,6 +11340,7 @@ dependencies = [
 name = "vta-config"
 version = "0.21.0"
 dependencies = [
+ "affinidi-crypto",
  "ipnetwork",
  "serde",
  "serde_ignored",

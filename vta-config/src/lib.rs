@@ -602,6 +602,12 @@ pub struct TeeConfig {
     /// never accept an overlay.
     #[serde(default)]
     pub allowed_kms_accounts: Vec<String>,
+    /// Ed25519 `did:key` that alone may claim first-boot admin via Mode B
+    /// (`POST /bootstrap/request`). Authorizes the claimant only — it is never
+    /// an admin identity. Unset means no Mode B claim is accepted. Tenant
+    /// overlay field, so it is in the attested config digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_claim_did: Option<String>,
 }
 
 /// KMS configuration for TEE secret bootstrap.
@@ -853,6 +859,7 @@ impl Default for TeeConfig {
             storage_key_salt: default_storage_key_salt(),
             allowed_did_methods: None,
             allowed_kms_accounts: Vec::new(),
+            bootstrap_claim_did: None,
         }
     }
 }

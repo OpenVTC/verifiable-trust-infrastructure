@@ -268,8 +268,9 @@ version of each is fail-*open*:
 | `tee.kms.admin_context_id` | `tee.kms.anchor.table_name` |
 | `resolver_url`, `server.*`, `store.*`, `log.*`, `services.*` | `tee.kms.anchor.writer_credential_ciphertext` (self-protecting — KMS-sealed) |
 | `policy.*`, `trusted_presentation_verifiers` | `messaging.setup_acl` — opens the VTA's *own* account on the chosen mediator; no power beyond choosing `mediator_did` |
+| — | `tee.bootstrap_claim_did` (Ed25519 `did:key`; authorizes who may claim Mode B, grants nothing itself) |
 | **`tee.kms.allowed_accounts`** (new, baked-only — see §3.5) | — |
-| `admin_did` — **never** in the overlay; established at runtime via Mode-B TOFU | — |
+| `admin_did` — **never** in the overlay; established at runtime via Mode B, claimable only by `bootstrap_claim_did` | — |
 
 ### 3.4 Envelope wire shape
 
