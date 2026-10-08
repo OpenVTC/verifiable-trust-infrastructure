@@ -618,7 +618,7 @@ by what the page chooses to show:
 | | Console (`/admin/`) | Member portal (`/members/`) |
 |---|---|---|
 | Who may sign in | An administrator (any administrative role) | An **active member** |
-| Sign-in methods | Passkey, wallet (SIOPv2), VTA identity | Wallet (SIOPv2) or a portal passkey — nothing else |
+| Sign-in methods | Passkey, wallet (SIOPv2), VTA identity | SIOPv2 issued by the member's VTA, or a portal passkey — nothing else |
 | Token audience | `VTC` | `VTC-member` |
 | Session store | `sessions` | `member_sessions` |
 | Passkey store | `passkey` | `member_passkeys` |
@@ -644,13 +644,23 @@ backend would otherwise accept the subject. Portal passkeys live in
 their own keyspace too, so one can never open a console session or
 answer a step-up.
 
-**Signing in.** The wallet runs its SIOPv2 round-trip against
-`<origin>/v1/member/wallet` (the same header-less shape as the
-console's `/v1/wallet`, with a different audience at the end) and the
-portal mirrors the bearer into its cookies via `POST /v1/member/session`.
-A **portal passkey** signs in without opening the wallet; a member adds
-one from the portal after a wallet sign-in. Adding or removing a
-passkey requires a session established with the wallet (`amr` contains
+**Signing in.** A member signs in as their **VTA identity**: the
+portal asks the wallet extension which VTA persona this community
+knows them as (`walletProfile`, which binds one on first use), takes a
+challenge for that DID from `<origin>/v1/member/wallet/auth/challenge`,
+has the VTA mint the SIOPv2 `id_token` with the challenge as nonce
+(`proxyLogin` — the key never leaves the VTA), and posts it to
+`wallet/auth/` — the same header-less shapes as the console's
+`/v1/wallet`, with a different audience at the end. The portal then
+mirrors the bearer into its cookies via `POST /v1/member/session`.
+There is no button for the extension's own `login()`: it self-issues
+with the extension's holder `did:key` unless a persona is bound, and a
+community admits members by their VTA identity, so it would present a
+DID no community admitted. When the daemon refuses a sign-in, the page
+names the DID the VTA presented.
+A **portal passkey** signs in without going through the VTA; a member
+adds one from the portal after a VTA sign-in. Adding or removing a
+passkey requires a session established by DID proof (`amr` contains
 `did`) — the DID is the anchor, so a stolen passkey cannot enrol more
 or remove the member's others. Changes are audited as
 `MemberPasskeyChanged`.
@@ -660,7 +670,7 @@ or remove the member's others. Changes are audited as
 It is not in a browser store yet; the sign-in page carries the manual
 install steps (build with Node 24+, load `packages/extension/dist/`
 unpacked in a Chromium browser, finish its setup) and opens them when
-no wallet is detected.
+no wallet that can sign in as a VTA identity is detected.
 
 **Routes** (all under `/v1/member/`): `wallet/auth/{challenge,,refresh}`,
 `session`, `auth/refresh`, `sign-out`, `passkey-login/{start,finish}`

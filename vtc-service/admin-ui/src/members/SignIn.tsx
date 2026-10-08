@@ -1,6 +1,10 @@
-// Member sign-in: the browser wallet (SIOPv2) or a portal passkey — nothing
-// else. Only an active member of this community is admitted; the daemon says
-// so in one message whatever the reason, and so does this page.
+// Member sign-in: SIOPv2 issued by the member's own VTA, or a portal passkey —
+// nothing else. Only an active member of this community is admitted; the
+// daemon says so in one message whatever the reason, and so does this page.
+//
+// There is deliberately no "sign in with this browser's wallet" button: the
+// extension's own `login()` presents its holder `did:key`, which no community
+// admitted as a member. The VTA sign-in always presents the VTA identity.
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -9,23 +13,24 @@ import { Fingerprint, Wallet } from "lucide-react";
 import { MemberApiError } from "./api";
 import { InstallWallet } from "./InstallWallet";
 import {
-  isWalletInstalled,
+  isVtaSignInAvailable,
   passkeysSupported,
+  PresentedDidError,
   signInWithPasskey,
-  signInWithWallet,
+  signInWithVta,
 } from "./auth";
 
 type Phase =
   | { kind: "idle" }
-  | { kind: "running"; method: "wallet" | "passkey" }
+  | { kind: "running"; method: "vta" | "passkey" }
   | { kind: "error"; message: string; hint?: string };
 
 const NOT_A_MEMBER_HINT =
   "Sign-in is for active members of this community. If you have joined, make " +
   "sure you are signing in with the identity the community admitted — your " +
-  "wallet can hold more than one.";
+  "VTA can hold more than one.";
 
-function describe(err: unknown, method: "wallet" | "passkey"): Phase {
+function describe(err: unknown, method: "vta" | "passkey"): Phase {
   if (err instanceof DOMException && err.name === "NotAllowedError") {
     return { kind: "error", message: "The passkey prompt was cancelled." };
   }
@@ -36,9 +41,11 @@ function describe(err: unknown, method: "wallet" | "passkey"): Phase {
       message: "This community didn't accept that sign-in.",
       hint:
         method === "passkey"
-          ? "Passkeys work once you have added one from a wallet sign-in. " +
+          ? "Passkeys work once you have added one after signing in with your VTA. " +
             NOT_A_MEMBER_HINT
-          : NOT_A_MEMBER_HINT,
+          : err instanceof PresentedDidError
+            ? `Your VTA signed in as ${err.presentedDid}. ` + NOT_A_MEMBER_HINT
+            : NOT_A_MEMBER_HINT,
     };
   }
   return { kind: "error", message };
@@ -47,13 +54,13 @@ function describe(err: unknown, method: "wallet" | "passkey"): Phase {
 export function SignIn({ communityName }: { communityName?: string | null }) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const qc = useQueryClient();
-  const walletInstalled = isWalletInstalled();
+  const vtaAvailable = isVtaSignInAvailable();
   const busy = phase.kind === "running";
 
-  const run = async (method: "wallet" | "passkey") => {
+  const run = async (method: "vta" | "passkey") => {
     setPhase({ kind: "running", method });
     try {
-      await (method === "wallet" ? signInWithWallet() : signInWithPasskey());
+      await (method === "vta" ? signInWithVta() : signInWithPasskey());
       setPhase({ kind: "idle" });
       await qc.invalidateQueries({ queryKey: ["member-me"] });
     } catch (err) {
@@ -69,27 +76,27 @@ export function SignIn({ communityName }: { communityName?: string | null }) {
           Sign in to {communityName || "your community"}
         </h1>
         <p className="lead">
-          Use your VTA Wallet or a passkey you've added here. There are no
-          passwords.
+          Sign in as the identity your VTA holds for this community, or with
+          a passkey you've added here. There are no passwords.
         </p>
 
         <div className="signin-options">
           <button
             type="button"
             className="btn btn-primary btn-lg"
-            onClick={() => run("wallet")}
-            disabled={busy || !walletInstalled}
+            onClick={() => run("vta")}
+            disabled={busy || !vtaAvailable}
           >
             <Wallet size={18} aria-hidden="true" />
-            {phase.kind === "running" && phase.method === "wallet"
-              ? "Waiting for your wallet…"
-              : "Sign in with VTA Wallet"}
+            {phase.kind === "running" && phase.method === "vta"
+              ? "Waiting for your VTA…"
+              : "Sign in with your VTA"}
           </button>
-          {!walletInstalled && (
-            <p className="option-note">
-              No wallet detected in this browser — install it below, then reload.
-            </p>
-          )}
+          <p className="option-note">
+            {vtaAvailable
+              ? "SIOPv2: your VTA signs as your member identity. Its key never leaves your VTA."
+              : "Needs the VTA Wallet browser extension, which connects this page to your VTA — install it below, then reload."}
+          </p>
 
           <button
             type="button"
@@ -103,7 +110,7 @@ export function SignIn({ communityName }: { communityName?: string | null }) {
               : "Sign in with a passkey"}
           </button>
           <p className="option-note">
-            First time? Sign in with your wallet, then add a passkey for this
+            First time? Sign in with your VTA, then add a passkey for this
             device.
           </p>
         </div>
@@ -116,7 +123,7 @@ export function SignIn({ communityName }: { communityName?: string | null }) {
         )}
       </section>
 
-      <InstallWallet open={!walletInstalled} />
+      <InstallWallet open={!vtaAvailable} />
 
       <p className="signin-foot">
         Not a member yet? Start at{" "}

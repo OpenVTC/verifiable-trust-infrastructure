@@ -1,8 +1,8 @@
 //! `/v1/member/*` — the member portal's routes.
 //!
-//! Sign-in is by the browser wallet (SIOPv2) or by a portal passkey, and only
-//! for an active member; see [`crate::member_portal`] for how these sessions
-//! are kept apart from the console's.
+//! Sign-in is by SIOPv2 issued by the member's own VTA or by a portal passkey,
+//! and only for an active member; see [`crate::member_portal`] for how these
+//! sessions are kept apart from the console's.
 //!
 //! **Why these are plain REST routes with no Trust Task binding.** They are the
 //! browser's own plumbing, the same class as the console's wallet aliases and
@@ -47,11 +47,13 @@ const REFRESH_TASK_URI: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
 /// row stays small.
 const PASSKEY_LABEL_MAX: usize = 64;
 
-// ── Wallet SIOPv2 sign-in ───────────────────────────────────────────────────
+// ── SIOPv2 sign-in ──────────────────────────────────────────────────────────
 //
-// The portal points the wallet at `<origin>/v1/member/wallet`; the wallet
-// appends `/auth/challenge`, `/auth/` and `/auth/refresh` exactly as it does
-// for the console's `/v1/wallet`.
+// The portal takes a challenge here for the member's VTA persona, has the VTA
+// mint the `id_token` through the wallet extension (`proxyLogin`), and posts it
+// back — the same shapes as the console's `/v1/wallet`. The verifier does not
+// care which holder minted the token; the active-member gate decides who gets
+// in, and only a member's VTA identity is on the ACL.
 
 /// `POST /v1/member/wallet/auth/challenge`. Answers every caller alike; a
 /// session is persisted only for an active member (VTI-SES-006, -007).
@@ -83,7 +85,7 @@ pub async fn wallet_authenticate(
         super::auth::authenticate_siop_with(&state, &body, &state.member_sessions_ks, &backend)
             .await?
             .ok_or_else(|| AppError::Authentication("expected a SIOPv2 id_token sign-in".into()))?;
-    info!(did = %resp.session.subject, "member portal sign-in (wallet)");
+    info!(did = %resp.session.subject, "member portal sign-in (SIOPv2)");
     Ok(Json(resp))
 }
 

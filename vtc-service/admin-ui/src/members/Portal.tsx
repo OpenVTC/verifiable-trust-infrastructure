@@ -145,7 +145,7 @@ function Home({ me }: { me: MemberMe }) {
             </div>
             <div>
               <dt>Signed in with</dt>
-              <dd>{me.amr.includes("passkey") ? "Passkey" : "VTA Wallet"}</dd>
+              <dd>{me.amr.includes("passkey") ? "Passkey" : "Your VTA (SIOPv2)"}</dd>
             </div>
           </dl>
         </section>

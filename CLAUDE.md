@@ -1060,8 +1060,10 @@ new flow, update both this section and the relevant `docs/*.md`.
 
 ### VTC member portal (`/members`, `/v1/member/*`)
 - **What**: Where a community's members sign in — a separate application from
-  the console, enforced by the daemon, not by what the page shows. Wallet
-  (SIOPv2, at `<origin>/v1/member/wallet`) or a portal passkey only.
+  the console, enforced by the daemon, not by what the page shows. SIOPv2
+  issued by the member's VTA (wallet `walletProfile` + `proxyLogin`, against
+  `<origin>/v1/member/wallet`) or a portal passkey only — never the extension's
+  self-issued `login()`, which presents its own `did:key`.
 - **Invariants to preserve**: only an **active member** (live ACL entry, not
   expired/suspended/`application`, member record not removed) signs in, and
   that is re-read on every request and refresh — never trusted from the

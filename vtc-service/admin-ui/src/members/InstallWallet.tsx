@@ -24,8 +24,9 @@ export function InstallWallet({ open }: { open: boolean }) {
 
       <div className="install-body">
         <p>
-          The wallet keeps your identity in your own Verifiable Trust Agent and
-          signs you in here without a password. It isn't in a browser store yet,
+          The wallet connects this browser to your own Verifiable Trust Agent,
+          so your VTA can sign you in here as your member identity — no
+          password, and the key stays in your VTA. It isn't in a browser store yet,
           so install it by hand from{" "}
           <a href={PLUGIN_REPO} target="_blank" rel="noopener noreferrer">
             OpenVTC/vta-browser-plugin
@@ -72,9 +73,10 @@ export function InstallWallet({ open }: { open: boolean }) {
           <li>
             <h4>Come back and sign in</h4>
             <p>
-              Reload this page. <strong>Sign in with VTA Wallet</strong> becomes
-              available. The wallet signs in with the identity this community
-              admitted you under.
+              Reload this page. <strong>Sign in with your VTA</strong> becomes
+              available. The first time, the wallet asks which of your VTA's
+              identities this community knows you as and remembers the answer —
+              choose the one you joined with.
             </p>
           </li>
         </ol>

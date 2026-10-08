@@ -26,7 +26,7 @@ export function memberCsrfToken(): string | null {
   return m && m[1] ? decodeURIComponent(m[1]) : null;
 }
 
-async function errorMessage(res: Response): Promise<string> {
+export async function errorMessage(res: Response): Promise<string> {
   try {
     const body = (await res.json()) as { message?: string; error?: string };
     return body.message ?? body.error ?? `${res.status} ${res.statusText}`;

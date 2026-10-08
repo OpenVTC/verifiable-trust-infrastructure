@@ -2,7 +2,7 @@
 // that its client never sends the console's credentials.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { memberCsrfToken, postMember } from "./api";
@@ -70,8 +70,10 @@ describe("member portal", () => {
     expect(
       await screen.findByRole("heading", { name: /sign in to acme guild/i }),
     ).toBeTruthy();
-    const wallet = screen.getByRole("button", { name: /sign in with vta wallet/i });
-    expect((wallet as HTMLButtonElement).disabled).toBe(true);
+    const vta = screen.getByRole("button", { name: /sign in with your vta/i });
+    expect((vta as HTMLButtonElement).disabled).toBe(true);
+    // No self-issued wallet sign-in: it would present the extension's did:key.
+    expect(screen.queryByRole("button", { name: /browser's wallet/i })).toBeNull();
     expect(screen.getByRole("button", { name: /sign in with a passkey/i })).toBeTruthy();
     // No wallet: the manual-install guide is open, and points at the repo.
     const guide = screen.getByText(/install the vta wallet browser extension/i)
@@ -82,15 +84,89 @@ describe("member portal", () => {
     ).toBe("https://github.com/OpenVTC/vta-browser-plugin");
   });
 
-  it("enables wallet sign-in and folds the guide away when the wallet is present", async () => {
-    (window as { vtaWallet?: unknown }).vtaWallet = { login: vi.fn() };
+  it("enables VTA sign-in and folds the guide away when the wallet can proxy", async () => {
+    (window as { vtaWallet?: unknown }).vtaWallet = {
+      login: vi.fn(),
+      walletProfile: vi.fn(),
+      proxyLogin: vi.fn(),
+    };
     stubFetch(() => json(401, {}));
     renderPortal();
-    const wallet = await screen.findByRole("button", { name: /sign in with vta wallet/i });
-    expect((wallet as HTMLButtonElement).disabled).toBe(false);
+    const vta = await screen.findByRole("button", { name: /sign in with your vta/i });
+    expect((vta as HTMLButtonElement).disabled).toBe(false);
     const guide = screen.getByText(/install the vta wallet browser extension/i)
       .closest("details") as HTMLDetailsElement;
     expect(guide.open).toBe(false);
+  });
+
+  it("keeps VTA sign-in off for a wallet that can only self-issue", async () => {
+    (window as { vtaWallet?: unknown }).vtaWallet = { login: vi.fn() };
+    stubFetch(() => json(401, {}));
+    renderPortal();
+    const vta = await screen.findByRole("button", { name: /sign in with your vta/i });
+    expect((vta as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("signs in as the VTA persona, never the wallet's own key", async () => {
+    const persona = "did:webvh:abc:example.com:alice";
+    const login = vi.fn();
+    const walletProfile = vi.fn(async () => ({ did: persona, entryId: "e1", bound: false }));
+    const proxyLogin = vi.fn(async () => ({
+      sessionBlob: { headers: [{ name: "Authorization", value: "Bearer ID.TOKEN.SIG" }] },
+    }));
+    (window as { vtaWallet?: unknown }).vtaWallet = { login, walletProfile, proxyLogin };
+
+    let signedIn = false;
+    const calls = stubFetch((url) => {
+      if (url === "/v1/member/me") return signedIn ? json(200, ME) : json(401, {});
+      if (url === "/v1/member/passkeys") return json(200, []);
+      if (url === "/health") return json(200, { vtc_did: "did:webvh:x:acme" });
+      if (url.endsWith("/v1/member/wallet/auth/challenge"))
+        return json(200, { challenge: "nonce-1", sessionId: "s1" });
+      if (url.endsWith("/v1/member/wallet/auth/"))
+        return json(200, { session: { id: "s1" }, tokens: { accessToken: "AT", refreshToken: "RT" } });
+      if (url === "/v1/member/session") {
+        signedIn = true;
+        return new Response(null, { status: 204 });
+      }
+      return json(404, {});
+    });
+    renderPortal();
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with your vta/i }));
+    expect(await screen.findByRole("heading", { name: /welcome back/i })).toBeTruthy();
+
+    expect(login).not.toHaveBeenCalled();
+    expect(walletProfile).toHaveBeenCalledWith({ target: { kind: "did", did: "did:webvh:x:acme" } });
+    expect(proxyLogin).toHaveBeenCalledWith({
+      entryId: "e1",
+      nonce: "nonce-1",
+      target: { kind: "did", did: "did:webvh:x:acme" },
+    });
+    const body = (suffix: string) =>
+      JSON.parse(String(calls.find((c) => c.url.endsWith(suffix))!.init!.body));
+    expect(body("/wallet/auth/challenge")).toEqual({ did: persona });
+    expect(body("/wallet/auth/").payload).toEqual({ id_token: "ID.TOKEN.SIG", session_id: "s1" });
+    expect(body("/v1/member/session")).toEqual({ accessToken: "AT", refreshToken: "RT" });
+  });
+
+  it("names the DID the VTA presented when the community refuses it", async () => {
+    const persona = "did:webvh:abc:example.com:alice";
+    (window as { vtaWallet?: unknown }).vtaWallet = {
+      walletProfile: vi.fn(async () => ({ did: persona, entryId: "e1", bound: false })),
+      proxyLogin: vi.fn(async () => ({
+        sessionBlob: { headers: [{ name: "Authorization", value: "Bearer T" }] },
+      })),
+    };
+    stubFetch((url) => {
+      if (url === "/health") return json(200, { vtc_did: "did:webvh:x:acme" });
+      if (url.endsWith("/wallet/auth/challenge"))
+        return json(200, { challenge: "n", sessionId: "s1" });
+      if (url.endsWith("/wallet/auth/")) return json(403, { message: "not an active member" });
+      return json(401, {});
+    });
+    renderPortal();
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with your vta/i }));
+    expect(await screen.findByText(new RegExp(`signed in as ${persona}`))).toBeTruthy();
   });
 
   it("shows a member their membership once signed in", async () => {

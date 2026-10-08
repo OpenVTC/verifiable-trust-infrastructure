@@ -1,4 +1,4 @@
-// The member's portal passkeys. Adding and removing need a wallet sign-in
+// The member's portal passkeys. Adding and removing need a VTA sign-in
 // (the DID is the anchor); a passkey session sees the list and why.
 
 import { useState } from "react";
@@ -57,8 +57,8 @@ export function Passkeys({ canManage }: { canManage: boolean }) {
         <h2 id="passkeys-heading">Passkeys</h2>
       </div>
       <p className="muted">
-        A passkey signs you in to this portal on this device without opening
-        your wallet. It works here only — never in the operator console.
+        A passkey signs you in to this portal on this device without going
+        through your VTA. It works here only — never in the operator console.
       </p>
 
       {list.isPending ? (
@@ -124,7 +124,7 @@ export function Passkeys({ canManage }: { canManage: boolean }) {
       ) : (
         <p className="muted">
           You signed in with a passkey. To add or remove passkeys, sign out and
-          sign in with your wallet.
+          sign in with your VTA.
         </p>
       )}
 

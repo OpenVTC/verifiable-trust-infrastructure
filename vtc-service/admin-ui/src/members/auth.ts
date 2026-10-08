@@ -1,5 +1,13 @@
-// The two ways a member signs in: the browser wallet (SIOPv2) and a portal
-// passkey. Each ends with the portal's cookies set by the daemon.
+// The two ways a member signs in: SIOPv2 issued by the member's own VTA, and a
+// portal passkey. Each ends with the portal's cookies set by the daemon.
+//
+// SIOPv2 here is the VTA-issued kind, not the wallet extension's own `login()`.
+// `login()` self-issues with whatever the extension holds for this site — by
+// default its own holder `did:key` — and that is not the identity a community
+// admitted. A member joined as their VTA identity, so the portal asks the
+// wallet which VTA persona this community knows them as (`walletProfile`) and
+// has the VTA mint the `id_token` for that DID (`proxyLogin`). The long-term
+// key never leaves the VTA, and the DID presented is the member's.
 
 import {
   decodePublicKeyOptions,
@@ -8,35 +16,120 @@ import {
   type JsonPublicKeyOptions,
 } from "@/lib/webauthn";
 
-import { postMember, vtcDid, type MemberPasskey } from "./api";
+import {
+  errorMessage,
+  MemberApiError,
+  postMember,
+  vtcDid,
+  type MemberPasskey,
+} from "./api";
 
-/** The wallet surface the portal points the extension at. The wallet appends
- *  `/auth/challenge`, `/auth/` and `/auth/refresh`, exactly as it does for the
- *  console's `/v1/wallet` — only the base differs, and with it the audience of
- *  the token the VTC mints. */
+const AUTHENTICATE_TYPE = "https://trusttasks.org/spec/auth/authenticate/0.1";
+
+/** The member SIOP surface. Same shapes as the console's `/v1/wallet`; only
+ *  the base differs, and with it who is admitted and the audience minted. */
 export function memberWalletBase(): string {
   return `${window.location.origin}/v1/member/wallet`;
 }
 
-export function isWalletInstalled(): boolean {
+/** True when the wallet extension can sign in as a VTA identity: resolve the
+ *  persona for this site and have the VTA mint as it. */
+export function isVtaSignInAvailable(): boolean {
   return (
     typeof window !== "undefined" &&
-    typeof window.vtaWallet?.login === "function"
+    typeof window.vtaWallet?.walletProfile === "function" &&
+    typeof window.vtaWallet?.proxyLogin === "function"
   );
 }
 
-/** SIOPv2 through the browser wallet, then mirror the bearer into cookies. */
-export async function signInWithWallet(): Promise<void> {
-  if (!isWalletInstalled()) {
-    throw new Error("The VTA Wallet browser extension isn't installed.");
+/** A refused VTA sign-in, carrying the DID it presented — the one thing a
+ *  member needs to tell an administrator, and not otherwise on screen. */
+export class PresentedDidError extends MemberApiError {
+  constructor(
+    message: string,
+    status: number,
+    readonly presentedDid: string,
+  ) {
+    super(message, status);
+    this.name = "PresentedDidError";
   }
-  const result = await window.vtaWallet!.login({
-    rpDid: await vtcDid(),
-    baseUrl: memberWalletBase(),
+}
+
+function bearerFromSessionBlob(
+  headers: Array<{ name: string; value: string }> | undefined,
+): string | null {
+  const auth = headers?.find((h) => h.name.toLowerCase() === "authorization");
+  const m = auth && /^\s*Bearer\s+(.+?)\s*$/i.exec(auth.value);
+  return m && m[1] ? m[1] : null;
+}
+
+/** SIOPv2 from the member's VTA, then mirror the bearer into cookies.
+ *
+ *  challenge (bound to the persona DID) → the VTA mints an `id_token` with
+ *  the challenge as nonce, addressed to this VTC → `/auth/` verifies it and
+ *  admits only an active member. The persona has to be known before the
+ *  challenge, which is why this is two wallet calls and not one. */
+export async function signInWithVta(): Promise<void> {
+  if (!isVtaSignInAvailable()) {
+    throw new Error(
+      "The VTA Wallet extension isn't installed, or is too old to sign in as your VTA identity.",
+    );
+  }
+  const rp = await vtcDid();
+  const profile = await window.vtaWallet!.walletProfile!({
+    target: { kind: "did", did: rp },
   });
+  if (!profile?.did || !profile.entryId) {
+    throw new Error("Your wallet returned no identity for this community.");
+  }
+  const did = profile.did;
+  const base = memberWalletBase();
+
+  const ch = await fetch(`${base}/auth/challenge`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ did }),
+  });
+  if (!ch.ok) {
+    throw new PresentedDidError(await errorMessage(ch), ch.status, did);
+  }
+  const challenge = (await ch.json()) as { challenge?: string; sessionId?: string };
+  if (!challenge.challenge || !challenge.sessionId) {
+    throw new Error("The community sent a malformed sign-in challenge.");
+  }
+
+  const minted = await window.vtaWallet!.proxyLogin!({
+    entryId: profile.entryId,
+    nonce: challenge.challenge,
+    target: { kind: "did", did: rp },
+  });
+  const idToken = bearerFromSessionBlob(minted?.sessionBlob?.headers);
+  if (!idToken) throw new Error("Your VTA returned no sign-in token.");
+
+  // `id_token` / `session_id` are snake_case on this wire, as the wallet and
+  // did-hosting-control send them.
+  const auth = await fetch(`${base}/auth/`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      type: AUTHENTICATE_TYPE,
+      payload: { id_token: idToken, session_id: challenge.sessionId },
+    }),
+  });
+  if (!auth.ok) {
+    throw new PresentedDidError(await errorMessage(auth), auth.status, did);
+  }
+  const tokens = (await auth.json()) as {
+    tokens?: { accessToken?: string; refreshToken?: string };
+  };
+  if (!tokens.tokens?.accessToken) {
+    throw new Error("The community answered the sign-in without a token.");
+  }
   await postMember("/v1/member/session", {
-    accessToken: result.accessToken,
-    refreshToken: result.refreshToken || undefined,
+    accessToken: tokens.tokens.accessToken,
+    refreshToken: tokens.tokens.refreshToken || undefined,
   });
 }
 
@@ -67,7 +160,7 @@ export async function signInWithPasskey(): Promise<void> {
   });
 }
 
-/** Add a portal passkey. The daemon allows it only from a wallet sign-in. */
+/** Add a portal passkey. The daemon allows it only from a VTA sign-in. */
 export async function addPasskey(label: string): Promise<MemberPasskey> {
   const start = await postMember<{
     registrationId: string;
