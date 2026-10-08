@@ -304,6 +304,85 @@ h1 {
 .alert-title {
   font-weight: 600;
 }
+.alert .btn {
+  margin-top: 0.5rem;
+}
+
+.btn-link {
+  justify-self: start;
+  padding: 0.25rem 0;
+  background: none;
+  border: 0;
+  color: var(--brand);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.btn-link:not(:disabled):hover {
+  text-decoration: underline;
+}
+.btn-link:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.did-inline {
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+/* The wallet's identities for this community: label, then the DID
+   abbreviated (whole on hover). Two identities can share a label, so the DID
+   is always shown. */
+.identity-picker {
+  margin-top: 0.5rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.identity-picker h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+.identity-choices {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+.identity-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.identity-choice:not(:disabled):hover {
+  border-color: var(--brand);
+}
+.identity-choice:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.identity-choice-label {
+  font-weight: 600;
+}
+.identity-choice-did {
+  max-width: 100%;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
 
 /* ── Install guide ───────────────────────────────────────── */
 

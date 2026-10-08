@@ -718,6 +718,12 @@ with the extension's holder `did:key` unless a persona is bound, and a
 community admits members by their VTA identity, so it would present a
 DID no community admitted. When the daemon refuses a sign-in, the page
 names the DID the VTA presented.
+**Sign in as a different identity…** is for a member whose wallet holds
+more than one VTA identity for this community: it lists the wallet's
+`did-self-issued` entries pinned to this community's DID (`vaultList`,
+which asks the member's consent because it discloses those entries to
+the page), shows each by its label and abbreviated DID, and runs the
+same round-trip as the chosen one. A refused sign-in offers it too.
 A **portal passkey** signs in without going through the VTA; a member
 adds one from the portal after a VTA sign-in. Adding or removing a
 passkey requires a session established by DID proof (`amr` contains

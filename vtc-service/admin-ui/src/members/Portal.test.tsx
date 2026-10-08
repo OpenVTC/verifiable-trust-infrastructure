@@ -166,7 +166,82 @@ describe("member portal", () => {
     });
     renderPortal();
     fireEvent.click(await screen.findByRole("button", { name: /sign in with your vta/i }));
-    expect(await screen.findByText(new RegExp(`signed in as ${persona}`))).toBeTruthy();
+    expect((await screen.findByText(/your vta signed in as/i)).querySelector("code")!.getAttribute("title")).toBe(persona);
+  });
+
+  it("signs in as an identity the member picks from the wallet", async () => {
+    const vtc = "did:webvh:x:acme";
+    const glenn = "did:webvh:QmcGecpMypWjgCM8sGA9Fvi8guAy2SNHU661XBNbrFHJgA:webvh.storm.ws:glenn-vta";
+    const donald = "did:webvh:QmV9swrHHt2XoMKpqL6XJVCvQDwNvvDyKPHCRJZurkSXjd:webvh.storm.ws:donald-duck";
+    const walletProfile = vi.fn();
+    const vaultList = vi.fn(async () => ({
+      truncated: false,
+      entries: [
+        { id: "a", label: "GG VTA", principalDid: glenn },
+        { id: "b", label: "Donald", principalDid: donald },
+        { id: "c", label: "No DID" },
+      ],
+    }));
+    const proxyLogin = vi.fn(async () => ({
+      sessionBlob: { headers: [{ name: "Authorization", value: "Bearer T" }] },
+    }));
+    (window as { vtaWallet?: unknown }).vtaWallet = { walletProfile, proxyLogin, vaultList };
+
+    let signedIn = false;
+    const calls = stubFetch((url) => {
+      if (url === "/v1/member/me") return signedIn ? json(200, ME) : json(401, {});
+      if (url === "/v1/member/passkeys") return json(200, []);
+      if (url === "/health") return json(200, { vtc_did: vtc });
+      if (url.endsWith("/wallet/auth/challenge")) return json(200, { challenge: "n", sessionId: "s1" });
+      if (url.endsWith("/wallet/auth/"))
+        return json(200, { session: { id: "s1" }, tokens: { accessToken: "AT" } });
+      if (url === "/v1/member/session") {
+        signedIn = true;
+        return new Response(null, { status: 204 });
+      }
+      return json(404, {});
+    });
+    renderPortal();
+    fireEvent.click(await screen.findByRole("button", { name: /different identity/i }));
+
+    // Label and abbreviated DID; the entry with no DID is not offered.
+    const pick = await screen.findByRole("button", { name: /donald/i });
+    expect(pick.getAttribute("title")).toBe(donald);
+    expect(screen.getByText("did:webvh:QmV9swrHHt…:…storm.ws:donald-duck")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /no did/i })).toBeNull();
+    expect(vaultList).toHaveBeenCalledWith({ targetDid: vtc, secretKind: "didSelfIssued" });
+
+    fireEvent.click(pick);
+    expect(await screen.findByRole("heading", { name: /welcome back/i })).toBeTruthy();
+    expect(walletProfile).not.toHaveBeenCalled();
+    expect(proxyLogin).toHaveBeenCalledWith({ entryId: "b", nonce: "n", target: { kind: "did", did: vtc } });
+    const challenge = calls.find((c) => c.url.endsWith("/wallet/auth/challenge"))!;
+    expect(JSON.parse(String(challenge.init!.body))).toEqual({ did: donald });
+  });
+
+  it("offers a different identity after a refusal", async () => {
+    const persona = "did:webvh:QmcGecpMypWjgCM8sGA9Fvi8guAy2SNHU661XBNbrFHJgA:webvh.storm.ws:glenn-vta";
+    (window as { vtaWallet?: unknown }).vtaWallet = {
+      walletProfile: vi.fn(async () => ({ did: persona, entryId: "a", bound: false })),
+      proxyLogin: vi.fn(async () => ({
+        sessionBlob: { headers: [{ name: "Authorization", value: "Bearer T" }] },
+      })),
+      vaultList: vi.fn(async () => ({ truncated: false, entries: [] })),
+    };
+    stubFetch((url) => {
+      if (url === "/health") return json(200, { vtc_did: "did:webvh:x:acme" });
+      if (url.endsWith("/wallet/auth/challenge")) return json(200, { challenge: "n", sessionId: "s1" });
+      if (url.endsWith("/wallet/auth/")) return json(403, { message: "not an active member" });
+      return json(401, {});
+    });
+    renderPortal();
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with your vta/i }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.querySelector("code")!.getAttribute("title")).toBe(persona);
+    fireEvent.click(
+      Array.from(alert.querySelectorAll("button")).find((b) => /different identity/i.test(b.textContent ?? ""))!,
+    );
+    expect(await screen.findByText(/no other identities set up/i)).toBeTruthy();
   });
 
   it("shows a member their membership once signed in", async () => {

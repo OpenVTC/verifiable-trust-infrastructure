@@ -63,18 +63,13 @@ function bearerFromSessionBlob(
   return m && m[1] ? m[1] : null;
 }
 
-/** SIOPv2 from the member's VTA, then mirror the bearer into cookies.
+/** SIOPv2 from the member's VTA, as the persona the wallet has bound to this
+ *  community (binding one on first use), then mirror the bearer into cookies.
  *
- *  challenge (bound to the persona DID) → the VTA mints an `id_token` with
- *  the challenge as nonce, addressed to this VTC → `/auth/` verifies it and
- *  admits only an active member. The persona has to be known before the
- *  challenge, which is why this is two wallet calls and not one. */
+ *  The persona has to be known before the challenge — `/auth/challenge` is
+ *  bound to its DID — which is why this is two wallet calls and not one. */
 export async function signInWithVta(): Promise<void> {
-  if (!isVtaSignInAvailable()) {
-    throw new Error(
-      "The VTA Wallet extension isn't installed, or is too old to sign in as your VTA identity.",
-    );
-  }
+  requireVtaSignIn();
   const rp = await vtcDid();
   const profile = await window.vtaWallet!.walletProfile!({
     target: { kind: "did", did: rp },
@@ -82,7 +77,56 @@ export async function signInWithVta(): Promise<void> {
   if (!profile?.did || !profile.entryId) {
     throw new Error("Your wallet returned no identity for this community.");
   }
-  const did = profile.did;
+  await runSiop(rp, profile.did, profile.entryId);
+}
+
+/** One of the wallet's VTA identities pinned to this community. */
+export interface VtaIdentity {
+  entryId: string;
+  label: string;
+  did: string;
+}
+
+/** True when the wallet can also list its identities for this community, so
+ *  a member holding more than one can choose. */
+export function isIdentityChoiceAvailable(): boolean {
+  return isVtaSignInAvailable() && typeof window.vtaWallet?.vaultList === "function";
+}
+
+/** The wallet's `did-self-issued` identities pinned to this community. Costs a
+ *  wallet consent prompt (it discloses those vault entries to this page), so
+ *  it runs only when the member asks to choose. */
+export async function listVtaIdentities(): Promise<VtaIdentity[]> {
+  if (!isIdentityChoiceAvailable()) {
+    throw new Error("Your VTA Wallet extension can't list identities. Update it, then reload.");
+  }
+  const wire = await window.vtaWallet!.vaultList!({
+    targetDid: await vtcDid(),
+    secretKind: "didSelfIssued",
+  });
+  return (wire?.entries ?? [])
+    .filter((e) => Boolean(e.principalDid))
+    .map((e) => ({ entryId: e.id, label: e.label, did: e.principalDid! }));
+}
+
+/** SIOPv2 from the member's VTA as an identity they chose. */
+export async function signInWithVtaAs(identity: VtaIdentity): Promise<void> {
+  requireVtaSignIn();
+  await runSiop(await vtcDid(), identity.did, identity.entryId);
+}
+
+function requireVtaSignIn(): void {
+  if (!isVtaSignInAvailable()) {
+    throw new Error(
+      "The VTA Wallet extension isn't installed, or is too old to sign in as your VTA identity.",
+    );
+  }
+}
+
+/** challenge (bound to `did`) → the VTA mints an `id_token` with the
+ *  challenge as nonce, addressed to this VTC → `/auth/` verifies it and admits
+ *  only an active member → the bearer becomes the portal's cookies. */
+async function runSiop(rp: string, did: string, entryId: string): Promise<void> {
   const base = memberWalletBase();
 
   const ch = await fetch(`${base}/auth/challenge`, {
@@ -100,7 +144,7 @@ export async function signInWithVta(): Promise<void> {
   }
 
   const minted = await window.vtaWallet!.proxyLogin!({
-    entryId: profile.entryId,
+    entryId,
     nonce: challenge.challenge,
     target: { kind: "did", did: rp },
   });
