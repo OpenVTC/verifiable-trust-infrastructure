@@ -117,12 +117,26 @@ pub async fn wallet_refresh(
 // ── Cookie session ──────────────────────────────────────────────────────────
 
 /// Body of `POST /v1/member/session`.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MemberSessionRequest {
     pub access_token: String,
     #[serde(default)]
     pub refresh_token: Option<String>,
+}
+
+/// Written by hand so neither token reaches a log: a derived `Debug` would
+/// print both.
+impl std::fmt::Debug for MemberSessionRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemberSessionRequest")
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 /// What the portal is told about the session it now holds in cookies.
