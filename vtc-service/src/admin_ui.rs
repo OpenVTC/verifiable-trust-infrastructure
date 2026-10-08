@@ -9,10 +9,14 @@
 //! without any out-of-tree dependencies.
 //!
 //! Operators wanting a richer SPA replace the files in
-//! `admin-ui/` and rebuild.
+//! `admin-ui/` and rebuild — or, without rebuilding the daemon, set
+//! `admin_ui.mode = "directory"` and serve the console from
+//! `admin_ui.dir` ([`serve_dir`]). `vtc admin-ui export <dir>`
+//! ([`export`]) writes the baked console out as the starting point.
 
 #![cfg(feature = "admin-ui")]
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -50,7 +54,7 @@ pub struct AdminUiInfo {
     pub index_sha256: Arc<String>,
     /// Total file count in the baked directory.
     pub file_count: u32,
-    /// `"embedded"` (default) or `"external"`.
+    /// `"embedded"` (default), `"directory"` or `"external"`.
     pub mode: Arc<String>,
 }
 
@@ -69,6 +73,109 @@ impl AdminUiInfo {
             mode: Arc::new(mode.to_string()),
         }
     }
+}
+
+impl AdminUiInfo {
+    /// The console actually being served under `config`: the directory's
+    /// when `mode = "directory"`, the baked one otherwise. A directory
+    /// that cannot be read reports an empty hash and no files rather than
+    /// failing — the boot check ([`check_serve_dir`]) is the gate.
+    pub fn for_config(config: &crate::config::AdminUiConfig) -> Self {
+        match config.serve_dir() {
+            Some(dir) => Self::from_directory(dir, &config.mode),
+            None => Self::from_embedded(&config.mode),
+        }
+    }
+
+    /// Compute from a console directory on disk.
+    pub fn from_directory(dir: &Path, mode: &str) -> Self {
+        let index_sha256 = std::fs::read(dir.join("index.html"))
+            .map(|b| hex::encode(Sha256::digest(b)))
+            .unwrap_or_default();
+        Self {
+            index_sha256: Arc::new(index_sha256),
+            file_count: count_files_on_disk(dir),
+            mode: Arc::new(mode.to_string()),
+        }
+    }
+}
+
+fn count_files_on_disk(dir: &Path) -> u32 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut total: u32 = 0;
+    for entry in entries.flatten() {
+        // `file_type` does not follow symlinks, so a link cycle cannot
+        // recurse forever; a linked file or directory is not counted.
+        match entry.file_type() {
+            Ok(t) if t.is_file() => total = total.saturating_add(1),
+            Ok(t) if t.is_dir() => total = total.saturating_add(count_files_on_disk(&entry.path())),
+            _ => {}
+        }
+    }
+    total
+}
+
+/// Boot check for `admin_ui.mode = "directory"`: the directory must hold a
+/// readable `index.html`, and neither may be world-writable. The console's
+/// scripts run with the administrator's session and sign with their console
+/// key, so whoever can write that directory can act as every administrator
+/// who next opens the console; a world-writable one hands that to every
+/// local user. Fails closed — a VTC does not start serving a console it
+/// cannot vouch for, nor silently fall back to the baked one.
+pub fn check_serve_dir(dir: &Path) -> Result<(), String> {
+    let index = dir.join("index.html");
+    let meta = std::fs::metadata(&index).map_err(|e| {
+        format!(
+            "admin_ui.dir {}: cannot read index.html ({e}) — `vtc admin-ui export {}` \
+             writes the built-in console there to start from",
+            dir.display(),
+            dir.display()
+        )
+    })?;
+    if !meta.is_file() {
+        return Err(format!("{} is not a file", index.display()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [dir, index.as_path()] {
+            let mode = std::fs::metadata(path)
+                .map_err(|e| format!("{}: {e}", path.display()))?
+                .permissions()
+                .mode();
+            if mode & 0o002 != 0 {
+                return Err(format!(
+                    "{} is world-writable — anyone on this host could replace the \
+                     admin console; run `chmod o-w {}`",
+                    path.display(),
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `vtc admin-ui export <dir>`: write the baked console to `dir` so an owner
+/// can customise it and serve it with `admin_ui.mode = "directory"`. Refuses
+/// a directory that already holds anything, so an earlier customisation is
+/// never overwritten.
+pub fn export(dir: &Path) -> Result<(), String> {
+    if let Ok(mut entries) = std::fs::read_dir(dir)
+        && entries.next().is_some()
+    {
+        return Err(format!(
+            "{} is not empty — export into a new or empty directory so nothing \
+             already there is overwritten",
+            dir.display()
+        ));
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    ADMIN_UI_DIR
+        .extract(dir)
+        .map_err(|e| format!("writing the console to {}: {e}", dir.display()))
 }
 
 fn count_files(dir: &Dir<'_>) -> u32 {
@@ -117,6 +224,58 @@ pub async fn serve(req: Request<Body>) -> Response {
     serve_from(&ADMIN_UI_DIR, "/admin", "admin UX", req)
 }
 
+/// `GET /admin/*` with `admin_ui.mode = "directory"`: the same contract as
+/// [`serve`] — shell revalidated, `/assets/*` cached, history-mode fallback
+/// to `index.html` — read from `dir` on every request, so an owner's edit
+/// shows on the next load. Every path goes through the website's
+/// path-safety chain ([`crate::website::paths::canonical_within_root`]):
+/// no hidden files, no escaping `dir` (symlinks included), no executables.
+pub async fn serve_dir(dir: &Path, req: Request<Body>) -> Response {
+    let rel = shell_relative(req.uri().path(), "/admin");
+    let (path, served_shell) = match resolve_in_dir(dir, rel) {
+        Some(p) => (p, rel == "/index.html"),
+        None => match resolve_in_dir(dir, "/index.html") {
+            Some(p) => (p, true),
+            None => return (StatusCode::NOT_FOUND, "admin UX not found").into_response(),
+        },
+    };
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(_) => return (StatusCode::NOT_FOUND, "admin UX not found").into_response(),
+    };
+    let mime = if served_shell {
+        "text/html; charset=utf-8".to_string()
+    } else {
+        mime_guess::from_path(&path)
+            .first_or_octet_stream()
+            .to_string()
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::CACHE_CONTROL, cache_control_for(rel, served_shell))
+        .body(Body::from(bytes))
+        .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "response build").into_response())
+}
+
+/// A regular file under `dir` for `rel`, through the path-safety chain;
+/// `None` for anything else (missing, a directory, refused).
+fn resolve_in_dir(dir: &Path, rel: &str) -> Option<PathBuf> {
+    let path = crate::website::paths::canonical_within_root(dir, rel, &[]).ok()?;
+    path.is_file().then_some(path)
+}
+
+/// The request path relative to `mount`, with the mount itself mapped to the
+/// shell.
+fn shell_relative<'a>(path: &'a str, mount: &str) -> &'a str {
+    let rel = path.strip_prefix(mount).unwrap_or(path);
+    if rel.is_empty() || rel == "/" {
+        "/index.html"
+    } else {
+        rel
+    }
+}
+
 /// Axum handler for `GET /members/*` — the member portal, served exactly as
 /// the console is (shell revalidated, hashed assets cached, history-mode
 /// fallback).
@@ -126,16 +285,7 @@ pub async fn serve_members(req: Request<Body>) -> Response {
 
 fn serve_from(dir: &'static Dir<'static>, mount: &str, what: &str, req: Request<Body>) -> Response {
     let lookup = |p: &str| lookup_in(dir, p);
-    let rel = req
-        .uri()
-        .path()
-        .strip_prefix(mount)
-        .unwrap_or(req.uri().path());
-    let rel = if rel.is_empty() || rel == "/" {
-        "/index.html"
-    } else {
-        rel
-    };
+    let rel = shell_relative(req.uri().path(), mount);
 
     // SPA history-mode fallback: extensionless paths like
     // `/admin/install` aren't on disk, so we serve `index.html` and
@@ -250,6 +400,116 @@ mod tests {
             .any(|f| f.path().extension().is_some_and(|e| e == "css"));
         assert!(js_present, "no .js asset in dist/assets/");
         assert!(css_present, "no .css asset in dist/assets/");
+    }
+
+    fn get(path: &str) -> Request<Body> {
+        Request::builder().uri(path).body(Body::empty()).unwrap()
+    }
+
+    async fn body_of(resp: Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    fn console_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<title>Ours</title>").unwrap();
+        std::fs::create_dir(dir.path().join("assets")).unwrap();
+        std::fs::write(dir.path().join("assets/app.css"), "body{}").unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn directory_console_serves_its_files_and_falls_back_to_its_shell() {
+        let dir = console_dir();
+
+        let resp = serve_dir(dir.path(), get("/admin/assets/app.css")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()[header::CONTENT_TYPE], "text/css");
+        assert_eq!(resp.headers()[header::CACHE_CONTROL], "public, max-age=300");
+        assert_eq!(body_of(resp).await, "body{}");
+
+        // The mount, and an extensionless client-side route, serve the shell.
+        for path in ["/admin", "/admin/", "/admin/members/approve"] {
+            let resp = serve_dir(dir.path(), get(path)).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{path}");
+            assert_eq!(
+                resp.headers()[header::CONTENT_TYPE],
+                "text/html; charset=utf-8"
+            );
+            assert_eq!(resp.headers()[header::CACHE_CONTROL], "no-cache");
+            assert_eq!(body_of(resp).await, "<title>Ours</title>", "{path}");
+        }
+
+        // An owner's edit shows on the next load — nothing is cached.
+        std::fs::write(dir.path().join("index.html"), "<title>Edited</title>").unwrap();
+        assert_eq!(
+            body_of(serve_dir(dir.path(), get("/admin/")).await).await,
+            "<title>Edited</title>"
+        );
+    }
+
+    #[tokio::test]
+    async fn directory_console_never_serves_hidden_or_escaping_files() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+        let dir = console_dir();
+        std::fs::write(dir.path().join(".env"), "secret").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            dir.path().join("link.txt"),
+        )
+        .unwrap();
+
+        for path in ["/admin/.env", "/admin/link.txt", "/admin/../secret.txt"] {
+            let body = body_of(serve_dir(dir.path(), get(path)).await).await;
+            assert_eq!(body, "<title>Ours</title>", "{path} must get the shell");
+        }
+    }
+
+    #[tokio::test]
+    async fn directory_without_a_shell_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let resp = serve_dir(dir.path(), get("/admin/")).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn serve_dir_check_requires_index_and_refuses_world_writable() {
+        let empty = tempfile::tempdir().unwrap();
+        let err = check_serve_dir(empty.path()).unwrap_err();
+        assert!(err.contains("vtc admin-ui export"), "{err}");
+
+        let dir = console_dir();
+        check_serve_dir(dir.path()).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let index = dir.path().join("index.html");
+            std::fs::set_permissions(&index, std::fs::Permissions::from_mode(0o666)).unwrap();
+            let err = check_serve_dir(dir.path()).unwrap_err();
+            assert!(err.contains("world-writable"), "{err}");
+        }
+    }
+
+    #[test]
+    fn export_writes_the_baked_console_and_never_overwrites() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("console");
+        export(&target).unwrap();
+
+        check_serve_dir(&target).unwrap();
+        let exported = AdminUiInfo::from_directory(&target, "directory");
+        let baked = AdminUiInfo::from_embedded("embedded");
+        assert_eq!(exported.index_sha256, baked.index_sha256);
+        assert_eq!(exported.file_count, baked.file_count);
+
+        let err = export(&target).unwrap_err();
+        assert!(err.contains("not empty"), "{err}");
     }
 
     #[test]

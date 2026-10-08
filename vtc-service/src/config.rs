@@ -293,11 +293,20 @@ where
 #[serde(rename_all = "snake_case")]
 pub struct AdminUiConfig {
     /// `"embedded"` (default): serve the baked admin SPA at
-    /// `routing.admin_ui.mount`. `"external"`: skip embedding;
-    /// the operator hosts the SPA elsewhere and the daemon
-    /// merely allowlists their origin.
+    /// `routing.admin_ui.mount`. `"directory"`: serve the console
+    /// from [`Self::dir`] on disk instead, so a community owner can
+    /// restyle or rebuild it without rebuilding the daemon.
+    /// `"external"`: skip embedding; the operator hosts the SPA
+    /// elsewhere and the daemon merely allowlists their origin.
     #[serde(default = "default_admin_ui_mode")]
     pub mode: String,
+    /// Directory the console is served from when `mode = "directory"`.
+    /// Must hold an `index.html` (the SPA shell); every other path is
+    /// served from it or falls back to that shell. `vtc admin-ui export
+    /// <dir>` writes the baked console here as a starting point.
+    /// Required with `mode = "directory"`, refused with any other mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<std::path::PathBuf>,
     /// Origin the external SPA serves from. Required when
     /// `mode = "external"`; ignored otherwise.
     #[serde(default)]
@@ -323,6 +332,7 @@ impl Default for AdminUiConfig {
     fn default() -> Self {
         Self {
             mode: default_admin_ui_mode(),
+            dir: None,
             external_origin: None,
             rp_id: None,
             plugin_dir: None,
@@ -332,6 +342,45 @@ impl Default for AdminUiConfig {
 
 fn default_admin_ui_mode() -> String {
     "embedded".into()
+}
+
+impl AdminUiConfig {
+    /// The directory to serve the console from, when `mode = "directory"`.
+    /// `None` for every other mode.
+    pub fn serve_dir(&self) -> Option<&std::path::Path> {
+        match self.mode.as_str() {
+            "directory" => self.dir.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Shape checks: a known mode, and `dir` set exactly when the mode is
+    /// `"directory"`. A `dir` beside another mode is refused rather than
+    /// ignored — an owner who customised a console and sees the stock one
+    /// would otherwise have no clue why. Whether the directory exists is
+    /// checked at boot ([`crate::admin_ui::check_serve_dir`]), not here,
+    /// so a config can be written before the directory is.
+    fn validate(&self) -> Result<(), AppError> {
+        match (self.mode.as_str(), self.dir.is_some()) {
+            ("directory", true) | ("embedded" | "external", false) => Ok(()),
+            ("directory", false) => Err(AppError::Config(
+                "admin_ui.mode = \"directory\" needs admin_ui.dir — the directory \
+                 holding the console's index.html (`vtc admin-ui export <dir>` writes \
+                 the built-in console there to start from)"
+                    .into(),
+            )),
+            ("embedded" | "external", true) => Err(AppError::Config(format!(
+                "admin_ui.dir is set but admin_ui.mode = \"{}\", so it would be \
+                 ignored — set mode = \"directory\" to serve the console from it, or \
+                 remove dir",
+                self.mode
+            ))),
+            (other, _) => Err(AppError::Config(format!(
+                "admin_ui.mode = \"{other}\" is not one of \"embedded\", \"directory\", \
+                 \"external\""
+            ))),
+        }
+    }
 }
 
 /// Public community website (§12.1, Phase 5 M5.4.1). Filesystem-
@@ -1353,6 +1402,7 @@ impl AppConfig {
         validate_routing(&self.routing)?;
         validate_website_isolation(&self.routing, self.website.root_dir.is_some())?;
         validate_cors(&self.cors)?;
+        self.admin_ui.validate()?;
         Ok(())
     }
 
@@ -1395,6 +1445,32 @@ fn unknown_key_message(config_path: &std::path::Path, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admin_ui_dir_goes_with_directory_mode_only() {
+        let parse = |s: &str| toml::from_str::<AdminUiConfig>(s).expect("parse admin_ui");
+
+        let directory = parse("mode = \"directory\"\ndir = \"/srv/console\"");
+        directory.validate().unwrap();
+        assert_eq!(
+            directory.serve_dir(),
+            Some(std::path::Path::new("/srv/console"))
+        );
+
+        parse("").validate().unwrap();
+        assert_eq!(parse("").serve_dir(), None);
+
+        // Directory mode without a directory, a directory the mode would
+        // ignore, and an unknown mode are each refused.
+        for bad in [
+            "mode = \"directory\"",
+            "dir = \"/srv/console\"",
+            "mode = \"external\"\ndir = \"/srv/console\"",
+            "mode = \"custom\"",
+        ] {
+            assert!(parse(bad).validate().is_err(), "{bad:?} must be refused");
+        }
+    }
 
     #[test]
     fn secret_backend_selector_parses_each_variant() {

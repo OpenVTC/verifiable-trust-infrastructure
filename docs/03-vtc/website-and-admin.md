@@ -446,6 +446,60 @@ at their own origin; that knob skips the embedded SPA and adds the
 operator-supplied origin to `cors.allowed_origins` so an
 externally-hosted SPA can drive the API.
 
+### Customising the console (`admin_ui.mode = "directory"`)
+
+To change the console's look and feel without rebuilding the daemon,
+serve it from a directory instead of from the binary:
+
+```sh
+vtc admin-ui export /var/lib/community/console   # the built-in console, as a starting point
+# edit it there, then in config.toml:
+#   [admin_ui]
+#   mode = "directory"
+#   dir  = "/var/lib/community/console"
+# and restart the daemon
+```
+
+The daemon serves that directory at `/admin/*` exactly as it serves the
+built-in console: `index.html` is the shell, extensionless paths fall
+back to it (client-side routing), and `/assets/*` is cached for five
+minutes. Files are read on every request, so an edit shows on the next
+page load with no restart. Every path goes through the website's
+[path-safety chain](#path-safety): hidden files, symlinks out of the
+directory and files with the executable bit are never served.
+
+Two ways to customise:
+
+- **Restyle.** Add a stylesheet to the directory and link it from
+  `index.html` (`<link rel="stylesheet" href="/admin/theme.css">`)
+  after the bundled one. The bundled CSS is minified; override it
+  rather than editing it.
+- **Rebuild.** Change the source under `vtc-service/admin-ui/`, run
+  `npm run build`, and point `admin_ui.dir` at the output. The build
+  emits asset URLs under `/admin/`, so keep the default
+  `routing.admin_ui.mount`.
+
+The console's [security headers](#path-safety) still apply: the CSP
+allows scripts only from the console's own origin, so a customised
+console cannot load scripts from a CDN or run inline ones. Styles,
+fonts and images may be inline or local.
+
+**Whoever can write this directory can act as every administrator.**
+The console's scripts run in the administrator's session and sign with
+their console key, so treat the directory like the binary: owned by
+the operator, not writable by the daemon's user if that can be
+avoided. The daemon refuses to start if the directory has no
+`index.html`, or if it or `index.html` is world-writable; it never
+falls back to the built-in console. `admin_ui.dir` is host
+configuration only — `config/patch` cannot set it.
+
+The `AdminUiServed` audit row records `mode = "directory"` and the
+SHA-256 of `index.html` **as it was at start-up**;
+`/admin/build-info.json` reports the directory as it is now. If the two
+differ, the console was edited after the daemon started.
+
+The member portal (`/members/*`) is always served from the binary.
+
 ### `/admin/build-info.json`
 
 Unauthenticated. Returns:
@@ -766,6 +820,7 @@ cnm website rollback --to-gen 2
 
 # Admin UX
 cnm admin build-info     # → /admin/build-info.json output
+vtc admin-ui export <dir>   # write the built-in console out to customise
 ```
 
 ## Configuration
@@ -783,7 +838,8 @@ max_file_size_mb = 10
 csp_override_file = ".vtc-website.toml"
 
 [admin_ui]
-mode = "embedded"                          # or "external"
+mode = "embedded"                          # or "directory" / "external"
+dir = "/var/lib/community/console"         # only (and required) when mode=directory
 external_origin = "https://admin.example.com"   # only when mode=external
 rp_id = "example.com"                      # WebAuthn RP ID
 

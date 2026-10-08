@@ -111,6 +111,26 @@ enum Commands {
         #[command(subcommand)]
         command: SyncJobCommands,
     },
+    /// The admin console's files (offline).
+    ///
+    /// To customise the console's look and feel, export it to a directory,
+    /// edit it there, and set `admin_ui.mode = "directory"` and
+    /// `admin_ui.dir` in config.toml. The daemon then serves that
+    /// directory instead of the console built into the binary.
+    AdminUi {
+        #[command(subcommand)]
+        command: AdminUiCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdminUiCommands {
+    /// Write the console built into this binary to a new or empty directory.
+    Export {
+        /// Directory to write into. Created if missing; refused if it
+        /// already holds anything.
+        dir: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -413,6 +433,31 @@ async fn main() {
             };
             if let Err(e) = result {
                 eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::AdminUi { command }) => {
+            #[cfg(feature = "admin-ui")]
+            {
+                let AdminUiCommands::Export { dir } = command;
+                if let Err(e) = vtc_service::admin_ui::export(&dir) {
+                    eprintln!("Export failed: {e}");
+                    std::process::exit(1);
+                }
+                println!(
+                    "Admin console written to {}.\n\
+                     To serve it, set in config.toml and restart the daemon:\n\n\
+                     [admin_ui]\n\
+                     mode = \"directory\"\n\
+                     dir = \"{}\"",
+                    dir.display(),
+                    std::path::absolute(&dir).unwrap_or(dir.clone()).display()
+                );
+            }
+            #[cfg(not(feature = "admin-ui"))]
+            {
+                let _ = command;
+                eprintln!("admin-ui subcommands are unavailable (compiled without 'admin-ui')");
                 std::process::exit(1);
             }
         }

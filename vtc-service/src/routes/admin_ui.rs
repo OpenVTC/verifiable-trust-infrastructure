@@ -3,11 +3,12 @@
 //! Two handlers:
 //!
 //! - **Catch-all** (`GET /admin/*`) → serves the baked SPA from
-//!   [`crate::admin_ui`]. SPA history-mode fallback: paths that
+//!   [`crate::admin_ui`], or the owner's console directory under
+//!   `admin_ui.mode = "directory"`. SPA history-mode fallback: paths that
 //!   don't match a baked file fall back to `index.html` so
 //!   client-side routing works.
 //! - **Build-info** (`GET /admin/build-info.json`) → returns the
-//!   embedded directory's SHA-256 + file count + mode. Unauth —
+//!   served console's SHA-256 + file count + mode. Unauth —
 //!   the daemon's release metadata is public.
 
 #![cfg(feature = "admin-ui")]
@@ -37,10 +38,16 @@ pub struct BuildInfo {
     pub mode: String,
 }
 
-/// `GET /admin/build-info.json` — unauth, surfaces what's baked.
+/// `GET /admin/build-info.json` — unauth, surfaces the console being
+/// served: the baked one, or with `admin_ui.mode = "directory"` the one on
+/// disk (cached for [`PLUGIN_SCAN_TTL`], since hashing it walks the
+/// directory and this route is unauthenticated).
 pub async fn build_info(State(state): State<AppState>) -> Json<BuildInfo> {
-    let mode = state.config.read().await.admin_ui.mode.clone();
-    let info = AdminUiInfo::from_embedded(&mode);
+    let config = state.config.read().await.admin_ui.clone();
+    let info = match config.serve_dir() {
+        Some(dir) => directory_info_cached(dir, &config.mode).await,
+        None => AdminUiInfo::from_embedded(&config.mode),
+    };
     Json(BuildInfo {
         // The admin SPA carries its own internal version, but
         // the embedded build's SHA-256 is what an operator
@@ -52,11 +59,36 @@ pub async fn build_info(State(state): State<AppState>) -> Json<BuildInfo> {
     })
 }
 
-/// `GET /admin/*` — serve the baked SPA. When
-/// `admin_ui.mode = "external"` this handler is skipped at route
-/// attach time and `/admin/*` returns 404.
-pub async fn serve_spa(req: Request<Body>) -> Response {
-    crate::admin_ui::serve(req).await
+/// Short-TTL cache of [`AdminUiInfo::from_directory`], keyed by directory.
+static DIRECTORY_INFO_CACHE: LazyLock<RwLock<Option<(PathBuf, Instant, AdminUiInfo)>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+async fn directory_info_cached(dir: &StdPath, mode: &str) -> AdminUiInfo {
+    if let Some((cached_dir, at, info)) = DIRECTORY_INFO_CACHE.read().await.as_ref()
+        && cached_dir == dir
+        && at.elapsed() < PLUGIN_SCAN_TTL
+    {
+        return info.clone();
+    }
+    let info = AdminUiInfo::from_directory(dir, mode);
+    *DIRECTORY_INFO_CACHE.write().await = Some((dir.to_path_buf(), Instant::now(), info.clone()));
+    info
+}
+
+/// `GET /admin/*` — serve the console: from `admin_ui.dir` when
+/// `admin_ui.mode = "directory"`, the baked SPA otherwise.
+pub async fn serve_spa(State(state): State<AppState>, req: Request<Body>) -> Response {
+    let dir = state
+        .config
+        .read()
+        .await
+        .admin_ui
+        .serve_dir()
+        .map(StdPath::to_path_buf);
+    match dir {
+        Some(dir) => crate::admin_ui::serve_dir(&dir, req).await,
+        None => crate::admin_ui::serve(req).await,
+    }
 }
 
 /// `GET /members/*` — serve the baked member portal. A separate application

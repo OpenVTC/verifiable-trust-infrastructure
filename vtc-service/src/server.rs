@@ -406,6 +406,14 @@ pub async fn run(
     store: Store,
     secret_store: Box<dyn SecretStore>,
 ) -> Result<(), AppError> {
+    // A console served from a directory must be there, and not writable by
+    // everyone, before anything is served — see `check_serve_dir`.
+    #[cfg(feature = "admin-ui")]
+    if let Some(dir) = config.admin_ui.serve_dir() {
+        crate::admin_ui::check_serve_dir(dir).map_err(AppError::Config)?;
+        info!(dir = %dir.display(), "admin console served from directory");
+    }
+
     // Open cached keyspace handles
     let sessions_ks = store.keyspace(keyspaces::SESSIONS)?;
     let acl_ks = store.keyspace(keyspaces::ACL)?;
@@ -1448,8 +1456,7 @@ pub async fn run(
     // who suspects a compromise can pin the running build.
     #[cfg(feature = "admin-ui")]
     if let Some(writer) = state.audit_writer.as_ref() {
-        let mode = boot_cfg.admin_ui.mode.clone();
-        let info = crate::admin_ui::AdminUiInfo::from_embedded(&mode);
+        let info = crate::admin_ui::AdminUiInfo::for_config(&boot_cfg.admin_ui);
         let _ = writer
             .write(
                 "daemon",
