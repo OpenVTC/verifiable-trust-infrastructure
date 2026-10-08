@@ -117,19 +117,20 @@ fn count_files_on_disk(dir: &Path) -> u32 {
     total
 }
 
-/// Boot check for `admin_ui.mode = "directory"`: the directory must hold a
+/// Boot check for `admin_ui.mode = "directory"` and `admin_ui.members_dir`:
+/// the directory must hold a
 /// readable `index.html`, and neither may be world-writable. The console's
 /// scripts run with the administrator's session and sign with their console
-/// key, so whoever can write that directory can act as every administrator
-/// who next opens the console; a world-writable one hands that to every
-/// local user. Fails closed — a VTC does not start serving a console it
+/// key (the portal's, with the member's session), so whoever can write that
+/// directory can act as everyone who next opens it; a world-writable one
+/// hands that to every local user. Fails closed — a VTC does not start serving a console it
 /// cannot vouch for, nor silently fall back to the baked one.
 pub fn check_serve_dir(dir: &Path) -> Result<(), String> {
     let index = dir.join("index.html");
     let meta = std::fs::metadata(&index).map_err(|e| {
         format!(
-            "admin_ui.dir {}: cannot read index.html ({e}) — `vtc admin-ui export {}` \
-             writes the built-in console there to start from",
+            "{}: cannot read index.html ({e}) — `vtc admin-ui export [--members] {}` \
+             writes the built-in one there to start from",
             dir.display(),
             dir.display()
         )
@@ -158,11 +159,12 @@ pub fn check_serve_dir(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// `vtc admin-ui export <dir>`: write the baked console to `dir` so an owner
-/// can customise it and serve it with `admin_ui.mode = "directory"`. Refuses
+/// `vtc admin-ui export [--members] <dir>`: write a baked bundle
+/// ([`ADMIN_UI_DIR`] or [`MEMBER_UI_DIR`]) to `dir` so an owner can customise
+/// it and serve it with `admin_ui.mode = "directory"` / `admin_ui.members_dir`. Refuses
 /// a directory that already holds anything, so an earlier customisation is
 /// never overwritten.
-pub fn export(dir: &Path) -> Result<(), String> {
+pub fn export(dir: &Path, bundle: &'static Dir<'static>) -> Result<(), String> {
     if let Ok(mut entries) = std::fs::read_dir(dir)
         && entries.next().is_some()
     {
@@ -173,9 +175,9 @@ pub fn export(dir: &Path) -> Result<(), String> {
         ));
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    ADMIN_UI_DIR
+    bundle
         .extract(dir)
-        .map_err(|e| format!("writing the console to {}: {e}", dir.display()))
+        .map_err(|e| format!("writing to {}: {e}", dir.display()))
 }
 
 fn count_files(dir: &Dir<'_>) -> u32 {
@@ -231,17 +233,27 @@ pub async fn serve(req: Request<Body>) -> Response {
 /// path-safety chain ([`crate::website::paths::canonical_within_root`]):
 /// no hidden files, no escaping `dir` (symlinks included), no executables.
 pub async fn serve_dir(dir: &Path, req: Request<Body>) -> Response {
-    let rel = shell_relative(req.uri().path(), "/admin");
+    serve_dir_at(dir, "/admin", "admin UX", req).await
+}
+
+/// `GET /members/*` with `admin_ui.members_dir` set: [`serve_dir`] for the
+/// member portal.
+pub async fn serve_members_dir(dir: &Path, req: Request<Body>) -> Response {
+    serve_dir_at(dir, "/members", "member portal", req).await
+}
+
+async fn serve_dir_at(dir: &Path, mount: &str, what: &str, req: Request<Body>) -> Response {
+    let rel = shell_relative(req.uri().path(), mount);
     let (path, served_shell) = match resolve_in_dir(dir, rel) {
         Some(p) => (p, rel == "/index.html"),
         None => match resolve_in_dir(dir, "/index.html") {
             Some(p) => (p, true),
-            None => return (StatusCode::NOT_FOUND, "admin UX not found").into_response(),
+            None => return (StatusCode::NOT_FOUND, format!("{what} not found")).into_response(),
         },
     };
     let bytes = match tokio::fs::read(&path).await {
         Ok(b) => b,
-        Err(_) => return (StatusCode::NOT_FOUND, "admin UX not found").into_response(),
+        Err(_) => return (StatusCode::NOT_FOUND, format!("{what} not found")).into_response(),
     };
     let mime = if served_shell {
         "text/html; charset=utf-8".to_string()
@@ -500,7 +512,7 @@ mod tests {
     fn export_writes_the_baked_console_and_never_overwrites() {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("console");
-        export(&target).unwrap();
+        export(&target, &ADMIN_UI_DIR).unwrap();
 
         check_serve_dir(&target).unwrap();
         let exported = AdminUiInfo::from_directory(&target, "directory");
@@ -508,8 +520,24 @@ mod tests {
         assert_eq!(exported.index_sha256, baked.index_sha256);
         assert_eq!(exported.file_count, baked.file_count);
 
-        let err = export(&target).unwrap_err();
+        let err = export(&target, &ADMIN_UI_DIR).unwrap_err();
         assert!(err.contains("not empty"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn exported_member_portal_serves_under_its_own_mount() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("members");
+        export(&target, &MEMBER_UI_DIR).unwrap();
+        check_serve_dir(&target).unwrap();
+
+        for path in ["/members", "/members/", "/members/profile"] {
+            let body = body_of(serve_members_dir(&target, get(path)).await).await;
+            assert!(
+                body.contains("<title>VTC Members</title>"),
+                "{path}: {body}"
+            );
+        }
     }
 
     #[test]

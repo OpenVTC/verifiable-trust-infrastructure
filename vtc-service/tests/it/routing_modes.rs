@@ -127,6 +127,36 @@ async fn path_mode_admin_surface_serves_a_console_directory() {
     assert_eq!(json["fileCount"], 1);
 }
 
+#[cfg(feature = "admin-ui")]
+#[tokio::test]
+async fn member_portal_is_served_from_its_directory_when_configured() {
+    // `admin_ui.members_dir` replaces the baked portal at `/members/*`,
+    // leaving the console untouched.
+    let portal = tempfile::tempdir().unwrap();
+    std::fs::write(
+        portal.path().join("index.html"),
+        "<title>Our Portal</title>",
+    )
+    .unwrap();
+    let routing = RoutingConfig::default();
+    let (router, vtc) = build_router(&routing).await;
+    vtc.state.config.write().await.admin_ui.members_dir = Some(portal.path().to_path_buf());
+
+    for path in ["/members", "/members/", "/members/profile"] {
+        let req = Request::builder().uri(path).body(Body::empty()).unwrap();
+        let (status, body) = request(&router, req).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert_eq!(body, b"<title>Our Portal</title>", "{path}");
+    }
+
+    let req = Request::builder()
+        .uri("/admin/")
+        .body(Body::empty())
+        .unwrap();
+    let (_, body) = request(&router, req).await;
+    assert!(String::from_utf8_lossy(&body).contains("VTC Admin"));
+}
+
 #[tokio::test]
 async fn path_mode_admin_bare_prefix_serves_admin_spa() {
     // `GET /admin` (no trailing slash) must hit the admin SPA's

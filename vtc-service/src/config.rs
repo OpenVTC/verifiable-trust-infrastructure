@@ -307,6 +307,12 @@ pub struct AdminUiConfig {
     /// Required with `mode = "directory"`, refused with any other mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir: Option<std::path::PathBuf>,
+    /// Directory the **member portal** (`/members/*`) is served from instead
+    /// of the binary, independent of `mode`. Must hold an `index.html`;
+    /// `vtc admin-ui export --members <dir>` writes the baked portal there
+    /// as a starting point. `None` (default) serves the baked portal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub members_dir: Option<std::path::PathBuf>,
     /// Origin the external SPA serves from. Required when
     /// `mode = "external"`; ignored otherwise.
     #[serde(default)]
@@ -333,6 +339,7 @@ impl Default for AdminUiConfig {
         Self {
             mode: default_admin_ui_mode(),
             dir: None,
+            members_dir: None,
             external_origin: None,
             rp_id: None,
             plugin_dir: None,

@@ -498,7 +498,11 @@ SHA-256 of `index.html` **as it was at start-up**;
 `/admin/build-info.json` reports the directory as it is now. If the two
 differ, the console was edited after the daemon started.
 
-The member portal (`/members/*`) is always served from the binary.
+The member portal (`/members/*`) is customised the same way, independently
+of the console: `vtc admin-ui export --members <dir>`, then
+`admin_ui.members_dir = "<dir>"`. It gets the same serving rules and the same
+start-up checks, for the same reason: the portal's scripts run in members'
+sessions. Its build emits asset URLs under `/members/`.
 
 ### `/admin/build-info.json`
 
@@ -820,7 +824,8 @@ cnm website rollback --to-gen 2
 
 # Admin UX
 cnm admin build-info     # → /admin/build-info.json output
-vtc admin-ui export <dir>   # write the built-in console out to customise
+vtc admin-ui export <dir>             # write the built-in console out to customise
+vtc admin-ui export --members <dir>   # the same for the member portal
 ```
 
 ## Configuration
@@ -840,6 +845,7 @@ csp_override_file = ".vtc-website.toml"
 [admin_ui]
 mode = "embedded"                          # or "directory" / "external"
 dir = "/var/lib/community/console"         # only (and required) when mode=directory
+members_dir = "/var/lib/community/portal"  # optional: serve /members from here
 external_origin = "https://admin.example.com"   # only when mode=external
 rp_id = "example.com"                      # WebAuthn RP ID
 

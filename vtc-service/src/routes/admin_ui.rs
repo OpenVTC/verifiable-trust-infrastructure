@@ -91,10 +91,15 @@ pub async fn serve_spa(State(state): State<AppState>, req: Request<Body>) -> Res
     }
 }
 
-/// `GET /members/*` — serve the baked member portal. A separate application
-/// from the console (`crate::member_portal`), mounted at a fixed path.
-pub async fn serve_members_spa(req: Request<Body>) -> Response {
-    crate::admin_ui::serve_members(req).await
+/// `GET /members/*` — serve the member portal: from `admin_ui.members_dir`
+/// when set, the baked one otherwise. A separate application from the
+/// console (`crate::member_portal`), mounted at a fixed path.
+pub async fn serve_members_spa(State(state): State<AppState>, req: Request<Body>) -> Response {
+    let dir = state.config.read().await.admin_ui.members_dir.clone();
+    match dir {
+        Some(dir) => crate::admin_ui::serve_members_dir(&dir, req).await,
+        None => crate::admin_ui::serve_members(req).await,
+    }
 }
 
 /// Manifest entry the admin SPA's plugin loader iterates over to

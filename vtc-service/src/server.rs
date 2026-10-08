@@ -413,6 +413,11 @@ pub async fn run(
         crate::admin_ui::check_serve_dir(dir).map_err(AppError::Config)?;
         info!(dir = %dir.display(), "admin console served from directory");
     }
+    #[cfg(feature = "admin-ui")]
+    if let Some(dir) = config.admin_ui.members_dir.as_deref() {
+        crate::admin_ui::check_serve_dir(dir).map_err(AppError::Config)?;
+        info!(dir = %dir.display(), "member portal served from directory");
+    }
 
     // Open cached keyspace handles
     let sessions_ks = store.keyspace(keyspaces::SESSIONS)?;
