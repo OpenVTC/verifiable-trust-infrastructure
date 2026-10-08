@@ -32,7 +32,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fingerprint, Wallet } from "lucide-react";
 
 import { fetchHealth, postJson, type HealthResponse } from "@/lib/api";
-import { CopyButton } from "@/components/CopyButton";
+import { DidText } from "@/components/DidText";
+import { shortenDid } from "@/lib/format";
 import {
   decodePublicKeyOptions,
   serializeAssertion,
@@ -304,12 +305,7 @@ export function Login() {
         {vtcDid ? (
           <p className="login-did">
             <span className="muted">Community</span>
-            <code>{vtcDid}</code>
-            <CopyButton
-              value={vtcDid}
-              label="Copy VTC DID"
-              successMessage="VTC DID copied"
-            />
+            <DidText did={vtcDid} />
           </p>
         ) : (
           health.isSuccess && (
@@ -396,17 +392,25 @@ export function Login() {
               Multiple vault entries are pinned to this VTC. Choose which one
               to sign in as.
             </p>
-            {candidates.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                className="secondary"
-                onClick={() => runProxyLogin(c)}
-                disabled={busy}
-              >
-                {c.label} — <code>{c.principalDid}</code>
-              </button>
-            ))}
+            <div className="identity-choices">
+              {candidates.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  className="identity-choice"
+                  onClick={() => runProxyLogin(c)}
+                  disabled={busy}
+                  title={c.principalDid}
+                >
+                  <span className="identity-choice-label">{c.label}</span>
+                  {c.principalDid && (
+                    <code className="identity-choice-did">
+                      {shortenDid(c.principalDid)}
+                    </code>
+                  )}
+                </button>
+              ))}
+            </div>
           </section>
         )}
 

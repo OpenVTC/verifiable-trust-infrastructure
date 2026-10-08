@@ -232,7 +232,7 @@ pre {
 /* ── Sign-in ─────────────────────────────────────────────── */
 
 .signin {
-  max-width: 34rem;
+  max-width: 42rem;
   margin: 0 auto;
   padding: clamp(1.5rem, 6vw, 3.5rem) var(--gutter) 3rem;
   display: grid;
