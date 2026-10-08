@@ -3,11 +3,21 @@
 In-tree default landing page served when the operator has not set
 `website.root_dir` in the daemon config.
 
-This is a tiny fallback so a fresh `cargo run` produces a working
+This is a fallback so a fresh `cargo run` produces a working
 `GET /` response instead of a 503. The page fetches
-`/v1/community/profile` + `/health` and renders them; until the
+`/v1/community/public-profile` + `/health` and renders them; until the
 profile is populated, the placeholder copy in `index.html` is
 shown.
+
+Around that live data it introduces a VTC to a visitor: a "Get started"
+link to <https://openvtc.net>, member sign-in at `/members/` (the member
+portal), the community's capabilities (git repositories governed across
+GitHub, Forgejo, Codeberg and Gitea; verifiable data rooms; access
+management; membership credentials; cross-community recognition), and a
+quieter link to the operator console at `/admin/`.
+
+The page is served under `default-src 'self'`: no inline scripts, no
+inline `style` attributes, and every image is same-origin or inline SVG.
 
 Baked at compile time by `include_dir!` (see
 `src/website/default_site.rs`). Served by the `/` catch-all

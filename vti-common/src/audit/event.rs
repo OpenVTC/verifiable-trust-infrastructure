@@ -219,6 +219,13 @@ pub enum AuditEvent {
     /// `inviteInvalidated`. The invite token and claim code are never recorded.
     StepUpPasskeyChanged(StepUpPasskeyData),
 
+    /// A member added or removed a **member-portal** passkey for their own
+    /// DID (VTC). Such a passkey opens a member-portal session and nothing
+    /// else: it is kept apart from administrator and step-up passkeys, never
+    /// opens a console session and never answers a step-up. The actor is the
+    /// member, whose wallet-proven session is the only one that may change it.
+    MemberPasskeyChanged(MemberPasskeyData),
+
     /// A step in the life of a **step-up approver** binding — a `did:key`
     /// bound to one subject as that subject's step-up factor (VTI-APV-015):
     /// an invite issued, voided after five wrong claim codes, an approver
@@ -913,6 +920,7 @@ impl AuditEvent {
             Self::AuthSteppedUp(..) => "AuthSteppedUp",
             Self::OperationStepUpRecorded(..) => "OperationStepUpRecorded",
             Self::StepUpPasskeyChanged(..) => "StepUpPasskeyChanged",
+            Self::MemberPasskeyChanged(..) => "MemberPasskeyChanged",
             Self::StepUpApproverChanged(..) => "StepUpApproverChanged",
             Self::OperationStepUpApproved(..) => "OperationStepUpApproved",
             Self::TaskConsentRecorded(..) => "TaskConsentRecorded",
@@ -1763,6 +1771,21 @@ pub struct StepUpPasskeyData {
     /// When an issued invite lapses unredeemed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// Payload for [`AuditEvent::MemberPasskeyChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberPasskeyData {
+    /// `registered` or `removed`.
+    pub stage: String,
+    /// The member whose passkey it is — always the actor too.
+    pub subject: String,
+    /// Credential id (hex).
+    pub credential_id: String,
+    /// The label the member gave it, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// Payload for [`AuditEvent::TaskConsentRecorded`].

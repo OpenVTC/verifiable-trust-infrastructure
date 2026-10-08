@@ -107,6 +107,8 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         console_keys_ks: store.keyspace("console_keys").unwrap(),
         step_up_marks_ks: store.keyspace("step_up_marks").unwrap(),
         step_up_passkeys_ks: store.keyspace("step_up_passkeys").unwrap(),
+        member_sessions_ks: store.keyspace("member_sessions").unwrap(),
+        member_passkey_ks: store.keyspace("member_passkeys").unwrap(),
         admin_actions_ks: store.keyspace("admin_actions").unwrap(),
         step_up_approvers_ks: store.keyspace("step_up_approvers").unwrap(),
         member_pushes_ks: store.keyspace("member_pushes").unwrap(),

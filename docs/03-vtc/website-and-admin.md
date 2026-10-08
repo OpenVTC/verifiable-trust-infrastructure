@@ -15,17 +15,21 @@ graph TB
         HEALTH["/health<br/>Trust-Task exempt"]
         API["/v1/*<br/>JSON API"]
         ADMIN["/admin/*<br/>SPA + build-info"]
+        MEMBERS["/members/*<br/>member portal"]
         WEB["/<br/>filesystem or default"]
     end
 
     OPSCLI[cnm-cli<br/>bearer JWT]
     SPA[Admin SPA<br/>session cookie + CSRF]
+    MEM[Members<br/>member cookie + CSRF]
     PUB[Public site visitors<br/>browser]
     APP[Application<br/>bearer JWT]
 
     OPSCLI --> API
     SPA --> ADMIN
     SPA --> API
+    MEM --> MEMBERS
+    MEM --> API
     PUB --> WEB
     APP --> API
     PUB -. POST form .-> API
@@ -33,7 +37,7 @@ graph TB
     classDef pub fill:#fff3e0,stroke:#c77a00,color:#5a3b00
     classDef priv fill:#e9d7f7,stroke:#7e3fa6,color:#3a0a5a
     class WEB,PUB pub
-    class API,ADMIN,SPA,OPSCLI,APP,HEALTH priv
+    class API,ADMIN,SPA,OPSCLI,APP,HEALTH,MEMBERS,MEM priv
 ```
 
 The default routing assignment:
@@ -43,6 +47,7 @@ The default routing assignment:
 | `/health` | Health probe (Trust-Task exempt) | 1 MiB | — |
 | `/v1/*` | JSON API | 1 MiB global, per-route override on website mgmt | — (JSON wire) |
 | `/admin/*` | Admin SPA + `/admin/build-info.json` | 1 MiB | default-src 'self' |
+| `/members/*` | Member portal (fixed mount; see [Member portal](#member-portal)) | 1 MiB | default-src 'self' |
 | `/` (catch-all) | Public website | 1 MiB | default-src 'self' (overridable per site) |
 
 Operators can rewrite these mounts via `routing.api.mount`,
@@ -184,9 +189,20 @@ or missing file → default CSP applies.
 
 When `website.root_dir` is **unset**, the daemon serves a small
 in-tree landing page (HTML/CSS/JS at `vtc-service/website-default/`)
-that fetches `/v1/community/profile` + `/health` and renders them.
+that fetches `/v1/community/public-profile` + `/health` and renders them.
 The moment an operator sets `root_dir`, the filesystem handler
 takes over and the default is unreachable.
+
+It is written for a visitor who has never heard of a VTC: the main
+call to action is **Get started** at [openvtc.net](https://openvtc.net),
+which explains what a community is and how to get a wallet and join.
+Beside it is **Member sign-in** (`/members/`). The page then outlines
+what the community runs on — git repositories governed across GitHub,
+Forgejo/Codeberg and Gitea, verifiable data rooms, access management,
+membership credentials, cross-community recognition — and ends with
+the service status. The operator console is linked, deliberately
+quietly. An operator site replacing the default should keep a link to
+`/members/`.
 
 ### Community DID as a QR code
 
@@ -591,6 +607,77 @@ the same signed `vtc/admin/actions/list` the Actions badge makes
 
 What each means, and what to do, is in
 [`admin-access.md`](admin-access.md) §2.1a, §3.4 and §3.5.
+
+## Member portal
+
+`/members/` is where a community's **members** sign in. It is a
+separate application from the operator console, not the console with
+fewer menus, and the separation is enforced by the daemon rather than
+by what the page chooses to show:
+
+| | Console (`/admin/`) | Member portal (`/members/`) |
+|---|---|---|
+| Who may sign in | An administrator (any administrative role) | An **active member** |
+| Sign-in methods | Passkey, wallet (SIOPv2), VTA identity | Wallet (SIOPv2) or a portal passkey — nothing else |
+| Token audience | `VTC` | `VTC-member` |
+| Session store | `sessions` | `member_sessions` |
+| Passkey store | `passkey` | `member_passkeys` |
+| Cookies | `vtc_admin_session`, `vtc_admin_refresh` (`Path=/`), `csrf` | `vtc_member_session`, `vtc_member_refresh` (`Path=/v1/member`), `vtc_member_csrf` |
+| Bundle | console shell + plugins | its own; loads no console code |
+
+**Active member** means a live ACL entry — not expired, not suspended,
+not an `application` entry — and a member record that has not been
+removed. It is checked at the challenge (a non-member gets an unusable
+challenge that looks like any other, VTI-SES-006/007), at
+authentication, at every refresh and on **every request**: a member
+removed or suspended mid-session is refused on their next call
+(VTI-SES-020–022). An administrator with no member record cannot sign
+in here; an administrator who is also a member can, and gets a
+member session that the console refuses.
+
+**Why the token classes cannot cross.** Every console route validates
+`aud = VTC`, so a portal token is refused there exactly as a VTA token
+is. Portal sessions live in their own keyspace, so a portal refresh
+token presented at `/v1/auth/refresh` is simply not found — which
+matters most for a member who is also an administrator, whose console
+backend would otherwise accept the subject. Portal passkeys live in
+their own keyspace too, so one can never open a console session or
+answer a step-up.
+
+**Signing in.** The wallet runs its SIOPv2 round-trip against
+`<origin>/v1/member/wallet` (the same header-less shape as the
+console's `/v1/wallet`, with a different audience at the end) and the
+portal mirrors the bearer into its cookies via `POST /v1/member/session`.
+A **portal passkey** signs in without opening the wallet; a member adds
+one from the portal after a wallet sign-in. Adding or removing a
+passkey requires a session established with the wallet (`amr` contains
+`did`) — the DID is the anchor, so a stolen passkey cannot enrol more
+or remove the member's others. Changes are audited as
+`MemberPasskeyChanged`.
+
+**The browser wallet** is the VTA Wallet extension
+([OpenVTC/vta-browser-plugin](https://github.com/OpenVTC/vta-browser-plugin)).
+It is not in a browser store yet; the sign-in page carries the manual
+install steps (build with Node 24+, load `packages/extension/dist/`
+unpacked in a Chromium browser, finish its setup) and opens them when
+no wallet is detected.
+
+**Routes** (all under `/v1/member/`): `wallet/auth/{challenge,,refresh}`,
+`session`, `auth/refresh`, `sign-out`, `passkey-login/{start,finish}`
+— unauthenticated, behind the per-IP governor — and `me`, `passkeys`,
+`passkeys/register/{start,finish}`, `passkeys/{credentialId}` (DELETE)
+— member-session only. They carry no Trust Task binding for the reason
+the console's wallet aliases and sign-out carry none: they are a
+WebAuthn ceremony, the wallet's header-less SIOP exchange, and cookie
+plumbing. Anything a member *does* in the portal beyond signing in
+belongs on the Trust Task surface, signed by the member's own DID.
+
+**Routing.** The mount is fixed at `/members` and takes precedence
+over an operator website's own `/members` path. In subdomain mode it
+is served on the **API's** host, since its calls go to `/v1/member/*`
+on its own origin. WebAuthn accepts the single origin derived from
+`public_url`, so portal passkeys work where that origin serves the
+portal — the default path mode does.
 
 ## Routing modes
 

@@ -36,6 +36,12 @@ use sha2::{Digest, Sha256};
 /// `BAKED_DIR` const there.
 pub static ADMIN_UI_DIR: Dir<'_> = include_dir!("$OUT_DIR/admin-ui-dist");
 
+/// In-binary copy of the **member portal** bundle (`vite.members.config.ts`),
+/// served at `/members/*`. A separate application from the console: its own
+/// bundle, its own sessions (`crate::member_portal`). `build.rs` owns the
+/// directory name (`MEMBER_BAKED_DIR`).
+pub static MEMBER_UI_DIR: Dir<'_> = include_dir!("$OUT_DIR/member-ui-dist");
+
 /// Metadata derived once at startup. Used by the build-info
 /// endpoint and the `AdminUiServed` audit envelope.
 #[derive(Debug, Clone)]
@@ -81,8 +87,12 @@ fn count_files(dir: &Dir<'_>) -> u32 {
 /// `Some(bytes)` for an exact match; the caller is responsible
 /// for the SPA history-mode fallback to `index.html`.
 pub fn lookup(rel_path: &str) -> Option<&'static [u8]> {
+    lookup_in(&ADMIN_UI_DIR, rel_path)
+}
+
+fn lookup_in(dir: &'static Dir<'static>, rel_path: &str) -> Option<&'static [u8]> {
     let trimmed = rel_path.trim_start_matches('/');
-    ADMIN_UI_DIR.get_file(trimmed).map(|f| f.contents())
+    dir.get_file(trimmed).map(|f| f.contents())
 }
 
 /// Cache-control for an admin-UX response. The SPA shell
@@ -104,7 +114,23 @@ fn cache_control_for(rel: &str, served_shell: bool) -> &'static str {
 /// through the embedded directory; falls back to `index.html`
 /// for client-side routing (SPA history mode).
 pub async fn serve(req: Request<Body>) -> Response {
-    let rel = req.uri().path().trim_start_matches("/admin");
+    serve_from(&ADMIN_UI_DIR, "/admin", "admin UX", req)
+}
+
+/// Axum handler for `GET /members/*` — the member portal, served exactly as
+/// the console is (shell revalidated, hashed assets cached, history-mode
+/// fallback).
+pub async fn serve_members(req: Request<Body>) -> Response {
+    serve_from(&MEMBER_UI_DIR, "/members", "member portal", req)
+}
+
+fn serve_from(dir: &'static Dir<'static>, mount: &str, what: &str, req: Request<Body>) -> Response {
+    let lookup = |p: &str| lookup_in(dir, p);
+    let rel = req
+        .uri()
+        .path()
+        .strip_prefix(mount)
+        .unwrap_or(req.uri().path());
     let rel = if rel.is_empty() || rel == "/" {
         "/index.html"
     } else {
@@ -129,7 +155,7 @@ pub async fn serve(req: Request<Body>) -> Response {
             // History-mode fallback — we served the SPA shell.
             Some(b) => (b, "text/html; charset=utf-8".to_string(), true),
             None => {
-                return (StatusCode::NOT_FOUND, "admin UX not embedded").into_response();
+                return (StatusCode::NOT_FOUND, format!("{what} not embedded")).into_response();
             }
         },
     };
@@ -190,6 +216,17 @@ mod tests {
             body.contains("id=\"root\""),
             "index.html missing React mount point: {body}"
         );
+    }
+
+    #[test]
+    fn member_portal_is_embedded_as_its_own_bundle() {
+        let index = MEMBER_UI_DIR
+            .get_file("index.html")
+            .expect("member portal index.html missing — did build:members run?");
+        let body = std::str::from_utf8(index.contents()).unwrap();
+        assert!(body.contains("<title>VTC Members</title>"), "{body}");
+        // Assets resolve under its own mount, not the console's.
+        assert!(body.contains("/members/assets/"), "{body}");
     }
 
     #[test]

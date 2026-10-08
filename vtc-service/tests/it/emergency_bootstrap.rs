@@ -349,6 +349,8 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         console_keys_ks,
         step_up_marks_ks,
         step_up_passkeys_ks: store.keyspace("step_up_passkeys").unwrap(),
+        member_sessions_ks: store.keyspace("member_sessions").unwrap(),
+        member_passkey_ks: store.keyspace("member_passkeys").unwrap(),
         admin_actions_ks,
         step_up_approvers_ks: store.keyspace("step_up_approvers").unwrap(),
         member_pushes_ks,

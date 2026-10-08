@@ -11,7 +11,9 @@
     "lint": "npm run wire:check && tsc -b --noEmit",
     "test": "vitest run",
     "wire:generate": "openapi-typescript openapi.json -o src/lib/wire.ts",
-    "wire:check": "openapi-typescript openapi.json -o /tmp/vtc-wire-check.ts && diff -q src/lib/wire.ts /tmp/vtc-wire-check.ts"
+    "wire:check": "openapi-typescript openapi.json -o /tmp/vtc-wire-check.ts && diff -q src/lib/wire.ts /tmp/vtc-wire-check.ts",
+    "build:members": "vite build -c vite.members.config.ts",
+    "dev:members": "vite -c vite.members.config.ts"
   },
   "dependencies": {
     "@fontsource-variable/fraunces": "^5.2.9",

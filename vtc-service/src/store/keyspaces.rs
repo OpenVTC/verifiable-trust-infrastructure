@@ -141,6 +141,21 @@ pub const STEP_UP_MARKS: &str = "step_up_marks";
 /// or elevate a session. See `crate::step_up_passkey`.
 pub const STEP_UP_PASSKEYS: &str = "step_up_passkeys";
 
+/// Member-portal sessions (`session:<id>`, `refresh:<hash>`, …, the shared
+/// session store's own row format). A keyspace of its own **by construction**:
+/// the administrator auth path reads [`SESSIONS`] only, so a member's refresh
+/// token can never be redeemed at `/v1/auth/refresh` for a console token —
+/// not even by a member who is also an administrator. See
+/// `crate::member_portal`.
+pub const MEMBER_SESSIONS: &str = "member_sessions";
+
+/// Member-portal passkeys and their WebAuthn ceremony state, in the passkey
+/// store's own row format. Kept apart from [`PASSKEY`] for the reason
+/// [`STEP_UP_PASSKEYS`] is: console login and every step-up read [`PASSKEY`]
+/// only, so a passkey a member enrolled for the portal can neither open a
+/// console session nor answer a step-up. See `crate::member_portal`.
+pub const MEMBER_PASSKEYS: &str = "member_passkeys";
+
 /// The administrator action list (`docs/05-design-notes/vtc-action-list.md`):
 /// every operation parked for other administrators' approval — VTI-APV-014's
 /// unrestricted grants, VTI-APV-019's reductions, VTI-APV-020's threshold
@@ -215,6 +230,8 @@ pub const ALL: &[&str] = &[
     CONSOLE_KEYS,
     STEP_UP_MARKS,
     STEP_UP_PASSKEYS,
+    MEMBER_SESSIONS,
+    MEMBER_PASSKEYS,
     ADMIN_ACTIONS,
     STEP_UP_APPROVERS,
     MEMBER_PUSHES,
@@ -337,6 +354,12 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // host must not arrive with gestures that authorize break-glass there. A
     // member re-enrols through a fresh invite.
     STEP_UP_PASSKEYS,
+    // Member-portal sessions: ephemeral auth, excluded for the reason
+    // `sessions` is — a restore must not resurrect a live session.
+    MEMBER_SESSIONS,
+    // Member-portal passkeys: bound to this relying party, like `passkey`. A
+    // member re-enrols from a wallet sign-in on the restored host.
+    MEMBER_PASSKEYS,
     // The administrator action list. An action binds one operation against the
     // ACL as it stood on this host when it was raised — its approver set, its
     // state pin, the approvals collected over it. Restored elsewhere, an open
@@ -370,10 +393,11 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        // 39 top-level `*_ks` fields plus the three `AppState::git_ns` carries,
-        // plus the 2 hidden-vetting keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`)
-        // from the `zkp-pcs` development branch.
-        assert_eq!(ALL.len(), 44, "ALL must list every AppState keyspace");
+        // 41 top-level `*_ks` fields (the member portal's two among them) plus
+        // the three `AppState::git_ns` carries, plus the 2 hidden-vetting
+        // keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`) from the
+        // `zkp-pcs` development branch.
+        assert_eq!(ALL.len(), 46, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

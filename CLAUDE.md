@@ -1058,6 +1058,30 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Docs**: `docs/03-vtc/admin-access.md` §2–3,
   `docs/05-design-notes/vtc-action-list.md`.
 
+### VTC member portal (`/members`, `/v1/member/*`)
+- **What**: Where a community's members sign in — a separate application from
+  the console, enforced by the daemon, not by what the page shows. Wallet
+  (SIOPv2, at `<origin>/v1/member/wallet`) or a portal passkey only.
+- **Invariants to preserve**: only an **active member** (live ACL entry, not
+  expired/suspended/`application`, member record not removed) signs in, and
+  that is re-read on every request and refresh — never trusted from the
+  session. Portal tokens carry audience `VTC-member`; console extractors
+  validate `aud = VTC`, so the two never cross — do not add a shared audience
+  or make a console extractor accept both. Portal sessions and passkeys live in
+  `member_sessions` / `member_passkeys`, never `sessions` / `passkey`: that is
+  what stops a member-who-is-also-an-admin from redeeming a portal refresh
+  token, or a portal passkey, at the console. Portal cookies are
+  `Path=/v1/member` (`vtc_member_csrf` is `Path=/`), and the CSRF gate pairs
+  them by path. Adding or removing a portal passkey requires a wallet-proven
+  session (`amr` contains `did`). The bundle imports no console shell, plugins
+  or API client.
+- **Code**: `vtc-service/src/member_portal/`, `vtc-service/src/routes/member_portal.rs`,
+  `vtc-service/src/routing/{csrf,host_dispatch}.rs`, `vtc-service/src/admin_ui.rs`
+  (`MEMBER_UI_DIR`), `vtc-service/admin-ui/src/members/` +
+  `vite.members.config.ts`, `vtc-service/website-default/` (the landing page
+  that links to it).
+- **Docs**: `docs/03-vtc/website-and-admin.md` (*Member portal*).
+
 ### VTC step-up: passkeys and approver devices
 - **What**: Authority-changing VTC acts need a step-up bound to a digest of
   that one operation (`acl::bound_step_up`, one use within 300 s). It is

@@ -70,6 +70,12 @@ use std::process::Command;
 /// `include_dir!("$OUT_DIR/admin-ui-dist")`. Keep the two in sync.
 const BAKED_DIR: &str = "admin-ui-dist";
 
+/// Directory under `OUT_DIR` that `src/admin_ui.rs` bakes the **member
+/// portal** from (`include_dir!("$OUT_DIR/member-ui-dist")`). Built from the
+/// same npm package by `vite.members.config.ts`; a separate bundle so a
+/// member's browser never loads console code.
+const MEMBER_BAKED_DIR: &str = "member-ui-dist";
+
 /// File under `OUT_DIR` where this script records what it did to
 /// the lockfile, for `tests/no_rebuild.rs` to check. See
 /// [`LockfileVerdict`].
@@ -119,6 +125,8 @@ fn main() {
     println!("cargo:rerun-if-changed=admin-ui/package.json");
     println!("cargo:rerun-if-changed=admin-ui/package-lock.json");
     println!("cargo:rerun-if-changed=admin-ui/vite.config.ts");
+    println!("cargo:rerun-if-changed=admin-ui/vite.members.config.ts");
+    println!("cargo:rerun-if-changed=admin-ui/members");
     println!("cargo:rerun-if-changed=admin-ui/tsconfig.json");
     println!("cargo:rerun-if-env-changed=VTC_SKIP_ADMIN_UI_BUILD");
 
@@ -160,14 +168,23 @@ fn baked_dir() -> PathBuf {
     out_dir().join(BAKED_DIR)
 }
 
-/// Guarantee the baked directory exists with at least one file —
+/// The member portal's baked directory — see [`MEMBER_BAKED_DIR`].
+fn member_baked_dir() -> PathBuf {
+    out_dir().join(MEMBER_BAKED_DIR)
+}
+
+/// Guarantee both baked directories exist with at least one file —
 /// `include_dir!` on a missing directory is a hard compile error.
 fn ensure_baked_dir_exists() {
-    let baked = baked_dir();
+    ensure_dir_has_placeholder(&baked_dir());
+    ensure_dir_has_placeholder(&member_baked_dir());
+}
+
+fn ensure_dir_has_placeholder(baked: &Path) {
     if baked.join("index.html").exists() {
         return;
     }
-    std::fs::create_dir_all(&baked).ok();
+    std::fs::create_dir_all(baked).ok();
     let placeholder = baked.join(".gitkeep");
     if !placeholder.exists() {
         let _ = std::fs::write(
@@ -184,14 +201,20 @@ fn ensure_baked_dir_exists() {
 /// jobs that only want npm skipped (and bake nothing) fall through
 /// to the placeholder.
 fn adopt_prebuilt_dist() {
-    let prebuilt = admin_ui_dir().join("dist");
-    if prebuilt.join("index.html").exists() {
-        // Read-only on this path: a pre-built dist is an *input*
-        // here, so watching it is honest and nothing is written back
-        // into the source tree.
-        println!("cargo:rerun-if-changed=admin-ui/dist");
-        copy_dir(&prebuilt, &baked_dir());
-        return;
+    // The member portal's pre-built bundle is `admin-ui/dist-members`
+    // (`npm run build:members`), adopted the same way.
+    for (src, watch, baked) in [
+        ("dist", "admin-ui/dist", baked_dir()),
+        ("dist-members", "admin-ui/dist-members", member_baked_dir()),
+    ] {
+        let prebuilt = admin_ui_dir().join(src);
+        if prebuilt.join("index.html").exists() {
+            // Read-only on this path: a pre-built dist is an *input*
+            // here, so watching it is honest and nothing is written back
+            // into the source tree.
+            println!("cargo:rerun-if-changed={watch}");
+            copy_dir(&prebuilt, &baked);
+        }
     }
     ensure_baked_dir_exists();
 }
@@ -239,6 +262,33 @@ fn build_admin_ui() {
         panic!(
             "build.rs: admin-ui build did not produce {}; check `npm run build` output",
             index.display()
+        );
+    }
+
+    // The member portal — same package, same installed dependencies, its own
+    // bundle, also straight into OUT_DIR.
+    let member_baked = member_baked_dir();
+    let member_arg = member_baked
+        .to_str()
+        .expect("build.rs: OUT_DIR is not valid UTF-8")
+        .to_string();
+    run_npm(
+        &admin_ui,
+        &[
+            "run",
+            "build:members",
+            "--",
+            "--outDir",
+            &member_arg,
+            "--emptyOutDir",
+        ],
+    );
+    let member_index = member_baked.join("index.html");
+    if !member_index.exists() {
+        panic!(
+            "build.rs: member portal build did not produce {}; check `npm run build:members` \
+             output",
+            member_index.display()
         );
     }
 }

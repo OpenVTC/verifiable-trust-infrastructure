@@ -405,9 +405,12 @@ async fn no_rest_route_issues_redeems_revokes_or_lists_one() {
             (never.0, &never.1),
             "{path} is answered as an unrouted path"
         );
-        assert!(
-            !String::from_utf8_lossy(&body).contains("credentials"),
-            "{path} returned a listing"
+        // Byte-identical to the never-routed path's answer (the website
+        // fallback), not merely free of one word: the landing page itself talks
+        // about credentials, so a substring check cannot tell a listing from it.
+        assert_eq!(
+            body, never.2,
+            "{path} returned something other than the fallback"
         );
     }
     h.tsp.shutdown().await;

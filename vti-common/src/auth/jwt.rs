@@ -123,6 +123,21 @@ impl JwtKeys {
         })
     }
 
+    /// The same signing key, bound to a different audience.
+    ///
+    /// For a service that issues two classes of token which must never be
+    /// accepted for one another — the VTC's administrator sessions (`VTC`) and
+    /// its member-portal sessions (`VTC-member`). Each instance validates only
+    /// its own `aud`, so a token minted by one is refused by the other exactly
+    /// as a VTA token is refused by the VTC.
+    pub fn for_audience(&self, audience: &str) -> Self {
+        Self {
+            encoding: self.encoding.clone(),
+            decoding: self.decoding.clone(),
+            audience: audience.to_string(),
+        }
+    }
+
     /// Encode claims into a signed JWT access token.
     pub fn encode(&self, claims: &Claims) -> Result<String, AppError> {
         let header = Header::new(Algorithm::EdDSA);
@@ -334,6 +349,38 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
         assert!(json.get("tee_attested").is_none());
+    }
+
+    #[test]
+    fn for_audience_tokens_are_refused_across_audiences() {
+        let admin = JwtKeys::from_ed25519_bytes(&[0x42u8; 32], "VTC").unwrap();
+        let member = admin.for_audience("VTC-member");
+
+        let token = member
+            .encode(&member.new_claims(
+                "did:key:z6Mk".into(),
+                "sess-m".into(),
+                "reader".into(),
+                vec![],
+                900,
+                false,
+            ))
+            .unwrap();
+        assert_eq!(member.decode(&token).unwrap().aud, "VTC-member");
+        // Same key, different audience: the admin instance must refuse it.
+        assert!(admin.decode(&token).is_err());
+
+        let admin_token = admin
+            .encode(&admin.new_claims(
+                "did:key:z6Mk".into(),
+                "sess-a".into(),
+                "admin".into(),
+                vec![],
+                900,
+                false,
+            ))
+            .unwrap();
+        assert!(member.decode(&admin_token).is_err());
     }
 
     #[test]
