@@ -54,7 +54,7 @@ pub struct AdminUiInfo {
     pub index_sha256: Arc<String>,
     /// Total file count in the baked directory.
     pub file_count: u32,
-    /// `"embedded"` (default), `"directory"` or `"external"`.
+    /// `"embedded"` (default) or `"directory"`.
     pub mode: Arc<String>,
 }
 

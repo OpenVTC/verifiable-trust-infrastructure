@@ -1231,14 +1231,17 @@ compiled SPA.
 The Phase 5 MVP started as a plain HTML/CSS/JS placeholder
 (status panel + build-info readout) but outgrew it during Phase 5
 itself as the plugin API + design-language pass landed. Operators
-wanting a different UX point `admin_ui.mode = "external"` at
-their own origin. See `vtc-service/admin-ui/README.md` for the
-contract.
+wanting a different UX serve their own build from a directory.
+See `vtc-service/admin-ui/README.md` for the contract.
 
 `admin_ui.mode = "embedded"` (default) serves the baked SPA at
-`routing.admin_ui.mount`. `mode = "external"` skips embedding;
-the operator hosts the SPA elsewhere and the daemon allowlists
-their origin via `cors.allowed_origins`.
+`routing.admin_ui.mount`; `mode = "directory"` serves `admin_ui.dir`
+instead (`docs/03-vtc/website-and-admin.md`). *Superseded:* this
+section originally specified `mode = "external"` — the SPA hosted on
+another origin, allowlisted in `cors.allowed_origins`. It was never
+served and is now refused at config load: the console is same-origin
+by construction (it reads the `csrf` cookie, calls the API by relative
+URL, and passkeys are bound to the VTC's origin).
 
 `GET /admin/build-info.json` (unauth) returns
 `{ version, indexSha256, fileCount, mode }` so operators can

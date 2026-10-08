@@ -2516,10 +2516,10 @@ pub struct AdminUiServedData {
     /// Number of files baked into the binary (informational —
     /// surfaces accidental directory bloat).
     pub file_count: u32,
-    /// `"embedded"`, `"directory"` or `"external"`. Embedded serves
-    /// the baked SPA; directory serves the operator's console from
-    /// `admin_ui.dir` (the hash is of its `index.html` at boot);
-    /// external delegates to an operator-supplied origin.
+    /// `"embedded"` or `"directory"`. Embedded serves the baked SPA;
+    /// directory serves the operator's console from `admin_ui.dir` (the
+    /// hash is of its `index.html` at boot). `"external"` appears only on
+    /// rows written before that mode was retired.
     pub mode: String,
     /// Daemon build version (`CARGO_PKG_VERSION`) that served this
     /// SPA, so the running admin-UI build correlates with a specific

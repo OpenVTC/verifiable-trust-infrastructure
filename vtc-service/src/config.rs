@@ -76,11 +76,9 @@ pub struct AppConfig {
     /// the cargo feature is default-on.
     #[serde(default)]
     pub website: WebsiteConfig,
-    /// Admin UX settings (Phase 5 M5.7). When `mode = "external"`,
-    /// the embedded SPA is skipped and `/admin/*` returns 404; the
-    /// configured `external_origin` is added to
-    /// `cors.allowed_origins` so an external SPA hosted on that
-    /// origin can drive the API.
+    /// Admin UX settings (Phase 5 M5.7): where the console and the member
+    /// portal are served from — the binary, or a directory an owner has
+    /// customised.
     #[serde(default)]
     pub admin_ui: AdminUiConfig,
     /// Trust Task document-dispatch settings (#1641). Holds no switch any more
@@ -296,8 +294,11 @@ pub struct AdminUiConfig {
     /// `routing.admin_ui.mount`. `"directory"`: serve the console
     /// from [`Self::dir`] on disk instead, so a community owner can
     /// restyle or rebuild it without rebuilding the daemon.
-    /// `"external"`: skip embedding; the operator hosts the SPA
-    /// elsewhere and the daemon merely allowlists their origin.
+    ///
+    /// `"external"` (an SPA hosted on another origin) is retired and
+    /// refused: it was never served, and the console cannot work from
+    /// another origin — it reads the CSRF cookie, calls the API by
+    /// relative URL, and passkeys are bound to the VTC's own origin.
     #[serde(default = "default_admin_ui_mode")]
     pub mode: String,
     /// Directory the console is served from when `mode = "directory"`.
@@ -313,10 +314,15 @@ pub struct AdminUiConfig {
     /// as a starting point. `None` (default) serves the baked portal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub members_dir: Option<std::path::PathBuf>,
-    /// Origin the external SPA serves from. Required when
-    /// `mode = "external"`; ignored otherwise.
-    #[serde(default)]
-    pub external_origin: Option<String>,
+    /// Retired with `mode = "external"`. Present only to **refuse** a config
+    /// that still declares it; absent (the only accepted state)
+    /// deserializes to `()`.
+    #[serde(
+        default,
+        deserialize_with = "refuse_retired_external_origin",
+        skip_serializing
+    )]
+    pub external_origin: (),
     /// WebAuthn RP-ID override. When `None`, derived from the
     /// routing mode (path-mode → base host; subdomain-mode →
     /// base domain).
@@ -340,12 +346,26 @@ impl Default for AdminUiConfig {
             mode: default_admin_ui_mode(),
             dir: None,
             members_dir: None,
-            external_origin: None,
+            external_origin: (),
             rp_id: None,
             plugin_dir: None,
         }
     }
 }
+
+/// Reject `admin_ui.external_origin` with the replacement. Only called when
+/// the key is present, so reaching it *is* the error.
+fn refuse_retired_external_origin<'de, D>(_: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Err(serde::de::Error::custom(RETIRED_EXTERNAL_MODE))
+}
+
+const RETIRED_EXTERNAL_MODE: &str = "admin_ui `mode = \"external\"` and `external_origin` have been \
+     retired — the console cannot run from another origin. To customise it, serve it from a \
+     directory instead: `vtc admin-ui export <dir>`, then `mode = \"directory\"` and \
+     `dir = \"<dir>\"`, and remove `external_origin`.";
 
 fn default_admin_ui_mode() -> String {
     "embedded".into()
@@ -369,22 +389,22 @@ impl AdminUiConfig {
     /// so a config can be written before the directory is.
     fn validate(&self) -> Result<(), AppError> {
         match (self.mode.as_str(), self.dir.is_some()) {
-            ("directory", true) | ("embedded" | "external", false) => Ok(()),
+            ("directory", true) | ("embedded", false) => Ok(()),
+            ("external", _) => Err(AppError::Config(RETIRED_EXTERNAL_MODE.into())),
             ("directory", false) => Err(AppError::Config(
                 "admin_ui.mode = \"directory\" needs admin_ui.dir — the directory \
                  holding the console's index.html (`vtc admin-ui export <dir>` writes \
                  the built-in console there to start from)"
                     .into(),
             )),
-            ("embedded" | "external", true) => Err(AppError::Config(format!(
+            ("embedded", true) => Err(AppError::Config(format!(
                 "admin_ui.dir is set but admin_ui.mode = \"{}\", so it would be \
                  ignored — set mode = \"directory\" to serve the console from it, or \
                  remove dir",
                 self.mode
             ))),
             (other, _) => Err(AppError::Config(format!(
-                "admin_ui.mode = \"{other}\" is not one of \"embedded\", \"directory\", \
-                 \"external\""
+                "admin_ui.mode = \"{other}\" is not one of \"embedded\", \"directory\""
             ))),
         }
     }
@@ -1472,11 +1492,28 @@ mod tests {
         for bad in [
             "mode = \"directory\"",
             "dir = \"/srv/console\"",
-            "mode = \"external\"\ndir = \"/srv/console\"",
             "mode = \"custom\"",
         ] {
             assert!(parse(bad).validate().is_err(), "{bad:?} must be refused");
         }
+    }
+
+    #[test]
+    fn retired_external_mode_is_refused_naming_directory_mode() {
+        let err = parse_admin_ui("mode = \"external\"")
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("mode = \"directory\""), "{err}");
+
+        let err = toml::from_str::<AdminUiConfig>("external_origin = \"https://a.example\"")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("vtc admin-ui export"), "{err}");
+    }
+
+    fn parse_admin_ui(s: &str) -> AdminUiConfig {
+        toml::from_str(s).expect("parse admin_ui")
     }
 
     #[test]

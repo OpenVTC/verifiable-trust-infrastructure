@@ -441,10 +441,12 @@ VTC sends `X-Accel-Buffering: no` for nginx) and must allow an idle read of at
 least twice the heartbeat. `cnm actions watch` prints the same hints on a
 terminal.
 
-Operators wanting a different UX point `admin_ui.mode = "external"`
-at their own origin; that knob skips the embedded SPA and adds the
-operator-supplied origin to `cors.allowed_origins` so an
-externally-hosted SPA can drive the API.
+Operators wanting a different UX serve their own console from a
+directory (below). The console cannot be hosted on another origin: it
+reads the `csrf` cookie, calls the API by relative URL, and passkeys
+are bound to the VTC's own origin. The former `admin_ui.mode =
+"external"` and `external_origin`, which never served anything, are
+refused at config load.
 
 ### Customising the console (`admin_ui.mode = "directory"`)
 
@@ -843,10 +845,9 @@ max_file_size_mb = 10
 csp_override_file = ".vtc-website.toml"
 
 [admin_ui]
-mode = "embedded"                          # or "directory" / "external"
+mode = "embedded"                          # or "directory"
 dir = "/var/lib/community/console"         # only (and required) when mode=directory
 members_dir = "/var/lib/community/portal"  # optional: serve /members from here
-external_origin = "https://admin.example.com"   # only when mode=external
 rp_id = "example.com"                      # WebAuthn RP ID
 
 [routing]
