@@ -108,15 +108,18 @@ async fn store_issued_credential(
     let id = format!("urn:uuid:{}", Uuid::new_v4());
 
     match credential {
-        // A JSON string → SD-JWT-VC compact serialization; `receive` resolves the
-        // issuer `did:key` internally.
+        // A JSON string → SD-JWT-VC compact serialization. Its issuer — a
+        // `did:key`, or a `did:web` / `did:webvh` issuer's `kid` method — is
+        // resolved through this VTA's DID cache (#1988).
         Value::String(compact) => {
+            let resolver =
+                vti_common::auth::TrustTaskVmResolver::from_optional(did_resolver.cloned());
             vault::receive(
                 vault_ks,
                 &id,
                 &CredentialFormat::SdJwtVc,
                 compact.as_bytes(),
-                vault::IssuerKey::None,
+                vault::IssuerKey::Resolver(&resolver),
                 source,
                 now,
             )

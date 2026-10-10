@@ -265,16 +265,26 @@ pub(crate) fn key_of(
     purpose: ProofPurpose,
 ) -> Result<ResolvedKey, DataIntegrityError> {
     let entry = authorised_method(doc, did, vm, purpose)?;
-    let bytes = entry.get_public_key_bytes().map_err(|e| {
+    let key_type = declared_key_type(&entry, vm)?;
+    // A Multikey is read as it always was. A `publicKeyJwk` goes through the
+    // upstream decoder that understands it; an EC key comes back as an
+    // uncompressed SEC1 point, which every EC consumer here accepts.
+    let bytes = if entry.property_set.contains_key("publicKeyMultibase") {
+        entry.get_public_key_bytes()
+    } else {
+        entry.decode_public_key().map(|(_, bytes)| bytes)
+    }
+    .map_err(|e| {
         DataIntegrityError::Resolver(format!(
             "the verificationMethod's public key could not be extracted: {e}"
         ))
     })?;
-    Ok(ResolvedKey::new(declared_key_type(&entry, vm)?, bytes))
+    Ok(ResolvedKey::new(key_type, bytes))
 }
 
 /// The key type a verification method actually declares, read from its
-/// `publicKeyMultibase` multicodec prefix.
+/// `publicKeyMultibase` multicodec prefix — or, for a method published as a
+/// `publicKeyJwk`, from the JWK's `kty`/`crv`.
 ///
 /// # Why this is not `KeyType::Ed25519`
 ///
@@ -296,18 +306,13 @@ fn declared_key_type(
     entry: &affinidi_did_common::verification_method::VerificationMethod,
     _vm: &str,
 ) -> Result<KeyType, DataIntegrityError> {
-    let multibase = entry
+    let Some(multibase) = entry
         .property_set
         .get("publicKeyMultibase")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            DataIntegrityError::Resolver(
-                "the verificationMethod has no `publicKeyMultibase`, so its algorithm cannot \
-                 be read; a PQC key must be published as a Multikey (the JWK path does not \
-                 express ML-DSA)"
-                    .to_string(),
-            )
-        })?;
+    else {
+        return jwk_key_type(entry);
+    };
 
     let (_base, bytes) = multibase::decode(multibase).map_err(|e| {
         DataIntegrityError::Resolver(format!(
@@ -343,6 +348,14 @@ fn declared_key_type(
         }
     }
 
+    // secp256k1 (`secp256k1-pub`, 0xe7) is verified but never minted here, so
+    // it has no entry in the local `KeyType` table above; its registry prefix
+    // is named here instead. ES256K SD-JWT-VC issuers and holders use it
+    // (#1988).
+    if bytes.starts_with(&[0xe7, 0x01]) {
+        return Ok(KeyType::Secp256k1);
+    }
+
     // Named rather than silently defaulted. A verifier that cannot check a
     // suite must say so, because the operator's next step is to publish a key
     // this build understands — and "signature did not verify" does not lead
@@ -352,6 +365,41 @@ fn declared_key_type(
          recognise, so its signature suite cannot be determined"
             .to_string(),
     ))
+}
+
+/// The key type of a method published as a `publicKeyJwk` — the form swiyu
+/// and EUDI issuers' DID documents use for P-256 keys (#1988).
+///
+/// A JWK names the classical curves only, so this recognises Ed25519, X25519,
+/// P-256 and secp256k1 and refuses the rest by name. ML-DSA has no JWK form
+/// here: a PQC key must be published as a Multikey.
+fn jwk_key_type(
+    entry: &affinidi_did_common::verification_method::VerificationMethod,
+) -> Result<KeyType, DataIntegrityError> {
+    let jwk = entry.property_set.get("publicKeyJwk").ok_or_else(|| {
+        DataIntegrityError::Resolver(
+            "the verificationMethod has neither `publicKeyMultibase` nor `publicKeyJwk`, so \
+             its algorithm cannot be read"
+                .to_string(),
+        )
+    })?;
+    let jwk: affinidi_crypto::JWK = serde_json::from_value(jwk.clone()).map_err(|e| {
+        DataIntegrityError::Resolver(format!(
+            "the verificationMethod's publicKeyJwk is malformed: {e}"
+        ))
+    })?;
+    match jwk.key_type() {
+        affinidi_crypto::KeyType::Ed25519 => Ok(KeyType::Ed25519),
+        affinidi_crypto::KeyType::X25519 => Ok(KeyType::X25519),
+        affinidi_crypto::KeyType::P256 => Ok(KeyType::P256),
+        affinidi_crypto::KeyType::Secp256k1 => Ok(KeyType::Secp256k1),
+        _ => Err(DataIntegrityError::Resolver(
+            "the verificationMethod's publicKeyJwk is on a curve this build does not verify \
+             (Ed25519, X25519, P-256 and secp256k1 are); a PQC key must be published as a \
+             Multikey"
+                .to_string(),
+        )),
+    }
 }
 
 /// Deliberately **not** the upstream `VerificationMethodResolver`, which has no
@@ -448,7 +496,119 @@ mod tests {
         );
     }
 
+    /// #1988: swiyu and EUDI DID documents publish P-256 keys as
+    /// `publicKeyJwk`. Such a method resolves, as P-256, to a key an ES256
+    /// signature verifies against — and only for the relationship it is
+    /// listed under.
+    #[test]
+    fn a_publickeyjwk_p256_method_resolves_and_verifies_es256() {
+        use crate::jws::JwsKey;
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        let kp = affinidi_crypto::p256::generate(Some(&[0x51; 32])).unwrap();
+        let mut jwk = serde_json::to_value(&kp.jwk).unwrap();
+        jwk.as_object_mut().unwrap().remove("d");
+        let did = "did:web:issuer.example";
+        let doc: affinidi_did_common::Document = serde_json::from_value(serde_json::json!({
+            "id": did,
+            "verificationMethod": [{
+                "id": format!("{did}#assert-key-01"),
+                "type": "JsonWebKey2020",
+                "controller": did,
+                "publicKeyJwk": jwk,
+            }],
+            "assertionMethod": [format!("{did}#assert-key-01")],
+        }))
+        .expect("a DID document");
+
+        let vm = format!("{did}#assert-key-01");
+        let resolved = key_of(&doc, did, &vm, ProofPurpose::AssertionMethod)
+            .expect("a JWK P-256 assertion key resolves");
+        assert_eq!(resolved.key_type, KeyType::P256);
+
+        let input = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(br#"{"alg":"ES256"}"#),
+            URL_SAFE_NO_PAD.encode(br#"{"iss":"did:web:issuer.example"}"#)
+        );
+        let sig = affinidi_crypto::p256::sign(&kp.private_bytes, input.as_bytes()).unwrap();
+        let token = format!("{input}.{}", URL_SAFE_NO_PAD.encode(sig));
+        JwsKey::from_resolved(&resolved)
+            .unwrap()
+            .verify_compact(&token)
+            .expect("ES256 under the resolved key");
+
+        assert!(
+            key_of(&doc, did, &vm, ProofPurpose::Authentication).is_err(),
+            "listed under assertionMethod only"
+        );
+    }
+
+    #[test]
+    fn jwk_and_multikey_secp256k1_methods_are_secp256k1() {
+        let kp = affinidi_crypto::secp256k1::generate(Some(&[0x52; 32])).unwrap();
+        let mut jwk = serde_json::to_value(&kp.jwk).unwrap();
+        jwk.as_object_mut().unwrap().remove("d");
+        let vm: VerificationMethod = serde_json::from_value(serde_json::json!({
+            "id": "did:example:alice#k1",
+            "type": "JsonWebKey2020",
+            "controller": "did:example:alice",
+            "publicKeyJwk": jwk,
+        }))
+        .unwrap();
+        assert_eq!(declared_key_type(&vm, "").unwrap(), KeyType::Secp256k1);
+
+        let mut multikey = vm_with(LocalKeyType::Ed25519, 0);
+        let mb = multibase::encode(
+            multibase::Base::Base58Btc,
+            [&[0xe7, 0x01][..], &[0x02; 33][..]].concat(),
+        );
+        multikey
+            .property_set
+            .insert("publicKeyMultibase".to_string(), serde_json::json!(mb));
+        assert_eq!(
+            declared_key_type(&multikey, "").unwrap(),
+            KeyType::Secp256k1
+        );
+    }
+
+    #[test]
+    fn a_method_with_no_key_material_names_both_forms() {
+        let vm: VerificationMethod = serde_json::from_value(serde_json::json!({
+            "id": "did:example:alice#k1",
+            "type": "JsonWebKey2020",
+            "controller": "did:example:alice",
+        }))
+        .unwrap();
+        let err = declared_key_type(&vm, "").unwrap_err().to_string();
+        assert!(err.contains("neither"), "{err}");
+    }
+
     use super::*;
+
+    /// A P-256 or secp256k1 `did:key` — what an ES256 / ES256K holder or
+    /// issuer is named by (#1988) — resolves locally to the same key.
+    #[tokio::test]
+    async fn p256_and_secp256k1_did_keys_resolve_to_their_key() {
+        use crate::jws::JwsKey;
+        let p256 = affinidi_crypto::p256::generate(Some(&[0x61; 32])).unwrap();
+        let k256 = affinidi_crypto::secp256k1::generate(Some(&[0x62; 32])).unwrap();
+        for (kt, public) in [
+            (KeyType::P256, p256.public_bytes),
+            (KeyType::Secp256k1, k256.public_bytes),
+        ] {
+            let key = JwsKey::from_resolved(&ResolvedKey::new(kt, public)).unwrap();
+            let did = key.did_key();
+            let id = did.strip_prefix("did:key:").unwrap();
+            let resolved = TrustTaskVmResolver::did_key_only()
+                .resolve_vm_for_purpose(&format!("{did}#{id}"), ProofPurpose::AssertionMethod)
+                .await
+                .unwrap_or_else(|e| panic!("{kt:?} did:key resolves: {e}"));
+            assert_eq!(resolved.key_type, kt);
+            assert_eq!(JwsKey::from_resolved(&resolved).unwrap(), key);
+        }
+    }
 
     /// `did:key` never needs the network, so the `did:key`-only resolver and a
     /// network-capable one must agree on it — and the fast path must come

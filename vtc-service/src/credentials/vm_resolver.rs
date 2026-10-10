@@ -71,8 +71,10 @@ impl DidVmResolver {
         Ok(key.public_key_bytes)
     }
 
-    /// As [`Self::resolve_ed25519`] but returns a [`VerifyingKey`] for the
-    /// SD-JWT issuer-signature path.
+    /// As [`Self::resolve_ed25519`] but returns a [`VerifyingKey`] — for the
+    /// OID4VCI proof-of-possession JWT, which is EdDSA only. A presented
+    /// SD-JWT-VC's issuer may use any curve `vta_sdk::jws::JwsKey` covers and
+    /// resolves through [`PurposeVmResolver`] instead.
     pub(crate) async fn resolve_verifying_key(
         &self,
         vm: &str,

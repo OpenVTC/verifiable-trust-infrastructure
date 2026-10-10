@@ -1,17 +1,16 @@
 //! OID4VP / SD-JWT-VC / W3C-DI / bbs-2023 presentation verifier stack
 //! + the DID-VM key resolver (split out of `exchange.rs`, P2.3).
 
-use super::jwt::{check_temporal, check_w3c_temporal, ed25519_from_okp_jwk};
+use super::jwt::{check_temporal, check_w3c_temporal};
 use affinidi_sd_jwt::SdJwt;
 use affinidi_sd_jwt::error::SdJwtError;
 use affinidi_sd_jwt::hasher::Sha256Hasher;
 use affinidi_sd_jwt::signer::JwtVerifier;
 use affinidi_sd_jwt::verifier::{VerificationOptions, verify as verify_sd_jwt};
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
-use ed25519_dalek::{Signature, VerifyingKey};
 use serde_json::Value;
+use vta_sdk::jws::{JwsKey, sd_jwt_issuer_method};
+use vti_common::auth::PurposeVmResolver;
 use vti_common::error::AppError;
 
 use crate::credentials::vm_resolver::{DidVmResolver, check_issuer_binding};
@@ -24,31 +23,19 @@ use crate::credentials::vm_resolver::{DidVmResolver, check_issuer_binding};
 // and temporal validity — so a holder can prove it holds a credential we (or a
 // trusted issuer) issued, without us re-reading the wire bytes by hand.
 
-/// A production Ed25519 verifier for the SD-JWT [`JwtVerifier`] trait: checks the
-/// compact JWS signature with `verify_strict` and returns the decoded payload.
-struct EdDsaJwtVerifier {
-    key: VerifyingKey,
+/// The SD-JWT [`JwtVerifier`] over one key — Ed25519 (`EdDSA`), P-256
+/// (`ES256`) or secp256k1 (`ES256K`), the issuer's resolved key or the holder's
+/// `cnf.jwk` (#1988). The header's `alg` must be the key's own; the signature is
+/// checked by [`JwsKey::verify_compact`] (Ed25519 with `verify_strict`).
+struct KeyJwtVerifier {
+    key: JwsKey,
 }
 
-impl JwtVerifier for EdDsaJwtVerifier {
+impl JwtVerifier for KeyJwtVerifier {
     fn verify_jwt(&self, jws: &str) -> Result<Value, SdJwtError> {
-        let parts: Vec<&str> = jws.split('.').collect();
-        if parts.len() != 3 {
-            return Err(SdJwtError::Verification("malformed JWS".into()));
-        }
-        let signing_input = format!("{}.{}", parts[0], parts[1]);
-        let sig_bytes = URL_SAFE_NO_PAD
-            .decode(parts[2])
-            .map_err(|e| SdJwtError::Verification(e.to_string()))?;
-        let signature = Signature::from_slice(&sig_bytes)
-            .map_err(|e| SdJwtError::Verification(e.to_string()))?;
         self.key
-            .verify_strict(signing_input.as_bytes(), &signature)
-            .map_err(|_| SdJwtError::Verification("signature did not verify".into()))?;
-        let payload = URL_SAFE_NO_PAD
-            .decode(parts[1])
-            .map_err(|e| SdJwtError::Verification(e.to_string()))?;
-        serde_json::from_slice(&payload).map_err(|e| SdJwtError::Verification(e.to_string()))
+            .verify_compact(jws)
+            .map_err(|e| SdJwtError::Verification(e.to_string()))
     }
 }
 
@@ -62,7 +49,8 @@ pub struct VerifiedPresentation {
     /// The issuer DID (`iss`) whose signature verified.
     pub issuer_did: String,
     /// The proven holder DID — the `did:key` of the `cnf.jwk` key whose kb-jwt
-    /// signature verified against `expected_aud` + `expected_nonce`.
+    /// signature verified against `expected_aud` + `expected_nonce`. An
+    /// Ed25519, P-256 (`did:key:zDn…`) or secp256k1 (`did:key:zQ3s…`) key.
     pub holder_did: String,
     /// The credential type (`vct`), if present.
     pub vct: Option<String>,
@@ -135,11 +123,13 @@ pub struct ParsedSdJwtPresentation {
     pub sd: SdJwt,
     /// The credential issuer DID, from the SD-JWT payload `iss`.
     pub issuer_did: String,
-    /// The issuer verification-method id — the JWS `kid`, or `iss` for a bare
-    /// `did:key` issuer. Already checked to sit under `issuer_did`.
+    /// The issuer verification method — the JWS `kid`, checked to sit under
+    /// `issuer_did`, or a `did:key` issuer's own key
+    /// ([`sd_jwt_issuer_method`]).
     pub issuer_vm: String,
-    /// The holder binding key, decoded from `cnf.jwk` (RFC 9901 §8.3).
-    pub holder_key: VerifyingKey,
+    /// The holder binding key, decoded from `cnf.jwk` (RFC 9901 §8.3):
+    /// Ed25519, P-256 or secp256k1.
+    pub holder_key: JwsKey,
     /// The proven holder DID — the `did:key` of `holder_key`.
     pub holder_did: String,
 }
@@ -149,8 +139,8 @@ pub struct ParsedSdJwtPresentation {
 ///
 /// Checks, in order: the token is a parseable SD-JWT-VC; it carries a holder
 /// `kb-jwt` (an unbound presentation is refused); it has an `iss`; the issuer
-/// JWS `kid` (or `iss` fallback) sits under `iss`; and it carries a decodable
-/// `cnf.jwk` Ed25519 holder key. Returns the [`ParsedSdJwtPresentation`]
+/// JWS `kid` names a method of `iss` (a `did:key` issuer may omit it); and it
+/// carries a decodable `cnf.jwk` holder key — Ed25519, P-256 or secp256k1. Returns the [`ParsedSdJwtPresentation`]
 /// projection the cryptographic verifier builds on.
 ///
 /// Pure and IO-free — the high-value SD-JWT-VC parser fuzz target. The
@@ -174,22 +164,14 @@ pub fn parse_sd_jwt_presentation(compact: &str) -> Result<ParsedSdJwtPresentatio
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::Validation("presentation has no `iss`".into()))?
         .to_string();
-    // The signing key is named by the issuer JWS `kid` (fall back to `iss` for a
-    // bare did:key issuer). Bind it to `iss` — a key under some *other* DID must
-    // not sign a credential claiming this issuer.
+    // The signing key is named by the issuer JWS `kid`, bound to `iss` — a key
+    // under some *other* DID must not sign a credential claiming this issuer. A
+    // did:key issuer's one key needs no `kid`; any other DID must name it.
     let header = sd
         .header()
         .map_err(|e| AppError::Validation(format!("presentation header: {e}")))?;
-    let issuer_vm = header
-        .get("kid")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| issuer_did.clone());
-    if issuer_vm.split('#').next().unwrap_or_default() != issuer_did {
-        return Err(AppError::Validation(format!(
-            "SD-JWT issuer kid `{issuer_vm}` is not under `iss` (`{issuer_did}`)"
-        )));
-    }
+    let issuer_vm = sd_jwt_issuer_method(&header, &issuer_did)
+        .map_err(|e| AppError::Validation(format!("SD-JWT issuer: {e}")))?;
 
     let cnf_jwk = payload
         .get("cnf")
@@ -197,9 +179,10 @@ pub fn parse_sd_jwt_presentation(compact: &str) -> Result<ParsedSdJwtPresentatio
         .ok_or_else(|| {
             AppError::Validation("presentation has no `cnf.jwk` (holder binding)".into())
         })?;
-    let holder_key = ed25519_from_okp_jwk(cnf_jwk)?;
+    let holder_key =
+        JwsKey::from_jwk(cnf_jwk).map_err(|e| AppError::Validation(format!("cnf.jwk: {e}")))?;
     // The proven holder DID is the did:key of the cnf binding key.
-    let holder_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&holder_key.to_bytes());
+    let holder_did = holder_key.did_key();
 
     Ok(ParsedSdJwtPresentation {
         sd,
@@ -213,11 +196,13 @@ pub fn parse_sd_jwt_presentation(compact: &str) -> Result<ParsedSdJwtPresentatio
 /// Verify an SD-JWT-VC `vp_token` received on `credential-exchange/present`.
 ///
 /// Checks, in order: the token parses and carries a holder `kb-jwt`; the issuer
-/// JWS signature (issuer key resolved from the JWS `kid`, bound to `iss` — a
-/// `did:key` issuer resolves locally, a `did:webvh` / `did:web` issuer through
-/// `did_resolver`); the holder key-binding JWT — bound to `expected_aud` +
-/// `expected_nonce`, signed by the `cnf.jwk` key the issuer committed to (RFC
-/// 9901 §8.3); and temporal validity (`nbf` / `exp`).
+/// JWS signature (issuer key resolved from the JWS `kid` for `assertionMethod`,
+/// bound to `iss` — a `did:key` issuer resolves locally, a `did:webvh` /
+/// `did:web` issuer through `did_resolver`, a `publicKeyJwk` method included);
+/// the holder key-binding JWT — bound to `expected_aud` + `expected_nonce`,
+/// signed by the `cnf.jwk` key the issuer committed to (RFC 9901 §8.3); and
+/// temporal validity (`nbf` / `exp`). Issuer and holder each sign with EdDSA,
+/// ES256 or ES256K, the algorithm fixed by their key (#1988).
 ///
 /// The IO-free structural parse is [`parse_sd_jwt_presentation`]; this adds the
 /// issuer-key resolution and signature checks. Deferred to follow-up slices:
@@ -244,13 +229,16 @@ pub async fn verify_presentation(
 
     let hasher = Sha256Hasher;
     let resolver = DidVmResolver::new(did_resolver.cloned());
-    let issuer_verifier = EdDsaJwtVerifier {
-        key: resolver
-            .resolve_verifying_key(&issuer_vm, vti_common::auth::ProofPurpose::AssertionMethod)
-            .await?,
+    let issuer_key = resolver
+        .resolve_vm_for_purpose(&issuer_vm, vti_common::auth::ProofPurpose::AssertionMethod)
+        .await
+        .map_err(|e| AppError::Validation(format!("verification method refused: {e}")))?;
+    let issuer_verifier = KeyJwtVerifier {
+        key: JwsKey::from_resolved(&issuer_key)
+            .map_err(|e| AppError::Validation(format!("issuer key: {e}")))?,
     };
 
-    let holder_verifier = EdDsaJwtVerifier { key: holder_key };
+    let holder_verifier = KeyJwtVerifier { key: holder_key };
 
     let options = VerificationOptions {
         verify_kb: true,

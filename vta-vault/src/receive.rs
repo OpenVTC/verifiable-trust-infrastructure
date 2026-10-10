@@ -11,9 +11,12 @@
 //! Receive verifies exactly two things, and **rejects-without-storing** on
 //! either failure:
 //! 1. **Issuer signature.** The SD-JWT's issuer JWS is verified against the
-//!    Ed25519 key resolved from the credential's own `iss` DID (`did:key`).
-//!    A tampered signature never produces verified claims, so a forged
-//!    credential cannot reach the store.
+//!    key the credential's own `iss` names — a `did:key`, or the `kid`
+//!    verification method of a `did:web` / `did:webvh` issuer, resolved for
+//!    `assertionMethod` by the caller's resolver. EdDSA, ES256 (P-256) and
+//!    ES256K (secp256k1) are accepted, the algorithm fixed by the resolved key
+//!    (`vta_sdk::jws`, #1988). A tampered signature never produces verified
+//!    claims, so a forged credential cannot reach the store.
 //! 2. **Temporal validity.** `affinidi_sd_jwt_vc::verify_temporal` over the
 //!    *verified* claims — `iat` not in the future, `exp` not in the past,
 //!    `nbf` not in the future. An expired credential is rejected.
@@ -37,8 +40,8 @@
 //!   1.1.
 //! - **Input validation.** The compact serialization is parsed and the issuer
 //!   DID is resolved before any trust is placed in the bytes; a malformed
-//!   credential, an `iss` that is not a resolvable `did:key`, or a missing
-//!   `iss` all fail closed.
+//!   credential, an `iss` whose key does not resolve, a `kid` that is not a
+//!   method of `iss`, or a missing `iss` all fail closed.
 //!
 //! ## What this module does NOT do
 //! It pulls in **no BBS** (`affinidi-bbs` is audit-gated; BBS receive is a
@@ -49,70 +52,92 @@ use affinidi_sd_jwt::SdJwt;
 use affinidi_sd_jwt::hasher::Sha256Hasher;
 use affinidi_sd_jwt::signer::JwtVerifier;
 use affinidi_sd_jwt::verifier::{VerificationOptions, verify};
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::Value;
-use vta_sdk::trust_task_proof::PurposeVmResolver;
+use vta_sdk::jws::{JwsKey, sd_jwt_issuer_method};
+use vta_sdk::trust_task_proof::{ProofPurpose, PurposeVmResolver, TrustTaskVmResolver};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
 use super::model::{CredentialFormat, CredentialPurpose, CredentialStatus, StoredCredential};
 use super::storage;
 
-/// An EdDSA (Ed25519) `JwtVerifier` bound to a single issuer key.
+/// A `JwtVerifier` bound to a single resolved issuer key — Ed25519, P-256 or
+/// secp256k1.
 ///
-/// The key is resolved from the credential's own `iss` DID before this
-/// verifier is built, so verification proves the JWS was signed by the key
-/// the credential names as its issuer. It validates the `alg` header is
-/// `EdDSA` *before* touching the signature and checks the Ed25519 signature
-/// over the compact signing input (`header_b64.payload_b64`). A wrong `alg`,
-/// a malformed JWS, or a bad signature all return an error — which means
-/// `verify` returns `Err` and no claims are produced.
-struct IssuerEddsaVerifier {
-    key: VerifyingKey,
+/// The key is resolved from the credential's own `iss` before this verifier is
+/// built, so verification proves the JWS was signed by a key the credential's
+/// issuer controls. The header's `alg` must be the one that key signs with
+/// ([`JwsKey::verify_compact`]); a wrong `alg`, a malformed JWS or a bad
+/// signature all return an error, so `verify` produces no claims.
+struct IssuerJwsVerifier {
+    key: JwsKey,
 }
 
-impl JwtVerifier for IssuerEddsaVerifier {
+impl JwtVerifier for IssuerJwsVerifier {
     fn verify_jwt(&self, jws: &str) -> Result<Value, affinidi_sd_jwt::error::SdJwtError> {
-        use affinidi_sd_jwt::error::SdJwtError;
-
-        let parts: Vec<&str> = jws.split('.').collect();
-        if parts.len() != 3 {
-            return Err(SdJwtError::Verification("malformed compact JWS".into()));
-        }
-        let (header_b64, payload_b64, sig_b64) = (parts[0], parts[1], parts[2]);
-
-        // Validate the algorithm header before doing any signature work.
-        let header_bytes = URL_SAFE_NO_PAD
-            .decode(header_b64)
-            .map_err(|e| SdJwtError::Verification(e.to_string()))?;
-        let header: Value = serde_json::from_slice(&header_bytes)
-            .map_err(|e| SdJwtError::Verification(e.to_string()))?;
-        if header.get("alg").and_then(Value::as_str) != Some("EdDSA") {
-            return Err(SdJwtError::Verification(
-                "unexpected alg (want EdDSA)".into(),
-            ));
-        }
-
-        // Verify the Ed25519 signature over `header_b64.payload_b64`.
-        let signing_input = format!("{header_b64}.{payload_b64}");
-        let sig_bytes = URL_SAFE_NO_PAD
-            .decode(sig_b64)
-            .map_err(|e| SdJwtError::Verification(e.to_string()))?;
-        let sig = Signature::from_slice(&sig_bytes)
-            .map_err(|e| SdJwtError::Verification(e.to_string()))?;
         self.key
-            .verify(signing_input.as_bytes(), &sig)
-            .map_err(|_| SdJwtError::Verification("Ed25519 signature invalid".into()))?;
-
-        // Signature good — decode and return the payload.
-        let payload_bytes = URL_SAFE_NO_PAD
-            .decode(payload_b64)
-            .map_err(|e| SdJwtError::Verification(e.to_string()))?;
-        serde_json::from_slice(&payload_bytes).map_err(|e| SdJwtError::Verification(e.to_string()))
+            .verify_compact(jws)
+            .map_err(|e| affinidi_sd_jwt::error::SdJwtError::Verification(e.to_string()))
     }
+}
+
+/// Verify an SD-JWT-VC's issuer signature against the key its `iss` names, and
+/// return `(iss, claims)` — the claims reconstructed with every disclosure the
+/// token carries, read only from the verified result.
+///
+/// The verification method is the `kid` under `iss` (or a `did:key`'s own key;
+/// [`sd_jwt_issuer_method`]), resolved through `resolver` for
+/// `assertionMethod`: a key the issuer has not authorised to issue does not
+/// verify its credentials. The unverified payload is read only to learn which
+/// issuer to resolve.
+async fn verify_sd_jwt_issuer(
+    sd_jwt: &SdJwt,
+    resolver: &(dyn PurposeVmResolver + '_),
+) -> Result<(String, Value), AppError> {
+    let payload = sd_jwt
+        .payload()
+        .map_err(|e| AppError::Validation(format!("unreadable SD-JWT-VC payload: {e}")))?;
+    let issuer_did = payload
+        .get("iss")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::Validation("SD-JWT-VC is missing the `iss` claim".to_string()))?
+        .to_string();
+    let header = sd_jwt
+        .header()
+        .map_err(|e| AppError::Validation(format!("unreadable SD-JWT-VC header: {e}")))?;
+    let method = sd_jwt_issuer_method(&header, &issuer_did)
+        .map_err(|e| AppError::Validation(format!("SD-JWT-VC issuer: {e}")))?;
+
+    let resolved = resolver
+        .resolve_vm_for_purpose(&method, ProofPurpose::AssertionMethod)
+        .await
+        .map_err(|e| {
+            AppError::Validation(format!(
+                "issuer `iss` ({issuer_did}) key did not resolve: {e}"
+            ))
+        })?;
+    let key = JwsKey::from_resolved(&resolved)
+        .map_err(|e| AppError::Validation(format!("issuer key cannot verify a JWS: {e}")))?;
+
+    // No holder-binding verifier: holder binding is a *presentation*-time
+    // concern (spec §14.4), not a receive-time one.
+    let hasher = Sha256Hasher;
+    let result = verify(
+        sd_jwt,
+        &IssuerJwsVerifier { key },
+        &hasher,
+        &VerificationOptions::default(),
+        None,
+    )
+    .map_err(|e| AppError::Validation(format!("issuer signature verification failed: {e}")))?;
+    if !result.is_verified() {
+        return Err(AppError::Validation(
+            "SD-JWT-VC verification did not succeed".to_string(),
+        ));
+    }
+    Ok((issuer_did, result.claims))
 }
 
 /// Provenance hint recorded on the stored envelope's `source` field.
@@ -127,8 +152,11 @@ pub type Provenance = Option<String>;
 ///
 /// `compact` is the SD-JWT-VC compact serialization (the JWS plus tilde-
 /// separated disclosures). `id` is the holder-agent-assigned local handle
-/// (the vault primary key — a ULID is recommended). `source` is optional
-/// provenance. `now_unix` is the current time in Unix seconds, injected for
+/// (the vault primary key — a ULID is recommended). `resolver` resolves the
+/// issuer's key — the caller supplies it, so the vault stays network-free: a
+/// `TrustTaskVmResolver` over the agent's DID cache reaches `did:web` /
+/// `did:webvh` issuers, `TrustTaskVmResolver::did_key_only()` reaches
+/// `did:key` alone. `source` is optional provenance. `now_unix` is the current time in Unix seconds, injected for
 /// testability (production callers pass `chrono::Utc::now().timestamp()`).
 ///
 /// On success the credential is stored under `id` and indexed by
@@ -139,8 +167,8 @@ pub type Provenance = Option<String>;
 /// ## Failure modes (all reject **without** storing)
 /// - `id` is empty → [`AppError::Validation`].
 /// - `compact` does not parse as an SD-JWT → [`AppError::Validation`].
-/// - the payload has no `iss`, or `iss` is not a resolvable `did:key`
-///   → [`AppError::Validation`].
+/// - the payload has no `iss`, its `kid` is not a method of `iss`, or the
+///   issuer key does not resolve for `assertionMethod` → [`AppError::Validation`].
 /// - the issuer signature does not verify → [`AppError::Validation`].
 /// - the credential is expired / not-yet-valid / has no `iat`
 ///   → [`AppError::Validation`].
@@ -150,6 +178,7 @@ pub async fn receive_sd_jwt_vc(
     vault: &KeyspaceHandle,
     id: &str,
     compact: &str,
+    resolver: &(dyn PurposeVmResolver + '_),
     source: Provenance,
     now_unix: u64,
 ) -> Result<StoredCredential, AppError> {
@@ -166,44 +195,11 @@ pub async fn receive_sd_jwt_vc(
     let sd_jwt = SdJwt::parse(compact, &hasher)
         .map_err(|e| AppError::Validation(format!("malformed SD-JWT-VC: {e}")))?;
 
-    // Read the *unverified* payload only to learn which issuer DID to resolve.
-    // No claim is trusted from this view — every value mapped onto the stored
-    // envelope below comes from the *verified* result.
-    let unverified_payload = sd_jwt
-        .payload()
-        .map_err(|e| AppError::Validation(format!("unreadable SD-JWT-VC payload: {e}")))?;
-
-    let issuer_did = unverified_payload
-        .get("iss")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| AppError::Validation("SD-JWT-VC is missing the `iss` claim".to_string()))?;
-
-    // Resolve the issuer DID to its Ed25519 public key. The credential names
-    // its own issuer; resolution failing (not a did:key, bad multicodec)
-    // rejects the credential rather than trusting an unresolvable issuer.
-    let issuer_pub = affinidi_crypto::did_key::did_key_to_ed25519_pub(issuer_did).map_err(|e| {
-        AppError::Validation(format!(
-            "issuer `iss` ({issuer_did}) is not a resolvable did:key: {e}"
-        ))
-    })?;
-    let verifying_key = VerifyingKey::from_bytes(&issuer_pub)
-        .map_err(|e| AppError::Validation(format!("issuer key is not a valid Ed25519 key: {e}")))?;
-    let verifier = IssuerEddsaVerifier { key: verifying_key };
-
     // Verify the issuer signature. A tampered JWS produces `Err` here, so
-    // forged credentials never reach the store. We pass no holder-binding
-    // verifier: holder binding is a *presentation*-time concern (spec §14.4),
-    // not a receive-time one. The returned `claims` are the only trusted view.
-    let opts = VerificationOptions::default();
-    let result = verify(&sd_jwt, &verifier, &hasher, &opts, None)
-        .map_err(|e| AppError::Validation(format!("issuer signature verification failed: {e}")))?;
-    if !result.is_verified() {
-        return Err(AppError::Validation(
-            "SD-JWT-VC verification did not succeed".to_string(),
-        ));
-    }
-    let claims = &result.claims;
+    // forged credentials never reach the store. The returned `claims` are the
+    // only trusted view.
+    let (issuer_did, claims) = verify_sd_jwt_issuer(&sd_jwt, resolver).await?;
+    let claims = &claims;
 
     // Temporal validity over the *verified* claims. Expired / not-yet-valid /
     // missing-iat all reject without storing.
@@ -222,6 +218,21 @@ pub async fn receive_sd_jwt_vc(
         unix_claim_to_rfc3339(claims, "nbf").or_else(|| unix_claim_to_rfc3339(claims, "iat"));
     let valid_until = unix_claim_to_rfc3339(claims, "exp");
 
+    // "Valid" means *passed signature + temporal* only; revocation state is
+    // resolved by the status task (1.6). The exception is an IETF Token Status
+    // List reference (`status.status_list`): nothing here reads a
+    // `statuslist+jwt` yet (#1988 follow-up), so a refresh can never settle it,
+    // and its state is Unknown rather than an assumed Valid (VTI-CRD-012).
+    let status = if claims
+        .get("status")
+        .and_then(|s| s.get("status_list"))
+        .is_some()
+    {
+        CredentialStatus::Unknown
+    } else {
+        CredentialStatus::Valid
+    };
+
     let cred = StoredCredential {
         id: id.to_string(),
         format: CredentialFormat::SdJwtVc,
@@ -235,11 +246,9 @@ pub async fn receive_sd_jwt_vc(
         community_did: None,
         context_id: None,
         subject_did,
-        issuer_did: Some(issuer_did.to_string()),
+        issuer_did: Some(issuer_did),
         purpose,
-        // "Valid" here means *passed signature + temporal* only. Real
-        // revocation state is resolved by the status task (1.6).
-        status: CredentialStatus::Valid,
+        status,
         valid_from,
         valid_until,
         received_at: chrono::Utc::now().to_rfc3339(),
@@ -271,9 +280,14 @@ pub async fn receive_sd_jwt_vc(
 /// - **Data-Integrity VC**: the document itself, verified on arrival.
 /// - **mdoc**: not readable by path here, and refused rather than guessed.
 ///
+/// `resolver` resolves an SD-JWT-VC's issuer key, as on receive.
+///
 /// Fails closed: a body that does not parse, or a signature that no longer
 /// verifies, is an error, never an empty document.
-pub fn stored_claims(cred: &StoredCredential) -> Result<Value, AppError> {
+pub async fn stored_claims(
+    cred: &StoredCredential,
+    resolver: &(dyn PurposeVmResolver + '_),
+) -> Result<Value, AppError> {
     match &cred.format {
         CredentialFormat::SdJwtVc => {
             let hasher = Sha256Hasher;
@@ -281,35 +295,10 @@ pub fn stored_claims(cred: &StoredCredential) -> Result<Value, AppError> {
                 .map_err(|e| AppError::Validation(format!("SD-JWT-VC body is not UTF-8: {e}")))?;
             let sd_jwt = SdJwt::parse(compact, &hasher)
                 .map_err(|e| AppError::Validation(format!("malformed SD-JWT-VC: {e}")))?;
-            let issuer_did = sd_jwt
-                .payload()
-                .ok()
-                .and_then(|p| p.get("iss").and_then(Value::as_str).map(str::to_string))
-                .ok_or_else(|| {
-                    AppError::Validation("SD-JWT-VC is missing the `iss` claim".to_string())
-                })?;
-            let issuer_pub = affinidi_crypto::did_key::did_key_to_ed25519_pub(&issuer_did)
-                .map_err(|e| {
-                    AppError::Validation(format!("issuer {issuer_did} is not a did:key: {e}"))
-                })?;
-            let key = VerifyingKey::from_bytes(&issuer_pub)
-                .map_err(|e| AppError::Validation(format!("issuer key is not Ed25519: {e}")))?;
-            let result = verify(
-                &sd_jwt,
-                &IssuerEddsaVerifier { key },
-                &hasher,
-                &VerificationOptions::default(),
-                None,
-            )
-            .map_err(|e| {
+            let (_, claims) = verify_sd_jwt_issuer(&sd_jwt, resolver).await.map_err(|e| {
                 AppError::Validation(format!("issuer signature no longer verifies: {e}"))
             })?;
-            if !result.is_verified() {
-                return Err(AppError::Validation(
-                    "SD-JWT-VC verification did not succeed".to_string(),
-                ));
-            }
-            Ok(result.claims)
+            Ok(claims)
         }
         CredentialFormat::EddsaJcs2022 | CredentialFormat::Bbs2023 => {
             serde_json::from_slice(&cred.body).map_err(|e| {
@@ -556,11 +545,13 @@ pub async fn receive_mdoc(
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub enum IssuerKey<'a> {
-    /// No caller-supplied key: the format resolves its own issuer (an
-    /// SD-JWT-VC's `did:key` `iss`), or none applies.
+    /// No caller-supplied key: the format resolves its own issuer locally (an
+    /// SD-JWT-VC's `did:key` or `did:peer` `iss`, with no I/O), or none
+    /// applies.
     None,
     /// Resolves each Data-Integrity proof's `verificationMethod` — one proof
-    /// or a proof set (VTI-44) — for the `EddsaJcs2022` format.
+    /// or a proof set (VTI-44) — for the `EddsaJcs2022` format, and an
+    /// SD-JWT-VC issuer's key — a `did:web` / `did:webvh` issuer needs one.
     Resolver(&'a (dyn PurposeVmResolver + 'a)),
     /// A caller-resolved raw public key — the 96-byte G2 key for `Bbs2023`.
     PublicKey(&'a [u8]),
@@ -579,7 +570,9 @@ impl std::fmt::Debug for IssuerKey<'_> {
 /// Format-dispatching receive — the vault's single entry point for storing an
 /// incoming credential of any format (spec D4).
 ///
-/// `SdJwtVc` resolves its issuer `did:key` internally; `EddsaJcs2022` takes a
+/// `SdJwtVc` resolves its issuer through a caller-supplied
+/// [`IssuerKey::Resolver`], or locally (`did:key` / `did:peer` only) under
+/// [`IssuerKey::None`]; `EddsaJcs2022` takes a
 /// caller-supplied [`IssuerKey::Resolver`] (the wire layer resolves the issuer
 /// DID); `Bbs2023` takes a caller-resolved [`IssuerKey::PublicKey`] and is
 /// audit-gated; `Zkp` is Phase-0-gated; `Other` is rejected.
@@ -597,7 +590,20 @@ pub async fn receive(
             let compact = std::str::from_utf8(body).map_err(|e| {
                 AppError::Validation(format!("SD-JWT-VC body is not valid UTF-8: {e}"))
             })?;
-            receive_sd_jwt_vc(vault, id, compact, source, now.timestamp().max(0) as u64).await
+            let now_unix = now.timestamp().max(0) as u64;
+            match issuer {
+                IssuerKey::Resolver(resolver) => {
+                    receive_sd_jwt_vc(vault, id, compact, resolver, source, now_unix).await
+                }
+                IssuerKey::None => {
+                    let local = TrustTaskVmResolver::did_key_only();
+                    receive_sd_jwt_vc(vault, id, compact, &local, source, now_unix).await
+                }
+                IssuerKey::PublicKey(_) => Err(AppError::Validation(
+                    "an SD-JWT-VC issuer is resolved from its `iss`, not supplied as a raw key"
+                        .to_string(),
+                )),
+            }
         }
         CredentialFormat::EddsaJcs2022 => {
             let IssuerKey::Resolver(resolver) = issuer else {
@@ -755,10 +761,17 @@ mod tests {
     use super::*;
     use affinidi_sd_jwt::hasher::Sha256Hasher;
     use affinidi_sd_jwt::signer::JwtSigner;
-    use ed25519_dalek::{Signer, SigningKey};
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use ed25519_dalek::{Signature, Signer, SigningKey};
     use serde_json::json;
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
+
+    /// The no-I/O resolver: every issuer in these tests is a `did:key`.
+    fn local() -> TrustTaskVmResolver {
+        TrustTaskVmResolver::did_key_only()
+    }
 
     /// A production-shape EdDSA (Ed25519) JWT signer for the tests. Mirrors
     /// the SDK smoke test's issuer: signs the compact signing input and emits
@@ -863,6 +876,7 @@ mod tests {
             &vault,
             "cred-1",
             &compact,
+            &local(),
             Some("exchange:thread-7".into()),
             1_800_000_000,
         )
@@ -921,7 +935,7 @@ mod tests {
         chars[pos] = if chars[pos] == 'A' { 'B' } else { 'A' };
         let tampered: String = chars.into_iter().collect();
 
-        let err = receive_sd_jwt_vc(&vault, "cred-bad", &tampered, None, 1_800_000_000)
+        let err = receive_sd_jwt_vc(&vault, "cred-bad", &tampered, &local(), None, 1_800_000_000)
             .await
             .expect_err("tampered credential must be rejected");
         assert!(matches!(err, AppError::Validation(_)));
@@ -937,7 +951,7 @@ mod tests {
         // exp is in the past relative to the `now` we pass below.
         let compact = issue_membership(&signer, &did, 1_700_000_000, Some(1_701_000_000));
 
-        let err = receive_sd_jwt_vc(&vault, "cred-exp", &compact, None, 1_900_000_000)
+        let err = receive_sd_jwt_vc(&vault, "cred-exp", &compact, &local(), None, 1_900_000_000)
             .await
             .expect_err("expired credential must be rejected");
         assert!(matches!(err, AppError::Validation(_)));
@@ -980,9 +994,16 @@ mod tests {
             Some(1_900_000_000),
         );
 
-        let err = receive_sd_jwt_vc(&vault, "cred-forged", &compact, None, 1_800_000_000)
-            .await
-            .expect_err("issuer-impersonation must be rejected");
+        let err = receive_sd_jwt_vc(
+            &vault,
+            "cred-forged",
+            &compact,
+            &local(),
+            None,
+            1_800_000_000,
+        )
+        .await
+        .expect_err("issuer-impersonation must be rejected");
         assert!(matches!(err, AppError::Validation(_)));
         assert!(storage::get(&vault, "cred-forged").await.unwrap().is_none());
     }
@@ -1005,9 +1026,16 @@ mod tests {
             affinidi_sd_jwt::issuer::issue(&claims, &frame, &signer, &hasher, None).unwrap();
         let compact = sd_jwt.serialize();
 
-        let err = receive_sd_jwt_vc(&vault, "cred-noiss", &compact, None, 1_800_000_000)
-            .await
-            .expect_err("missing iss must be rejected");
+        let err = receive_sd_jwt_vc(
+            &vault,
+            "cred-noiss",
+            &compact,
+            &local(),
+            None,
+            1_800_000_000,
+        )
+        .await
+        .expect_err("missing iss must be rejected");
         assert!(matches!(err, AppError::Validation(_)));
         assert!(storage::get(&vault, "cred-noiss").await.unwrap().is_none());
     }
@@ -1017,7 +1045,7 @@ mod tests {
         let (_dir, _store, vault) = fresh_vault();
         let (signer, did) = issuer();
         let compact = issue_membership(&signer, &did, 1_700_000_000, Some(1_900_000_000));
-        let err = receive_sd_jwt_vc(&vault, "  ", &compact, None, 1_800_000_000)
+        let err = receive_sd_jwt_vc(&vault, "  ", &compact, &local(), None, 1_800_000_000)
             .await
             .expect_err("empty id must be rejected");
         assert!(matches!(err, AppError::Validation(_)));
@@ -1629,5 +1657,225 @@ mod tests {
             matches!(&err, AppError::Validation(m) if m.contains("IssuerSigned")),
             "{err:?}"
         );
+    }
+
+    // ---- ES256 / did:web SD-JWT-VC issuers (#1988) -----------------------
+
+    /// An ES256 (P-256) issuer, the swiyu / EUDI shape.
+    struct Es256Signer {
+        private: Vec<u8>,
+        kid: Option<String>,
+    }
+
+    impl JwtSigner for Es256Signer {
+        fn algorithm(&self) -> &str {
+            "ES256"
+        }
+        fn key_id(&self) -> Option<&str> {
+            self.kid.as_deref()
+        }
+        fn sign_jwt(
+            &self,
+            header: &Value,
+            payload: &Value,
+        ) -> Result<String, affinidi_sd_jwt::error::SdJwtError> {
+            let enc = |v: &Value| URL_SAFE_NO_PAD.encode(serde_json::to_vec(v).unwrap());
+            let input = format!("{}.{}", enc(header), enc(payload));
+            let sig = affinidi_crypto::p256::sign(&self.private, input.as_bytes())
+                .map_err(|e| affinidi_sd_jwt::error::SdJwtError::Verification(e.to_string()))?;
+            Ok(format!("{input}.{}", URL_SAFE_NO_PAD.encode(sig)))
+        }
+    }
+
+    fn p256_issuer(kid: Option<&str>) -> (Es256Signer, ResolvedKey) {
+        let kp = affinidi_crypto::p256::generate(Some(&[0x71; 32])).unwrap();
+        let key = ResolvedKey::new(
+            affinidi_secrets_resolver::secrets::KeyType::P256,
+            kp.public_bytes,
+        );
+        (
+            Es256Signer {
+                private: kp.private_bytes,
+                kid: kid.map(str::to_string),
+            },
+            key,
+        )
+    }
+
+    fn issue_with(signer: &dyn JwtSigner, issuer_did: &str) -> String {
+        affinidi_sd_jwt_vc::issue(
+            "https://validant.ai/credentials/IterationSeal",
+            issuer_did,
+            None,
+            &json!({ "verdict": "pass", "band": "adequate" }),
+            &json!({ "_sd": ["band"] }),
+            signer,
+            &Sha256Hasher,
+            None,
+            1_700_000_000,
+            Some(1_900_000_000),
+        )
+        .expect("issue SD-JWT-VC")
+        .serialize()
+    }
+
+    /// #1988: an ES256 credential from a `did:web` issuer whose `kid` names a
+    /// P-256 assertion key is received, with its disclosed claims.
+    #[tokio::test]
+    async fn an_es256_did_web_credential_is_received() {
+        let (_dir, _store, vault) = fresh_vault();
+        let vm = format!("{DI_ISSUER}#assert-key-01");
+        let (signer, key) = p256_issuer(Some(&vm));
+        let compact = issue_with(&signer, DI_ISSUER);
+        let resolver = FixedKeys(vec![(vm, key)]);
+
+        let stored = receive_sd_jwt_vc(&vault, "es256", &compact, &resolver, None, 1_800_000_000)
+            .await
+            .expect("an ES256 did:web credential is received");
+        assert_eq!(stored.issuer_did.as_deref(), Some(DI_ISSUER));
+
+        let claims = stored_claims(&stored, &resolver)
+            .await
+            .expect("re-verifies");
+        assert_eq!(claims["band"], "adequate", "the disclosure is read back");
+
+        // Through the format-dispatching entry point too.
+        let id = "es256-dispatch";
+        receive(
+            &vault,
+            id,
+            &CredentialFormat::SdJwtVc,
+            compact.as_bytes(),
+            IssuerKey::Resolver(&resolver),
+            None,
+            chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+        )
+        .await
+        .expect("dispatch with a resolver");
+    }
+
+    /// A Token Status List reference cannot be read yet, so the credential is
+    /// held as Unknown, never an assumed Valid (VTI-CRD-012).
+    #[tokio::test]
+    async fn a_token_status_list_reference_is_stored_unknown() {
+        let (_dir, _store, vault) = fresh_vault();
+        let vm = format!("{DI_ISSUER}#assert-key-01");
+        let (signer, key) = p256_issuer(Some(&vm));
+        let compact = affinidi_sd_jwt_vc::issue(
+            "https://validant.ai/credentials/IterationSeal",
+            DI_ISSUER,
+            None,
+            &json!({
+                "verdict": "pass",
+                "status": { "status_list": { "idx": 7, "uri": "https://issuer.example/sl/1" } },
+            }),
+            &json!({}),
+            &signer,
+            &Sha256Hasher,
+            None,
+            1_700_000_000,
+            Some(1_900_000_000),
+        )
+        .expect("issue")
+        .serialize();
+        let stored = receive_sd_jwt_vc(
+            &vault,
+            "tsl",
+            &compact,
+            &FixedKeys(vec![(vm, key)]),
+            None,
+            1_800_000_000,
+        )
+        .await
+        .expect("received");
+        assert_eq!(stored.status, CredentialStatus::Unknown);
+    }
+
+    /// Without a resolver, `receive` resolves locally only, so a `did:web`
+    /// issuer is refused for that reason and nothing is stored.
+    #[tokio::test]
+    async fn a_did_web_credential_needs_a_resolver() {
+        let (_dir, _store, vault) = fresh_vault();
+        let vm = format!("{DI_ISSUER}#assert-key-01");
+        let (signer, _) = p256_issuer(Some(&vm));
+        let compact = issue_with(&signer, DI_ISSUER);
+        let err = receive(
+            &vault,
+            "no-resolver",
+            &CredentialFormat::SdJwtVc,
+            compact.as_bytes(),
+            IssuerKey::None,
+            None,
+            chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+        )
+        .await
+        .expect_err("did:web needs a resolver");
+        assert!(err.to_string().contains("did:key only"), "{err}");
+        assert!(storage::get(&vault, "no-resolver").await.unwrap().is_none());
+    }
+
+    /// A P-256 `did:key` issuer needs no resolver at all.
+    #[tokio::test]
+    async fn a_p256_did_key_issuer_resolves_locally() {
+        let (_dir, _store, vault) = fresh_vault();
+        let (mut signer, key) = p256_issuer(None);
+        let did = vta_sdk::jws::JwsKey::from_resolved(&key).unwrap().did_key();
+        signer.kid = Some(format!("{did}#key-0"));
+        let compact = issue_with(&signer, &did);
+        receive_sd_jwt_vc(&vault, "p256-key", &compact, &local(), None, 1_800_000_000)
+            .await
+            .expect("a P-256 did:key issuer verifies with no I/O");
+    }
+
+    /// A `kid` naming another DID's key is refused, even when that key did
+    /// sign: the issuer is who `iss` says, and only its keys count.
+    #[tokio::test]
+    async fn a_kid_outside_iss_is_refused() {
+        let (_dir, _store, vault) = fresh_vault();
+        let foreign = "did:web:attacker.example#k1".to_string();
+        let (signer, key) = p256_issuer(Some(&foreign));
+        let compact = issue_with(&signer, DI_ISSUER);
+        let err = receive_sd_jwt_vc(
+            &vault,
+            "foreign-kid",
+            &compact,
+            &FixedKeys(vec![(foreign, key)]),
+            None,
+            1_800_000_000,
+        )
+        .await
+        .expect_err("a key of another DID must not sign for this issuer");
+        assert!(
+            err.to_string().contains("not a verification method of"),
+            "{err}"
+        );
+        assert!(storage::get(&vault, "foreign-kid").await.unwrap().is_none());
+    }
+
+    /// The IterationSeal vector attached to #1988, verbatim. Its signature is
+    /// genuine ES256 (`vta_sdk::jws` verifies it against the published JWK),
+    /// but its header names no `kid` on a `did:web` issuer, so the signing
+    /// key cannot be selected and the credential is refused for that reason —
+    /// not as a bad signature.
+    #[tokio::test]
+    async fn the_issue_1988_vector_is_refused_for_its_missing_kid() {
+        const VECTOR: &str = concat!(
+            "eyJ0eXAiOiJkYytzZC1qd3QiLCJhbGciOiJFUzI1NiJ9.",
+            "eyJpc3MiOiJkaWQ6d2ViOnZhbGlkYW50LmFpIiwidmN0IjoiaHR0cHM6Ly92YWxpZGFudC5haS9jcmVkZW50aWFscy9JdGVyYXRpb25TZWFsIiwiYXNzZXNzbWVudF9pZCI6IjNmMmE5YzFlLThiNDctNGQyYS05ZTZmLTFjNWI3YTBkNGUyMSIsIml0ZXJhdGlvbl9udW1iZXIiOjIsImNvbnRyYWN0dWFsX21ldHJpYyI6ImRlbW9ncmFwaGljX3Bhcml0eSIsInZlcmRpY3QiOiJwYXNzIiwiYmFuZCI6ImFkZXF1YXRlIiwibGVpIjoiOTg0NTAwOUI2OERONzZJNUY1MTAiLCJwb2ludGluZyI6eyJib2R5IjoiTW9kZWwiLCJwYXRod2F5IjoiaGlyaW5nL0NWLXNjcmVlbmluZyIsImF1ZGllbmNlIjpbInN1YmplY3QiXX0sImFzc3VyYW5jZV9wcm9maWxlIjp7ImFjY2VzcyI6IkEzIiwiZXZpZGVuY2UiOiJFMiIsInZhbGlkaXR5IjoiVjIiLCJhc3N1cmFuY2VfY2xhc3MiOiJyZWFzb25hYmxlIiwiY2VpbGluZyI6InJlYXNvbmFibGUiLCJsaW1pdGluZyI6WyJhY2Nlc3MiLCJldmlkZW5jZSIsInZhbGlkaXR5Il0sIm1pbl9kZXRlY3RhYmxlX2VmZmVjdCI6MC4wNDMsImZyb250aWVyIjp7ImludGVydmVudGlvbmFsIjoibm90X29mZmVyZWQiLCJmdWxsX2xpbmVhZ2UiOiJub3Rfb2ZmZXJlZCIsImNvbnRpbnVvdXMiOiJub3Rfb2ZmZXJlZCJ9LCJjYWxpYnJhdGlvbiI6IjIwMjYtMDgifSwiY29udGVudF9oYXNoIjoiMzEwNTYzNzE4ZTA2ZjdjNzI0ODE2OGUyYjRiZTk1MjZlZDQ2MWExOWU3YjhhYmFjYWJiMWY5ZWYwZTkwYzE4ZCIsImlhdCI6MTc4NTk3NDQwMCwiZXhwIjoxODE3NTEwNDAwLCJfc2QiOlsiU2xfR0ZSRXFuMU9nSEd2Y1lLekNxSVM5SFBiZW01ZzhVaWphWDF3RExZSSJdLCJfc2RfYWxnIjoic2hhLTI1NiJ9.",
+            "02oW1G8gG29v0lp4vGG3nweHVJ5mjq6guWhQjFmy_lmC69Zup4iYMJNQeOOU21pfq86qqBWjTqjnqCvGi7mL9g",
+            "~WyItT3dsZHFfU25YWEFuSkVZRG5DM3N3IiwiZGV0YWlscyIseyJtYXhfZGlzcGFyaXR5IjowLjA0MSwiY29udHJhY3R1YWxfdGhyZXNob2xkIjowLjEsInRocmVzaG9sZF9zb3VyY2UiOiJzaWduZWRfbWV0cmljIiwidmVyZGljdF9wcm92aXNpb25hbCI6ZmFsc2UsImZyYW1lc19zaGEyNTYiOiI5ZjFjMGIzYTJkNGU1ZjYwNzE4MjkzYTRiNWM2ZDdlOGY5MDExMjIzMzQ0NTU2Njc3ODg5OWFhYmJjY2RkZWVmZiIsInByb3ZlbmFuY2VfdmVyaWZpZWQiOnRydWV9XQ~"
+        );
+        let (_dir, _store, vault) = fresh_vault();
+        let err = receive_sd_jwt_vc(
+            &vault,
+            "seal",
+            VECTOR,
+            &FixedKeys(vec![]),
+            None,
+            1_785_974_401,
+        )
+        .await
+        .expect_err("no kid on a did:web issuer");
+        assert!(err.to_string().contains("DID-URL kid"), "{err}");
     }
 }

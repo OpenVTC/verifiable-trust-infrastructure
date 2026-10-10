@@ -208,10 +208,13 @@ pub async fn mint_and_store_sd_jwt_vc(
 ) -> Result<StoredCredential, AppError> {
     let compact = mint_sd_jwt_vc(req, signer)?;
     // Self-mint provenance; the receive path indexes it like any credential.
+    // A self-minted credential is issued by a `did:key`, which resolves with
+    // no I/O.
     receive::receive_sd_jwt_vc(
         vault,
         id,
         &compact,
+        &vta_sdk::trust_task_proof::TrustTaskVmResolver::did_key_only(),
         Some("self-minted".to_string()),
         now_unix,
     )

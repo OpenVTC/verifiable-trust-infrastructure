@@ -4,7 +4,6 @@
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
-use ed25519_dalek::VerifyingKey;
 use serde_json::Value;
 use vti_common::error::AppError;
 
@@ -30,30 +29,6 @@ pub(super) fn check_w3c_temporal(vc: &Value, now: DateTime<Utc>) -> Result<(), A
         }
     }
     Ok(())
-}
-
-/// Build a verifying key from an RFC 8037 OKP / Ed25519 JWK (the `cnf.jwk`).
-pub(super) fn ed25519_from_okp_jwk(jwk: &Value) -> Result<VerifyingKey, AppError> {
-    if jwk.get("kty").and_then(Value::as_str) != Some("OKP")
-        || jwk.get("crv").and_then(Value::as_str) != Some("Ed25519")
-    {
-        return Err(AppError::Validation(
-            "cnf.jwk is not an OKP / Ed25519 key".into(),
-        ));
-    }
-    let x = jwk
-        .get("x")
-        .and_then(Value::as_str)
-        .ok_or_else(|| AppError::Validation("cnf.jwk has no `x`".into()))?;
-    let bytes = URL_SAFE_NO_PAD
-        .decode(x)
-        .map_err(|e| AppError::Validation(format!("cnf.jwk `x` is not base64url: {e}")))?;
-    let arr: [u8; 32] = bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| AppError::Validation("cnf.jwk `x` is not 32 bytes".into()))?;
-    VerifyingKey::from_bytes(&arr)
-        .map_err(|e| AppError::Validation(format!("cnf.jwk key is invalid: {e}")))
 }
 
 /// Enforce temporal validity over the presentation's protected claims.

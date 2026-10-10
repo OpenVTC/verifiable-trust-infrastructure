@@ -124,6 +124,9 @@ pub mod did_key;
 pub mod did_refresh;
 pub mod did_secrets;
 pub mod did_templates;
+/// Compact-JWS verification over a resolved key — EdDSA, ES256, ES256K.
+#[cfg(feature = "proof-verify")]
+pub mod jws;
 /// Verifying a Trust-Task document's Data-Integrity proof. Moved down from
 /// `vti-common` when a *client* needed it too — see the module docs.
 #[cfg(feature = "proof-verify")]
