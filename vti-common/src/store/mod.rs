@@ -13,6 +13,7 @@ pub mod counter;
 #[cfg(feature = "encryption")]
 pub(crate) mod encryption;
 
+pub(crate) mod generation;
 #[cfg(any(feature = "vsock-store", test))]
 mod key_locks;
 #[cfg(feature = "vsock-store")]
@@ -153,6 +154,61 @@ impl KeyspaceHandle {
             KeyspaceHandle::Local(h) => h.is_encrypted(),
             #[cfg(feature = "vsock-store")]
             KeyspaceHandle::Vsock(h) => h.is_encrypted(),
+        }
+    }
+
+    /// A cache ticket for this keyspace: `Some(generation)` while no write
+    /// through any handle for this keyspace is in flight or has an unknown
+    /// outcome, `None` otherwise ("read through, cache nothing").
+    ///
+    /// The protocol for caching a value derived from this keyspace: take a
+    /// ticket *before* reading; serve a cached value only if it was cached
+    /// under the current ticket; cache a fresh read only if the ticket taken
+    /// before it is still the current one ([`Self::ticket_is_current`]). The
+    /// `store::generation` module docs give the argument, including why a
+    /// write the parent applies after its future was cancelled cannot leave
+    /// a stale value cached. State is process-local only.
+    pub fn cache_ticket(&self) -> Option<u64> {
+        self.writes().ticket()
+    }
+
+    /// Whether `ticket` is still current: nothing has been written, begun,
+    /// or abandoned in this keyspace since it was taken.
+    pub fn ticket_is_current(&self, ticket: u64) -> bool {
+        self.writes().ticket() == Some(ticket)
+    }
+
+    fn writes(&self) -> &generation::KeyspaceWrites {
+        match self {
+            KeyspaceHandle::Local(h) => &h.writes,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.writes(),
+        }
+    }
+
+    /// Test-only: hold a local write open, as a running write would.
+    #[cfg(test)]
+    pub(crate) fn begin_local_write_for_test(&self) -> generation::WriteGuard {
+        match self {
+            KeyspaceHandle::Local(h) => h.writes.begin().known_on_drop(),
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(_) => unimplemented!("local-store tests only"),
+        }
+    }
+
+    /// Test-only: delete `key` *without* recording a write — the one way to
+    /// change a row behind a cache's back, used to prove a cache hit reads
+    /// nothing. Never compiled into a build.
+    #[cfg(test)]
+    pub(crate) async fn remove_untracked(&self, key: impl Into<Vec<u8>>) -> Result<(), AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => {
+                let key = key.into();
+                let ks = h.keyspace.clone();
+                blocking_with_timeout(move || Ok(ks.remove(key)?)).await
+            }
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(_) => unimplemented!("local-store tests only"),
         }
     }
 
@@ -435,6 +491,7 @@ type WriteLocks =
 pub struct LocalStore {
     db: fjall::Database,
     write_locks: WriteLocks,
+    writes: generation::Generations,
 }
 
 #[derive(Clone)]
@@ -459,6 +516,10 @@ pub struct LocalKeyspaceHandle {
     /// Shared with every other handle for the same keyspace name — see
     /// [`WriteLocks`].
     write_lock: std::sync::Arc<std::sync::Mutex<()>>,
+    /// Shared with every other handle for the same keyspace name. Each write
+    /// begins one before its blocking closure and ends it inside, after the
+    /// write — see [`generation`].
+    writes: std::sync::Arc<generation::KeyspaceWrites>,
     #[cfg(feature = "encryption")]
     encryption_key: Option<std::sync::Arc<zeroize::Zeroizing<[u8; 32]>>>,
 }
@@ -525,6 +586,7 @@ impl LocalStore {
         Ok(Self {
             db,
             write_locks: WriteLocks::default(),
+            writes: generation::Generations::default(),
         })
     }
 
@@ -543,6 +605,7 @@ impl LocalStore {
             name: name.to_string(),
             db: self.db.clone(),
             write_lock,
+            writes: self.writes.for_keyspace(name),
             #[cfg(feature = "encryption")]
             encryption_key: None,
         })
@@ -591,7 +654,12 @@ impl LocalKeyspaceHandle {
         let bytes = serde_json::to_vec(value)?;
         let bytes = self.maybe_encrypt(&key, bytes)?;
         let ks = self.keyspace.clone();
-        blocking_with_timeout(move || Ok(ks.insert(key, bytes)?)).await
+        let write = self.writes.begin().known_on_drop();
+        blocking_with_timeout(move || {
+            let _write = write;
+            Ok(ks.insert(key, bytes)?)
+        })
+        .await
     }
 
     pub async fn get<V: DeserializeOwned + Send + 'static>(
@@ -623,7 +691,12 @@ impl LocalKeyspaceHandle {
     pub async fn remove(&self, key: impl Into<Vec<u8>>) -> Result<(), AppError> {
         let key = key.into();
         let ks = self.keyspace.clone();
-        blocking_with_timeout(move || Ok(ks.remove(key)?)).await
+        let write = self.writes.begin().known_on_drop();
+        blocking_with_timeout(move || {
+            let _write = write;
+            Ok(ks.remove(key)?)
+        })
+        .await
     }
 
     /// Atomically `GET` + `DELETE` (the classic Redis `GETDEL`).
@@ -643,12 +716,15 @@ impl LocalKeyspaceHandle {
         let key = key.into();
         let ks = self.keyspace.clone();
         let lock = self.write_lock.clone();
+        let write = self.writes.begin().known_on_drop();
         #[cfg(feature = "encryption")]
         let enc_key = self.encryption_key.clone();
         #[cfg(feature = "encryption")]
         let name = self.name.clone();
         blocking_with_timeout(move || {
             let _guard = lock_writes(&lock);
+            // Ends the write on every exit path, after anything written here.
+            let _write = write;
             match ks.get(&key)? {
                 Some(bytes) => {
                     ks.remove(&key)?;
@@ -675,7 +751,12 @@ impl LocalKeyspaceHandle {
         let key = key.into();
         let value = self.maybe_encrypt(&key, value.into())?;
         let ks = self.keyspace.clone();
-        blocking_with_timeout(move || Ok(ks.insert(key, value)?)).await
+        let write = self.writes.begin().known_on_drop();
+        blocking_with_timeout(move || {
+            let _write = write;
+            Ok(ks.insert(key, value)?)
+        })
+        .await
     }
 
     pub async fn get_raw(&self, key: impl Into<Vec<u8>>) -> Result<Option<Vec<u8>>, AppError> {
@@ -791,8 +872,11 @@ impl LocalKeyspaceHandle {
         let bytes = self.maybe_encrypt(&new_key, bytes)?;
         let ks = self.keyspace.clone();
         let lock = self.write_lock.clone();
+        let write = self.writes.begin().known_on_drop();
         blocking_with_timeout(move || {
             let _guard = lock_writes(&lock);
+            // Ends the write on every exit path, after anything written here.
+            let _write = write;
             if ks.contains_key(&new_key)? {
                 return Ok(false);
             }
@@ -822,12 +906,15 @@ impl LocalKeyspaceHandle {
         let bytes = self.maybe_encrypt(&new_key, bytes)?;
         let ks = self.keyspace.clone();
         let lock = self.write_lock.clone();
+        let write = self.writes.begin().known_on_drop();
         #[cfg(feature = "encryption")]
         let enc_key = self.encryption_key.clone();
         #[cfg(feature = "encryption")]
         let name = self.name.clone();
         blocking_with_timeout(move || {
             let _guard = lock_writes(&lock);
+            // Ends the write on every exit path, after anything written here.
+            let _write = write;
             let Some(current) = ks.get(&old_key)? else {
                 return Ok(MoveOutcome::SourceMissing);
             };
@@ -881,8 +968,11 @@ impl LocalKeyspaceHandle {
         let bytes = self.maybe_encrypt(&key, bytes)?;
         let ks = self.keyspace.clone();
         let lock = self.write_lock.clone();
+        let write = self.writes.begin().known_on_drop();
         blocking_with_timeout(move || {
             let _guard = lock_writes(&lock);
+            // Ends the write on every exit path, after anything written here.
+            let _write = write;
             if ks.contains_key(&key)? {
                 return Ok(false);
             }

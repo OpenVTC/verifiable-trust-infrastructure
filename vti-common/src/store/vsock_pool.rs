@@ -23,6 +23,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -97,10 +98,24 @@ impl ConnectionPool {
     /// the same as applying them once; anything else goes through
     /// [`Self::request_once`].
     pub(crate) async fn request(&self, payload: &[u8]) -> Result<Vec<u8>, AppError> {
+        self.request_tracked(payload, &AtomicBool::new(false)).await
+    }
+
+    /// [`Self::request`], setting `ever_sent` once any attempt's frame has
+    /// been completely written — from then on the parent may have applied
+    /// it, even if this future is dropped before the reply (which no error
+    /// can report). A caller that tracks writes (`generation::WriteGuard`)
+    /// reads it to tell a write that never left the enclave from one whose
+    /// outcome is unknown.
+    pub(crate) async fn request_tracked(
+        &self,
+        payload: &[u8],
+        ever_sent: &AtomicBool,
+    ) -> Result<Vec<u8>, AppError> {
         let _permit = self.permit().await?;
 
         if let Some(mut stream) = self.take_live_idle() {
-            match round_trip_within(&mut stream, payload, self.timeout).await {
+            match round_trip_within(&mut stream, payload, self.timeout, ever_sent).await {
                 Ok(resp) => {
                     self.put_idle(stream);
                     return Ok(resp);
@@ -111,7 +126,7 @@ impl ConnectionPool {
 
         let mut stream = (self.connect)().await?;
         trace!("storage connection opened");
-        let resp = round_trip_within(&mut stream, payload, self.timeout)
+        let resp = round_trip_within(&mut stream, payload, self.timeout, ever_sent)
             .await
             .map_err(RoundTripError::into_error)?;
         self.put_idle(stream);
@@ -131,11 +146,26 @@ impl ConnectionPool {
     /// A connection the parent closed while idle would otherwise make that
     /// error routine (the write lands in a dead socket, the read gets EOF), so
     /// idle connections are checked first; see [`is_stale`].
+    ///
+    /// The store sends through [`Self::request_once_tracked`]; this
+    /// untracked form is for tests.
+    #[cfg(test)]
     pub(crate) async fn request_once(&self, payload: &[u8]) -> Result<Vec<u8>, OnceError> {
+        self.request_once_tracked(payload, &AtomicBool::new(false))
+            .await
+    }
+
+    /// [`Self::request_once`], setting `ever_sent` as
+    /// [`Self::request_tracked`] does.
+    pub(crate) async fn request_once_tracked(
+        &self,
+        payload: &[u8],
+        ever_sent: &AtomicBool,
+    ) -> Result<Vec<u8>, OnceError> {
         let _permit = self.permit().await.map_err(OnceError::NotSent)?;
 
         if let Some(mut stream) = self.take_live_idle() {
-            match round_trip_within(&mut stream, payload, self.timeout).await {
+            match round_trip_within(&mut stream, payload, self.timeout, ever_sent).await {
                 Ok(resp) => {
                     self.put_idle(stream);
                     return Ok(resp);
@@ -149,7 +179,7 @@ impl ConnectionPool {
 
         let mut stream = (self.connect)().await.map_err(OnceError::NotSent)?;
         trace!("storage connection opened");
-        match round_trip_within(&mut stream, payload, self.timeout).await {
+        match round_trip_within(&mut stream, payload, self.timeout, ever_sent).await {
             Ok(resp) => {
                 self.put_idle(stream);
                 Ok(resp)
@@ -270,7 +300,7 @@ fn is_stale(stream: &mut BoxStream) -> bool {
 /// Write one length-prefixed request frame and read one response frame.
 #[cfg(test)]
 async fn round_trip(stream: &mut BoxStream, payload: &[u8]) -> Result<Vec<u8>, RoundTripError> {
-    round_trip_within(stream, payload, ROUND_TRIP_TIMEOUT).await
+    round_trip_within(stream, payload, ROUND_TRIP_TIMEOUT, &AtomicBool::new(false)).await
 }
 
 /// [`round_trip_inner`] under a deadline. A deadline that expires after the
@@ -278,13 +308,22 @@ async fn round_trip(stream: &mut BoxStream, payload: &[u8]) -> Result<Vec<u8>, R
 /// applying it right now — and before that, [`RoundTripError::Unsent`]: a
 /// partial frame is never acted on. Either way the caller drops the
 /// connection.
+///
+/// `ever_sent` is the caller's: set (never cleared) at the same moment as
+/// this attempt's `sent`, so it also survives the caller's future being
+/// dropped mid-round-trip, where no error is returned to say so.
 async fn round_trip_within(
     stream: &mut BoxStream,
     payload: &[u8],
     timeout: std::time::Duration,
+    ever_sent: &AtomicBool,
 ) -> Result<Vec<u8>, RoundTripError> {
     let mut sent = false;
-    let result = tokio::time::timeout(timeout, round_trip_inner(stream, payload, &mut sent)).await;
+    let result = tokio::time::timeout(
+        timeout,
+        round_trip_inner(stream, payload, &mut sent, ever_sent),
+    )
+    .await;
     match result {
         Ok(result) => result,
         Err(_) => {
@@ -298,11 +337,13 @@ async fn round_trip_within(
     }
 }
 
-/// `*sent` becomes `true` once every byte of the request frame is written.
+/// `*sent` (and `ever_sent`) become `true` once every byte of the request
+/// frame is written.
 async fn round_trip_inner(
     stream: &mut BoxStream,
     payload: &[u8],
     sent: &mut bool,
+    ever_sent: &AtomicBool,
 ) -> Result<Vec<u8>, RoundTripError> {
     let len = u32::try_from(payload.len()).map_err(|_| {
         RoundTripError::Unsent(AppError::Internal("storage request too large".into()))
@@ -327,6 +368,7 @@ async fn round_trip_inner(
     // From here on every byte of the frame has been handed over, so any
     // failure — or the deadline — leaves the outcome unknown.
     *sent = true;
+    ever_sent.store(true, Ordering::SeqCst);
     let sent = |op| move |e| RoundTripError::Sent(AppError::vsock(op)(e));
     stream.flush().await.map_err(sent("vsock flush"))?;
 
