@@ -266,6 +266,21 @@ describe("member portal", () => {
     expect(screen.getByRole("button", { name: /add a passkey/i })).toBeTruthy();
   });
 
+  it.each([
+    [["did", "oob", "uv"], "Your wallet"],
+    [["did"], "Your VTA (SIOPv2)"],
+    [["passkey"], "Passkey"],
+  ])("names how the member signed in (amr %j)", async (amr, label) => {
+    stubFetch((url) => {
+      if (url === "/v1/member/me") return json(200, { ...ME, amr });
+      if (url === "/v1/member/passkeys") return json(200, []);
+      return json(404, {});
+    });
+    renderPortal();
+    await screen.findByRole("heading", { name: /welcome back/i });
+    expect(screen.getByText("Signed in with").nextElementSibling?.textContent).toBe(label);
+  });
+
   it("treats a 403 (no longer an active member) as signed out", async () => {
     stubFetch((url) =>
       url === "/v1/member/me" ? json(403, { message: "not an active member" }) : json(401, {}),
