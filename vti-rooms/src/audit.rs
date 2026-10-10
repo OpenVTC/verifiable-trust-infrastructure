@@ -201,6 +201,7 @@ mod tests {
             Ok(VerifiedChain {
                 subject: presenter.to_string(),
                 actions: vec!["read".into(), "write".into()],
+                member: Some(presenter.to_string()),
             })
         }
     }
