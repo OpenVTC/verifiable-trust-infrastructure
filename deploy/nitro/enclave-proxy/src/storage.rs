@@ -60,6 +60,8 @@ pub async fn run_storage(vsock_port: u32, data_dir: PathBuf) {
         db,
         keyspaces: RwLock::new(HashMap::new()),
         data_dir: data_dir.clone(),
+        #[cfg(test)]
+        batch_commits: Default::default(),
     });
 
     let listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
@@ -95,6 +97,9 @@ struct StorageState {
     db: Database,
     keyspaces: RwLock<HashMap<String, KeyspaceEntry>>,
     data_dir: PathBuf,
+    /// Moves committed as one write batch (tests assert the batch path).
+    #[cfg(test)]
+    batch_commits: std::sync::atomic::AtomicUsize,
 }
 
 /// A keyspace and the lock its atomic operations hold.
@@ -499,6 +504,12 @@ async fn handle_move_if_equal(state: &StorageState, data: &[u8]) -> Vec<u8> {
 
 /// Write `value` at `new` and delete `old`, unless `new` is occupied
 /// (`Ok(false)`, nothing written). The caller holds the keyspace's lock.
+///
+/// The insert and the delete are one fjall write batch: one journal record
+/// under one sequence number, so recovery after a crash replays both or
+/// neither. As two writes, a crash between them would leave both rows — the
+/// moved-from row still live beside its replacement (an old ACL DID keeping
+/// its authority).
 fn move_locked(
     state: &StorageState,
     ks_name: &str,
@@ -510,9 +521,15 @@ fn move_locked(
     if ks.contains_key(new)? {
         return Ok(false);
     }
-    ks.insert(new, value)?;
+    let mut batch = state.db.batch();
+    batch.insert(ks, new, value);
+    batch.remove(ks, old);
+    batch.commit()?;
+    #[cfg(test)]
+    state
+        .batch_commits
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     after_insert(state, ks_name, new, value);
-    ks.remove(old)?;
     Ok(true)
 }
 
@@ -536,6 +553,7 @@ mod tests {
             db,
             keyspaces: RwLock::new(HashMap::new()),
             data_dir: dir,
+            batch_commits: Default::default(),
         })
     }
 
@@ -711,6 +729,34 @@ mod tests {
         assert_eq!(wins, 1);
         assert_eq!(get(&s, b"new").await, Some(b"w".to_vec()));
         assert_eq!(get(&s, b"old").await, None);
+    }
+
+    /// Every move commits its insert and delete as one write batch, and only
+    /// a move that happens commits one. Outcomes are unchanged.
+    #[tokio::test]
+    async fn moves_commit_one_write_batch() {
+        let s = state();
+        let batches = || s.batch_commits.load(Ordering::SeqCst);
+        put(&s, b"old", b"v").await;
+
+        let r = dispatch(&s, &req(OP_SWAP_IF_ABSENT, &[b"old", b"mid", b"w"])).await;
+        assert!(decode_bool_response(&r).unwrap());
+        assert_eq!(batches(), 1);
+
+        let r = dispatch(&s, &req(OP_MOVE_IF_EQUAL, &[b"mid", b"w", b"new", b"x"])).await;
+        assert_eq!(r, build_ok_byte(MOVE_MOVED));
+        assert_eq!(batches(), 2);
+        assert_eq!(get(&s, b"old").await, None);
+        assert_eq!(get(&s, b"mid").await, None);
+        assert_eq!(get(&s, b"new").await, Some(b"x".to_vec()));
+
+        // Refused moves write nothing at all.
+        put(&s, b"a", b"1").await;
+        let r = dispatch(&s, &req(OP_SWAP_IF_ABSENT, &[b"a", b"new", b"y"])).await;
+        assert!(!decode_bool_response(&r).unwrap());
+        let r = dispatch(&s, &req(OP_MOVE_IF_EQUAL, &[b"a", b"2", b"z", b"y"])).await;
+        assert_eq!(r, build_ok_byte(MOVE_SOURCE_CHANGED));
+        assert_eq!(batches(), 2);
     }
 
     #[tokio::test]
