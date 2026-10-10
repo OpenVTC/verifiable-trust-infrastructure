@@ -148,7 +148,7 @@ function Home({ me }: { me: MemberMe }) {
             </div>
             <div>
               <dt>Signed in with</dt>
-              <dd>{me.amr.includes("passkey") ? "Passkey" : "Your VTA (SIOPv2)"}</dd>
+              <dd>{signInMethod(me.amr)}</dd>
             </div>
           </dl>
         </section>
@@ -170,4 +170,12 @@ function Home({ me }: { me: MemberMe }) {
       </div>
     </main>
   );
+}
+
+/** How the member signed in, from the session's `amr`. A wallet sign-in by
+ *  trigger link carries `oob`; the legacy SIOPv2 path carries only `did`. */
+function signInMethod(amr: string[]): string {
+  if (amr.includes("passkey")) return "Passkey";
+  if (amr.includes("oob")) return "Your wallet";
+  return "Your VTA (SIOPv2)";
 }
