@@ -1197,9 +1197,9 @@ for `0.0.0.3`: believe `X-Forwarded-For` from the parent and from nothing else
 never a valid TCP source, so nothing inside the enclave can claim that trust.
 This proxy reads the same key as its `trusted_upstream_cidrs`, for
 `127.0.0.1`: a TLS terminator on the parent's loopback in front of it. (Before
-the VTA served vsock directly, an in-enclave `socat` made its peer `127.0.0.1`;
-a config that trusts only loopback now reads no header in the VTA, and the VTA
-logs a warning naming the fix.)
+the VTA served vsock directly, an in-enclave `socat` made its peer `127.0.0.1`.
+A config that still trusts only `127.0.0.1/32` keeps working: on vsock the VTA
+reads it as the parent and logs once at boot how to make that explicit.)
 
 The VTA opens no TCP port in the enclave. A `VTA_REST_VSOCK_PORT` that is not a
 valid vsock port, or a VTA build without vsock support, refuses to boot rather

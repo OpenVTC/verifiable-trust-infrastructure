@@ -1288,14 +1288,30 @@ pub async fn run(
                 .spawn(move || run_rest_thread(listener, state, &mut rest_shutdown_rx, ready_tx))
                 .map_err(|e| AppError::Internal(format!("failed to spawn REST thread: {e}")))?;
             // A listener that cannot be served fails the boot, not a thread.
-            match ready_rx.await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => return Err(AppError::Config(e)),
-                Err(_) => {
-                    return Err(AppError::Internal(
-                        "REST thread exited before its listener was ready".into(),
-                    ));
+            // On a soft restart this generation has already started work, so
+            // it is stopped the way a normal shutdown stops it before the
+            // error is returned.
+            let failure = match ready_rx.await {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(AppError::Config(e)),
+                Err(_) => Some(AppError::Internal(
+                    "REST thread exited before its listener was ready".into(),
+                )),
+            };
+            if let Some(err) = failure {
+                let _ = shutdown_tx.send(true);
+                #[cfg(any(feature = "didcomm", feature = "tsp"))]
+                didcomm_shutdown.cancel();
+                match tokio::task::spawn_blocking(move || handle.join()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_panic)) => error!("REST thread panicked"),
+                    Err(e) => error!("failed to join REST thread: {e}"),
                 }
+                // What the storage thread does on shutdown; it has not started.
+                if let Err(e) = store.persist().await {
+                    error!("failed to persist store on shutdown: {e}");
+                }
+                return Err(err);
             }
             Some(handle)
         } else {
@@ -1894,35 +1910,50 @@ impl RestListener {
     }
 }
 
-/// Hand a blocking vsock listener to the calling runtime's reactor.
-///
-/// Must run inside the REST thread's runtime: tokio-vsock registers the
-/// socket with the runtime it is created in, which is why the boot cannot
-/// create the async listener itself. tokio-vsock 0.7 adopts an existing
-/// socket only through `FromRawFd`.
-#[cfg(all(feature = "rest", feature = "vsock-store"))]
-fn adopt_vsock_listener(listener: vsock::VsockListener) -> VsockRestListener {
-    use std::os::fd::IntoRawFd;
-    use std::os::unix::io::FromRawFd;
-    let fd = listener.into_raw_fd();
-    // SAFETY: `into_raw_fd` has just released `fd` from a listener this
-    // function owned by value, so no other owner exists and nothing else will
-    // close it; ownership passes to the tokio listener, which closes it on
-    // drop. It is a listening AF_VSOCK socket, which is what
-    // `tokio_vsock::VsockListener` wraps.
-    let listener = unsafe { tokio_vsock::VsockListener::from_raw_fd(fd) };
-    VsockRestListener(listener)
-}
-
 /// A vsock listener for `axum::serve`, for enclave builds.
 ///
 /// Accepts the parent only, and reports it as
 /// [`vti_common::rate_limit::VSOCK_PARENT_PEER`] (`0.0.0.3`) — an address no
-/// TCP connection can carry. `trust_xff_cidrs = ["0.0.0.3/32"]` then trusts
-/// exactly the parent's proxy. Through `socat` the peer was `127.0.0.1`, which
+/// TCP connection can carry, which `trust_xff_cidrs` can then trust as exactly
+/// the parent's proxy. Through `socat` the peer was `127.0.0.1`, which
 /// anything inside the enclave could also be.
+///
+/// Built on the blocking `vsock` listener (bound once at boot, cloned per REST
+/// generation) wrapped in this runtime's [`AsyncFd`](tokio::io::unix::AsyncFd),
+/// rather than tokio-vsock's listener, whose only way to adopt an existing
+/// socket (`FromRawFd`) panics on failure.
 #[cfg(all(feature = "rest", feature = "vsock-store"))]
-struct VsockRestListener(tokio_vsock::VsockListener);
+struct VsockRestListener {
+    inner: tokio::io::unix::AsyncFd<vsock::VsockListener>,
+    backoff: AcceptBackoff,
+}
+
+#[cfg(all(feature = "rest", feature = "vsock-store"))]
+impl VsockRestListener {
+    /// Register this generation's clone of the boot listener with the calling
+    /// runtime. Fallible end to end, so a real OS error (EMFILE, a runtime
+    /// shutting down) reaches the boot through the REST thread's `ready`
+    /// channel instead of panicking the thread.
+    fn adopt(listener: vsock::VsockListener) -> std::io::Result<Self> {
+        listener.set_nonblocking(true)?;
+        Ok(Self {
+            inner: tokio::io::unix::AsyncFd::new(listener)?,
+            backoff: AcceptBackoff::default(),
+        })
+    }
+
+    async fn accept_one(&self) -> std::io::Result<(vsock::VsockStream, vsock::VsockAddr)> {
+        loop {
+            let mut guard = self.inner.readable().await?;
+            match guard.try_io(|inner| inner.get_ref().accept()) {
+                Ok(Ok(accepted)) => return Ok(accepted),
+                Ok(Err(e)) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Ok(Err(e)) => return Err(e),
+                Err(_would_block) => continue,
+            }
+        }
+    }
+}
 
 #[cfg(all(feature = "rest", feature = "vsock-store"))]
 impl axum::serve::Listener for VsockRestListener {
@@ -1931,9 +1962,17 @@ impl axum::serve::Listener for VsockRestListener {
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         loop {
-            match self.0.accept().await {
+            let error = match self.accept_one().await {
                 Ok((stream, peer)) if peer.cid() == vti_common::store::vsock::PARENT_CID => {
-                    return (stream, vti_common::rate_limit::VSOCK_PARENT_PEER);
+                    match tokio_vsock::VsockStream::new(stream) {
+                        Ok(stream) => {
+                            if let Some(failures) = self.backoff.succeeded() {
+                                info!(failures, "REST vsock accept recovered");
+                            }
+                            return (stream, vti_common::rate_limit::VSOCK_PARENT_PEER);
+                        }
+                        Err(e) => e,
+                    }
                 }
                 Ok((stream, peer)) => {
                     tracing::warn!(
@@ -1943,12 +1982,23 @@ impl axum::serve::Listener for VsockRestListener {
                         "REST vsock connection from a peer other than the parent; dropped"
                     );
                     drop(stream);
+                    continue;
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, "REST vsock accept failed");
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                Err(e) => e,
+            };
+            let (delay, report) = self.backoff.failed(std::time::Instant::now());
+            match report {
+                Some(AcceptFailureReport::First) => {
+                    tracing::warn!(error = %error, "REST vsock accept failed; backing off")
                 }
+                Some(AcceptFailureReport::Since { failures }) => tracing::warn!(
+                    error = %error,
+                    failures,
+                    "REST vsock accept still failing"
+                ),
+                None => {}
             }
+            tokio::time::sleep(delay).await;
         }
     }
 
@@ -1957,34 +2007,144 @@ impl axum::serve::Listener for VsockRestListener {
     }
 }
 
-/// The boot warning for a REST-on-vsock VTA whose `trust_xff_cidrs` names
-/// proxies but not the parent (`0.0.0.3`), or `None`.
-///
-/// An empty list is a deliberate choice — no proxy is trusted, as a
-/// byte-bridging parent (`parent-proxy.sh`) requires — and gets no warning. A
-/// list that trusts something but not `0.0.0.3` (typically a config written
-/// for the old socat ingress, `["127.0.0.1/32"]`) never reads
-/// `X-Forwarded-For` on vsock, so every client shares one bucket. Safe, but
-/// not what the operator meant.
+/// Backoff and log rate for failing `accept`s. A persistent error (EMFILE)
+/// retried every 10 ms with a warning each time is ~100 lines a second, which
+/// fills the enclave's log queue; this doubles the delay from 10 ms to 1 s,
+/// warns on the first failure, then at most one summary per
+/// [`AcceptBackoff::REPORT_EVERY`], and resets on the next success.
 #[cfg(all(feature = "rest", feature = "vsock-store"))]
-fn vsock_parent_trust_warning(trust_xff_cidrs: &[ipnetwork::IpNetwork]) -> Option<String> {
-    let parent = vti_common::rate_limit::VSOCK_PARENT_PEER.ip();
-    if trust_xff_cidrs.is_empty() || trust_xff_cidrs.iter().any(|c| c.contains(parent)) {
-        return None;
-    }
-    Some(format!(
-        "[server] trust_xff_cidrs = {:?} does not include 0.0.0.3/32. REST is \
-         served on vsock and the parent arrives as 0.0.0.3, so X-Forwarded-For \
-         is never read and every client shares one rate-limit bucket. If the \
-         parent runs deploy/nitro/enclave-proxy, add \"0.0.0.3/32\"",
-        trust_xff_cidrs
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-    ))
+#[derive(Debug)]
+struct AcceptBackoff {
+    delay: std::time::Duration,
+    /// Failures since the last success.
+    failures: u64,
+    last_report: Option<std::time::Instant>,
 }
 
-/// A listener ready to serve, inside the REST thread's runtime.
+#[cfg(all(feature = "rest", feature = "vsock-store"))]
+#[derive(Debug, PartialEq, Eq)]
+enum AcceptFailureReport {
+    /// The first failure since a success.
+    First,
+    /// A periodic summary: failures since the last success.
+    Since { failures: u64 },
+}
+
+#[cfg(all(feature = "rest", feature = "vsock-store"))]
+impl Default for AcceptBackoff {
+    fn default() -> Self {
+        Self {
+            delay: Self::MIN,
+            failures: 0,
+            last_report: None,
+        }
+    }
+}
+
+#[cfg(all(feature = "rest", feature = "vsock-store"))]
+impl AcceptBackoff {
+    const MIN: std::time::Duration = std::time::Duration::from_millis(10);
+    const MAX: std::time::Duration = std::time::Duration::from_secs(1);
+    const REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Record a failure: how long to wait, and whether to log now.
+    fn failed(
+        &mut self,
+        now: std::time::Instant,
+    ) -> (std::time::Duration, Option<AcceptFailureReport>) {
+        self.failures += 1;
+        let delay = self.delay;
+        self.delay = (self.delay * 2).min(Self::MAX);
+        let report = match self.last_report {
+            None => Some(AcceptFailureReport::First),
+            Some(at) if now.duration_since(at) >= Self::REPORT_EVERY => {
+                Some(AcceptFailureReport::Since {
+                    failures: self.failures,
+                })
+            }
+            Some(_) => None,
+        };
+        if report.is_some() {
+            self.last_report = Some(now);
+        }
+        (delay, report)
+    }
+
+    /// Record a success; the failure count it ends, if any.
+    fn succeeded(&mut self) -> Option<u64> {
+        let failures = std::mem::take(&mut self.failures);
+        self.delay = Self::MIN;
+        self.last_report = None;
+        (failures > 0).then_some(failures)
+    }
+}
+
+/// What the REST router trusts, and what to say about it at boot.
+#[cfg(feature = "rest")]
+#[derive(Debug, PartialEq, Eq)]
+struct XffTrust {
+    cidrs: Vec<ipnetwork::IpNetwork>,
+    /// Logged once at info: a legacy entry honoured for the parent.
+    note: Option<String>,
+    /// Logged at warn: a list that trusts proxies but cannot reach the parent.
+    warning: Option<String>,
+}
+
+/// `trust_xff_cidrs` as the REST router applies it.
+///
+/// Over TCP, exactly as configured. On vsock the parent arrives as
+/// `0.0.0.3`, so:
+///
+/// - **A trusted `127.0.0.1` also trusts the parent.** On vsock the VTA binds
+///   no TCP, so no peer is ever `127.0.0.1`; in a VTA config that entry can
+///   only ever have meant the socat hop from the parent. Honouring it keeps an
+///   upgraded config (`["127.0.0.1/32"]`) from collapsing every client into
+///   one rate-limit bucket. It is safe for the same reason trusting the parent
+///   is: a non-empty list implies the Rust `enclave-proxy`, which sets
+///   `X-Forwarded-For` itself, because `parent-proxy.sh` (a byte bridge)
+///   refuses to start whenever `trust_xff_cidrs` is set.
+/// - **A non-empty list naming neither** reads no header; that is warned.
+/// - **An empty list** trusts nothing, as a byte-bridging parent requires.
+#[cfg(feature = "rest")]
+fn effective_trust_xff_cidrs(configured: &[ipnetwork::IpNetwork], vsock: bool) -> XffTrust {
+    let parent = vti_common::rate_limit::VSOCK_PARENT_PEER.ip();
+    let loopback = std::net::IpAddr::from([127, 0, 0, 1]);
+    let has = |ip| configured.iter().any(|c| c.contains(ip));
+    let mut trust = XffTrust {
+        cidrs: configured.to_vec(),
+        note: None,
+        warning: None,
+    };
+    if !vsock || configured.is_empty() || has(parent) {
+        return trust;
+    }
+    if has(loopback) {
+        trust
+            .cidrs
+            .push(ipnetwork::IpNetwork::new(parent, 32).expect("a /32 is valid"));
+        trust.note = Some(
+            "[server] trust_xff_cidrs trusts 127.0.0.1, which on vsock can only mean \
+             the parent's proxy: trusting it as 0.0.0.3 (the parent over vsock). Add \
+             \"0.0.0.3/32\" to make that explicit"
+                .into(),
+        );
+    } else {
+        trust.warning = Some(format!(
+            "[server] trust_xff_cidrs = {:?} names neither 0.0.0.3/32 nor \
+             127.0.0.1/32. REST is served on vsock and the parent arrives as \
+             0.0.0.3, so X-Forwarded-For is never read and every client shares one \
+             rate-limit bucket. If the parent runs deploy/nitro/enclave-proxy, add \
+             \"0.0.0.3/32\"",
+            configured
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        ));
+    }
+    trust
+}
+
+/// A listener ready to serve, inside the REST thread's runtime./// A listener ready to serve, inside the REST thread's runtime.
 #[cfg(feature = "rest")]
 enum Serving {
     Tcp(tokio::net::TcpListener),
@@ -2011,10 +2171,13 @@ fn run_rest_thread(
     } else {
         tokio::runtime::Builder::new_current_thread()
     };
-    let rt = builder
-        .enable_all()
-        .build()
-        .expect("failed to build REST runtime");
+    let rt = match builder.enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            let _ = ready.send(Err(format!("REST runtime could not be built: {e}")));
+            return;
+        }
+    };
 
     rt.block_on(async {
         info!("REST thread started");
@@ -2031,7 +2194,7 @@ fn run_rest_thread(
                 tokio::net::TcpListener::from_std(std_listener).map(Serving::Tcp)
             }
             #[cfg(feature = "vsock-store")]
-            RestListener::Vsock(listener) => Ok(Serving::Vsock(adopt_vsock_listener(listener))),
+            RestListener::Vsock(listener) => VsockRestListener::adopt(listener).map(Serving::Vsock),
         };
         let serving = match serving {
             Ok(s) => {
@@ -2061,18 +2224,23 @@ fn run_rest_thread(
                 cfg.server.trust_xff_cidrs.clone(),
             )
         };
-        // On vsock the parent arrives as 0.0.0.3; a trust list that means to
-        // trust a proxy but omits it reads no X-Forwarded-For at all.
         #[cfg(feature = "vsock-store")]
-        if matches!(serving, Serving::Vsock(_))
-            && let Some(msg) = vsock_parent_trust_warning(&trust_xff_cidrs)
-        {
-            warn!("{msg}");
+        let on_vsock = matches!(serving, Serving::Vsock(_));
+        #[cfg(not(feature = "vsock-store"))]
+        let on_vsock = false;
+        let trust = effective_trust_xff_cidrs(&trust_xff_cidrs, on_vsock);
+        if let Some(note) = &trust.note {
+            // Once per process, not once per soft restart.
+            static NOTED: std::sync::Once = std::sync::Once::new();
+            NOTED.call_once(|| info!("{note}"));
+        }
+        if let Some(warning) = &trust.warning {
+            warn!("{warning}");
         }
 
         let traced_routes = routes::router_with_cors(
             &cors_origins,
-            &trust_xff_cidrs,
+            &trust.cidrs,
             routes::QuotaSource::Live(state.config.clone()),
         )
         .with_state(state.clone())
@@ -3241,33 +3409,113 @@ mod rest_ingress_tests {
         list.iter().map(|n| n.parse().unwrap()).collect()
     }
 
-    #[cfg(feature = "vsock-store")]
-    #[test]
-    fn no_warning_when_nothing_is_trusted() {
-        // parent-proxy.sh deployments: nothing may be trusted.
-        assert_eq!(vsock_parent_trust_warning(&[]), None);
+    fn trusts(trust: &XffTrust, ip: &str) -> bool {
+        let ip: std::net::IpAddr = ip.parse().unwrap();
+        trust.cidrs.iter().any(|c| c.contains(ip))
     }
 
     #[cfg(feature = "vsock-store")]
     #[test]
-    fn no_warning_when_the_parent_is_trusted() {
-        assert_eq!(vsock_parent_trust_warning(&nets(&["0.0.0.3/32"])), None);
-        // The shipped Nitro configs: the parent for the VTA, loopback for a
-        // TLS terminator in front of the parent's proxy.
+    fn a_legacy_loopback_list_trusts_the_parent_on_vsock() {
+        // An upgraded socat-era config must not collapse rate limiting.
+        let trust = effective_trust_xff_cidrs(&nets(&["127.0.0.1/32"]), true);
+        assert!(trusts(&trust, "0.0.0.3"));
+        let note = trust.note.as_deref().expect("says so once");
+        assert!(note.contains("\"0.0.0.3/32\""), "{note}");
+        assert_eq!(trust.warning, None);
+
+        // End to end: the parent's X-Forwarded-For names the client.
+        use axum::extract::ConnectInfo;
+        use tower_governor::key_extractor::KeyExtractor;
+        let mut req = axum::http::Request::builder()
+            .header("x-forwarded-for", "203.0.113.9")
+            .body(())
+            .unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(vti_common::rate_limit::VSOCK_PARENT_PEER));
+        let extractor = vti_common::rate_limit::TrustedProxyKeyExtractor::new(trust.cidrs);
         assert_eq!(
-            vsock_parent_trust_warning(&nets(&["127.0.0.1/32", "0.0.0.3/32"])),
-            None
+            extractor.extract(&req).unwrap(),
+            "203.0.113.9".parse::<std::net::IpAddr>().unwrap()
         );
     }
 
     #[cfg(feature = "vsock-store")]
     #[test]
-    fn a_socat_era_config_is_warned_with_the_fix() {
-        let msg = vsock_parent_trust_warning(&nets(&["127.0.0.1/32"])).expect("warns");
-        assert!(msg.contains("\"0.0.0.3/32\""), "{msg}");
+    fn an_explicit_parent_is_trusted_without_comment() {
+        for list in [&["0.0.0.3/32"][..], &["127.0.0.1/32", "0.0.0.3/32"][..]] {
+            let trust = effective_trust_xff_cidrs(&nets(list), true);
+            assert!(trusts(&trust, "0.0.0.3"));
+            assert_eq!((trust.note, trust.warning), (None, None));
+        }
+    }
+
+    #[cfg(feature = "vsock-store")]
+    #[test]
+    fn an_empty_list_trusts_nothing_and_is_not_warned() {
+        // How a byte-bridging parent (parent-proxy.sh) must be configured.
+        let trust = effective_trust_xff_cidrs(&[], true);
+        assert!(trust.cidrs.is_empty());
+        assert_eq!((trust.note, trust.warning), (None, None));
+    }
+
+    #[cfg(feature = "vsock-store")]
+    #[test]
+    fn a_list_naming_neither_is_warned_and_not_widened() {
+        let trust = effective_trust_xff_cidrs(&nets(&["10.0.0.0/8"]), true);
+        assert!(!trusts(&trust, "0.0.0.3"));
+        let warning = trust.warning.expect("warned");
         assert!(
-            msg.contains("127.0.0.1/32"),
-            "names what is configured: {msg}"
+            warning.contains("\"0.0.0.3/32\"") && warning.contains("10.0.0.0/8"),
+            "{warning}"
+        );
+    }
+
+    #[test]
+    fn tcp_mode_is_unchanged() {
+        let configured: Vec<ipnetwork::IpNetwork> = vec!["127.0.0.1/32".parse().unwrap()];
+        let trust = effective_trust_xff_cidrs(&configured, false);
+        assert_eq!(trust.cidrs, configured);
+        assert!(!trusts(&trust, "0.0.0.3"));
+        assert_eq!((trust.note, trust.warning), (None, None));
+    }
+
+    #[cfg(feature = "vsock-store")]
+    #[test]
+    fn accept_backoff_doubles_to_a_cap_and_resets() {
+        let mut b = AcceptBackoff::default();
+        let now = std::time::Instant::now();
+        let delays: Vec<u64> = (0..9).map(|_| b.failed(now).0.as_millis() as u64).collect();
+        assert_eq!(delays, [10, 20, 40, 80, 160, 320, 640, 1000, 1000]);
+        assert_eq!(b.succeeded(), Some(9));
+        assert_eq!(b.failed(now).0.as_millis(), 10, "reset after a success");
+        assert_eq!(b.succeeded(), Some(1));
+        assert_eq!(
+            b.succeeded(),
+            None,
+            "nothing to report after a clean accept"
+        );
+    }
+
+    #[cfg(feature = "vsock-store")]
+    #[test]
+    fn accept_failures_are_reported_first_then_at_most_every_ten_seconds() {
+        let mut b = AcceptBackoff::default();
+        let t0 = std::time::Instant::now();
+        assert_eq!(b.failed(t0).1, Some(AcceptFailureReport::First));
+        for ms in [10, 500, 9_000] {
+            assert_eq!(b.failed(t0 + std::time::Duration::from_millis(ms)).1, None);
+        }
+        assert_eq!(
+            b.failed(t0 + std::time::Duration::from_secs(10)).1,
+            Some(AcceptFailureReport::Since { failures: 5 })
+        );
+        assert_eq!(b.failed(t0 + std::time::Duration::from_secs(11)).1, None);
+        b.succeeded();
+        assert_eq!(
+            b.failed(t0 + std::time::Duration::from_secs(12)).1,
+            Some(AcceptFailureReport::First),
+            "a new outage is reported at once"
         );
     }
 
