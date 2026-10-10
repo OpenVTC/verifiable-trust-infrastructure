@@ -566,9 +566,12 @@ jobs:
           rustup toolchain install "$MSRV" --profile minimal --no-self-update
           rustup default "$MSRV"
 
-      # mold + compiled third-party crates; see the action for why this
-      # is safe where the old `target/` cache (#1133) was not.
+      # Registry only: on a pull request this job runs only when a manifest,
+      # the lockfile or the toolchain changes, so a compiled MSRV tree would
+      # sit in the cache allowance for runs that seldom restore it.
       - uses: ./.github/actions/rust-cache
+        with:
+          compiled: "false"
 
       # A type-check never reads the baked admin-ui bundle's content, only that
       # `include_dir!`'s target directory exists, so the npm build buys this
@@ -1513,10 +1516,13 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
 
-      # Its own workspace and lockfile, so its own cache root.
+      # Its own workspace and lockfile, so its own cache root. Registry only:
+      # it runs on a pull request only when its own directory changes, and its
+      # release tree (aws-lc-sys among it) is one of the largest there is.
       - uses: ./.github/actions/rust-cache
         with:
           workspaces: deploy/nitro/enclave-proxy
+          compiled: "false"
 
       # Neither `fmt --all` nor `clippy --workspace` reaches an excluded crate,
       # so this job is the only place either can run for it.
