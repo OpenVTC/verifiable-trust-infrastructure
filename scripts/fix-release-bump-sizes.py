@@ -8,6 +8,9 @@ crate's own dependents now ask for a new range, so they must be raised too.
 Done by hand that is ~30 crates, and release-plz rewrites the Release PR on
 every merge to main, so the hand edit is lost the next time.
 
+It also applies what `check-release-line-ownership.py` asks for — the same fix,
+for a crate whose proposed version falls in a line a release branch owns.
+
 Run from the root of a checkout of the Release PR branch:
 
     python3 scripts/fix-release-bump-sizes.py
@@ -26,7 +29,12 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-GUARD = ROOT / "scripts" / "check-release-bump-sizes.py"
+# Both guards name a crate the same way and take the same fix: the second
+# refuses a version in a compatibility line a release branch owns (RELEASES.md).
+GUARDS = [
+    ROOT / "scripts" / "check-release-bump-sizes.py",
+    ROOT / "scripts" / "check-release-line-ownership.py",
+]
 NAMED = re.compile(r"Raise (\S+) to its next breaking version")
 MAX_ROUNDS = 8
 
@@ -89,15 +97,18 @@ def bump(name):
 
 def main():
     for rnd in range(1, MAX_ROUNDS + 1):
-        out = subprocess.run(
-            [sys.executable, str(GUARD)], capture_output=True, text=True, cwd=ROOT
-        )
-        if out.returncode == 0:
-            print(out.stdout.strip())
+        outs = [
+            subprocess.run([sys.executable, str(g)], capture_output=True, text=True, cwd=ROOT)
+            for g in GUARDS
+        ]
+        if all(o.returncode == 0 for o in outs):
+            for o in outs:
+                print(o.stdout.strip())
             return 0
-        names = sorted(set(NAMED.findall(out.stderr)))
+        stderr = "".join(o.stderr for o in outs)
+        names = sorted(set(NAMED.findall(stderr)))
         if not names:
-            print(out.stderr, file=sys.stderr)
+            print(stderr, file=sys.stderr)
             print("the guard failed for a reason this script does not fix", file=sys.stderr)
             return 1
         print(f"round {rnd}: raising {len(names)} crate(s)")

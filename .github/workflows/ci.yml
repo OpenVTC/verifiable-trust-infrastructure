@@ -2,9 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main, nightly]
+    # release/** — a named release's branch (RELEASES.md) runs the same suite
+    # as main; there it is a required check, not advisory.
+    branches: [main, nightly, "release/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
 
 # Read-only, and every job below inherits it: nothing in CI writes to the
 # repository. Without this block a workflow gets the repository's DEFAULT
@@ -910,6 +912,12 @@ jobs:
       # other PR every version is already published. See the script header.
       - name: Release bump sizes and dev-dependency versions
         run: python3 scripts/check-release-bump-sizes.py
+      # Fifth: main never publishes into a compatibility line a named release
+      # owns (releases/*.toml), or that release has no patch number left to
+      # take. A no-op until a Release PR proposes an unpublished version. See
+      # RELEASES.md and the script header.
+      - name: Release-line ownership
+        run: python3 scripts/check-release-line-ownership.py
 
   authz-context-types:
     # An approver's device chooses which approval card to render by

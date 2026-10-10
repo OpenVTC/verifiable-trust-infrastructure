@@ -1313,6 +1313,34 @@ These are load-bearing — know they exist before adjusting nearby code.
   concurrent requests both pass the `is_some()` check and both mint
   admins. New TEE flows must not provide a back door.
 
+## Branches: where a PR goes
+
+The release cycle and branch model are in [`RELEASES.md`](RELEASES.md); crate
+publishing is in [`RELEASING.md`](RELEASING.md). What an agent opening a PR
+needs:
+
+| Branch | Open a PR against it? |
+|---|---|
+| `main` | **Yes — the default for everything**: features, fixes, docs, refactors. Branch from `origin/main` (`feat/…`, `fix/…`, `docs/…`). |
+| `nightly` | **Never.** A bot fast-forwards it to the last fully green `main` commit. |
+| `release/<name>` (Dogwood, Eucalyptus, …) | **Not directly, as a rule.** A fix lands on `main` first; then label the merged PR `backport release/<name>` and `backport.yml` opens the cherry-pick PR. Open one by hand only when the code no longer exists on `main` — base it on `origin/release/<name>` and say why in the description. |
+| `release-plz-*`, `release-prep/*`, `release-cut/*` | **Never** — bots and release scripts open these. |
+
+Rules for anything that does land on a release branch:
+
+- **Fixes, security changes and docs only.** No features. No breaking change
+  to a published crate — `prepare-release-branch.py` refuses one
+  (`cargo semver-checks --release-type patch`); rework the fix to keep the API.
+- **Never edit `version =` or `RELEASE`** — only the *Prepare a named release*
+  workflow does, same as the Release PR on `main`.
+- **Never edit `releases/*.toml`** — `cut-release.py` writes it. Each one gives
+  a release branch the compatibility line of every crate it was cut with, and
+  `check-release-line-ownership.py` keeps `main` out of those lines.
+- CI is a **required** check on `release/**`, unlike `main`.
+- Which supported release a fix should go to is a maintainer's call (support
+  status is in the `RELEASES.md` table); if the task doesn't say, ask rather
+  than labelling every branch.
+
 ## Versioning & publishing (workspace-specific)
 
 **Never edit a `version = ` field in a feature PR.** Versions are assigned by
