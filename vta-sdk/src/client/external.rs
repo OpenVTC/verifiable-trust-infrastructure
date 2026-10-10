@@ -253,16 +253,18 @@ impl VtaClient {
 
 /// Seal an external account's secret in the client, to `wrapping_did_key` (the
 /// `wrappingKey` of a fresh `keys/import-wrapping-key/0.1` answer), naming the
-/// account it is for. Returns the armor `secret/set` carries.
+/// account it is for — and, for `s3-static-presign`, the access key id it
+/// belongs to. Returns the armor `secret/set` carries.
 #[cfg(feature = "sealed-transfer")]
 pub async fn seal_external_secret(
     wrapping_did_key: &str,
     context: &str,
     account: &str,
     secret: &str,
+    access_key_id: Option<&str>,
 ) -> Result<String, VtaError> {
     use crate::sealed_transfer::{
-        AssertionProof, ExternalSecretBundle, InMemoryNonceStore, ProducerAssertion,
+        AssertionProof, ExternalSecretPayload, InMemoryNonceStore, ProducerAssertion,
         SealedPayloadV1, armor, generate_ed25519_keypair, seal_payload,
     };
     let recipient = affinidi_crypto::did_key::did_key_to_ed25519_pub(wrapping_did_key)
@@ -276,10 +278,11 @@ pub async fn seal_external_secret(
     let (_seed, producer) = generate_ed25519_keypair();
     // A random v4 UUID's bytes: 122 random bits, unique per bundle.
     let bundle_id = uuid::Uuid::new_v4().into_bytes();
-    let payload = SealedPayloadV1::ExternalSecret(Box::new(ExternalSecretBundle {
+    let payload = SealedPayloadV1::ExternalSecret(Box::new(ExternalSecretPayload {
         context: context.to_string(),
         account: account.to_string(),
         secret: secret.to_string(),
+        access_key_id: access_key_id.map(str::to_string),
     }));
     let bundle = seal_payload(
         &recipient,
@@ -305,7 +308,7 @@ pub async fn seal_external_secret(
 pub fn open_external_credential(
     armored: &str,
     x25519_secret: &[u8; 32],
-) -> Result<crate::sealed_transfer::ExternalCredentialBundle, VtaError> {
+) -> Result<crate::sealed_transfer::ExternalCredentialPayload, VtaError> {
     use crate::sealed_transfer::{
         PinnedOnlyPolicy, SealedPayloadV1, armor, open_bundle_with_policy,
     };

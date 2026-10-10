@@ -28,7 +28,7 @@ pub use bundle::{
 };
 pub use chunk::{ChunkPlaintext, MAX_PAYLOAD_FRAGMENT, VERSION};
 pub use error::SealedTransferError;
-pub use external::{ExternalCredential, ExternalCredentialBundle, ExternalSecretBundle};
+pub use external::{ExternalCredentialPayload, ExternalSecretPayload};
 pub use hpke::{HpkeSealed, generate_keypair, open as hpke_open, seal as hpke_seal};
 pub use nonce::{InMemoryNonceStore, NonceStore};
 pub use request::BootstrapRequest;

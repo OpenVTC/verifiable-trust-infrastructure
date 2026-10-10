@@ -116,11 +116,11 @@ pub enum SealedPayloadV1 {
     /// key), sealed in the administrator's client to the custodian for
     /// `external/accounts/secret/set/0.1`. Write-only: no task ever returns
     /// it. Additive variant — no existing variant changes.
-    ExternalSecret(Box<super::external::ExternalSecretBundle>),
+    ExternalSecret(Box<super::external::ExternalSecretPayload>),
     /// A short-lived, downscoped provider credential issued by
     /// `external/credentials/issue/0.1`, sealed to the consumer that asked.
     /// Additive variant — no existing variant changes.
-    ExternalCredential(Box<super::external::ExternalCredentialBundle>),
+    ExternalCredential(Box<super::external::ExternalCredentialPayload>),
 }
 
 /// The payload of [`SealedPayloadV1::SeedMnemonic`].

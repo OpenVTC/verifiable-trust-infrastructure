@@ -410,8 +410,7 @@ fn print_opened(
         }
         SealedPayloadV1::ExternalCredential(c) => {
             println!("Payload: ExternalCredential");
-            println!("  Account:    {}/{}", c.context, c.account);
-            println!("  Expires at: {}", c.expires_at);
+            println!("  Expires at: {}", c.expires_at());
         }
     }
     Ok(())

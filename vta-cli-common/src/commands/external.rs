@@ -104,6 +104,18 @@ pub async fn cmd_update(
 
 /// `secret-set`: read the secret without echo, seal it here, send the armor.
 pub async fn cmd_secret_set(client: &VtaClient, context: &str, id: &str) -> CliResult {
+    // The account's access key id goes inside the seal, so the VTA refuses a
+    // secret that belongs to another key.
+    let account = client
+        .external_accounts_get(&payload(
+            "external/accounts/get",
+            json!({ "context": context, "id": id }),
+        )?)
+        .await?;
+    let access_key_id = serde_json::to_value(&account.account.settings)?
+        .get("accessKeyId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let secret = zeroize::Zeroizing::new(if std::io::stdin().is_terminal() {
         dialoguer::Password::new()
             .with_prompt(format!("Secret for {context}/{id}"))
@@ -117,8 +129,14 @@ pub async fn cmd_secret_set(client: &VtaClient, context: &str, id: &str) -> CliR
         return Err("no secret was given".into());
     }
     let wrapping = client.get_wrapping_key().await?;
-    let armored =
-        vta_sdk::client::seal_external_secret(&wrapping.wrapping_key, context, id, &secret).await?;
+    let armored = vta_sdk::client::seal_external_secret(
+        &wrapping.wrapping_key,
+        context,
+        id,
+        &secret,
+        access_key_id.as_deref(),
+    )
+    .await?;
     drop(secret);
     let req = payload::<ext::accounts::secret::set::v0_1::Payload>(
         "external/accounts/secret/set",
