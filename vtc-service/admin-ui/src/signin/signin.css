@@ -76,6 +76,10 @@
 /* ── Top bar ─────────────────────────────────────────────── */
 
 .vtc-signin .topbar {
+  /* Reset what the console's own `.topbar` (its shell) sets. */
+  display: block;
+  padding: 0;
+  grid-area: auto;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-elev) 85%, transparent);
   backdrop-filter: blur(8px);
