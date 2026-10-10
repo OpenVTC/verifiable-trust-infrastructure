@@ -310,6 +310,39 @@ impl SealedRoom {
             .map_err(|_| RoomKeyError::DidNotOpen)
     }
 
+    /// The key for a file about to be sealed, and the epoch it derives from: always the
+    /// current one, exactly as a record is sealed.
+    pub fn file_key_for_seal(
+        &self,
+        file_id: &crate::files::FileId,
+    ) -> Result<(crate::files::FileKey, u32), RoomKeyError> {
+        let epoch = self.room_epoch();
+        let storage_key = self.group.storage_key()?;
+        Ok((
+            crate::files::derive_file_key(&storage_key, &self.room_id, file_id, u64::from(epoch)),
+            epoch,
+        ))
+    }
+
+    /// The key for a file sealed under `epoch`, walked out of the chain as a record's is.
+    ///
+    /// Fails with [`RoomKeyError::EpochAhead`] or [`RoomKeyError::EpochUnreachable`] for an
+    /// epoch this holder cannot reach — the same two answers `open_record` gives.
+    pub fn file_key_for_open(
+        &mut self,
+        file_id: &crate::files::FileId,
+        epoch: u32,
+    ) -> Result<crate::files::FileKey, RoomKeyError> {
+        self.reanchor()?;
+        let storage_key = self.chain.key_for(epoch)?;
+        Ok(crate::files::derive_file_key(
+            &storage_key,
+            &self.room_id,
+            file_id,
+            u64::from(epoch),
+        ))
+    }
+
     /// The value to anchor in the room's witnessed DID log for this epoch.
     ///
     /// A host that forks the group shows different members different commit sequences.
@@ -408,6 +441,44 @@ mod tests {
             !a.contains('/'),
             "url-safe, so it needs no escaping in a payload"
         );
+    }
+
+    /// A file sealed now opens through the chain later, after the group has moved on.
+    #[test]
+    fn a_file_key_survives_a_membership_change() {
+        use crate::files::{Padding, open_file, seal_file};
+        let mut r = room("did:webvh:zRoom");
+        let id = [5u8; 32];
+        let (k, epoch) = r.file_key_for_seal(&id).unwrap();
+        let s = seal_file(
+            &k,
+            crate::files::FileBinding {
+                room_id: "did:webvh:zRoom".into(),
+                file_id: id,
+                epoch: u64::from(epoch),
+                segment_size: crate::files::MIN_SEGMENT_SIZE,
+            },
+            "f",
+            None,
+            b"a file",
+            Padding::None,
+        )
+        .unwrap();
+
+        let (_bob, kp) = crate::mls::IdentitySnapshot::mint("did:key:zBob").unwrap();
+        r.add_member(&kp).unwrap();
+        assert_eq!(r.room_epoch(), 2);
+
+        let k_open = r.file_key_for_open(&id, epoch).unwrap();
+        assert_eq!(k_open, k);
+        assert_eq!(
+            open_file(&k_open, "did:webvh:zRoom", &s.file, &s.chunks).unwrap(),
+            b"a file"
+        );
+        assert!(matches!(
+            r.file_key_for_open(&id, 3),
+            Err(RoomKeyError::EpochAhead { .. })
+        ));
     }
 
     /// Sealing twice must not reuse a nonce, or the AEAD's guarantee is gone.
