@@ -33,6 +33,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
+use vti_rooms::error::RoomKeyError;
 use vti_rooms::mls::{GroupSnapshot, IdentitySnapshot, RoomGroup};
 use vti_rooms::sealed::SealedRoom;
 use vti_rooms::wire::EpochLink;
@@ -263,6 +264,69 @@ pub async fn seal_record(
     SealedRoom::new(room_id, group)
         .seal_record(key, version, plaintext)
         .map_err(|e| AppError::Validation(e.to_string()))
+}
+
+/// Why a file key could not be derived.
+#[derive(Debug)]
+pub enum FileKeyError {
+    /// Anything that is not an epoch this VTA cannot reach: no group for the room, a group
+    /// that does not restore.
+    App(AppError),
+    /// The file is sealed under an epoch later than the one this VTA holds: a commit has not
+    /// been delivered.
+    NotDelivered { epoch: u32, held: u32 },
+    /// The epoch chain reaches back only to `earliest`.
+    BeyondChain { epoch: u32, earliest: u32 },
+}
+
+/// One file's key — `rooms/keys/file-key/0.1`.
+///
+/// `open_epoch` is `None` to seal (the current epoch, which is returned) and the file's
+/// epoch to open, walked out of the retained chain exactly as [`open_record`] walks it.
+///
+/// # A key, unlike every other answer here
+///
+/// `rooms/keys/open` keeps the key and returns plaintext; this returns a key, because file
+/// bytes must not pass through this VTA. What it releases opens one file and nothing else:
+/// the room's storage key does not leave, so no sibling can be derived from it.
+pub async fn file_key(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+    file_id: &vti_rooms::files::FileId,
+    open_epoch: Option<u32>,
+) -> Result<(vti_rooms::files::FileKey, u32), FileKeyError> {
+    let record = load(groups, room_id)
+        .await
+        .map_err(FileKeyError::App)?
+        .ok_or_else(|| {
+            FileKeyError::App(AppError::NotFound(format!(
+                "this VTA holds no group state for room `{room_id}`"
+            )))
+        })?;
+    let group = RoomGroup::restore(&record.snapshot)
+        .map_err(|e| FileKeyError::App(AppError::Internal(format!("restore the group: {e}"))))?;
+    let mut room = SealedRoom::new(room_id, group);
+
+    let Some(epoch) = open_epoch else {
+        return room
+            .file_key_for_seal(file_id)
+            .map_err(|e| FileKeyError::App(AppError::Internal(e.to_string())));
+    };
+    room.add_links(record.links);
+    match room.file_key_for_open(file_id, epoch) {
+        Ok(key) => Ok((key, epoch)),
+        Err(RoomKeyError::EpochAhead { sealed, held }) => Err(FileKeyError::NotDelivered {
+            epoch: sealed,
+            held,
+        }),
+        Err(RoomKeyError::EpochUnreachable { sealed, earliest }) => {
+            Err(FileKeyError::BeyondChain {
+                epoch: sealed,
+                earliest,
+            })
+        }
+        Err(e) => Err(FileKeyError::App(AppError::Validation(e.to_string()))),
+    }
 }
 
 /// Every room this VTA holds group state for, with how far each one reads.
@@ -797,5 +861,88 @@ mod root_memory_tests {
             RootVerdict::NoneHeld,
             "nothing survived the removal to compare against"
         );
+    }
+}
+
+#[cfg(test)]
+mod file_key_tests {
+    use super::*;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    const ROOM: &str = "did:webvh:example.com:rooms:northwind";
+
+    async fn open() -> (tempfile::TempDir, KeyspaceHandle) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace(crate::keyspaces::ROOM_GROUPS).unwrap();
+        (dir, ks)
+    }
+
+    /// A room this VTA holds at epoch 2, with the rung back to 1 when `chained`.
+    async fn held(ks: &KeyspaceHandle, chained: bool) -> SealedRoom {
+        let mut room = SealedRoom::new(ROOM, RoomGroup::create("did:key:zAlice").unwrap());
+        let (_bob, kp) = IdentitySnapshot::mint("did:key:zBob").unwrap();
+        room.add_member(&kp).unwrap();
+        let links = if chained { room.links() } else { Vec::new() };
+        store(ks, ROOM, "did:key:zAlice", room.group(), links, 0)
+            .await
+            .unwrap();
+        room
+    }
+
+    #[tokio::test]
+    async fn a_sealing_key_is_the_current_epoch_and_opens_later() {
+        let (_d, ks) = open().await;
+        let room = held(&ks, true).await;
+        let id = [4u8; 32];
+
+        let (seal_key, epoch) = file_key(&ks, ROOM, &id, None).await.unwrap();
+        assert_eq!(epoch, 2, "a sealing key is always the current epoch");
+        assert_eq!(seal_key, room.file_key_for_seal(&id).unwrap().0);
+
+        let (open_key, e) = file_key(&ks, ROOM, &id, Some(2)).await.unwrap();
+        assert_eq!((open_key, e), (seal_key, 2));
+    }
+
+    #[tokio::test]
+    async fn an_earlier_epoch_is_reached_through_the_chain() {
+        let (_d, ks) = open().await;
+        held(&ks, true).await;
+        let (k1, e) = file_key(&ks, ROOM, &[4u8; 32], Some(1)).await.unwrap();
+        assert_eq!(e, 1);
+        assert_ne!(
+            k1,
+            file_key(&ks, ROOM, &[4u8; 32], Some(2)).await.unwrap().0
+        );
+    }
+
+    #[tokio::test]
+    async fn the_two_unreachable_cases_say_which_they_are() {
+        let (_d, ks) = open().await;
+        held(&ks, false).await;
+        assert!(matches!(
+            file_key(&ks, ROOM, &[4u8; 32], Some(3)).await,
+            Err(FileKeyError::NotDelivered { epoch: 3, held: 2 })
+        ));
+        assert!(matches!(
+            file_key(&ks, ROOM, &[4u8; 32], Some(1)).await,
+            Err(FileKeyError::BeyondChain {
+                epoch: 1,
+                earliest: 2
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn no_group_is_not_found() {
+        let (_d, ks) = open().await;
+        assert!(matches!(
+            file_key(&ks, ROOM, &[4u8; 32], None).await,
+            Err(FileKeyError::App(AppError::NotFound(_)))
+        ));
     }
 }

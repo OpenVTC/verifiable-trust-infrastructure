@@ -1044,6 +1044,161 @@ pub(super) async fn handle_open(
     )
 }
 
+/// `rooms/keys/file-key/0.1`.
+///
+/// The one `rooms/keys/*` task that releases a key. `open` keeps the key and returns
+/// plaintext; a file can be a gigabyte, and its bytes must not pass through this VTA, so
+/// the member's own client gets **that file's** key and does the encryption itself. What
+/// crosses opens one file: it is derived per file from the epoch's storage key, which never
+/// leaves, so no sibling can be derived from it.
+///
+/// Gated on `RoomOpen` for both purposes, as `seal` and `open` are: a sealing key opens the
+/// file it seals.
+pub(super) async fn handle_file_key(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use trust_tasks_rs::specs::rooms::keys::file_key::v0_1 as spec;
+
+    if let Err(r) = super::helpers::require_capability(
+        state,
+        auth,
+        &doc,
+        Capability::RoomOpen,
+        "releasing a room file's key",
+    )
+    .await
+    {
+        return r;
+    }
+
+    let req: spec::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    // `purpose` is non-exhaustive in the generated binding: a purpose this build does not
+    // know is refused, never treated as either of the two it does.
+    let purpose = match req.purpose {
+        spec::PayloadPurpose::Seal => "seal",
+        spec::PayloadPurpose::Open => "open",
+        _ => {
+            return super::helpers::malformed_request_response(format!(
+                "unknown purpose `{}`",
+                req.purpose
+            ));
+        }
+    };
+    // Which epoch is the caller's choice only when opening. A sealing key is always
+    // derived under the current epoch — letting a caller pick an older one would seal new
+    // files under a key a removed member can still derive.
+    let open_epoch = match (purpose, req.epoch) {
+        ("seal", None) => None,
+        ("open", Some(e)) => match u32::try_from(e.get()) {
+            Ok(e) => Some(e),
+            Err(_) => {
+                return super::helpers::malformed_request_response(format!(
+                    "epoch {e} is beyond any epoch a room reaches"
+                ));
+            }
+        },
+        ("seal", Some(_)) => {
+            return super::helpers::malformed_request_response(
+                "a sealing key is always derived under the current epoch; `epoch` is \
+                 forbidden with purpose `seal`"
+                    .into(),
+            );
+        }
+        _ => {
+            return super::helpers::malformed_request_response(
+                "`epoch` is required with purpose `open`: it is the epoch the file's \
+                 manifest names"
+                    .into(),
+            );
+        }
+    };
+
+    let file_id = match vti_rooms::files::decode_file_id(&req.file_id) {
+        Ok(id) => id,
+        Err(e) => return super::helpers::malformed_request_response(e.to_string()),
+    };
+
+    let (key, epoch) = match room_groups::file_key(
+        &state.room_groups_ks,
+        &req.room_id,
+        &file_id,
+        open_epoch,
+    )
+    .await
+    {
+        Ok(k) => k,
+        Err(room_groups::FileKeyError::App(e)) => return app_error_to_reject(&doc, e),
+        Err(room_groups::FileKeyError::NotDelivered { epoch, held }) => {
+            return super::helpers::reject_with_code(
+                &doc,
+                declared(spec::error_codes::UNKNOWN_EPOCH),
+                format!(
+                    "the file is sealed under epoch {epoch} and this VTA holds room `{}` \
+                         at epoch {held}; a commit has not been delivered",
+                    req.room_id
+                ),
+                Some(serde_json::json!({ "reason": "notDelivered" })),
+            );
+        }
+        Err(room_groups::FileKeyError::BeyondChain { epoch, earliest }) => {
+            return super::helpers::reject_with_code(
+                &doc,
+                declared(spec::error_codes::UNKNOWN_EPOCH),
+                format!(
+                    "the file is sealed under epoch {epoch}, which this VTA cannot reach — \
+                         the epoch key chain reaches back only to {earliest}"
+                ),
+                Some(serde_json::json!({
+                    "reason": "beyondChain",
+                    "earliestEpoch": earliest,
+                })),
+            );
+        }
+    };
+
+    // Who asked for which file's key, for what, under which epoch — never the key. This
+    // row is how a principal sees which files their agents and clients opened.
+    if let Err(e) = audit::record_with_detail(
+        &state.audit_sink,
+        "rooms.keys.file-key",
+        &auth.did,
+        Some(&req.room_id),
+        "success",
+        Some(TRANSPORT_TRUST_TASK),
+        None,
+        Some(&format!(
+            "fileId={} purpose={purpose} epoch={epoch}",
+            req.file_id.as_str()
+        )),
+    )
+    .await
+    {
+        tracing::error!(error = %e, "failed to record a room file-key audit entry");
+    }
+
+    success_response(
+        &doc,
+        serde_json::json!({
+            "key": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, key),
+            "epoch": epoch,
+        }),
+    )
+}
+
+/// A declared code, as the framework's extended form.
+fn declared(code: trust_tasks_rs::DeclaredErrorCode) -> trust_tasks_rs::TrustTaskCode {
+    trust_tasks_rs::TrustTaskCode::Extended {
+        slug: code.namespace().to_string(),
+        local: code.local().to_string(),
+    }
+}
+
 // ─── Shared ──────────────────────────────────────────────────────────────
 
 /// Verify the invitation, and refuse if it is missing, bad, or already spent.
