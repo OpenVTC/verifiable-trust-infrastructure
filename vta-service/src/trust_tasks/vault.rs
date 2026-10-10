@@ -1727,6 +1727,10 @@ struct VaultSignTrustTaskBody {
     consumer_context: Option<Value>,
     // (`step_up_proof` removed in P0.13: enforced by the pre-dispatch policy
     // gate, which reads the session's ACR.)
+    /// Namespaced extensions. Carries `org.openvtc.uv-consent` — the device's
+    /// UV approval — with an `auth/oob/grant` envelope.
+    #[serde(default)]
+    ext: Option<Value>,
 }
 
 /// Response body for `vault/sign-trust-task/0.1`. Same `unsigned_envelope`
@@ -1808,6 +1812,63 @@ pub(super) async fn handle_sign_trust_task(
     }
 
     // Step-up (vault/sign-trust-task floor) is enforced centrally by the PDP gate.
+
+    // Wallet sign-in documents (`auth/oob/identify`, `auth/oob/grant`) carry
+    // the default policy of the key-grant sign-in design: an exact schema, an
+    // enrolled device, the entry's own principal and target, and for a grant
+    // the device's UV approval and a never-reused id. Every other envelope
+    // passes through unchanged (`Ok(None)`).
+    use crate::operations::vault::oob_sign_in;
+    let oob = {
+        let vta_did = state.config.read().await.vta_did.clone();
+        let deps = oob_sign_in::OobDeps {
+            acl_ks: &state.acl_ks,
+            task_consent_ks: &state.task_consent_ks,
+            webvh_ks: &state.webvh_ks,
+            vta_did,
+        };
+        match oob_sign_in::authorize(
+            &deps,
+            &auth.did,
+            &stored.entry,
+            &stored.secret,
+            &req.unsigned_envelope,
+            req.ext.as_ref(),
+            chrono::Utc::now(),
+        )
+        .await
+        {
+            Ok(o) => o,
+            Err(oob_sign_in::OobError::App(e)) => return app_error_to_reject(&doc, e),
+            Err(e) => {
+                let (code, message) = e.code_and_message();
+                tracing::warn!(
+                    actor = %auth.did,
+                    entry_id = %req.entry_id,
+                    code,
+                    "vault/sign-trust-task: sign-in document refused"
+                );
+                crate::audit::record_with_detail_best_effort(
+                    &state.audit_sink,
+                    "vault.sign-trust-task.oob-refused",
+                    &auth.did,
+                    Some(&req.entry_id),
+                    "denied",
+                    Some(super::helpers::TRANSPORT_TRUST_TASK),
+                    Some(&stored.entry.context_id),
+                    Some(code),
+                )
+                .await;
+                return reject_with(
+                    &doc,
+                    RejectReason::TaskFailed {
+                        reason: format!("vault/sign-trust-task:{code} — {message}"),
+                        details: Some(serde_json::json!({ "code": code })),
+                    },
+                );
+            }
+        }
+    };
 
     // Validate the envelope against the entry's principal identity and sign
     // (operations layer; P2.4). The typed `SignTrustTaskError` maps back to the
@@ -1924,6 +1985,22 @@ pub(super) async fn handle_sign_trust_task(
         }
         Err(SignTrustTaskError::App(e)) => return app_error_to_reject(&doc, e),
     };
+
+    // A sign-in signature that the audit trail cannot show is not released
+    // (base design §11 item 7).
+    if let Some(oob) = &oob
+        && let Err(e) = oob_sign_in::record_signature(
+            &state.audit_sink,
+            &req.entry_id,
+            &stored.entry.context_id,
+            super::helpers::TRANSPORT_TRUST_TASK,
+            oob,
+        )
+        .await
+    {
+        tracing::error!(error = %e, "vault/sign-trust-task: sign-in audit write failed; signature withheld");
+        return app_error_to_reject(&doc, e);
+    }
 
     // Audit log — `{who, when, entryId, envelope: {id, type, recipient}}`.
     // Per the spec, payload is OMITTED (it may carry sensitive RP-side content).

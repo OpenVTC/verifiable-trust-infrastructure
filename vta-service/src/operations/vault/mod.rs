@@ -26,11 +26,12 @@ use crate::operations::internal_authority::InternalAuthority;
 use crate::store::KeyspaceHandle;
 use vta_sdk::did_key::decode_private_key_multibase;
 
+/// `vault/sign-trust-task/0.1` envelope validation + signing.
+pub mod oob_sign_in;
 /// `vault/proxy-login/0.1` driver dispatch + session-blob sealing.
 pub mod proxy_login;
 /// `vault/release/0.1` sealing logic.
 pub mod release;
-/// `vault/sign-trust-task/0.1` envelope validation + signing.
 pub mod sign_trust_task;
 /// `vault/upsert/0.1` sealed-secret unsealing.
 pub mod upsert;
