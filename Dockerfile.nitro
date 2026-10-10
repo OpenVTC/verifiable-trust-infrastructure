@@ -145,6 +145,7 @@ COPY vta-support/ vta-support/
 COPY vta-tee/ vta-tee/
 COPY vta-sweepers/ vta-sweepers/
 COPY vta-vault/ vta-vault/
+COPY vta-external/ vta-external/
 COPY vta-webvh/ vta-webvh/
 COPY vta-service/ vta-service/
 COPY vta-enclave/ vta-enclave/
