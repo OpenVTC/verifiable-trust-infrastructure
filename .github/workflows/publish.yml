@@ -530,6 +530,46 @@ jobs:
           # trigger CI before merging it.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
 
+      # Raise any crate the Release PR proposes inside a release branch's
+      # compatibility line (releases/*.toml) — and anything else the release
+      # guards name — to its next breaking version, and push that onto the PR.
+      #
+      # release-plz derives patch bumps without knowing the lines exist, and
+      # rewrites the Release PR on every merge to main, so a fix made by hand
+      # is overwritten by the next merge. Running the same fix here, after
+      # every rewrite, keeps the Release PR valid without anyone touching it.
+      # `fix-release-bump-sizes.py` is a no-op when every guard already passes.
+      #
+      # Pushed with RELEASE_PLZ_TOKEN so the push re-runs CI on the PR (a push
+      # with GITHUB_TOKEN would not). Branch rules allow version edits on a
+      # `release-plz-*` head; the commit is `chore(release)`, which the
+      # changelog skips.
+      - name: Keep the Release PR's versions valid
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          head=$(gh pr list --repo "$REPO" --state open --label release --base main \
+            --json headRefName --jq '[.[] | select(.headRefName | startswith("release-plz-"))][0].headRefName // ""')
+          if [ -z "$head" ]; then
+            echo "no open Release PR"; exit 0
+          fi
+          # The checkout keeps no credentials; fetch with the token.
+          git fetch --quiet "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" \
+            "+refs/heads/$head:refs/remotes/origin/$head"
+          git switch --quiet --force -C "$head" "origin/$head"
+          python3 scripts/fix-release-bump-sizes.py
+          if git diff --quiet; then
+            echo "$head: versions already valid"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qas -m "chore(release): raise versions out of release-branch lines" \
+            -m "Applied by publish.yml with scripts/fix-release-bump-sizes.py (RELEASES.md)."
+          git push --quiet "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/$head"
+          git diff --stat HEAD~1 HEAD
+
       - name: Semver checks admitted, and memory, during release-plz
         if: always()
         run: |

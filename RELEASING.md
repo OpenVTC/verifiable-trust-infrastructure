@@ -211,6 +211,10 @@ When a named release is cut, every published crate's line at the cut (0.38 for
 one of those lines (`releases/*.toml`); `fix-release-bump-sizes.py` raises the
 crate to its next breaking version, as in step 4.
 
+You don't run it by hand: after every rewrite of the Release PR, `publish.yml`
+runs `fix-release-bump-sizes.py` on its branch and pushes the result, so the
+Release PR always proposes versions the guards accept.
+
 ---
 
 ## Release branches
