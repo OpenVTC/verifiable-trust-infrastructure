@@ -9,8 +9,9 @@
 //! validation, and the signing live here.
 //!
 //! The proof purpose is the envelope type's, never the requester's: an
-//! operational document is signed for `authentication`, and only the
-//! approver/attestation types in
+//! operational document (including `auth/oob/identify`) is signed for
+//! `authentication`, and only the approver/attestation types (including
+//! `auth/oob/grant`) in
 //! [`vta_sdk::trust_task_proof::ATTESTATION_SLUGS`] for `assertionMethod`
 //! (VTI-KEY-022, VTI-KEY-106).
 

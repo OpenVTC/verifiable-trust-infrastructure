@@ -108,14 +108,22 @@ impl std::fmt::Display for ProofPurpose {
 ///   decision" (0.1–0.5);
 /// - `task-consent/decision` — "the approver's attestation, not an operational
 ///   message";
-/// - `confirm/response` — the subject's signed confirmation.
+/// - `confirm/response` — the subject's signed confirmation;
+/// - `auth/oob/grant` — "let this browser key act as me at this origin until
+///   `notAfter`": the approving DID's attestation, which the service relies on
+///   to open a session for that DID (sign-in trigger-link contract C5).
+///
+/// `auth/oob/identify` is deliberately **not** listed: it grants no authority
+/// on its own ("I am this DID and I hold this lock") and is signed for
+/// `authentication`, as the service verifies it.
 ///
 /// Every other document is operational and is signed for `authentication`
 /// (VTI-KEY-106, VTI-KEY-022).
-pub const ATTESTATION_SLUGS: [&str; 3] = [
+pub const ATTESTATION_SLUGS: [&str; 4] = [
     "auth/step-up/approve-response",
     "task-consent/decision",
     "confirm/response",
+    "auth/oob/grant",
 ];
 
 /// The purpose a Trust Task document of type `type_uri` must be signed for.
