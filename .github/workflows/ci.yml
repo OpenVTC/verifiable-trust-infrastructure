@@ -1487,11 +1487,13 @@ jobs:
       # is safe where the old `target/` cache (#1133) was not.
       - uses: ./.github/actions/rust-cache
 
-      - run: cargo check -p vta-enclave --no-default-features --features rest,didcomm,vsock-store
+      # `vsock-log` is in the Nitro image and nothing else compiles it: before
+      # it was added here, its forwarder was only ever checked by hand.
+      - run: cargo check -p vta-enclave --no-default-features --features rest,didcomm,vsock-store,vsock-log
       # The fleet build. `tenant-overlay` pulls in a different module set (the
       # vsock config fetch + apply), so a change that compiles for the baked
       # build can still break the un-baked one.
-      - run: cargo check -p vta-enclave --no-default-features --features rest,didcomm,vsock-store,tenant-overlay
+      - run: cargo check -p vta-enclave --no-default-features --features rest,didcomm,vsock-store,vsock-log,tenant-overlay
 
   enclave-proxy:
     # Standalone crate (own [workspace], excluded from the root workspace —
