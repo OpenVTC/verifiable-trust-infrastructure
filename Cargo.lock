@@ -11238,6 +11238,7 @@ dependencies = [
  "vta-sdk",
  "vtc-client",
  "vti-common",
+ "vti-rooms",
  "x25519-dalek 3.0.0",
 ]
 
