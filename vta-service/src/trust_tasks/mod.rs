@@ -2538,6 +2538,10 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1 => room_group::handle_open
         [ None Metadata false ],
+    // Releases one file's key — `None Secret false`: a pure derivation that
+    // stores nothing, returning key material for one file and nothing else.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1 => room_group::handle_file_key
+        [ None Secret false ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_1 => room_group::handle_chain
         [ Mutating None false ],
     // `actsAsSubject`, unlike every other `rooms/keys/*`: this one presents the

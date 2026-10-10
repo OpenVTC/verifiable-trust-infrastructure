@@ -105,4 +105,41 @@ impl VtaClient {
         )
         .await
     }
+
+    /// `rooms/keys/file-key/0.1` — one file's key, so the caller seals or opens
+    /// that file itself and its bytes never pass through the VTA.
+    ///
+    /// `open_epoch` is `None` to seal (the VTA derives under the room's current
+    /// epoch and says which) and the file manifest's `epoch` to open.
+    ///
+    /// **The key is secret, and opens that file for as long as its ciphertext
+    /// exists.** Hold it for one encryption or decryption, never store or log
+    /// it, and never hand it to web page script.
+    pub async fn room_file_key(
+        &self,
+        room_id: &str,
+        file_id: &str,
+        open_epoch: Option<u64>,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::file_key::v0_1::Response, VtaError> {
+        let mut payload = json!({
+            "roomId": room_id,
+            "fileId": file_id,
+            "purpose": if open_epoch.is_some() { "open" } else { "seal" },
+        });
+        if let Some(epoch) = open_epoch {
+            payload["epoch"] = json!(epoch);
+        }
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1,
+                payload,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| {
+            VtaError::Protocol(format!(
+                "rooms/keys/file-key response does not match its schema: {e}"
+            ))
+        })
+    }
 }

@@ -1022,6 +1022,13 @@ pub const TASK_ROOMS_KEYS_BROWSE_0_1: &str = "https://trusttasks.org/spec/rooms/
 /// to a host and presents its own authority there.
 pub const TASK_ROOMS_KEYS_SEAL_0_1: &str = "https://trusttasks.org/spec/rooms/keys/seal/0.1";
 
+/// `spec/rooms/keys/file-key/0.1` — one file's key, for the member's own client
+/// to seal or open that file itself, so file bytes never pass through the VTA.
+/// Unlike `open`, a key crosses — one bound to the room, the epoch and the file,
+/// which opens that file and nothing else. Auth: `roomOpen` capability.
+pub const TASK_ROOMS_KEYS_FILE_KEY_0_1: &str =
+    "https://trusttasks.org/spec/rooms/keys/file-key/0.1";
+
 /// `spec/rooms/keys/list/0.1` — which rooms this VTA can open, and how far back
 /// each reads. Auth: `roomOpen` capability. Key custody, never membership: a
 /// room whose Welcome never arrived is absent even where a good VMC is held.
@@ -2383,6 +2390,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_READ_0_1,
     TASK_ROOMS_KEYS_BROWSE_0_1,
     TASK_ROOMS_KEYS_SEAL_0_1,
+    TASK_ROOMS_KEYS_FILE_KEY_0_1,
     TASK_ROOMS_KEYS_LIST_0_1,
     TASK_ROOMS_OWNER_INVITE_0_1,
     TASK_ROOMS_OWNER_REGISTER_0_1,

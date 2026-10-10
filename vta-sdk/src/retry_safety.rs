@@ -501,6 +501,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Reads group state and returns plaintext. Nothing is written, and a second
     // execution is indistinguishable from one.
     (trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1, ReadOnly),
+    // A pure derivation: the same request yields the same key, and nothing is
+    // stored but the audit line.
+    (trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1, ReadOnly),
     // Minting retains a private key. A retry after a lost reply mints a SECOND
     // one and leaves a second private half behind for a Welcome that will
     // consume at most one — a duplicate that costs real key material, which is
