@@ -776,6 +776,12 @@ async fn get_versioned(
         Ok(a) => a,
         Err(e) => return from_app_error(doc, &e),
     };
+    // A 0.2 read names the blobs of the version it returns: the record and its
+    // references are read under the lock every record write holds.
+    let snapshot = match v2 {
+        true => Some(state.files.read_snapshot().await),
+        false => None,
+    };
     match storage::get_record(&state.records, &req.room_id, &req.key).await {
         Ok(record) => {
             audit_room(&room, &authorized, RoomOperation::GetRecord, Some(&req.key));
@@ -783,10 +789,10 @@ async fn get_versioned(
             // `respond(doc, record)` put the *storage* record on the wire.
             let (commitment, trace) = record_verification(state, &req.room_id, &req.key).await;
             let response = GetRecordResponse::of(&record, commitment.as_ref(), trace);
-            if !v2 {
+            let Some(snapshot) = snapshot else {
                 return respond(doc, response);
-            }
-            files::get_v2_response(state, doc, &req.room_id, &req.key, response).await
+            };
+            files::get_v2_response(&snapshot, doc, &req.room_id, &req.key, response).await
         }
         Err(e) => from_app_error(doc, &e),
     }
@@ -838,6 +844,10 @@ async fn list_versioned(
     // Paginated honestly: the page the caller asked for, and a cursor when more
     // remain. This used to `take(limit)` and drop the rest without a word, so a
     // short page and a complete room were indistinguishable.
+    let snapshot = match v2 {
+        true => Some(state.files.read_snapshot().await),
+        false => None,
+    };
     match storage::list_records_page(
         &state.records,
         &req.room_id,
@@ -868,10 +878,10 @@ async fn list_versioned(
                 record_count: head.as_ref().map(|h| h.record_count),
                 head_version: head.as_ref().map(|h| h.head_version),
             };
-            if !v2 {
+            let Some(snapshot) = snapshot else {
                 return respond(doc, response);
-            }
-            files::list_v2_response(state, doc, &req.room_id, response).await
+            };
+            files::list_v2_response(&snapshot, doc, &req.room_id, response).await
         }
         Err(e) => from_app_error(doc, &e),
     }
@@ -1410,6 +1420,12 @@ async fn curate(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
         Err(e) => return from_app_error(doc, &e),
     };
 
+    // Held across the curation, so a 0.2 read never sees a retracted record
+    // still naming the blobs the retraction released.
+    let release = match state.files.prepare_release(&req.room_id, &req.key).await {
+        Ok(r) => r,
+        Err(e) => return from_app_error(doc, &e),
+    };
     match storage::curate_record(
         &state.rooms,
         &state.records,
@@ -1428,7 +1444,7 @@ async fn curate(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
             // A retraction keeps no body, so it keeps no file: every blob the
             // record named is released, and orphaned if nothing else names it.
             if curated.status == RecordStatus::Retracted
-                && let Err(e) = state.files.release_record(&req.room_id, &curated.key).await
+                && let Err(e) = release.apply().await
             {
                 tracing::error!(error = %e, room = %req.room_id, record = %curated.key,
                     "record retracted but its blobs were not released");

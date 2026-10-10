@@ -1141,12 +1141,38 @@ impl BlobHost {
         })
     }
 
-    /// Release every blob record `record_key` names, as a retraction does.
-    pub async fn release_record(&self, room_id: &str, record_key: &str) -> Result<(), AppError> {
-        let _guard = self.lock.lock().await;
+    /// Prepare to release every blob record `record_key` names, as a
+    /// retraction does. Holds the lock like [`Self::prepare_record`]: the
+    /// caller curates the record while holding it, and applies only if the
+    /// curation retracted it.
+    pub async fn prepare_release(
+        &self,
+        room_id: &str,
+        record_key: &str,
+    ) -> Result<RecordBlobs<'_>, AppError> {
+        let guard = self.lock.lock().await;
         let previous = self.record_blobs(room_id, record_key).await?;
-        self.apply_refs(room_id, record_key, &previous, &[], None)
-            .await
+        Ok(RecordBlobs {
+            host: self,
+            _guard: guard,
+            room_id: room_id.to_string(),
+            record_key: record_key.to_string(),
+            blobs: Vec::new(),
+            previous,
+            member: None,
+        })
+    }
+
+    /// Hold the lock every record write holds, so a read of a record and of
+    /// the blobs it names sees one version of both. A record write and its blob
+    /// references change together under this lock; reading both inside it is
+    /// what keeps a 0.2 read from pairing one version's record with another's
+    /// `blobs`.
+    pub async fn read_snapshot(&self) -> ReadSnapshot<'_> {
+        ReadSnapshot {
+            host: self,
+            _guard: self.lock.lock().await,
+        }
     }
 
     async fn apply_refs(
@@ -1554,6 +1580,23 @@ pub struct RecordBlobs<'a> {
     blobs: Vec<String>,
     previous: Vec<String>,
     member: Option<String>,
+}
+
+/// A read under the record-write lock ([`BlobHost::read_snapshot`]).
+pub struct ReadSnapshot<'a> {
+    host: &'a BlobHost,
+    _guard: tokio::sync::MutexGuard<'a, ()>,
+}
+
+impl ReadSnapshot<'_> {
+    /// The blobs the current version of record `record_key` names.
+    pub async fn record_blobs(
+        &self,
+        room_id: &str,
+        record_key: &str,
+    ) -> Result<Vec<String>, AppError> {
+        self.host.record_blobs(room_id, record_key).await
+    }
 }
 
 impl RecordBlobs<'_> {
