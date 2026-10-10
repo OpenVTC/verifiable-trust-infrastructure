@@ -1,6 +1,6 @@
 # Named releases
 
-What operators deploy is a **named release** — Dogwood, Eucalyptus, … — cut from
+What operators deploy is a **named release** — Eucalyptus, Fig, … — cut from
 `main` on a fixed schedule and patched on its own branch for as long as it is
 supported. This file is the schedule and the policy. The mechanics of
 publishing crates are in [RELEASING.md](RELEASING.md).
@@ -10,8 +10,8 @@ publishing crates are in [RELEASING.md](RELEASING.md).
 ```
 feature/*  ──PR──▶  main  ──(nightly.yml: last fully green commit)──▶  nightly
                                                                           │
-                       release/dogwood    ◀── cut ─────────────────────────┤
-                       release/eucalyptus ◀── cut ─────────────────────────┘
+                       release/eucalyptus ◀── cut ─────────────────────────┤
+                       release/fig        ◀── cut ─────────────────────────┘
 ```
 
 | Branch | What it is | Written by |
@@ -26,10 +26,21 @@ feature/*  ──PR──▶  main  ──(nightly.yml: last fully green commit)
 A release is cut every **4–6 weeks**, alphabetically by tree name. Dates are
 set when the previous release goes GA.
 
-| Release | Support | Cut | GA | End of life | Status |
-|---|---|---|---|---|---|
-| Dogwood | standard | TBD | TBD | TBD | planned |
-| Eucalyptus | standard | TBD | TBD | TBD | planned |
+| Release | Branch | Support | First RC | GA | Patches | Status |
+|---|---|---|---|---|---|---|
+| Aspen | — | — | — | 2026-06-04 (`openvtc-aspen`) | — | end of life |
+| Banyan | — | — | — | 2026-06-22 (`Banyan`) | — | end of life |
+| Cypress | — | — | 2026-08-02 | 2026-08-18 (`Cypress`) | — | end of life |
+| Dogwood | — | — | 2026-08-29 | 2026-08-30 | `VTI-Dogwood-R1` 2026-09-01 | end of life — no branch (below) |
+| Eucalyptus | `release/eucalyptus` | standard | 2026-09-17 | 2026-10-07 | — | **supported (N)** |
+| Fig | — | — | TBD, 4–6 weeks after Eucalyptus GA | TBD | — | in development on `main` |
+
+Aspen to Eucalyptus went out as tags on `main`, before release branches
+existed. Eucalyptus was given its branch after the fact (`--released-as`):
+nothing but release tooling had changed on `main` since its GA. Dogwood was not:
+it is weeks and hundreds of commits behind, its branch would need the release
+tooling ported onto Dogwood's code, and it would leave support at Fig's GA
+anyway. If a deployment still needs a Dogwood fix, that is the work to do.
 
 `releases/<name>.toml` is the machine-readable side of a release — what it was
 cut from and which crate versions it owns. `scripts/cut-release.py` writes it;
@@ -39,10 +50,14 @@ it is never edited by hand.
 
 | Week | Step | Tag |
 |---|---|---|
-| 0 | **Cut** `release/<name>` from `nightly`. | `<name>.rc1` |
-| 0–1 | **Stabilise.** Backport fixes; each prep is another candidate. | `<name>.rc2`, … |
-| ~1 | **GA.** | `<name>.0` |
-| after | **Patch** as fixes are backported. | `<name>.1`, `<name>.2`, … |
+| 0 | **Cut** `release/<name>` from `nightly`. | `VTI-Fig-RC-0` |
+| 0–1 | **Stabilise.** Backport fixes; each prep is another candidate. | `VTI-Fig-RC-1`, … |
+| ~1 | **GA.** | `VTI-Fig` |
+| after | **Patch** as fixes are backported. | `VTI-Fig-R1`, `VTI-Fig-R2`, … |
+
+The tags keep the convention every release before this tooling used
+(`VTI-Dogwood-RC-1`, `VTI-Dogwood`, `VTI-Dogwood-R1`). A release branch's
+`RELEASE` file holds its current tag.
 | EOL | Marked in the table above. The branch stays, read-only. | — |
 
 ## Support
@@ -85,7 +100,7 @@ a branch operators run, it is not.
 
 Two version schemes, deliberately kept apart:
 
-1. **The release version** — `dogwood.0`, `dogwood.3`. What an operator deploys,
+1. **The release version** — `VTI-Eucalyptus`, `VTI-Eucalyptus-R2`. What an operator deploys,
    and what identifies the unpublished crates (`vtc-service`, `vta-enclave`,
    …) at the commit it tags. The project publishes no container images or
    enclave images: operators build their own from the tag, and generate their
@@ -97,10 +112,10 @@ Two version schemes, deliberately kept apart:
 
 ### Each release branch owns its lines
 
-When Dogwood is cut with `vta-sdk` at 0.38.2, the 0.38 line belongs to
-`release/dogwood`: 0.38.3, 0.38.4, … are its patches. `main` must not publish
-into it, or Dogwood's next patch has no version left, and a consumer on `^0.38`
-would receive `main`'s features as a "patch".
+When Eucalyptus was given its branch with `vta-sdk` at 0.64.2, the 0.64 line
+became `release/eucalyptus`'s: 0.64.3, 0.64.4, … are its patches. `main` must
+not publish into it, or Eucalyptus's next patch has no version left, and a
+consumer on `^0.64` would receive `main`'s features as a "patch".
 
 `check-release-line-ownership.py` enforces this on `main`'s Release PR, from
 `releases/*.toml`; `fix-release-bump-sizes.py` applies the fix (raise to the
@@ -112,14 +127,18 @@ bump most weeks anyway.
 ### Cut
 
 ```sh
-python3 scripts/cut-release.py dogwood --dry-run   # check; prints the manifest
-python3 scripts/cut-release.py dogwood [--lts]
+python3 scripts/cut-release.py fig --dry-run   # check; prints the manifest
+python3 scripts/cut-release.py fig [--lts]
 ```
 
-This pushes `release/dogwood` (tagged `dogwood.rc1` by `publish.yml`) and opens
-a PR to `main` recording `releases/dogwood.toml`. **Merge that PR before
-`main`'s next Release PR.** Then add the backport label
-`backport release/dogwood` and update the table above.
+This pushes `release/fig` (tagged `VTI-Fig-RC-0` by `publish.yml`), creates the
+`backport release/fig` label, and opens a PR to `main` recording
+`releases/fig.toml`. **Merge that PR before `main`'s next Release PR.** Then
+update the table above.
+
+`--released-as <tag>` gives a branch to a release that already went GA as a tag
+(how `release/eucalyptus` was made): the source commit must carry that tag's
+code unchanged, which the script checks.
 
 The cut refuses if any crate at the source commit is not on crates.io yet —
 let `main`'s release job finish first.
@@ -136,8 +155,8 @@ changelog entry saying why. Merge it, wait for the release job and for
 Actions → **Prepare a named release** → choose the release branch as the ref
 and `rc`, `ga` or `patch`. It bumps the patch version of every published crate
 that changed since its last release (semver-checked), writes their changelogs,
-moves `RELEASE`, and opens a `chore(release): <name>.<n>` PR. **Merging it is
-the release:** `publish.yml` publishes the crates and tags `<name>.<n>`.
+moves `RELEASE`, and opens a `chore(release): VTI-<Name>-…` PR. **Merging it
+is the release:** `publish.yml` publishes the crates and tags it.
 
 A prep with no crate changes still produces a release: something unpublished
 (`vtc-service`, the enclave) changed.

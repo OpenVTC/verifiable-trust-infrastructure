@@ -6,7 +6,7 @@ Run by `.github/workflows/branch-rules.yml` on every PR into `main` or
 
 Into `release/<name>`:
   1. Only a bot backport (`backport-<pr>-to-release/<name>`, opened by
-     backport.yml), a prep PR (`release-prep/<name>.<n>`), or a PR labelled
+     backport.yml), a prep PR (`release-prep/<name>/<tag>`), or a PR labelled
      `release-direct` by a maintainer. A fix lands on main first.
   2. Only a prep PR changes a crate's `version`, `RELEASE` or
      `releases/*.toml`.
@@ -63,7 +63,7 @@ def main():
     if base.startswith("release/"):
         name = base.removeprefix("release/")
         backport = re.fullmatch(rf"backport-\d+-to-release/{re.escape(name)}", head)
-        prep = head.startswith(f"release-prep/{name}.")
+        prep = head.startswith(f"release-prep/{name}/")
         if not (backport or prep or "release-direct" in labels):
             problems.append(
                 f"A change reaches {base} by backport, not directly. Open this PR against main "

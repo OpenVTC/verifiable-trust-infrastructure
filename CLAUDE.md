@@ -1323,7 +1323,7 @@ needs:
 |---|---|
 | `main` | **Yes — the default for everything**: features, fixes, docs, refactors. Branch from `origin/main` (`feat/…`, `fix/…`, `docs/…`). |
 | `nightly` | **Never.** A bot fast-forwards it to the last fully green `main` commit. |
-| `release/<name>` (Dogwood, Eucalyptus, …) | **Not directly, as a rule.** A fix lands on `main` first; then label the merged PR `backport release/<name>` and `backport.yml` opens the cherry-pick PR. Open one by hand only when the code no longer exists on `main` — base it on `origin/release/<name>` and say why in the description. |
+| `release/<name>` (Eucalyptus, Fig, …) | **Not directly, as a rule.** A fix lands on `main` first; then label the merged PR `backport release/<name>` and `backport.yml` opens the cherry-pick PR. Open one by hand only when the code no longer exists on `main` — base it on `origin/release/<name>` and say why in the description. |
 | `release-plz-*`, `release-prep/*`, `release-cut/*` | **Never** — bots and release scripts open these. |
 
 Rules for anything that does land on a release branch:

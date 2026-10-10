@@ -3,7 +3,7 @@ name: Prepare a named release
 # Opens the PR that prepares the next rc, GA or patch of a named release
 # (RELEASES.md). Run it from the Actions tab with the release branch selected
 # as the ref. Merging the PR it opens is the release: publish.yml publishes the
-# patched crates and tags `<name>.<n>`.
+# patched crates and tags the release (VTI-<Name>-R<n> …, RELEASES.md).
 #
 # release-plz's Release PR does not run on release branches — it derives
 # versions from the newest crate on crates.io, which is main's line. See the
@@ -60,7 +60,7 @@ jobs:
         run: |
           set -euo pipefail
           target=$(cat RELEASE)
-          head="release-prep/$target"
+          head="release-prep/${BASE#release/}/$target"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$head"

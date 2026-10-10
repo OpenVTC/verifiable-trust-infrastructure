@@ -30,6 +30,7 @@ so on a feature PR it is a no-op.
 """
 
 import json
+import re
 import pathlib
 import subprocess
 import sys
@@ -87,7 +88,12 @@ def owned_lines():
 def main():
     owned = owned_lines()
     marker = ROOT / "RELEASE"
-    this_release = marker.read_text().strip().split(".")[0] if marker.exists() else None
+    # RELEASE holds the branch's current tag (VTI-Eucalyptus-R1); the release
+    # name is the manifest's, lower-cased.
+    this_release = None
+    if marker.exists():
+        m = re.match(r"^VTI-([A-Za-z]+)", marker.read_text().strip())
+        this_release = m.group(1).lower() if m else None
     if not owned:
         print("no release manifests under releases/ — nothing to check")
         return 0

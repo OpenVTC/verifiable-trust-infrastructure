@@ -17,8 +17,9 @@ A release branch only ever takes patches, so the rule is simple enough to own:
     belongs on main, not in a patch release);
   * its CHANGELOG gains an entry from the commits that touched it (git-cliff,
     same `cliff.toml` as main);
-  * `RELEASE` moves on: dogwood.rc1 -> rc2 (rc), rcN -> dogwood.0 (ga),
-    dogwood.N -> N+1 (patch).
+  * `RELEASE` moves on, in the project's tag convention (the tags Aspen to
+    Eucalyptus were cut with): VTI-Fig-RC-0 -> VTI-Fig-RC-1 (rc),
+    VTI-Fig-RC-N -> VTI-Fig (ga), VTI-Fig -> VTI-Fig-R1 -> VTI-Fig-R2 (patch).
 
 Unpublished crates (vtc-service, vta-enclave …) keep their versions: what
 identifies them in a named release is the release tag.
@@ -40,7 +41,9 @@ import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REPO_URL = "https://github.com/OpenVTC/verifiable-trust-infrastructure"
-RELEASE_RE = re.compile(r"^([a-z]+)\.(?:rc(\d+)|(\d+))$")
+# VTI-<Name>, VTI-<Name>-RC-<n>, VTI-<Name>-R<n>: the convention of every
+# release tag before this tooling existed (VTI-Dogwood-RC-1, VTI-Dogwood-R1).
+RELEASE_RE = re.compile(r"^VTI-([A-Z][a-z]+)(?:-RC-(\d+)|-R(\d+))?$")
 
 
 def run(*cmd, check=True):
@@ -50,19 +53,19 @@ def run(*cmd, check=True):
 def next_release(current, kind):
     m = RELEASE_RE.match(current)
     if not m:
-        sys.exit(f"RELEASE holds {current!r}, which is not <name>.rcN or <name>.N")
+        sys.exit(f"RELEASE holds {current!r}, which is not VTI-<Name>[-RC-<n>|-R<n>]")
     name, rc, n = m.group(1), m.group(2), m.group(3)
     if kind == "rc":
         if rc is None:
             sys.exit(f"{current} is already generally available; the next one is a patch")
-        return f"{name}.rc{int(rc) + 1}"
+        return f"VTI-{name}-RC-{int(rc) + 1}"
     if kind == "ga":
         if rc is None:
             sys.exit(f"{current} is already generally available")
-        return f"{name}.0"
+        return f"VTI-{name}"
     if rc is not None:
         sys.exit(f"{current} is a release candidate; ship it with --kind ga first")
-    return f"{name}.{int(n) + 1}"
+    return f"VTI-{name}-R{int(n or 0) + 1}"
 
 
 def next_patch(v):
@@ -178,7 +181,8 @@ def main():
     print(f"RELEASE: {current} -> {target}")
 
     if args.pr_body:
-        lines = [f"Prepares **{target}** on `release/{target.split('.')[0]}`.", ""]
+        branch = "release/" + RELEASE_RE.match(target).group(1).lower()
+        lines = [f"Prepares **{target}** on `{branch}`.", ""]
         if bumps:
             lines += ["Crates this publishes (API-compatible patches, checked):", ""]
             lines += [f"- `{n}` {o} → {nv}" for n, o, nv, *_ in bumps]

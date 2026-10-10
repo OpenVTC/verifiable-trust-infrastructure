@@ -236,12 +236,15 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth3.outputs.token }}
 
       # On a release branch, once its crates are out: tag the named release
-      # `RELEASE` names (dogwood.rc1, dogwood.0, dogwood.3 …) if it is not
+      # `RELEASE` names (VTI-Fig-RC-0, VTI-Fig, VTI-Fig-R1 …) if it is not
       # tagged yet, with the bill of materials — every published crate's
       # version at this commit — as its notes. A push that changes nothing
       # (a backport, before the prep PR) finds the tag already there.
       #
-      # Never "latest": that belongs to main's line. An rc is a prerelease.
+      # Never "latest": that belongs to main's line. An RC is a prerelease.
+      # "Already tagged" is read from the tag, not a GitHub Release: the tags
+      # before this tooling (VTI-Dogwood-R1 …) mostly have no Release, and a
+      # branch cut at one must not mint a Release for it at a later commit.
       - name: Tag the named release
         if: success() && startsWith(github.ref, 'refs/heads/release/') && inputs.package == ''
         env:
@@ -249,8 +252,8 @@ jobs:
         run: |
           set -euo pipefail
           rel=$(cat RELEASE)
-          [[ "$rel" =~ ^[a-z]+\.(rc[0-9]+|[0-9]+)$ ]] || { echo "::error::RELEASE holds '$rel'"; exit 1; }
-          if gh release view "$rel" >/dev/null 2>&1; then
+          [[ "$rel" =~ ^VTI-[A-Z][a-z]+(-RC-[0-9]+|-R[0-9]+)?$ ]] || { echo "::error::RELEASE holds '$rel'"; exit 1; }
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$rel" >/dev/null 2>&1; then
             echo "$rel is already tagged"; exit 0
           fi
           {
@@ -270,7 +273,7 @@ jobs:
           PY
           } > "$RUNNER_TEMP/notes.md"
           pre=()
-          [[ "$rel" == *.rc* ]] && pre=(--prerelease)
+          [[ "$rel" == *-RC-* ]] && pre=(--prerelease)
           gh release create "$rel" --target "$GITHUB_SHA" --title "$rel" \
             --notes-file "$RUNNER_TEMP/notes.md" --latest=false "${pre[@]}"
 

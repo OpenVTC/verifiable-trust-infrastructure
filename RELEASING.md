@@ -7,8 +7,8 @@ release is cut. Releases are cut by merging a **Release PR** that
 Contributing rather than releasing? You only need
 [What this means for contributors](#what-this-means-for-contributors).
 
-This file is about publishing crates from `main`. **Named releases** — Dogwood,
-Eucalyptus, the release branches operators deploy and the patches they take —
+This file is about publishing crates from `main`. **Named releases** — Eucalyptus,
+Fig, the release branches operators deploy and the patches they take —
 are in [RELEASES.md](RELEASES.md); [Release branches](#release-branches) below
 covers how their crates publish.
 
