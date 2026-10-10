@@ -23,8 +23,8 @@ use crate::bridge::bridge;
 /// Inbound REST, terminated as HTTP/1.1 rather than bridged as bytes.
 ///
 /// This is the last hop that knows the client's address: from here on the
-/// request travels vsock and then `socat … TCP-CONNECT:127.0.0.1:8100` inside
-/// the enclave, so the VTA's socket peer is loopback for every client alike.
+/// request travels vsock to the VTA, which serves REST on vsock itself and
+/// sees this proxy as the peer `0.0.0.3` for every client alike.
 /// [`crate::http_forward`] explains why that makes this function — not the
 /// enclave — the place `X-Forwarded-For` has to be set, and why forwarding the
 /// client's own copy of that header instead would be a rate-limit bypass.
