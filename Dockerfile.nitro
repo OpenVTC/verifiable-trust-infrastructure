@@ -248,9 +248,14 @@ COPY --from=config-src /out/ /etc/vta/
 # Create data directories
 RUN mkdir -p /var/lib/vta
 
-# Health check for container orchestration (port depends on config)
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -qO- http://localhost:8100/health || exit 1
+# No HEALTHCHECK. This image only runs as a Nitro Enclave (`nitro-cli
+# build-enclave` converts it to an EIF), where no Docker runtime executes one,
+# and the VTA serves REST on vsock only (VTA_REST_VSOCK_PORT), so nothing in
+# the image could reach /health anyway — the old `wget localhost:8100/health`
+# polled a port that no longer exists. Health is checked from the parent:
+# `GET /health` through deploy/nitro/enclave-proxy, which is what the load
+# balancer's target health check already does. A process-alive probe here
+# would be a signal that never goes false.
 
 # Note: USER nobody is not used because the enclave entrypoint needs root
 # for `ip link set lo up` and socat vsock proxy setup. The Nitro Enclave
