@@ -11912,6 +11912,7 @@ dependencies = [
  "chrono",
  "getrandom 0.2.17",
  "getrandom 0.4.3",
+ "hkdf 0.13.0",
  "multibase",
  "openmls",
  "openmls_basic_credential",
