@@ -8,10 +8,12 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::info;
 
+use super::key_locks::KeyLocks;
+#[cfg(test)]
+use super::vsock_pool::MAX_MESSAGE_SIZE;
+use super::vsock_pool::{BoxStream, ConnectionPool, Connector};
 use crate::error::AppError;
 
 // ---------------------------------------------------------------------------
@@ -29,8 +31,6 @@ const OP_PERSIST: u8 = 0x06;
 const STATUS_OK: u8 = 0x00;
 const STATUS_NOT_FOUND: u8 = 0x01;
 const STATUS_ERROR: u8 = 0x02;
-
-const MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024;
 
 fn encode_bytes(buf: &mut Vec<u8>, data: &[u8]) {
     buf.extend_from_slice(&(data.len() as u32).to_be_bytes());
@@ -64,54 +64,14 @@ fn encode_keyspace(buf: &mut Vec<u8>, name: &str) {
 // Connection
 // ---------------------------------------------------------------------------
 
-/// A connection to the parent's storage proxy over vsock.
-struct VsockConnection {
-    stream: tokio_vsock::VsockStream,
-}
-
-impl VsockConnection {
-    async fn connect(cid: u32, port: u32) -> Result<Self, AppError> {
-        let addr = tokio_vsock::VsockAddr::new(cid, port);
-        let stream = tokio_vsock::VsockStream::connect(addr)
-            .await
-            .map_err(AppError::vsock("vsock connect"))?;
-        tracing::trace!(cid, port, "vsock connected");
-        Ok(Self { stream })
-    }
-
-    async fn request(&mut self, payload: &[u8]) -> Result<Vec<u8>, AppError> {
-        // Write frame
-        self.stream
-            .write_u32(payload.len() as u32)
-            .await
-            .map_err(AppError::vsock("vsock write"))?;
-        self.stream
-            .write_all(payload)
-            .await
-            .map_err(AppError::vsock("vsock write"))?;
-        self.stream
-            .flush()
-            .await
-            .map_err(AppError::vsock("vsock flush"))?;
-
-        // Read frame
-        let len = self
-            .stream
-            .read_u32()
-            .await
-            .map_err(AppError::vsock("vsock read"))?;
-        if len > MAX_MESSAGE_SIZE {
-            return Err(AppError::Internal(format!(
-                "vsock response too large: {len} > {MAX_MESSAGE_SIZE}"
-            )));
-        }
-        let mut buf = vec![0u8; len as usize];
-        self.stream
-            .read_exact(&mut buf)
-            .await
-            .map_err(AppError::vsock("vsock read"))?;
-        Ok(buf)
-    }
+/// Open a vsock connection to the parent's storage proxy.
+async fn connect_vsock(cid: u32, port: u32) -> Result<BoxStream, AppError> {
+    let addr = tokio_vsock::VsockAddr::new(cid, port);
+    let stream = tokio_vsock::VsockStream::connect(addr)
+        .await
+        .map_err(AppError::vsock("vsock connect"))?;
+    tracing::trace!(cid, port, "vsock connected");
+    Ok(Box::new(stream))
 }
 
 // ---------------------------------------------------------------------------
@@ -122,25 +82,47 @@ impl VsockConnection {
 const PARENT_CID: u32 = 3;
 /// Default vsock port for the storage proxy.
 const DEFAULT_STORAGE_PORT: u32 = 5500;
+/// Upper bound on simultaneous storage connections to the parent.
+///
+/// High enough that storage round trips stop being the bottleneck on the
+/// enclave sizes we run (1 to 6 vCPUs), low enough that a burst cannot open
+/// an unbounded number of sockets on the parent.
+const DEFAULT_MAX_CONNECTIONS: usize = 8;
 
 /// A key-value store backed by the parent's storage proxy over vsock.
 ///
 /// Drop-in replacement for `Store` when running inside a Nitro Enclave.
+///
+/// Storage operations run concurrently over a bounded pool of connections
+/// (see [`super::vsock_pool`]); each operation is still one request and
+/// response.
 #[derive(Clone)]
 pub struct VsockStore {
-    conn: Arc<Mutex<Option<VsockConnection>>>,
-    port: u32,
+    pool: Arc<ConnectionPool>,
+    /// Shared by every keyspace handle, so multi-step operations on one key
+    /// exclude each other however the handles were obtained.
+    locks: Arc<KeyLocks>,
 }
 
 impl VsockStore {
     /// Connect to the parent's storage proxy.
     pub async fn connect(port: Option<u32>) -> Result<Self, AppError> {
         let port = port.unwrap_or(DEFAULT_STORAGE_PORT);
-        let conn = VsockConnection::connect(PARENT_CID, port).await?;
-        info!(port, "connected to parent storage proxy via vsock");
-        Ok(Self {
-            conn: Arc::new(Mutex::new(Some(conn))),
+        // Connect once up front so a missing proxy fails the boot here.
+        let first = connect_vsock(PARENT_CID, port).await?;
+        info!(
             port,
+            max_connections = DEFAULT_MAX_CONNECTIONS,
+            "connected to parent storage proxy via vsock"
+        );
+        let connector: Connector = Arc::new(move || Box::pin(connect_vsock(PARENT_CID, port)));
+        Ok(Self {
+            pool: Arc::new(ConnectionPool::new(
+                connector,
+                DEFAULT_MAX_CONNECTIONS,
+                first,
+            )),
+            locks: Arc::new(KeyLocks::default()),
         })
     }
 
@@ -148,8 +130,8 @@ impl VsockStore {
     /// with each operation.
     pub fn keyspace(&self, name: &str) -> Result<VsockKeyspaceHandle, AppError> {
         Ok(VsockKeyspaceHandle {
-            conn: Arc::clone(&self.conn),
-            port: self.port,
+            pool: Arc::clone(&self.pool),
+            locks: Arc::clone(&self.locks),
             keyspace: name.to_string(),
             #[cfg(feature = "encryption")]
             encryption_key: None,
@@ -159,30 +141,8 @@ impl VsockStore {
     /// Flush the parent's store to disk.
     pub async fn persist(&self) -> Result<(), AppError> {
         let payload = vec![OP_PERSIST];
-        let resp = self.send(&payload).await?;
+        let resp = self.pool.request(&payload).await?;
         decode_ok(&resp)
-    }
-
-    /// Send a request, reconnecting once on failure.
-    async fn send(&self, payload: &[u8]) -> Result<Vec<u8>, AppError> {
-        let mut guard = self.conn.lock().await;
-
-        // Try on existing connection
-        if let Some(ref mut conn) = *guard {
-            match conn.request(payload).await {
-                Ok(resp) => return Ok(resp),
-                Err(e) => {
-                    warn!("storage request failed, reconnecting: {e}");
-                    *guard = None;
-                }
-            }
-        }
-
-        // Reconnect
-        let mut conn = VsockConnection::connect(PARENT_CID, self.port).await?;
-        let resp = conn.request(payload).await?;
-        *guard = Some(conn);
-        Ok(resp)
     }
 }
 
@@ -196,8 +156,8 @@ impl VsockStore {
 /// Encryption is applied enclave-side before sending over vsock.
 #[derive(Clone)]
 pub struct VsockKeyspaceHandle {
-    conn: Arc<Mutex<Option<VsockConnection>>>,
-    port: u32,
+    pool: Arc<ConnectionPool>,
+    locks: Arc<KeyLocks>,
     keyspace: String,
     #[cfg(feature = "encryption")]
     encryption_key: Option<Arc<zeroize::Zeroizing<[u8; 32]>>>,
@@ -357,6 +317,55 @@ impl VsockKeyspaceHandle {
         Ok(keys.len())
     }
 
+    /// Insert `value` at `key` only if absent; `true` when it was inserted.
+    /// Atomic: the key's lock is held across the read and the write.
+    pub async fn insert_if_absent<V: Serialize>(
+        &self,
+        key: impl Into<Vec<u8>>,
+        value: &V,
+    ) -> Result<bool, AppError> {
+        let key = key.into();
+        let _guard = self.locks.lock(&self.keyspace, &[&key]).await;
+        if self.get_raw(key.clone()).await?.is_some() {
+            return Ok(false);
+        }
+        self.insert(key, value).await?;
+        Ok(true)
+    }
+
+    /// Raw-bytes [`Self::insert_if_absent`].
+    pub async fn insert_raw_if_absent(
+        &self,
+        key: impl Into<Vec<u8>>,
+        value: impl Into<Vec<u8>>,
+    ) -> Result<bool, AppError> {
+        let key = key.into();
+        let _guard = self.locks.lock(&self.keyspace, &[&key]).await;
+        if self.get_raw(key.clone()).await?.is_some() {
+            return Ok(false);
+        }
+        self.insert_raw(key, value).await?;
+        Ok(true)
+    }
+
+    /// Read and delete `key`; exactly one of two racing callers gets the
+    /// value. The key's lock is held across both round trips.
+    ///
+    /// If the caller is cancelled between them the row stays and nobody
+    /// received it; if the delete fails the caller gets the error, not the
+    /// value. Neither path hands the value out twice.
+    pub async fn take_raw(&self, key: impl Into<Vec<u8>>) -> Result<Option<Vec<u8>>, AppError> {
+        let key = key.into();
+        let _guard = self.locks.lock(&self.keyspace, &[&key]).await;
+        let val = self.get_raw(key.clone()).await?;
+        if val.is_some() {
+            self.remove(key).await?;
+        }
+        Ok(val)
+    }
+
+    /// Move to `new_key` unless it is occupied; `false` when it was. Atomic
+    /// with respect to every other multi-step operation on either key.
     pub async fn swap<V: Serialize>(
         &self,
         old_key: impl Into<Vec<u8>>,
@@ -364,21 +373,30 @@ impl VsockKeyspaceHandle {
         value: &V,
     ) -> Result<bool, AppError> {
         let old_key = old_key.into();
-        let new_key_bytes = new_key.into();
+        let new_key = new_key.into();
+        let _guard = self.locks.lock(&self.keyspace, &[&old_key, &new_key]).await;
+        self.swap_locked(old_key, new_key, value).await
+    }
 
-        // Check if new key exists
-        if self.get_raw(new_key_bytes.clone()).await?.is_some() {
+    /// The steps of [`Self::swap`]; the caller holds both keys' locks.
+    async fn swap_locked<V: Serialize>(
+        &self,
+        old_key: Vec<u8>,
+        new_key: Vec<u8>,
+        value: &V,
+    ) -> Result<bool, AppError> {
+        if self.get_raw(new_key.clone()).await?.is_some() {
             return Ok(false);
         }
 
         // Insert new, delete old. The value lands at `new_key`, so bind
-        // the AAD to `new_key_bytes`.
+        // the AAD to it.
         let bytes = serde_json::to_vec(value)?;
-        let bytes = self.maybe_encrypt(&new_key_bytes, bytes)?;
+        let bytes = self.maybe_encrypt(&new_key, bytes)?;
 
         let mut insert_payload = vec![OP_INSERT];
         encode_keyspace(&mut insert_payload, &self.keyspace);
-        encode_bytes(&mut insert_payload, &new_key_bytes);
+        encode_bytes(&mut insert_payload, &new_key);
         encode_bytes(&mut insert_payload, &bytes);
         let resp = self.send(&insert_payload).await?;
         decode_ok(&resp)?;
@@ -392,10 +410,9 @@ impl VsockKeyspaceHandle {
         Ok(true)
     }
 
-    /// Non-atomic compare-and-move: the vsock proto has no multi-op opcode, so
-    /// this is `get` + compare + `insert` + `delete` across round-trips. The
-    /// same documented gap as `take_raw`'s fallback; callers that need
-    /// exactly-one semantics also serialise in-process.
+    /// Compare-and-move: only while `old_key` still holds exactly `expected`
+    /// (plaintext). Both keys' locks are held from the comparison to the
+    /// delete, so two callers holding the same `expected` cannot both move.
     pub async fn move_if_unchanged<V: Serialize>(
         &self,
         old_key: impl Into<Vec<u8>>,
@@ -403,42 +420,25 @@ impl VsockKeyspaceHandle {
         new_key: impl Into<Vec<u8>>,
         value: &V,
     ) -> Result<super::MoveOutcome, AppError> {
-        tracing::warn!(
-            "VsockKeyspaceHandle::move_if_unchanged is not atomic across vsock round-trips; \
-             single-replica TEE deployments are unaffected in practice."
-        );
         let old_key = old_key.into();
         let new_key = new_key.into();
+        let _guard = self.locks.lock(&self.keyspace, &[&old_key, &new_key]).await;
         match self.get_raw(old_key.clone()).await? {
             None => return Ok(super::MoveOutcome::SourceMissing),
             Some(current) if current != expected => return Ok(super::MoveOutcome::SourceChanged),
             Some(_) => {}
         }
-        if self.swap(old_key, new_key, value).await? {
+        if self.swap_locked(old_key, new_key, value).await? {
             Ok(super::MoveOutcome::Moved)
         } else {
             Ok(super::MoveOutcome::TargetExists)
         }
     }
 
-    /// Send a request, reconnecting once on failure.
+    /// Send one request over a pooled connection (reconnecting once on
+    /// failure) and return the response.
     async fn send(&self, payload: &[u8]) -> Result<Vec<u8>, AppError> {
-        let mut guard = self.conn.lock().await;
-
-        if let Some(ref mut conn) = *guard {
-            match conn.request(payload).await {
-                Ok(resp) => return Ok(resp),
-                Err(e) => {
-                    warn!("storage request failed, reconnecting: {e}");
-                    *guard = None;
-                }
-            }
-        }
-
-        let mut conn = VsockConnection::connect(PARENT_CID, self.port).await?;
-        let resp = conn.request(payload).await?;
-        *guard = Some(conn);
-        Ok(resp)
+        self.pool.request(payload).await
     }
 
     fn maybe_encrypt(&self, store_key: &[u8], plaintext: Vec<u8>) -> Result<Vec<u8>, AppError> {
@@ -874,5 +874,223 @@ mod tests {
         let (ks_len, rest) = payload[1..].split_at(2);
         assert_eq!(u16::from_be_bytes([ks_len[0], ks_len[1]]), 3);
         assert_eq!(&rest[..3], b"acl");
+    }
+}
+
+/// Multi-step operations against a fake parent that serves the real wire
+/// protocol over in-memory pipes and holds every request for a few
+/// milliseconds, so concurrent round trips overlap the way they do on a busy
+/// enclave. Run on a multi-thread runtime: the REST server is one.
+#[cfg(test)]
+mod atomicity_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+
+    type Rows = Arc<StdMutex<HashMap<(String, Vec<u8>), Vec<u8>>>>;
+
+    #[derive(Clone, Default)]
+    struct FakeParent {
+        rows: Rows,
+    }
+
+    impl FakeParent {
+        fn handle(&self) -> VsockKeyspaceHandle {
+            let parent = self.clone();
+            let connect: Connector = Arc::new(move || {
+                let parent = parent.clone();
+                Box::pin(async move { Ok(parent.open()) })
+            });
+            VsockKeyspaceHandle {
+                pool: Arc::new(ConnectionPool::new(connect, 8, self.open())),
+                locks: Arc::new(KeyLocks::default()),
+                keyspace: "ks".into(),
+                #[cfg(feature = "encryption")]
+                encryption_key: None,
+            }
+        }
+
+        fn open(&self) -> BoxStream {
+            let (client, server) = tokio::io::duplex(64 * 1024);
+            tokio::spawn(self.clone().serve(server));
+            Box::new(client)
+        }
+
+        async fn serve(self, mut s: DuplexStream) {
+            loop {
+                let Ok(len) = s.read_u32().await else { return };
+                let mut req = vec![0u8; len as usize];
+                if s.read_exact(&mut req).await.is_err() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(3)).await;
+                let resp = self.apply(&req);
+                let mut frame = (resp.len() as u32).to_be_bytes().to_vec();
+                frame.extend_from_slice(&resp);
+                if s.write_all(&frame).await.is_err() {
+                    return;
+                }
+            }
+        }
+
+        fn apply(&self, req: &[u8]) -> Vec<u8> {
+            let op = req[0];
+            let ks_len = u16::from_be_bytes([req[1], req[2]]) as usize;
+            let ks = String::from_utf8(req[3..3 + ks_len].to_vec()).unwrap();
+            let (key, next) = decode_bytes(req, 3 + ks_len).unwrap();
+            let id = (ks, key.to_vec());
+            let mut rows = self.rows.lock().unwrap();
+            match op {
+                OP_GET => match rows.get(&id) {
+                    Some(v) => {
+                        let mut out = vec![STATUS_OK];
+                        encode_bytes(&mut out, v);
+                        out
+                    }
+                    None => vec![STATUS_NOT_FOUND],
+                },
+                OP_INSERT => {
+                    let (value, _) = decode_bytes(req, next).unwrap();
+                    rows.insert(id, value.to_vec());
+                    vec![STATUS_OK]
+                }
+                OP_DELETE => {
+                    rows.remove(&id);
+                    vec![STATUS_OK]
+                }
+                other => panic!("fake parent: unexpected opcode {other:#04x}"),
+            }
+        }
+    }
+
+    const CALLERS: usize = 32;
+
+    /// Run `CALLERS` copies of `op` at once and count how many report success.
+    async fn race<F, Fut>(op: F) -> usize
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = bool> + Send + 'static,
+    {
+        let wins = Arc::new(AtomicUsize::new(0));
+        let tasks: Vec<_> = (0..CALLERS)
+            .map(|_| {
+                let fut = op();
+                let wins = wins.clone();
+                tokio::spawn(async move {
+                    if fut.await {
+                        wins.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+        for t in tasks {
+            t.await.unwrap();
+        }
+        wins.load(Ordering::SeqCst)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn take_raw_under_concurrency_admits_exactly_one() {
+        // A refresh token presented by many callers at once: one rotation.
+        let h = FakeParent::default().handle();
+        h.insert_raw(b"refresh:t".to_vec(), b"session".to_vec())
+            .await
+            .unwrap();
+        let wins = race(|| {
+            let h = h.clone();
+            async move { h.take_raw(b"refresh:t".to_vec()).await.unwrap().is_some() }
+        })
+        .await;
+        assert_eq!(wins, 1);
+        assert_eq!(h.get_raw(b"refresh:t".to_vec()).await.unwrap(), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn insert_if_absent_under_concurrency_admits_exactly_one() {
+        let h = FakeParent::default().handle();
+        let wins = race(|| {
+            let h = h.clone();
+            async move { h.insert_if_absent(b"claim".to_vec(), &1u32).await.unwrap() }
+        })
+        .await;
+        assert_eq!(wins, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn insert_raw_if_absent_under_concurrency_admits_exactly_one() {
+        let h = FakeParent::default().handle();
+        let wins = race(|| {
+            let h = h.clone();
+            async move {
+                h.insert_raw_if_absent(b"claim".to_vec(), b"x".to_vec())
+                    .await
+                    .unwrap()
+            }
+        })
+        .await;
+        assert_eq!(wins, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn move_if_unchanged_under_concurrency_admits_exactly_one() {
+        let h = FakeParent::default().handle();
+        let current = serde_json::to_vec(&"v1").unwrap();
+        h.insert(b"old".to_vec(), &"v1").await.unwrap();
+        let wins = race(|| {
+            let h = h.clone();
+            let expected = current.clone();
+            async move {
+                h.move_if_unchanged(b"old".to_vec(), expected, b"new".to_vec(), &"v2")
+                    .await
+                    .unwrap()
+                    == super::super::MoveOutcome::Moved
+            }
+        })
+        .await;
+        assert_eq!(wins, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn swap_under_concurrency_admits_exactly_one() {
+        let h = FakeParent::default().handle();
+        h.insert(b"old".to_vec(), &"v").await.unwrap();
+        let wins = race(|| {
+            let h = h.clone();
+            async move {
+                h.swap(b"old".to_vec(), b"new".to_vec(), &"v")
+                    .await
+                    .unwrap()
+            }
+        })
+        .await;
+        assert_eq!(wins, 1);
+    }
+
+    /// Control: the same harness catches the race the locks close. Without
+    /// a lock, a read-then-delete claim is won by more than one caller.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn harness_detects_an_unlocked_claim() {
+        let h = FakeParent::default().handle();
+        h.insert_raw(b"refresh:t".to_vec(), b"session".to_vec())
+            .await
+            .unwrap();
+        let wins = race(|| {
+            let h = h.clone();
+            async move {
+                let v = h.get_raw(b"refresh:t".to_vec()).await.unwrap();
+                if v.is_some() {
+                    h.remove(b"refresh:t".to_vec()).await.unwrap();
+                }
+                v.is_some()
+            }
+        })
+        .await;
+        assert!(
+            wins > 1,
+            "unlocked read-then-delete should double-claim here, got {wins}"
+        );
     }
 }
