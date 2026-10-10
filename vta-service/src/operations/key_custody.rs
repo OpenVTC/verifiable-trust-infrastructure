@@ -154,13 +154,13 @@ pub async fn load_sign_context(
     })
 }
 
-/// [`derive_record_key`] for a record whose context this request has already
-/// read with [`load_sign_context`].
+/// [`derive_record_key`] for the signing path, which may already have read the
+/// record's context with [`load_sign_context`].
 ///
 /// `context` supplies the base path only when it was read for the record's own
-/// context. Anything else (a context-less record, or a context read for another
-/// key) falls back to [`derive_record_key`]'s own read, so a mismatched
-/// `CustodyContext` can cost a read but never supply a base path.
+/// context. Anything else (`None`, a context-less record, or a context read for
+/// another key) falls back to [`derive_record_key`]'s own read, so a
+/// mismatched `CustodyContext` can cost a read but never supply a base path.
 #[allow(clippy::too_many_arguments)]
 pub async fn derive_record_key_in(
     contexts_ks: &KeyspaceHandle,
@@ -169,10 +169,12 @@ pub async fn derive_record_key_in(
     audit_sink: &vta_audit::SharedAuditSink,
     actor: &str,
     record: &KeyRecord,
-    context: &CustodyContext,
+    context: Option<&CustodyContext>,
     channel: &str,
 ) -> Result<RecordKey, AppError> {
-    if record.context_id.as_deref() != Some(context.context_id.as_str()) {
+    let Some(context) =
+        context.filter(|c| record.context_id.as_deref() == Some(c.context_id.as_str()))
+    else {
         return derive_record_key(
             contexts_ks,
             keys_ks,
@@ -183,7 +185,7 @@ pub async fn derive_record_key_in(
             channel,
         )
         .await;
-    }
+    };
     let base = context.base_path.clone();
     derive_with_base(
         keys_ks, seed_store, audit_sink, actor, record, base, channel,
@@ -684,7 +686,7 @@ mod tests {
                 &h.audit,
                 "did:key:z6MkTenant",
                 r,
-                c,
+                Some(c),
                 "t",
             )
             .await

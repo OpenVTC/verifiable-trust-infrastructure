@@ -1903,34 +1903,17 @@ async fn sign_payload_recorded(
                     algorithm, record.key_type
                 )));
             }
-            let key = match custody_context.as_ref() {
-                Some(context) => {
-                    super::key_custody::derive_record_key_in(
-                        contexts_ks,
-                        keys_ks,
-                        &**seed_store,
-                        audit,
-                        &auth.did,
-                        &record,
-                        context,
-                        channel,
-                    )
-                    .await?
-                }
-                // A context-less record has no base to read.
-                None => {
-                    super::key_custody::derive_record_key(
-                        contexts_ks,
-                        keys_ks,
-                        &**seed_store,
-                        audit,
-                        &auth.did,
-                        &record,
-                        channel,
-                    )
-                    .await?
-                }
-            };
+            let key = super::key_custody::derive_record_key_in(
+                contexts_ks,
+                keys_ks,
+                &**seed_store,
+                audit,
+                &auth.did,
+                &record,
+                custody_context.as_ref(),
+                channel,
+            )
+            .await?;
             match record.key_type {
                 KeyType::P256 => {
                     let p256_secret = key.p256_secret()?;
