@@ -914,10 +914,13 @@ pub fn check_sign_in_portal(
 /// VTI-LNK-053, matched on `type`).
 pub const TRUST_TASK_HTTPS_TYPE: &str = "TrustTaskHTTPS";
 
-/// The `TrustTaskHTTPS` endpoint: this VTC's document door, in full — a
-/// wallet posts each `auth/oob` document to the endpoint as published.
+/// The `TrustTaskHTTPS` endpoint: this VTC's **Trust-Task base**. HTTPS
+/// binding 0.2 §6 makes the advertised `serviceEndpoint` the base and the
+/// request URL `<base>/trust-tasks`, as every consumer in the workspace (and
+/// the `vtc-host` template) composes it, so `{public_url}/v1` reaches the
+/// `POST /v1/trust-tasks` door this service serves.
 pub fn trust_task_https_endpoint(public_url: &str) -> String {
-    format!("{}/v1/trust-tasks", public_url.trim_end_matches('/'))
+    format!("{}/v1", public_url.trim_end_matches('/'))
 }
 
 /// The `TrustTaskHTTPS` DID-document service entry this VTC needs.
@@ -1203,18 +1206,20 @@ mod tests {
     }
 
     #[test]
-    fn trust_task_https_check_needs_the_full_door_url() {
+    fn trust_task_https_check_needs_the_trust_task_base() {
         let did = "did:webvh:x:vtc.example";
         let ok = serde_json::json!({ "service": [trust_task_https_service(did, "https://vtc.example")] });
         assert_eq!(
             ok["service"][0]["serviceEndpoint"],
-            "https://vtc.example/v1/trust-tasks"
+            "https://vtc.example/v1"
         );
         assert!(check_trust_task_https(&ok, did, "https://vtc.example").is_ok());
-        let base_only = serde_json::json!({ "service": [
-            { "id": "x", "type": "TrustTaskHTTPS", "serviceEndpoint": "https://vtc.example/v1" },
+        // The full request URL is not the base: a client appending
+        // `/trust-tasks` to it would reach `/v1/trust-tasks/trust-tasks`.
+        let full_url = serde_json::json!({ "service": [
+            { "id": "x", "type": "TrustTaskHTTPS", "serviceEndpoint": "https://vtc.example/v1/trust-tasks" },
         ]});
-        assert!(check_trust_task_https(&base_only, did, "https://vtc.example").is_err());
+        assert!(check_trust_task_https(&full_url, did, "https://vtc.example").is_err());
     }
 
     #[test]

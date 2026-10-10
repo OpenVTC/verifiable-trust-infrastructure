@@ -761,8 +761,11 @@ every `auth/oob` response is `no-store`. Each step is audited as
 refuses a sign-in link unless the VTC's DID document lists a
 `SignInPortal` service whose origin is the portal's
 (`{"id":"<did>#sign-in-portal","type":"SignInPortal","serviceEndpoint":"<public_url>/members/"}`),
-and sends the trust tasks to its trust-task HTTPS service. `vtc status`
-reports whether the service is there. Adding it is a VTA-side
+and sends the trust tasks to its trust-task HTTPS service
+(`{"id":"<did>#trust-tasks","type":"TrustTaskHTTPS","serviceEndpoint":"<public_url>/v1"}`).
+That endpoint is the Trust-Task base (HTTPS binding 0.2 §6): a client posts
+to `<base>/trust-tasks`, which is `POST /v1/trust-tasks`. `vtc status`
+reports whether both services are there. Adding it is a VTA-side
 `dids edit`, then `cnm did-log install` for a VTC that serves its own
 `did.jsonl`.
 
