@@ -241,6 +241,25 @@ pub enum Capability {
     /// the ACL create/update paths. An administrator scoped to one context
     /// cannot mint holder authority, for themselves or for anyone else.
     PersonaHolder,
+    /// Managing **external accounts** — the `external/accounts/*` Trust Tasks:
+    /// creating an account a VTA holds at a cloud or third-party provider,
+    /// changing its settings, setting its secret, binding consumers to it, and
+    /// its lifecycle.
+    ///
+    /// Distinct from [`Capability::ExternalAuthUse`] because managing an
+    /// account and consuming one are different powers: the integration that
+    /// mints storage credentials for itself must not thereby be able to widen
+    /// its own binding. Derived by [`Role::Admin`] alone. The consent rules in
+    /// the approvals defaults sit on top of it, so holding this capability lets
+    /// a caller *ask* for a change; other administrators decide it.
+    ExternalAccountsManage,
+    /// Consuming an external account — `external/credentials/issue/0.1`.
+    ///
+    /// Necessary and not sufficient: the account must also carry a binding
+    /// naming the caller, which fixes which account, how far, how long and how
+    /// often. Derived by the roles that already hold [`Capability::Sign`],
+    /// because the binding, not the role, is what bounds the grant.
+    ExternalAuthUse,
 }
 
 /// Capabilities that no role derives, and that an entry therefore holds only
@@ -372,6 +391,8 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::SignTrustTask,
             Capability::KeyMint,
             Capability::KeyExport,
+            Capability::ExternalAccountsManage,
+            Capability::ExternalAuthUse,
         ],
         Role::Initiator => vec![
             Capability::VaultRead,
@@ -388,6 +409,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::SignSshsig,
             Capability::SignTrustTask,
             Capability::KeyMint,
+            Capability::ExternalAuthUse,
         ],
         // `application` is the role a memory agent runs as — `vta-agent-memory`
         // grants exactly it, deliberately, so the memory service is not the
@@ -420,6 +442,9 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::MemoryWrite,
             Capability::RoomPresent,
             Capability::RoomOpen,
+            // A storage-hosting integration (a VTC) runs as this role and
+            // consumes the accounts it is bound to. The binding bounds it.
+            Capability::ExternalAuthUse,
         ],
         Role::Reader => vec![Capability::VaultRead, Capability::MemoryRead],
         Role::Monitor => vec![],
@@ -1781,6 +1806,41 @@ mod tests {
 
     /// `sign-sshsig` follows `sign`: a role that can reach the general oracle can
     /// reach the constrained one, so no entry loses a commit signer it had.
+    /// `external/accounts/*` management is an administrator's power only, and
+    /// consuming an account (`external/credentials/issue`) is held by every
+    /// role that can already sign — the binding, not the role, bounds it.
+    #[test]
+    fn external_account_capabilities_split_manage_from_use() {
+        for role in [
+            Role::Admin,
+            Role::Initiator,
+            Role::Application,
+            Role::Reader,
+            Role::Monitor,
+        ] {
+            assert_eq!(
+                role_has_capability(&role, Capability::ExternalAccountsManage),
+                matches!(role, Role::Admin),
+                "{role:?} manage"
+            );
+            assert_eq!(
+                role_has_capability(&role, Capability::ExternalAuthUse),
+                role_has_capability(&role, Capability::Sign),
+                "{role:?} use"
+            );
+        }
+        assert!(!is_additive(Capability::ExternalAccountsManage));
+        assert!(!is_additive(Capability::ExternalAuthUse));
+        assert_eq!(
+            serde_json::to_value(Capability::ExternalAccountsManage).unwrap(),
+            "external-accounts-manage"
+        );
+        assert_eq!(
+            serde_json::to_value(Capability::ExternalAuthUse).unwrap(),
+            "external-auth-use"
+        );
+    }
+
     #[test]
     fn every_role_that_derives_sign_derives_sign_sshsig() {
         for role in [

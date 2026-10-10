@@ -269,6 +269,28 @@ pub const IDEMPOTENCY: &str = "idempotency";
 /// carrying it.
 pub const RELATIONSHIPS: &str = "relationships";
 
+/// External accounts a VTA holds at clouds and third-party providers
+/// (`external/accounts/*`), keyed `acct:<context>:<accountId>`, plus a
+/// `retired:<context>:<accountId>` tombstone per deleted id so an id is never
+/// reused while a provider-side trust policy may still name it.
+///
+/// Settings, bindings, state and the approvals that changed them — never a
+/// secret or a private key. In [`BACKED_UP`]: a restore that came back without
+/// them would strand every integration bound to an account, while the
+/// provider-side setup they describe still exists.
+pub const EXTERNAL_ACCOUNTS: &str = "external_accounts";
+
+/// The secret halves of external accounts whose model holds one
+/// (`s3-static-presign`, `static-secret`), set by
+/// `external/accounts/secret/set/0.1` and wrapped under the seed-derived KEK the
+/// way imported keys are. Keyed `secret:<context>:<accountId>`.
+///
+/// In [`EXCLUDED_FROM_BACKUP`], and that is the point: a VTA backup is portable
+/// and password-protected, so a super-admin holding a backup and its password
+/// could otherwise take a provider secret away. A restored account reports
+/// `providerSetupRequired` until its secret is set again.
+pub const EXTERNAL_SECRETS: &str = "external_secrets";
+
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
 /// asserts the partition stays exhaustive so a newly-added keyspace can't be
@@ -306,6 +328,8 @@ pub const ALL: &[&str] = &[
     TRUST_TASK_PUSHES,
     IDEMPOTENCY,
     RELATIONSHIPS,
+    EXTERNAL_ACCOUNTS,
+    EXTERNAL_SECRETS,
 ];
 
 /// Keyspaces a backup carries, **every row of each**, as a raw dump.
@@ -371,6 +395,9 @@ pub const BACKED_UP: &[&str] = &[
     // Task-consent grants are durable authorizations a re-submitted task
     // consumes; losing them on restore would strand in-flight approvals.
     TASK_CONSENT,
+    // The external accounts a community's integrations are bound to. Their
+    // secrets are not here; see EXTERNAL_SECRETS.
+    EXTERNAL_ACCOUNTS,
 ];
 
 /// Keyspaces deliberately **not** in a backup, each for a stated reason.
@@ -405,6 +432,10 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // a re-handshake (design note D2/D3) and scoped to this VTA's DIDs — so a
     // restore re-drives it, like [`SESSIONS`], rather than carrying it.
     RELATIONSHIPS,
+    // Provider secrets of external accounts. A portable, password-protected
+    // backup must not be a way to take one away; a restored account asks for
+    // its secret again (`providerSetupRequired`).
+    EXTERNAL_SECRETS,
 ];
 
 /// Rows inside a [`BACKED_UP`] keyspace that belong to the **deployment**, not
@@ -609,6 +640,10 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         // in use; refusing tells the operator what to unpick.
         b"contexts" | b"service_state" | b"service_prev_config" => Blocks,
         b"policy" | b"consent_approvers" => Blocks,
+        // An external account's binding names its consumer's DID. Deleting the
+        // consumer while the binding stands leaves a grant of provider access
+        // to an identity nobody can rotate; revoke the binding first.
+        b"external_accounts" => Blocks,
 
         // ---- Cannot be deleted, only revoked -----------------------------
         // Third parties hold copies. Deleting our record achieves nothing but
@@ -621,6 +656,8 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         b"audit" | b"audit_key" => Unrelated,
         b"did_templates" | b"sealed_nonces" | b"backup_bundles" => Unrelated,
         b"drains" | b"bootstrap" | b"idempotency" => Unrelated,
+        // Keyed by account, never by DID; the account row carries the bindings.
+        b"external_secrets" => Unrelated,
 
         _ => return None,
     })
