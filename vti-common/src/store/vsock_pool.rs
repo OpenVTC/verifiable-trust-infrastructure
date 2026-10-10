@@ -35,6 +35,11 @@ use crate::error::AppError;
 /// parent can make the enclave allocate.
 pub(crate) const MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024;
 
+/// Largest request coalesced with its length prefix into one write. Storage
+/// requests are almost all far below this; the rare large value (a backup
+/// bundle chunk) is not copied.
+const COALESCE_MAX: usize = 64 * 1024;
+
 /// A bidirectional byte stream a storage connection runs over.
 pub(crate) trait FrameStream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> FrameStream for T {}
@@ -122,15 +127,28 @@ impl ConnectionPool {
 async fn round_trip(stream: &mut BoxStream, payload: &[u8]) -> Result<Vec<u8>, AppError> {
     let len = u32::try_from(payload.len())
         .map_err(|_| AppError::Internal("storage request too large".into()))?;
-    // One write per frame: on an unbuffered vsock stream every write is its
-    // own packet across the enclave boundary.
-    let mut frame = Vec::with_capacity(4 + payload.len());
-    frame.extend_from_slice(&len.to_be_bytes());
-    frame.extend_from_slice(payload);
-    stream
-        .write_all(&frame)
-        .await
-        .map_err(AppError::vsock("vsock write"))?;
+    // On an unbuffered vsock stream every write is its own packet across the
+    // enclave boundary, so a small frame goes out as one write. Above
+    // `COALESCE_MAX` the frame spans many packets whatever we do, and copying
+    // it just to save the header's packet costs more than it saves.
+    if payload.len() <= COALESCE_MAX {
+        let mut frame = Vec::with_capacity(4 + payload.len());
+        frame.extend_from_slice(&len.to_be_bytes());
+        frame.extend_from_slice(payload);
+        stream
+            .write_all(&frame)
+            .await
+            .map_err(AppError::vsock("vsock write"))?;
+    } else {
+        stream
+            .write_all(&len.to_be_bytes())
+            .await
+            .map_err(AppError::vsock("vsock write"))?;
+        stream
+            .write_all(payload)
+            .await
+            .map_err(AppError::vsock("vsock write"))?;
+    }
     stream
         .flush()
         .await
@@ -350,6 +368,16 @@ mod tests {
         assert_eq!(resp, b"retry");
         assert_eq!(server.connects.load(Ordering::SeqCst), 2);
         assert_eq!(pool.idle_len(), 1, "only the working connection is kept");
+    }
+
+    #[tokio::test]
+    async fn test_large_request_round_trips_without_coalescing() {
+        // Above COALESCE_MAX the header and payload go as two writes; the
+        // echo server must still see one well-formed frame.
+        let pool = Server::default().pool(1);
+        let big = vec![0xA5u8; COALESCE_MAX + 1];
+        let resp = pool.request(&big).await.expect("request");
+        assert_eq!(resp, big);
     }
 
     #[tokio::test]
