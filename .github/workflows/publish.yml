@@ -29,7 +29,10 @@ name: Release-plz
 
 on:
   push:
-    branches: [main]
+    # release/** — a named release's branch publishes its own crate patches
+    # (RELEASES.md). Only the `release` job runs there; its versions come from
+    # scripts/prepare-release-branch.py, not the Release PR.
+    branches: [main, "release/**"]
   # Recovery hatch. release-plz publishes the workspace in one pass, and a
   # single crate failing leaves the release *half-shipped* — consumers can
   # resolve the crates that made it and not the ones that did not.
@@ -232,6 +235,45 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth3.outputs.token }}
 
+      # On a release branch, once its crates are out: tag the named release
+      # `RELEASE` names (dogwood.rc1, dogwood.0, dogwood.3 …) if it is not
+      # tagged yet, with the bill of materials — every published crate's
+      # version at this commit — as its notes. A push that changes nothing
+      # (a backport, before the prep PR) finds the tag already there.
+      #
+      # Never "latest": that belongs to main's line. An rc is a prerelease.
+      - name: Tag the named release
+        if: success() && startsWith(github.ref, 'refs/heads/release/') && inputs.package == ''
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rel=$(cat RELEASE)
+          [[ "$rel" =~ ^[a-z]+\.(rc[0-9]+|[0-9]+)$ ]] || { echo "::error::RELEASE holds '$rel'"; exit 1; }
+          if gh release view "$rel" >/dev/null 2>&1; then
+            echo "$rel is already tagged"; exit 0
+          fi
+          {
+            echo "Named release **$rel**, \`${GITHUB_REF_NAME}\` at \`${GITHUB_SHA}\`. See RELEASES.md."
+            echo
+            echo "| Crate | Version |"
+            echo "|---|---|"
+            python3 - <<'PY'
+          import json, subprocess
+          meta = json.loads(subprocess.run(
+              ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+              capture_output=True, text=True, check=True).stdout)
+          for p in sorted(meta["packages"], key=lambda p: p["name"]):
+              if p.get("publish") is None:
+                  n, v = p["name"], p["version"]
+                  print(f"| [`{n}`](https://crates.io/crates/{n}/{v}) | {v} |")
+          PY
+          } > "$RUNNER_TEMP/notes.md"
+          pre=()
+          [[ "$rel" == *.rc* ]] && pre=(--prerelease)
+          gh release create "$rel" --target "$GITHUB_SHA" --title "$rel" \
+            --notes-file "$RUNNER_TEMP/notes.md" --latest=false "${pre[@]}"
+
   release-plz-pr:
     name: Release-plz PR
     # Push, plus the recovery hatch. The Release PR tracks what has landed on
@@ -240,7 +282,10 @@ jobs:
     # note below) the PR is left describing an older main, and a dispatch is
     # then the cheapest way to bring it back in line without re-running a
     # specific job by id.
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    #
+    # main only: on a release branch the Release PR would derive versions from
+    # main's newer crates on crates.io (scripts/prepare-release-branch.py).
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     # 60, not 30, because this job's cost scales with **how many crates changed
     # since their last release** — release-plz semver-checks each one against

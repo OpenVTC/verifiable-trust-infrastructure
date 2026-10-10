@@ -103,6 +103,7 @@ Before submitting a pull request:
 - [ ] Changes to the authority model, client lifecycle, operation surface, transports, sessions, credentials or audit conform to the [VTI specification](https://trustoverip.github.io/dtgwg-vti-spec/), and cite the requirement identifiers they implement
 - [ ] Any divergence from the specification is recorded in its divergence register (Appendix F), not left implicit
 - [ ] PR title is a conventional commit — it becomes the changelog entry (see [Changelog](#changelog))
+- [ ] PR targets `main` — not `nightly` or a `release/*` branch. A fix a supported release needs is backported with the `backport release/<name>` label after merge (see [RELEASES.md](RELEASES.md))
 - [ ] No `version = ` edits in any `Cargo.toml` — the Release PR assigns versions (see [RELEASING.md](RELEASING.md))
 - [ ] Commits are signed off (DCO: `git commit -s`) — required for all outside contributions
 

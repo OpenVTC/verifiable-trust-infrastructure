@@ -7,6 +7,11 @@ release is cut. Releases are cut by merging a **Release PR** that
 Contributing rather than releasing? You only need
 [What this means for contributors](#what-this-means-for-contributors).
 
+This file is about publishing crates from `main`. **Named releases** — Dogwood,
+Eucalyptus, the release branches operators deploy and the patches they take —
+are in [RELEASES.md](RELEASES.md); [Release branches](#release-branches) below
+covers how their crates publish.
+
 ---
 
 ## What this means for contributors
@@ -63,6 +68,10 @@ blocks when the bump is too small. It does not depend on anyone noticing.
 explanation you write for reviewers is the same text an external consumer reads
 on crates.io. This is the whole changelog process now — there are no fragment
 files to add and nothing to collate.
+
+**Fixing something a supported release also needs?** Land it on `main`, then
+label the merged PR `backport release/<name>`; a bot opens the cherry-pick on
+that branch. See [RELEASES.md](RELEASES.md#what-goes-on-a-release-branch).
 
 > **Changed from the old flow:** `changelog.d/` fragments are gone, along with
 > `check-changelogs.sh`, `collate-changelog.sh` and the per-PR version bump.
@@ -193,6 +202,38 @@ CI's `check-release-bump-sizes.py` fails the Release PR when this happens and
 names the crate. Fix it in the Release PR: raise that crate to the next breaking
 version and update its dependents' requirements (`check-workspace-version-reqs.py`
 points at any you miss).
+
+### 5. A release branch owns its compatibility lines
+
+When a named release is cut, every published crate's line at the cut (0.38 for
+`vta-sdk` 0.38.2) belongs to its branch, which publishes its patches there.
+`check-release-line-ownership.py` fails a Release PR that proposes a version in
+one of those lines (`releases/*.toml`); `fix-release-bump-sizes.py` raises the
+crate to its next breaking version, as in step 4.
+
+---
+
+## Release branches
+
+`publish.yml` also runs on `release/**`, and its `release` job publishes from
+there exactly as from `main`: whatever version in the manifests is not on
+crates.io yet. Two things differ, both because release-plz derives a Release PR
+from the **newest** version of each crate on crates.io — on a release branch,
+`main`'s line:
+
+- **No Release PR.** Versions on a release branch come from
+  `scripts/prepare-release-branch.py`, run by the *Prepare a named release*
+  workflow: the next patch of each changed published crate, checked with
+  `cargo semver-checks --release-type patch`, its changelog rendered from
+  `cliff.toml`. That workflow is the one sanctioned way a `version =` changes on
+  a release branch.
+- **Not "latest".** `cut-release.py` sets `git_release_latest = false` in the
+  branch's `release-plz.toml`, so a patch's GitHub Releases do not displace
+  `main`'s.
+
+After a release branch's crates are published, the same job tags the named
+release from the branch's `RELEASE` file. The procedures are in
+[RELEASES.md](RELEASES.md#procedures).
 
 ---
 

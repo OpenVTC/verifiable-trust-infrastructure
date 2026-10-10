@@ -15,7 +15,8 @@ name: PR title
 # depends on PR metadata is the one that reruns when PR metadata changes.
 on:
   pull_request:
-    branches: [main]
+    # Backports and release-branch prep PRs land in the branch's changelog too.
+    branches: [main, "release/**"]
     types: [opened, edited, synchronize, reopened]
 
 permissions:
