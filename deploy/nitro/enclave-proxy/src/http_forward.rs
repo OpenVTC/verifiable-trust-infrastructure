@@ -7,9 +7,9 @@
 //! the inbound one used to be too. That is the correct shape for a tunnel,
 //! and the wrong shape for the *only* hop that still knows who the client is.
 //!
-//! The enclave VTA sees its peer as `127.0.0.1`, because the last leg is
-//! `socat VSOCK-LISTEN:5100 → TCP-CONNECT:127.0.0.1:8100` inside the enclave
-//! (see `enclave-entrypoint.sh`). So every request looks identical to it, and
+//! The enclave VTA serves REST on vsock and sees every request as coming from
+//! its parent, reported as `0.0.0.3` (`vti_common::rate_limit::
+//! VSOCK_PARENT_PEER`). So every request looks identical to it, and
 //! its per-IP rate limiters — `/auth`, `/bootstrap/request`, the public DID
 //! log — collapse into one bucket that any single client can exhaust for
 //! everyone.
@@ -18,7 +18,7 @@
 //! it and the limiter reads `X-Forwarded-For` for requests arriving from that
 //! address. That config is only safe if something on the path actually
 //! *replaces* the header. A byte bridge does not — it forwards whatever the
-//! client typed — so trusting `127.0.0.1` over a byte bridge means every
+//! client typed — so trusting `0.0.0.3` over a byte bridge means every
 //! client can pick its own rate-limit bucket, which is worse than the shared
 //! bucket it was meant to fix.
 //!

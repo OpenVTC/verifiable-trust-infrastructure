@@ -9,8 +9,9 @@
 #   docker build -f Dockerfile.nitro -t vta-nitro .
 #   nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif
 #
-# Networking: Nitro Enclaves have NO direct network access. The entrypoint
-# starts socat-based vsock proxies inside the enclave to bridge TCP<->vsock.
+# Networking: Nitro Enclaves have NO direct network access. The VTA serves
+# inbound REST on vsock itself (VTA_REST_VSOCK_PORT, parent only); the
+# entrypoint starts socat-based vsock proxies for the outbound channels.
 # The parent EC2 instance runs parent-proxy.sh to bridge vsock<->internet.
 #
 # CONFIG MODES (BAKE_CONFIG build-arg):

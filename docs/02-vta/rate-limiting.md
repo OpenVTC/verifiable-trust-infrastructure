@@ -97,15 +97,24 @@ restart (`POST /vta/restart` or a process restart). The quotas below do not.
 ### Inside a Nitro enclave
 
 The TEE deployment is the case where this is easiest to get wrong. The enclave
-VTA is reached over vsock and then `socat … TCP-CONNECT:127.0.0.1:8100`, so its
-peer is `127.0.0.1` for every client in the world.
+VTA serves REST on vsock itself and accepts only its parent instance (CID 3),
+which it reports as the peer `0.0.0.3` — for every client in the world.
+`0.0.0.3` is never a valid TCP source address, so no TCP peer and nothing
+inside the enclave can present it.
 
-`deploy/nitro/config.toml` therefore ships `trust_xff_cidrs = ["127.0.0.1/32"]`,
-and that is safe **only** with `deploy/nitro/enclave-proxy` on the parent: it
+`deploy/nitro/config.toml` therefore ships `trust_xff_cidrs = ["0.0.0.3/32"]`,
+which trusts the parent and nothing else, and that is safe **only** with
+`deploy/nitro/enclave-proxy` on the parent: it
 terminates HTTP/1.1, strips every client-supplied identity header and sets
 `X-Forwarded-For` from the address it accepted the connection from. The
 socat-based `parent-proxy.sh` cannot do this, and refuses to start against a
 config that sets `trust_xff_cidrs`.
+
+Before the VTA served vsock directly, an in-enclave `socat` made the peer
+`127.0.0.1` and the configs trusted `127.0.0.1/32` — which anything else inside
+the enclave could also have been. A config that still says so now trusts
+nothing that arrives (one shared bucket, never a client-chosen one), and the
+VTA logs a warning at boot naming the replacement.
 
 ## Units: an interval is seconds per token, not a rate
 
