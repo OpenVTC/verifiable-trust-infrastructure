@@ -19,6 +19,8 @@ use trust_tasks_rs::specs::rooms::blobs::upload::begin::v0_1 as upload_begin;
 use trust_tasks_rs::specs::rooms::blobs::upload::chunk::v0_1 as upload_chunk;
 use trust_tasks_rs::specs::rooms::blobs::upload::commit::v0_1 as upload_commit;
 use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
+use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2_spec;
+use trust_tasks_rs::specs::rooms::records::list::v0_2 as list_v2_spec;
 use trust_tasks_rs::specs::rooms::records::put::v0_2 as put_v2;
 use trust_tasks_rs::{DeclaredErrorCode, ErrorPayload, RejectReason, TrustTask, TrustTaskCode};
 use uuid::Uuid;
@@ -52,6 +54,10 @@ pub(crate) const DOWNLOAD_CHUNK_TYPE: &str =
 pub(crate) const INFO_TYPE: &str = <rooms_info::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/put/0.2`.
 pub(crate) const PUT_V2_TYPE: &str = <put_v2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/get/0.2`.
+pub(crate) const GET_V2_TYPE: &str = <get_v2_spec::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/list/0.2`.
+pub(crate) const LIST_V2_TYPE: &str = <list_v2_spec::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// Parse `payload` as the generated type `P`, or refuse it as malformed.
 fn parse<P: serde::de::DeserializeOwned>(
@@ -145,14 +151,14 @@ fn general(doc: &TrustTask<Value>, e: BlobError) -> Answer {
 /// Read the presentation and room, verify the chain for `action`, and return
 /// the room, the authenticated presenter and the authorization.
 ///
-/// A chain that does not confer `action` is answered with `not_authorized`, the
-/// code the task declares for it.
+/// A chain that does not confer `action` is the framework's standard
+/// `permissionDenied`, as for every `rooms/*` task: the family declares no
+/// task-specific code that would shadow it.
 async fn authorize(
     state: &HostState,
     doc: &TrustTask<Value>,
     payload: &Value,
     action: Action,
-    not_authorized: DeclaredErrorCode,
 ) -> Result<(Room, String, AuthorizedAction), Answer> {
     let presentation: AuthorityPresentation =
         serde_json::from_value(payload["presentation"].clone()).map_err(|e| {
@@ -173,10 +179,7 @@ async fn authorize(
         .map_err(|e| from_app_error(doc, &e))?;
     let authorized = authz::authorize(&room, &presentation, action, &presenter, now(), &verifier)
         .await
-        .map_err(|e| match e {
-            AppError::Forbidden(reason) => coded(doc, not_authorized, reason, None),
-            other => from_app_error(doc, &other),
-        })?;
+        .map_err(|e| from_app_error(doc, &e))?;
     Ok((room, presenter, authorized))
 }
 
@@ -185,11 +188,10 @@ pub(crate) async fn begin(state: &HostState, doc: &TrustTask<Value>, payload: Va
     if let Err(a) = parse::<upload_begin::Payload>(doc, &payload) {
         return a;
     }
-    let (room, presenter, authorized) =
-        match authorize(state, doc, &payload, Action::Write, codes::NOT_AUTHORIZED).await {
-            Ok(r) => r,
-            Err(a) => return a,
-        };
+    let (room, presenter, authorized) = match authorize(state, doc, &payload, Action::Write).await {
+        Ok(r) => r,
+        Err(a) => return a,
+    };
     let manifest = match Manifest::parse(&payload["manifest"]) {
         Ok(m) => m,
         Err(e) => return coded(doc, codes::INVALID_MANIFEST, e.to_string(), None),
@@ -199,13 +201,22 @@ pub(crate) async fn begin(state: &HostState, doc: &TrustTask<Value>, payload: Va
         .begin(&room, &presenter, authorized.member(), manifest)
         .await
     {
-        Ok(b) => answer::<upload_begin::Response>(
-            doc,
-            json!({
+        Ok(b) => {
+            let mut body = json!({
                 "uploadId": b.upload_id.to_string(),
                 "missing": b.missing,
                 "expiresAt": b.expires_at,
-            }),
+            });
+            if b.already_committed {
+                body["alreadyCommitted"] = json!(true);
+            }
+            answer::<upload_begin::Response>(doc, body)
+        }
+        Err(e @ BlobError::TooManyUploads { max_open }) => coded(
+            doc,
+            codes::TOO_MANY_UPLOADS,
+            e.to_string(),
+            Some(json!({ "maxOpen": max_open })),
         ),
         Err(BlobError::FilesDisabled) => coded(
             doc,
@@ -336,11 +347,10 @@ pub(crate) async fn get(state: &HostState, doc: &TrustTask<Value>, payload: Valu
         Ok(p) => p,
         Err(a) => return a,
     };
-    let (room, presenter, _authorized) =
-        match authorize(state, doc, &payload, Action::Read, codes::NOT_AUTHORIZED).await {
-            Ok(r) => r,
-            Err(a) => return a,
-        };
+    let (room, presenter, _authorized) = match authorize(state, doc, &payload, Action::Read).await {
+        Ok(r) => r,
+        Err(a) => return a,
+    };
     match state
         .files
         .open_download(&room.room_id, &presenter, req.blob_ref.as_str())
@@ -403,15 +413,13 @@ pub(crate) async fn download_chunk(
 }
 
 pub(crate) async fn info(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    use rooms_info::error_codes as codes;
     if let Err(a) = parse::<rooms_info::Payload>(doc, &payload) {
         return a;
     }
-    let (room, _presenter, authorized) =
-        match authorize(state, doc, &payload, Action::Read, codes::NOT_AUTHORIZED).await {
-            Ok(r) => r,
-            Err(a) => return a,
-        };
+    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
+        Ok(r) => r,
+        Err(a) => return a,
+    };
     let limits = state.files.effective_limits(&room);
     let room_usage = match state.files.room_usage(&room.room_id).await {
         Ok(u) => u,
@@ -472,14 +480,99 @@ pub(crate) async fn put_v2(
     super::put_with_blobs(state, doc, body, Some(blobs)).await
 }
 
-/// The `blobNotFound` refusal `rooms/records/put` 0.2 declares.
-pub(crate) fn blob_not_found(doc: &TrustTask<Value>) -> Answer {
-    coded(
-        doc,
-        put_v2::error_codes::BLOB_NOT_FOUND,
-        "a `blobs` entry names no blob committed in this room",
-        None,
-    )
+/// The request members a 0.1 read shares with its 0.2 successor: everything
+/// but `ext`, which the 0.1 body does not take.
+fn without_ext(mut payload: Value) -> Value {
+    if let Some(obj) = payload.as_object_mut() {
+        obj.remove("ext");
+    }
+    payload
+}
+
+/// `rooms/records/get/0.2`: the 0.1 read, whose answer also names the
+/// record's blobs.
+pub(crate) async fn get_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    if let Err(a) = parse::<get_v2_spec::Payload>(doc, &payload) {
+        return a;
+    }
+    super::get_versioned(state, doc, without_ext(payload), true).await
+}
+
+/// `rooms/records/list/0.2`: the 0.1 listing, each row naming its blobs.
+pub(crate) async fn list_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    if let Err(a) = parse::<list_v2_spec::Payload>(doc, &payload) {
+        return a;
+    }
+    super::list_versioned(state, doc, without_ext(payload), true).await
+}
+
+/// A 0.1 get response with `blobs` added, answered as 0.2.
+///
+/// `blobs` is exactly what the stored version names: absent when it names
+/// none, which includes a retraction (which released them) and a 0.1 write.
+pub(crate) async fn get_v2_response(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    room_id: &str,
+    key: &str,
+    response: impl serde::Serialize,
+) -> Answer {
+    let mut body = match serde_json::to_value(response) {
+        Ok(v) => v,
+        Err(e) => return from_app_error(doc, &AppError::Serialization(e)),
+    };
+    match state.files.record_blobs(room_id, key).await {
+        Ok(blobs) if !blobs.is_empty() => body["blobs"] = json!(blobs),
+        Ok(_) => {}
+        Err(e) => return from_app_error(doc, &e),
+    }
+    answer::<get_v2_spec::Response>(doc, body)
+}
+
+/// A 0.1 listing with each row's `blobs` added, answered as 0.2.
+pub(crate) async fn list_v2_response(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    room_id: &str,
+    response: impl serde::Serialize,
+) -> Answer {
+    let mut body = match serde_json::to_value(response) {
+        Ok(v) => v,
+        Err(e) => return from_app_error(doc, &AppError::Serialization(e)),
+    };
+    if let Some(rows) = body["records"].as_array_mut() {
+        for row in rows {
+            let Some(key) = row["key"].as_str().map(str::to_string) else {
+                continue;
+            };
+            match state.files.record_blobs(room_id, &key).await {
+                Ok(blobs) if !blobs.is_empty() => row["blobs"] = json!(blobs),
+                Ok(_) => {}
+                Err(e) => return from_app_error(doc, &e),
+            }
+        }
+    }
+    answer::<list_v2_spec::Response>(doc, body)
+}
+
+/// Why `rooms/records/put` 0.2 refused a record's `blobs`, as that task's
+/// declared codes.
+pub(crate) fn record_blobs_refused(doc: &TrustTask<Value>, e: BlobError) -> Answer {
+    match e {
+        BlobError::NotFound => coded(
+            doc,
+            put_v2::error_codes::BLOB_NOT_FOUND,
+            "a `blobs` entry names no blob committed in this room",
+            None,
+        ),
+        BlobError::LimitExceeded(l) => coded(
+            doc,
+            put_v2::error_codes::LIMIT_EXCEEDED,
+            BlobError::LimitExceeded(l.clone()).to_string(),
+            Some(l.details()),
+        ),
+        other => general(doc, other),
+    }
 }
 
 #[cfg(test)]
@@ -635,7 +728,8 @@ mod tests {
         let (status, begun) = begin(h, f, b).await;
         assert_eq!(status, StatusCode::OK, "{begun}");
         let id = begun["uploadId"].as_str().unwrap().to_string();
-        for i in 0..b.bytes.len().div_ceil(CHUNK) {
+        for i in begun["missing"].as_array().unwrap() {
+            let i = i.as_u64().unwrap() as usize;
             let (status, out) =
                 call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, b, i), &f.owner).await;
             assert_eq!(status, StatusCode::OK, "{out}");
@@ -878,13 +972,22 @@ mod tests {
         assert_eq!(info(&h, &f).await["usage"]["room"]["files"], json!(1));
     }
 
-    /// Uploading the same file twice stores and charges it once.
+    /// Uploading the same file twice stores and charges it once: begin says
+    /// it is already there, reserves nothing, and commit answers with it.
     #[tokio::test]
     async fn a_second_upload_of_a_committed_blob_is_not_stored_twice() {
         let h = host(HostLimits::default());
         let f = room(&h).await;
         let b = blob(CHUNK + 1, 3);
         upload(&h, &f, &b).await;
+        let (status, begun) = begin(&h, &f, &b).await;
+        assert_eq!(status, StatusCode::OK, "{begun}");
+        assert_eq!(begun["alreadyCommitted"], json!(true));
+        assert_eq!(begun["missing"], json!([]));
+        assert_eq!(
+            info(&h, &f).await["usage"]["room"]["reservedFiles"],
+            json!(0)
+        );
         let again = upload(&h, &f, &b).await;
         assert_eq!(again, b.blob_ref);
         let usage = info(&h, &f).await["usage"]["room"].clone();
@@ -1019,7 +1122,11 @@ mod tests {
             &f.successor,
         )
         .await;
-        assert_eq!(code(&out), "rooms/blobs/upload/begin:notAuthorized");
+        assert_eq!(
+            code(&out),
+            "permissionDenied",
+            "the standard code, not a shadow"
+        );
 
         for i in 0..2 {
             call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, &b, i), &f.owner).await;
@@ -1158,5 +1265,154 @@ mod tests {
         upload(&h, &f, &blob(CHUNK, 17)).await;
         assert_eq!(h.state.files().sweep().await.unwrap().collected, 1);
         assert_eq!(info(&h, &f).await["usage"]["room"]["files"], json!(0));
+    }
+
+    /// In another room, the same BlobRef is uploaded again: another room's
+    /// copy is never reported.
+    #[tokio::test]
+    async fn another_rooms_copy_is_never_reported() {
+        let h = host(HostLimits::default());
+        let (a, other) = (room(&h).await, room(&h).await);
+        let b = blob(CHUNK, 20);
+        upload(&h, &a, &b).await;
+        let (_, begun) = begin(&h, &other, &b).await;
+        assert!(begun.get("alreadyCommitted").is_none(), "{begun}");
+        assert_eq!(begun["missing"], json!([0]));
+    }
+
+    #[tokio::test]
+    async fn too_many_open_uploads_is_its_own_retryable_refusal() {
+        let h = host(HostLimits::default());
+        let f = room(&h).await;
+        for seed in 0..3 {
+            let (status, out) = begin(&h, &f, &blob(CHUNK, 30 + seed)).await;
+            assert_eq!(status, StatusCode::OK, "{out}");
+        }
+        let (_, out) = begin(&h, &f, &blob(CHUNK, 40)).await;
+        assert_eq!(code(&out), "rooms/blobs/upload/begin:tooManyUploads");
+        assert_eq!(out["retryable"], json!(true));
+        assert_eq!(out["details"]["maxOpen"], json!(3));
+    }
+
+    /// For `maxFileBytes` the refusal names where the smallest limit was set,
+    /// not merely the narrowest scope that has one.
+    #[tokio::test]
+    async fn the_smallest_file_limit_is_the_one_named() {
+        let h = host(HostLimits {
+            member: ScopeLimits {
+                max_file_bytes: Some(CHUNK as u64 * 4),
+                ..Default::default()
+            },
+            room: ScopeLimits {
+                max_file_bytes: Some(CHUNK as u64),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let f = room(&h).await;
+        let (_, out) = begin(&h, &f, &blob(CHUNK * 5, 41)).await;
+        assert_eq!(out["details"]["scope"], json!("room"));
+        assert_eq!(out["details"]["limit"], json!(CHUNK));
+    }
+
+    /// Reviving an orphan charges it again and is checked against limits.
+    #[tokio::test]
+    async fn re_referencing_an_orphan_is_charged_and_checked() {
+        let h = host(HostLimits {
+            member: ScopeLimits {
+                max_files: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let f = room(&h).await;
+        let (a, b) = (blob(CHUNK, 50), blob(CHUNK, 51));
+        let ra = upload(&h, &f, &a).await;
+        put_record(&h, &f, "a", &[&ra]).await;
+        put_record(&h, &f, "a", &[]).await; // orphaned: the member has room again
+        let rb = upload(&h, &f, &b).await;
+        put_record(&h, &f, "b", &[&rb]).await;
+
+        let (_, out) = put_record(&h, &f, "a", &[&ra]).await;
+        assert_eq!(code(&out), "rooms/records/put:limitExceeded", "{out}");
+        assert_eq!(out["details"]["scope"], json!("member"));
+        assert_eq!(
+            info(&h, &f).await["usage"]["member"]["usage"]["files"],
+            json!(1)
+        );
+
+        // Room made: the revival is charged.
+        put_record(&h, &f, "b", &[]).await;
+        let (status, out) = put_record(&h, &f, "a", &[&ra]).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(
+            info(&h, &f).await["usage"]["member"]["usage"]["files"],
+            json!(1)
+        );
+    }
+
+    /// get and list 0.2 name the blobs a record keeps alive; 0.1 cannot.
+    #[tokio::test]
+    async fn reads_at_0_2_name_the_records_blobs() {
+        let h = host(HostLimits::default());
+        let f = room(&h).await;
+        let b = blob(CHUNK, 60);
+        let r = upload(&h, &f, &b).await;
+        put_record(&h, &f, "with-file", &[&r]).await;
+        put_record(&h, &f, "without", &[]).await;
+
+        let (status, got) = call(
+            &h.app,
+            GET_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "with-file", "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        assert_eq!(got["blobs"], json!([r]));
+
+        let (status, listed) = call(
+            &h.app,
+            LIST_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{listed}");
+        let rows = listed["records"].as_array().unwrap();
+        let row = |k: &str| rows.iter().find(|r| r["key"] == json!(k)).unwrap().clone();
+        assert_eq!(row("with-file")["blobs"], json!([r]));
+        assert!(row("without").get("blobs").is_none());
+
+        let (_, old) = call(
+            &h.app,
+            vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "with-file", "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert!(old.get("blobs").is_none(), "0.1 has no such member: {old}");
+    }
+
+    /// A document larger than its specification bounds is refused before it
+    /// is acted on.
+    #[tokio::test]
+    async fn an_oversized_document_is_refused_at_its_bound() {
+        let h = host(HostLimits::default());
+        let f = room(&h).await;
+        let (_, out) = call(
+            &h.app,
+            UPLOAD_BEGIN_TYPE,
+            json!({
+                "roomId": f.room.room_id,
+                "presentation": f.as_owner(),
+                "manifest": blob(CHUNK, 70).manifest,
+                "padding": "x".repeat(340_000),
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(code(&out), "malformedRequest");
+        assert!(out["message"].as_str().unwrap().contains("327680"), "{out}");
     }
 }
