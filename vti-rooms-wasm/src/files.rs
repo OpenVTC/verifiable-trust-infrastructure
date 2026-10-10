@@ -192,26 +192,50 @@ impl FileSealer {
 
 /// Opens one file, chunk by chunk, as it downloads.
 ///
-/// **Not received until [`FileOpener::finish`] succeeds.** Each chunk authenticates, but the
-/// file is the one its author signed only once the digest checks; write to a temporary
-/// place and show it after `finish`.
+/// **What [`FileOpener::push`] returns is provisional.** Each chunk authenticates under this
+/// file's key, but the file is the one its author signed only once the digest checks. The
+/// caller writes the plaintext to a temporary destination and releases it — saves it under
+/// its final name, renders it, hands it to a page — only after [`FileOpener::finish`] has
+/// returned and [`FileOpener::verified`] is `true`. On any error it discards the
+/// destination. `FileManifest`'s *Reading* rules; `data-rooms-files.md` §4.1.
 #[wasm_bindgen]
 pub struct FileOpener {
     inner: Option<StreamOpener>,
+    verified: bool,
+    manifest: Option<FileManifest>,
+}
+
+/// What a verified [`FileOpener::finish`] reports.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Verified<'a> {
+    verified: bool,
+    size: u64,
+    digest: &'a str,
 }
 
 impl FileOpener {
     /// Open with a key the member's VTA released. **Extension context only.**
+    ///
+    /// `blob_manifest` is what the host served with the download (`rooms/blobs/get`); it is
+    /// checked against the author's `file_manifest` before any byte is opened.
     pub fn with_key(
         room_id: &str,
         key: &str,
         file_manifest: &str,
-        chunk_count: u64,
+        blob_manifest: &str,
     ) -> Result<FileOpener, String> {
-        let file: FileManifest = serde_json::from_str(file_manifest).map_err(err)?;
-        let inner =
-            StreamOpener::new(&decode_key(key)?, room_id, &file, chunk_count).map_err(err)?;
-        Ok(FileOpener { inner: Some(inner) })
+        let (file, blob) = manifests(file_manifest, blob_manifest)?;
+        let inner = StreamOpener::new(&decode_key(key)?, room_id, &file, &blob).map_err(err)?;
+        Ok(FileOpener::from_parts(inner, file))
+    }
+
+    fn from_parts(inner: StreamOpener, file: FileManifest) -> FileOpener {
+        FileOpener {
+            inner: Some(inner),
+            verified: false,
+            manifest: Some(file),
+        }
     }
 
     /// Open the next chunk; returns its plaintext with any padding removed.
@@ -223,14 +247,37 @@ impl FileOpener {
             .map_err(err)
     }
 
-    /// Check that every chunk arrived and the file is the one its author signed.
-    pub fn finish(&mut self) -> Result<(), String> {
+    /// Check that every chunk arrived, the padding is zero and the plaintext is the one its
+    /// author signed. Returns `{ verified: true, size, digest }` as JSON; any failure is an
+    /// error and leaves [`FileOpener::verified`] `false`.
+    pub fn finish(&mut self) -> Result<String, String> {
         self.inner
             .take()
             .ok_or("this file is already finished")?
             .finish()
-            .map_err(err)
+            .map_err(err)?;
+        self.verified = true;
+        let file = self.manifest.as_ref().ok_or("no manifest")?;
+        serde_json::to_string(&Verified {
+            verified: true,
+            size: file.size,
+            digest: &file.digest,
+        })
+        .map_err(err)
     }
+
+    /// Whether [`FileOpener::finish`] has verified the file. Until it is `true`, nothing
+    /// [`FileOpener::push`] returned may be released.
+    pub fn verified(&self) -> bool {
+        self.verified
+    }
+}
+
+fn manifests(file: &str, blob: &str) -> Result<(FileManifest, BlobManifest), String> {
+    Ok((
+        serde_json::from_str(file).map_err(err)?,
+        serde_json::from_str(blob).map_err(err)?,
+    ))
 }
 
 #[wasm_bindgen]
@@ -241,9 +288,9 @@ impl FileOpener {
         room_id: &str,
         key: &str,
         file_manifest: &str,
-        chunk_count: u64,
+        blob_manifest: &str,
     ) -> Result<FileOpener, JsError> {
-        Self::with_key(room_id, key, file_manifest, chunk_count).map_err(js)
+        Self::with_key(room_id, key, file_manifest, blob_manifest).map_err(js)
     }
 
     /// See [`FileOpener::push`].
@@ -254,8 +301,14 @@ impl FileOpener {
 
     /// See [`FileOpener::finish`].
     #[wasm_bindgen(js_name = finish)]
-    pub fn finish_js(&mut self) -> Result<(), JsError> {
+    pub fn finish_js(&mut self) -> Result<String, JsError> {
         self.finish().map_err(js)
+    }
+
+    /// See [`FileOpener::verified`].
+    #[wasm_bindgen(getter, js_name = verified)]
+    pub fn verified_js(&self) -> bool {
+        self.verified()
     }
 }
 
@@ -281,21 +334,24 @@ impl RoomMember {
         FileSealer::from_parts(&key, binding, size, padme, name, media_type)
     }
 
-    /// Start opening a file from its sealed manifest, walking the epoch chain for its key.
+    /// Start opening a file from its sealed manifest and the blob manifest the host served,
+    /// walking the epoch chain for its key.
     pub fn file_opener(
         &mut self,
         file_manifest: &str,
-        chunk_count: u64,
+        blob_manifest: &str,
     ) -> Result<FileOpener, String> {
-        let file: FileManifest = serde_json::from_str(file_manifest).map_err(err)?;
-        let epoch = u32::try_from(file.epoch).map_err(err)?;
+        let (file, blob) = manifests(file_manifest, blob_manifest)?;
+        // Epochs are u64 on the wire and u32 in a room's group; one that does not fit is
+        // refused, never truncated.
+        let epoch = u32::try_from(file.epoch)
+            .map_err(|_| format!("epoch {} is beyond any epoch a room reaches", file.epoch))?;
         let key = self
             .inner
             .file_key_for_open(&file.file_id_bytes().map_err(err)?, epoch)
             .map_err(err)?;
-        let inner =
-            StreamOpener::new(&key, self.inner.room_id(), &file, chunk_count).map_err(err)?;
-        Ok(FileOpener { inner: Some(inner) })
+        let inner = StreamOpener::new(&key, self.inner.room_id(), &file, &blob).map_err(err)?;
+        Ok(FileOpener::from_parts(inner, file))
     }
 }
 
@@ -320,9 +376,9 @@ impl RoomMember {
     pub fn file_opener_js(
         &mut self,
         file_manifest: &str,
-        chunk_count: u64,
+        blob_manifest: &str,
     ) -> Result<FileOpener, JsError> {
-        self.file_opener(file_manifest, chunk_count).map_err(js)
+        self.file_opener(file_manifest, blob_manifest).map_err(js)
     }
 }
 
@@ -366,12 +422,16 @@ mod tests {
         );
 
         let file = manifests["file"].to_string();
-        let mut opener = m.file_opener(&file, chunks.len() as u64).unwrap();
+        let blob = manifests["blob"].to_string();
+        let mut opener = m.file_opener(&file, &blob).unwrap();
         let mut back = Vec::new();
         for c in &chunks {
             back.extend(opener.push(c).unwrap());
         }
-        opener.finish().unwrap();
+        assert!(!opener.verified(), "nothing is verified before finish");
+        let report: serde_json::Value = serde_json::from_str(&opener.finish().unwrap()).unwrap();
+        assert_eq!(report["verified"], true);
+        assert!(opener.verified());
         assert_eq!(back, plain);
     }
 
@@ -400,11 +460,32 @@ mod tests {
             "did:webvh:zRoom",
             &B64.encode(key),
             &manifests["file"].to_string(),
-            1,
+            &manifests["blob"].to_string(),
         )
         .unwrap();
         assert_eq!(opener.push(&out).unwrap(), b"hello");
         opener.finish().unwrap();
         assert!(opener.finish().is_err(), "a finished opener stays finished");
+    }
+
+    /// A file whose plaintext is not the one its author signed never verifies.
+    #[test]
+    fn a_digest_mismatch_is_never_verified() {
+        let mut m = member();
+        let mut sealer = m.file_sealer(5, false, "n", None, None).unwrap();
+        let mut out = sealer.push(b"hello").unwrap();
+        out.extend(sealer.finish().unwrap());
+        let mut manifests: serde_json::Value =
+            serde_json::from_str(&sealer.manifests().unwrap()).unwrap();
+        manifests["file"]["digest"] = files::digest_multibase(b"other").into();
+        let mut opener = m
+            .file_opener(
+                &manifests["file"].to_string(),
+                &manifests["blob"].to_string(),
+            )
+            .unwrap();
+        opener.push(&out).unwrap();
+        assert!(opener.finish().is_err());
+        assert!(!opener.verified());
     }
 }
