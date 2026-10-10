@@ -26,3 +26,14 @@
 @import "./plugins/actions.css";
 @import "./plugins/members.css";
 @import "./plugins/recognition.css";
+@import "./plugins/dashboard.css";
+@import "./plugins/audit.css";
+@import "./plugins/join-requests.css";
+@import "./plugins/invitations.css";
+@import "./plugins/relationships.css";
+@import "./plugins/roles.css";
+@import "./plugins/acl.css";
+@import "./plugins/sessions.css";
+@import "./plugins/profile.css";
+@import "./plugins/rooms.css";
+@import "./plugins/account.css";
