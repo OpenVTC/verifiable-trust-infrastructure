@@ -180,6 +180,12 @@ pub struct AppState {
     /// delete}/0.1`). Entries keyed `mem:<contextId>:<key>`; gated on context
     /// access. Durable user data.
     pub memory_ks: KeyspaceHandle,
+    /// External accounts (`external/accounts/*`): settings, bindings, state.
+    pub external_accounts_ks: KeyspaceHandle,
+    /// Their wrapped secrets — excluded from backup.
+    pub external_secrets_ks: KeyspaceHandle,
+    /// Per-binding issuance rate for `external/credentials/issue`.
+    pub external_rate: Arc<vta_external::rate::BindingRateLimiter>,
     /// A member's MLS group for each room they belong to. Group secrets — see
     /// [`crate::keyspaces::ROOM_GROUPS`].
     pub room_groups_ks: KeyspaceHandle,
@@ -506,6 +512,11 @@ pub async fn build_app_state(
     let issued_credentials_ks =
         apply_encryption(store.keyspace(crate::keyspaces::ISSUED_CREDENTIALS)?);
     let memory_ks = apply_encryption(store.keyspace(crate::keyspaces::MEMORY)?);
+    let external_accounts_ks =
+        apply_encryption(store.keyspace(crate::keyspaces::EXTERNAL_ACCOUNTS)?);
+    // Provider secrets, wrapped under the seed-derived KEK on top of the
+    // keyspace's own at-rest encryption.
+    let external_secrets_ks = apply_encryption(store.keyspace(crate::keyspaces::EXTERNAL_SECRETS)?);
     // Encrypted alongside the key store where a TEE deployment provides a storage key: a
     // group snapshot decrypts every record its room holds, which is the same class of
     // material as a derived key and deserves the same treatment.
@@ -609,6 +620,9 @@ pub async fn build_app_state(
         consent_approvers_ks,
         issued_credentials_ks,
         memory_ks,
+        external_accounts_ks,
+        external_secrets_ks,
+        external_rate: Arc::new(vta_external::rate::BindingRateLimiter::new()),
         room_groups_ks,
         room_invitations_ks,
         app_state_ks,

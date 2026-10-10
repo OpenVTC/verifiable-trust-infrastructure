@@ -182,6 +182,9 @@ vta-keys = { path = "../vta-keys", version = "0.17" }
 # `bbs` / `webvh` features enable `vta-vault/bbs` / `vta-vault/webvh`.
 vta-persona = { path = "../vta-persona", version = "0.17" }
 vta-vault = { path = "../vta-vault", version = "0.15" }
+# External accounts — the VTA as the key authority for cloud and third-party
+# accounts (`external/*`), re-exported as `crate::external`.
+vta-external = { path = "../vta-external", version = "0.1" }
 
 # The room presentation oracle attenuates a member VAC and signs it.
 dtg-credentials = { workspace = true }

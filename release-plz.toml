@@ -77,6 +77,10 @@ name = "vta-config"
 semver_check = false
 
 [[package]]
+name = "vta-external"
+semver_check = false
+
+[[package]]
 name = "vta-keys"
 semver_check = false
 

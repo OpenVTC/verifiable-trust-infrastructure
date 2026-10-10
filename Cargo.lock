@@ -11239,6 +11239,7 @@ dependencies = [
  "vtc-client",
  "vti-common",
  "x25519-dalek 3.0.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -11273,6 +11274,31 @@ dependencies = [
  "vta-service",
  "vta-tee",
  "vti-common",
+]
+
+[[package]]
+name = "vta-external"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "hex",
+ "hmac 0.13.0",
+ "multibase",
+ "rand 0.10.2",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
+ "vta-keys",
+ "vta-keyspaces",
+ "vta-sdk",
+ "vti-common",
+ "zeroize",
 ]
 
 [[package]]
@@ -11555,6 +11581,7 @@ dependencies = [
  "vta-backup",
  "vta-cli-common",
  "vta-config",
+ "vta-external",
  "vta-keys",
  "vta-keyspaces",
  "vta-persona",

@@ -138,6 +138,11 @@ const ALLOWED: &[(&str, usize, &str)] = &[
         1,
         "enclave boot, non-KMS fallback: applies a staged backup restore before anything reads the store",
     ),
+    (
+        "vta-external/src/store.rs",
+        2,
+        "external-account secrets: the seed feeds only the imported-secret KEK (HKDF, no BIP-32 path), wrapping on set and unwrapping for one presign or probe; gated by external-accounts-manage / a binding",
+    ),
 ];
 
 /// The raw primitives. `seed_store.get()` is matched by receiver name, which is
@@ -156,6 +161,7 @@ const CRATES: &[&str] = &[
     "vta-enclave/src",
     "vta-backup/src",
     "vta-support/src",
+    "vta-external/src",
 ];
 
 #[test]
