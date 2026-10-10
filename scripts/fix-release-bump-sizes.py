@@ -21,8 +21,16 @@ For each crate the guard names it
   3. retitles the crate's newest CHANGELOG entry,
 and then refreshes Cargo.lock and re-runs the guard (network: crates.io).
 Commit the result onto the Release PR branch.
+
+`--raise CRATE… --claim RELEASE` is the other caller: `cut-release.py` uses it
+on main when a crate about to be cut still sits in a line an earlier release
+owns (it has not changed since). It raises those crates first, gives each a
+changelog entry saying why (the newest entry is an already-published version,
+so it must not be retitled), and then converges as above.
 """
 
+import argparse
+import datetime
 import pathlib
 import re
 import subprocess
@@ -62,6 +70,9 @@ def manifests():
     ] + [ROOT / "Cargo.toml"]
 
 
+CLAIM = None  # the release a --claim run opens new lines ahead of
+
+
 def bump(name):
     manifest = ROOT / name / "Cargo.toml"
     text = manifest.read_text()
@@ -82,7 +93,22 @@ def bump(name):
 
     # The newest changelog entry carries the version in its title and compare link.
     log = ROOT / name / "CHANGELOG.md"
-    if log.exists():
+    if log.exists() and CLAIM:
+        # Nothing about the crate changed; say why it has a new version.
+        t = log.read_text()
+        link = (
+            "https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/"
+            f"{name}-v{old}...{name}-v{new}"
+        )
+        entry = (
+            f"## [{new}]({link}) — {datetime.date.today().isoformat()}\n\n"
+            f"No functional change. A new compatibility line, so that `release/{CLAIM}` "
+            f"does not share {req(old)} with an earlier release branch (RELEASES.md).\n\n\n"
+        )
+        at = t.find("\n## ")
+        at = len(t) if at < 0 else at + 1
+        log.write_text(t[:at] + entry + t[at:])
+    elif log.exists():
         t = log.read_text()
         head = re.search(r"^## \[" + re.escape(old) + r"\]\(.*$", t, re.M)
         if head:
@@ -96,6 +122,19 @@ def bump(name):
 
 
 def main():
+    global CLAIM
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--raise", dest="raise_", nargs="+", default=[], metavar="CRATE",
+                    help="raise these crates to their next breaking version first")
+    ap.add_argument("--claim", metavar="RELEASE",
+                    help="with --raise: the release these new lines are opened for")
+    args = ap.parse_args()
+    CLAIM = args.claim
+    if args.raise_:
+        print(f"raising {len(args.raise_)} named crate(s)")
+        for n in args.raise_:
+            bump(n)
+        subprocess.run(["cargo", "update", "--workspace"], cwd=ROOT, check=True)
     for rnd in range(1, MAX_ROUNDS + 1):
         outs = [
             subprocess.run([sys.executable, str(g)], capture_output=True, text=True, cwd=ROOT)

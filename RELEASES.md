@@ -66,12 +66,17 @@ deployment are backported and released. Features never are.
 `backport release/<name>` (one label per target branch); `backport.yml` opens the
 cherry-pick as a PR on that branch, as a draft carrying the conflict if it does
 not apply cleanly. Only fix on the release branch directly when the code there
-no longer exists on `main`, and say so in the PR.
+no longer exists on `main`: a maintainer adds the `release-direct` label to that
+PR, and its description says why.
 
 A release branch takes fixes, security changes and docs. It never takes a
 feature, and it **cannot** take a breaking change to a published crate:
 `prepare-release-branch.py` runs `cargo semver-checks --release-type patch` and
 refuses. Rework the fix to keep the API, or leave it on `main`.
+
+The `branch rules` check (`check-branch-rules.py`) holds all of this: a PR into
+`release/**` is a bot backport, a prep PR or labelled `release-direct`; only the
+release tooling changes versions, `RELEASE` or `releases/`, on any branch.
 
 CI is **required** on `release/**`. On `main` it is advisory (see CLAUDE.md); on
 a branch operators run, it is not.
@@ -119,6 +124,13 @@ a PR to `main` recording `releases/dogwood.toml`. **Merge that PR before
 The cut refuses if any crate at the source commit is not on crates.io yet —
 let `main`'s release job finish first.
 
+It also refuses if a crate has not changed since an earlier release was cut:
+its version is still in that release's line, and two branches in one line
+would want the same patch numbers. `--claim` opens a PR on `main` that gives
+those crates (and their dependents) their next breaking version, with a
+changelog entry saying why. Merge it, wait for the release job and for
+`nightly` to move past it, and cut again.
+
 ### Release candidate, GA, patch
 
 Actions → **Prepare a named release** → choose the release branch as the ref
@@ -139,8 +151,9 @@ crates stay, and its lines stay closed to `main`.
 
 These are settings, not files, so they are not in this PR:
 
-- **Ruleset on `release/**`:** require a PR, require the CI jobs, block force
-  pushes and deletion. Allow `RELEASE_PLZ_TOKEN`'s identity to create the
+- **Ruleset on `release/**`:** require a PR, require the CI jobs and
+  `branch rules`, block force pushes and deletion.
+- **Ruleset on `main`:** require a PR, and require `branch rules`. Allow `RELEASE_PLZ_TOKEN`'s identity to create the
   branch (`cut-release.py`).
 - **Ruleset on `nightly`:** block force pushes and deletion; only
   `RELEASE_PLZ_TOKEN`'s identity may update it.

@@ -1337,6 +1337,9 @@ Rules for anything that does land on a release branch:
   a release branch the compatibility line of every crate it was cut with, and
   `check-release-line-ownership.py` keeps `main` out of those lines.
 - CI is a **required** check on `release/**`, unlike `main`.
+- The `branch rules` check (`scripts/check-branch-rules.py`) enforces the table
+  above and the version rule, on every PR into `main` or `release/**`. If it
+  fails, it names the fix — read it rather than working around it.
 - Which supported release a fix should go to is a maintainer's call (support
   status is in the `RELEASES.md` table); if the task doesn't say, ask rather
   than labelling every branch.

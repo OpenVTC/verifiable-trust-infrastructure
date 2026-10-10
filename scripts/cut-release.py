@@ -19,7 +19,15 @@ Run by the release manager from a clean checkout with push access. It:
      "latest". `publish.yml` then tags `<name>.rc1`;
   5. opens a PR to main adding the manifest. **Merge it before main's next
      Release PR** — until it lands, main's guard does not know the lines are
-     owned.
+     owned;
+  6. creates the `backport release/<name>` label backport.yml reads.
+
+It also refuses when a crate's version at the source commit is in a line an
+earlier release already owns: a crate unchanged since that cut. Two branches in
+one line would want the same patch number. `--claim` opens the PR that fixes
+it — those crates (and whatever depends on them) take their next breaking
+version on main, with a changelog entry saying why. Merge it, let the release
+job publish and `nightly` move past it, then cut again.
 """
 
 import argparse
@@ -30,6 +38,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 import time
 import urllib.error
 import urllib.request
@@ -61,6 +70,61 @@ def on_crates_io(name, version):
     return False
 
 
+def compat(v):
+    """Caret compatibility class, as in check-release-bump-sizes.py."""
+    p = ([int(x) for x in v.split("-")[0].split(".")] + [0, 0, 0])[:3]
+    idx = next((i for i, x in enumerate(p) if x != 0), 2)
+    return tuple(p[: idx + 1])
+
+
+def owned_on_main():
+    """{crate: [(line, release)]} from every releases/*.toml on origin/main."""
+    owned = {}
+    files = git("ls-tree", "--name-only", "origin/main", "releases/", check=False).stdout.split()
+    for f in files:
+        if not f.endswith(".toml"):
+            continue
+        data = tomllib.loads(git("show", f"origin/main:{f}").stdout)
+        for crate, version in data.get("crates", {}).items():
+            owned.setdefault(crate, []).append((compat(version), data["release"]["name"]))
+    return owned
+
+
+def claim(name, crates):
+    """Open the PR on main that gives `crates` new compatibility lines."""
+    with tempfile.TemporaryDirectory(prefix=f"claim-{name}-") as tmp:
+        wt = pathlib.Path(tmp) / "wt"
+        pr_branch = f"release-claim/{name}"
+        git("worktree", "add", "--quiet", "-B", pr_branch, str(wt), "origin/main")
+        try:
+            subprocess.run(
+                [sys.executable, "scripts/fix-release-bump-sizes.py",
+                 "--raise", *crates, "--claim", name],
+                cwd=wt, check=True,
+            )
+            git("add", "-A", cwd=wt)
+            git("commit", "--quiet", "-s", "-m",
+                f"chore(release): open new version lines before the {name} cut", cwd=wt)
+            git("push", "--quiet", "origin", f"HEAD:refs/heads/{pr_branch}", cwd=wt)
+            subprocess.run(
+                [
+                    "gh", "pr", "create", "--base", "main", "--head", pr_branch,
+                    "--title", f"chore(release): open new version lines before the {name} cut",
+                    "--body",
+                    "These crates have not changed since an earlier release branch was cut, so "
+                    f"`release/{name}` would share their compatibility line with it and the two "
+                    "branches would want the same patch numbers. Each takes its next breaking "
+                    "version (dependents follow), with a changelog entry saying why.\n\n"
+                    "Merging publishes them. Once `nightly` has moved past this commit, run "
+                    f"`scripts/cut-release.py {name}` again.\n\nSee RELEASES.md.",
+                ],
+                cwd=wt, check=True,
+            )
+        finally:
+            git("worktree", "remove", "--force", str(wt), check=False)
+            git("branch", "-D", pr_branch, check=False)
+
+
 def manifest_text(name, support, sha, crates):
     lines = [
         f"# Named release {name}: what release/{name} was cut from, and the",
@@ -86,6 +150,8 @@ def main():
     ap.add_argument("--lts", action="store_true", help="the maintainers have designated this release LTS (RELEASES.md)")
     ap.add_argument("--from", dest="source", default="origin/nightly")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--claim", action="store_true",
+                    help="if crates share a line with an earlier release, open the PR on main that fixes it")
     args = ap.parse_args()
 
     name = args.name
@@ -123,6 +189,23 @@ def main():
                     "not on crates.io yet — let main's release job finish, or cut from an "
                     "earlier commit:\n  " + "\n  ".join(missing)
                 )
+            owned = owned_on_main()
+            shared = sorted(
+                c for c, v in crates.items()
+                if any(line == compat(v) for line, _ in owned.get(c, []))
+            )
+            if shared:
+                lines = [
+                    f"{c} {crates[c]} (line owned by release/"
+                    f"{', release/'.join(r for l, r in owned[c] if l == compat(crates[c]))})"
+                    for c in shared
+                ]
+                print("these crates have not changed since an earlier release was cut, so "
+                      f"release/{name} would share their line:\n  " + "\n  ".join(lines))
+                if args.claim and not args.dry_run:
+                    claim(name, shared)
+                    return 0
+                sys.exit("re-run with --claim to open the PR on main that gives them new lines")
             text = manifest_text(name, "lts" if args.lts else "standard", sha, crates)
             print(text)
             if args.dry_run:
@@ -170,6 +253,12 @@ def main():
                     f"off those lines.\n\nAlso add {name} to the schedule table in RELEASES.md.",
                 ],
                 cwd=wt, check=True,
+            )
+            subprocess.run(
+                ["gh", "label", "create", f"backport release/{name}", "--force",
+                 "--color", "c5def5",
+                 "--description", f"Merged to main; cherry-pick onto release/{name} (backport.yml)"],
+                check=True,
             )
         finally:
             git("worktree", "remove", "--force", str(wt), check=False)
