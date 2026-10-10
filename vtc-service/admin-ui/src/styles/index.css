@@ -1,0 +1,28 @@
+/* The console's stylesheets, in cascade order.
+ *
+ * - `tokens.css`: the design tokens shared with the home page and the member
+ *   portal (colour, type, spacing, radius, motion, elevation).
+ * - `base.css`: reset and element defaults.
+ * - `shell.css`: the frame — top bar, grouped sidebar, account menu,
+ *   attention strip and the banners it holds.
+ * - `components.css`: the shared components every screen uses — page header,
+ *   cards, buttons, form fields, tabs, tables, chips, empty states, dialogs,
+ *   toasts.
+ * - `pages.css`: the standalone pages outside the shell (sign-in, install).
+ * - `plugins/*.css`: layout particular to one built-in screen.
+ *
+ * Order matters: a later file wins a tie, so keep plugins last.
+ */
+
+@import "./tokens.css";
+@import "./base.css";
+@import "./shell.css";
+@import "./components.css";
+@import "./pages.css";
+@import "./plugins/ceremonies.css";
+@import "./plugins/vetting.css";
+@import "./plugins/policy-flow.css";
+@import "./plugins/repos.css";
+@import "./plugins/actions.css";
+@import "./plugins/members.css";
+@import "./plugins/recognition.css";

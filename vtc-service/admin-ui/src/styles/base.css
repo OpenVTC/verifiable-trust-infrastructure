@@ -1,0 +1,103 @@
+/* Reset and element defaults.
+ *
+ * The tokens (colour, type, spacing, radius, motion, elevation) are shared
+ * with the home page and the member portal and live in `tokens.css`,
+ * imported before this file (`index.css`). Rules read tokens, not raw
+ * values.
+ */
+
+/* ── Reset + base ────────────────────────────────────────────── */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: calc(var(--text-base-leading) / var(--text-base));
+  letter-spacing: var(--tracking-tight);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+}
+
+/* Display type: Plex Sans at a heavier weight on the big structural
+ * headings. Component-level titles opt in via this. */
+h1,
+.page-title,
+.display {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tighter);
+}
+
+/* Numeric surfaces — tabular nums so columns align. */
+.data-table,
+.stat-tile-value,
+.pagination,
+time,
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+a {
+  color: var(--brand);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: var(--space-4) 0;
+}
+
+/* Visible focus rings, 2px with 1px inset on form controls (Vercel
+ * idiom). The default ring sits outside; form controls get an inset
+ * ring via their own rule so the border doesn't double up. */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline-offset: -1px;
+}
+
+button:focus-visible {
+  outline-offset: 2px;
+}
+
+button.primary:focus-visible {
+  /* Brand-on-brand outline disappears — punch a 1px white-tinted
+   * gap, then the ring outside it (Linear / Vercel idiom). */
+  outline-offset: 3px;
+  box-shadow: 0 0 0 1px var(--bg);
+}
+
+::selection {
+  background: var(--brand-tint-strong);
+}

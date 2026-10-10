@@ -1,0 +1,4 @@
+/* The DID column takes the spare width, so a webvh DID's path is never cut. */
+.members-did {
+  width: 40%;
+}

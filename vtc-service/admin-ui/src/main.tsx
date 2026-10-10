@@ -20,10 +20,9 @@ import "@fontsource/ibm-plex-sans/700.css";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
-// The tokens shared with the home page and the member portal, then the
-// console's own rules.
-import "@/styles/tokens.css";
-import "@/styles.css";
+// The console's stylesheets: the tokens shared with the home page and the
+// member portal first, then the console's own rules (`styles/index.css`).
+import "@/styles/index.css";
 
 // Apply the persisted theme before first paint so the cascade picks
 // the right `color-scheme` without a flash.
