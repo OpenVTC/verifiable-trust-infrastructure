@@ -62,6 +62,10 @@ pub async fn run_storage(vsock_port: u32, data_dir: PathBuf) {
         data_dir: data_dir.clone(),
         #[cfg(test)]
         batch_commits: Default::default(),
+        #[cfg(test)]
+        critical_delay_ms: Default::default(),
+        #[cfg(test)]
+        reached_lock: Default::default(),
     });
 
     let listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
@@ -100,17 +104,26 @@ struct StorageState {
     /// Moves committed as one write batch (tests assert the batch path).
     #[cfg(test)]
     batch_commits: std::sync::atomic::AtomicUsize,
+    /// Extra time each atomic operation holds its keyspace lock, so a test
+    /// can make contention real.
+    #[cfg(test)]
+    critical_delay_ms: std::sync::atomic::AtomicU64,
+    /// Atomic operations that have reached their keyspace lock (holding it
+    /// or waiting for it).
+    #[cfg(test)]
+    reached_lock: std::sync::atomic::AtomicUsize,
 }
 
 /// A keyspace and the lock its atomic operations hold.
 ///
 /// fjall makes each operation atomic, not a sequence of them, and every
 /// connection is served on its own task, so OP_TAKE, OP_INSERT_IF_ABSENT,
-/// OP_SWAP_IF_ABSENT and OP_MOVE_IF_EQUAL hold this across their steps. A
-/// plain mutex rather than fjall's transactional database: the critical
-/// sections are a few fjall calls with no await inside, and switching the
-/// database type would touch every operation for no gain. Plain
-/// get/insert/delete do not take it, matching the enclave's local store.
+/// OP_SWAP_IF_ABSENT and OP_MOVE_IF_EQUAL hold this across their steps, on
+/// the blocking pool (see [`critical_section`]). A plain mutex rather than
+/// fjall's transactional database: the critical sections are a few fjall
+/// calls with no await inside, and switching the database type would touch
+/// every operation for no gain. Plain get/insert/delete do not take it,
+/// matching the enclave's local store.
 #[derive(Clone)]
 struct KeyspaceEntry {
     ks: Keyspace,
@@ -128,6 +141,16 @@ impl KeyspaceEntry {
 }
 
 impl StorageState {
+    #[cfg(test)]
+    fn hold_critical_section(&self) {
+        let ms = self
+            .critical_delay_ms
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+    }
+
     /// Get or create a keyspace by name.
     async fn get_keyspace(&self, name: &str) -> Result<Keyspace, String> {
         Ok(self.entry(name).await?.ks)
@@ -166,7 +189,7 @@ impl StorageState {
 /// Handle a single client connection (long-lived, multiple requests).
 async fn handle_connection(
     mut stream: tokio_vsock::VsockStream,
-    state: &StorageState,
+    state: &Arc<StorageState>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     loop {
         // Read request frame
@@ -382,7 +405,41 @@ async fn handle_persist(state: &StorageState) -> Vec<u8> {
 // Atomic multi-step operations (see the opcode docs in `protocol`)
 // ---------------------------------------------------------------------------
 
-async fn handle_take(state: &StorageState, data: &[u8]) -> Vec<u8> {
+/// Run an atomic operation's critical section — the keyspace lock and the
+/// fjall calls under it — on tokio's blocking pool, and return its response.
+///
+/// The work under the lock is blocking I/O, and contended operations on one
+/// keyspace (every refresh-token claim lands on the same one) queue for the
+/// lock. On a worker thread both would stall that worker and every connection
+/// task scheduled on it — plain reads on other keyspaces included. On the
+/// blocking pool only the operation's own task waits. A std mutex rather than
+/// tokio's: nothing under it awaits, and blocking work under a blocking lock
+/// is what the blocking pool is for.
+///
+/// If the connection is dropped meanwhile, the section still runs to the end:
+/// an operation is applied whole or not at all, never half.
+async fn critical_section<F>(state: &Arc<StorageState>, entry: KeyspaceEntry, f: F) -> Vec<u8>
+where
+    F: FnOnce(&StorageState, &Keyspace) -> Vec<u8> + Send + 'static,
+{
+    let state = Arc::clone(state);
+    let section = tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        state
+            .reached_lock
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _guard = entry.lock();
+        #[cfg(test)]
+        state.hold_critical_section();
+        f(&state, &entry.ks)
+    });
+    match section.await {
+        Ok(resp) => resp,
+        Err(e) => build_error(&format!("storage operation failed: {e}")),
+    }
+}
+
+async fn handle_take(state: &Arc<StorageState>, data: &[u8]) -> Vec<u8> {
     let parsed: Result<_, String> = (|| {
         let (ks_name, offset) = decode_keyspace(data, 0)?;
         let (key, _) = decode_bytes(data, offset)?;
@@ -396,18 +453,18 @@ async fn handle_take(state: &StorageState, data: &[u8]) -> Vec<u8> {
         Ok(e) => e,
         Err(e) => return build_error(&e),
     };
-    let _guard = entry.lock();
-    match entry.ks.get(&key) {
-        Ok(Some(value)) => match entry.ks.remove(&key) {
+    critical_section(state, entry, move |_, ks| match ks.get(&key) {
+        Ok(Some(value)) => match ks.remove(&key) {
             Ok(()) => build_ok_value(&value),
             Err(e) => build_error(&format!("take failed: {e}")),
         },
         Ok(None) => build_not_found(),
         Err(e) => build_error(&format!("take failed: {e}")),
-    }
+    })
+    .await
 }
 
-async fn handle_insert_if_absent(state: &StorageState, data: &[u8]) -> Vec<u8> {
+async fn handle_insert_if_absent(state: &Arc<StorageState>, data: &[u8]) -> Vec<u8> {
     let parsed: Result<_, String> = (|| {
         let (ks_name, offset) = decode_keyspace(data, 0)?;
         let (key, offset) = decode_bytes(data, offset)?;
@@ -422,10 +479,9 @@ async fn handle_insert_if_absent(state: &StorageState, data: &[u8]) -> Vec<u8> {
         Ok(e) => e,
         Err(e) => return build_error(&e),
     };
-    let _guard = entry.lock();
-    match entry.ks.contains_key(&key) {
+    critical_section(state, entry, move |state, ks| match ks.contains_key(&key) {
         Ok(true) => build_ok_bool(false),
-        Ok(false) => match entry.ks.insert(&key, &value) {
+        Ok(false) => match ks.insert(&key, &value) {
             Ok(()) => {
                 after_insert(state, &ks_name, &key, &value);
                 build_ok_bool(true)
@@ -433,10 +489,11 @@ async fn handle_insert_if_absent(state: &StorageState, data: &[u8]) -> Vec<u8> {
             Err(e) => build_error(&format!("insert_if_absent failed: {e}")),
         },
         Err(e) => build_error(&format!("insert_if_absent failed: {e}")),
-    }
+    })
+    .await
 }
 
-async fn handle_swap_if_absent(state: &StorageState, data: &[u8]) -> Vec<u8> {
+async fn handle_swap_if_absent(state: &Arc<StorageState>, data: &[u8]) -> Vec<u8> {
     let parsed: Result<_, String> = (|| {
         let (ks_name, offset) = decode_keyspace(data, 0)?;
         let (old, offset) = decode_bytes(data, offset)?;
@@ -457,14 +514,16 @@ async fn handle_swap_if_absent(state: &StorageState, data: &[u8]) -> Vec<u8> {
         Ok(e) => e,
         Err(e) => return build_error(&e),
     };
-    let _guard = entry.lock();
-    match move_locked(state, &ks_name, &entry.ks, &old, &new, &value) {
-        Ok(moved) => build_ok_bool(moved),
-        Err(e) => build_error(&format!("swap_if_absent failed: {e}")),
-    }
+    critical_section(state, entry, move |state, ks| {
+        match move_locked(state, &ks_name, ks, &old, &new, &value) {
+            Ok(moved) => build_ok_bool(moved),
+            Err(e) => build_error(&format!("swap_if_absent failed: {e}")),
+        }
+    })
+    .await
 }
 
-async fn handle_move_if_equal(state: &StorageState, data: &[u8]) -> Vec<u8> {
+async fn handle_move_if_equal(state: &Arc<StorageState>, data: &[u8]) -> Vec<u8> {
     let parsed: Result<_, String> = (|| {
         let (ks_name, offset) = decode_keyspace(data, 0)?;
         let (old, offset) = decode_bytes(data, offset)?;
@@ -487,19 +546,23 @@ async fn handle_move_if_equal(state: &StorageState, data: &[u8]) -> Vec<u8> {
         Ok(e) => e,
         Err(e) => return build_error(&e),
     };
-    let _guard = entry.lock();
-    // Same order of checks as the enclave's compare-and-move.
-    match entry.ks.get(&old) {
-        Ok(None) => return build_ok_byte(MOVE_SOURCE_MISSING),
-        Ok(Some(current)) if *current != *expected => return build_ok_byte(MOVE_SOURCE_CHANGED),
-        Ok(Some(_)) => {}
-        Err(e) => return build_error(&format!("move_if_equal failed: {e}")),
-    }
-    match move_locked(state, &ks_name, &entry.ks, &old, &new, &value) {
-        Ok(true) => build_ok_byte(MOVE_MOVED),
-        Ok(false) => build_ok_byte(MOVE_TARGET_EXISTS),
-        Err(e) => build_error(&format!("move_if_equal failed: {e}")),
-    }
+    critical_section(state, entry, move |state, ks| {
+        // Same order of checks as the enclave's compare-and-move.
+        match ks.get(&old) {
+            Ok(None) => return build_ok_byte(MOVE_SOURCE_MISSING),
+            Ok(Some(current)) if *current != *expected => {
+                return build_ok_byte(MOVE_SOURCE_CHANGED);
+            }
+            Ok(Some(_)) => {}
+            Err(e) => return build_error(&format!("move_if_equal failed: {e}")),
+        }
+        match move_locked(state, &ks_name, ks, &old, &new, &value) {
+            Ok(true) => build_ok_byte(MOVE_MOVED),
+            Ok(false) => build_ok_byte(MOVE_TARGET_EXISTS),
+            Err(e) => build_error(&format!("move_if_equal failed: {e}")),
+        }
+    })
+    .await
 }
 
 /// Write `value` at `new` and delete `old`, unless `new` is occupied
@@ -554,6 +617,8 @@ mod tests {
             keyspaces: RwLock::new(HashMap::new()),
             data_dir: dir,
             batch_commits: Default::default(),
+            critical_delay_ms: Default::default(),
+            reached_lock: Default::default(),
         })
     }
 
@@ -566,7 +631,7 @@ mod tests {
         buf
     }
 
-    async fn dispatch(state: &StorageState, request: &[u8]) -> Vec<u8> {
+    async fn dispatch(state: &Arc<StorageState>, request: &[u8]) -> Vec<u8> {
         let body = &request[1..];
         match request[0] {
             OP_GET => handle_get(state, body).await,
@@ -579,11 +644,11 @@ mod tests {
         }
     }
 
-    async fn get(state: &StorageState, key: &[u8]) -> Option<Vec<u8>> {
+    async fn get(state: &Arc<StorageState>, key: &[u8]) -> Option<Vec<u8>> {
         decode_value_response(&dispatch(state, &req(OP_GET, &[key])).await).unwrap()
     }
 
-    async fn put(state: &StorageState, key: &[u8], value: &[u8]) {
+    async fn put(state: &Arc<StorageState>, key: &[u8], value: &[u8]) {
         decode_ok_response(&dispatch(state, &req(OP_INSERT, &[key, value])).await).unwrap();
     }
 
@@ -757,6 +822,68 @@ mod tests {
         let r = dispatch(&s, &req(OP_MOVE_IF_EQUAL, &[b"a", b"2", b"z", b"y"])).await;
         assert_eq!(r, build_ok_byte(MOVE_SOURCE_CHANGED));
         assert_eq!(batches(), 2);
+    }
+
+    /// Contended atomic operations on one keyspace queue for its lock on the
+    /// blocking pool, not on the runtime's workers: a plain read on another
+    /// keyspace completes promptly while they wait.
+    ///
+    /// Two workers, two operations on one keyspace: one holds the lock for
+    /// `HOLD_MS`, the other waits for it. Taken on worker threads, that is both
+    /// workers, and a read arriving meanwhile cannot run until the holder
+    /// finishes. On the blocking pool the workers are free.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn contended_atomic_ops_do_not_starve_other_reads() {
+        const HOLD_MS: u64 = 300;
+        let s = state();
+        let mut other = vec![OP_GET];
+        encode_keyspace(&mut other, "other");
+        encode_bytes(&mut other, b"x");
+        // Create both keyspaces first: creation is durable (an fsync, slow on
+        // macOS) and would be measured instead of the wait for a worker.
+        dispatch(&s, &other).await;
+        put(&s, b"warm", b"v").await;
+        s.critical_delay_ms.store(HOLD_MS, Ordering::SeqCst);
+
+        let contended: Vec<_> = (0..2)
+            .map(|_| {
+                let s = s.clone();
+                tokio::spawn(async move {
+                    dispatch(&s, &req(OP_INSERT_IF_ABSENT, &[b"claim", b"v"])).await
+                })
+            })
+            .collect();
+        // Until both have reached the lock: one holds it, one waits. A
+        // blocking wait on the test thread, which is not a worker, so it does
+        // not depend on the workers being free.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while s.reached_lock.load(Ordering::SeqCst) < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "operations never reached the lock"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        // On a worker, like every connection task: that is what would starve.
+        let started = std::time::Instant::now();
+        let reader = s.clone();
+        let read = tokio::spawn(async move { dispatch(&reader, &other).await });
+        let resp = read.await.unwrap();
+        let took = started.elapsed();
+        assert_eq!(resp, build_not_found());
+        assert!(
+            took < std::time::Duration::from_millis(HOLD_MS / 3),
+            "a read on another keyspace waited {took:?} behind a {HOLD_MS} ms critical section"
+        );
+
+        let mut inserted = 0;
+        for t in contended {
+            if decode_bool_response(&t.await.unwrap()).unwrap() {
+                inserted += 1;
+            }
+        }
+        assert_eq!(inserted, 1, "still exactly one winner");
     }
 
     #[tokio::test]
