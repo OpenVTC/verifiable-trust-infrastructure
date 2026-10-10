@@ -60,6 +60,13 @@ rate-limit = ["dep:tower_governor", "dep:ipnetwork"]
 # `Role`, session `SessionState`). Off by default and zero-cost when off —
 # only the services turn it on.
 openapi = ["dep:utoipa", "dep:utoipa-axum"]
+# Room file storage on S3-compatible object stores (AWS S3, R2, MinIO, B2),
+# through `object_store`. Off by default: a host storing files in a local
+# directory needs none of it. See `blob_store`.
+blob-s3 = ["dep:object_store", "object_store/aws"]
+# Room file storage on Google Cloud Storage, natively (not its S3
+# interoperability mode, which needs static HMAC keys).
+blob-gcs = ["dep:object_store", "object_store/gcp"]
 
 [dependencies]
 # vta-sdk for the canonical auth wire shapes
@@ -162,6 +169,10 @@ dialoguer = { workspace = true, optional = true }
 
 tower_governor = { version = "0.8", features = ["axum"], optional = true }
 ipnetwork = { workspace = true, optional = true }
+# Object-store backends for `blob_store` (S3, GCS). One crate for both, and it
+# takes a custom credential provider, which is where VTA-issued, room-scoped
+# credentials plug in later (data-rooms-files.md §7.4).
+object_store = { version = "0.14", default-features = false, optional = true }
 
 [dev-dependencies]
 # Parses the config fixtures in the VaultConfig tests.
