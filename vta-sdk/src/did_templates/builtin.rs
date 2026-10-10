@@ -76,6 +76,42 @@ mod tests {
         }
     }
 
+    /// Every DID a built-in mints can sign an attestation: its document lists
+    /// a key under `assertionMethod`. A persona signs `auth/oob/grant` for
+    /// `assertionMethod` (VTI-KEY-106), and a service verifying it refuses a
+    /// key not listed there (VTI-KEY-022), so a shape without one could never
+    /// sign a member in.
+    #[test]
+    fn every_builtin_document_lists_an_assertion_method_key() {
+        let raws = [
+            AI_AGENT,
+            AI_AGENT_PEER,
+            DIDCOMM_MEDIATOR,
+            PUSH_GATEWAY,
+            ROOM,
+            ROOM_HOST,
+            VTA_ADMIN,
+            VTC_HOST,
+            DID_HOST_HTTP_DIDCOMM,
+            DID_HOST_HTTP,
+            DID_HOST_DIDCOMM,
+            DID_HOST_HTTP_TSP,
+            DID_HOST_TSP,
+        ];
+        assert_eq!(raws.len(), BUILTIN_NAMES.len(), "a builtin is missing here");
+        for raw in raws {
+            let v: serde_json::Value = serde_json::from_str(raw).expect("template JSON");
+            let listed = v["document"]["assertionMethod"]
+                .as_array()
+                .is_some_and(|a| !a.is_empty());
+            assert!(
+                listed,
+                "builtin '{}' lists no assertionMethod key",
+                v["name"]
+            );
+        }
+    }
+
     #[test]
     fn unknown_builtin_errors() {
         let err = load_embedded("does-not-exist").unwrap_err();
