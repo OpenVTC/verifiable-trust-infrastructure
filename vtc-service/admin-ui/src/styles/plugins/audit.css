@@ -1,1 +1,22 @@
 /* Layout particular to the audit screen. Shared look lives in components.css. */
+
+/* The "Show system events" toggle: a checkbox at its own size, not a
+   stretched toolbar input. */
+.toolbar .field.inline.audit-system-toggle {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.audit-system-toggle input[type="checkbox"] {
+  width: auto;
+  height: auto;
+}
+
+/* An event's description over its wire kind. */
+.audit-event {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space-1) / 2);
+}
+.audit-event-kind {
+  font-size: var(--text-xs);
+}

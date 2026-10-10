@@ -38,6 +38,10 @@ import {
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { useViewerAmr } from "@/lib/viewer";
 import { SIGNING_STATUS_KEY, suggestedLabel } from "@/pages/SetupSigning";
+import { Field } from "@/components/Field";
+import { DataTable } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { PageHeader } from "@/components/PageHeader";
 
 /** What this browser holds, and whether it could hold one at all. */
 interface LocalState {
@@ -123,13 +127,17 @@ export function ConsoleKeys() {
 
   return (
     <section className="page">
-      <h2>Console signing keys</h2>
-      <p className="lead">
-        A signing key lets this browser author Trust Task documents in your
-        name — signed by a key that never leaves it, and authorised by your own
-        access-control entry, read at the moment each document runs. It grants
-        no role of its own, and you can disown any browser here at any time.
-      </p>
+      <PageHeader
+        title="Console signing keys"
+        lead={
+          <>
+          A signing key lets this browser author Trust Task documents in your
+          name — signed by a key that never leaves it, and authorised by your own
+          access-control entry, read at the moment each document runs. It grants
+          no role of its own, and you can disown any browser here at any time.
+          </>
+        }
+      />
 
       {local && !local.supported && (
         <section className="card">
@@ -168,15 +176,14 @@ export function ConsoleKeys() {
             }}
             className="form-stack"
           >
-            <label className="field">
-              <span className="field-label">Label (optional)</span>
+            <Field label="Label (optional)">
               <input
                 type="text"
                 placeholder={suggestedLabel()}
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
               />
-            </label>
+            </Field>
 
             {enrolError && (
               <section className="card error">
@@ -259,103 +266,94 @@ export function ConsoleKeys() {
       )}
 
       <section className="card">
-        <table className="data-table">
-          <thead>
+        <DataTable
+          columns={[
+            { key: "label", label: "Label" },
+            { key: "key", label: "Key" },
+            { key: "status", label: "Status" },
+            { key: "enrolled", label: "Enrolled" },
+            { key: "last-used", label: "Last used" },
+            { key: "actions", label: "" },
+          ]}
+        >
+          {query.isPending && (
             <tr>
-              <th>Label</th>
-              <th>Key</th>
-              <th>Status</th>
-              <th>Enrolled</th>
-              <th>Last used</th>
-              <th />
+              <td colSpan={6}>Loading…</td>
             </tr>
-          </thead>
-          <tbody>
-            {query.isPending && (
-              <tr>
-                <td colSpan={6}>Loading…</td>
-              </tr>
-            )}
-            {!query.isPending && keys.length === 0 && (
-              <tr>
-                <td colSpan={6}>
-                  <div className="empty-state">
-                    <span className="empty-icon" aria-hidden="true">
-                      <PenLine />
-                    </span>
-                    <h4>No signing keys enrolled</h4>
-                    <p>
-                      Every administrator action in this console is signed.
-                      Enable signing above to use it from this browser.
-                    </p>
-                  </div>
-                </td>
-              </tr>
-            )}
-            {keys.map((k) => (
-              <tr key={k.consoleDid}>
-                <td>
-                  {k.label ?? <span className="muted">—</span>}
-                  {k.consoleDid === local?.consoleDid && (
-                    <>
-                      {" "}
-                      <span className="muted">(this browser)</span>
-                    </>
-                  )}
-                </td>
-                <td>
-                  <code className="truncate" title={k.consoleDid}>
-                    {k.consoleDid}
-                  </code>
-                </td>
-                <td>
-                  {k.active ? (
-                    "Active"
-                  ) : k.revokedAt ? (
-                    <span className="muted">
-                      Revoked {formatDate(k.revokedAt)}
-                    </span>
-                  ) : (
-                    <span className="muted">Expired</span>
-                  )}
-                </td>
-                <td>{formatDate(k.createdAt)}</td>
-                <td>
-                  {k.lastUsedAt ? (
-                    formatDate(k.lastUsedAt)
-                  ) : (
-                    <span className="muted">never</span>
-                  )}
-                </td>
-                <td>
-                  {k.active && (
-                    <button
-                      type="button"
-                      className="secondary destructive"
-                      disabled={revoke.isPending}
-                      onClick={async () => {
-                        const ok = await confirm({
-                          title: k.label
-                            ? `Revoke “${k.label}”?`
-                            : "Revoke this signing key?",
-                          message:
-                            k.consoleDid === local?.consoleDid
-                              ? "This browser stops signing immediately and forgets its key. You stay signed in, and the console asks you to set signing up again before you can carry on. A revoked key cannot come back; setting up generates a new one."
-                              : "That browser stops signing on its very next document. A revoked key cannot be re-enrolled; that browser generates a new one if you enable it again.",
-                          confirmLabel: "Revoke",
-                          destructive: true,
-                        });
-                        if (ok) revoke.mutate(k.consoleDid);
-                      }}
-                    >
-                      <ShieldOff size={14} aria-hidden="true" /> Revoke
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+          )}
+          {!query.isPending && keys.length === 0 && (
+            <tr>
+              <td colSpan={6}>
+                <EmptyState icon={PenLine} title="No signing keys enrolled">
+                  Every administrator action in this console is signed.
+                  Enable signing above to use it from this browser.
+                </EmptyState>
+              </td>
+            </tr>
+          )}
+          {keys.map((k) => (
+            <tr key={k.consoleDid}>
+              <td>
+                {k.label ?? <span className="muted">—</span>}
+                {k.consoleDid === local?.consoleDid && (
+                  <>
+                    {" "}
+                    <span className="muted">(this browser)</span>
+                  </>
+                )}
+              </td>
+              <td>
+                <code className="truncate" title={k.consoleDid}>
+                  {k.consoleDid}
+                </code>
+              </td>
+              <td>
+                {k.active ? (
+                  "Active"
+                ) : k.revokedAt ? (
+                  <span className="muted">
+                    Revoked {formatDate(k.revokedAt)}
+                  </span>
+                ) : (
+                  <span className="muted">Expired</span>
+                )}
+              </td>
+              <td>{formatDate(k.createdAt)}</td>
+              <td>
+                {k.lastUsedAt ? (
+                  formatDate(k.lastUsedAt)
+                ) : (
+                  <span className="muted">never</span>
+                )}
+              </td>
+              <td>
+                {k.active && (
+                  <button
+                    type="button"
+                    className="secondary destructive"
+                    disabled={revoke.isPending}
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: k.label
+                          ? `Revoke “${k.label}”?`
+                          : "Revoke this signing key?",
+                        message:
+                          k.consoleDid === local?.consoleDid
+                            ? "This browser stops signing immediately and forgets its key. You stay signed in, and the console asks you to set signing up again before you can carry on. A revoked key cannot come back; setting up generates a new one."
+                            : "That browser stops signing on its very next document. A revoked key cannot be re-enrolled; that browser generates a new one if you enable it again.",
+                        confirmLabel: "Revoke",
+                        destructive: true,
+                      });
+                      if (ok) revoke.mutate(k.consoleDid);
+                    }}
+                  >
+                    <ShieldOff size={14} aria-hidden="true" /> Revoke
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </DataTable>
       </section>
     </section>
   );

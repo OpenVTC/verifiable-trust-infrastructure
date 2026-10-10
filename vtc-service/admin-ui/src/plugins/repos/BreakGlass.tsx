@@ -20,12 +20,15 @@
 // Where the viewer cannot sign one, the page says why and shows the `cnm`
 // command for someone who can.
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Siren } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
+import { type Column, DataTable, useSortedRows } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { PageHeader } from "@/components/PageHeader";
 import { NamedDid } from "@/components/NamedDid";
 import { useNameBook } from "@/lib/names";
 import { useIsGitCommunityAdmin, useViewerDid } from "@/lib/viewer";
@@ -45,7 +48,7 @@ import {
   rightLabel,
   shortName,
 } from "./model";
-import { formatDay, readErrorMessage, REPOS_PATH, repoPath, SignTaskDialog, ToneChip } from "./ui";
+import { formatDay, readErrorMessage, repoPath, SignTaskDialog, ToneChip } from "./ui";
 
 type Dialog =
   | { kind: "ratify"; item: GitNsBreakGlassItem }
@@ -60,6 +63,41 @@ const STATE_TONE: Record<BreakGlassState, "danger" | "warning" | "neutral"> = {
 
 function stateOf(item: GitNsBreakGlassItem): BreakGlassState {
   return item.state === "pending" || item.state === "ratified" ? item.state : "unratified";
+}
+
+type SortKey = "holder" | "right" | "resource" | "when" | "state";
+
+const COLUMNS: readonly Column<SortKey>[] = [
+  { key: "holder", label: "Holder", sortKey: "holder" },
+  { key: "right", label: "Right", sortKey: "right" },
+  { key: "resource", label: "Resource", sortKey: "resource" },
+  { key: "justification", label: "Justification" },
+  { key: "when", label: "When", sortKey: "when" },
+  { key: "state", label: "State", sortKey: "state" },
+  { key: "actions", label: <span className="visually-hidden">Actions</span> },
+];
+
+/** One list of break-glass grants, read whole, so sortable here. Rows keep
+ *  the order they were given until a header is clicked. */
+function BreakGlassTable({
+  rows,
+  label,
+  row,
+  valueOf,
+}: {
+  rows: readonly GitNsBreakGlassItem[];
+  label: string;
+  row: (item: GitNsBreakGlassItem) => ReactNode;
+  valueOf: (item: GitNsBreakGlassItem, key: SortKey) => string | null;
+}) {
+  const sorted = useSortedRows(rows, valueOf, { initialDir: { when: "desc" } });
+  return (
+    <div className="table-scroll">
+      <DataTable columns={COLUMNS} sort={sorted.sort} onSort={sorted.onSort} aria-label={label}>
+        {sorted.rows.map(row)}
+      </DataTable>
+    </div>
+  );
 }
 
 function HandOver({ why, command }: { why: string; command: string }) {
@@ -184,41 +222,39 @@ export function BreakGlassList() {
     );
   };
 
+  const sortValue = (item: GitNsBreakGlassItem, key: SortKey): string | null => {
+    switch (key) {
+      case "holder":
+        return book.nameOf(item.subject) ?? item.subject;
+      case "right":
+        return rightLabel(item.right);
+      case "resource":
+        return item.resource;
+      case "when":
+        return item.breakGlass.at;
+      case "state":
+        return BREAK_GLASS_STATE_LABEL[stateOf(item)];
+    }
+  };
+
   const table = (rows: GitNsBreakGlassItem[], label: string) => (
-    <div className="table-scroll">
-      <table className="data-table" aria-label={label}>
-        <thead>
-          <tr>
-            <th scope="col">Holder</th>
-            <th scope="col">Right</th>
-            <th scope="col">Resource</th>
-            <th scope="col">Justification</th>
-            <th scope="col">When</th>
-            <th scope="col">State</th>
-            <th scope="col">
-              <span className="visually-hidden">Actions</span>
-            </th>
-          </tr>
-        </thead>
-        <tbody>{rows.map(row)}</tbody>
-      </table>
-    </div>
+    <BreakGlassTable rows={rows} label={label} row={row} valueOf={sortValue} />
   );
 
   return (
     <>
-      <nav aria-label="Breadcrumb" className="gitns-crumbs">
-        <Link to={REPOS_PATH}>Repos</Link>
-        <span aria-hidden="true">/</span>
-        <span aria-current="page">Break-glass grants</span>
-      </nav>
-      <h2>Break-glass grants</h2>
-      <p className="lead">
-        Namespace admin, repo creator and owner are never granted to oneself. When nobody
-        else could, an administrator broke the glass: the right took effect at once, does
-        not expire, and stays here — and in the banner on every page — until another
-        administrator ratifies it or revokes it.
-      </p>
+      <PageHeader
+        trail={[{ label: "Break-glass grants" }]}
+        title="Break-glass grants"
+        lead={
+          <>
+            Namespace admin, repo creator and owner are never granted to oneself. When
+            nobody else could, an administrator broke the glass: the right took effect at
+            once, does not expire, and stays here — and in the banner on every page — until
+            another administrator ratifies it or revokes it.
+          </>
+        }
+      />
 
       {q.isPending && (
         <section className="card">
@@ -239,7 +275,7 @@ export function BreakGlassList() {
             {awaiting.length}
           </h3>
           {awaiting.length === 0 ? (
-            <p className="muted">None. Every break-glass has been ratified or revoked.</p>
+            <EmptyState compact title="None. Every break-glass has been ratified or revoked." />
           ) : (
             table(awaiting, "Break-glass grants awaiting a decision")
           )}

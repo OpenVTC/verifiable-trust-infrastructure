@@ -10,6 +10,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, BadgeCheck, ExternalLink } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
+import { EmptyState } from "@/components/EmptyState";
 import { shortenDid } from "@/lib/format";
 import {
   buildListBody,
@@ -220,22 +221,19 @@ export function RegistryPreview() {
         )}
         {query.isPending && <p className="muted">Loading…</p>}
         {query.data && query.data.vetters.length === 0 && (
-          <div className="empty-state">
-            <span className="empty-icon" aria-hidden="true">
-              <BadgeCheck />
-            </span>
-            <h4>
-              {filtered
+          <EmptyState
+            icon={BadgeCheck}
+            title={
+              filtered
                 ? "No listed vetter matches these filters"
-                : "No vetter is listed"}
-            </h4>
-            <p>
-              Only members with a live vetter grant who published a listed
-              profile appear. A vetter publishes their profile from their own
-              client.
-              {filtered ? " Clear the filters to see every listed vetter." : ""}
-            </p>
-          </div>
+                : "No vetter is listed"
+            }
+          >
+            Only members with a live vetter grant who published a listed
+            profile appear. A vetter publishes their profile from their own
+            client.
+            {filtered ? " Clear the filters to see every listed vetter." : ""}
+          </EmptyState>
         )}
         {query.data && query.data.vetters.length > 0 && (
           <ul className="vet-registry">

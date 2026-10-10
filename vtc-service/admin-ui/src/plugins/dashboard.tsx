@@ -3,6 +3,8 @@ import { ExternalLink } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { CopyButton } from "@/components/CopyButton";
+import { DataTable } from "@/components/DataTable";
+import { PageHeader } from "@/components/PageHeader";
 import { fetchHealth, fetchBuildInfo, fetchDiagnostics } from "@/lib/api";
 import { WAITING_COUNT_KEY } from "@/lib/action-badge";
 import { fetchActionsAttention } from "@/lib/actions-api";
@@ -153,7 +155,7 @@ export function Dashboard() {
 
   return (
     <section className="page">
-      <h2>Dashboard</h2>
+      <PageHeader />
 
       <div className="stat-tiles">
         {singleAdminMode && (
@@ -401,36 +403,26 @@ export function Dashboard() {
             </p>
           ) : (
             <>
-              <table className="data-table transport-table">
-                <thead>
-                  <tr>
-                    <th>Transport</th>
-                    <th>In the DID document</th>
-                    <th>Serviceable now</th>
-                    <th>Advertised endpoint</th>
+              <DataTable columns={TRANSPORT_COLUMNS} className="transport-table">
+                {transports.map((t) => (
+                  <tr key={t.protocol}>
+                    <td>{protocolName(t.protocol)}</td>
+                    <td className={t.advertised ? "yes" : "no"}>
+                      {t.advertised ? "advertised" : "not advertised"}
+                    </td>
+                    <td className={t.serviceable ? "yes" : "no"}>
+                      {t.serviceable ? "yes" : "no"}
+                    </td>
+                    <td>
+                      {t.endpoint ? (
+                        <code>{t.endpoint}</code>
+                      ) : (
+                        <span className="muted">&mdash;</span>
+                      )}
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {transports.map((t) => (
-                    <tr key={t.protocol}>
-                      <td>{protocolName(t.protocol)}</td>
-                      <td className={t.advertised ? "yes" : "no"}>
-                        {t.advertised ? "advertised" : "not advertised"}
-                      </td>
-                      <td className={t.serviceable ? "yes" : "no"}>
-                        {t.serviceable ? "yes" : "no"}
-                      </td>
-                      <td>
-                        {t.endpoint ? (
-                          <code>{t.endpoint}</code>
-                        ) : (
-                          <span className="muted">&mdash;</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                ))}
+              </DataTable>
               <p className="muted">
                 A client resolving this DID commits to the highest-preference
                 transport it finds &mdash; TSP, then DIDComm, then REST &mdash;
@@ -542,6 +534,13 @@ export function Dashboard() {
     </section>
   );
 }
+
+const TRANSPORT_COLUMNS = [
+  { key: "transport", label: "Transport" },
+  { key: "advertised", label: "In the DID document" },
+  { key: "serviceable", label: "Serviceable now" },
+  { key: "endpoint", label: "Advertised endpoint" },
+] as const;
 
 /**
  * Trim a transport error to a tile-sized line.

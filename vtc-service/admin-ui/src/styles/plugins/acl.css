@@ -1,1 +1,34 @@
 /* Layout particular to the acl screen. Shared look lives in components.css. */
+
+/* The Admin invites card's heading row. */
+.acl-invites-title {
+  margin: 0;
+}
+
+.acl-invites-lead {
+  margin: 0;
+  flex: 1 1 auto;
+}
+
+/* An entry's label, edited in place: the row's height, not a full control. */
+.acl-label-input {
+  height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+}
+
+button.link.acl-label-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+}
+
+button.link.acl-label-edit.empty {
+  color: var(--text-muted);
+}
+
+.acl-label-pencil {
+  opacity: 0.5;
+}

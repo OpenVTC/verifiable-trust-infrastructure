@@ -30,7 +30,11 @@ import { Link, useSearchParams } from "react-router-dom";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
+import { EmptyState } from "@/components/EmptyState";
+import { Field } from "@/components/Field";
 import { NamedDid } from "@/components/NamedDid";
+import { PageHeader } from "@/components/PageHeader";
+import { Tabs } from "@/components/Tabs";
 import {
   ABSENT,
   SUMMARY_REFUSED_MESSAGE,
@@ -108,7 +112,7 @@ export function Actions() {
   if (actionId) {
     return (
       <section className="page">
-        <h2>Actions</h2>
+        <PageHeader title="Actions" trail={[{ label: actionId }]} />
         <p>
           <Link to="/actions">Back to all actions</Link>
         </p>
@@ -119,13 +123,6 @@ export function Actions() {
 
   return (
     <section className="page">
-      <h2>Actions</h2>
-      <p className="lead">
-        Changes to who holds authority here wait for other administrators to
-        approve them. Each one completes by itself once enough have. A change the
-        operator made offline is already in effect and waits only for each
-        administrator to acknowledge it.
-      </p>
       <ActionList view={view} onView={(v) => setParams({ tab: v })} />
     </section>
   );
@@ -141,48 +138,58 @@ function ActionList({ view, onView }: { view: ActionsView; onView: (v: ActionsVi
   });
   const counts = query.data?.pages[0]?.counts;
   const actions = query.data?.pages.flatMap((p) => p.actions) ?? [];
+  const countOf = (v: ActionsView): number | undefined =>
+    v === "waitingForMe"
+      ? counts?.waitingForMe
+      : v === "requestedByMe"
+        ? counts?.requestedByMe
+        : undefined;
+  // The open count of the list on show, from the read the tabs already make;
+  // History keeps no count.
+  const current = countOf(view);
 
   return (
     <>
-      <div className="action-tabs" role="tablist" aria-label="Action lists">
-        {TABS.map((t) => {
-          const count =
-            t.view === "waitingForMe"
-              ? counts?.waitingForMe
-              : t.view === "requestedByMe"
-                ? counts?.requestedByMe
-                : undefined;
-          return (
-            <button
-              key={t.view}
-              type="button"
-              role="tab"
-              aria-selected={view === t.view}
-              className={view === t.view ? "on" : ""}
-              onClick={() => onView(t.view)}
-            >
-              {t.label}
-              {count !== undefined && count > 0 && (
-                <span className="nav-badge" aria-label={`${count} open`}>
-                  {count}
-                </span>
-              )}
-            </button>
-          );
+      <PageHeader
+        count={current}
+        countLabel={current !== undefined ? `${current} open` : undefined}
+        lead={
+          <>
+            Changes to who holds authority here wait for other administrators to
+            approve them. Each one completes by itself once enough have. A change the
+            operator made offline is already in effect and waits only for each
+            administrator to acknowledge it.
+          </>
+        }
+      />
+      <Tabs
+        label="Action lists"
+        value={view}
+        onChange={onView}
+        items={TABS.map((t) => {
+          const count = countOf(t.view);
+          return {
+            id: t.view,
+            label: t.label,
+            count,
+            countLabel: count !== undefined ? `${count} open` : undefined,
+          };
         })}
-        <button
-          type="button"
-          className="link"
-          onClick={() => void query.refetch()}
-          disabled={query.isFetching}
-          aria-label="Refresh"
-          title="Refresh"
-        >
-          <span className="button-icon" aria-hidden="true">
-            <RefreshCw />
-          </span>
-        </button>
-      </div>
+        end={
+          <button
+            type="button"
+            className="link"
+            onClick={() => void query.refetch()}
+            disabled={query.isFetching}
+            aria-label="Refresh"
+            title="Refresh"
+          >
+            <span className="button-icon" aria-hidden="true">
+              <RefreshCw />
+            </span>
+          </button>
+        }
+      />
 
       {query.error && (
         <section className="card error">
@@ -192,7 +199,7 @@ function ActionList({ view, onView }: { view: ActionsView; onView: (v: ActionsVi
       )}
       {query.isPending && <p className="lead">Loading…</p>}
       {!query.isPending && !query.error && actions.length === 0 && (
-        <p className="lead">{emptyText(view)}</p>
+        <EmptyState title={emptyText(view)} />
       )}
 
       <div className="action-list">
@@ -1060,15 +1067,14 @@ function ReasonForm(props: {
         props.onSubmit();
       }}
     >
-      <label className="field">
-        <span className="field-label">{props.label}</span>
+      <Field label={props.label}>
         <textarea
           rows={3}
           maxLength={MAX_REASON_LEN}
           value={props.reason}
           onChange={(e) => props.onReason(e.target.value)}
         />
-      </label>
+      </Field>
       <div className="form-actions">
         <button type="button" className="secondary" onClick={props.onCancel} disabled={props.busy}>
           Back

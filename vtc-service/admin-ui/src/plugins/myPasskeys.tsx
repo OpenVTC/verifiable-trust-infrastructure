@@ -25,6 +25,10 @@ import {
   serializeRegistration,
   type JsonPublicKeyOptions,
 } from "@/lib/webauthn";
+import { Field } from "@/components/Field";
+import { DataTable } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { PageHeader } from "@/components/PageHeader";
 
 // Canonical `auth/passkey/*` tasks (trust-tasks-tf#145). One task per
 // ceremony leg — the retired `admin/passkeys/{register,revoke}/1.0` pair
@@ -187,13 +191,17 @@ export function MyPasskeys() {
 
   return (
     <section className="page">
-      <h2>My passkeys</h2>
-      <p className="lead">
-        Manage the passkeys bound to your admin DID. Register a
-        backup before losing access to your primary device — losing
-        your only passkey means using <code>vtc admin emergency-bootstrap</code>{" "}
-        on the host to recover.
-      </p>
+      <PageHeader
+        title="My passkeys"
+        lead={
+          <>
+          Manage the passkeys bound to your admin DID. Register a
+          backup before losing access to your primary device — losing
+          your only passkey means using <code>vtc admin emergency-bootstrap</code>{" "}
+          on the host to recover.
+          </>
+        }
+      />
 
       {query.error && (
         <section className="card error">
@@ -244,8 +252,7 @@ export function MyPasskeys() {
             }}
             className="form-stack"
           >
-            <label className="field">
-              <span className="field-label">Label</span>
+            <Field label="Label">
               <input
                 type="text"
                 placeholder="e.g. ‘YubiKey 5C — work’"
@@ -253,7 +260,7 @@ export function MyPasskeys() {
                 onChange={(e) => setLabel(e.target.value)}
                 required
               />
-            </label>
+            </Field>
 
             {registerMutation.error && (
               <section className="card error">
@@ -285,91 +292,82 @@ export function MyPasskeys() {
       )}
 
       <section className="card">
-        <table className="data-table">
-          <thead>
+        <DataTable
+          columns={[
+            { key: "label", label: "Label" },
+            { key: "credential-id", label: "Credential ID" },
+            { key: "registered", label: "Registered" },
+            { key: "last-used", label: "Last used" },
+            { key: "actions", label: "" },
+          ]}
+        >
+          {query.isPending && (
             <tr>
-              <th>Label</th>
-              <th>Credential ID</th>
-              <th>Registered</th>
-              <th>Last used</th>
-              <th></th>
+              <td colSpan={5}>Loading…</td>
             </tr>
-          </thead>
-          <tbody>
-            {query.isPending && (
-              <tr>
-                <td colSpan={5}>Loading…</td>
-              </tr>
-            )}
-            {passkeys.length === 0 && !query.isPending && (
-              <tr>
-                <td colSpan={5}>
-                  <div className="empty-state">
-                    <span className="empty-icon" aria-hidden="true">
-                      <KeyRound />
-                    </span>
-                    <h4>No passkeys registered</h4>
-                    <p>
-                      Your session is authenticated another way — by your VTA
-                      wallet — so there is no passkey here to add a second
-                      device against. Registering one starts from an install
-                      URL, which an operator mints on the host with{" "}
-                      <code>vtc admin invite --did &lt;your-did&gt;</code>.
-                    </p>
-                  </div>
-                </td>
-              </tr>
-            )}
-            {passkeys.map((p) => (
-              <tr key={p.credentialId}>
-                <td>{p.deviceLabel ?? <span className="muted">—</span>}</td>
-                <td>
-                  <code className="truncate" title={p.credentialId}>
-                    {p.credentialId}
-                  </code>
-                </td>
-                <td>{formatDate(p.registeredAt)}</td>
-                <td>
-                  {p.lastUsedAt ? (
-                    formatDate(p.lastUsedAt)
-                  ) : (
-                    <span className="muted">never</span>
-                  )}
-                </td>
-                <td>
-                  <button
-                    type="button"
-                    className="secondary destructive"
-                    disabled={revokeMutation.isPending || onlyOne}
-                    title={
-                      onlyOne
-                        ? "Cannot revoke your last passkey"
-                        : undefined
-                    }
-                    onClick={async () => {
-                      const ok = await confirm({
-                        title: p.deviceLabel
-                          ? `Revoke "${p.deviceLabel}"?`
-                          : "Revoke this passkey?",
-                        message:
-                          "You'll need to verify with another passkey. The revoked passkey can no longer sign in.",
-                        confirmLabel: "Revoke",
-                        destructive: true,
+          )}
+          {passkeys.length === 0 && !query.isPending && (
+            <tr>
+              <td colSpan={5}>
+                <EmptyState icon={KeyRound} title="No passkeys registered">
+                  Your session is authenticated another way — by your VTA
+                  wallet — so there is no passkey here to add a second
+                  device against. Registering one starts from an install
+                  URL, which an operator mints on the host with{" "}
+                  <code>vtc admin invite --did &lt;your-did&gt;</code>.
+                </EmptyState>
+              </td>
+            </tr>
+          )}
+          {passkeys.map((p) => (
+            <tr key={p.credentialId}>
+              <td>{p.deviceLabel ?? <span className="muted">—</span>}</td>
+              <td>
+                <code className="truncate" title={p.credentialId}>
+                  {p.credentialId}
+                </code>
+              </td>
+              <td>{formatDate(p.registeredAt)}</td>
+              <td>
+                {p.lastUsedAt ? (
+                  formatDate(p.lastUsedAt)
+                ) : (
+                  <span className="muted">never</span>
+                )}
+              </td>
+              <td>
+                <button
+                  type="button"
+                  className="secondary destructive"
+                  disabled={revokeMutation.isPending || onlyOne}
+                  title={
+                    onlyOne
+                      ? "Cannot revoke your last passkey"
+                      : undefined
+                  }
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: p.deviceLabel
+                        ? `Revoke "${p.deviceLabel}"?`
+                        : "Revoke this passkey?",
+                      message:
+                        "You'll need to verify with another passkey. The revoked passkey can no longer sign in.",
+                      confirmLabel: "Revoke",
+                      destructive: true,
+                    });
+                    if (ok) {
+                      revokeMutation.mutate({
+                        credentialId: p.credentialId,
                       });
-                      if (ok) {
-                        revokeMutation.mutate({
-                          credentialId: p.credentialId,
-                        });
-                      }
-                    }}
-                  >
-                    Revoke
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                    }
+                  }}
+                >
+                  Revoke
+                </button>
+              </td>
+            </tr>
+          ))}
+        </DataTable>
         {onlyOne && (
           <p className="muted">
             The Revoke button is disabled because you only have one

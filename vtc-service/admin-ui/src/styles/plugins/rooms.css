@@ -1,1 +1,11 @@
 /* Layout particular to the rooms screen. Shared look lives in components.css. */
+
+/* The small second line under a room's name, tier or retention. */
+.rooms-sub {
+  font-size: var(--text-sm);
+}
+
+.rooms-tiers,
+.rooms-policy-note {
+  margin-top: var(--space-4);
+}

@@ -1,1 +1,35 @@
 /* Layout particular to the relationships screen. Shared look lives in components.css. */
+
+/* The graph and its legend beside the selected node's edges. */
+.relationships-layout {
+  display: flex;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+.relationships-figures {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.relationships-graph {
+  width: min(100%, 560px);
+  height: auto;
+}
+.relationships-legend {
+  width: min(100%, 260px);
+  height: auto;
+}
+.relationships-node {
+  cursor: pointer;
+}
+.relationships-detail {
+  flex: 1 1 220px;
+  min-width: 220px;
+}
+.relationships-edges {
+  padding-left: 1.1em;
+  margin: 0;
+}
+.relationships-edges li {
+  margin-bottom: var(--space-1);
+}

@@ -55,7 +55,10 @@ import {
 } from "@/lib/api";
 import { CopyButton } from "@/components/CopyButton";
 import { DidText } from "@/components/DidText";
-import { SortableHeader } from "@/components/SortableHeader";
+import { DataTable, useSortedRows, type Column } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { Field } from "@/components/Field";
+import { PageHeader } from "@/components/PageHeader";
 import { ErrorOrParked } from "@/components/ParkedNotice";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate, shortenDid } from "@/lib/format";
@@ -243,6 +246,26 @@ async function purgeMember(did: string): Promise<void> {
   await postSignedTrustTask<unknown>(TRUST_TASK_PURGE, { did });
 }
 
+type RemovedSortKey = "did" | "removed" | "slot";
+
+const REMOVED_COLUMNS: readonly Column<RemovedSortKey>[] = [
+  { key: "did", label: "DID", sortKey: "did" },
+  { key: "removed", label: "Removed", sortKey: "removed" },
+  { key: "slot", label: "Revocation slot", sortKey: "slot" },
+  { key: "actions", label: "" },
+];
+
+function removedValue(m: RemovedMemberRow, key: RemovedSortKey): SortValue {
+  switch (key) {
+    case "did":
+      return m.did;
+    case "removed":
+      return Date.parse(m.removedAt) || null;
+    case "slot":
+      return m.statusListIndex ?? null;
+  }
+}
+
 /// Departed members whose Member row was kept as a tombstone (Tombstone /
 /// Historical disposition). They have no ACL, so they don't show in the active
 /// list — surfaced here so operators can see who left and permanently purge the
@@ -264,6 +287,7 @@ function RemovedMembers() {
   });
 
   const rows = query.data ?? [];
+  const sorted = useSortedRows(rows, removedValue, { initialDir: { removed: "desc" } });
   if (query.isPending || rows.length === 0) {
     // Hide the section entirely when there are no departed members.
     return null;
@@ -276,45 +300,35 @@ function RemovedMembers() {
         Departed members whose record was retained (tombstone). They are no
         longer members; permanently delete the row to clean up.
       </p>
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>DID</th>
-            <th>Removed</th>
-            <th>Revocation slot</th>
-            <th />
+      <DataTable columns={REMOVED_COLUMNS} sort={sorted.sort} onSort={sorted.onSort}>
+        {sorted.rows.map((m) => (
+          <tr key={m.did}>
+            <td>
+              <code>{m.did}</code>
+            </td>
+            <td>{formatDate(m.removedAt)}</td>
+            <td>{m.statusListIndex ?? "—"}</td>
+            <td>
+              <button
+                type="button"
+                className="secondary destructive"
+                disabled={purgeMutation.isPending}
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: "Permanently delete member?",
+                    message: `This removes the retained record for ${m.did}. This cannot be undone.`,
+                    confirmLabel: "Delete permanently",
+                    destructive: true,
+                  });
+                  if (ok) purgeMutation.mutate(m.did);
+                }}
+              >
+                <Trash2 size={16} strokeWidth={1.75} /> Delete permanently
+              </button>
+            </td>
           </tr>
-        </thead>
-        <tbody>
-          {rows.map((m) => (
-            <tr key={m.did}>
-              <td>
-                <code>{m.did}</code>
-              </td>
-              <td>{formatDate(m.removedAt)}</td>
-              <td>{m.statusListIndex ?? "—"}</td>
-              <td>
-                <button
-                  type="button"
-                  className="secondary destructive"
-                  disabled={purgeMutation.isPending}
-                  onClick={async () => {
-                    const ok = await confirm({
-                      title: "Permanently delete member?",
-                      message: `This removes the retained record for ${m.did}. This cannot be undone.`,
-                      confirmLabel: "Delete permanently",
-                      destructive: true,
-                    });
-                    if (ok) purgeMutation.mutate(m.did);
-                  }}
-                >
-                  <Trash2 size={16} strokeWidth={1.75} /> Delete permanently
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+        ))}
+      </DataTable>
       {purgeMutation.error && (
         <p className="error">
           {(purgeMutation.error as Error).message}
@@ -455,25 +469,38 @@ function MembersList() {
     setSort((s) => nextSort(s, key, INITIAL_DIR[key]));
     setPage(0);
   };
-  const header = (key: MemberSortKey, label: string) => (
-    <SortableHeader
-      label={label}
-      sortKey={key}
-      sort={sort}
-      onSort={onSort}
-      tip={MEMBER_COLUMN_TIPS[key]}
-      className={key === "did" ? "members-did" : undefined}
-    />
-  );
+  // Name leads: it is what an operator is looking for. The DID stays in its
+  // own column rather than being replaced by the name — a member you cannot
+  // check against an identifier is a member you cannot audit.
+  const column = (key: MemberSortKey, label: string): Column<MemberSortKey> => ({
+    key,
+    label,
+    sortKey: key,
+    tip: MEMBER_COLUMN_TIPS[key],
+    className: key === "did" ? "members-did" : undefined,
+  });
+  const tableColumns: Column<MemberSortKey>[] = [
+    column("name", "Name"),
+    column("did", "DID"),
+    column("role", "Role"),
+    column("joined", "Joined"),
+    column("personhood", "Personhood"),
+    ...(showGit ? [column("git", "Git")] : []),
+  ];
 
   return (
     <section className="page">
-      <h2>Members</h2>
+      <PageHeader
+        title="Members"
+        count={query.isSuccess ? all.length : undefined}
+        countLabel={
+          query.isSuccess ? `${all.length} member${all.length === 1 ? "" : "s"}` : undefined
+        }
+      />
 
       <section className="card">
         <div className="toolbar members-toolbar">
-          <label className="field inline members-search">
-            <span className="field-label">Search</span>
+          <Field label="Search" inline className="members-search">
             <input
               type="search"
               placeholder="Name, DID, role or forge login"
@@ -483,9 +510,8 @@ function MembersList() {
                 setPage(0);
               }}
             />
-          </label>
-          <label className="field inline">
-            <span className="field-label">Role</span>
+          </Field>
+          <Field label="Role" inline>
             <select
               value={roleFilter}
               onChange={(e) => {
@@ -500,7 +526,7 @@ function MembersList() {
                 </option>
               ))}
             </select>
-          </label>
+          </Field>
         </div>
       </section>
 
@@ -524,100 +550,76 @@ function MembersList() {
           </p>
         )}
         <div className="table-scroll">
-          <table className="data-table">
-            <thead>
+          <DataTable columns={tableColumns} sort={sort} onSort={onSort}>
+            {query.isPending && (
               <tr>
-                {/* Name leads: it is what an operator is looking for. The DID
-                    stays in its own column rather than being replaced by the
-                    name — a member you cannot check against an identifier is a
-                    member you cannot audit. */}
-                {header("name", "Name")}
-                {header("did", "DID")}
-                {header("role", "Role")}
-                {header("joined", "Joined")}
-                {header("personhood", "Personhood")}
-                {showGit && header("git", "Git")}
+                <td colSpan={columns}>Loading…</td>
               </tr>
-            </thead>
-            <tbody>
-              {query.isPending && (
-                <tr>
-                  <td colSpan={columns}>Loading…</td>
-                </tr>
-              )}
-              {query.isSuccess && rows.length === 0 && (
-                <tr>
-                  <td colSpan={columns}>
-                    <div className="empty-state">
-                      <span className="empty-icon" aria-hidden="true">
-                        <UsersIcon />
-                      </span>
-                      {all.length === 0 ? (
-                        <>
-                          <h4>No members yet</h4>
-                          <p>Members appear here once join requests are approved.</p>
-                        </>
-                      ) : (
-                        <>
-                          <h4>No members match</h4>
-                          <p>Clear the search or choose another role to widen the result.</p>
-                        </>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              )}
-              {visible.map((m) => (
-                <tr key={m.did}>
-                  <td>
-                    {m.label ?? book.nameOf(m.did) ?? <span className="muted">—</span>}
-                    {m.joinedViaInvitation && (
-                      <Ticket
-                        size={14}
-                        strokeWidth={1.75}
-                        aria-label="Joined via invitation"
-                        className="status-icon ok"
-                        style={{ marginLeft: 6, verticalAlign: "middle" }}
-                      />
-                    )}
-                  </td>
-                  <td className="members-did">
-                    <DidText did={m.did} to={encodeURIComponent(m.did)} />
-                  </td>
-                  <td>
-                    <code>{m.role}</code>
-                  </td>
-                  <td>{formatDate(m.joinedAt)}</td>
-                  <td>
-                    {m.personhood ? (
-                      <Check
-                        size={16}
-                        strokeWidth={1.75}
-                        aria-label="Asserted"
-                        className="status-icon ok"
-                      />
-                    ) : (
-                      <Minus
-                        size={16}
-                        strokeWidth={1.75}
-                        aria-label="Not asserted"
-                        className="status-icon muted"
-                      />
-                    )}
-                  </td>
-                  {showGit && (
-                    <td>
-                      {git.isPending ? (
-                        <span className="muted">…</span>
-                      ) : (
-                        <MemberGitCell did={m.did} index={git.index} />
-                      )}
-                    </td>
+            )}
+            {query.isSuccess && rows.length === 0 && (
+              <tr>
+                <td colSpan={columns}>
+                  {all.length === 0 ? (
+                    <EmptyState icon={UsersIcon} title="No members yet">
+                      Members appear here once join requests are approved.
+                    </EmptyState>
+                  ) : (
+                    <EmptyState icon={UsersIcon} title="No members match">
+                      Clear the search or choose another role to widen the result.
+                    </EmptyState>
                   )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                </td>
+              </tr>
+            )}
+            {visible.map((m) => (
+              <tr key={m.did}>
+                <td>
+                  {m.label ?? book.nameOf(m.did) ?? <span className="muted">—</span>}
+                  {m.joinedViaInvitation && (
+                    <Ticket
+                      size={14}
+                      strokeWidth={1.75}
+                      aria-label="Joined via invitation"
+                      className="status-icon ok members-invited"
+                    />
+                  )}
+                </td>
+                <td className="members-did">
+                  <DidText did={m.did} to={encodeURIComponent(m.did)} />
+                </td>
+                <td>
+                  <code>{m.role}</code>
+                </td>
+                <td>{formatDate(m.joinedAt)}</td>
+                <td>
+                  {m.personhood ? (
+                    <Check
+                      size={16}
+                      strokeWidth={1.75}
+                      aria-label="Asserted"
+                      className="status-icon ok"
+                    />
+                  ) : (
+                    <Minus
+                      size={16}
+                      strokeWidth={1.75}
+                      aria-label="Not asserted"
+                      className="status-icon muted"
+                    />
+                  )}
+                </td>
+                {showGit && (
+                  <td>
+                    {git.isPending ? (
+                      <span className="muted">…</span>
+                    ) : (
+                      <MemberGitCell did={m.did} index={git.index} />
+                    )}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </DataTable>
         </div>
 
         {query.isSuccess && (
@@ -664,7 +666,7 @@ function CredentialBody({ label, doc }: { label: string; doc: unknown }) {
   const json = JSON.stringify(doc, null, 2);
   const id = credentialId(doc);
   return (
-    <li style={{ marginBottom: "var(--space-3)" }}>
+    <li>
       <strong>{label}</strong>
       {id && (
         <span className="muted">
@@ -679,9 +681,7 @@ function CredentialBody({ label, doc }: { label: string; doc: unknown }) {
       />
       <details>
         <summary className="muted">Credential</summary>
-        <pre style={{ overflowX: "auto", fontSize: "var(--text-sm)" }}>
-          {json}
-        </pre>
+        <pre className="member-credential-json">{json}</pre>
       </details>
     </li>
   );
@@ -708,11 +708,9 @@ function MemberCredentialDocuments({
     <>
       <h4>Documents</h4>
       {docs.length === 0 ? (
-        <p className="muted">
-          This community holds no credential documents for this member.
-        </p>
+        <EmptyState compact title="This community holds no credential documents for this member." />
       ) : (
-        <ul style={{ paddingLeft: "1.1em", margin: 0 }}>
+        <ul className="member-credential-list">
           {docs.map((d) => (
             <CredentialBody key={d.key} label={d.label} doc={d.doc} />
           ))}
@@ -774,6 +772,7 @@ function MemberDetail() {
   const confirm = useConfirm();
   const decoded = decodeURIComponent(did);
   const [removeReason, setRemoveReason] = useState("");
+  const book = useNameBook();
 
   const query = useQuery({
     queryKey: ["member", decoded],
@@ -811,6 +810,10 @@ function MemberDetail() {
       e.endpoints.includes(decoded) &&
       e.halves.some((h) => h.issuerDid !== decoded && h.subjectDid === decoded),
   );
+
+  // The name the Members list shows for this member, else its DID shortened.
+  const displayName =
+    query.data?.label ?? book.nameOf(decoded) ?? shortenDid(decoded);
 
   const confirmGesture = gestureFromConfirm(confirm);
   const promoteMutation = useMutation({
@@ -861,7 +864,7 @@ function MemberDetail() {
       <button type="button" className="link" onClick={() => navigate("..")}>
         <ArrowLeft size={14} aria-hidden="true" /> Back to members
       </button>
-      <h2>Member detail</h2>
+      <PageHeader trail={[{ label: displayName }]} title={displayName} />
 
       {query.isPending && <p>Loading…</p>}
       {query.error && (
@@ -1030,14 +1033,14 @@ function MemberDetail() {
             )}
             {relationships.data &&
               (relationships.data.items.length === 0 ? (
-                <p className="muted">
-                  None published. A member's relationships are private to them
-                  until they publish an edge here.
-                </p>
+                <EmptyState
+                  compact
+                  title="None published. A member's relationships are private to them until they publish an edge here."
+                />
               ) : (
-                <ul style={{ paddingLeft: "1.1em", margin: 0 }}>
+                <ul className="member-credential-list">
                   {relationships.data.items.map((r) => (
-                    <li key={r.id} style={{ marginBottom: "var(--space-3)" }}>
+                    <li key={r.id}>
                       <code>{shortenDid(r.issuerDid)}</code> →{" "}
                       <code>{shortenDid(r.subjectDid)}</code>
                       <span className="muted"> · {formatDate(r.createdAt)}</span>
@@ -1048,12 +1051,7 @@ function MemberDetail() {
                       />
                       <details>
                         <summary className="muted">Credential</summary>
-                        <pre
-                          style={{
-                            overflowX: "auto",
-                            fontSize: "var(--text-sm)",
-                          }}
-                        >
+                        <pre className="member-credential-json">
                           {JSON.stringify(r.vrcJsonld, null, 2)}
                         </pre>
                       </details>
@@ -1115,7 +1113,7 @@ function MemberDetail() {
                   <dd>{liveGrant.statusListIndex}</dd>
                 </dl>
               ) : (
-                <p className="muted">Not a vetter.</p>
+                <EmptyState compact title="Not a vetter." />
               ))}
 
             {grantVetterMutation.error && (
@@ -1222,15 +1220,14 @@ function MemberDetail() {
 
             <hr />
 
-            <label className="field">
-              <span className="field-label">Removal reason (optional)</span>
+            <Field label="Removal reason (optional)">
               <input
                 type="text"
                 placeholder="left the community / policy violation / …"
                 value={removeReason}
                 onChange={(e) => setRemoveReason(e.target.value)}
               />
-            </label>
+            </Field>
             <div className="form-actions">
               <button
                 type="button"

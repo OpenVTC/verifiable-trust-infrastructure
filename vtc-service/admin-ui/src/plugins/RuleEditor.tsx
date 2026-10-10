@@ -5,6 +5,7 @@
 
 import { useMemo, useState } from "react";
 
+import { Tabs } from "@/components/Tabs";
 import {
   type Condition,
   type Effect,
@@ -93,39 +94,28 @@ export function RuleEditor({
         >
           + Add route
         </button>
-        <p className="cer-sub" style={{ fontSize: "var(--text-xs)" }}>
+        <p className="cer-note">
           Routes are first-match, top to bottom. A structural{" "}
           <code>deny</code> is always appended as the backstop.
         </p>
       </div>
 
       <div className="rule-preview">
-        <div className="rule-view-tabs" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === "english"}
-            className={view === "english" ? "on" : ""}
-            onClick={() => setView("english")}
-          >
-            Plain English
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === "rego"}
-            className={view === "rego" ? "on" : ""}
-            onClick={() => setView("rego")}
-          >
-            Compiled Rego
-          </button>
-        </div>
+        <Tabs
+          variant="segmented"
+          label="Preview"
+          className="rule-view"
+          value={view}
+          onChange={setView}
+          items={[
+            { id: "english", label: "Plain English" },
+            { id: "rego", label: "Compiled Rego" },
+          ]}
+        />
         {view === "english" ? (
           <EnglishView lines={english} />
         ) : (
-          <pre className="cer-policy" style={{ maxHeight: 360 }}>
-            {rego}
-          </pre>
+          <pre className="cer-policy cer-policy-preview">{rego}</pre>
         )}
         <div className="rule-actions">
           <button

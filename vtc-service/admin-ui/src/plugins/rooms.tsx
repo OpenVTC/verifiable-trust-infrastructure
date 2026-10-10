@@ -66,6 +66,9 @@ import { postSignedRead } from "@/lib/api";
 import { fetchActivePolicy } from "@/lib/policies-api";
 import { formatEpoch, shorten } from "@/lib/format";
 import { NamedDid } from "@/components/NamedDid";
+import { DataTable } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { PageHeader } from "@/components/PageHeader";
 import { useNameBook } from "@/lib/names";
 import type { HostedRoom, PolicyTestResponse } from "@/lib/wire-types";
 
@@ -182,55 +185,52 @@ function LifecyclePill({ value }: { value: string }) {
 function RoomsTable({ rooms }: { rooms: HostedRoom[] }) {
   const nameBook = useNameBook();
   return (
-    <table className="data-table">
-      <thead>
-        <tr>
-          <th>Room</th>
-          <th>Owner</th>
-          <th>Tier</th>
-          <th>Epoch</th>
-          <th>Lifecycle</th>
-          <th>Retention</th>
-          <th>Created</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rooms.map((r) => (
-          <tr key={r.roomId}>
-            <td>
-              <code title={r.roomId}>{shorten(r.roomId)}</code>
-              {r.mirrorOf && (
-                <div className="muted" style={{ fontSize: "0.85em" }}>
-                  read-only copy of {shorten(r.mirrorOf)}
-                </div>
-              )}
-            </td>
-            <td>
-              <NamedDid did={r.ownerDid} book={nameBook} />
-            </td>
-            <td>{r.visibility}</td>
-            <td>
-              {r.epoch}
-              {r.epochExpiresAt ? (
-                <div className="muted" style={{ fontSize: "0.85em" }}>
-                  expires {formatEpoch(r.epochExpiresAt)}
-                </div>
-              ) : null}
-            </td>
-            <td>
-              <LifecyclePill value={r.lifecycle} />
-            </td>
-            <td>
-              {r.retentionDays}d
-              <div className="muted" style={{ fontSize: "0.85em" }}>
-                {r.retentionPolicy === "chained" ? "history kept" : "from join"}
+    <DataTable
+      columns={[
+        { key: "room", label: "Room" },
+        { key: "owner", label: "Owner" },
+        { key: "tier", label: "Tier" },
+        { key: "epoch", label: "Epoch" },
+        { key: "lifecycle", label: "Lifecycle" },
+        { key: "retention", label: "Retention" },
+        { key: "created", label: "Created" },
+      ]}
+    >
+      {rooms.map((r) => (
+        <tr key={r.roomId}>
+          <td>
+            <code title={r.roomId}>{shorten(r.roomId)}</code>
+            {r.mirrorOf && (
+              <div className="muted rooms-sub">
+                read-only copy of {shorten(r.mirrorOf)}
               </div>
-            </td>
-            <td>{formatEpoch(r.createdAt)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+            )}
+          </td>
+          <td>
+            <NamedDid did={r.ownerDid} book={nameBook} />
+          </td>
+          <td>{r.visibility}</td>
+          <td>
+            {r.epoch}
+            {r.epochExpiresAt ? (
+              <div className="muted rooms-sub">
+                expires {formatEpoch(r.epochExpiresAt)}
+              </div>
+            ) : null}
+          </td>
+          <td>
+            <LifecyclePill value={r.lifecycle} />
+          </td>
+          <td>
+            {r.retentionDays}d
+            <div className="muted rooms-sub">
+              {r.retentionPolicy === "chained" ? "history kept" : "from join"}
+            </div>
+          </td>
+          <td>{formatEpoch(r.createdAt)}</td>
+        </tr>
+      ))}
+    </DataTable>
   );
 }
 
@@ -318,46 +318,44 @@ function CreationPolicy() {
           )}
 
           {probesQuery.data && (
-            <table className="data-table" style={{ marginTop: "var(--space-4)" }}>
-              <thead>
-                <tr>
-                  <th>Tier</th>
-                  <th>A member may create</th>
-                  <th>What the policy said</th>
-                </tr>
-              </thead>
-              <tbody>
-                {TIERS.map((tier) => {
-                  const v = probesQuery.data[tier];
-                  const allowed = v?.effect === "allow";
-                  return (
-                    <tr key={tier}>
-                      <td>
-                        {tier}
-                        <div className="muted" style={{ fontSize: "0.85em" }}>
-                          {TIER_BLURB[tier]}
-                        </div>
-                      </td>
-                      <td>
-                        <span className={`chip ${allowed ? "success" : "warning"}`}>
-                          {v ? (allowed ? "yes" : "no") : "no decision"}
-                        </span>
-                      </td>
-                      <td className="muted">
-                        {v
-                          ? (v.reason ?? v.code ?? v.effect)
-                          : "The module returned nothing for this input, which this host treats as a deny."}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <DataTable
+              className="rooms-tiers"
+              columns={[
+                { key: "tier", label: "Tier" },
+                { key: "a-member-may-create", label: "A member may create" },
+                { key: "what-the-policy-said", label: "What the policy said" },
+              ]}
+            >
+              {TIERS.map((tier) => {
+                const v = probesQuery.data[tier];
+                const allowed = v?.effect === "allow";
+                return (
+                  <tr key={tier}>
+                    <td>
+                      {tier}
+                      <div className="muted rooms-sub">
+                        {TIER_BLURB[tier]}
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`chip ${allowed ? "success" : "warning"}`}>
+                        {v ? (allowed ? "yes" : "no") : "no decision"}
+                      </span>
+                    </td>
+                    <td className="muted">
+                      {v
+                        ? (v.reason ?? v.code ?? v.effect)
+                        : "The module returned nothing for this input, which this host treats as a deny."}
+                    </td>
+                  </tr>
+                );
+              })}
+            </DataTable>
           )}
         </>
       )}
 
-      <p className="muted" style={{ marginTop: "var(--space-4)" }}>
+      <p className="muted rooms-policy-note">
         To change any of it, edit the <b>rooms</b> policy under Policies. The
         shipped default denies the private tier deliberately: a community that has
         not decided should not find out it is hosting rooms whose membership it
@@ -383,14 +381,18 @@ export function Rooms() {
 
   return (
     <section className="page">
-      <h2>Data rooms</h2>
-      <p className="lead">
-        Rooms this community stores. It cannot read their records and holds no
-        member list — both by construction — so this is the row and nothing
-        derived from a room's contents. The owner is shown at every tier,
-        including private, because they are the party a quota or reclamation
-        notice has to reach.
-      </p>
+      <PageHeader
+        title="Data rooms"
+        lead={
+          <>
+          Rooms this community stores. It cannot read their records and holds no
+          member list — both by construction — so this is the row and nothing
+          derived from a room's contents. The owner is shown at every tier,
+          including private, because they are the party a quota or reclamation
+          notice has to reach.
+          </>
+        }
+      />
 
       {roomsQuery.isPending && (
         <section className="card">
@@ -409,16 +411,10 @@ export function Rooms() {
 
       {!roomsQuery.isPending && !roomsQuery.isError && rooms.length === 0 && (
         <section className="card">
-          <div className="empty-state">
-            <span className="empty-icon" aria-hidden="true">
-              <DoorOpen />
-            </span>
-            <h4>No rooms hosted here</h4>
-            <p>
-              A room appears once its owner registers it with this community. The
-              policy below decides who may.
-            </p>
-          </div>
+          <EmptyState icon={DoorOpen} title="No rooms hosted here">
+            A room appears once its owner registers it with this community. The
+            policy below decides who may.
+          </EmptyState>
         </section>
       )}
 

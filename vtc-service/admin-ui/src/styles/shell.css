@@ -10,17 +10,19 @@
   --topbar-h: 52px;
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
-  grid-template-rows: var(--topbar-h) 1fr;
+  grid-template-rows: var(--topbar-h) minmax(0, 1fr);
   grid-template-areas:
     "top top"
     "nav main";
-  min-height: 100vh;
+  /* The page area scrolls, not the window: the top bar and the sidebar stay
+     put, and a table's sticky header sticks to the top of the page area. */
+  height: 100vh;
+  height: 100dvh;
 }
 
 .topbar {
   grid-area: top;
-  position: sticky;
-  top: 0;
+  position: relative;
   z-index: 800;
   display: flex;
   align-items: center;
@@ -114,6 +116,8 @@ img.community-logo {
    measure (`.prose-measure`), not the page's. */
 .content {
   grid-area: main;
+  overflow-y: auto;
+  min-height: 0;
   padding: var(--space-6) var(--space-8) var(--space-10);
   max-width: none;
   /* The 1fr grid track is minmax(auto,1fr) by default; auto lets inner
@@ -126,9 +130,7 @@ img.community-logo {
 
 .nav {
   grid-area: nav;
-  position: sticky;
-  top: var(--topbar-h);
-  height: calc(100vh - var(--topbar-h));
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;

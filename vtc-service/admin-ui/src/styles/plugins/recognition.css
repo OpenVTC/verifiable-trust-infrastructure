@@ -26,3 +26,12 @@
 .records-resource {
   overflow-wrap: anywhere;
 }
+
+/* An icon set in a line of bold text, sitting on its baseline. */
+.recognition-inline-icon {
+  vertical-align: calc(var(--space-1) / -2);
+}
+/* The answer to "Check recognition", under its form. */
+.recognition-result {
+  margin-top: var(--space-3);
+}

@@ -22,6 +22,10 @@ import {
 } from "@/lib/api";
 import { offerDeepLink } from "@/lib/invitation-offer";
 import { CopyButton } from "@/components/CopyButton";
+import { DataTable, useSortedRows } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { Field } from "@/components/Field";
+import { PageHeader } from "@/components/PageHeader";
 import { useToast } from "@/lib/toast";
 import { useNameBook } from "@/lib/names";
 import { NamedDid } from "@/components/NamedDid";
@@ -31,6 +35,16 @@ import { NamedDid } from "@/components/NamedDid";
 /// still offer copy + download, and fall back to those for the rare VIC that
 /// exceeds the QR limit.
 const QR_MAX_CHARS = 2900;
+
+type InvitationSortKey = "invitee" | "role" | "issued" | "status";
+
+const INVITATION_COLUMNS = [
+  { key: "invitee", label: "Invitee", sortKey: "invitee" },
+  { key: "role", label: "Role", sortKey: "role" },
+  { key: "issued", label: "Issued", sortKey: "issued" },
+  { key: "status", label: "Status", sortKey: "status" },
+  { key: "actions", label: "" },
+] as const satisfies readonly { key: string; label: string; sortKey?: InvitationSortKey }[];
 
 export function Invitations() {
   const nameBook = useNameBook();
@@ -95,21 +109,38 @@ export function Invitations() {
     onError: (e) => toast.pushFromError(e),
   });
 
+  // The list is read whole, so its columns sort in the browser.
+  const sorted = useSortedRows<InvitationListItem, InvitationSortKey>(
+    invitations.data ?? [],
+    (inv, key) => {
+      switch (key) {
+        case "invitee":
+          return nameBook.nameOrDid(inv.subjectDid);
+        case "role":
+          return inv.role ?? "member";
+        case "issued":
+          return inv.issuedAt;
+        case "status":
+          return inv.revokedAt ? "revoked" : "live";
+      }
+    },
+    { initialDir: { issued: "desc" } },
+  );
+
   const result = mutation.data;
   const vicJson = result ? JSON.stringify(result.vic, null, 2) : "";
 
   return (
     <div className="page">
-      <header className="page-header">
-        <h2>
-          <Ticket size={20} strokeWidth={1.75} /> Invitations
-        </h2>
-        <p className="muted">
-          Issue a Verifiable Invitation Credential (VIC) for a prospective
-          member. The holder presents it when joining and is auto-admitted — no
-          manual approval needed.
-        </p>
-      </header>
+      <PageHeader
+        lead={
+          <>
+            Issue a Verifiable Invitation Credential (VIC) for a prospective
+            member. The holder presents it when joining and is auto-admitted — no
+            manual approval needed.
+          </>
+        }
+      />
 
       <section className="card">
         <form
@@ -118,8 +149,7 @@ export function Invitations() {
             if (did.trim()) mutation.mutate();
           }}
         >
-          <label className="field">
-            <span className="field-label">Invitee DID</span>
+          <Field label="Invitee DID">
             <input
               type="text"
               value={did}
@@ -128,9 +158,8 @@ export function Invitations() {
               autoComplete="off"
               spellCheck={false}
             />
-          </label>
-          <label className="field">
-            <span className="field-label">Validity (days, optional)</span>
+          </Field>
+          <Field label="Validity (days, optional)">
             <input
               type="number"
               min={1}
@@ -139,15 +168,14 @@ export function Invitations() {
               onChange={(e) => setValidityDays(e.target.value)}
               placeholder="7"
             />
-          </label>
-          <label className="field">
-            <span className="field-label">Role on join</span>
+          </Field>
+          <Field label="Role on join">
             <select value={role} onChange={(e) => setRole(e.target.value)}>
               <option value="member">member</option>
               <option value="moderator">moderator</option>
               <option value="issuer">issuer</option>
             </select>
-          </label>
+          </Field>
           <button
             type="submit"
             className="btn primary"
@@ -166,7 +194,7 @@ export function Invitations() {
               Valid until <code>{result.validUntil}</code>
             </p>
           )}
-          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <div className="invitation-handoff">
             <CopyButton
               value={vicJson}
               label="Copy invitation JSON"
@@ -180,7 +208,7 @@ export function Invitations() {
             value={vicJson}
             rows={14}
             spellCheck={false}
-            style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }}
+            className="invitation-json"
           />
         </section>
       )}
@@ -193,7 +221,7 @@ export function Invitations() {
             invited DID, so a photographed code admits no one else. Expires{" "}
             <code>{offerShown.expiresAt}</code>.
           </p>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <div className="invitation-handoff">
             <CopyButton value={offerShown.link} label="Copy offer link" successMessage="Offer link copied" />
           </div>
           <VicQr text={offerShown.link} />
@@ -207,77 +235,66 @@ export function Invitations() {
           <p className="muted">Could not load invitations.</p>
         )}
         {invitations.data && invitations.data.length === 0 && (
-          <p className="muted">No invitations issued yet.</p>
+          <EmptyState icon={Ticket} title="No invitations issued yet." />
         )}
         {invitations.data && invitations.data.length > 0 && (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Invitee</th>
-                <th>Role</th>
-                <th>Issued</th>
-                <th>Status</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {invitations.data.map((inv: InvitationListItem) => (
-                <tr key={inv.id}>
-                  <td>
-                    <NamedDid book={nameBook} did={inv.subjectDid} />
-                  </td>
-                  <td>{inv.role ?? "member"}</td>
-                  <td>{inv.issuedAt.slice(0, 10)}</td>
-                  <td>
-                    {inv.revokedAt ? (
-                      <span className="muted">revoked</span>
-                    ) : (
-                      "live"
-                    )}
-                  </td>
-                  <td>
-                    {!inv.revokedAt && (
-                      <>
-                        <button
-                          type="button"
-                          className="btn"
-                          disabled={deliver.isPending}
-                          onClick={() =>
-                            deliver.mutate({ id: inv.id, subjectDid: inv.subjectDid, channel: "message" })
-                          }
-                          title="Send an offer to the invitee's DID"
-                        >
-                          <Send size={16} strokeWidth={1.75} /> Send
-                        </button>
-                        <button
-                          type="button"
-                          className="btn"
-                          disabled={deliver.isPending}
-                          onClick={() =>
-                            deliver.mutate({ id: inv.id, subjectDid: inv.subjectDid, channel: "offer" })
-                          }
-                          title="Show an offer as a QR code for the invitee to scan"
-                        >
-                          <QrCode size={16} strokeWidth={1.75} /> QR offer
-                        </button>
-                      </>
-                    )}
-                    {!inv.revokedAt && (
+          <DataTable columns={INVITATION_COLUMNS} sort={sorted.sort} onSort={sorted.onSort}>
+            {sorted.rows.map((inv: InvitationListItem) => (
+              <tr key={inv.id}>
+                <td>
+                  <NamedDid book={nameBook} did={inv.subjectDid} />
+                </td>
+                <td>{inv.role ?? "member"}</td>
+                <td>{inv.issuedAt.slice(0, 10)}</td>
+                <td>
+                  {inv.revokedAt ? (
+                    <span className="muted">revoked</span>
+                  ) : (
+                    "live"
+                  )}
+                </td>
+                <td>
+                  {!inv.revokedAt && (
+                    <>
                       <button
                         type="button"
                         className="btn"
-                        disabled={revoke.isPending}
-                        onClick={() => revoke.mutate(inv.id)}
-                        title="Revoke this invitation"
+                        disabled={deliver.isPending}
+                        onClick={() =>
+                          deliver.mutate({ id: inv.id, subjectDid: inv.subjectDid, channel: "message" })
+                        }
+                        title="Send an offer to the invitee's DID"
                       >
-                        <Trash2 size={16} strokeWidth={1.75} /> Revoke
+                        <Send size={16} strokeWidth={1.75} /> Send
                       </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={deliver.isPending}
+                        onClick={() =>
+                          deliver.mutate({ id: inv.id, subjectDid: inv.subjectDid, channel: "offer" })
+                        }
+                        title="Show an offer as a QR code for the invitee to scan"
+                      >
+                        <QrCode size={16} strokeWidth={1.75} /> QR offer
+                      </button>
+                    </>
+                  )}
+                  {!inv.revokedAt && (
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={revoke.isPending}
+                      onClick={() => revoke.mutate(inv.id)}
+                      title="Revoke this invitation"
+                    >
+                      <Trash2 size={16} strokeWidth={1.75} /> Revoke
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </DataTable>
         )}
       </section>
     </div>
@@ -348,7 +365,7 @@ function VicQr({ text }: { text: string }) {
   }
   if (!dataUrl) return null;
   return (
-    <div style={{ marginBottom: 8 }}>
+    <div className="invitation-qr">
       <img src={dataUrl} alt="Invitation QR code" width={240} height={240} />
     </div>
   );

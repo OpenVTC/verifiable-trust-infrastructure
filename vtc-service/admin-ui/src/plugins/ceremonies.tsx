@@ -28,6 +28,10 @@ import { formatIso } from "@/lib/format";
 import { gestureFromConfirm, parkedOf } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
 import { ParkedNotice } from "@/components/ParkedNotice";
+import { EmptyState } from "@/components/EmptyState";
+import { Field } from "@/components/Field";
+import { PageHeader } from "@/components/PageHeader";
+import { Tabs, type TabItem } from "@/components/Tabs";
 import {
   type PolicyRow,
   type Purpose,
@@ -62,7 +66,6 @@ import {
   evalShowWhen,
   fetchCeremonies,
   materializeFacts,
-  natureColor,
 } from "@/lib/ceremony-manifest";
 
 const TRUST_TASK_TEST = "https://trusttasks.org/spec/vtc/policies/test/0.1";
@@ -192,66 +195,52 @@ export function Ceremonies() {
 
   const ceremony = ceremonies.find((c) => c.purpose === active) ?? null;
 
+  // One tab per ceremony, its nature (read-only, constructive, …) as a
+  // coloured dot and a hint; then the purposes that are no ceremony.
+  const tabs: TabItem[] = [
+    ...ceremonies.map((c) => ({
+      id: c.purpose,
+      label: c.label,
+      icon: <span className={`cer-nature nature-${c.nature}`} aria-hidden />,
+      hint: c.nature,
+    })),
+    {
+      id: "other",
+      label: "Other policies",
+      icon: <span className="cer-nature nature-none" aria-hidden />,
+      hint: "no ceremony",
+    },
+  ];
+
   return (
-    <div style={{ maxWidth: 1180 }}>
-      <div className="cer-kicker">Verifiable Trust Community · Pipeline</div>
-      <h1 className="cer-h1">
-        One pipeline, every <em>ceremony</em>
-      </h1>
-      <p className="cer-sub">
-        Joining, leaving, directory lookups, role changes — each community
-        state transition is an instance of one decision pipeline. Pick a
-        ceremony to see its flow, manage its decision policy, and dry-run the
-        live verdict the daemon would reach.
-      </p>
+    <section className="page">
+      <PageHeader
+        lead={
+          <>
+            Joining, leaving, directory lookups, role changes — each community
+            state transition is an instance of one decision pipeline. Pick a
+            policy to see its flow, manage it, and dry-run the live verdict the
+            daemon would reach.
+          </>
+        }
+      />
 
       {query.isLoading && <p className="cer-sub">Loading the registry…</p>}
       {query.error && (
-        <p className="cer-sub" style={{ color: "var(--vd-deny)" }}>
-          {(query.error as Error).message}
-        </p>
+        <section className="card error">
+          <h3>Failed to load the ceremony registry</h3>
+          <p>{(query.error as Error).message}</p>
+        </section>
       )}
 
-      <div className="cer-tabs" role="tablist">
-        {ceremonies.map((c) => (
-          <button
-            key={c.purpose}
-            role="tab"
-            aria-selected={c.purpose === active}
-            className={`cer-tab${c.purpose === active ? " on" : ""}`}
-            onClick={() => setActive(c.purpose)}
-          >
-            <span
-              className="nature"
-              style={{ color: natureColor[c.nature] }}
-              aria-hidden
-            />
-            {c.label}
-            <small>{c.nature}</small>
-          </button>
-        ))}
-        <button
-          role="tab"
-          aria-selected={active === "other"}
-          className={`cer-tab${active === "other" ? " on" : ""}`}
-          onClick={() => setActive("other")}
-        >
-          <span
-            className="nature"
-            style={{ color: "var(--text-faint)" }}
-            aria-hidden
-          />
-          Other policies
-          <small>no ceremony</small>
-        </button>
-      </div>
+      <Tabs label="Policies" items={tabs} value={active} onChange={setActive} />
 
       {active === "other" ? (
         <OtherPolicies initial={requestedOther} />
       ) : ceremony ? (
         <CeremonyPanel key={ceremony.purpose} ceremony={ceremony} />
       ) : null}
-    </div>
+    </section>
   );
 }
 
@@ -368,9 +357,7 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
 
   return (
     <>
-      <p className="cer-sub" style={{ marginTop: "var(--space-5)" }}>
-        {ceremony.blurb}
-      </p>
+      <p className="cer-sub">{ceremony.blurb}</p>
 
       <div className="cer-meta-row">
         <span className="cer-chip">
@@ -381,16 +368,7 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
         </span>
         <span className="cer-chip">
           status{" "}
-          <b
-            style={{
-              color:
-                ceremony.wired === "live"
-                  ? "var(--vd-allow)"
-                  : ceremony.wired === "legacy"
-                    ? "var(--vd-refer)"
-                    : "var(--text-faint)",
-            }}
-          >
+          <b className={`cer-wired ${ceremony.wired}`}>
             {ceremony.wired === "live"
               ? "decision pipeline"
               : ceremony.wired === "legacy"
@@ -400,27 +378,23 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
         </span>
       </div>
 
-      <div className="card" style={{ marginTop: "var(--space-5)", padding: 0 }}>
-        <div style={{ padding: "var(--space-4) var(--space-4) 0" }}>
-          <FlowDiagram phase={phase} verdict={verdict} />
-        </div>
-        <div style={{ padding: "0 var(--space-4) var(--space-4)" }}>
-          <div className="cer-outcomes">
-            {EFFECTS.map((e) => (
-              <div
-                key={e.key}
-                className={`cer-oc ${e.key}${
-                  verdict?.effect === e.key ? " lit" : ""
-                }`}
-              >
-                <div className="oc-h">
-                  <span className="dot" />
-                  {e.label}
-                </div>
-                <div className="oc-d">{e.blurb}</div>
+      <div className="card cer-flow-card">
+        <FlowDiagram phase={phase} verdict={verdict} />
+        <div className="cer-outcomes">
+          {EFFECTS.map((e) => (
+            <div
+              key={e.key}
+              className={`cer-oc ${e.key}${
+                verdict?.effect === e.key ? " lit" : ""
+              }`}
+            >
+              <div className="oc-h">
+                <span className="dot" />
+                {e.label}
               </div>
-            ))}
-          </div>
+              <div className="oc-d">{e.blurb}</div>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -475,10 +449,7 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
               </button>
 
               {error && (
-                <div
-                  className="cer-verdict"
-                  style={{ borderColor: "var(--vd-deny)" }}
-                >
+                <div className="cer-verdict error">
                   <span className="cer-vbadge deny">error</span>
                   <div className="cer-vwith">{error}</div>
                 </div>
@@ -571,39 +542,18 @@ function ActivePolicyView({
   if (!ir && !canFlow) return <pre className="cer-policy">{source}</pre>;
   return (
     <>
-      <div className="rule-view-tabs" role="tablist">
-        {ir && (
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === "english"}
-            className={view === "english" ? "on" : ""}
-            onClick={() => setView("english")}
-          >
-            Plain English
-          </button>
-        )}
-        {canFlow && (
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === "flow"}
-            className={view === "flow" ? "on" : ""}
-            onClick={() => setView("flow")}
-          >
-            Flow
-          </button>
-        )}
-        <button
-          type="button"
-          role="tab"
-          aria-selected={view === "rego"}
-          className={view === "rego" ? "on" : ""}
-          onClick={() => setView("rego")}
-        >
-          Rego
-        </button>
-      </div>
+      <Tabs
+        variant="segmented"
+        label="Policy view"
+        className="rule-view"
+        value={view}
+        onChange={setView}
+        items={[
+          ...(ir ? [{ id: "english" as const, label: "Plain English" }] : []),
+          ...(canFlow ? [{ id: "flow" as const, label: "Flow" }] : []),
+          { id: "rego" as const, label: "Rego" },
+        ]}
+      />
       {view === "english" && ir && <EnglishView lines={irToEnglish(ir)} />}
       {view === "flow" && ceremony && policyId && (
         <FlowView ceremony={ceremony} policyId={policyId} values={values} />
@@ -655,7 +605,7 @@ function FlowView({
   }
   if (probes.error) {
     return (
-      <p className="cer-sub" style={{ color: "var(--vd-deny)" }}>
+      <p className="cer-error">
         Could not evaluate the policy: {(probes.error as Error).message}
       </p>
     );
@@ -680,7 +630,7 @@ function FlowView({
         </span>
       </div>
       <PolicyFlow ceremony={ceremony} probes={rows} values={values} />
-      <p className="cer-sub" style={{ fontSize: "var(--text-xs)" }}>
+      <p className="cer-note">
         Drawn by evaluating the active policy, not by reading it — so a
         hand-written module charts the same way. A fact no control varies cannot
         appear here.
@@ -800,17 +750,12 @@ function PolicyManager({
     <>
       {query.isLoading && <p className="cer-sub">Loading…</p>}
       {query.error && (
-        <p className="cer-sub" style={{ color: "var(--vd-deny)" }}>
-          {(query.error as Error).message}
-        </p>
+        <p className="cer-error">{(query.error as Error).message}</p>
       )}
 
       {active && (
         <>
-          <div
-            className="cer-meta-row"
-            style={{ marginTop: 0, marginBottom: "var(--space-3)" }}
-          >
+          <div className="cer-meta-row cer-active-meta">
             <span className="cer-chip">
               active <b>v{active.version}</b>
             </span>
@@ -829,16 +774,13 @@ function PolicyManager({
         </>
       )}
       {!query.isLoading && !active && (
-        <p className="cer-sub">No active policy for this purpose.</p>
+        <EmptyState compact title="No active policy for this purpose." />
       )}
 
       {/* Version history */}
       {items.length > 0 && (
         <>
-          <div
-            className="cer-panel-title"
-            style={{ marginTop: "var(--space-4)" }}
-          >
+          <div className="cer-panel-title cer-panel-title--sub">
             Versions <span className="ln" />
           </div>
           <div className="cer-versions">
@@ -876,13 +818,12 @@ function PolicyManager({
           <button
             type="button"
             className="cer-run"
-            style={{ marginTop: "var(--space-4)" }}
             onClick={() => setEditing(true)}
           >
             Author visually ▸
           </button>
           {active && !parseRego(active.module) && (
-            <p className="cer-sub" style={{ fontSize: "var(--text-xs)" }}>
+            <p className="cer-note">
               The active policy was hand-written — opening the editor starts
               from a blank route set.
             </p>
@@ -892,8 +833,7 @@ function PolicyManager({
 
       <button
         type="button"
-        className="rule-cancel"
-        style={{ marginTop: "var(--space-3)" }}
+        className="rule-cancel cer-upload-toggle"
         onClick={() => setShowUpload((v) => !v)}
       >
         {showUpload ? "Cancel" : "Upload raw Rego"}
@@ -939,9 +879,7 @@ function VersionRow({
         <span className="cer-ver-v">v{row.version}</span>
         <span className="cer-ver-meta">{formatIso(row.createdAt)}</span>
         {isActive ? (
-          <span className="cer-chip" style={{ color: "var(--vd-allow)" }}>
-            active
-          </span>
+          <span className="cer-chip cer-chip-active">active</span>
         ) : (
           <>
             {active && !isActive && (
@@ -988,7 +926,7 @@ function VersionDiff({
   const toIr = parseRego(to.module);
   if (!fromIr || !toIr) {
     return (
-      <p className="cer-sub" style={{ fontSize: "var(--text-xs)" }}>
+      <p className="cer-note">
         A structured diff needs both revisions authored visually — one here
         is hand-written Rego.
       </p>
@@ -1002,9 +940,10 @@ function VersionDiff({
         v{from.version} <span aria-hidden>→</span> v{to.version}
       </div>
       {changed.length === 0 ? (
-        <p className="cer-sub" style={{ fontSize: "var(--text-xs)" }}>
-          No route-level changes — the decision is identical.
-        </p>
+        <EmptyState
+          compact
+          title="No route-level changes — the decision is identical."
+        />
       ) : (
         changed.map((d) => (
           <div key={`${purpose}-${d.name}`} className={`diff-route ${d.status}`}>
@@ -1048,9 +987,9 @@ function UploadPolicyForm({
         e.preventDefault();
         mutation.mutate();
       }}
-      style={{ marginTop: "var(--space-3)" }}
+      className="cer-upload"
     >
-      <p className="cer-sub" style={{ marginBottom: "var(--space-2)" }}>
+      <p className="cer-sub">
         Uploading does not activate — the revision is archived until you
         activate it above.
       </p>
@@ -1066,9 +1005,7 @@ function UploadPolicyForm({
         (parkedOf(mutation.error) ? (
           <ParkedNotice action={parkedOf(mutation.error)!} />
         ) : (
-          <p className="cer-sub" style={{ color: "var(--vd-deny)" }}>
-            {(mutation.error as Error).message}
-          </p>
+          <p className="cer-error">{(mutation.error as Error).message}</p>
         ))}
       <button
         type="submit"
@@ -1085,22 +1022,17 @@ function OtherPolicies({ initial }: { initial?: Purpose }) {
   const [purpose, setPurpose] = useState<Purpose>(initial ?? OTHER_PURPOSES[0]!);
   return (
     <>
-      <p className="cer-sub" style={{ marginTop: "var(--space-5)" }}>
+      <p className="cer-sub">
         Policy purposes that aren't (yet) first-class ceremonies — managed
         the same way, without a flow or simulator.
       </p>
-      <div className="cer-tabs" style={{ marginTop: "var(--space-4)" }}>
-        {OTHER_PURPOSES.map((p) => (
-          <button
-            key={p}
-            className={`cer-tab${p === purpose ? " on" : ""}`}
-            onClick={() => setPurpose(p)}
-          >
-            {p}
-          </button>
-        ))}
-      </div>
-      <div className="card" style={{ marginTop: "var(--space-4)" }}>
+      <Tabs
+        label="Other policies"
+        items={OTHER_PURPOSES.map((p) => ({ id: p, label: p }))}
+        value={purpose}
+        onChange={setPurpose}
+      />
+      <div className="card">
         <div className="cer-panel-title">
           {purpose} <span className="ln" />
         </div>
@@ -1127,11 +1059,12 @@ function SimFields({
       {fields
         .filter((f) => evalShowWhen(f.showWhen, values))
         .map((f) => (
-          <div className="cer-field" key={f.key}>
-            <label>
-              {f.label}
-              {f.hint && <small>{f.hint}</small>}
-            </label>
+          <Field
+            className="cer-field"
+            key={f.key}
+            label={f.label}
+            hint={f.hint}
+          >
             {f.type === "toggle" ? (
               <Toggle
                 on={values[f.key] === true}
@@ -1154,7 +1087,7 @@ function SimFields({
                 ))}
               </select>
             )}
-          </div>
+          </Field>
         ))}
     </>
   );
@@ -1233,8 +1166,7 @@ function NeedsLoop({
       })}
       <button
         type="button"
-        className="cer-run"
-        style={{ marginTop: "var(--space-2)" }}
+        className="cer-run cer-run-tight"
         onClick={onRerun}
         disabled={running || !anySelected}
       >
@@ -1320,7 +1252,7 @@ function RawFactsEditor({
   }
   return (
     <div className="cer-raw">
-      <p className="cer-sub" style={{ fontSize: "var(--text-xs)" }}>
+      <p className="cer-note">
         This JSON is sent to the policy verbatim — the field toggles are
         ignored. Seeded from the current fields.
       </p>
@@ -1333,9 +1265,7 @@ function RawFactsEditor({
         aria-invalid={invalid}
       />
       {invalid && (
-        <p className="cer-sub" style={{ color: "var(--vd-deny)" }}>
-          Not valid JSON.
-        </p>
+        <p className="cer-error">Not valid JSON.</p>
       )}
       <div className="rule-actions">
         <button type="button" className="rule-cancel" onClick={onReset}>
@@ -1357,30 +1287,8 @@ function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
       aria-checked={on}
       onClick={onClick}
       className="cer-toggle"
-      style={{
-        width: 42,
-        height: 23,
-        borderRadius: 999,
-        border: `1px solid ${on ? "var(--brand)" : "var(--border-strong)"}`,
-        background: on ? "var(--brand-tint-strong)" : "var(--bg-subtle)",
-        position: "relative",
-        cursor: "pointer",
-        transition: "all var(--motion-fast)",
-        flex: "none",
-      }}
     >
-      <span
-        style={{
-          position: "absolute",
-          top: 2,
-          left: on ? 21 : 2,
-          width: 17,
-          height: 17,
-          borderRadius: "50%",
-          background: on ? "var(--brand)" : "var(--text-faint)",
-          transition: "all var(--motion-fast)",
-        }}
-      />
+      <span className="cer-toggle-knob" />
     </button>
   );
 }

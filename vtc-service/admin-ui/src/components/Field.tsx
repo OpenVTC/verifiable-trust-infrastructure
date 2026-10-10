@@ -29,6 +29,7 @@ export function Field({
   errorId,
   errorRole,
   htmlFor,
+  labelId,
   inline,
   className,
 }: {
@@ -41,6 +42,9 @@ export function Field({
   errorRole?: "alert";
   /** The control's id: renders the pointing shape. */
   htmlFor?: string;
+  /** An id for the label text, for a control that names it in
+   *  `aria-labelledby`. */
+  labelId?: string;
   /** Label and control side by side, for toolbars. */
   inline?: boolean;
   className?: string;
@@ -63,7 +67,7 @@ export function Field({
   if (htmlFor) {
     return (
       <div className={cls}>
-        <label className="field-label" htmlFor={htmlFor}>
+        <label className="field-label" htmlFor={htmlFor} id={labelId}>
           {label}
         </label>
         {children}
@@ -77,7 +81,9 @@ export function Field({
     return (
       <div className={cls}>
         <label className="field-wrap">
-          <span className="field-label">{label}</span>
+          <span className="field-label" id={labelId}>
+            {label}
+          </span>
           {children}
         </label>
         {extra}
@@ -86,7 +92,9 @@ export function Field({
   }
   return (
     <label className={cls}>
-      <span className="field-label">{label}</span>
+      <span className="field-label" id={labelId}>
+        {label}
+      </span>
       {children}
     </label>
   );

@@ -5,81 +5,50 @@
  * the ceremony visual guide to the running daemon. Verdict colours
  * come from the shared --vd-* tokens. */
 
-.cer-kicker {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  letter-spacing: 0.3em;
-  text-transform: uppercase;
-  color: var(--brand);
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-.cer-kicker::before {
-  content: "";
-  width: 26px;
-  height: 1px;
-  background: var(--brand);
-}
-.cer-h1 {
-  font-family: var(--font-display);
-  font-weight: 500;
-  font-size: clamp(28px, 4vw, 44px);
-  line-height: 1.04;
-  letter-spacing: var(--tracking-tight);
-  margin: var(--space-3) 0 var(--space-2);
-}
-.cer-h1 em {
-  font-style: italic;
-  color: var(--brand);
-}
 .cer-sub {
+  margin: 0;
   color: var(--text-muted);
   max-width: 64ch;
-  font-size: var(--text-md);
+  font-size: var(--text-base);
 }
-
-/* Ceremony selector tabs */
-.cer-tabs {
-  display: flex;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  margin: var(--space-5) 0 var(--space-2);
-}
-.cer-tab {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  letter-spacing: 0.04em;
-  padding: var(--space-2) var(--space-4);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-strong);
-  background: transparent;
+/* A smaller aside under a panel's content. */
+.cer-note {
+  margin: 0;
   color: var(--text-muted);
-  cursor: pointer;
-  transition: all var(--motion-fast);
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.cer-tab:hover {
-  color: var(--text);
-  border-color: var(--text-faint);
-}
-.cer-tab.on {
-  border-color: var(--brand);
-  color: var(--brand);
-  background: var(--brand-tint);
-}
-.cer-tab small {
-  color: var(--text-faint);
+  max-width: 64ch;
   font-size: var(--text-xs);
 }
-.cer-tab .nature {
-  width: 7px;
-  height: 7px;
+/* An error inside a panel (a failed read, invalid input). */
+.cer-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+/* A ceremony's nature, as the dot on its tab (read-only = brand, constructive = allow, destructive = deny, mutating = refer). */
+.cer-nature {
+  width: var(--space-2);
+  height: var(--space-2);
   border-radius: 50%;
   background: currentColor;
   opacity: 0.7;
+  flex: none;
+}
+.cer-nature.nature-read-only {
+  color: var(--brand);
+}
+.cer-nature.nature-constructive {
+  color: var(--vd-allow);
+}
+.cer-nature.nature-destructive {
+  color: var(--vd-deny);
+}
+.cer-nature.nature-mutating {
+  color: var(--vd-refer);
+}
+.cer-nature.nature-none {
+  color: var(--text-faint);
 }
 
 /* Pipeline flow diagram */
@@ -103,12 +72,6 @@
   font-family: var(--font-sans);
   font-size: 13px;
   font-weight: 500;
-}
-.cer-flow .node-s {
-  fill: var(--text-faint);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.04em;
 }
 .cer-flow .edge {
   stroke: var(--border-strong);
@@ -146,6 +109,12 @@
   font-size: 8.5px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+}
+
+/* The flow card: the diagram over its outcome chips. */
+.cer-flow-card {
+  padding: var(--space-4);
+  gap: 0;
 }
 
 /* Outcome chips below the flow */
@@ -222,7 +191,6 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--space-5);
-  margin-top: var(--space-5);
 }
 /* Grid items default to min-width:auto, so an unbreakable line (e.g. the
    compiled-Rego @vtc-rule-ir header) would expand the track and scroll
@@ -254,40 +222,77 @@
   gap: var(--space-3);
   margin-bottom: var(--space-4);
 }
+.cer-panel-title--sub {
+  margin-top: var(--space-4);
+}
 .cer-panel-title .ln {
   flex: 1;
   height: 1px;
   background: var(--border);
 }
 
-/* Facts form rows */
+/* Facts form rows: a Field per declared input, the label (and its hint
+   under it) on the left, the control on the right. */
 .cer-field {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto;
   align-items: center;
-  gap: var(--space-3);
+  column-gap: var(--space-3);
+  row-gap: var(--space-1);
   padding: var(--space-3) var(--space-1);
   border-bottom: 1px solid var(--border);
 }
-.cer-field:last-of-type {
+.cer-field:not(:has(+ .cer-field)) {
   border-bottom: none;
 }
-.cer-field label {
-  font-size: var(--text-base);
-  flex: 1;
+.cer-field .field-label {
+  grid-column: 1;
 }
-.cer-field label small {
-  display: block;
-  color: var(--text-faint);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  margin-top: 1px;
+.cer-field .field-hint {
+  grid-column: 1;
+}
+.cer-field select,
+.cer-field .cer-toggle {
+  grid-column: 2;
+  grid-row: 1 / span 2;
 }
 .cer-field select {
   width: auto;
   min-width: 150px;
-  flex: none;
   font-family: var(--font-mono);
   font-size: var(--text-sm);
+}
+
+/* On/off switch for a toggle input. */
+.cer-toggle {
+  position: relative;
+  width: 42px;
+  height: 23px;
+  padding: 0;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-subtle);
+  cursor: pointer;
+  transition: all var(--motion-fast);
+  flex: none;
+}
+.cer-toggle[aria-checked="true"] {
+  border-color: var(--brand);
+  background: var(--brand-tint-strong);
+}
+.cer-toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  transition: all var(--motion-fast);
+}
+.cer-toggle[aria-checked="true"] .cer-toggle-knob {
+  left: 21px;
+  background: var(--brand);
 }
 
 /* Run button + verdict */
@@ -305,6 +310,9 @@
   cursor: pointer;
   transition: background var(--motion-fast);
 }
+.cer-run.cer-run-tight {
+  margin-top: var(--space-2);
+}
 .cer-run:hover {
   background: var(--brand-tint-strong);
 }
@@ -319,6 +327,9 @@
   padding: var(--space-4);
   background: var(--bg-elev);
   animation: cer-pop 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.cer-verdict.error {
+  border-color: var(--vd-deny);
 }
 
 /* raw-facts editor (advanced simulator input) */
@@ -562,12 +573,19 @@
   padding: var(--space-4);
   max-height: 420px;
 }
+/* The editor's compiled-Rego preview. */
+.cer-policy.cer-policy-preview {
+  max-height: 360px;
+}
 .cer-meta-row {
   display: flex;
   gap: var(--space-2);
   flex-wrap: wrap;
   align-items: center;
-  margin-top: var(--space-4);
+}
+/* The active revision's chips, over its source. */
+.cer-active-meta {
+  margin-bottom: var(--space-3);
 }
 .cer-chip {
   font-family: var(--font-mono);
@@ -580,6 +598,19 @@
 .cer-chip b {
   color: var(--text);
   font-weight: 500;
+}
+.cer-chip.cer-chip-active {
+  color: var(--vd-allow);
+}
+/* Whether the ceremony runs the decision pipeline. */
+.cer-chip b.cer-wired.live {
+  color: var(--vd-allow);
+}
+.cer-chip b.cer-wired.legacy {
+  color: var(--vd-refer);
+}
+.cer-chip b.cer-wired.unwired {
+  color: var(--text-faint);
 }
 
 /* Policy version history + upload (merged from the policies plugin) */
@@ -712,6 +743,17 @@
   padding: var(--space-3);
   margin-bottom: var(--space-2);
   resize: vertical;
+}
+
+/* Raw-Rego upload */
+.cer-upload {
+  margin-top: var(--space-3);
+}
+.cer-upload > .cer-sub {
+  margin-bottom: var(--space-2);
+}
+.rule-cancel.cer-upload-toggle {
+  margin-top: var(--space-3);
 }
 
 /* ── Visual rule editor ──────────────────────────────────────────── */
@@ -902,32 +944,9 @@
   flex-direction: column;
 }
 
-/* English | Rego view toggle (editor preview + active-policy view) */
-.rule-view-tabs {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+/* English | Flow | Rego view toggle (editor preview + active-policy view) */
+.rule-view {
   margin-bottom: var(--space-3);
-  width: max-content;
-}
-.rule-view-tabs button {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  padding: var(--space-1) var(--space-3);
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-faint);
-  cursor: pointer;
-}
-.rule-view-tabs button.on {
-  background: var(--brand-tint-strong);
-  color: var(--text);
 }
 
 /* Plain-English route summary */

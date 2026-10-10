@@ -39,7 +39,9 @@ import {
   type RelationshipsGraph,
 } from "@/lib/api";
 import { useNameBook } from "@/lib/names";
+import { EmptyState } from "@/components/EmptyState";
 import { NamedDid } from "@/components/NamedDid";
+import { PageHeader } from "@/components/PageHeader";
 
 const SIZE = 600;
 const C = SIZE / 2;
@@ -115,19 +117,19 @@ export function Relationships() {
 
   return (
     <div className="page">
-      <header className="page-header">
-        <h2>
-          <Share2 size={20} strokeWidth={1.75} /> Relationships
-        </h2>
-        <p className="muted">
-          The community's trust graph. Each node is an identifier — a member, or
-          this community itself — and each edge joins a pair. An edge is{" "}
-          <strong>complete</strong> when both parties have issued a credential
-          naming the other; that reciprocal credential is how each consents to
-          the edge. A <strong>half-edge</strong> is one party's claim the other
-          has not answered.
-        </p>
-        <p className="muted">
+      <PageHeader
+        lead={
+          <>
+            The community's trust graph. Each node is an identifier — a member, or
+            this community itself — and each edge joins a pair. An edge is{" "}
+            <strong>complete</strong> when both parties have issued a credential
+            naming the other; that reciprocal credential is how each consents to
+            the edge. A <strong>half-edge</strong> is one party's claim the other
+            has not answered.
+          </>
+        }
+      />
+      <p className="lead">
           <strong>Membership</strong> edges join a member to this community: the
           membership credential (VMC) this community issued, and the member's
           acknowledgement of it. An acknowledgement counts only when its{" "}
@@ -135,8 +137,7 @@ export function Relationships() {
           has not answered — or whose answer predates that binding — shows as a
           half-edge until they re-issue. <strong>Relationship</strong> edges
           join two members by a pair of relationship credentials (VRCs).
-        </p>
-      </header>
+      </p>
 
       {query.isPending && (
         <section className="card">
@@ -150,19 +151,19 @@ export function Relationships() {
       )}
       {isEmpty && (
         <section className="card">
-          <p className="muted">
-            Nothing to draw yet — no memberships have been issued and no member
-            has published a relationship credential.
-          </p>
+          <EmptyState
+            icon={Share2}
+            title="Nothing to draw yet — no memberships have been issued and no member has published a relationship credential."
+          />
         </section>
       )}
 
       {query.data && placed.length > 0 && (
-        <section className="card" style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+        <section className="card relationships-layout">
+          <div className="relationships-figures">
             <svg
               viewBox={`0 0 ${SIZE} ${SIZE}`}
-              style={{ width: "min(100%, 560px)", height: "auto" }}
+              className="relationships-graph"
               role="img"
               aria-label="Member relationship graph"
             >
@@ -205,7 +206,7 @@ export function Relationships() {
                 // half-edge distinction — that stays in the line style, which
                 // survives greyscale and colour-blindness.
                 const hue = isMembership(e)
-                  ? "var(--accent, #7c5cff)"
+                  ? "var(--accent-violet)"
                   : "var(--brand)";
                 return (
                   <line
@@ -232,7 +233,7 @@ export function Relationships() {
                   <g
                     key={p.did}
                     transform={`translate(${p.x}, ${p.y})`}
-                    style={{ cursor: "pointer" }}
+                    className="relationships-node"
                     opacity={dim ? 0.35 : 1}
                     onClick={() => setSelected(isSel ? null : p.did)}
                   >
@@ -246,7 +247,7 @@ export function Relationships() {
                         width={isSel ? 18 : 12}
                         height={isSel ? 18 : 12}
                         fill={
-                          isSel ? "var(--accent, #7c5cff)" : "var(--brand-tint-strong)"
+                          isSel ? "var(--accent-violet)" : "var(--brand-tint-strong)"
                         }
                         stroke="var(--border-strong)"
                         strokeWidth={1}
@@ -275,7 +276,7 @@ export function Relationships() {
 
             <svg
               viewBox="0 0 260 58"
-              style={{ width: "min(100%, 260px)", height: "auto" }}
+              className="relationships-legend"
               role="img"
               aria-label="Legend"
             >
@@ -325,7 +326,7 @@ export function Relationships() {
                 y1={48}
                 x2={40}
                 y2={48}
-                stroke="var(--accent, #7c5cff)"
+                stroke="var(--accent-violet)"
                 strokeWidth={2}
                 markerStart="url(#rel-arrow-legend)"
                 markerEnd="url(#rel-arrow-legend)"
@@ -336,7 +337,7 @@ export function Relationships() {
             </svg>
           </div>
 
-          <div style={{ flex: "1 1 220px", minWidth: 220 }}>
+          <div className="relationships-detail">
             <h3>{selected ? "Connections" : "Overview"}</h3>
             {!selected && (
               <p className="muted">
@@ -357,9 +358,9 @@ export function Relationships() {
                   <NamedDid book={nameBook} did={selected} />
                 </p>
                 {selectedEdges.length === 0 ? (
-                  <p className="muted">No relationships.</p>
+                  <EmptyState compact title="No relationships." />
                 ) : (
-                  <ul style={{ paddingLeft: "1.1em", margin: 0 }}>
+                  <ul className="relationships-edges">
                     {selectedEdges.map((e) => {
                       const other = otherEnd(e, selected);
                       const name = nameBook.nameOrDid(other);
@@ -379,7 +380,7 @@ export function Relationships() {
                           : [],
                       );
                       return (
-                        <li key={edgeKey(e)} style={{ marginBottom: 4 }}>
+                        <li key={edgeKey(e)}>
                           {isMembership(e) ? (
                             // A membership edge reads in the community's
                             // vocabulary, not the peer-vouching one: "vouched

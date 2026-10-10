@@ -1,32 +1,11 @@
-.gitns-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--space-6);
-  flex-wrap: wrap;
-}
-.gitns-head h2 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: var(--text-2xl);
-  line-height: var(--text-2xl-leading);
-  font-weight: 600;
-  letter-spacing: var(--tracking-tighter);
-}
-.gitns-head h2.gitns-mono {
-  font-family: var(--font-mono);
-  font-weight: 500;
-  font-size: var(--text-xl);
-}
-.gitns-head .lead {
-  margin: var(--space-1) 0 0;
+/* A caption over a block that is not a form control (a fact, a command, a
+   checklist): the look of a field label, without a <label>. */
+.gitns-caption {
   color: var(--text-muted);
-  max-width: 72ch;
-}
-.gitns-head-actions {
-  display: flex;
-  gap: var(--space-2);
-  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
 }
 
 .gitns-mono {
@@ -191,18 +170,11 @@
   background: color-mix(in srgb, var(--warning) 7%, var(--bg-elev));
 }
 
-.gitns-crumbs {
-  display: flex;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-  color: var(--text-muted);
-}
 .gitns-chips {
   display: flex;
   gap: var(--space-2);
   align-items: center;
   flex-wrap: wrap;
-  margin-top: var(--space-2);
 }
 /* A repository's page is one column of full-width sections: the people and
    registry tables carry long DIDs and four or five columns, and in the old
@@ -401,14 +373,6 @@
 
 .gitns-bind {
   max-width: 56rem;
-}
-.gitns-bind-title {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: var(--text-2xl);
-  line-height: var(--text-2xl-leading);
-  font-weight: 600;
-  letter-spacing: var(--tracking-tighter);
 }
 .gitns-stepper {
   list-style: none;

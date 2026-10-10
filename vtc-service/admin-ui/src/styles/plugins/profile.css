@@ -1,1 +1,7 @@
 /* Layout particular to the profile screen. Shared look lives in components.css. */
+
+/* The join-discovery switch: a checkbox, not a full-width field control. */
+.join-discovery-toggle input[type="checkbox"] {
+  width: auto;
+  height: auto;
+}

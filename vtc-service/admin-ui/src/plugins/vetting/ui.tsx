@@ -4,6 +4,7 @@
 
 import type { ReactNode } from "react";
 
+import { Field } from "@/components/Field";
 import type { Explained, Tone } from "@/lib/vetting";
 
 /** Where the vetting plugin is mounted (`src/plugins/index.ts`). */
@@ -81,41 +82,42 @@ export function ExplainedText({ item }: { item: Explained }) {
 
 /**
  * A labelled control with an optional hint and error, tied to the control by
- * `id`. The control itself sets `aria-describedby={describedBy(…)}` and
- * `aria-invalid`, so a screen reader reads the error with the field.
+ * `id`: the shared `Field` in its pointing shape, with the hint and error at
+ * `${id}-hint` / `${id}-error`. The control itself sets
+ * `aria-describedby={describedBy(…)}` and `aria-invalid`, so a screen reader
+ * reads the error with the field.
  */
 export function FormField({
   id,
   label,
   hint,
   error,
-  className = "field",
+  inline,
+  className,
   children,
 }: {
   id: string;
   label: string;
   hint?: ReactNode;
   error?: string | null;
+  /** Label and control side by side, for toolbars. */
+  inline?: boolean;
   className?: string;
   children: ReactNode;
 }) {
   return (
-    <div className={className}>
-      <label className="field-label" htmlFor={id}>
-        {label}
-      </label>
+    <Field
+      label={label}
+      htmlFor={id}
+      hint={hint}
+      hintId={`${id}-hint`}
+      error={error || undefined}
+      errorId={`${id}-error`}
+      inline={inline}
+      className={className}
+    >
       {children}
-      {hint && (
-        <span className="field-hint" id={`${id}-hint`}>
-          {hint}
-        </span>
-      )}
-      {error && (
-        <span className="field-error" id={`${id}-error`}>
-          {error}
-        </span>
-      )}
-    </div>
+    </Field>
   );
 }
 

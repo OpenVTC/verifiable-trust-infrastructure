@@ -18,6 +18,7 @@
 import { useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 
+import { Field } from "@/components/Field";
 import { useSingleAdminMode } from "@/lib/action-badge";
 import { useNameBook } from "@/lib/names";
 import { useViewerDid } from "@/lib/viewer";
@@ -118,15 +119,6 @@ function FormDialog({
   );
 }
 
-function FieldError({ id, error }: { id: string; error: string | null }) {
-  if (!error) return null;
-  return (
-    <span id={id} className="field-error" role="alert">
-      {error}
-    </span>
-  );
-}
-
 /** A labelled text input whose error, when there is one, describes it. */
 function TextField({
   label,
@@ -152,10 +144,15 @@ function TextField({
   const hintId = `${id}-hint`;
   const describedBy = [error ? errId : null, hint ? hintId : null].filter(Boolean).join(" ");
   return (
-    <div className="field">
-      <label className="field-label" htmlFor={id}>
-        {label}
-      </label>
+    <Field
+      label={label}
+      htmlFor={id}
+      hint={hint}
+      hintId={hintId}
+      error={error}
+      errorId={errId}
+      errorRole="alert"
+    >
       <input
         id={id}
         value={value}
@@ -166,13 +163,7 @@ function TextField({
         aria-describedby={describedBy || undefined}
         onChange={(e) => onChange(e.target.value)}
       />
-      {hint && (
-        <span id={hintId} className="field-hint">
-          {hint}
-        </span>
-      )}
-      <FieldError id={errId} error={error ?? null} />
-    </div>
+    </Field>
   );
 }
 
@@ -220,10 +211,7 @@ function PersonField({
   }, [pages.data, filter, exclude, book]);
 
   return (
-    <div className="field">
-      <label className="field-label" htmlFor={id}>
-        {label}
-      </label>
+    <Field label={label} htmlFor={id} error={error} errorId={errId} errorRole="alert">
       <input
         type="search"
         aria-label={`Filter members for ${label}`}
@@ -288,8 +276,7 @@ function PersonField({
           </span>
         </>
       )}
-      <FieldError id={errId} error={error} />
-    </div>
+    </Field>
   );
 }
 
@@ -373,10 +360,7 @@ export function GrantDialog({
         error={errors.subject}
       />
       {rights.length > 1 ? (
-        <div className="field">
-          <label className="field-label" htmlFor={rightId}>
-            Right
-          </label>
+        <Field label="Right" htmlFor={rightId}>
           <select
             id={rightId}
             value={right}
@@ -388,7 +372,7 @@ export function GrantDialog({
               </option>
             ))}
           </select>
-        </div>
+        </Field>
       ) : (
         <p>
           Right: <b>{RIGHT_LABEL[right]}</b> <code>{right}</code>
@@ -985,10 +969,21 @@ export function BreakGlassDialog({
         that separation of duties stops you granting to yourself.
       </p>
       <BreakGlassConsequences />
-      <div className="field">
-        <label className="field-label" htmlFor={id}>
-          Justification
-        </label>
+      <Field
+        label="Justification"
+        htmlFor={id}
+        hint={
+          <>
+            Required. Shown to every administrator and every owner of the resource, sent in
+            every notice and kept in the audit record. Never published. At most{" "}
+            {MAX_JUSTIFICATION} characters.
+          </>
+        }
+        hintId={`${id}-hint`}
+        error={error}
+        errorId={`${id}-err`}
+        errorRole="alert"
+      >
         <textarea
           id={id}
           rows={4}
@@ -999,13 +994,7 @@ export function BreakGlassDialog({
           aria-describedby={error ? `${id}-err` : `${id}-hint`}
           onChange={(e) => setJustification(e.target.value)}
         />
-        <span id={`${id}-hint`} className="field-hint">
-          Required. Shown to every administrator and every owner of the resource, sent in
-          every notice and kept in the audit record. Never published. At most{" "}
-          {MAX_JUSTIFICATION} characters.
-        </span>
-        <FieldError id={`${id}-err`} error={error} />
-      </div>
+      </Field>
     </FormDialog>
   );
 }

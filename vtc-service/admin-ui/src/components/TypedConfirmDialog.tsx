@@ -9,6 +9,8 @@
 
 import { ReactNode, useEffect, useRef, useState } from "react";
 
+import { Field } from "@/components/Field";
+
 export interface TypedConfirmProps {
   title: string;
   message: ReactNode;
@@ -63,8 +65,7 @@ export function TypedConfirmDialog(props: TypedConfirmProps) {
             if (ok && !props.busy) props.onConfirm(typed.trim());
           }}
         >
-          <label className="field">
-            <span className="field-label">{props.prompt}</span>
+          <Field label={props.prompt}>
             <input
               ref={inputRef}
               aria-label={props.prompt}
@@ -73,7 +74,7 @@ export function TypedConfirmDialog(props: TypedConfirmProps) {
               spellCheck={false}
               onChange={(e) => setTyped(e.target.value)}
             />
-          </label>
+          </Field>
           <div className="form-actions">
             <button type="button" className="secondary" onClick={props.onCancel}>
               Cancel

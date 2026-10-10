@@ -56,13 +56,6 @@ export interface CeremonyManifest {
   factsTemplate: unknown;
 }
 
-export const natureColor: Record<Nature, string> = {
-  "read-only": "var(--brand)",
-  constructive: "var(--vd-allow)",
-  destructive: "var(--vd-deny)",
-  mutating: "var(--vd-refer)",
-};
-
 const TRUST_TASK_CEREMONIES =
   "https://trusttasks.org/spec/vtc/ceremonies/list/0.1";
 

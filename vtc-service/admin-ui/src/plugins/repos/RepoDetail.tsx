@@ -7,8 +7,11 @@ import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, Check, Minus, Plus, X } from "lucide-react";
 
+import { type Column, DataTable, useSortedRows } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
 import { InfoTip } from "@/components/InfoTip";
 import { NamedDid } from "@/components/NamedDid";
+import { PageHeader } from "@/components/PageHeader";
 import { useSingleAdminMode } from "@/lib/action-badge";
 import { useNameBook } from "@/lib/names";
 import { useIsGitCommunityAdmin, useViewerDid } from "@/lib/viewer";
@@ -86,7 +89,6 @@ import {
   formatDay,
   memberPath,
   namespacePath,
-  REPOS_PATH,
   SignTaskDialog,
   ToneChip,
 } from "./ui";
@@ -166,6 +168,8 @@ function GrantedBy({
   );
 }
 
+type PeopleSortKey = "person" | "right" | "granted";
+
 function PeopleTable({
   rows,
   forge,
@@ -189,101 +193,118 @@ function PeopleTable({
   readOnlyNote?: (row: GitNsRightRow) => string | null;
 }) {
   const book = useNameBook();
+  const sorted = useSortedRows<GitNsRightRow, PeopleSortKey>(
+    rows,
+    (r, key) => {
+      switch (key) {
+        case "person":
+          return book.nameOf(r.subject) ?? r.subject;
+        case "right":
+          return rightLabel(r.right);
+        case "granted":
+          return r.grantedAt ?? null;
+      }
+    },
+    { initialDir: { granted: "desc" } },
+  );
+  const columns: readonly Column<PeopleSortKey>[] = [
+    { key: "person", label: "Person", sortKey: "person" },
+    { key: "right", label: "Right", sortKey: "right", className: "gitns-col-right" },
+    { key: "forge", label: forge, className: "gitns-col-forge" },
+    { key: "granted", label: "Granted by", sortKey: "granted", className: "gitns-col-granted" },
+    {
+      key: "actions",
+      label: <span className="visually-hidden">Actions</span>,
+      className: "gitns-col-actions",
+    },
+  ];
   return (
     <div className="table-scroll">
-      <table className="data-table gitns-table gitns-people-table">
-        <thead>
-          <tr>
-            <th scope="col">Person</th>
-            <th scope="col" className="gitns-col-right">Right</th>
-            <th scope="col" className="gitns-col-forge">{forge}</th>
-            <th scope="col" className="gitns-col-granted">Granted by</th>
-            <th scope="col" className="gitns-col-actions">
-              <span className="visually-hidden">Actions</span>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => {
-            const note = readOnlyNote?.(r) ?? null;
-            const name = book.nameOf(r.subject) ?? r.subject;
-            return (
-              <tr key={`${r.subject}|${r.right}|${r.origin}`}>
-                <td>
-                  <Link to={memberPath(r.subject)}>
-                    <NamedDid did={r.subject} book={book} />
-                  </Link>
-                  {!r.subjectMember && (
-                    <div>
-                      <ToneChip tone="warning" title="Not a member of this community">
-                        External signer
-                      </ToneChip>
-                    </div>
-                  )}
-                </td>
-                <td>
-                  <ToneChip tone={RIGHT_TONE[r.right] ?? "neutral"} title={r.right}>
-                    {rightLabel(r.right)}
-                  </ToneChip>
-                  {r.breakGlass && (
-                    <div>
-                      <BreakGlassChip mark={r.breakGlass} />
-                    </div>
-                  )}
-                  {waiverFor(waived, r) && (
-                    <div>
-                      <SelfGrantWaivedChip mark={waiverFor(waived, r)} />
-                    </div>
-                  )}
-                </td>
-                <td>
-                  <ForgeAccountCell
-                    did={r.subject}
-                    forge={forge}
-                    forges={forges}
-                    right={r.right}
-                    roleMap={roleMap}
-                  />
-                </td>
-                <td>
-                  <GrantedBy row={r} vtcDid={vtcDid} />
-                  <div className="muted gitns-small">
-                    {r.grantedAt ? formatDay(r.grantedAt) : ""}
-                    {r.expiresAt && (
-                      <span className={expiresWithin(r, 14) ? "gitns-warn" : undefined}>
-                        {r.grantedAt ? " · " : ""}expires {formatDay(r.expiresAt)}
-                      </span>
-                    )}
-                    {r.granterDeparted && " · review"}
+      <DataTable
+        columns={columns}
+        sort={sorted.sort}
+        onSort={sorted.onSort}
+        className="gitns-table gitns-people-table"
+      >
+        {sorted.rows.map((r) => {
+          const note = readOnlyNote?.(r) ?? null;
+          const name = book.nameOf(r.subject) ?? r.subject;
+          return (
+            <tr key={`${r.subject}|${r.right}|${r.origin}`}>
+              <td>
+                <Link to={memberPath(r.subject)}>
+                  <NamedDid did={r.subject} book={book} />
+                </Link>
+                {!r.subjectMember && (
+                  <div>
+                    <ToneChip tone="warning" title="Not a member of this community">
+                      External signer
+                    </ToneChip>
                   </div>
-                  {r.reason && <div className="muted gitns-small">“{r.reason}”</div>}
-                  {r.breakGlass && (
-                    <div className="muted gitns-small gitns-justification">
-                      Break-glass: “{r.breakGlass.justification}”
-                    </div>
+                )}
+              </td>
+              <td>
+                <ToneChip tone={RIGHT_TONE[r.right] ?? "neutral"} title={r.right}>
+                  {rightLabel(r.right)}
+                </ToneChip>
+                {r.breakGlass && (
+                  <div>
+                    <BreakGlassChip mark={r.breakGlass} />
+                  </div>
+                )}
+                {waiverFor(waived, r) && (
+                  <div>
+                    <SelfGrantWaivedChip mark={waiverFor(waived, r)} />
+                  </div>
+                )}
+              </td>
+              <td>
+                <ForgeAccountCell
+                  did={r.subject}
+                  forge={forge}
+                  forges={forges}
+                  right={r.right}
+                  roleMap={roleMap}
+                />
+              </td>
+              <td>
+                <GrantedBy row={r} vtcDid={vtcDid} />
+                <div className="muted gitns-small">
+                  {r.grantedAt ? formatDay(r.grantedAt) : ""}
+                  {r.expiresAt && (
+                    <span className={expiresWithin(r, 14) ? "gitns-warn" : undefined}>
+                      {r.grantedAt ? " · " : ""}expires {formatDay(r.expiresAt)}
+                    </span>
                   )}
-                </td>
-                <td>
-                  {note ? (
-                    <span className="muted gitns-small">{note}</span>
-                  ) : (
-                    onRevoke && (
-                      <button
-                        type="button"
-                        className="secondary sm destructive"
-                        aria-label={`Revoke ${rightLabel(r.right)} from ${name}`}
-                        onClick={() => onRevoke(r)}
-                      >
-                        Revoke
-                      </button>
-                    )
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                  {r.granterDeparted && " · review"}
+                </div>
+                {r.reason && <div className="muted gitns-small">“{r.reason}”</div>}
+                {r.breakGlass && (
+                  <div className="muted gitns-small gitns-justification">
+                    Break-glass: “{r.breakGlass.justification}”
+                  </div>
+                )}
+              </td>
+              <td>
+                {note ? (
+                  <span className="muted gitns-small">{note}</span>
+                ) : (
+                  onRevoke && (
+                    <button
+                      type="button"
+                      className="secondary sm destructive"
+                      aria-label={`Revoke ${rightLabel(r.right)} from ${name}`}
+                      onClick={() => onRevoke(r)}
+                    >
+                      Revoke
+                    </button>
+                  )
+                )}
+              </td>
+            </tr>
+          );
+        })}
+      </DataTable>
     </div>
   );
 }
@@ -461,7 +482,7 @@ function Activity({ ns, resource }: { ns: GitNsNamespaceRow; resource: string })
           <p className="muted">Activity could not be read: {errorMessage(q.error)}.</p>
         ))}
       {q.isSuccess && items.length === 0 && (
-        <p className="muted">Nothing recorded for this repository yet.</p>
+        <EmptyState compact title="Nothing recorded for this repository yet." />
       )}
       {items.length > 0 && (
         <ul className="gitns-activity">
@@ -549,7 +570,7 @@ function CommitTrust({ ns, repo }: { ns: GitNsNamespaceRow; repo: GitNsRepoRow }
       </div>
 
       <div>
-        <span className="field-label">
+        <span className="gitns-caption">
           Setup steps
           <InfoTip label="About setup steps">
             What the bridge puts on the repository. Not every repository uses all four:
@@ -814,6 +835,15 @@ function RepoSummary({
   );
 }
 
+type TupleSortKey = "entity" | "action" | "resource" | "state";
+
+const TUPLE_COLUMNS: readonly Column<TupleSortKey>[] = [
+  { key: "entity", label: "Entity", sortKey: "entity" },
+  { key: "action", label: "Action", sortKey: "action", className: "gitns-col-action" },
+  { key: "resource", label: "Resource", sortKey: "resource", className: "gitns-col-resource" },
+  { key: "state", label: "State", sortKey: "state", className: "gitns-col-state" },
+];
+
 function RegistryPreview({
   resource,
   rights,
@@ -829,6 +859,18 @@ function RegistryPreview({
 } & ReturnType<typeof useRegistryTuples>) {
   const book = useNameBook();
   const pending = tuples.filter((t) => !t.published).length;
+  const sortedTuples = useSortedRows<(typeof tuples)[number], TupleSortKey>(tuples, (t, key) => {
+    switch (key) {
+      case "entity":
+        return book.nameOf(t.entity) ?? t.entity;
+      case "action":
+        return t.action;
+      case "resource":
+        return t.resource;
+      case "state":
+        return proj.data ? (t.published ? "Published" : "Pending") : null;
+    }
+  });
 
   return (
     <section className="card" aria-labelledby="gitns-registry">
@@ -858,47 +900,42 @@ function RegistryPreview({
           <p>Loading…</p>
         )
       ) : tuples.length === 0 ? (
-        <p className="muted">Nothing on this repository is published.</p>
+        <EmptyState compact title="Nothing on this repository is published." />
       ) : (
         <div className="table-scroll">
-          <table className="data-table gitns-table gitns-tuples">
-            <caption className="visually-hidden">Registry records for {resource}</caption>
-            <thead>
-              <tr>
-                <th scope="col">Entity</th>
-                <th scope="col" className="gitns-col-action">Action</th>
-                <th scope="col" className="gitns-col-resource">Resource</th>
-                <th scope="col" className="gitns-col-state">State</th>
+          <DataTable
+            columns={TUPLE_COLUMNS}
+            sort={sortedTuples.sort}
+            onSort={sortedTuples.onSort}
+            caption={`Registry records for ${resource}`}
+            className="gitns-table gitns-tuples"
+          >
+            {sortedTuples.rows.map((t) => (
+              <tr key={`${t.entity}|${t.action}|${t.resource}`}>
+                <td>
+                  <NamedDid did={t.entity} book={book} />
+                </td>
+                <td>
+                  <code>{t.action}</code>
+                  {t.impliedBy && (
+                    <div className="muted gitns-small">implied by {t.impliedBy}</div>
+                  )}
+                </td>
+                <td>
+                  <code>{t.resource}</code>
+                </td>
+                <td>
+                  {proj.data ? (
+                    <ToneChip tone={t.published ? "success" : "accent"}>
+                      {t.published ? "Published" : "Pending"}
+                    </ToneChip>
+                  ) : (
+                    "—"
+                  )}
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {tuples.map((t) => (
-                <tr key={`${t.entity}|${t.action}|${t.resource}`}>
-                  <td>
-                    <NamedDid did={t.entity} book={book} />
-                  </td>
-                  <td>
-                    <code>{t.action}</code>
-                    {t.impliedBy && (
-                      <div className="muted gitns-small">implied by {t.impliedBy}</div>
-                    )}
-                  </td>
-                  <td>
-                    <code>{t.resource}</code>
-                  </td>
-                  <td>
-                    {proj.data ? (
-                      <ToneChip tone={t.published ? "success" : "accent"}>
-                        {t.published ? "Published" : "Pending"}
-                      </ToneChip>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+            ))}
+          </DataTable>
         </div>
       )}
       <p className="muted gitns-small">
@@ -939,14 +976,15 @@ export function RepoDetail() {
     rightsQ.isSuccess ? allRights : null,
   );
 
+  const leaf = resource.split("/").pop();
+  const trail = [
+    ns
+      ? { label: ns.resource, to: namespacePath(ns.id) }
+      : { label: resource.split("/").slice(0, 2).join("/") },
+    { label: leaf },
+  ];
   const breadcrumb = (
-    <nav aria-label="Breadcrumb" className="gitns-crumbs">
-      <Link to={REPOS_PATH}>Repos</Link>
-      <span aria-hidden="true">/</span>
-      {ns ? <Link to={namespacePath(ns.id)}>{ns.resource}</Link> : <span>{resource.split("/").slice(0, 2).join("/")}</span>}
-      <span aria-hidden="true">/</span>
-      <span aria-current="page">{resource.split("/").pop()}</span>
-    </nav>
+    <PageHeader trail={trail} title={<span className="gitns-mono">{leaf}</span>} />
   );
 
   if (reposQ.isPending || nsQ.isPending) {
@@ -989,18 +1027,16 @@ export function RepoDetail() {
     // or published, so none of the governed panels apply.
     return (
       <>
-        {breadcrumb}
-        <header className="gitns-head">
-          <div>
-            <h2 className="gitns-mono">{repo.resource}</h2>
-            <div className="gitns-chips">
-              <ToneChip tone="neutral">Detached</ToneChip>
-              <span className="muted gitns-small">
-                {repo.forgeId && `forge id ${repo.forgeId} · `}recorded {formatDay(repo.createdAt)}
-              </span>
-            </div>
-          </div>
-        </header>
+        <PageHeader
+          trail={trail}
+          title={<span className="gitns-mono">{repo.resource}</span>}
+        />
+        <div className="gitns-chips">
+          <ToneChip tone="neutral">Detached</ToneChip>
+          <span className="muted gitns-small">
+            {repo.forgeId && `forge id ${repo.forgeId} · `}recorded {formatDay(repo.createdAt)}
+          </span>
+        </div>
         <section className="card">
           <p>
             No longer governed: {ns ? "it moved outside its namespace" : "its namespace was unbound"}.
@@ -1043,60 +1079,60 @@ export function RepoDetail() {
 
   return (
     <>
-      {breadcrumb}
-      <header className="gitns-head">
-        <div>
-          <h2 className="gitns-mono">{shortName(repo.resource)}</h2>
-          <div className="gitns-chips">
-            <ToneChip tone="neutral">{repo.visibility}</ToneChip>
-            <ToneChip tone={status.tone}>{status.label}</ToneChip>
-            {repo.bootstrap.requiredCheck && (
-              <ToneChip tone="accent">“Verify commit trust” required</ToneChip>
-            )}
-            <span className="muted gitns-small">
-              {repo.forgeId && `${ns.forge} id ${repo.forgeId} · `}
-              recorded {formatDay(repo.createdAt)}
-            </span>
-          </div>
-        </div>
-        <div className="gitns-head-actions">
-          {repo.state === "unmanaged" ? (
-            <button type="button" className="primary" onClick={() => setDialog({ kind: "adopt" })}>
-              Adopt
-            </button>
-          ) : (
-            <>
-              <button
-                type="button"
-                className="secondary"
-                disabled={!governed || archived}
-                onClick={() => setDialog({ kind: "transfer" })}
-              >
-                Transfer ownership
+      <PageHeader
+        trail={trail}
+        title={<span className="gitns-mono">{shortName(repo.resource)}</span>}
+        actions={
+          <>
+            {repo.state === "unmanaged" ? (
+              <button type="button" className="primary" onClick={() => setDialog({ kind: "adopt" })}>
+                Adopt
               </button>
-              {ns.mode === "bridge" && (
+            ) : (
+              <>
                 <button
                   type="button"
                   className="secondary"
-                  disabled={!reprojectable}
-                  title="Have the bridge re-apply this repository's forge roles under its current role map. No right changes."
-                  onClick={() => setDialog({ kind: "sign", task: reprojectTask(repo.resource) })}
+                  disabled={!governed || archived}
+                  onClick={() => setDialog({ kind: "transfer" })}
                 >
-                  Re-project roles
+                  Transfer ownership
                 </button>
-              )}
-              <button
-                type="button"
-                className="secondary destructive"
-                disabled={!governed || archived}
-                onClick={() => setDialog({ kind: "sign", task: archiveTask(repo.resource) })}
-              >
-                Archive
-              </button>
-            </>
-          )}
-        </div>
-      </header>
+                {ns.mode === "bridge" && (
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={!reprojectable}
+                    title="Have the bridge re-apply this repository's forge roles under its current role map. No right changes."
+                    onClick={() => setDialog({ kind: "sign", task: reprojectTask(repo.resource) })}
+                  >
+                    Re-project roles
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="secondary destructive"
+                  disabled={!governed || archived}
+                  onClick={() => setDialog({ kind: "sign", task: archiveTask(repo.resource) })}
+                >
+                  Archive
+                </button>
+              </>
+            )}
+          </>
+        }
+      />
+      <div className="gitns-chips">
+        <ToneChip tone="neutral">{repo.visibility}</ToneChip>
+        <ToneChip tone={status.tone}>{status.label}</ToneChip>
+        {repo.bootstrap.requiredCheck && (
+          <ToneChip tone="accent">“Verify commit trust” required</ToneChip>
+        )}
+        <span className="muted gitns-small">
+          {repo.forgeId && `${ns.forge} id ${repo.forgeId} · `}
+          recorded {formatDay(repo.createdAt)}
+        </span>
+      </div>
 
       {repo.roleMapStale && repo.roleMap && (
         <div className="finding warn">

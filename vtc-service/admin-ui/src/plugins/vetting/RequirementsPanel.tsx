@@ -23,6 +23,7 @@ import { ExternalLink } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
 import { useConfirm } from "@/components/ConfirmDialog";
+import { EmptyState } from "@/components/EmptyState";
 import { useToast } from "@/lib/toast";
 import {
   admissionSentence,
@@ -124,11 +125,10 @@ export function RequirementsPanel() {
         </p>
         {criteria.isPending && <p className="muted">Loading the criteria…</p>}
         {criteria.data && rows.length === 0 && (
-          <p className="muted">
-            No criteria are registered, so this community is not accepting
-            applications. Add one to open it — a criterion that asks for nothing
-            lets anyone apply.
-          </p>
+          <EmptyState
+            compact
+            title="No criteria are registered, so this community is not accepting applications. Add one to open it — a criterion that asks for nothing lets anyone apply."
+          />
         )}
         {editing.kind === "none" && (
           <div className="form-actions">

@@ -1,1 +1,20 @@
 /* Layout particular to the invitations screen. Shared look lives in components.css. */
+
+/* Copy / download / offer-link buttons above an issued VIC or offer. */
+.invitation-handoff {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin-bottom: var(--space-2);
+}
+
+/* The VIC itself, read-only, for copying by hand. */
+.invitation-json {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.invitation-qr {
+  margin-bottom: var(--space-2);
+}

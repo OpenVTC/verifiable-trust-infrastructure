@@ -626,8 +626,9 @@ select {
 
 .data-table thead th {
   position: sticky;
-  /* Under the shell's top bar, which is sticky too. */
-  top: var(--topbar-h, 0);
+  /* The shell scrolls the page area itself (shell.css, `.content`), so the
+     top of the nearest scroller is the top of the page area, under the bar. */
+  top: 0;
   background: var(--bg-elev);
   z-index: 1;
 }
@@ -1342,31 +1343,6 @@ dd .copy-icon-btn {
   border: 0;
 }
 
-/* Section links inside a plugin page. */
-.subnav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-  border-bottom: 1px solid var(--border);
-}
-.subnav a {
-  padding: var(--space-2) var(--space-3);
-  margin-bottom: -1px;
-  color: var(--text-muted);
-  font-weight: 500;
-  text-decoration: none;
-  border-bottom: 2px solid transparent;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-}
-.subnav a:hover {
-  color: var(--text);
-  background: var(--bg-hover);
-}
-.subnav a.active {
-  color: var(--text);
-  border-bottom-color: var(--brand);
-}
-.subnav a:focus-visible,
 a.stat-tile:focus-visible,
 a.button:focus-visible,
 .switch-field input:focus-visible,

@@ -19,7 +19,11 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { WAITING_COUNT_KEY } from "@/lib/action-badge";
 import { formatIso as formatDate } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
+import { DataTable } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { Field } from "@/components/Field";
 import { NamedDid } from "@/components/NamedDid";
+import { PageHeader } from "@/components/PageHeader";
 import { factsHeadline } from "@/lib/vetting";
 import {
   JoinRequestVettingCard,
@@ -81,6 +85,13 @@ async function reject(args: {
 }
 
 
+const JOIN_REQUEST_COLUMNS = [
+  { key: "applicant", label: "Applicant DID" },
+  { key: "submitted", label: "Submitted" },
+  { key: "consent", label: "Registry consent" },
+  { key: "review", label: "" },
+] as const;
+
 export function JoinRequests() {
   return (
     <Routes>
@@ -104,12 +115,11 @@ function JoinRequestsList() {
 
   return (
     <section className="page">
-      <h2>Join requests</h2>
+      <PageHeader />
 
       <section className="card">
         <div className="toolbar">
-          <label className="field inline">
-            <span className="field-label">Status</span>
+          <Field label="Status" inline>
             <select
               value={status}
               onChange={(e) => {
@@ -123,7 +133,7 @@ function JoinRequestsList() {
               <option value="withdrawn">Withdrawn</option>
               <option value="deferred">Deferred</option>
             </select>
-          </label>
+          </Field>
           {/* The VTC filters before paging, so this counts every request in
               this status, and each page holds only them. */}
           {typeof query.data?.totalEstimate === "number" && (
@@ -148,61 +158,47 @@ function JoinRequestsList() {
       )}
 
       <section className="card">
-        <table className="data-table">
-          <thead>
+        {/* Server-paged: no column sorts, since sorting one page would
+            misrepresent the whole list. */}
+        <DataTable columns={JOIN_REQUEST_COLUMNS}>
+          {query.isPending && (
             <tr>
-              <th>Applicant DID</th>
-              <th>Submitted</th>
-              <th>Registry consent</th>
-              <th></th>
+              <td colSpan={4}>Loading…</td>
             </tr>
-          </thead>
-          <tbody>
-            {query.isPending && (
-              <tr>
-                <td colSpan={4}>Loading…</td>
-              </tr>
-            )}
-            {query.data?.items.length === 0 && (
-              <tr>
-                <td colSpan={4}>
-                  <div className="empty-state">
-                    <span className="empty-icon" aria-hidden="true">
-                      <Inbox />
-                    </span>
-                    <h4>No {status} join requests</h4>
-                    <p>
-                      Switch the status filter to inspect historical
-                      requests, or wait for a new applicant to submit.
-                    </p>
-                  </div>
-                </td>
-              </tr>
-            )}
-            {query.data?.items.map((r) => (
-              <tr key={r.id}>
-                <td>
-                  <Link to={r.id}>
-                    <NamedDid book={nameBook} did={r.applicantDid} />
-                  </Link>
-                </td>
-                <td>{formatDate(r.submittedAt)}</td>
-                <td>
-                  {r.registryConsent ? (
-                    "Yes"
-                  ) : (
-                    <span className="muted">No</span>
-                  )}
-                </td>
-                <td>
-                  <Link to={r.id}>
-                    Review <ArrowRight size={12} aria-hidden="true" />
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+          )}
+          {query.data?.items.length === 0 && (
+            <tr>
+              <td colSpan={4}>
+                <EmptyState icon={Inbox} title={`No ${status} join requests`}>
+                  Switch the status filter to inspect historical
+                  requests, or wait for a new applicant to submit.
+                </EmptyState>
+              </td>
+            </tr>
+          )}
+          {query.data?.items.map((r) => (
+            <tr key={r.id}>
+              <td>
+                <Link to={r.id}>
+                  <NamedDid book={nameBook} did={r.applicantDid} />
+                </Link>
+              </td>
+              <td>{formatDate(r.submittedAt)}</td>
+              <td>
+                {r.registryConsent ? (
+                  "Yes"
+                ) : (
+                  <span className="muted">No</span>
+                )}
+              </td>
+              <td>
+                <Link to={r.id}>
+                  Review <ArrowRight size={12} aria-hidden="true" />
+                </Link>
+              </td>
+            </tr>
+          ))}
+        </DataTable>
 
         <div className="pagination">
           <button
@@ -273,10 +269,13 @@ function JoinRequestDetail() {
 
   return (
     <section className="page">
+      <PageHeader
+        title="Join request detail"
+        trail={[{ label: "Join request detail" }]}
+      />
       <button type="button" className="link" onClick={() => navigate("..")}>
         <ArrowLeft size={14} aria-hidden="true" /> Back to join requests
       </button>
-      <h2>Join request detail</h2>
 
       {query.isPending && <p>Loading…</p>}
       {query.error && (
@@ -355,15 +354,14 @@ function JoinRequestDetail() {
 
               <hr />
 
-              <label className="field">
-                <span className="field-label">Reject reason (optional)</span>
+              <Field label="Reject reason (optional)">
                 <input
                   type="text"
                   placeholder="missing VRC / failed policy check / …"
                   value={rejectReason}
                   onChange={(e) => setRejectReason(e.target.value)}
                 />
-              </label>
+              </Field>
               <div className="form-actions">
                 <button
                   type="button"
