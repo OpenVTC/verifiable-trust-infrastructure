@@ -269,8 +269,10 @@ pub async fn seal_record(
 /// Why a file key could not be derived.
 #[derive(Debug)]
 pub enum FileKeyError {
-    /// Anything that is not an epoch this VTA cannot reach: no group for the room, a group
-    /// that does not restore.
+    /// This VTA holds no group for the room.
+    NoGroup,
+    /// Anything else that is not an unreachable epoch: a store error, a group that does not
+    /// restore.
     App(AppError),
     /// The file is sealed under an epoch later than the one this VTA holds: a commit has not
     /// been delivered.
@@ -298,11 +300,7 @@ pub async fn file_key(
     let record = load(groups, room_id)
         .await
         .map_err(FileKeyError::App)?
-        .ok_or_else(|| {
-            FileKeyError::App(AppError::NotFound(format!(
-                "this VTA holds no group state for room `{room_id}`"
-            )))
-        })?;
+        .ok_or(FileKeyError::NoGroup)?;
     let group = RoomGroup::restore(&record.snapshot)
         .map_err(|e| FileKeyError::App(AppError::Internal(format!("restore the group: {e}"))))?;
     let mut room = SealedRoom::new(room_id, group);
@@ -562,6 +560,18 @@ async fn store(
         .insert(group_key(room_id), &record)
         .await
         .map_err(|e| AppError::Internal(format!("store group state for `{room_id}`: {e}")))
+}
+
+/// Store a group as `join` would, for tests that need a room held at some epoch.
+#[cfg(test)]
+pub(crate) async fn store_for_test(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+    member_did: &str,
+    group: &RoomGroup,
+    links: Vec<EpochLink>,
+) -> Result<(), AppError> {
+    store(groups, room_id, member_did, group, links, 0).await
 }
 
 /// Prefix for what a host has told this agent about a room's tree.
@@ -942,7 +952,7 @@ mod file_key_tests {
         let (_d, ks) = open().await;
         assert!(matches!(
             file_key(&ks, ROOM, &[4u8; 32], None).await,
-            Err(FileKeyError::App(AppError::NotFound(_)))
+            Err(FileKeyError::NoGroup)
         ));
     }
 }

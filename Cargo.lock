@@ -11514,6 +11514,7 @@ dependencies = [
  "hmac 0.13.0",
  "http-body-util",
  "ipnetwork",
+ "jsonschema 0.58.5",
  "jsonwebtoken 11.1.0",
  "keyring-core",
  "libc",
