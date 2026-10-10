@@ -113,7 +113,7 @@ export interface SignedTrustTaskDocument extends UnsignedTrustTaskDocument {
     cryptosuite: "eddsa-jcs-2022";
     verificationMethod: string;
     created: string;
-    proofPurpose: "assertionMethod";
+    proofPurpose: "assertionMethod" | "authentication";
     proofValue: string;
   };
 }
@@ -173,7 +173,14 @@ export function buildTrustTaskDocument(args: {
 export async function signTrustTaskDocument(
   doc: UnsignedTrustTaskDocument,
   key: ConsoleSigningKey,
-  options: { now?: Date } = {},
+  options: {
+    now?: Date;
+    /** Defaults to `assertionMethod`, what the console's documents carry. A
+     *  `did:key` is authorised for every purpose; an operational document
+     *  from another caller (the member portal's sign-in key) may say
+     *  `authentication` (VTI-KEY-106). */
+    proofPurpose?: "assertionMethod" | "authentication";
+  } = {},
 ): Promise<SignedTrustTaskDocument> {
   // `created` is an `Option<String>` on the Rust side, so it survives the
   // round trip verbatim — but it is written the same way as `issuedAt` so
@@ -190,7 +197,7 @@ export async function signTrustTaskDocument(
     cryptosuite: "eddsa-jcs-2022" as const,
     verificationMethod: key.verificationMethod,
     created,
-    proofPurpose: "assertionMethod" as const,
+    proofPurpose: options.proofPurpose ?? ("assertionMethod" as const),
   };
 
   // The document as hashed: no `proof` member at all. `doc` is built without

@@ -63,7 +63,10 @@ function bearerFromSessionBlob(
   return m && m[1] ? m[1] : null;
 }
 
-/** SIOPv2 from the member's VTA, as the persona the wallet has bound to this
+/** @deprecated Legacy SIOPv2 sign-in (contract C7), behind "Using an older
+ *  wallet?". New wallets use the trigger-link sign-in (`./oob`).
+ *
+ *  SIOPv2 from the member's VTA, as the persona the wallet has bound to this
  *  community (binding one on first use), then mirror the bearer into cookies.
  *
  *  The persona has to be known before the challenge — `/auth/challenge` is
@@ -109,7 +112,8 @@ export async function listVtaIdentities(): Promise<VtaIdentity[]> {
     .map((e) => ({ entryId: e.id, label: e.label, did: e.principalDid! }));
 }
 
-/** SIOPv2 from the member's VTA as an identity they chose. */
+/** @deprecated Legacy SIOPv2 sign-in (contract C7).
+ *  SIOPv2 from the member's VTA as an identity they chose. */
 export async function signInWithVtaAs(identity: VtaIdentity): Promise<void> {
   requireVtaSignIn();
   await runSiop(await vtcDid(), identity.did, identity.entryId);

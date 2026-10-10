@@ -1060,10 +1060,20 @@ new flow, update both this section and the relevant `docs/*.md`.
 
 ### VTC member portal (`/members`, `/v1/member/*`)
 - **What**: Where a community's members sign in — a separate application from
-  the console, enforced by the daemon, not by what the page shows. SIOPv2
-  issued by the member's VTA (wallet `walletProfile` + `proxyLogin`, against
-  `<origin>/v1/member/wallet`) or a portal passkey only — never the extension's
-  self-issued `login()`, which presents its own `did:key`.
+  the console, enforced by the daemon, not by what the page shows. Sign-in is
+  the **trigger-link key grant** (`auth/oob/*` on `/v1/trust-tasks`,
+  `trust_tasks::oob_tasks` + `member_portal::oob`: the browser's
+  non-extractable `K_b` opens a request, a wallet claims it with a throwaway
+  `K_a`, proves membership and the on-screen number, and returns a grant
+  signed by the member's DID naming `K_b`; only `K_b` redeems it), a portal
+  passkey, or — **deprecated** (contract C7) — SIOPv2 issued by the member's
+  VTA (wallet `walletProfile` + `proxyLogin`, against
+  `<origin>/v1/member/wallet`). Never the extension's self-issued `login()`,
+  which presents its own `did:key`. For `auth/oob`: the ACL string check comes
+  before any DID resolution; every state change is a compare-and-set under one
+  process lock; a failed step from the lock holder declines the request; step
+  1 and 2 responses are signed for `assertionMethod`; `identify` is verified
+  for `authentication`, `grant` for `assertionMethod`.
 - **Invariants to preserve**: only an **active member** (live ACL entry, not
   expired/suspended/`application`, member record not removed) signs in, and
   that is re-read on every request and refresh — never trusted from the

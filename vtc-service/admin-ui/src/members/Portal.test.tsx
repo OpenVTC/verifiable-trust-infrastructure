@@ -59,7 +59,7 @@ describe("member portal", () => {
     document.cookie = "csrf=; Max-Age=0; Path=/";
   });
 
-  it("shows sign-in and the install guide to a visitor with no wallet", async () => {
+  it("offers wallet sign-in first and keeps the legacy extension behind 'Using an older wallet?'", async () => {
     stubFetch((url) =>
       url.endsWith("/public-profile")
         ? json(200, { name: "Acme Guild" })
@@ -75,10 +75,17 @@ describe("member portal", () => {
     // No self-issued wallet sign-in: it would present the extension's did:key.
     expect(screen.queryByRole("button", { name: /browser's wallet/i })).toBeNull();
     expect(screen.getByRole("button", { name: /sign in with a passkey/i })).toBeTruthy();
-    // No wallet: the manual-install guide is open, and points at the repo.
+    // The trigger-link sign-in is the first option (contract C7).
+    const options = screen.getAllByRole("button").map((b) => b.textContent ?? "");
+    expect(options[0]).toMatch(/show sign-in code/i);
+    // SIOPv2 is legacy: folded behind "Using an older wallet?", and the
+    // extension's install guide with it.
+    const legacy = screen.getByText(/using an older wallet\?/i).closest("details") as HTMLDetailsElement;
+    expect(legacy.open).toBe(false);
+    expect(legacy.contains(vta)).toBe(true);
     const guide = screen.getByText(/install the vta wallet browser extension/i)
       .closest("details") as HTMLDetailsElement;
-    expect(guide.open).toBe(true);
+    expect(legacy.contains(guide)).toBe(true);
     expect(
       screen.getByRole("link", { name: /openvtc\/vta-browser-plugin/i }).getAttribute("href"),
     ).toBe("https://github.com/OpenVTC/vta-browser-plugin");

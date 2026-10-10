@@ -71,6 +71,7 @@ mod join_didcomm;
 mod join_requests;
 mod join_tsp;
 mod member_portal;
+mod member_portal_oob;
 mod member_push_didcomm;
 mod members_crud;
 mod no_rebuild;

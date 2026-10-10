@@ -678,7 +678,7 @@ by what the page chooses to show:
 | | Console (`/admin/`) | Member portal (`/members/`) |
 |---|---|---|
 | Who may sign in | An administrator (any administrative role) | An **active member** |
-| Sign-in methods | Passkey, wallet (SIOPv2), VTA identity | SIOPv2 issued by the member's VTA, or a portal passkey — nothing else |
+| Sign-in methods | Passkey, wallet (SIOPv2), VTA identity | Wallet sign-in by trigger link (`auth/oob/*`, the default), a portal passkey, or — deprecated — SIOPv2 issued by the member's VTA |
 | Token audience | `VTC` | `VTC-member` |
 | Session store | `sessions` | `member_sessions` |
 | Passkey store | `passkey` | `member_passkeys` |
@@ -704,7 +704,76 @@ backend would otherwise accept the subject. Portal passkeys live in
 their own keyspace too, so one can never open a console session or
 answer a step-up.
 
-**Signing in.** A member signs in as their **VTA identity**: the
+**Signing in with your wallet** (the default, first option). The page
+shows a sign-in code: a QR code that is also a link, so a wallet on the
+same device can be clicked instead of scanned. Its text is a **trigger
+link** (VTI spec §7a, flow `/vti/flow/sign-in/0.1`):
+
+```
+https://link.trustoverip.org/t#_from=<VTC DID>&_id=<requestId>&_exp=<claim deadline>&_type=/vti/flow/sign-in/0.1
+```
+
+The link host is `admin_ui.sign_in_link_host` (default
+`link.trustoverip.org`), and must not be on the portal's own domain —
+a universal link tapped on a page of the same domain opens in the
+browser, not the wallet (VTI-LNK-084). `GET /v1/member/sign-in/config`
+hands the page the DID, host and flow, and refuses with the fix when
+the host breaks those rules.
+
+The exchange is the **key grant** of `auth/oob/*`, every step a signed
+Trust Task document on `POST /v1/trust-tasks`:
+
+1. The browser generates a non-extractable WebCrypto Ed25519 key `K_b`
+   and signs `auth/oob/request`. Accepted only from the portal's own
+   `Origin`; at most five open codes per address. The code lives 120 s.
+2. The wallet, which knows this community, signs `auth/oob/claim` with a
+   throwaway key `K_a` (`parentThreadId` = the request id, VTI-LNK-054).
+   The first claim locks the request; the VTC answers step 1 (community,
+   portal origin, purpose, decision deadline) signed with its
+   `assertionMethod` key. A claim starts a fresh 120 s decision window.
+3. The browser's long poll (`auth/oob/redeem`, 25 s, one open poll per
+   request) now shows **"Your number is 47"** — only to the holder of
+   `K_b`.
+4. The wallet sends `auth/oob/prove` carrying `auth/oob/identify`, signed
+   by the member's DID for `authentication`, with the typed number. The
+   VTC checks the DID against the ACL **before** resolving anything, then
+   the proof, then the number, and answers step 2 (the requester's
+   browser, OS, approximate location and whether it is on the phone's
+   network — never an address), again signed for `assertionMethod`. Any
+   failure — a non-member, a bad signature, a wrong number — ends the
+   request.
+5. The member approves; their VTA signs `auth/oob/grant` for
+   `assertionMethod` (after a user-verification gesture on the device),
+   naming `K_b`, `K_a`, the origin, `notAfter` and the digest of step 2.
+   The wallet sends it in `auth/oob/respond`.
+6. The browser's next poll redeems: the VTC creates a member session
+   bound to `K_b` (`amr = ["did","oob","uv"]`, ending no later than the
+   grant's `notAfter`), sets the usual portal cookies, and the page asks
+   **"Continue as Alice?"** before using it. *Not me* signs out.
+
+The page hides the code when the tab is hidden (the request keeps
+running). It is served with `Referrer-Policy: no-referrer`,
+`Cache-Control: no-store` and a CSP with `frame-ancestors 'none'`, and
+every `auth/oob` response is `no-store`. Each step is audited as
+`MemberWalletSignIn` (city and country, never the address).
+
+**Wallets find this portal in the community's DID document.** A wallet
+refuses a sign-in link unless the VTC's DID document lists a
+`SignInPortal` service whose origin is the portal's
+(`{"id":"<did>#sign-in-portal","type":"SignInPortal","serviceEndpoint":"<public_url>/members/"}`),
+and sends the trust tasks to its trust-task HTTPS service
+(`{"id":"<did>#trust-tasks","type":"TrustTaskHTTPS","serviceEndpoint":"<public_url>/v1"}`).
+That endpoint is the Trust-Task base (HTTPS binding 0.2 §6): a client posts
+to `<base>/trust-tasks`, which is `POST /v1/trust-tasks`. `vtc status`
+reports whether both services are there. Adding it is a VTA-side
+`dids edit`, then `cnm did-log install` for a VTC that serves its own
+`did.jsonl`.
+
+**Using an older wallet? (deprecated).** The SIOPv2 sign-in below is
+kept for wallets that cannot do the above, behind a link on the
+sign-in page. It will be removed; a date has not been set.
+
+A member signs in as their **VTA identity**: the
 portal asks the wallet extension which VTA persona this community
 knows them as (`walletProfile`, which binds one on first use), takes a
 challenge for that DID from `<origin>/v1/member/wallet/auth/challenge`,
@@ -738,7 +807,8 @@ install steps (build with Node 24+, load `packages/extension/dist/`
 unpacked in a Chromium browser, finish its setup) and opens them when
 no wallet that can sign in as a VTA identity is detected.
 
-**Routes** (all under `/v1/member/`): `wallet/auth/{challenge,,refresh}`,
+**Routes** (all under `/v1/member/`): `sign-in/config`,
+`wallet/auth/{challenge,,refresh}` (deprecated),
 `session`, `auth/refresh`, `sign-out`, `passkey-login/{start,finish}`
 — unauthenticated, behind the per-IP governor — and `me`, `passkeys`,
 `passkeys/register/{start,finish}`, `passkeys/{credentialId}` (DELETE)

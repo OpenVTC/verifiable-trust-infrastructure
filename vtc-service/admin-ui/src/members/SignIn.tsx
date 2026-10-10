@@ -1,10 +1,17 @@
-// Member sign-in: SIOPv2 issued by the member's own VTA, or a portal passkey —
-// nothing else. Only an active member of this community is admitted; the
-// daemon says so in one message whatever the reason, and so does this page.
+// Member sign-in. In order:
 //
-// There is deliberately no "sign in with this browser's wallet" button: the
+// 1. **Sign in with your wallet** — the trigger-link key grant (`auth/oob/*`,
+//    `WalletSignIn`), the default (contract C7).
+// 2. A portal passkey.
+// 3. **Using an older wallet?** — SIOPv2 issued by the member's VTA through
+//    the browser extension. Deprecated (contract C7): kept, not deleted, until
+//    a removal date is set.
+//
+// Only an active member of this community is admitted; the daemon says so in
+// one message whatever the reason, and so does this page. There is
+// deliberately no "sign in with this browser's wallet" button: the
 // extension's own `login()` presents its holder `did:key`, which no community
-// admitted as a member. The VTA sign-in always presents the VTA identity.
+// admitted as a member.
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -14,6 +21,7 @@ import { shortenDid } from "@/lib/format";
 
 import { MemberApiError } from "./api";
 import { InstallWallet } from "./InstallWallet";
+import { WalletSignIn } from "./WalletSignIn";
 import {
   isIdentityChoiceAvailable,
   isVtaSignInAvailable,
@@ -119,14 +127,42 @@ export function SignIn({ communityName }: { communityName?: string | null }) {
           Sign in to {communityName || "your community"}
         </h1>
         <p className="lead">
-          Sign in as the identity your VTA holds for this community, or with
-          a passkey you've added here. There are no passwords.
+          Sign in with the wallet that holds your membership, or with a passkey
+          you've added here. There are no passwords.
         </p>
 
         <div className="signin-options">
+          <WalletSignIn
+            communityName={communityName}
+            onSignedIn={() => qc.invalidateQueries({ queryKey: ["member-me"] })}
+          />
+
           <button
             type="button"
-            className="btn btn-primary btn-lg"
+            className="btn btn-secondary btn-lg"
+            onClick={() => run("passkey")}
+            disabled={busy || !passkeysSupported()}
+          >
+            <Fingerprint size={18} aria-hidden="true" />
+            {phase.kind === "running" && phase.method === "passkey"
+              ? "Waiting for your passkey…"
+              : "Sign in with a passkey"}
+          </button>
+          <p className="option-note">
+            First time? Sign in with your wallet, then add a passkey for this
+            device.
+          </p>
+
+          <details className="legacy-signin">
+            <summary>Using an older wallet?</summary>
+            <p className="option-note">
+              The VTA Wallet browser extension's older sign-in (SIOPv2). It is
+              deprecated and will be removed; use “Sign in with your wallet”
+              when your wallet supports it.
+            </p>
+          <button
+            type="button"
+            className="btn btn-secondary"
             onClick={() => run("vta")}
             disabled={busy || !vtaAvailable}
           >
@@ -186,21 +222,8 @@ export function SignIn({ communityName }: { communityName?: string | null }) {
             </section>
           )}
 
-          <button
-            type="button"
-            className="btn btn-secondary btn-lg"
-            onClick={() => run("passkey")}
-            disabled={busy || !passkeysSupported()}
-          >
-            <Fingerprint size={18} aria-hidden="true" />
-            {phase.kind === "running" && phase.method === "passkey"
-              ? "Waiting for your passkey…"
-              : "Sign in with a passkey"}
-          </button>
-          <p className="option-note">
-            First time? Sign in with your VTA, then add a passkey for this
-            device.
-          </p>
+          <InstallWallet open={false} />
+          </details>
         </div>
 
         {phase.kind === "error" && (
@@ -229,8 +252,6 @@ export function SignIn({ communityName }: { communityName?: string | null }) {
           </div>
         )}
       </section>
-
-      <InstallWallet open={!vtaAvailable} />
 
       <p className="signin-foot">
         Not a member yet? Start at{" "}

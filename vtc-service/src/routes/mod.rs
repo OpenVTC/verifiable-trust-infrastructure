@@ -910,6 +910,10 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
             "/member/wallet/auth/refresh",
             post(member_portal::wallet_refresh),
         )
+        .route(
+            "/member/sign-in/config",
+            get(member_portal::sign_in_config),
+        )
         .route("/member/session", post(member_portal::session))
         .route("/member/auth/refresh", post(member_portal::cookie_refresh))
         .route("/member/sign-out", post(member_portal::sign_out))
