@@ -1,65 +1,22 @@
 /* VTC default public landing page.
  *
- * Standalone — no build step, no framework. Echoes the admin UX
- * design language (indigo brand, Inter-style stack, 4px grid) but
- * leans more marketing-y in the hero. CSP is `default-src 'self'`:
- * no inline JS, no inline style attributes, so every rule lives here.
+ * Standalone — no build step, no framework. CSP is `default-src 'self'`: no
+ * inline JS, no inline style attributes, so every rule lives here.
+ *
+ * The colours, type, spacing and radii come from `tokens.css`, the same token
+ * file the member portal and the operator console use (its source of truth is
+ * `admin-ui/src/styles/tokens.css`), and the IBM Plex faces from `fonts.css`.
+ * `index.html` links both before this file. Only the page's own measures are
+ * set here; the hero leans more marketing-y than the console.
  */
 
 :root {
-  color-scheme: light dark;
-
-  --font-sans:
-    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-  --font-mono:
-    ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Code", Menlo,
-    Consolas, monospace;
-
-  /* Indigo brand — matches the admin UX. */
-  --brand-50: #efeffe;
-  --brand-100: #e0e1fd;
-  --brand-300: #a0a0f3;
-  --brand-400: #7c7ce8;
-  --brand-500: #5b5bd6;
-  --brand-600: #4a4ac4;
-
-  --accent-pink: #db5dd7;
-  --accent-violet: #8b5cf6;
-
-  /* Semantic surface tokens — light-dark() flips on `color-scheme`. */
-  --bg: light-dark(#fafaff, #08080d);
-  --bg-elev: light-dark(#ffffff, #14141c);
-  --bg-subtle: light-dark(#f4f4fa, #1c1c26);
-  --border: light-dark(#e4e4ec, #26262f);
-  --border-strong: light-dark(#d4d4dc, #34343f);
-  --text: light-dark(#0f0f17, #f5f5fa);
-  --text-muted: light-dark(#54545f, #a0a0aa);
-  --text-faint: light-dark(#7a7a82, #6f6f78);
-  --brand: light-dark(var(--brand-500), var(--brand-400));
-  --brand-hover: light-dark(var(--brand-600), var(--brand-300));
-  --brand-soft: light-dark(var(--brand-50), #1d1d3a);
-  --on-brand: #ffffff;
-  --success: light-dark(#16a34a, #4ade80);
-  --warning: light-dark(#d97706, #fbbf24);
-  --danger: light-dark(#dc2626, #f87171);
-
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 20px;
-  --radius-pill: 999px;
-
   --page-max: 72rem;
   --gutter: clamp(1rem, 4vw, 2.5rem);
-
-  --shadow-card: light-dark(
-    0 1px 2px rgb(0 0 0 / 0.04),
-    0 1px 2px rgb(0 0 0 / 0.4)
-  );
-  --shadow-hover: light-dark(
-    0 10px 32px -8px rgb(91 91 214 / 0.18),
-    0 10px 32px -8px rgb(0 0 0 / 0.6)
-  );
+  /* The page's filled buttons sit on indigo 500 in both themes, so their
+   * label stays white rather than following the console's dark-mode
+   * `--brand-fg`. */
+  --on-brand: #ffffff;
 }
 
 * {

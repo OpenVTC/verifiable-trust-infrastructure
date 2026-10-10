@@ -1,0 +1,219 @@
+/* ── Shared design tokens ─────────────────────────────────────────
+ *
+ * One token file for the community's three surfaces: the home page
+ * (`website-default/`), the member portal (`/members/`) and the operator
+ * console (`/admin/`). Each surface's own stylesheet builds on these and
+ * adds only what is particular to it (page widths, hero washes).
+ *
+ * This file is the source of truth. `vtc-service/website-default/tokens.css`
+ * is a byte-for-byte copy, because the home page is static and served under
+ * `default-src 'self'` with no build step; a test in
+ * `vtc-service/src/website/default_site.rs` fails if the two drift. Edit
+ * this one, then copy it over.
+ *
+ * Theme: `light-dark()` follows the OS through `color-scheme: light dark`.
+ * `[data-theme="light"|"dark"]` on <html> (the console's switcher,
+ * `src/lib/theme.ts`) pins one, and the cascade follows.
+ *
+ * Fonts: IBM Plex Sans and IBM Plex Mono, self-hosted on every surface.
+ * The @font-face rules are not here: the console and the portal take them
+ * from the bundled @fontsource packages, the home page from its own
+ * `fonts.css`. A surface without them falls back to the system stack.
+ *
+ * Brand: indigo by default. A community accent, when one is configured
+ * (the Branding card's accent colour), is set as `--community-accent` on
+ * <html> and overrides `--brand` below; nothing else needs to change.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* Type. 14px base: the console is dense, and the site and portal set
+   * their own larger body size. */
+  --font-sans:
+    "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono:
+    "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    monospace;
+  /* Kept as a name so stylesheets that read it still resolve. Plex Sans:
+   * there is no separate display face any more. */
+  --font-display: var(--font-sans);
+
+  --text-xs: 11px;
+  --text-xs-leading: 16px;
+  --text-sm: 12px;
+  --text-sm-leading: 18px;
+  --text-base: 14px;
+  --text-base-leading: 20px;
+  --text-md: 15px;
+  --text-md-leading: 22px;
+  --text-lg: 17px;
+  --text-lg-leading: 24px;
+  --text-xl: 21px;
+  --text-xl-leading: 28px;
+  --text-2xl: 28px;
+  --text-2xl-leading: 34px;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --tracking-tight: -0.011em;
+  --tracking-tighter: -0.02em;
+  --tracking-wide: 0.02em;
+  --tracking-caps: 0.08em;
+
+  /* Grey ramp: cool, faintly indigo, to sit with the brand. */
+  --gray-50: #fafaff;
+  --gray-100: #f4f4fa;
+  --gray-200: #e4e4ec;
+  --gray-300: #d4d4dc;
+  --gray-400: #a0a0aa;
+  --gray-500: #7a7a82;
+  --gray-600: #54545f;
+  --gray-700: #34343f;
+  --gray-800: #26262f;
+  --gray-900: #14141c;
+  --gray-950: #08080d;
+
+  /* Brand: indigo, with a violet accent for the community mark. */
+  --brand-50: #efeffe;
+  --brand-100: #e0e1fd;
+  --brand-200: #c4c4f8;
+  --brand-300: #a0a0f3;
+  --brand-400: #7c7ce8;
+  --brand-500: #5b5bd6;
+  --brand-600: #4a4ac4;
+  --brand-700: #3b3ba3;
+  --accent-violet: #8b5cf6;
+  --accent-pink: #db5dd7;
+
+  /* Semantic ramps. */
+  --success-500: #16a34a;
+  --success-400: #4ade80;
+  --warning-500: #d97706;
+  --warning-400: #fbbf24;
+  --danger-500: #dc2626;
+  --danger-400: #f87171;
+
+  /* Spacing: 4px grid. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* Control and row heights (the console's density). */
+  --control-h: 36px;
+  --control-h-sm: 28px;
+  --row-h: 40px;
+
+  /* Radius. */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 20px;
+  --radius-pill: 999px;
+
+  /* Motion: expo-out. */
+  --motion-fast: 120ms cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-medium: 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-slow: 260ms cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Surfaces. */
+  --bg: light-dark(#fafaff, #08080d);
+  --bg-elev: light-dark(#ffffff, #14141c);
+  --bg-subtle: light-dark(#f4f4fa, #1c1c26);
+  --bg-hover: light-dark(#efeff7, #1f1f2a);
+  --border: light-dark(#e4e4ec, #26262f);
+  --border-strong: light-dark(#d4d4dc, #34343f);
+  --text: light-dark(#0f0f17, #f5f5fa);
+  --text-muted: light-dark(#54545f, #a0a0aa);
+  --text-faint: light-dark(#7a7a82, #6f6f78);
+
+  /* Brand roles. A community accent overrides these: see
+   * `:root[data-community-accent]` below. */
+  --brand: light-dark(var(--brand-500), var(--brand-400));
+  --brand-strong: light-dark(var(--brand-600), var(--brand-300));
+  --brand-hover: var(--brand-strong);
+  --brand-fg: light-dark(#ffffff, #0b0b1a);
+  --on-brand: var(--brand-fg);
+  --brand-soft: light-dark(
+    color-mix(in srgb, var(--brand) 10%, white),
+    color-mix(in srgb, var(--brand) 18%, #08080d)
+  );
+  --brand-tint: color-mix(in srgb, var(--brand) 9%, transparent);
+  --brand-tint-strong: color-mix(in srgb, var(--brand) 16%, transparent);
+  --focus-ring: var(--brand);
+
+  --success: light-dark(var(--success-500), var(--success-400));
+  --warning: light-dark(var(--warning-500), var(--warning-400));
+  --danger: light-dark(var(--danger-500), var(--danger-400));
+  --success-soft: light-dark(#e8f6ee, #10261a);
+  --warning-soft: light-dark(#fdf3e4, #2a2010);
+  --danger-soft: light-dark(#fcecec, #2c1517);
+  --danger-tint: color-mix(in srgb, var(--danger) 12%, transparent);
+
+  /* Verdict palette: the four policy effects, shared by the Policies
+   * (ceremonies) screens and anything else that renders a decision.
+   * allow=emerald, deny=rose, refer=amber, request_more=violet. These keep
+   * their values whatever the brand is. */
+  --vd-allow: light-dark(#059669, #34d399);
+  --vd-deny: light-dark(#e11d48, #fb7185);
+  --vd-refer: light-dark(#d97706, #fbbf24);
+  --vd-more: light-dark(#7c3aed, #a78bfa);
+
+  /* Elevation: a 1px border plus an optional soft shadow. */
+  --elev-0: none;
+  --elev-1:
+    0 0 0 1px var(--border),
+    0 1px 2px 0 rgb(15 15 23 / 0.04);
+  --elev-2:
+    0 0 0 1px var(--border),
+    0 8px 24px -12px rgb(15 15 23 / 0.16);
+  --elev-3:
+    0 0 0 1px var(--border),
+    0 12px 32px -4px rgb(0 0 0 / 0.22);
+  --shadow-card: light-dark(0 1px 2px rgb(0 0 0 / 0.04), 0 1px 2px rgb(0 0 0 / 0.4));
+  --shadow-hover: light-dark(
+    0 10px 32px -8px rgb(91 91 214 / 0.18),
+    0 10px 32px -8px rgb(0 0 0 / 0.6)
+  );
+
+  /* The community mark when there is no logo. */
+  --mark-gradient: linear-gradient(135deg, var(--brand), var(--accent-violet));
+}
+
+/* A community accent (the Branding card's accent colour). The console
+ * sets `--community-accent` and `--community-accent-fg` (white or near-black,
+ * whichever reads on it) inline on <html>, with this attribute. In dark mode
+ * the accent is lifted towards white so a dark one stays legible on the dark
+ * ground. Absent the attribute, the indigo above stands. */
+:root[data-community-accent] {
+  --brand: light-dark(
+    var(--community-accent),
+    color-mix(in srgb, var(--community-accent) 70%, white)
+  );
+  --brand-strong: light-dark(
+    color-mix(in srgb, var(--community-accent) 82%, black),
+    color-mix(in srgb, var(--community-accent) 55%, white)
+  );
+  --brand-fg: light-dark(var(--community-accent-fg, #ffffff), #0b0b1a);
+}
+
+/* A pinned theme. `light-dark()` keys off `color-scheme`, so this is all
+ * it takes. */
+[data-theme="light"] {
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+}

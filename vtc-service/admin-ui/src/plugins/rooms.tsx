@@ -358,7 +358,7 @@ function CreationPolicy() {
       )}
 
       <p className="muted" style={{ marginTop: "var(--space-4)" }}>
-        To change any of it, edit the <b>rooms</b> policy under Ceremonies. The
+        To change any of it, edit the <b>rooms</b> policy under Policies. The
         shipped default denies the private tier deliberately: a community that has
         not decided should not find out it is hosting rooms whose membership it
         cannot see.

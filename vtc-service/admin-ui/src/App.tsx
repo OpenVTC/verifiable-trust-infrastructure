@@ -1,20 +1,16 @@
-import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { ChevronsLeft, ChevronsRight, Menu, RefreshCw, X } from "lucide-react";
 
-import { getPlugins, subscribePlugins, type PluginManifest } from "@/plugin-api";
-import { BreakGlassBanner } from "@/components/BreakGlassBanner";
+import { getPlugins, subscribePlugins } from "@/plugin-api";
+import { AccountMenu } from "@/components/AccountMenu";
+import { AttentionStrip, type AttentionItem } from "@/components/AttentionStrip";
+import { BreakGlassNotice, useBreakGlassState } from "@/components/BreakGlassBanner";
 import { LiveIndicator } from "@/components/LiveIndicator";
 import { PluginHost } from "@/components/PluginHost";
-import { ThemeSwitcher } from "@/components/ThemeSwitcher";
-import {
-  probeSession,
-  signOut,
-  watchSession,
-  SIGNING_KEY_REFUSED_EVENT,
-  WhoamiResponse,
-} from "@/lib/api";
+import { PluginIcon } from "@/components/PluginIcon";
+import { probeSession, watchSession, SIGNING_KEY_REFUSED_EVENT } from "@/lib/api";
 import { signingStatus, type SigningStatus } from "@/lib/console-keys-api";
 import {
   ACTIONS_PLUGIN_ID,
@@ -24,7 +20,7 @@ import {
   waitingSentence,
 } from "@/lib/action-badge";
 import {
-  CoolingOffBanner,
+  CoolingOffNotice,
   OperatorWriteBanner,
   SingleAdminModeBanner,
 } from "@/components/ActionsAlertBanners";
@@ -36,8 +32,9 @@ import {
   usePendingJoinRequests,
 } from "@/lib/community-counts";
 import { pluginVisible } from "@/lib/viewer";
+import { useCommunityIdentity } from "@/lib/community-identity";
+import { arrangeNav } from "@/lib/nav-groups";
 import { useLiveEvents } from "@/lib/use-live-events";
-import { shortenDid } from "@/lib/format";
 import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
 import { useToast } from "@/lib/toast";
 import { Install } from "@/pages/Install";
@@ -307,12 +304,17 @@ export default function App() {
     }
   }
   const renewSoon = signing.data?.state === "ready" && signing.data.renewSoon;
+  const canSign = needsSigning && signing.data?.state === "ready";
 
   // Navigation follows the viewer's capabilities, read live behind `whoami`
   // (`vtc-admin-roles.md` §4) — not the session's role hint, which every
   // administrative role shares. The VTC still refuses what the entry does not
   // hold; hiding it keeps the UX coherent.
   const plugins = allPlugins.filter((p) => pluginVisible(probe.data, p));
+  // Grouped for the sidebar, and the operator's own entries for the account
+  // menu (`lib/nav-groups.ts`). A group the viewer can see nothing in is left
+  // out; plugins naming no group are listed under "More".
+  const nav = arrangeNav(plugins);
 
   return (
     <div
@@ -320,116 +322,102 @@ export default function App() {
         navCollapsed ? " nav-collapsed" : ""
       }`}
     >
-      <button
-        type="button"
-        className="nav-toggle"
-        aria-label={navOpen ? "Close navigation" : "Open navigation"}
-        aria-expanded={navOpen}
-        aria-controls="admin-nav"
-        onClick={() => setNavOpen((v) => !v)}
-      >
-        <span className="button-icon" aria-hidden="true">
-          {navOpen ? <X /> : <Menu />}
-        </span>
-        Menu
-      </button>
+      <TopBar
+        canSign={canSign}
+        toggle={
+          <button
+            type="button"
+            className="nav-toggle"
+            aria-label={navOpen ? "Close navigation" : "Open navigation"}
+            aria-expanded={navOpen}
+            aria-controls="admin-nav"
+            onClick={() => setNavOpen((v) => !v)}
+          >
+            <span className="button-icon" aria-hidden="true">
+              {navOpen ? <X /> : <Menu />}
+            </span>
+            <span className="nav-toggle-label">Menu</span>
+          </button>
+        }
+        end={
+          <>
+            {needsSigning && <LiveIndicator />}
+            <AccountMenu
+              whoami={probe.data}
+              plugins={nav.account}
+              renewSoon={!!renewSoon}
+            />
+          </>
+        }
+      />
       <aside
         className={`nav${navCollapsed ? " collapsed" : ""}`}
         id="admin-nav"
+        aria-label="Console navigation"
       >
-        <header>
-          <div className="nav-brand">
-            <h1>VTC Admin</h1>
-            <button
-              type="button"
-              className="nav-collapse-btn"
-              aria-label={
-                navCollapsed ? "Expand navigation" : "Collapse navigation"
-              }
-              aria-expanded={!navCollapsed}
-              title={navCollapsed ? "Expand" : "Collapse"}
-              onClick={() => setNavCollapsed((v) => !v)}
-            >
-              <span className="button-icon" aria-hidden="true">
-                {navCollapsed ? <ChevronsRight /> : <ChevronsLeft />}
-              </span>
-            </button>
-          </div>
-          <SessionBadge whoami={probe.data} />
-          {needsSigning && <LiveIndicator />}
-          <ThemeSwitcher />
-        </header>
-        <ul>
-          {plugins.map((p) => (
-            <li key={p.id}>
-              <NavLink to={p.path} title={p.label}>
-                <span className="nav-icon" aria-hidden="true">
-                  <PluginIcon plugin={p} />
-                </span>
-                <span className="nav-label">{p.label}</span>
-                {p.id === ACTIONS_PLUGIN_ID && waiting > 0 && (
-                  <span
-                    className="nav-badge"
-                    aria-label={`${waiting} waiting for you`}
-                  >
-                    {waiting}
-                  </span>
-                )}
-                {p.id === JOIN_REQUESTS_PLUGIN_ID &&
-                  pendingJoins &&
-                  pendingJoins.count > 0 && (
-                    <span
-                      className="nav-badge"
-                      aria-label={`${formatTally(pendingJoins)} pending`}
-                    >
-                      {formatTally(pendingJoins)}
+        {nav.sections.map((section) => (
+          <div className="nav-group" key={section.id} data-nav-group={section.id}>
+            <div className="nav-group-label" id={`nav-group-${section.id}`}>
+              {section.label}
+            </div>
+            <ul aria-labelledby={`nav-group-${section.id}`}>
+              {section.plugins.map((p) => (
+                <li key={p.id}>
+                  <NavLink to={p.path} title={p.label} end={p.path === "/"}>
+                    <span className="nav-icon" aria-hidden="true">
+                      <PluginIcon plugin={p} />
                     </span>
-                  )}
-              </NavLink>
-            </li>
-          ))}
-        </ul>
-        <ReloadPluginsButton />
+                    <span className="nav-label">{p.label}</span>
+                    {p.id === ACTIONS_PLUGIN_ID && waiting > 0 && (
+                      <span
+                        className="nav-badge"
+                        aria-label={`${waiting} waiting for you`}
+                      >
+                        {waiting}
+                      </span>
+                    )}
+                    {p.id === JOIN_REQUESTS_PLUGIN_ID &&
+                      pendingJoins &&
+                      pendingJoins.count > 0 && (
+                        <span
+                          className="nav-badge"
+                          aria-label={`${formatTally(pendingJoins)} pending`}
+                        >
+                          {formatTally(pendingJoins)}
+                        </span>
+                      )}
+                  </NavLink>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+        <div className="nav-footer">
+          <ReloadPluginsButton />
+          <button
+            type="button"
+            className="nav-collapse-btn"
+            aria-label={navCollapsed ? "Expand navigation" : "Collapse navigation"}
+            aria-expanded={!navCollapsed}
+            title={navCollapsed ? "Expand" : "Collapse"}
+            onClick={() => setNavCollapsed((v) => !v)}
+          >
+            <span className="button-icon" aria-hidden="true">
+              {navCollapsed ? <ChevronsRight /> : <ChevronsLeft />}
+            </span>
+          </button>
+        </div>
       </aside>
       <main className="content">
-        {/* Permanent while in effect: single-administrator mode is reported to
-            every administrator on every page (VTI-APV-022). */}
-        <SingleAdminModeBanner on={attention.singleAdminMode} />
-        {/* Not dismissible: it clears when every self-granted elevated right
-            has been ratified or revoked (git-ns/right/break-glass). */}
-        <BreakGlassBanner />
-        {/* Not dismissible either: an operator's offline write clears when
-            acknowledged (VTI-VTC-023), a cooling-off against you when it is
-            cancelled or lands (VTI-APV-019). */}
-        <OperatorWriteBanner actionIds={attention.operatorWritesUnacknowledged} />
-        <CoolingOffBanner items={attention.coolingOffAgainstMe} />
-        {renewSoon && !pathname.startsWith("/console-keys") && (
-          <div className="signing-renew-banner" role="status">
-            <strong>This browser's signing key expires soon.</strong>
-            <span>
-              Renew it now — one passkey confirmation — so the console keeps
-              working.
-            </span>
-            <NavLink to="/console-keys">Renew</NavLink>
-          </div>
-        )}
-        {waiting > 0 && !bannerHidden && !pathname.startsWith("/actions") && (
-          <div className="actions-banner" role="status">
-            <strong>{waitingSentence(waiting)}.</strong>
-            <NavLink to="/actions">Review them</NavLink>
-            <button
-              type="button"
-              className="link"
-              aria-label="Dismiss for this session"
-              onClick={() => {
-                dismissBanner();
-                setBannerHidden(true);
-              }}
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
+        <ConsoleAttention
+          attention={attention}
+          renewSoon={!!renewSoon}
+          bannerHidden={bannerHidden}
+          onDismissBanner={() => {
+            dismissBanner();
+            setBannerHidden(true);
+          }}
+        />
         <Routes>
           {plugins.map((p) => (
             <Route
@@ -452,122 +440,185 @@ export default function App() {
   );
 }
 
+// Re-exported: `App.test.tsx` and any out-of-tree code that imported it from
+// here keep working now that it lives in its own file.
+export { PluginIcon };
+
 /**
- * The nav's icon slot for one plugin.
- *
- * Exported for its own test: the `<img>` below is a security property, not a
- * styling choice, and a later refactor back to injected markup would look like
- * a simplification.
+ * The top bar: the mobile nav toggle, the community's mark and name
+ * (`lib/community-identity.ts`), the "Operator console" pill, and at the end
+ * the live indicator and the account menu.
  */
-export function PluginIcon({ plugin }: { plugin: PluginManifest }) {
-  // Built-in plugins ship a lucide-react component; third-party
-  // plugins fall back to the `icon` string (inline SVG or single
-  // glyph). If neither is set, fall back to the label's first
-  // letter so the nav row stays balanced.
-  if (plugin.iconComponent) {
-    const Icon = plugin.iconComponent;
-    return <Icon aria-hidden="true" />;
-  }
-  if (plugin.icon) {
-    // An SVG icon is rendered as an image, never injected as markup.
-    //
-    // This used to be `dangerouslySetInnerHTML`, which put the plugin's
-    // string into the document as live DOM. `script-src 'self'`
-    // (`vtc-service/src/routing/security_headers.rs`) stops a `<script>` in
-    // it from executing — but an `onload=` / `onerror=` attribute is not
-    // script-src's business, and `icon` reaches the shell from plugin
-    // JavaScript that a third party may have written.
-    //
-    // Inside an `<img>` an SVG is a picture: the browser renders it in a
-    // non-scripted context, so neither scripts nor event handlers in it ever
-    // run, and `img-src 'self' data:` already admits the data URL. No
-    // sanitiser, and so no dependency on one being configured correctly.
-    if (/^<svg[\s>]/i.test(plugin.icon.trim())) {
-      const src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
-        plugin.icon,
-      )}`;
-      return (
-        <img className="plugin-icon-raw" src={src} alt="" aria-hidden="true" />
-      );
-    }
-    // Anything else is text — a glyph or emoji as before, and markup that is
-    // not an SVG as its own characters, because React escapes it.
-    return <span aria-hidden="true">{plugin.icon}</span>;
-  }
-  return <span aria-hidden="true">{plugin.label.charAt(0).toUpperCase()}</span>;
+function TopBar({
+  canSign,
+  toggle,
+  end,
+}: {
+  canSign: boolean;
+  toggle: ReactNode;
+  end: ReactNode;
+}) {
+  const identity = useCommunityIdentity(canSign);
+  const [logoFailed, setLogoFailed] = useState(false);
+  const logo = identity.logoUrl && !logoFailed ? identity.logoUrl : null;
+  return (
+    <header className="topbar">
+      {toggle}
+      <NavLink to="/" end className="topbar-brand" aria-label={`${identity.name}: dashboard`}>
+        {logo ? (
+          <img
+            className="community-mark community-logo"
+            src={logo}
+            alt=""
+            onError={() => setLogoFailed(true)}
+          />
+        ) : (
+          <span className="community-mark" aria-hidden="true" />
+        )}
+        <span className="community-name">{identity.name}</span>
+      </NavLink>
+      <span className="console-pill">Operator console</span>
+      <span className="topbar-spacer" />
+      <div className="topbar-end">{end}</div>
+    </header>
+  );
 }
 
-function SessionBadge({ whoami }: { whoami: WhoamiResponse }) {
-  const qc = useQueryClient();
-  const toast = useToast();
-  const signOutMut = useMutation({
-    mutationFn: signOut,
-    onError: (err) => toast.pushFromError(err, "Sign-out failed"),
-    onSettled: () => {
-      // Whether the server-side revoke succeeded or not, the
-      // cookies are gone now — force the query cache to refetch
-      // so the shell flips back to the Login screen.
-      qc.invalidateQueries({ queryKey: ["whoami"] });
-    },
-  });
+/**
+ * Everything the operator must know, in one strip above the page
+ * (`components/AttentionStrip.tsx`). Each item keeps the wording, links and
+ * role it had as its own banner.
+ */
+function ConsoleAttention({
+  attention,
+  renewSoon,
+  bannerHidden,
+  onDismissBanner,
+}: {
+  attention: ReturnType<typeof useActionsAttention>;
+  renewSoon: boolean;
+  bannerHidden: boolean;
+  onDismissBanner: () => void;
+}) {
+  const { pathname } = useLocation();
+  const breakGlass = useBreakGlassState();
+  const waiting = attention.waiting;
+  const items: AttentionItem[] = [];
 
-  return (
-    <div className="session-badge">
-      <div className="session-did" title={whoami.session.subject}>
-        <span className="session-label">Signed in as</span>
-        <code>{shortenDid(whoami.session.subject)}</code>
-      </div>
-      <button
-        type="button"
-        className="link"
-        onClick={() => signOutMut.mutate()}
-        disabled={signOutMut.isPending}
-        aria-busy={signOutMut.isPending}
-      >
-        {signOutMut.isPending ? "Signing out…" : "Sign out"}
-      </button>
-    </div>
-  );
+  // Not dismissible: an operator's offline write clears when acknowledged
+  // (VTI-VTC-023), a cooling-off against you when it is cancelled or lands
+  // (VTI-APV-019).
+  if (attention.operatorWritesUnacknowledged.length > 0) {
+    items.push({
+      key: "operator-writes",
+      severity: "critical",
+      node: <OperatorWriteBanner actionIds={attention.operatorWritesUnacknowledged} />,
+    });
+  }
+  for (const c of attention.coolingOffAgainstMe) {
+    items.push({
+      key: `cooling-off-${c.actionId}`,
+      severity: "critical",
+      node: <CoolingOffNotice item={c} />,
+    });
+  }
+  // Not dismissible either: it clears when every self-granted elevated right
+  // has been ratified or revoked (git-ns/right/break-glass). The "cannot be
+  // checked from this browser" variant is pinned beside it.
+  if (breakGlass.kind !== "none") {
+    items.push({
+      key: "break-glass",
+      severity: "critical",
+      node: <BreakGlassNotice state={breakGlass} />,
+    });
+  }
+  // Permanent while in effect: single-administrator mode is reported to every
+  // administrator on every page (VTI-APV-022).
+  if (attention.singleAdminMode) {
+    items.push({
+      key: "single-admin",
+      severity: "standing",
+      node: <SingleAdminModeBanner on />,
+    });
+  }
+  if (renewSoon && !pathname.startsWith("/console-keys")) {
+    items.push({
+      key: "signing-renew",
+      severity: "warning",
+      node: (
+        <div
+          className="signing-renew-banner attention-item attention-item--warning"
+          role="status"
+        >
+          <strong>This browser's signing key expires soon.</strong>
+          <span>
+            Renew it now — one passkey confirmation — so the console keeps
+            working.
+          </span>
+          <NavLink to="/console-keys">Renew</NavLink>
+        </div>
+      ),
+    });
+  }
+  if (waiting > 0 && !bannerHidden && !pathname.startsWith("/actions")) {
+    items.push({
+      key: "actions-waiting",
+      severity: "info",
+      node: (
+        <div className="actions-banner attention-item attention-item--info" role="status">
+          <strong>{waitingSentence(waiting)}.</strong>
+          <NavLink to="/actions">Review them</NavLink>
+          <button
+            type="button"
+            className="link"
+            aria-label="Dismiss for this session"
+            onClick={onDismissBanner}
+          >
+            Dismiss
+          </button>
+        </div>
+      ),
+    });
+  }
+  return <AttentionStrip items={items} />;
 }
 
 function ReloadPluginsButton() {
   const toast = useToast();
   const [pending, setPending] = useState(false);
   return (
-    <div className="nav-footer">
-      <button
-        type="button"
-        className="link"
-        disabled={pending}
-        aria-busy={pending}
-        title="Refetch /admin/plugins.json and import any new plugins"
-        onClick={async () => {
-          setPending(true);
-          try {
-            const added = await reloadThirdPartyPlugins();
-            if (added.length === 0) {
-              toast.push("info", "No new plugins.");
-            } else {
-              toast.push(
-                "success",
-                `Loaded ${added.length} new plugin${added.length === 1 ? "" : "s"}: ${added.join(", ")}`,
-              );
-            }
-          } catch (err) {
-            toast.pushFromError(err, "Plugin reload failed");
-          } finally {
-            setPending(false);
+    <button
+      type="button"
+      className="link nav-reload"
+      disabled={pending}
+      aria-busy={pending}
+      title="Refetch /admin/plugins.json and import any new plugins"
+      onClick={async () => {
+        setPending(true);
+        try {
+          const added = await reloadThirdPartyPlugins();
+          if (added.length === 0) {
+            toast.push("info", "No new plugins.");
+          } else {
+            toast.push(
+              "success",
+              `Loaded ${added.length} new plugin${added.length === 1 ? "" : "s"}: ${added.join(", ")}`,
+            );
           }
-        }}
-      >
-        <span className="button-icon" aria-hidden="true">
-          <RefreshCw />
-        </span>
-        <span className="nav-footer-label">
-          {pending ? "Reloading plugins…" : "Reload plugins"}
-        </span>
-      </button>
-    </div>
+        } catch (err) {
+          toast.pushFromError(err, "Plugin reload failed");
+        } finally {
+          setPending(false);
+        }
+      }}
+    >
+      <span className="button-icon" aria-hidden="true">
+        <RefreshCw />
+      </span>
+      <span className="nav-footer-label">
+        {pending ? "Reloading plugins…" : "Reload plugins"}
+      </span>
+    </button>
   );
 }
 

@@ -54,8 +54,10 @@ import { Sessions } from "@/plugins/sessions";
 import { Vetting } from "@/plugins/vetting";
 
 export function registerBuiltinPlugins(): void {
+  // ── Overview ──
   registerPlugin({
     id: "dashboard",
+    group: "overview",
     label: "Dashboard",
     path: "/",
     iconComponent: LayoutDashboard,
@@ -66,6 +68,7 @@ export function registerBuiltinPlugins(): void {
   // is drawn by the shell (`App.tsx`, `lib/action-badge.ts`).
   registerPlugin({
     id: ACTIONS_PLUGIN_ID,
+    group: "overview",
     label: "Actions",
     path: "/actions",
     iconComponent: ListChecks,
@@ -73,15 +76,19 @@ export function registerBuiltinPlugins(): void {
   });
 
   registerPlugin({
-    id: "ceremonies",
-    label: "Ceremonies",
-    path: "/ceremonies",
-    iconComponent: Workflow,
-    reactComponent: Ceremonies,
+    id: "audit",
+    group: "overview",
+    label: "Audit trail",
+    path: "/audit",
+    iconComponent: ClipboardList,
+    reactComponent: Audit,
+    capabilities: ["vtc.audit.read"],
   });
 
+  // ── Membership ──
   registerPlugin({
     id: "join-requests",
+    group: "membership",
     label: "Join requests",
     path: "/join-requests",
     iconComponent: Inbox,
@@ -90,42 +97,8 @@ export function registerBuiltinPlugins(): void {
   });
 
   registerPlugin({
-    id: "vetting",
-    label: "Vetting",
-    path: "/vetting",
-    iconComponent: BadgeCheck,
-    reactComponent: Vetting,
-    capabilities: ["vtc.vetting.manage"],
-  });
-
-  registerPlugin({
-    id: "invitations",
-    label: "Invitations",
-    path: "/invitations",
-    iconComponent: Ticket,
-    reactComponent: Invitations,
-    capabilities: ["vtc.invitations.manage"],
-  });
-
-  registerPlugin({
-    id: "recognition",
-    label: "Recognition",
-    path: "/recognition",
-    iconComponent: Network,
-    reactComponent: Recognition,
-    capabilities: ["vtc.registry.admin"],
-  });
-
-  registerPlugin({
-    id: "relationships",
-    label: "Relationships",
-    path: "/relationships",
-    iconComponent: Share2,
-    reactComponent: Relationships,
-  });
-
-  registerPlugin({
     id: "members",
+    group: "membership",
     label: "Members",
     path: "/members",
     iconComponent: Users,
@@ -134,7 +107,100 @@ export function registerBuiltinPlugins(): void {
   });
 
   registerPlugin({
+    id: "invitations",
+    group: "membership",
+    label: "Invitations",
+    path: "/invitations",
+    iconComponent: Ticket,
+    reactComponent: Invitations,
+    capabilities: ["vtc.invitations.manage"],
+  });
+
+  registerPlugin({
+    id: "vetting",
+    group: "membership",
+    label: "Vetting",
+    path: "/vetting",
+    iconComponent: BadgeCheck,
+    reactComponent: Vetting,
+    capabilities: ["vtc.vetting.manage"],
+  });
+
+  registerPlugin({
+    id: "relationships",
+    group: "membership",
+    label: "Relationships",
+    path: "/relationships",
+    iconComponent: Share2,
+    reactComponent: Relationships,
+  });
+
+  // ── Governance ──
+  // Shown as "Policies": the label changed, the route did not.
+  registerPlugin({
+    id: "ceremonies",
+    group: "governance",
+    label: "Policies",
+    path: "/ceremonies",
+    iconComponent: Workflow,
+    reactComponent: Ceremonies,
+  });
+
+  // The administrative role vocabulary: readable by every administrator,
+  // defined and deleted (through the action list) by holders of
+  // vtc.roles.assign and vtc.approvals.admin (`vtc-admin-roles.md` §6.2).
+  registerPlugin({
+    id: "roles",
+    group: "governance",
+    label: "Roles",
+    path: "/roles",
+    iconComponent: UserCog,
+    reactComponent: Roles,
+  });
+
+  registerPlugin({
+    id: "acl",
+    group: "governance",
+    label: "Access control",
+    path: "/acl",
+    iconComponent: ShieldCheck,
+    reactComponent: Acl,
+  });
+
+  registerPlugin({
+    id: "sessions",
+    group: "governance",
+    label: "Sessions",
+    path: "/sessions",
+    iconComponent: Smartphone,
+    reactComponent: Sessions,
+    capabilities: ["vtc.sessions.revoke"],
+  });
+
+  // ── Community ──
+  registerPlugin({
+    id: "profile",
+    group: "community",
+    label: "Profile",
+    path: "/profile",
+    iconComponent: Tag,
+    reactComponent: Profile,
+    capabilities: ["vtc.surface.admin"],
+  });
+
+  registerPlugin({
+    id: "recognition",
+    group: "community",
+    label: "Recognition",
+    path: "/recognition",
+    iconComponent: Network,
+    reactComponent: Recognition,
+    capabilities: ["vtc.registry.admin"],
+  });
+
+  registerPlugin({
     id: "rooms",
+    group: "community",
     label: "Data rooms",
     path: "/rooms",
     iconComponent: DoorOpen,
@@ -143,6 +209,7 @@ export function registerBuiltinPlugins(): void {
 
   registerPlugin({
     id: "repos",
+    group: "community",
     label: "Repos",
     path: "/repos",
     iconComponent: FolderGit2,
@@ -154,36 +221,10 @@ export function registerBuiltinPlugins(): void {
     capabilities: ["git.ns.admin", "git.repo.manage"],
   });
 
-  registerPlugin({
-    id: "acl",
-    label: "Access control",
-    path: "/acl",
-    iconComponent: ShieldCheck,
-    reactComponent: Acl,
-  });
-
-  // The administrative role vocabulary: readable by every administrator,
-  // defined and deleted (through the action list) by holders of
-  // vtc.roles.assign and vtc.approvals.admin (`vtc-admin-roles.md` §6.2).
-  registerPlugin({
-    id: "roles",
-    label: "Roles",
-    path: "/roles",
-    iconComponent: UserCog,
-    reactComponent: Roles,
-  });
-
-  registerPlugin({
-    id: "profile",
-    label: "Community profile",
-    path: "/profile",
-    iconComponent: Tag,
-    reactComponent: Profile,
-    capabilities: ["vtc.surface.admin"],
-  });
-
+  // ── Account menu (top bar): the operator's own, not the community's ──
   registerPlugin({
     id: "my-passkeys",
+    group: "account",
     label: "My passkeys",
     path: "/my-passkeys",
     iconComponent: KeyRound,
@@ -192,27 +233,10 @@ export function registerBuiltinPlugins(): void {
 
   registerPlugin({
     id: "console-keys",
+    group: "account",
     label: "Signing keys",
     path: "/console-keys",
     iconComponent: PenLine,
     reactComponent: ConsoleKeys,
-  });
-
-  registerPlugin({
-    id: "sessions",
-    label: "Sessions",
-    path: "/sessions",
-    iconComponent: Smartphone,
-    reactComponent: Sessions,
-    capabilities: ["vtc.sessions.revoke"],
-  });
-
-  registerPlugin({
-    id: "audit",
-    label: "Audit trail",
-    path: "/audit",
-    iconComponent: ClipboardList,
-    reactComponent: Audit,
-    capabilities: ["vtc.audit.read"],
   });
 }
