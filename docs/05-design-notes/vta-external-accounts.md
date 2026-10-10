@@ -39,8 +39,8 @@ Five rules follow from that table, and the rest of this note implements them.
 
 1. **No long-lived bearer secret outside the VTA.** Consumers get credentials
    that expire in minutes, and only in a sealed envelope (§6).
-2. **Keys are pinned at the cloud, never fetched from a host we must trust**,
-   wherever the cloud allows it (§3). A trust model where an attacker who can
+2. **Keys are pinned at the cloud, never fetched from a host we must trust**
+   (§3), which is also what lets the VTA keep no inbound surface (§3.1). A trust model where an attacker who can
    edit one file on one web server can mint credentials is the weakest link,
    so it is the last choice rather than the first.
 3. **The VTA builds what it signs** (`SigningDomain::ProtocolDefined`). The
@@ -103,40 +103,51 @@ trait ExternalAuthDriver {
 |---|---|---|---|---|
 | **`aws-roles-anywhere`** | **a CA certificate** (the trust anchor), uploaded once | **none** | P-256 CA key + per-account end-entity key | **Recommended for AWS.** The VTA is the CA. It issues short-lived end-entity certificates (24 h, re-issued) to its own account keys, and signs `CreateSession` with the end-entity key. Revocation is a CRL the VTA generates and an administrator imports (`ImportCrl`): pushed, never fetched. |
 | **`gcp-wif-pinned`** | **an uploaded JWKS** (≤ 8 keys) on the Workload Identity pool provider | **none** | P-256, or RSA if ES256 is refused | **Recommended for GCP.** The VTA signs an ID token. GCP's STS exchanges it, then optionally impersonates a service account. Rotation is a re-upload, overlapping old and new keys. |
-| **`oidc-discovery`** (AWS IAM OIDC, GCP, Azure federated credential) | the **issuer URL**; keys are fetched from its JWKS | **yes**: discovery + JWKS over public HTTPS | P-256 or RSA (Azure documents RS256 only) | **The JWKS host is a trust root.** Anyone who can change that file can assume the role. Only for a VTA that is publicly reachable anyway, served by the VTA itself (a declared REST exception) rather than a shared host, and only where no pinned alternative exists (§3.1). |
-| **`azure-cert`** (later) | an uploaded certificate on the app registration | none | RSA | Client-assertion JWT (RFC 7523) to Entra's token endpoint. Azure's pinned equivalent of the two above. |
+| **`azure-cert`** | an uploaded certificate on the app registration | none | RSA (Entra documents RS256) | Client-assertion JWT (RFC 7523) to Entra's token endpoint. Azure's pinned equivalent of the two above. |
 | **`oauth2-private-key-jwt`** | the public key, registered with the provider | none | P-256 or RSA | RFC 7523 client authentication for SaaS APIs and IdPs that support it. Brokered like the cloud models. |
 | **`s3-static-presign`** | an access-key pair | none | — (holds a **secret**) | For S3-compatible stores that cannot federate (R2, B2, MinIO). The secret **never leaves the VTA**: consumers get **per-object presigned URLs** (SigV4), each one operation on one key for minutes. |
 | **`sui-signer`** | the address (from the VTA key) | none | P-256 (Sui `secp256r1`) | **Sign-only.** The VTA signs a Sui transaction only if it is an allow-listed call: Walrus `register`, `certify`, `extend` or `delete`, against the configured system object, with a gas and amount cap. The intent message and Blake2b digest are built by the VTA. Sui's internal SHA-256 and low-`s` rules are to be confirmed against its reference implementation before use. |
 | **`static-secret`** | an API key or token | none | — (holds a **secret**) | **Last resort.** Brokered only through a driver that uses it inside the VTA, as `password` + `loginConfig` does today. **Never released.** A provider that can only be reached by handing the consumer the raw key is not supported, because that defeats every rule in §1. |
 
-### 3.1 Network exposure: the VTA can stay hidden
+### 3.1 Network exposure: no inbound surface, by requirement
 
-Nothing in this note needs the VTA to accept a connection from the internet.
+**A VTA using external accounts accepts no inbound connection from the
+internet**: no fixed IP, no public URL, no REST route. This is a requirement,
+not a preference. Every model above satisfies it, and a model that could not
+is not offered.
 
-- **Inbound.** Every task travels the VTA's existing transports: TSP or DIDComm
-  through its mediator, or HTTPS only where the VTA already offers it. The
-  pinned models (`aws-roles-anywhere`, `gcp-wif-pinned`, `azure-cert`,
-  `oauth2-private-key-jwt`) put the verification material **in the provider's
-  account**, uploaded by an administrator from §8's setup. The provider never
-  calls back. A Roles Anywhere CRL is pushed with `import-crl`, never fetched.
-  `s3-static-presign` and `sui-signer` are computations inside the VTA.
-- **The one exception is `oidc-discovery`**, whose provider fetches the JWKS
-  from the issuer over public HTTPS. A VTA that is not publicly reachable should
-  not use it: it should choose the pinned model for the same cloud. A static
-  copy of the JWKS somewhere public would work, but it would make that host a
-  trust root (§1 rule 2), which is the reason the pinned models rank first.
-- **Outbound.** Brokered models need egress to the provider's token endpoints,
-  and to nothing else:
+- **Inbound.** Every task arrives the way the VTA's Trust Tasks already do: over
+  TSP or DIDComm through its mediator, on a connection the VTA dialled out. The
+  models put their verification material **in the provider's account**,
+  uploaded once by an administrator from §8's setup:
+  - a CA certificate (`aws-roles-anywhere`);
+  - a JWKS (`gcp-wif-pinned`);
+  - a certificate (`azure-cert`);
+  - a registered key (`oauth2-private-key-jwt`).
+
+  No provider ever calls back. A Roles Anywhere CRL is pushed with
+  `import-crl`, never fetched. `s3-static-presign` and `sui-signer` are
+  computations inside the VTA.
+- **Outbound only.** Brokered models need egress to the provider's token
+  endpoints, and to nothing else:
   - `rolesanywhere.<region>.amazonaws.com`, plus `sts.<region>.amazonaws.com`
     when downscoping chains an `AssumeRole`;
   - `sts.googleapis.com` and `iamcredentials.googleapis.com`;
   - `login.microsoftonline.com`;
   - the token endpoint an `oauth2-private-key-jwt` account names.
 
-  The account's settings name each host, and an egress proxy can allow-list
-  exactly that set. `s3-static-presign` and `sui-signer` need no egress at all:
-  the consumer uses the URL, and submits the signed transaction itself.
+  The account's settings name each host, so an egress proxy can allow-list
+  exactly that set. `s3-static-presign` and `sui-signer` need no egress: the
+  consumer uses the URL, and submits the signed transaction itself.
+
+**Why plain OIDC federation is not a model here.** OIDC discovery federation
+(AWS IAM OIDC providers, an Azure federated credential against an issuer URL,
+GCP pools without an uploaded JWKS) works by the provider **fetching** the
+issuer's JWKS over public HTTPS. That needs an inbound public endpoint, which
+the requirement above rules out. Publishing a static copy elsewhere would also
+make that host a trust root: whoever can edit the file can assume every
+federated role. Each cloud has a pinned alternative, so nothing is lost by
+leaving it out.
 
 **Ambient cloud identity** (an EC2 role, GKE workload identity) is not an account
 model; it belongs to the consumer's host. A consumer may use it where it runs on
@@ -314,9 +325,10 @@ hand.
     `providers create-oidc --jwk-json-path` commands, with an attribute
     condition on `assertion.sub`;
   - the bucket IAM binding.
-- **`oidc-discovery`**: the issuer URL, the IAM OIDC provider or federated
-  credential commands, the trust policy, and a warning that the JWKS endpoint is
-  now a trust root.
+- **`azure-cert`**:
+  - the certificate to upload to the app registration;
+  - the `az ad app credential reset --cert` command;
+  - the role assignment on the storage account or the API's permission.
 
 `probe` runs before consent is even requested:
 1. sign;
@@ -393,7 +405,7 @@ guard treats it as per-call.
 | E3 | `s3-static-presign` | S |
 | E4 | `sui-signer` with the Walrus call allow-list | M |
 | E5 | VTC console: External accounts pages, setup and probe, the combined consent queue | M |
-| E6 | `oidc-discovery` (AWS IAM OIDC, Azure) with the VTA-served JWKS; then `azure-cert`, `oauth2-private-key-jwt` | M |
+| E6 | `azure-cert` (wrapped RSA keys), then `oauth2-private-key-jwt` | M |
 
 ## 13. Open
 

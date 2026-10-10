@@ -578,8 +578,8 @@ consent and sealing, is its own note:
 
 | Backend | Account model (recommended first) | What the VTC receives |
 |---|---|---|
-| S3 (AWS) | `aws-roles-anywhere`; `oidc-discovery` | AWS session credentials, ≤ 15 min, **downscoped to one room's prefix** |
-| GCS | `gcp-wif-pinned`; `oidc-discovery` | a GCS access token, ≤ 15 min, with a Credential Access Boundary on **one room's prefix** |
+| S3 (AWS) | `aws-roles-anywhere` | AWS session credentials, ≤ 15 min, **downscoped to one room's prefix** |
+| GCS | `gcp-wif-pinned` | a GCS access token, ≤ 15 min, with a Credential Access Boundary on **one room's prefix** |
 | S3-compatible without federation (R2, B2, MinIO) | `s3-static-presign` | **per-object presigned URLs**. The access key never leaves the VTA |
 | Walrus | `sui-signer` | signatures over Walrus storage transactions the VTA has validated |
 | Local directory | — | nothing; the files are the VTC's own disk |
