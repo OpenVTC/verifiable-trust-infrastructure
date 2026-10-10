@@ -73,6 +73,81 @@ pub mod types {
     pub const CANCEL_TYPE: &str = <CancelPayload as trust_tasks_rs::Payload>::TYPE_URI;
 }
 
+// ── Which session a request asks for ────────────────────────────────────────
+
+/// The `ext` namespace that says which session a sign-in asks for. A VTC
+/// extension, not a `purpose`: `auth/oob/0.1`'s `Purpose` is a closed enum
+/// (`login`), and both sessions are a login. Carried on `request` by the
+/// starter, and repeated by the VTC in the signed step 1 and step 2
+/// responses so the wallet can show it and the grant's `contextDigest`
+/// covers it.
+pub const SESSION_EXT: &str = "org.openvtc.session";
+
+/// Which session `redeem` issues. `member` is the default: a request with no
+/// [`SESSION_EXT`] member, and every request stored before the field existed,
+/// is a member-portal sign-in exactly as before.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionAudience {
+    /// A member-portal session (`VTC-member` audience, `member_sessions`).
+    #[default]
+    Member,
+    /// An operator-console session (`VTC` audience, `sessions`), for a DID
+    /// the ACL holds as an administrator.
+    Admin,
+}
+
+impl SessionAudience {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SessionAudience::Member => "member",
+            SessionAudience::Admin => "admin",
+        }
+    }
+
+    pub fn is_member(&self) -> bool {
+        *self == SessionAudience::Member
+    }
+
+    /// Read the audience a `request` asks for from its `ext`. No `ext`, or
+    /// no [`SESSION_EXT`] member in it, is `member`. A [`SESSION_EXT`] member
+    /// that is present but does not name a known audience is refused rather
+    /// than read as either: a page that asked for something this VTC does not
+    /// serve should learn so, not get a session it did not ask for.
+    pub fn from_ext(ext: Option<&serde_json::Value>) -> Result<Self, String> {
+        let Some(ns) = ext.and_then(|e| e.get(SESSION_EXT)) else {
+            return Ok(SessionAudience::Member);
+        };
+        match ns.get("audience").and_then(serde_json::Value::as_str) {
+            Some("member") => Ok(SessionAudience::Member),
+            Some("admin") => Ok(SessionAudience::Admin),
+            Some(other) => Err(format!(
+                "ext[\"{SESSION_EXT}\"].audience `{other}` is not served; use `member` or `admin`"
+            )),
+            None => Err(format!(
+                "ext[\"{SESSION_EXT}\"] must be an object with an `audience` of `member` or `admin`"
+            )),
+        }
+    }
+
+    /// The `ext` the VTC puts on its responses for this audience. `None` for
+    /// `member`, so a member sign-in's responses — and so their signatures
+    /// and the `contextDigest` a wallet computes — are byte for byte what
+    /// they were before the extension existed.
+    pub fn to_ext(self) -> Option<serde_json::Value> {
+        match self {
+            SessionAudience::Member => None,
+            SessionAudience::Admin => Some(serde_json::json!({
+                SESSION_EXT: { "audience": self.as_str() }
+            })),
+        }
+    }
+}
+
+/// The decline reason `redeem` reports when the identity that approved an
+/// operator-console sign-in is not an administrator.
+pub const NOT_AN_ADMIN: &str = "notAnAdmin";
+
 // ── Clocks and limits ───────────────────────────────────────────────────────
 
 /// A request must be claimed this long after it is made. VTI-LNK-100 allows a
@@ -207,9 +282,26 @@ pub struct OobRequest {
     /// When the request reached a final state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<u64>,
+    /// Which session `redeem` issues, fixed at `request`. Absent on rows
+    /// stored before the field existed, which are member sign-ins.
+    #[serde(default, skip_serializing_if = "SessionAudience::is_member")]
+    pub audience: SessionAudience,
+    /// Why a request was declined, when the starter is told (today only
+    /// [`NOT_AN_ADMIN`]). `redeem` reports it in `details.reason`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decline_reason: Option<String>,
 }
 
 impl OobRequest {
+    /// The audience the VTC signed into step 1 (and so into step 2, which
+    /// repeats it, and so into the grant's `contextDigest`). `None` before
+    /// the claim, or if the stored extension cannot be read. A member
+    /// request's step 1 carries no extension, which reads as `member`.
+    pub fn signed_audience(&self) -> Option<SessionAudience> {
+        self.step1
+            .as_ref()
+            .and_then(|s| SessionAudience::from_ext(s.get("ext")).ok())
+    }
     /// The state as of `now`: a request past its clock is expired whether or
     /// not anything has written that down yet.
     pub fn effective_state(&self, now: u64) -> OobState {
@@ -943,6 +1035,8 @@ mod tests {
             decision_deadline: None,
             grant: None,
             ended_at: None,
+            audience: SessionAudience::Member,
+            decline_reason: None,
         };
         assert_eq!(r.effective_state(119), OobState::Pending);
         assert_eq!(r.effective_state(120), OobState::Expired);

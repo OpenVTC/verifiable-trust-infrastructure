@@ -9,6 +9,7 @@ import { MemberApiError, memberFetch, postMember, type MemberMe } from "./api";
 import { Passkeys } from "./Passkeys";
 import { forgetSessionKey } from "./oob";
 import { SignIn } from "./SignIn";
+import { CommunityTopbar, fetchCommunityProfile } from "../signin/SignInLayout";
 
 async function fetchMe(): Promise<MemberMe | null> {
   try {
@@ -22,17 +23,6 @@ async function fetchMe(): Promise<MemberMe | null> {
   }
 }
 
-async function fetchCommunityName(): Promise<string | null> {
-  try {
-    const res = await fetch("/v1/community/public-profile");
-    if (!res.ok) return null;
-    const p = (await res.json()) as { name?: string };
-    return p.name || null;
-  } catch {
-    return null;
-  }
-}
-
 function shortDid(did: string): string {
   return did.length > 34 ? `${did.slice(0, 20)}…${did.slice(-8)}` : did;
 }
@@ -40,9 +30,9 @@ function shortDid(did: string): string {
 export function Portal() {
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ["member-me"], queryFn: fetchMe });
-  const name = useQuery({
-    queryKey: ["community-name"],
-    queryFn: fetchCommunityName,
+  const profile = useQuery({
+    queryKey: ["community-profile"],
+    queryFn: fetchCommunityProfile,
     staleTime: Infinity,
   });
 
@@ -57,34 +47,24 @@ export function Portal() {
     }
   };
 
-  const communityName = me.data?.community.name ?? name.data;
+  const communityName = me.data?.community.name ?? profile.data?.name;
+  const logoUrl = me.data?.community.logoUrl ?? profile.data?.logoUrl;
 
   return (
     <>
       <a className="skip" href="#main">
         Skip to content
       </a>
-      <header className="topbar">
-        <div className="topbar-inner">
-          <a className="brand" href="/">
-            {me.data?.community.logoUrl ? (
-              <img src={me.data.community.logoUrl} alt="" className="brand-logo" />
-            ) : (
-              <span className="brand-mark" aria-hidden="true" />
-            )}
-            <span>{communityName || "Verifiable Trust Community"}</span>
-          </a>
-          <span className="topbar-tag">Members</span>
-          {me.data && (
-            <div className="topbar-user">
-              <code title={me.data.did}>{shortDid(me.data.did)}</code>
-              <button type="button" className="btn btn-ghost btn-sm" onClick={signOut}>
-                <LogOut size={14} aria-hidden="true" /> Sign out
-              </button>
-            </div>
-          )}
-        </div>
-      </header>
+      <CommunityTopbar communityName={communityName} logoUrl={logoUrl} tag="Members">
+        {me.data && (
+          <div className="topbar-user">
+            <code title={me.data.did}>{shortDid(me.data.did)}</code>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={signOut}>
+              <LogOut size={14} aria-hidden="true" /> Sign out
+            </button>
+          </div>
+        )}
+      </CommunityTopbar>
 
       {me.isPending ? (
         <main className="signin" id="main">

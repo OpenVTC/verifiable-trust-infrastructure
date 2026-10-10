@@ -25,6 +25,19 @@ export const OOB_TYPES = {
   cancel: "https://trusttasks.org/spec/auth/oob/cancel/0.1",
 } as const;
 
+/** Which session a sign-in asks for. `member` is the portal's; `admin` is
+ *  the operator console's, for an identity the community's ACL holds as an
+ *  administrator. */
+export type SessionAudience = "member" | "admin";
+
+/** The `ext` namespace that carries the audience on `auth/oob/request`, and
+ *  in the VTC's signed step 1 and step 2 (so the member's grant covers it).
+ *  `auth/oob/0.1`'s `purpose` is a closed enum, so it is not a purpose. */
+export const SESSION_EXT = "org.openvtc.session";
+
+/** The decline reason for an identity that is not an administrator. */
+export const NOT_AN_ADMIN = "notAnAdmin";
+
 /** What `GET /v1/member/sign-in/config` answers. */
 export interface SignInConfig {
   vtcDid: string;
@@ -38,6 +51,17 @@ export interface RedeemResult {
   displayName?: string | null;
   notAfter: number;
   amr: string[];
+  /** The session the VTC issued, from the response's `ext`; `member` when
+   *  it says nothing. */
+  audience: SessionAudience;
+}
+
+/** The audience an `ext` names, or `member` when it names none. */
+export function audienceOf(ext: unknown): SessionAudience {
+  const ns = (ext as Record<string, unknown> | null | undefined)?.[SESSION_EXT] as
+    | { audience?: unknown }
+    | undefined;
+  return ns?.audience === "admin" ? "admin" : "member";
 }
 
 /** A refusal from the sign-in service: the local part of its code. */
@@ -171,11 +195,26 @@ async function send(
   );
 }
 
-/** `auth/oob/request`: open a request. Returns its id and claim deadline. */
+/** `auth/oob/request`: open a request. Returns its id and claim deadline.
+ *  A member request is sent exactly as before; an operator-console one adds
+ *  `ext["org.openvtc.session"]`, and is refused here unless the VTC echoed
+ *  it — a VTC that predates the extension carries `ext` through unread and
+ *  would open a member sign-in instead. */
 export async function openRequest(
   cfg: SignInConfig,
+  audience: SessionAudience = "member",
 ): Promise<{ requestId: string; claimDeadline: number }> {
-  const p = await send(OOB_TYPES.request, { purpose: "login", mode: "scan" }, cfg);
+  const payload =
+    audience === "member"
+      ? { purpose: "login", mode: "scan" }
+      : { purpose: "login", mode: "scan", ext: { [SESSION_EXT]: { audience } } };
+  const p = await send(OOB_TYPES.request, payload, cfg);
+  if (audienceOf(p.ext) !== audience) {
+    throw new Error(
+      "This community's service doesn't offer wallet sign-in to the operator console yet. " +
+        "Use your passkey, or an older wallet below.",
+    );
+  }
   const requestId = typeof p.requestId === "string" ? p.requestId : "";
   const claimDeadline = epochOf(p.claimDeadline);
   if (!/^[A-Za-z0-9_-]{22}$/.test(requestId) || claimDeadline === null) {
@@ -199,6 +238,7 @@ export async function redeemOnce(
     displayName: typeof p.displayName === "string" ? p.displayName : null,
     notAfter: epochOf(p.notAfter) ?? 0,
     amr: Array.isArray(p.amr) ? (p.amr as string[]) : [],
+    audience: audienceOf(p.ext),
   };
 }
 

@@ -85,10 +85,13 @@ pub async fn serve_spa(State(state): State<AppState>, req: Request<Body>) -> Res
         .admin_ui
         .serve_dir()
         .map(StdPath::to_path_buf);
-    match dir {
+    let mut response = match dir {
         Some(dir) => crate::admin_ui::serve_dir(&dir, req).await,
         None => crate::admin_ui::serve(req).await,
-    }
+    };
+    // The console's login page shows a sign-in trigger link too.
+    harden_sign_in_page(&mut response);
+    response
 }
 
 /// `GET /members/*` — serve the member portal: from `admin_ui.members_dir`
@@ -100,17 +103,18 @@ pub async fn serve_members_spa(State(state): State<AppState>, req: Request<Body>
         Some(dir) => crate::admin_ui::serve_members_dir(&dir, req).await,
         None => crate::admin_ui::serve_members(req).await,
     };
-    harden_member_page(&mut response);
+    harden_sign_in_page(&mut response);
     response
 }
 
-/// The portal's page shows a sign-in trigger link, so it is served with
+/// The portal's page and the console's login page show a sign-in trigger
+/// link, so each is served with
 /// `Referrer-Policy: no-referrer` and `Cache-Control: no-store` (VTI-LNK-082),
 /// and a CSP with `frame-ancestors 'none'` and no third-party script source
 /// (base design §13.6). Set here rather than left to the browser-surface
 /// middleware so the page carries them however it is mounted. Hashed assets
 /// keep their cache lifetime; only the HTML shell is `no-store`.
-fn harden_member_page(response: &mut Response) {
+fn harden_sign_in_page(response: &mut Response) {
     use axum::http::HeaderValue;
     let is_html = response
         .headers()

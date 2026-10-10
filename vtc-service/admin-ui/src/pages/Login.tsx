@@ -1,4 +1,21 @@
-// Login page: passkey + VTA-wallet sign-in.
+// Login page for the operator console. It wears the community's sign-in look
+// (`@/signin`, shared with the member portal's `members/SignIn.tsx`) rather
+// than the console's, because an operator arrives here from the community's
+// site: the same top bar, centred card, option buttons and footer, with a
+// "Back to <community>" link home. It stays a standalone page at `/admin/`.
+// The rest of the console keeps its own look.
+//
+// The options, in order (contract C7):
+//
+// 1. **Sign in with your wallet** — the trigger-link key grant
+//    (`auth/oob/*`), the shared `WalletSignIn` asking for the console's
+//    session with `ext["org.openvtc.session"].audience = "admin"`. The VTC
+//    issues the same cookie session the other console sign-ins do, and only
+//    to an identity its ACL holds as an administrator; anyone else is told
+//    "This identity isn't an administrator of this community."
+// 2. **Passkey.**
+// 3. **Using an older wallet?** — the two SIOPv2 wallet buttons below,
+//    deprecated, unchanged, behind a disclosure.
 //
 // Passkey: POST `/v1/auth/passkey-login/start` → `navigator.credentials.get`
 // → POST `/finish` → daemon sets the `vtc_admin_session` + `csrf` cookies.
@@ -31,9 +48,17 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fingerprint, Wallet } from "lucide-react";
 
-import { fetchHealth, postJson, type HealthResponse } from "@/lib/api";
-import { DidText } from "@/components/DidText";
+import { fetchHealth, postJson, signOut, type HealthResponse } from "@/lib/api";
 import { shortenDid } from "@/lib/format";
+import { WalletSignIn } from "@/members/WalletSignIn";
+import {
+  CommunityTopbar,
+  fetchCommunityProfile,
+  HomeLink,
+  OlderWalletOptions,
+  SignInPage,
+} from "@/signin/SignInLayout";
+import "@/signin/signin.css";
 import {
   decodePublicKeyOptions,
   serializeAssertion,
@@ -86,6 +111,13 @@ export function Login() {
     queryFn: fetchHealth,
   });
   const vtcDid = health.data?.vtc_did;
+  // The community's public name and logo, for the top bar and heading.
+  const profile = useQuery({
+    queryKey: ["community-profile"],
+    queryFn: fetchCommunityProfile,
+    staleTime: Infinity,
+  });
+  const communityName = profile.data?.name ?? null;
 
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [walletPhase, setWalletPhase] = useState<Phase>({ kind: "idle" });
@@ -290,156 +322,187 @@ export function Login() {
     }
   };
 
-  return (
-    <section className="page login-page">
-      <div className="login-card">
-        <h2>VTC Admin</h2>
-        <p className="lead">
-          Sign in with your registered passkey, or with a wallet identity
-          this community's ACL admits as an Admin.
-        </p>
+  const errorPhase =
+    phase.kind === "error" ? phase : walletPhase.kind === "error" ? walletPhase : null;
 
-        {/* Absent while `/health` is in flight, and on a daemon that has not
-            been set up yet — which is a real state, not an error, so it says
-            so rather than rendering an empty box or a spinner. */}
-        {vtcDid ? (
-          <p className="login-did">
-            <span className="muted">Community</span>
-            <DidText did={vtcDid} />
-          </p>
-        ) : (
-          health.isSuccess && (
-            <p className="lead muted">
-              This VTC has no DID yet — it has not been set up.
-            </p>
+  return (
+    <div className="vtc-signin vtc-signin-page">
+      <a className="skip" href="#main">
+        Skip to content
+      </a>
+      <CommunityTopbar
+        communityName={communityName}
+        logoUrl={profile.data?.logoUrl}
+        tag="Operator console"
+      />
+      <SignInPage
+        eyebrow="Operator console"
+        title={
+          communityName ? (
+            <>Sign in to {communityName} — operator console</>
+          ) : (
+            <>Sign in to the operator console</>
           )
-        )}
+        }
+        lead={
+          <>
+            For this community's administrators. Sign in with the wallet that
+            holds your administrator identity, or with your passkey. There are
+            no passwords.
+          </>
+        }
+        after={
+          <>
+            {/* Absent while `/health` is in flight, and on a daemon that has
+                not been set up yet — which is a real state, not an error, so
+                it says so rather than rendering an empty box or a spinner. */}
+            {vtcDid ? (
+              <p className="option-note login-did">
+                Community DID{" "}
+                <code className="did-inline" title={vtcDid}>
+                  {vtcDid}
+                </code>
+              </p>
+            ) : (
+              health.isSuccess && (
+                <p className="option-note">
+                  This VTC has no DID yet — it has not been set up.
+                </p>
+              )
+            )}
+
+            {errorPhase && (
+              <div className="alert" role="alert">
+                <p className="alert-title">Sign-in failed</p>
+                <p>{errorPhase.message}</p>
+                {errorPhase.hint && <p>{errorPhase.hint}</p>}
+              </div>
+            )}
+          </>
+        }
+        foot={[
+          <>
+            Not an operator? Go to the <a href="/members/">member portal</a>.
+          </>,
+          <HomeLink communityName={communityName} />,
+        ]}
+      >
+        <WalletSignIn
+          audience="admin"
+          communityName={communityName}
+          onSignedIn={() => queryClient.invalidateQueries({ queryKey: ["whoami"] })}
+          onNotMe={signOut}
+        />
 
         <button
           type="button"
-          className="primary"
+          className="btn btn-secondary btn-lg"
           onClick={signIn}
           disabled={busy}
         >
-          <Fingerprint size={16} aria-hidden="true" />
+          <Fingerprint size={18} aria-hidden="true" />
           {phase.kind === "running"
-            ? "Waiting for passkey…"
-            : "Sign in with passkey"}
+            ? "Waiting for your passkey…"
+            : "Sign in with a passkey"}
         </button>
+        <p className="option-note">
+          No passkey yet? Open the install URL the daemon operator shared, or
+          ask them to mint a fresh one via <code>vtc admin invite</code>.
+        </p>
 
-        {walletAvailable ? (
-          <div className="login-option">
-            <button
-              type="button"
-              className="secondary"
-              onClick={handleWalletLogin}
-              disabled={busy}
-            >
-              <Wallet size={16} aria-hidden="true" />
-              {walletPhase.kind === "running"
-                ? "Waiting for wallet…"
-                : "Sign in with this browser's wallet"}
-            </button>
-            <p className="login-option-note">
-              The wallet presents the identity it uses for this site — its
-              own key (a <code>did:key</code>) unless you have chosen a VTA
-              identity here.
-            </p>
-          </div>
-        ) : (
-          <p className="lead">
-            Install the VTA wallet browser extension to sign in with your
-            DID — no passkey required.
+        <OlderWalletOptions>
+          <p className="option-note">
+            The VTA Wallet browser extension's older sign-in (SIOPv2). It is
+            deprecated and will be removed; use “Sign in with your wallet” when
+            your wallet supports it.
           </p>
-        )}
-
-        {proxyAvailable && (
-          <>
-            <div className="login-option">
+          {walletAvailable ? (
+            <>
               <button
                 type="button"
-                className="secondary"
+                className="btn btn-secondary"
+                onClick={handleWalletLogin}
+                disabled={busy}
+              >
+                <Wallet size={18} aria-hidden="true" />
+                {walletPhase.kind === "running"
+                  ? "Waiting for wallet…"
+                  : "Sign in with this browser's wallet"}
+              </button>
+              <p className="option-note">
+                The wallet presents the identity it uses for this site — its
+                own key (a <code>did:key</code>) unless you have chosen a VTA
+                identity here.
+              </p>
+            </>
+          ) : (
+            <p className="option-note">
+              Install the VTA wallet browser extension to sign in with your
+              DID — no passkey required.
+            </p>
+          )}
+
+          {proxyAvailable && (
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary"
                 onClick={handleProxyStart}
                 disabled={busy}
               >
                 Sign in as a VTA identity
               </button>
-              <p className="login-option-note">
+              <p className="option-note">
                 Your VTA signs as the identity bound to this community. Use
                 this when your ACL entry names your VTA identity.
               </p>
-            </div>
 
-            {/* Secondary, and worded as the exception it is. The button above
-                uses whichever identity the wallet has bound to this site; this
-                is for an operator holding more than one here, and it costs a
-                consent prompt that enumerates the vault to this page. */}
-            <button
-              type="button"
-              className="link"
-              onClick={handleChooseIdentity}
-              disabled={busy}
-            >
-              Sign in as a different VTA identity…
-            </button>
-          </>
-        )}
+              {/* Secondary, and worded as the exception it is. The button
+                  above uses whichever identity the wallet has bound to this
+                  site; this is for an operator holding more than one here,
+                  and it costs a consent prompt that enumerates the vault to
+                  this page. */}
+              <button
+                type="button"
+                className="btn btn-link"
+                onClick={handleChooseIdentity}
+                disabled={busy}
+              >
+                Sign in as a different VTA identity…
+              </button>
+            </>
+          )}
 
-        {candidates && (
-          <section className="card">
-            <h3>Pick a proxy identity</h3>
-            <p className="lead">
-              Multiple vault entries are pinned to this VTC. Choose which one
-              to sign in as.
-            </p>
-            <div className="identity-choices">
-              {candidates.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  className="identity-choice"
-                  onClick={() => runProxyLogin(c)}
-                  disabled={busy}
-                  title={c.principalDid}
-                >
-                  <span className="identity-choice-label">{c.label}</span>
-                  {c.principalDid && (
-                    <code className="identity-choice-did">
-                      {shortenDid(c.principalDid)}
-                    </code>
-                  )}
-                </button>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {(phase.kind === "error" || walletPhase.kind === "error") && (
-          <section className="card error">
-            <h3>Sign-in failed</h3>
-            <p>
-              {phase.kind === "error"
-                ? phase.message
-                : walletPhase.kind === "error"
-                  ? walletPhase.message
-                  : null}
-            </p>
-            {phase.kind === "error" && phase.hint && (
-              <p className="lead">{phase.hint}</p>
-            )}
-            {walletPhase.kind === "error" && walletPhase.hint && (
-              <p className="lead">{walletPhase.hint}</p>
-            )}
-          </section>
-        )}
-
-        <footer>
-          <p>
-            No passkey yet? Open the install URL the daemon operator shared, or
-            ask them to mint a fresh one via <code>vtc admin invite</code>.
-          </p>
-        </footer>
-      </div>
-    </section>
+          {candidates && (
+            <section className="identity-picker" aria-labelledby="proxy-picker-heading">
+              <h2 id="proxy-picker-heading">Pick a proxy identity</h2>
+              <p className="option-note">
+                Multiple vault entries are pinned to this VTC. Choose which one
+                to sign in as.
+              </p>
+              <div className="identity-choices">
+                {candidates.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    className="identity-choice"
+                    onClick={() => runProxyLogin(c)}
+                    disabled={busy}
+                    title={c.principalDid}
+                  >
+                    <span className="identity-choice-label">{c.label}</span>
+                    {c.principalDid && (
+                      <code className="identity-choice-did">
+                        {shortenDid(c.principalDid)}
+                      </code>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+        </OlderWalletOptions>
+      </SignInPage>
+    </div>
   );
 }

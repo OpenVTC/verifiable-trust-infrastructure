@@ -233,6 +233,15 @@ pub enum AuditEvent {
     /// Never the requester's address — city and country only (T22).
     MemberWalletSignIn(MemberWalletSignInData),
 
+    /// A step of a **wallet sign-in to the operator console** — the same
+    /// `auth/oob/*` key-grant flow as [`AuditEvent::MemberWalletSignIn`],
+    /// started by the console's login page with the `admin` session audience
+    /// (`ext["org.openvtc.session"]`). It ends in a console session only for
+    /// a DID the ACL holds as an administrator; any other identity is
+    /// declined (`reason: notAnAdmin`). Its own variant so console access
+    /// reads beside the other console sign-ins rather than the portal's.
+    AdminWalletSignIn(MemberWalletSignInData),
+
     /// A step in the life of a **step-up approver** binding — a `did:key`
     /// bound to one subject as that subject's step-up factor (VTI-APV-015):
     /// an invite issued, voided after five wrong claim codes, an approver
@@ -929,6 +938,7 @@ impl AuditEvent {
             Self::StepUpPasskeyChanged(..) => "StepUpPasskeyChanged",
             Self::MemberPasskeyChanged(..) => "MemberPasskeyChanged",
             Self::MemberWalletSignIn(..) => "MemberWalletSignIn",
+            Self::AdminWalletSignIn(..) => "AdminWalletSignIn",
             Self::StepUpApproverChanged(..) => "StepUpApproverChanged",
             Self::OperationStepUpApproved(..) => "OperationStepUpApproved",
             Self::TaskConsentRecorded(..) => "TaskConsentRecorded",
@@ -1781,7 +1791,8 @@ pub struct StepUpPasskeyData {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
-/// Payload for [`AuditEvent::MemberWalletSignIn`].
+/// Payload for [`AuditEvent::MemberWalletSignIn`] and
+/// [`AuditEvent::AdminWalletSignIn`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MemberWalletSignInData {
@@ -3536,6 +3547,22 @@ mod tests {
         });
         let v = wire_value(&e);
         assert_eq!(v["type"], "EndorsementTypeDeleted");
+        round_trip(&e);
+    }
+
+    #[test]
+    fn admin_wallet_sign_in_round_trip() {
+        let e = AuditEvent::AdminWalletSignIn(MemberWalletSignInData {
+            stage: "declined".into(),
+            request_id: "r".into(),
+            member: Some("did:webvh:x".into()),
+            reason: Some("notAnAdmin".into()),
+            location: Some("unknown".into()),
+            grant: None,
+        });
+        let v = wire_value(&e);
+        assert_eq!(v["type"], "AdminWalletSignIn");
+        assert_eq!(e.variant_name(), "AdminWalletSignIn");
         round_trip(&e);
     }
 

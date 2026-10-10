@@ -19,6 +19,8 @@ import { Fingerprint, Wallet } from "lucide-react";
 
 import { shortenDid } from "@/lib/format";
 
+import { HomeLink, OlderWalletOptions, SignInPage } from "../signin/SignInLayout";
+
 import { MemberApiError } from "./api";
 import { InstallWallet } from "./InstallWallet";
 import { WalletSignIn } from "./WalletSignIn";
@@ -120,113 +122,17 @@ export function SignIn({ communityName }: { communityName?: string | null }) {
   };
 
   return (
-    <main className="signin" id="main">
-      <section className="signin-card" aria-labelledby="signin-heading">
-        <p className="eyebrow">Member portal</p>
-        <h1 id="signin-heading">
-          Sign in to {communityName || "your community"}
-        </h1>
-        <p className="lead">
+    <SignInPage
+      eyebrow="Member portal"
+      title={<>Sign in to {communityName || "your community"}</>}
+      lead={
+        <>
           Sign in with the wallet that holds your membership, or with a passkey
           you've added here. There are no passwords.
-        </p>
-
-        <div className="signin-options">
-          <WalletSignIn
-            communityName={communityName}
-            onSignedIn={() => qc.invalidateQueries({ queryKey: ["member-me"] })}
-          />
-
-          <button
-            type="button"
-            className="btn btn-secondary btn-lg"
-            onClick={() => run("passkey")}
-            disabled={busy || !passkeysSupported()}
-          >
-            <Fingerprint size={18} aria-hidden="true" />
-            {phase.kind === "running" && phase.method === "passkey"
-              ? "Waiting for your passkey…"
-              : "Sign in with a passkey"}
-          </button>
-          <p className="option-note">
-            First time? Sign in with your wallet, then add a passkey for this
-            device.
-          </p>
-
-          <details className="legacy-signin">
-            <summary>Using an older wallet?</summary>
-            <p className="option-note">
-              The VTA Wallet browser extension's older sign-in (SIOPv2). It is
-              deprecated and will be removed; use “Sign in with your wallet”
-              when your wallet supports it.
-            </p>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={() => run("vta")}
-            disabled={busy || !vtaAvailable}
-          >
-            <Wallet size={18} aria-hidden="true" />
-            {phase.kind === "running" && phase.method === "vta"
-              ? "Waiting for your VTA…"
-              : "Sign in with your VTA"}
-          </button>
-          <p className="option-note">
-            {vtaAvailable
-              ? "SIOPv2: your VTA signs as your member identity. Its key never leaves your VTA."
-              : "Needs the VTA Wallet browser extension, which connects this page to your VTA — install it below, then reload."}
-          </p>
-          {canChoose && (
-            <button
-              type="button"
-              className="btn btn-link"
-              onClick={chooseIdentity}
-              disabled={busy}
-            >
-              {phase.kind === "running" && phase.method === "choose"
-                ? "Asking your wallet…"
-                : "Sign in as a different identity…"}
-            </button>
-          )}
-
-          {choices && (
-            <section className="identity-picker" aria-labelledby="identity-picker-heading">
-              <h2 id="identity-picker-heading">Choose an identity</h2>
-              <p className="option-note">
-                Your wallet holds these identities for this community. Pick the
-                one the community admitted you as.
-              </p>
-              <ul className="identity-choices">
-                {choices.map((c) => (
-                  <li key={c.entryId}>
-                    <button
-                      type="button"
-                      className="identity-choice"
-                      onClick={() => attempt("vta", () => signInWithVtaAs(c))}
-                      disabled={busy}
-                      title={c.did}
-                    >
-                      <span className="identity-choice-label">{c.label || "Identity"}</span>
-                      <code className="identity-choice-did">{shortenDid(c.did)}</code>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={() => setChoices(null)}
-              >
-                Cancel
-              </button>
-            </section>
-          )}
-
-          <InstallWallet open={false} />
-          </details>
-        </div>
-
-        {phase.kind === "error" && (
+        </>
+      }
+      after={
+        phase.kind === "error" && (
           <div className="alert" role="alert">
             <p className="alert-title">{phase.message}</p>
             {phase.presentedDid && (
@@ -250,17 +156,111 @@ export function SignIn({ communityName }: { communityName?: string | null }) {
               </button>
             )}
           </div>
-        )}
-      </section>
+        )
+      }
+      foot={[
+        <>
+          Not a member yet? Start at{" "}
+          <a href="https://openvtc.net" target="_blank" rel="noopener noreferrer">
+            openvtc.net
+          </a>
+          . Running this community? The <a href="/admin/">operator console</a> is
+          separate.
+        </>,
+        <HomeLink communityName={communityName} />,
+      ]}
+    >
+      <WalletSignIn
+        communityName={communityName}
+        onSignedIn={() => qc.invalidateQueries({ queryKey: ["member-me"] })}
+      />
 
-      <p className="signin-foot">
-        Not a member yet? Start at{" "}
-        <a href="https://openvtc.net" target="_blank" rel="noopener noreferrer">
-          openvtc.net
-        </a>
-        . Running this community? The <a href="/admin/">operator console</a> is
-        separate.
+      <button
+        type="button"
+        className="btn btn-secondary btn-lg"
+        onClick={() => run("passkey")}
+        disabled={busy || !passkeysSupported()}
+      >
+        <Fingerprint size={18} aria-hidden="true" />
+        {phase.kind === "running" && phase.method === "passkey"
+          ? "Waiting for your passkey…"
+          : "Sign in with a passkey"}
+      </button>
+      <p className="option-note">
+        First time? Sign in with your wallet, then add a passkey for this
+        device.
       </p>
-    </main>
+
+      <OlderWalletOptions>
+        <p className="option-note">
+          The VTA Wallet browser extension's older sign-in (SIOPv2). It is
+          deprecated and will be removed; use “Sign in with your wallet”
+          when your wallet supports it.
+        </p>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => run("vta")}
+          disabled={busy || !vtaAvailable}
+        >
+          <Wallet size={18} aria-hidden="true" />
+          {phase.kind === "running" && phase.method === "vta"
+            ? "Waiting for your VTA…"
+            : "Sign in with your VTA"}
+        </button>
+        <p className="option-note">
+          {vtaAvailable
+            ? "SIOPv2: your VTA signs as your member identity. Its key never leaves your VTA."
+            : "Needs the VTA Wallet browser extension, which connects this page to your VTA — install it below, then reload."}
+        </p>
+        {canChoose && (
+          <button
+            type="button"
+            className="btn btn-link"
+            onClick={chooseIdentity}
+            disabled={busy}
+          >
+            {phase.kind === "running" && phase.method === "choose"
+              ? "Asking your wallet…"
+              : "Sign in as a different identity…"}
+          </button>
+        )}
+
+        {choices && (
+          <section className="identity-picker" aria-labelledby="identity-picker-heading">
+            <h2 id="identity-picker-heading">Choose an identity</h2>
+            <p className="option-note">
+              Your wallet holds these identities for this community. Pick the
+              one the community admitted you as.
+            </p>
+            <ul className="identity-choices">
+              {choices.map((c) => (
+                <li key={c.entryId}>
+                  <button
+                    type="button"
+                    className="identity-choice"
+                    onClick={() => attempt("vta", () => signInWithVtaAs(c))}
+                    disabled={busy}
+                    title={c.did}
+                  >
+                    <span className="identity-choice-label">{c.label || "Identity"}</span>
+                    <code className="identity-choice-did">{shortenDid(c.did)}</code>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setChoices(null)}
+            >
+              Cancel
+            </button>
+          </section>
+        )}
+
+        <InstallWallet open={false} />
+      </OlderWalletOptions>
+    </SignInPage>
   );
 }

@@ -852,73 +852,19 @@ pub async fn passkey_login_finish(
     // since enrolment is a real path (operator demoted, etc.).
     // Uses the VTC-aware resolver so a demoted-to-VtcRole row yields a
     // clean 403, not a 500 in the VTA-taxonomy deserializer (P0.16).
-    let (role, allowed_contexts) = resolve_auth_role(&state.acl_ks, &user.did).await?;
-
-    // Mint access + refresh tokens through the shared minter so the
-    // passkey path gets the same `aal2` short access TTL + Authenticated
-    // audit as the canonical `/auth/` handler (P1.4) — previously this
-    // hand-rolled the mint with the full `aal1` TTL, giving the one
-    // token class the hardening protects the longest exposure.
+    //
     // Passkey-login: amr=["passkey"], acr="aal2" — the WebAuthn
     // assertion alone is two factors (possession of the authenticator +
     // a user-verification gesture / biometric).
-    let backend = crate::auth::VtcAuthBackend::from_state(&state).await?;
-    let session_id = Uuid::new_v4().to_string();
+    let AdminCookieSession {
+        session_id,
+        minted,
+        cookies,
+    } = mint_admin_cookie_session(&state, &user.did, &["passkey"], None).await?;
     let amr = vec!["passkey".to_string()];
     let acr = "aal2".to_string();
-    let minted = vti_common::auth::handlers::mint_session_tokens(
-        &backend,
-        &user.did,
-        &session_id,
-        &role,
-        &allowed_contexts,
-        &amr,
-        &acr,
-        false,
-    )
-    .await?;
-
-    // Persist the session record so `/auth/sessions` lists it and
-    // refresh-token rotation finds it. AAL is captured so refresh keeps
-    // the holder at aal2 instead of dropping to aal1 on every rotation.
-    let session = Session {
-        session_id: session_id.clone(),
-        did: user.did.clone(),
-        challenge: String::new(),
-        state: SessionState::Authenticated,
-        created_at: minted.issued_at,
-        last_seen: minted.issued_at,
-        refresh_token: Some(minted.refresh_token.clone()),
-        refresh_expires_at: Some(minted.refresh_expires_at),
-        tee_attested: false,
-        amr: amr.clone(),
-        acr: acr.clone(),
-        acr_expires_at: None,
-        token_id: Some(minted.token_id.clone()),
-        session_pubkey_b58btc: None,
-    };
-    store_session(&state.sessions_ks, &session).await?;
-    store_refresh_index(&state.sessions_ks, &minted.refresh_token, &session_id).await?;
 
     info!(did = %user.did, %session_id, "passkey login successful");
-
-    // Set cookies — same shape as `admin_session`.
-    let max_age = minted.access_expires_at.saturating_sub(now_epoch()).max(1);
-    let session_cookie = build_session_cookie(&minted.access_token, max_age);
-    // The refresh cookie outlives the access cookie by design: it is what
-    // the console presents to mint the next access token, so it is scoped
-    // to the refresh TTL rather than this 300s (aal2) access window.
-    let refresh_max_age = minted.refresh_expires_at.saturating_sub(now_epoch()).max(1);
-    let refresh_cookie = build_refresh_cookie(&minted.refresh_token, refresh_max_age);
-
-    use rand::RngExt;
-    let mut csrf_bytes = [0u8; 32];
-    rand::rng().fill(&mut csrf_bytes);
-    let csrf = hex::encode(csrf_bytes);
-    // Scoped to the refresh window too. If it expired with the access
-    // cookie, the renewal POST — a mutation, and therefore CSRF-gated —
-    // would have no token to present and every renewal would 403.
-    let csrf_cookie = build_csrf_cookie(&csrf, refresh_max_age);
 
     let resp = PasskeyLoginResponse {
         // Required by `login/finish/0.2`, and not merely decorative: `start`
@@ -947,23 +893,107 @@ pub async fn passkey_login_finish(
 
     let mut response = Json(resp).into_response();
     let headers = response.headers_mut();
-    headers.append(
-        SET_COOKIE,
-        HeaderValue::try_from(session_cookie)
-            .map_err(|e| AppError::Internal(format!("invalid session cookie: {e}")))?,
-    );
-    headers.append(
-        SET_COOKIE,
-        HeaderValue::try_from(csrf_cookie)
-            .map_err(|e| AppError::Internal(format!("invalid csrf cookie: {e}")))?,
-    );
-    headers.append(
-        SET_COOKIE,
-        HeaderValue::try_from(refresh_cookie)
-            .map_err(|e| AppError::Internal(format!("invalid refresh cookie: {e}")))?,
-    );
+    for cookie in cookies {
+        headers.append(
+            SET_COOKIE,
+            HeaderValue::try_from(cookie)
+                .map_err(|e| AppError::Internal(format!("invalid session cookie: {e}")))?,
+        );
+    }
 
     Ok(response)
+}
+
+/// An operator-console session just minted, and the cookies that carry it.
+pub(crate) struct AdminCookieSession {
+    pub session_id: String,
+    pub minted: vti_common::auth::handlers::MintedTokens,
+    /// `vtc_admin_session`, `csrf` and the refresh cookie, in that order.
+    pub cookies: Vec<String>,
+}
+
+/// Mint the operator-console session every interactive console sign-in
+/// issues — passkey login, and wallet sign-in by trigger link
+/// (`auth/oob/*` with the `admin` audience): the DID's role read from the
+/// ACL now (a non-administrator is `Forbidden`), tokens for the `VTC`
+/// audience through the shared minter (`aal2`, so the short access TTL),
+/// the session row and refresh index in `sessions`, and the
+/// `vtc_admin_session` + `csrf` + refresh cookie trio.
+///
+/// One function so the sign-in methods cannot drift apart in audience,
+/// cookie flags, lifetimes or CSRF — a console session is a console session
+/// whichever way the operator proved who they are.
+pub(crate) async fn mint_admin_cookie_session(
+    state: &AppState,
+    did: &str,
+    amr: &[&str],
+    session_pubkey_b58btc: Option<String>,
+) -> Result<AdminCookieSession, AppError> {
+    let (role, allowed_contexts) = resolve_auth_role(&state.acl_ks, did).await?;
+
+    // Mint access + refresh tokens through the shared minter so every
+    // console sign-in gets the same `aal2` short access TTL + Authenticated
+    // audit as the canonical `/auth/` handler (P1.4).
+    let backend = crate::auth::VtcAuthBackend::from_state(state).await?;
+    let session_id = Uuid::new_v4().to_string();
+    let amr: Vec<String> = amr.iter().map(|s| s.to_string()).collect();
+    let acr = "aal2".to_string();
+    let minted = vti_common::auth::handlers::mint_session_tokens(
+        &backend,
+        did,
+        &session_id,
+        &role,
+        &allowed_contexts,
+        &amr,
+        &acr,
+        false,
+    )
+    .await?;
+
+    // Persist the session record so `/auth/sessions` lists it and
+    // refresh-token rotation finds it. AAL is captured so refresh keeps
+    // the holder at aal2 instead of dropping to aal1 on every rotation.
+    let session = Session {
+        session_id: session_id.clone(),
+        did: did.to_string(),
+        challenge: String::new(),
+        state: SessionState::Authenticated,
+        created_at: minted.issued_at,
+        last_seen: minted.issued_at,
+        refresh_token: Some(minted.refresh_token.clone()),
+        refresh_expires_at: Some(minted.refresh_expires_at),
+        tee_attested: false,
+        amr,
+        acr,
+        acr_expires_at: None,
+        token_id: Some(minted.token_id.clone()),
+        session_pubkey_b58btc,
+    };
+    store_session(&state.sessions_ks, &session).await?;
+    store_refresh_index(&state.sessions_ks, &minted.refresh_token, &session_id).await?;
+
+    let max_age = minted.access_expires_at.saturating_sub(now_epoch()).max(1);
+    let session_cookie = build_session_cookie(&minted.access_token, max_age);
+    // The refresh cookie outlives the access cookie by design: it is what
+    // the console presents to mint the next access token, so it is scoped
+    // to the refresh TTL rather than the 300s (aal2) access window.
+    let refresh_max_age = minted.refresh_expires_at.saturating_sub(now_epoch()).max(1);
+    let refresh_cookie = build_refresh_cookie(&minted.refresh_token, refresh_max_age);
+
+    use rand::RngExt;
+    let mut csrf_bytes = [0u8; 32];
+    rand::rng().fill(&mut csrf_bytes);
+    let csrf = hex::encode(csrf_bytes);
+    // Scoped to the refresh window too. If it expired with the access
+    // cookie, the renewal POST — a mutation, and therefore CSRF-gated —
+    // would have no token to present and every renewal would 403.
+    let csrf_cookie = build_csrf_cookie(&csrf, refresh_max_age);
+
+    Ok(AdminCookieSession {
+        session_id,
+        minted,
+        cookies: vec![session_cookie, csrf_cookie, refresh_cookie],
+    })
 }
 
 /// One subject's registered credentials, for a challenge scoped to them.

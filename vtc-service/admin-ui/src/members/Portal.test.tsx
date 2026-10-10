@@ -89,6 +89,10 @@ describe("member portal", () => {
     expect(
       screen.getByRole("link", { name: /openvtc\/vta-browser-plugin/i }).getAttribute("href"),
     ).toBe("https://github.com/OpenVTC/vta-browser-plugin");
+    // The same footer as the console's login page: a way back home.
+    expect(
+      screen.getByRole("link", { name: /back to acme guild/i }).getAttribute("href"),
+    ).toBe("/");
   });
 
   it("enables VTA sign-in and folds the guide away when the wallet can proxy", async () => {
