@@ -33,6 +33,9 @@ semver_check = true
 # One GitHub Release per published crate, carrying that crate's changelog
 # section. This is what an external consumer lands on from crates.io.
 git_release_enable = true
+# A release branch: its crate releases must not become GitHub's
+# "latest", which belongs to main's line. Set by cut-release.py.
+git_release_latest = false
 
 # Label the Release PR so it is obvious in the queue and easy to filter.
 pr_labels = ["release"]
