@@ -31,7 +31,9 @@ Settled with the product owner on 2026-10-10. Not to be re-litigated here.
 | | Decision |
 |---|---|
 | **Where blobs live** | **Pluggable.** Three backends: a **local directory** of plain files, **S3-compatible** object storage, and **[Walrus](https://github.com/MystenLabs/walrus)**. |
-| **How big a file can be** | **Configured per room by the hosting VTC.** It is not a protocol constant. |
+| **How storage is organised** | **Named storage configs, as many as the VTC wants.** Each is one backend with its own account and credentials. **Every room is assigned to one config, and one config serves any number of rooms.** Some rooms can sit on one AWS account, others on a second, others on Walrus. |
+| **How much a room can hold** | **Limits set by the hosting VTC, at three scopes:** the room, each member in the room, and each object. Each scope measures **file count, file size and total size.** None of it is a protocol constant. **Usage is reported** at every scope. |
+| **Storage credentials** | **Usable by the VTC, unrecoverable by its administrators.** An S3 secret key or a Walrus wallet key can be set and replaced through the console, never read back, never exported and never in a backup. A community has several administrators, and none of them can take the keys home. |
 | **Who holds the room keys when a member uses the portal** | **The member's VTA.** The VTA keeps the MLS group, as it does today. For a file, it releases **that file's key only**, through the wallet extension. The browser encrypts and decrypts the bytes. File bytes never pass through the VTA, and the group's storage key never reaches the browser. |
 
 ---
@@ -93,7 +95,7 @@ blob that was never uploaded. So the record gains one cleartext member:
 
 On a sealed tier that discloses **that** a record carries a file, and the blob
 discloses its size. The design already accepts both (§4 of the guide: the
-`attributed` tier hides content, not existence or timing). §8 offers padding for
+`attributed` tier hides content, not existence or timing). §9 offers padding for
 rooms that want sizes blurred.
 
 `blobRef` is the digest of the **ciphertext manifest** (§3.2). It is content
@@ -198,7 +200,7 @@ the room is hosted by that same VTC. The change is:
   credentials.
 - **`file-key` is the only task that puts key material in a page.** Its consent
   text says so. A member who would rather not let it can still use the room from
-  the extension's own manager panes, which get the same feature (§7.3).
+  the extension's own manager panes, which get the same feature (§8.3).
 
 ---
 
@@ -213,7 +215,7 @@ moves a site in chunked Trust Tasks over `vti_common::backup_transfer`.
 
 | Task | Needs | Does |
 |---|---|---|
-| `rooms/blobs/upload/begin/0.1` | `write` chain | Takes the ciphertext manifest. Checks it against the room's limits (§6) and opens an upload bundle owned by the presenter. Returns `{ uploadId, missing }` |
+| `rooms/blobs/upload/begin/0.1` | `write` chain | Takes the ciphertext manifest. Checks it against every applicable limit (§6.1) and reserves against them. Opens an upload bundle owned by the presenter. Returns `{ uploadId, missing }` |
 | `rooms/blobs/upload/chunk/0.1` | the open bundle | `{ uploadId, index, bytes }`. Idempotent; checked against the manifest digest |
 | `rooms/blobs/upload/commit/0.1` | the open bundle | Verifies the whole digest, hands the blob to the `BlobStore` and returns `{ blobRef }` |
 | `rooms/blobs/upload/abort/0.1` | the open bundle | Discards it |
@@ -259,12 +261,14 @@ pub trait BlobStore: Send + Sync {
 ```
 
 `vti-common` holds it, node-neutral like `backup_transfer`, so `room-host` and
-`vtc-service` share one implementation and one conformance suite.
+`vtc-service` share one implementation and one conformance suite. **One instance
+per storage config** (§7). A VTC with four configs holds four, keyed by config
+id, and every blob operation looks its store up by the blob's own `configId`.
 
 | Backend | Built on | Notes |
 |---|---|---|
 | **Local directory** | `object_store`'s `LocalFileSystem` | Plain files, `<root>/<aa>/<bb>/<blobRef>`, created owner-only. The default. **Not** in the VTC backup (§5.6) |
-| **S3-compatible** | `object_store`'s `AmazonS3` | AWS, R2, MinIO, B2. Server-side encryption on top is harmless and optional; the bytes are already ciphertext. Credentials come through the existing `vti-secrets` backends |
+| **S3-compatible** | `object_store`'s `AmazonS3` | AWS, R2, MinIO, B2. Server-side encryption on top is harmless and optional; the bytes are already ciphertext. Credentials are ambient or sealed (§7.4) |
 | **Walrus** | HTTP to a **publisher** (write) and an **aggregator** (read) | §5.4 |
 
 Use the [`object_store`](https://crates.io/crates/object_store) crate for the
@@ -312,7 +316,7 @@ touches the transport preference order (TSP > DIDComm > REST).
 A new keyspace, `room_blobs`:
 
 ```
-room_blobs:<roomId>:<blobRef>  →  { size, manifest, backend, backendRef,
+room_blobs:<roomId>:<blobRef>  →  { size, manifest, configId, backendRef,
                                      state: committed | orphaned | deleting | gone,
                                      refs, uploadedBy, createdAt, orphanedAt? }
 ```
@@ -320,6 +324,8 @@ room_blobs:<roomId>:<blobRef>  →  { size, manifest, backend, backendRef,
 - `refs` counts the records that name the blob. It is incremented on put,
   decremented on a rewrite that drops the blob or on a `retracted` curation, and
   when it reaches zero the blob becomes `orphaned`.
+- `configId` is the storage config (§7) the blob was written to. It is what lets
+  a room move to another config without stranding its existing files.
 - `uploadedBy` exists on `attributed` because the host already learns which member
   acted. It does not exist on `private`, where the host cannot learn it.
 
@@ -332,7 +338,8 @@ room_blobs:<roomId>:<blobRef>  →  { size, manifest, backend, backendRef,
 - **Room lifecycle**: a room reaching `Reclaimable` (the lifecycle clock in
   guide §10.1) orphans all its blobs at once.
 - **Backup**: `room_blobs` (the index) joins `BACKED_UP`. **The bytes do not.** A
-  VTC backup would otherwise grow with every upload. Each backend gets an explicit
+  VTC backup would otherwise grow with every upload. Storage configs (§7) are
+  backed up; their credentials are not (§7.4). Each backend gets an explicit
   answer in `docs/03-vtc/backup-restore.md`:
   - **local directory**: back the directory up beside the VTC backup;
   - **S3**: the bucket's own versioning or replication;
@@ -343,43 +350,281 @@ room_blobs:<roomId>:<blobRef>  →  { size, manifest, backend, backendRef,
 
 ---
 
-## 6. Per-room limits, set by the VTC
+## 6. Limits and usage
 
 The host decides how much it is willing to store. That is a hosting decision
 like any other, and nothing a room's credentials can widen.
 
-| Limit | Meaning |
-|---|---|
-| `maxFileBytes` | Largest single blob (ciphertext) |
-| `maxRoomBytes` | Total committed blob bytes the room may hold |
-| `maxFiles` | Count of committed blobs |
-| `filesEnabled` | `false` refuses `rooms/blobs/*` for the room outright |
+### 6.1 Three scopes, three measures
 
-**Where the numbers come from**, in order:
+| Scope | `maxFiles` | `maxFileBytes` | `maxBytes` |
+|---|---|---|---|
+| **Object**: one file | — | the largest single file | — |
+| **Member**: one member, in one room | files they have added | largest file *they* may add (≤ the room's) | total they have added |
+| **Room** | files in the room | largest file in the room | total in the room |
+| **Storage config** (§7): capacity, not policy | — | — | total across every room on it |
+
+Plus `filesEnabled: false`, which refuses `rooms/blobs/*` for a room outright.
+
+- **An upload must fit every scope at once.** `begin` checks the object
+  against `min(member.maxFileBytes, room.maxFileBytes, host ceiling)`. It checks
+  the member's and the room's counts and totals *with this file added*, and the
+  storage config's capacity. The refusal names **which** limit and its numbers
+  (`memberBytes: 1.9 of 2 GiB`), so a member knows whether to delete their own
+  files or ask the room's owner.
+- **"Member" means the person, not the key that signed.** Usage is charged to
+  the **subject at the root of the presented chain**. An agent writing on an
+  attenuated chain spends its member's quota, and a member cannot multiply their
+  allowance by minting agents. The VMC subject is the member, the same DID the
+  `attributed` tier already discloses to the host.
+- **On `private` rooms there are no per-member limits.** The host cannot tell
+  members apart, by design. Object and room limits still hold. The console says
+  so rather than showing an empty column.
+- **Reservations, not after-the-fact checks.** `begin` reserves the bytes and
+  the file against every scope. `commit` converts the reservation into usage, and
+  `abort` or bundle expiry releases it. Two concurrent uploads cannot both squeeze
+  under a limit that only one of them fits.
+- **Sizes are ciphertext bytes**: what is actually stored, padding included
+  (§9). The portal shows the plaintext size of a file beside it, from the sealed
+  manifest. Quotas are about storage and are stated in storage.
+- **Deleting frees quota at once.** Retracting a file's record releases it from
+  the member's and the room's usage when the blob is **orphaned**, not after GC's
+  grace window. Members expect a delete to make room. The storage config's
+  capacity keeps counting it until the backend deletion actually happens.
+
+### 6.2 Where the numbers come from
 
 1. **The `rooms` policy returns them at creation.** `data.vtc.rooms.decision`
-   gains a `limits` object, so a community writes "members' rooms get 2 GiB,
-   rooms owned by the board get 20 GiB, `open` rooms get no files" as policy,
-   next to who may create a room at all. The shipped default returns
-   `{ filesEnabled: true, maxFileBytes: 100 MiB, maxRoomBytes: 5 GiB, maxFiles: 10 000 }`.
-2. **An administrator can override one room** with `vtc/rooms/limits/set/0.1`,
-   audited with a reason. It is gated on a **new capability, `vtc.rooms.admin`**.
-   Today the only rooms task on the console, `vtc/rooms/list`, is gated on plain
-   `Admin`, and a capability is what lets a community hand room hosting to someone
-   who is not a full administrator (`docs/05-design-notes/vtc-admin-roles.md`).
-   `vtc/rooms/list` and `vtc/rooms/get` move to it too. Lowering a limit below
+   gains `limits` (room and member) and `storage` (which config, §7.2). So a
+   community writes, as policy, next to who may create a room at all:
+   - "members' rooms get 2 GiB, 200 MiB per member, 100 MiB per file";
+   - "rooms owned by the board get 20 GiB on the EU bucket";
+   - "`open` rooms get no files".
+
+   The shipped default:
+   ```jsonc
+   { "filesEnabled": true,
+     "room":   { "maxFiles": 10000, "maxFileBytes": "100 MiB", "maxBytes": "5 GiB" },
+     "member": { "maxFiles": 2000,  "maxFileBytes": "100 MiB", "maxBytes": "1 GiB" } }
+   ```
+2. **An administrator can override one room**, including its per-member
+   defaults and **one named member's** allowance in that room, with
+   `vtc/rooms/limits/set/0.1`. It is audited with a reason. Lowering a limit below
    current use refuses new uploads and deletes nothing.
 3. **A host-wide ceiling** in config (`[rooms.blobs] max_file_bytes`), capped by
-   §5.1's 1 GiB, bounds both.
+   §5.1's 1 GiB, bounds everything above.
 
-**Members see the limits.** The room's own record (`Room`) carries `limits` and
-`usage { bytes, files }`, returned on a new `rooms/info/0.1` (a `read` chain).
-The portal then shows "1.2 GB of 5 GB" before anyone drags a file in, and a file
-over the limit is refused **before** it is encrypted and uploaded, not after.
+All of the room-hosting administration in §6 and §7 sits on a **new capability,
+`vtc.rooms.admin`**. Today the only rooms task on the console, `vtc/rooms/list`,
+is gated on plain `Admin`, and a capability is what lets a community hand room
+hosting to someone who is not a full administrator
+(`docs/05-design-notes/vtc-admin-roles.md`). `vtc/rooms/list` moves to it.
+
+### 6.3 Usage reporting
+
+The host already knows everything usage needs: it is the counters §6.1 enforces.
+Reporting adds no new disclosure, only a place to read it.
+
+**Live counters**, updated in the same write as the blob index (§5.5):
+
+```
+room_usage:<roomId>                    →  { files, bytes, reservedBytes, uploads30d, downloads30d, egressBytes30d }
+room_usage:<roomId>:member:<memberDid> →  { files, bytes, reservedBytes, lastUploadAt }
+storage_usage:<configId>               →  { rooms, files, bytes, pendingDeleteBytes }
+```
+
+**History**: one row per room per day in `room_usage_daily` (files, bytes,
+uploads, downloads, egress bytes), kept 400 days, so a community can see growth
+and cost over a year. **Egress is counted**, because on S3 reads are what cost
+money, and a room whose files are downloaded a thousand times a day is a
+different conversation from one that is merely large.
+
+**Who sees what:**
+
+| Reader | Sees | Through |
+|---|---|---|
+| **Room-hosting administrator** (`vtc.rooms.admin`) | every room and storage config. Per member on `attributed`: member DIDs with their counts, never file names | `vtc/rooms/usage/0.1`: filter by room, member, storage config or date range, sort, top-N; CSV export from the console |
+| **Room owner** (an `admin` chain on the room) | their room, per member | `rooms/usage/0.1` |
+| **Member** | the room's totals and limits, and **their own** usage and limits | `rooms/info/0.1` |
+
+**Alerts**: crossing 80 %, 95 % and 100 % of any limit, or of a storage
+config's capacity, raises a hint on the console's live channel (topic `rooms`,
+hints only, never the data; see the `vtc/admin/events/*` invariant) and a banner
+in the portal for the member or owner concerned.
+
+Per-member usage on an `attributed` room tells administrators who adds how much.
+That is the tier's actual privacy property, and the console states it beside
+the column, as §8.1 does for activity.
 
 ---
 
-## 7. The experience
+## 7. Storage configs
+
+### 7.1 A config is a named backend; rooms are assigned to configs
+
+```
+storage_configs:<configId>  →  { id: "eu-s3-primary", label: "EU — S3 (main account)",
+                                  kind: local | s3 | walrus,
+                                  settings: { … },              // per kind, below; never a secret
+                                  credential: <credentialId>?,   // §7.4
+                                  capacityBytes?,                // §6.1's fourth row
+                                  state: active | draining | retired,
+                                  createdBy, createdAt }
+```
+
+- **As many configs as the community wants.** Two AWS accounts, an R2 bucket and
+  a Walrus publisher are four configs. Each has its own `BlobStore` instance (§5.3),
+  built when the config is activated and rebuilt when its settings or credential
+  change.
+- **Settings per kind**, none of them secret:
+  - **local**: the `root` directory.
+  - **s3**:
+    - `endpoint`, `region`, `bucket`, an optional `prefix`;
+    - `pathStyle` for MinIO;
+    - the auth mode: `ambient` or `credential`, see §7.4.
+  - **walrus**:
+    - `publisherUrl` and `aggregatorUrl`;
+    - `epochs` to buy and `extendBeforeEpochs`;
+    - the signer: `vta` or `credential`, see §7.4.
+- **Every room is assigned to exactly one config**, which receives its new
+  uploads. **A config serves any number of rooms.** The assignment is
+  `Room.storageConfig`, held by the VTC beside the room and never in the room's
+  credentials. Moving hosts means the new host picks its own.
+- **Every blob remembers its own config** (`room_blobs.configId`, §5.5), so
+  reassigning a room never strands its existing files (§7.3).
+- **A config is never deleted while a blob names it.** `retired` refuses new
+  rooms and new uploads but keeps serving reads. A config with live blobs is
+  `draining` until a migration empties it.
+
+### 7.2 Choosing the config at creation
+
+1. **The `rooms` policy decides** (`decision.storage.config`). It can also
+   return `decision.storage.allowed`, a list a room's creator may choose from. A
+   community then writes "board rooms go to `eu-s3-primary`; anyone may choose
+   `walrus-main` for public-interest rooms".
+2. **The creator may ask** for one of the allowed configs. That is one field on
+   the VTC's room-creation path, a VTC extension (`ext["org.openvtc"].storageConfig`)
+   so `rooms/create` stays host-neutral. A config outside the allowed list is
+   refused with the list.
+3. **With neither**, the VTC's default config.
+
+The member portal shows the creator the allowed configs by **label and kind**,
+with what each kind means for the room in one line each:
+
+- **Local or S3**: "files are removed when deleted".
+- **Walrus**: "public ciphertext, removal is cryptographic" (§5.4).
+
+### 7.3 Reassigning and migrating
+
+- **`vtc/rooms/storage/assign/0.1`** (`vtc.rooms.admin`) points a room at another
+  config. **New uploads go there from that moment.** Existing files stay where
+  they are and keep working, because each blob names its own config.
+- **`vtc/rooms/storage/migrate/0.1`** moves a room's existing blobs to its
+  current config:
+  1. copy;
+  2. verify against the manifest digest (the ciphertext is identical, so no
+     key is involved);
+  3. switch `room_blobs.configId`;
+  4. delete from the old config through GC.
+
+  It is resumable, rate-limited, reported as progress on the console and
+  audited. On Walrus, the "delete" is a lapse (§5.4).
+- **Draining a config** is migrating every room assigned to it, then `retired`.
+
+### 7.4 Credentials: usable by the VTC, unrecoverable by administrators
+
+The requirement: the blob subsystem can use an S3 secret key or a Walrus signing
+key, while **no administrator, however many there are, can get one back.**
+
+**First choice: hold no secret at all.**
+
+- **S3 with `auth: ambient`.** The VTC's runtime identity is the credential:
+  - an EC2 instance profile;
+  - an EKS service account (IRSA or Pod Identity);
+  - ECS task roles;
+  - GCP or Azure workload identity behind an S3-compatible gateway.
+
+  The config names the bucket and, optionally, a role to assume. There is no key
+  to recover because there is no key. **This is the recommended mode** and the
+  console offers it first.
+- **Walrus with `signer: vta`.** The Sui address that owns the community's blob
+  objects and pays for storage is a **key held in the community's VTA**, used
+  through its signing oracle, which never exports a key. Sui accepts secp256r1
+  (P-256) signatures, and the VTA already mints and signs with P-256 (ES256).
+  So the VTC asks the VTA to sign each storage transaction, and the key never
+  exists on the VTC at all. *To verify before P9:*
+  - the digest Sui's secp256r1 scheme signs (Blake2b intent digest, then
+    SHA-256 inside ECDSA) against what the oracle's ES256 signs;
+  - that the oracle can sign a caller-supplied digest without widening
+    what a `sign` grant means.
+
+  If either fails, Walrus falls back to the sealed mode below.
+
+**Otherwise: a sealed, write-only credential.** For static S3 access keys (R2,
+B2, MinIO, an account the VTC has no role in), and a Walrus key the community
+insists on supplying.
+
+| Step | What happens |
+|---|---|
+| **Set** | The console seals the secret **in the browser** to the VTC's storage-credential key, with `vta_sdk::sealed_transfer`, the workspace's only secret-bearing wire format. It is sent as `vtc/storage/credentials/set/0.1`. No plaintext secret crosses the wire or lands in a log. |
+| **Store** | The VTC opens it and re-encrypts it at rest under a key derived (HKDF, domain `vtc/storage-credentials/v1`) from the VTC's own secret in `vti-secrets`. It stores the ciphertext in a new `storage_credentials` keyspace. |
+| **Use** | The blob subsystem decrypts it into memory when building a `BlobStore`, holds it zeroize-on-drop, and never hands it to anything else. |
+| **Read back** | **There is no task, route, CLI verb or console view that returns it.** A credential is shown as `{ id, kind, fingerprint, last4, setBy, setAt, lastUsedOk }`. The fingerprint is SHA-256 over the secret, truncated, so two administrators can confirm they entered the same thing without seeing it. |
+| **Replace / revoke** | Write-only, like set. The old ciphertext is overwritten. Revoking a credential an active config uses puts that config in `draining` and refuses uploads to it. |
+| **Backup** | `storage_credentials` is in **`EXCLUDED_FROM_BACKUP`**. A VTC backup carries the VTC's signing key bundle, so an administrator holding a backup and its password could otherwise decrypt every stored credential. After a restore, each credential-backed config shows **"credential required"** until someone sets it again. Ambient and `vta` configs come back working. |
+
+**Changing where data goes takes two administrators.** These operations park in
+the VTC administrator action list (`vtc-action-list.md`) and run on the N-th
+approval:
+- creating a config;
+- changing its settings or credential;
+- assigning or migrating a room;
+- retiring a config.
+
+They decide where a community's files physically live, and a credential swap is
+the quiet way to redirect them. Single-administrator mode (VTI-APV-022) waives
+the consent on its usual terms: the requester's bound step-up and a `Critical`
+audit row.
+
+**Least privilege at the backend**, which the console checks and warns about
+when it can:
+- An S3 credential or role should be scoped to `PutObject`, `GetObject` and
+  `DeleteObject` on the config's bucket and prefix. No `ListBucket` beyond the
+  prefix, no ACL or policy actions, nothing on other buckets.
+- A Walrus signer's address should hold only enough WAL and SUI for a few epochs
+  of extensions. A low balance is a console warning, not a reason to hold more.
+
+**What this does and does not protect against.** Say it exactly; it is the
+question an auditor will ask.
+
+- **Does:** every administrator, through every surface the VTC offers:
+  console, Trust Tasks, CLI, backups, logs, audit rows, telemetry. However many
+  administrators there are, and whatever roles they hold, none of these returns
+  the secret.
+- **Does not:** whoever operates the machine. Root on the host, or read access
+  to the VTC's `vti-secrets` backend **and** its data directory together, can
+  reconstruct the secret, because the process must be able to use it. The VTC
+  has no TEE: TEE-KMS is a permanent VTC non-goal. Against the operator, the
+  defences are:
+  - the no-secret modes above;
+  - a `vti-secrets` backend whose access the operator's role does not include
+    (AWS Secrets Manager with an IAM boundary, for example);
+  - least privilege at the backend.
+
+  A deployment where "administrator" and "machine operator" are the same people
+  should read §7.4's first choice as the requirement, not a preference.
+
+### 7.5 Per-config facts the console shows
+
+For every config: kind, label, health (the last `BlobStore::health` probe and
+the last successful put, get and delete), rooms assigned, files, bytes,
+capacity, pending deletions, and credential state (`ambient`, `vta`,
+`set · fingerprint ab12…`, or `credential required`). On Walrus it also shows the
+signer address, its balance and the next extension due.
+
+---
+
+## 8. The experience
 
 Two surfaces, kept apart the way the console and the portal already are:
 **the console administers hosting, and the portal is where people use rooms.**
@@ -387,33 +632,54 @@ An administrator who is also a room member uses the portal for content, like
 everyone else. The VTC's console never holds a room key and never shows a record
 body.
 
-### 7.1 Admin console: the Data rooms plugin
+### 8.1 Admin console: the Data rooms plugin
 
 Extends `plugins/rooms.tsx`. Everything here is about **hosting**. None of it
 needs, or could use, room credentials.
 
-- **Rooms table** (exists): add a **storage** column, "1.2 / 5 GB · 312 files",
-  and a filter for rooms near their limit.
+- **Rooms table** (exists): add **storage config** and **usage** columns
+  ("eu-s3-primary · 1.2 / 5 GB · 312 files"), and filters for config and for
+  rooms near a limit.
 - **Room detail** (new, `/rooms/:roomId`):
   - **Identity**: room DID, owner DID, tier, created.
   - **Lifecycle**: epoch and expiry, lifecycle state, retention.
-  - **Storage**: bytes and files against limits, the largest blobs by size (sizes
-    only), orphans awaiting GC.
-  - **Activity**: counts per day of puts, reads and uploads. On `attributed`,
-    *which member* acted is visible here, because the host knows it. The page
-    says so in words, since that is the tier's actual privacy property.
-  - **Limits editor**: `vtc/rooms/limits/set`, with a reason, as an audited admin
-    act.
-- **Settings ▸ Blob storage** (new):
-  - **Backend status**: kind, health, bytes held, and on Walrus the wallet balance
-    and the next extension due.
-  - **Defaults and ceiling**: the default limits and the host-wide ceiling.
+  - **Storage**: the assigned config, and how many of the room's blobs still sit
+    on earlier configs. Bytes and files against the room's limits. The largest
+    blobs by size (sizes only), and orphans awaiting GC.
+  - **Members' usage** (`attributed` only): one row per member who has added
+    files (DID, files, bytes, against their limit), each with an **override**
+    action. It is not a membership roster: a member who has added nothing does not
+    appear, because the host has never seen them.
+  - **Activity**: counts per day of puts, reads, uploads, downloads and egress. On
+    `attributed`, *which member* acted is visible here, because the host knows it.
+    The page says so in words, since that is the tier's actual privacy property.
+  - **Actions**: edit limits (`vtc/rooms/limits/set`), reassign storage, migrate.
+    Each takes a reason, is audited, and the storage actions park for a second
+    administrator (§7.4).
+- **Storage** (new top-level page):
+  - **Configs**: a list with §7.5's facts. **New config** is a form per kind,
+    offering ambient (S3) or VTA signer (Walrus) first and a sealed credential
+    second. A credential is entered once, sealed in the browser, and shown
+    afterwards only as its fingerprint.
+  - **Config detail**: the rooms assigned, capacity against use, health
+    history, credential state, and **Replace credential**, **Drain**, **Retire**.
+  - **After a restore**: every config that needs its credential set again,
+    listed first.
+- **Usage** (new top-level page): the §6.3 reports.
+  - **Views**: totals by config, by room and by member. Top rooms by bytes and by
+    egress. 30, 90 and 365-day growth charts from `room_usage_daily`.
+  - **Export**: CSV.
+  - **Thresholds**: rooms and configs past 80 %, 95 % or 100 % of a limit.
+- **Settings ▸ Rooms**:
+  - **Default limits** at all three scopes, the default storage config, and the
+    host-wide ceiling.
   - **Who may create rooms**: the "who may create" card that exists, now showing
-    the limits the policy would return per tier.
-- **Never**: record titles, file names, a member list, or a download button. The
-  host does not have them, and the console must not imply that it does.
+    the limits and storage config the policy would return per tier.
+- **Never**: record titles, file names, file contents, a download button, or a
+  credential's value. The host does not have the first four, and nobody gets the
+  fifth (§7.4). The console must not imply otherwise.
 
-### 7.2 Member portal: Rooms
+### 8.2 Member portal: Rooms
 
 Builds on `/members` (`feat/vtc-member-portal`). Every room act goes through the
 member's wallet extension (§4.1) to their VTA. The portal holds no room
@@ -422,7 +688,8 @@ credentials and no group key.
 **My rooms.** Every room hosted by *this* VTC that the member holds credentials
 for, found from the VTA (`rooms/keys/list`), never from a server-side roster,
 which the host does not have. Each card shows tier, member since, last activity,
-unread count and storage used.
+unread count, and storage: the room's use against its limit, and **the member's
+own** use against theirs.
 
 **A room.** One page, three panes:
 
@@ -445,10 +712,12 @@ unread count and storage used.
   - **History**: versions, curation state and the epoch.
 - **Add.**
   - **Drop a file, or write a note.** A file shows its size against the room's
-    limit before anything happens.
+    limits before anything happens: the file against the per-file limit, and the
+    member's and the room's remaining space and file count. A file that would not
+    fit is refused here, naming the limit and who can raise it: the room's owner
+    for a member allowance, the community for the room.
   - **Upload**: encrypt with progress, resumable after a closed tab (§5.1's
     `begin` + `missing`), then the record put.
-  - **Over the limit**: the upload is refused up front, with the limit named.
   - **Notes**: written in markdown, sealed with `rooms/keys/seal`.
 
 **Curate**, for members whose chain grants `curate`: pin, deprecate, retract.
@@ -470,7 +739,7 @@ different thing from being an administrator of the VTC.
   else.
 - **Renew, transfer ownership, nominate a successor.**
 
-### 7.3 The extension's own manager
+### 8.3 The extension's own manager
 
 The plugin's manager panes (`manager/panes/rooms*.tsx`) get the same file
 browse, download and upload. A member then has a way to use a room that never
@@ -478,11 +747,13 @@ puts a file key in a web page. It costs little once §3.3's wasm is shared.
 
 ---
 
-## 8. What each party learns
+## 9. What each party learns
 
 | Party | Learns | Never learns |
 |---|---|---|
 | **Host (VTC)** | that a record has a file; blob sizes, counts and upload times; on `attributed`, which member uploaded or downloaded | file names, types, contents, plaintext digests |
+| **VTC administrators** (`vtc.rooms.admin`) | everything the host learns, as reports (§6.3): usage per room, per config and, on `attributed`, per member | everything the host never learns, **and storage credentials** (§7.4) |
+| **Whoever operates the machine** | can reconstruct a sealed storage credential (§7.4), and still cannot open a file | file contents, which need room keys the VTC never holds |
 | **Blob store** (local / S3) | ciphertext sizes and access times | anything room-shaped; it never sees a room ID, only `blobRef` paths |
 | **Walrus** | the same, **publicly and permanently** | the same |
 | **Member's VTA** | which files the member's pages and agents opened (it audits `file-key`) | file contents; bytes never pass through it |
@@ -502,7 +773,7 @@ wants it, belongs in the member's client after decryption.
 
 ---
 
-## 9. Specifications to land first
+## 10. Specifications to land first
 
 Everything below is a Trust Task specification change and lands in
 `dtgwg-trust-tasks-tf` first, reaching this workspace through a `trust-tasks-rs`
@@ -516,7 +787,11 @@ bump, per the workspace rule.
 | `rooms/blobs/upload/{begin,chunk,commit,abort}/0.1` | new; `chunk` declares `maxDocumentBytes.request` |
 | `rooms/blobs/{get,chunk}/0.1` | new; `chunk` declares `maxDocumentBytes.response` |
 | `rooms/keys/file-key/0.1` | new |
-| `vtc/rooms/limits/set/0.1`, `vtc/rooms/get/0.1` | new, VTC-only (admin detail) |
+| `rooms/usage/0.1` | new: per-member usage for a room's `admin` chain |
+| `vtc/rooms/get/0.1`, `vtc/rooms/limits/set/0.1`, `vtc/rooms/usage/0.1` | new, VTC-only: room detail, limit overrides at all three scopes, usage reports |
+| `vtc/storage/configs/{list,get,create,update,retire}/0.1` | new, VTC-only: storage configs (§7.1) |
+| `vtc/storage/credentials/set/0.1` | new, VTC-only. The payload is a `sealed_transfer` armor block; the response is the fingerprint. **No get or list task returns a value** |
+| `vtc/rooms/storage/{assign,migrate}/0.1` | new, VTC-only (§7.3) |
 | the sealed body's `file` member | documented in the rooms spec's sealed-body section; it is client-to-client, so the host's schemas never see it |
 
 `vti-rooms`'s hand-written wire types follow with conformance tests, as the
@@ -524,9 +799,9 @@ existing ones do.
 
 ---
 
-## 10. Prerequisites
+## 11. Prerequisites
 
-Two gaps from guide §2 block the owner half of §7.2 and are worth closing first
+Two gaps from guide §2 block the owner half of §8.2 and are worth closing first
 on their own merit:
 
 - **The owner's MLS half as VTA tasks.** `RoomGroup::{create, add_member,
@@ -539,41 +814,49 @@ on their own merit:
 
 ---
 
-## 11. Phases
+## 12. Phases
 
 | # | Phase | Size | Depends on |
 |---|---|---|---|
-| P0 | Owner MLS tasks + `pnm rooms owner …` + sealed `put` (§10) | L | — |
-| P1 | Specs (§9) | M | — |
+| P0 | Owner MLS tasks + `pnm rooms owner …` + sealed `put` (§11) | L | — |
+| P1 | Specs (§10) | M | — |
 | P2 | `vti-rooms::files`: KDF, STREAM, manifest; wasm build; test vectors | M | P1 |
 | P3 | `BlobStore` trait in `vti-common`; local + S3 via `object_store`; conformance suite | M | — |
-| P4 | Host: `room_blobs`, upload/download tasks, `size.rs` bundle gate, limits, GC sweeper. In **both** `vtc-service` and `room-host` | L | P1, P3 |
-| P5 | VTA `rooms/keys/file-key`; `pnm rooms file {put,get}` | M | P2 |
-| P6 | Extension: page allow-list + per-room consent (§4.1); manager-pane files (§7.3) | M | P5 |
-| P7 | Member portal Rooms (§7.2), members first, owners after P0 | XL | P4, P6, member portal merged |
-| P8 | Console: room detail, storage, limits, blob settings (§7.1) | M | P4 |
-| P9 | Walrus backend, with epoch extension in the sweeper | M | P3, P4 |
-| P10 | Direct-to-store presigned transfer (§5.2), if measurements ask for it | M | P4 |
+| P4 | Storage configs and credentials (§7): config store, sealed write-only credentials, `EXCLUDED_FROM_BACKUP`, ambient S3, action-list consent for storage changes, `vtc.rooms.admin` | L | P3 |
+| P5 | Host: `room_blobs`, upload/download tasks, `size.rs` bundle gate, limits at three scopes with reservations, usage counters, GC sweeper. In **both** `vtc-service` and `room-host` (one config, set from its command line) | L | P1, P3, P4 |
+| P6 | VTA `rooms/keys/file-key`; `pnm rooms file {put,get}` | M | P2 |
+| P7 | Extension: page allow-list + per-room consent (§4.1); manager-pane files (§8.3) | M | P6 |
+| P8 | Member portal Rooms (§8.2), members first, owners after P0 | XL | P5, P7, member portal merged |
+| P9 | Console: room detail, Storage, Usage, Settings (§8.1); `room_usage_daily` history and CSV | L | P4, P5 |
+| P10 | Room storage reassignment and migration (§7.3) | M | P5 |
+| P11 | Walrus backend: VTA signer (after the §7.4 check) or sealed credential, epoch extension in the sweeper | M | P3, P4, P5 |
+| P12 | Direct-to-store presigned transfer (§5.2), if measurements ask for it | M | P5 |
 
-P2, P3 and P0 run in parallel. A member can upload and download a file from the
-CLI after P5, and from the portal after P7.
+P0, P2 and P3 run in parallel, and P4 follows P3. A member can upload and
+download a file from the CLI after P6, and from the portal after P8.
 
 ---
 
-## 12. Open
+## 13. Open
 
-1. **Walrus payment and custody.** Whose Sui wallet pays, how it is funded, and
-   whether its key belongs in `vti-secrets`. An operator decision with a default
-   to propose; it blocks P9 and nothing earlier.
-2. **Several files per record.** The wire allows it (`blobs` is an array). The
+1. **Walrus payment.** How the signer address is funded, by whom, and what the
+   console does as the balance runs low. Custody is settled (§7.4: the VTA's key,
+   else a sealed credential); funding is an operator decision. It blocks P11 and
+   nothing earlier.
+2. **Rooms bringing their own storage.** A room owner who wants their files in
+   *their* bucket. §7.4's sealed credential already keeps it from the VTC's
+   administrators. What is open is whether the `rooms` policy should allow an
+   owner-supplied config and how its capacity is counted. Not proposed for the
+   first cut; nothing in §7 would need reshaping to add it.
+3. **Several files per record.** The wire allows it (`blobs` is an array). The
    sealed `file` member would become `files`. Decide from use.
-3. **Large-file streaming in the browser.** File System Access is Chromium-only.
+4. **Large-file streaming in the browser.** File System Access is Chromium-only.
    Firefox and Safari fall back to an in-memory `Blob`, which bounds a download by
    memory. A Service-Worker stream is the usual answer; worth it only if rooms
    routinely hold files over a few hundred MB.
-4. **`private` tier.** Nothing here is `private`-specific. Its upload attribution
+5. **`private` tier.** Nothing here is `private`-specific. Its upload attribution
    question is the same unsettled ZK binding as everything else on that tier.
-5. **Re-encrypting on removal.** Not proposed. Files sealed before a removal stay
+6. **Re-encrypting on removal.** Not proposed. Files sealed before a removal stay
    readable to whoever held their key then, exactly as records do. A room that
    needs more re-uploads under the new epoch, which is a client feature
    ("re-seal everything") rather than a protocol one.
