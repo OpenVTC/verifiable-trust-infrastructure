@@ -30,10 +30,10 @@ Settled with the product owner on 2026-10-10. Not to be re-litigated here.
 
 | | Decision |
 |---|---|
-| **Where blobs live** | **Pluggable.** Three backends: a **local directory** of plain files, **S3-compatible** object storage, and **[Walrus](https://github.com/MystenLabs/walrus)**. |
+| **Where blobs live** | **Pluggable.** Four backends: a **local directory** of plain files, **S3-compatible** object storage, **Google Cloud Storage**, and **[Walrus](https://github.com/MystenLabs/walrus)**. A VTC may run anywhere, not only inside the cloud it stores to. |
 | **How storage is organised** | **Named storage configs, as many as the VTC wants.** Each is one backend with its own account and credentials. **Every room is assigned to one config, and one config serves any number of rooms.** Some rooms can sit on one AWS account, others on a second, others on Walrus. |
 | **How much a room can hold** | **Limits set by the hosting VTC, at three scopes:** the room, each member in the room, and each object. Each scope measures **file count, file size and total size.** None of it is a protocol constant. **Usage is reported** at every scope. |
-| **Storage credentials** | **Usable by the VTC, unrecoverable by its administrators.** An S3 secret key or a Walrus wallet key can be set and replaced through the console, never read back, never exported and never in a backup. A community has several administrators, and none of them can take the keys home. |
+| **Storage credentials** | **Usable by the VTC, unrecoverable by its administrators.** An S3 secret key or a Walrus wallet key can be set and replaced through the console, never read back, never exported and never in a backup. A community has several administrators, and none of them can take the keys home. **Preferably there is no stored key at all:** cloud identity where the VTC runs on AWS or GCP, and **federation** (the VTC as an OIDC issuer to AWS STS and GCP Workload Identity) where it runs anywhere else. |
 | **Who holds the room keys when a member uses the portal** | **The member's VTA.** The VTA keeps the MLS group, as it does today. For a file, it releases **that file's key only**, through the wallet extension. The browser encrypts and decrypts the bytes. File bytes never pass through the VTA, and the group's storage key never reaches the browser. |
 
 ---
@@ -268,12 +268,15 @@ id, and every blob operation looks its store up by the blob's own `configId`.
 | Backend | Built on | Notes |
 |---|---|---|
 | **Local directory** | `object_store`'s `LocalFileSystem` | Plain files, `<root>/<aa>/<bb>/<blobRef>`, created owner-only. The default. **Not** in the VTC backup (§5.6) |
-| **S3-compatible** | `object_store`'s `AmazonS3` | AWS, R2, MinIO, B2. Server-side encryption on top is harmless and optional; the bytes are already ciphertext. Credentials are ambient or sealed (§7.4) |
+| **S3-compatible** | `object_store`'s `AmazonS3` | AWS, R2, MinIO, B2. Server-side encryption on top is harmless and optional; the bytes are already ciphertext. Credentials are ambient, federated or sealed (§7.4) |
+| **Google Cloud Storage** | `object_store`'s `GoogleCloudStorage` | Native GCS, not GCS's S3-interoperability mode, which needs static HMAC keys. Credentials are ambient, federated or sealed (§7.4) |
 | **Walrus** | HTTP to a **publisher** (write) and an **aggregator** (read) | §5.4 |
 
 Use the [`object_store`](https://crates.io/crates/object_store) crate for the
-first two, not `aws-sdk-s3`. It is one crate for local, S3, GCS and Azure, so the
-next two backends cost configuration rather than code. It is also the crate the
+first three, not `aws-sdk-s3` and `google-cloud-storage`. It is one crate for
+local, S3, GCS and Azure, so a later Azure backend costs configuration rather
+than code. It takes a custom `CredentialProvider`, which is where §7.5's
+federated credentials plug in. It is also the crate the
 Arrow ecosystem maintains. Check it against `cargo-deny` before adopting it.
 
 ### 5.4 Walrus
@@ -473,7 +476,7 @@ storage_configs:<configId>  →  { id: "eu-s3-primary", label: "EU — S3 (main 
 ```
 
 - **As many configs as the community wants.** Two AWS accounts, an R2 bucket and
-  a Walrus publisher are four configs. Each has its own `BlobStore` instance (§5.3),
+  a Walrus publisher are four configs, and a GCS bucket makes five. Each has its own `BlobStore` instance (§5.3),
   built when the config is activated and rebuilt when its settings or credential
   change.
 - **Settings per kind**, none of them secret:
@@ -481,7 +484,13 @@ storage_configs:<configId>  →  { id: "eu-s3-primary", label: "EU — S3 (main 
   - **s3**:
     - `endpoint`, `region`, `bucket`, an optional `prefix`;
     - `pathStyle` for MinIO;
-    - the auth mode: `ambient` or `credential`, see §7.4.
+    - the auth mode: `ambient`, `federated` (with `roleArn`) or `credential`,
+      see §7.4.
+  - **gcs**:
+    - `bucket`, an optional `prefix`;
+    - the auth mode: `ambient`, `federated` (with the
+      `workloadIdentityProvider` resource name and an optional `serviceAccount`
+      to impersonate) or `credential`, see §7.4.
   - **walrus**:
     - `publisherUrl` and `aggregatorUrl`;
     - `epochs` to buy and `extendBeforeEpochs`;
@@ -536,33 +545,45 @@ with what each kind means for the room in one line each:
 The requirement: the blob subsystem can use an S3 secret key or a Walrus signing
 key, while **no administrator, however many there are, can get one back.**
 
-**First choice: hold no secret at all.**
+**First choice: hold no secret at all.** Three ways, in order of preference.
 
-- **S3 with `auth: ambient`.** The VTC's runtime identity is the credential:
-  - an EC2 instance profile;
-  - an EKS service account (IRSA or Pod Identity);
-  - ECS task roles;
-  - GCP or Azure workload identity behind an S3-compatible gateway.
+- **`ambient`: the VTC runs inside the cloud it stores to.** Its runtime
+  identity is the credential:
+  - AWS: an EC2 instance profile, an EKS service account (IRSA or Pod Identity),
+    or an ECS task role;
+  - GCP: the attached service account on GCE, GKE (Workload Identity) or Cloud Run.
 
-  The config names the bucket and, optionally, a role to assume. There is no key
-  to recover because there is no key. **This is the recommended mode** and the
-  console offers it first.
+  The config names the bucket and nothing else. There is no key to recover
+  because there is no key.
+- **`federated`: the VTC runs anywhere else** (another cloud, a colo, a laptop
+  demo). It proves who it is to AWS or GCP with a short-lived token it signs
+  itself, and gets back cloud credentials that expire within the hour. Nothing
+  long-lived is stored, and nothing an administrator could carry away works for
+  more than minutes. §7.5 describes it. **This is the recommended mode for any
+  VTC not running on the target cloud**, and the console offers it first.
 - **Walrus with `signer: vta`.** The Sui address that owns the community's blob
-  objects and pays for storage is a **key held in the community's VTA**, used
-  through its signing oracle, which never exports a key. Sui accepts secp256r1
-  (P-256) signatures, and the VTA already mints and signs with P-256 (ES256).
-  So the VTC asks the VTA to sign each storage transaction, and the key never
-  exists on the VTC at all. *To verify before P9:*
-  - the digest Sui's secp256r1 scheme signs (Blake2b intent digest, then
-    SHA-256 inside ECDSA) against what the oracle's ES256 signs;
-  - that the oracle can sign a caller-supplied digest without widening
-    what a `sign` grant means.
+  objects and pays for storage is a **P-256 key held in the community's VTA**,
+  which never exports a key. Sui accepts secp256r1 signatures. The VTA's general
+  oracle (`keys/sign`) **cannot** do this: it signs caller bytes only under its
+  opaque-signing domain prefix, so its output verifies as "a VTA opaque payload"
+  and as nothing else, Sui included. It needs a new protocol-defined task,
+  `keys/sign-sui-transaction/0.1`, built like `keys/sign-sshsig/0.1`:
+  - **The VTA builds what it signs.** It takes the transaction bytes, refuses
+    any that are not a Walrus storage call (register, certify, extend, delete)
+    against the configured system object, and builds the intent message itself.
+  - **It has its own narrow capability**, `sign-sui-walrus`, so the grant cannot
+    be stretched into a general Sui wallet.
+  - *To verify before P11:* that Sui's secp256r1 scheme (Blake2b-256 of the
+    intent message, then ECDSA with SHA-256 inside) is what the VTA's P-256
+    signer produces when given that digest.
 
-  If either fails, Walrus falls back to the sealed mode below.
+  If that check fails, Walrus falls back to the sealed mode below.
 
-**Otherwise: a sealed, write-only credential.** For static S3 access keys (R2,
-B2, MinIO, an account the VTC has no role in), and a Walrus key the community
-insists on supplying.
+**Otherwise: a sealed, write-only credential.** For stores that cannot federate:
+- static S3 access keys for R2, B2 and MinIO, none of which accept a foreign
+  OIDC issuer;
+- a GCP service-account key JSON, where the organisation still permits them;
+- a Walrus key the community insists on supplying.
 
 | Step | What happens |
 |---|---|
@@ -571,7 +592,7 @@ insists on supplying.
 | **Use** | The blob subsystem decrypts it into memory when building a `BlobStore`, holds it zeroize-on-drop, and never hands it to anything else. |
 | **Read back** | **There is no task, route, CLI verb or console view that returns it.** A credential is shown as `{ id, kind, fingerprint, last4, setBy, setAt, lastUsedOk }`. The fingerprint is SHA-256 over the secret, truncated, so two administrators can confirm they entered the same thing without seeing it. |
 | **Replace / revoke** | Write-only, like set. The old ciphertext is overwritten. Revoking a credential an active config uses puts that config in `draining` and refuses uploads to it. |
-| **Backup** | `storage_credentials` is in **`EXCLUDED_FROM_BACKUP`**. A VTC backup carries the VTC's signing key bundle, so an administrator holding a backup and its password could otherwise decrypt every stored credential. After a restore, each credential-backed config shows **"credential required"** until someone sets it again. Ambient and `vta` configs come back working. |
+| **Backup** | `storage_credentials` is in **`EXCLUDED_FROM_BACKUP`**. A VTC backup carries the VTC's signing key bundle, so an administrator holding a backup and its password could otherwise decrypt every stored credential. After a restore, each credential-backed config shows **"credential required"** until someone sets it again. Ambient, federated and `vta` configs come back working. |
 
 **Changing where data goes takes two administrators.** These operations park in
 the VTC administrator action list (`vtc-action-list.md`) and run on the N-th
@@ -614,12 +635,123 @@ question an auditor will ask.
   A deployment where "administrator" and "machine operator" are the same people
   should read §7.4's first choice as the requirement, not a preference.
 
-### 7.5 Per-config facts the console shows
+### 7.5 Federation: the VTC as an OIDC issuer
+
+AWS and GCP both trust tokens from an external OpenID Connect issuer, and
+exchange them for their own short-lived credentials:
+- **AWS**: an IAM OIDC identity provider plus `sts:AssumeRoleWithWebIdentity`;
+- **GCP**: a Workload Identity Federation pool and provider, the STS token
+  exchange, and optionally service-account impersonation.
+
+So the VTC becomes a minimal OIDC issuer, for this one purpose.
+
+```mermaid
+sequenceDiagram
+    participant V as VTC
+    participant A as Community VTA
+    participant C as AWS STS / GCP STS
+    participant B as Bucket
+
+    V->>A: keys/sign-oidc-token (configId, audience)
+    A-->>V: JWT, ES256, 5 min
+    V->>C: exchange the JWT
+    Note over C: fetches the VTC's JWKS once,<br/>checks iss / aud / sub against<br/>the trust policy
+    C-->>V: credentials, ≤ 1 h
+    V->>B: Put / Get / Delete
+```
+
+**The token.**
+
+```jsonc
+{ "iss": "https://vtc.northwind.example",              // the VTC's public origin
+  "sub": "storage:eu-s3-primary",                       // one subject per config
+  "aud": "sts.amazonaws.com",                           // or the GCP provider's audience
+  "iat": …, "exp": iat + 300, "jti": "…",
+  "vtc": "did:webvh:…" }                                // which community, for the cloud's audit log
+```
+
+ES256, because the VTA's keys are P-256 and both clouds accept it for OIDC
+federation. Confirm that against each cloud's current list of accepted
+algorithms in P4b, before anything depends on it.
+
+**One `sub` per config** is what keeps a role trusted for one bucket from being
+used for another. The trust policy pins `sub`, and every config gets its own
+role or pool provider.
+
+**Publishing the issuer.**
+- The VTC serves `/.well-known/openid-configuration` and
+  `/.well-known/jwks.json` at its public origin, over HTTPS with a publicly
+  trusted certificate, because AWS and GCP fetch them.
+- Both are unauthenticated GETs of public material. They join the VTC's
+  `REST_EXCEPTIONS` as the foreign-protocol interface they are, beside
+  `/.well-known/did.jsonl`, each with a row naming why.
+- A VTC that is not publicly reachable can publish the two documents as static
+  files anywhere HTTPS-reachable (a public bucket, a CDN) and name that origin
+  as `iss`. They contain only public keys.
+
+**Where the signing key lives.**
+- **In the community's VTA.** The key is a P-256 key, used through a new
+  protocol-defined task, `keys/sign-oidc-token/0.1`. As with the Sui task, the
+  VTA builds the JWS signing input itself from validated claims:
+  - `iss` must be the configured issuer;
+  - `aud` must be in an allow-list;
+  - `exp` is at most 15 minutes away.
+
+  It has its own capability, `sign-oidc-token`, and never signs a caller's
+  bytes. The VTA audits every token it mints. **The VTC host never holds the
+  key**, so neither an administrator nor the machine's operator can mint tokens
+  except through a live, audited VTA.
+- **Fallback, for a VTC without a runtime VTA link:** a dedicated federation
+  key, generated on the VTC and kept like a sealed credential (§7.4), never
+  exported or backed up. It is still far better than a static cloud key:
+  - it confers nothing on its own;
+  - the cloud's trust policy bounds what it can reach;
+  - tokens last five minutes;
+  - rotating it is publishing a new JWKS.
+
+**Key rotation.** The JWKS publishes the current key and the next one, each with
+its `kid`. Rotation signs with the next and retires the old after the clouds'
+JWKS cache window: AWS and GCP both re-fetch within hours. Rotation needs
+nothing on the cloud side.
+
+**Setting it up once, per config.** The console generates the cloud-side
+configuration verbatim, in the spirit of "operator errors should suggest the
+fix". An administrator pastes it into their AWS or GCP account; the VTC never
+asks for cloud-admin credentials.
+- **AWS**:
+  - the `aws iam create-open-id-connect-provider` command for the issuer;
+  - a role whose trust policy conditions on `aud` and `sub`;
+  - a permissions policy limited to `s3:PutObject`, `GetObject` and
+    `DeleteObject` on `arn:aws:s3:::<bucket>/<prefix>*`.
+- **GCP**:
+  - the `gcloud iam workload-identity-pools create` and `providers create-oidc`
+    commands, with an attribute condition on `assertion.sub`;
+  - the `roles/storage.objectUser` binding on the bucket, for the pool principal
+    or the impersonated service account.
+
+**Check, then save.** Creating a federated config runs a **probe** before it
+parks for the second administrator: mint, exchange, then put, get and delete a
+canary object under the prefix. The console shows which step failed and the
+cloud's own error, since a wrong `sub` condition reads as an opaque
+`AccessDenied` otherwise.
+
+**At runtime** the `CredentialProvider` (§5.3) caches the cloud credentials and
+re-exchanges five minutes before expiry. A failed exchange marks the config
+unhealthy on the console and the live channel, and uploads to it are refused
+with that reason rather than timing out.
+
+**Azure** federates the same way (a federated identity credential on an app
+registration). An Azure Blob backend later is configuration plus this exchange,
+not a new design.
+
+### 7.6 Per-config facts the console shows
 
 For every config: kind, label, health (the last `BlobStore::health` probe and
 the last successful put, get and delete), rooms assigned, files, bytes,
-capacity, pending deletions, and credential state (`ambient`, `vta`,
-`set · fingerprint ab12…`, or `credential required`). On Walrus it also shows the
+capacity, pending deletions, and credential state (`ambient`, `federated ·
+expires in 42 min`, `vta`, `set · fingerprint ab12…`, or `credential required`).
+For a federated config it also shows the issuer, the `sub`, the last exchange
+and the generated cloud-side setup, ready to copy again. On Walrus it also shows the
 signer address, its balance and the next extension due.
 
 ---
@@ -657,9 +789,9 @@ needs, or could use, room credentials.
     Each takes a reason, is audited, and the storage actions park for a second
     administrator (§7.4).
 - **Storage** (new top-level page):
-  - **Configs**: a list with §7.5's facts. **New config** is a form per kind,
-    offering ambient (S3) or VTA signer (Walrus) first and a sealed credential
-    second. A credential is entered once, sealed in the browser, and shown
+  - **Configs**: a list with §7.6's facts. **New config** is a form per kind.
+    It offers no-secret modes first (ambient, then federated with its generated
+    cloud setup, or the VTA signer for Walrus) and a sealed credential last. A credential is entered once, sealed in the browser, and shown
     afterwards only as its fingerprint.
   - **Config detail**: the rooms assigned, capacity against use, health
     history, credential state, and **Replace credential**, **Drain**, **Retire**.
@@ -753,7 +885,7 @@ puts a file key in a web page. It costs little once §3.3's wasm is shared.
 |---|---|---|
 | **Host (VTC)** | that a record has a file; blob sizes, counts and upload times; on `attributed`, which member uploaded or downloaded | file names, types, contents, plaintext digests |
 | **VTC administrators** (`vtc.rooms.admin`) | everything the host learns, as reports (§6.3): usage per room, per config and, on `attributed`, per member | everything the host never learns, **and storage credentials** (§7.4) |
-| **Whoever operates the machine** | can reconstruct a sealed storage credential (§7.4), and still cannot open a file | file contents, which need room keys the VTC never holds |
+| **Whoever operates the machine** | can reconstruct a **sealed** storage credential (§7.4), and use an ambient identity while on the box. A federated config whose key is in the VTA, and the Walrus VTA signer, leave nothing on the machine to take. In every case they still cannot open a file | file contents, which need room keys the VTC never holds |
 | **Blob store** (local / S3) | ciphertext sizes and access times | anything room-shaped; it never sees a room ID, only `blobRef` paths |
 | **Walrus** | the same, **publicly and permanently** | the same |
 | **Member's VTA** | which files the member's pages and agents opened (it audits `file-key`) | file contents; bytes never pass through it |
@@ -792,6 +924,9 @@ bump, per the workspace rule.
 | `vtc/storage/configs/{list,get,create,update,retire}/0.1` | new, VTC-only: storage configs (§7.1) |
 | `vtc/storage/credentials/set/0.1` | new, VTC-only. The payload is a `sealed_transfer` armor block; the response is the fingerprint. **No get or list task returns a value** |
 | `vtc/rooms/storage/{assign,migrate}/0.1` | new, VTC-only (§7.3) |
+| `vtc/storage/configs/probe/0.1` | new, VTC-only: the mint → exchange → canary check of §7.5 |
+| `keys/sign-oidc-token/0.1` | new, **VTA**: protocol-defined JWS for federation (§7.5), capability `sign-oidc-token` |
+| `keys/sign-sui-transaction/0.1` | new, **VTA**: Walrus storage transactions only (§7.4), capability `sign-sui-walrus` |
 | the sealed body's `file` member | documented in the rooms spec's sealed-body section; it is client-to-client, so the host's schemas never see it |
 
 `vti-rooms`'s hand-written wire types follow with conformance tests, as the
@@ -821,18 +956,19 @@ on their own merit:
 | P0 | Owner MLS tasks + `pnm rooms owner …` + sealed `put` (§11) | L | — |
 | P1 | Specs (§10) | M | — |
 | P2 | `vti-rooms::files`: KDF, STREAM, manifest; wasm build; test vectors | M | P1 |
-| P3 | `BlobStore` trait in `vti-common`; local + S3 via `object_store`; conformance suite | M | — |
+| P3 | `BlobStore` trait in `vti-common`; local, S3 and GCS via `object_store`; conformance suite | M | — |
 | P4 | Storage configs and credentials (§7): config store, sealed write-only credentials, `EXCLUDED_FROM_BACKUP`, ambient S3, action-list consent for storage changes, `vtc.rooms.admin` | L | P3 |
+| P4b | Federation (§7.5): OIDC discovery and JWKS on the VTC, `keys/sign-oidc-token` on the VTA, AWS and GCP STS exchange as `object_store` credential providers, generated cloud-side setup, the probe | L | P4 |
 | P5 | Host: `room_blobs`, upload/download tasks, `size.rs` bundle gate, limits at three scopes with reservations, usage counters, GC sweeper. In **both** `vtc-service` and `room-host` (one config, set from its command line) | L | P1, P3, P4 |
 | P6 | VTA `rooms/keys/file-key`; `pnm rooms file {put,get}` | M | P2 |
 | P7 | Extension: page allow-list + per-room consent (§4.1); manager-pane files (§8.3) | M | P6 |
 | P8 | Member portal Rooms (§8.2), members first, owners after P0 | XL | P5, P7, member portal merged |
 | P9 | Console: room detail, Storage, Usage, Settings (§8.1); `room_usage_daily` history and CSV | L | P4, P5 |
 | P10 | Room storage reassignment and migration (§7.3) | M | P5 |
-| P11 | Walrus backend: VTA signer (after the §7.4 check) or sealed credential, epoch extension in the sweeper | M | P3, P4, P5 |
+| P11 | Walrus backend: `keys/sign-sui-transaction` on the VTA (after the §7.4 check) or a sealed credential, epoch extension in the sweeper | L | P3, P4, P5 |
 | P12 | Direct-to-store presigned transfer (§5.2), if measurements ask for it | M | P5 |
 
-P0, P2 and P3 run in parallel, and P4 follows P3. A member can upload and
+P0, P2 and P3 run in parallel; P4 follows P3, and P4b follows P4. A member can upload and
 download a file from the CLI after P6, and from the portal after P8.
 
 ---
@@ -843,20 +979,27 @@ download a file from the CLI after P6, and from the portal after P8.
    console does as the balance runs low. Custody is settled (§7.4: the VTA's key,
    else a sealed credential); funding is an operator decision. It blocks P11 and
    nothing earlier.
-2. **Rooms bringing their own storage.** A room owner who wants their files in
+2. **The VTC's runtime link to its VTA.** §7.5 and §7.4's Walrus signer both
+   want the VTC to call its community VTA at runtime, as an integration with a
+   narrow ACL entry (`sign-oidc-token`, `sign-sui-walrus`). A VTC is
+   provisioned from a VTA today, and `vta_did` is in its config, but whether it
+   holds a live session to it is a deployment fact rather than a guarantee.
+   Where it does not, §7.5's local fallback key applies. Decide whether a VTC
+   that hosts rooms should be required to keep one.
+3. **Rooms bringing their own storage.** A room owner who wants their files in
    *their* bucket. §7.4's sealed credential already keeps it from the VTC's
    administrators. What is open is whether the `rooms` policy should allow an
    owner-supplied config and how its capacity is counted. Not proposed for the
    first cut; nothing in §7 would need reshaping to add it.
-3. **Several files per record.** The wire allows it (`blobs` is an array). The
+4. **Several files per record.** The wire allows it (`blobs` is an array). The
    sealed `file` member would become `files`. Decide from use.
-4. **Large-file streaming in the browser.** File System Access is Chromium-only.
+5. **Large-file streaming in the browser.** File System Access is Chromium-only.
    Firefox and Safari fall back to an in-memory `Blob`, which bounds a download by
    memory. A Service-Worker stream is the usual answer; worth it only if rooms
    routinely hold files over a few hundred MB.
-5. **`private` tier.** Nothing here is `private`-specific. Its upload attribution
+6. **`private` tier.** Nothing here is `private`-specific. Its upload attribution
    question is the same unsettled ZK binding as everything else on that tier.
-6. **Re-encrypting on removal.** Not proposed. Files sealed before a removal stay
+7. **Re-encrypting on removal.** Not proposed. Files sealed before a removal stay
    readable to whoever held their key then, exactly as records do. A room that
    needs more re-uploads under the new epoch, which is a client feature
    ("re-seal everything") rather than a protocol one.
