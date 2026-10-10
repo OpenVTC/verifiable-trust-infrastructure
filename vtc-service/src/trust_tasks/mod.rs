@@ -513,9 +513,8 @@ async fn dispatch_trust_task_validated(
     }
 
     // 2d. The `auth/oob` family's signer must be an Ed25519 `did:key`, decided
-    //     from the identifier before any proof is read (T21), and it requires
-    //     `proof` and `recipient` — rules `spec_policy_for` cannot state yet,
-    //     since `trust-tasks-rs` has not published these specifications.
+    //     from the identifier before any proof is read (T21) — a rule its
+    //     specifications state in prose, which `spec_policy_for` cannot carry.
     if let Some(refused) = oob_tasks::precheck(&doc, &type_uri) {
         return refused;
     }
@@ -2162,11 +2161,8 @@ mod spine_proof_tests {
         let mut unexplained = Vec::new();
         let mut stale = Vec::new();
         for &uri in &dispatched {
-            // `auth/oob/*` is dispatched ahead of its publication; until then
-            // `oob_tasks::precheck` holds its proof requirement.
             let required = trust_tasks_rs::schema_index::spec_policy_for(uri)
-                .is_some_and(|p| p.is_proof_required)
-                || oob_tasks::URIS.contains(&uri);
+                .is_some_and(|p| p.is_proof_required);
             let allow_listed = DISPATCHED_WITHOUT_PROOF.iter().any(|&(u, _)| u == uri);
             match (required, allow_listed) {
                 (false, false) => unexplained.push(uri),
@@ -5789,19 +5785,6 @@ mod tests {
     #[test]
     fn dispatcher_routes_every_dispatched_uri() {
         for uri in DISPATCHED_URIS {
-            // The one counted exception: `auth/oob/*`, bound ahead of its
-            // specification (authored in parallel against the sign-in
-            // trigger-link contract). `oob_tasks::precheck` holds the proof,
-            // recipient and key rules the policy would. The day the registry
-            // publishes them this arm fails, and the exception goes.
-            if oob_tasks::URIS.contains(uri) {
-                assert!(
-                    trust_tasks_rs::schema_index::spec_policy_for(uri).is_none(),
-                    "`{uri}` is now published: drop the auth/oob exception here and \
-                     in `oob_tasks::precheck`, and swap the local types for the generated ones"
-                );
-                continue;
-            }
             assert!(
                 trust_tasks_rs::schema_index::spec_policy_for(uri).is_some(),
                 "`{uri}` is dispatched but the spec registry has no policy for it — either it \

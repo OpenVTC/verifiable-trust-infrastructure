@@ -65,7 +65,6 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use trust_tasks_rs::TypeUri;
@@ -115,66 +114,22 @@ const ENVELOPE_MEMBERS: &[&str] = &[
 /// `wire:` rows.
 const GRANT_REPLAY_PREFIX: &str = "oob-grant:";
 
-// ─── Local wire types ───────────────────────────────────────────────────────
+// ─── Wire types ─────────────────────────────────────────────────────────────
 
-/// `auth/oob/identify/0.1` payload — base design §10, contract C5.
-// TODO: replace with generated trust-tasks types once `auth/oob` publishes.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct IdentifyPayload {
-    /// The service's request id (16 random bytes, base64url: 22 characters).
-    pub request_id: String,
-    /// The wallet's throwaway key `K_a` that holds the request's lock.
-    pub approver_key: String,
-    /// The two-digit number the member typed, as a string so `07` survives.
-    pub entered_number: String,
-}
-
-/// `auth/oob/grant/0.1` payload — base design §10, contract C5.
-// TODO: replace with generated trust-tasks types once `auth/oob` publishes.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GrantPayload {
-    pub request_id: String,
-    /// `approve` or `decline`.
-    pub decision: GrantDecision,
-    /// The browser's key `K_b` the grant lets act as the member.
-    pub session_key: String,
-    /// `K_a`, the lock.
-    pub approver_key: String,
-    /// The portal origin the session is for.
-    pub origin: String,
-    /// SHA-256 of the JCS-canonical signed step 2 response, as a sha2-256
-    /// multihash in multibase — `z…` normally; `u…` and `f…` (hex) are also
-    /// read (contract C9).
-    pub context_digest: String,
-    /// The session ends no later than this: integer epoch seconds (contract
-    /// C9), or an RFC 3339 timestamp, which readers also accept.
-    pub not_after: Value,
-}
-
-impl GrantPayload {
-    /// `notAfter` as an instant, whichever of its two spellings it uses.
-    pub fn not_after_instant(&self) -> Option<chrono::DateTime<chrono::Utc>> {
-        match &self.not_after {
-            Value::Number(n) => n
-                .as_i64()
-                .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0)),
-            Value::String(s) => chrono::DateTime::parse_from_rfc3339(s)
-                .ok()
-                .map(|t| t.with_timezone(&chrono::Utc)),
-            _ => None,
-        }
-    }
-}
-
+/// `auth/oob/grant/0.1` payload, generated from the specification.
+pub use trust_tasks_rs::specs::auth::oob::grant::v0_1::Payload as GrantPayload;
 /// The member's answer, as the grant states it.
-// TODO: replace with generated trust-tasks types once `auth/oob` publishes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum GrantDecision {
-    Approve,
-    Decline,
+pub use trust_tasks_rs::specs::auth::oob::grant::v0_1::PayloadDecision as GrantDecision;
+/// `auth/oob/identify/0.1` payload, generated from the specification. Its
+/// newtypes enforce the schema's patterns (`requestId`, `approverKey`,
+/// `enteredNumber`) when the payload is parsed.
+pub use trust_tasks_rs::specs::auth::oob::identify::v0_1::Payload as IdentifyPayload;
+
+/// `notAfter` as an instant: integer epoch seconds (contract C9).
+fn not_after_instant(p: &GrantPayload) -> Option<chrono::DateTime<chrono::Utc>> {
+    i64::try_from(p.not_after)
+        .ok()
+        .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
 }
 
 // ─── Outcome types ──────────────────────────────────────────────────────────
@@ -474,7 +429,7 @@ pub async fn authorize(
             let p: IdentifyPayload = serde_json::from_value(payload)
                 .map_err(|e| OobError::DocumentInvalid(format!("identify payload: {e}")))?;
             check_identify(&p)?;
-            (p.request_id, None)
+            (p.request_id.to_string(), None)
         }
         OobDocument::Grant => {
             let p: GrantPayload = serde_json::from_value(payload)
@@ -500,7 +455,7 @@ pub async fn authorize(
             if !deps.task_consent_ks.insert_if_absent(key, &marker).await? {
                 return Err(OobError::Replayed);
             }
-            (p.request_id, Some(uv))
+            (p.request_id.to_string(), Some(uv))
         }
     };
 
@@ -541,19 +496,12 @@ fn is_ed25519_did_key(s: &str) -> bool {
         })
 }
 
-/// `https://host[:port]` (or `http://localhost…` for development), with no path.
+/// `https://host[:port]`, with no path, query, fragment or userinfo. The
+/// generated `Origin` already requires `https://` and no `/?#` (auth/oob/grant
+/// 0.1); this adds the userinfo and space refusals the pattern leaves open.
 fn is_web_origin(s: &str) -> bool {
-    let rest = if let Some(r) = s.strip_prefix("https://") {
-        r
-    } else if let Some(r) = s.strip_prefix("http://") {
-        if !(r == "localhost" || r.starts_with("localhost:") || r.starts_with("127.0.0.1")) {
-            return false;
-        }
-        r
-    } else {
-        return false;
-    };
-    !rest.is_empty() && !rest.contains(['/', '?', '#', '@', ' '])
+    s.strip_prefix("https://")
+        .is_some_and(|rest| !rest.is_empty() && !rest.contains(['/', '?', '#', '@', ' ']))
 }
 
 fn check_identify(p: &IdentifyPayload) -> Result<(), OobError> {
@@ -587,12 +535,12 @@ fn check_grant(p: &GrantPayload, now: chrono::DateTime<chrono::Utc>) -> Result<(
         return invalid("approverKey must be an Ed25519 did:key");
     }
     if !is_web_origin(&p.origin) {
-        return invalid("origin must be an https origin with no path");
+        return invalid("origin must be an https origin with no path or userinfo");
     }
     if sha256_from_digest_multibase(&p.context_digest).is_none() {
         return invalid("contextDigest must be a sha2-256 multihash in multibase");
     }
-    match p.not_after_instant() {
+    match not_after_instant(p) {
         Some(t) if t > now => Ok(()),
         Some(_) => invalid("notAfter is in the past"),
         None => invalid("notAfter must be integer epoch seconds"),
@@ -1057,7 +1005,8 @@ mod tests {
     fn web_origins_are_bare() {
         assert!(is_web_origin("https://portal.example"));
         assert!(is_web_origin("https://portal.example:8443"));
-        assert!(is_web_origin("http://localhost:5173"));
+        assert!(!is_web_origin("http://localhost:5173"));
+        assert!(!is_web_origin("https://user@portal.example"));
         assert!(!is_web_origin("http://portal.example"));
         assert!(!is_web_origin("https://portal.example/members"));
         assert!(!is_web_origin("chrome-extension://abc"));
