@@ -245,6 +245,10 @@ are implementer-facing rather than operator-facing.
 - **[Data rooms — files and the VTC experience](05-design-notes/data-rooms-files.md)** —
   encrypted file attachments in a pluggable blob store (local, S3, Walrus), per-room
   limits set by the hosting VTC, and the console and member-portal surfaces. Proposal.
+- **[The VTA as key authority for cloud and third-party accounts](05-design-notes/vta-external-accounts.md)** —
+  external accounts (AWS Roles Anywhere, GCP Workload Identity with pinned keys, presigned
+  S3, Sui signing) used by integrations through short-lived, downscoped, sealed credentials,
+  managed over Trust Tasks with consent from approvers' own DIDs. Proposal.
 - **[Data rooms — epoch anchoring](05-design-notes/data-rooms-epoch-anchoring.md)** —
   the one open *decision* in the rooms design: §9 says a renewal anchors the MLS
   epoch authenticator and version watermark in the room's witnessed log, but not
