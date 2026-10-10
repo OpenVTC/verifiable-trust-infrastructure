@@ -14,6 +14,12 @@
 //!
 //! [w3c]: https://www.w3.org/TR/vc-bitstring-status-list/
 //!
+//! An SD-JWT-VC may instead reference an **IETF Token Status List**
+//! (`status.status_list = { idx, uri }`, a `statuslist+jwt`). That is read
+//! through [`StatusListResolver::resolve_token_status`], verified as signed by
+//! the credential's own issuer (`vta_sdk::token_status_list`), and its entry —
+//! `VALID`, `INVALID` or `SUSPENDED` — drives the same stored status (#1988).
+//!
 //! ## Scope (deliberately holder-side only)
 //!
 //! This task is the *consumer* of issuer status. It does **not** stand up the
@@ -58,11 +64,12 @@ use vti_common::store::KeyspaceHandle;
 
 #[cfg(feature = "webvh")]
 use affinidi_status_list::DEFAULT_BITSTRING_SIZE;
+use affinidi_status_list::token::{StatusListReference, TokenStatus};
 use affinidi_status_list::{BitstringStatusList, StatusPurpose};
 #[cfg(feature = "webvh")]
 use vta_sdk::trust_task_proof::{PurposeVmResolver, TrustTaskVmResolver};
 
-use super::model::{CredentialStatus, StoredCredential};
+use super::model::{CredentialStatus, StoredCredential, TOKEN_STATUS_SUSPENDED_TAG};
 use super::storage;
 
 /// A status-list reference parsed out of a held credential's
@@ -227,6 +234,33 @@ impl StatusListResolver for HttpStatusListResolver {
             status_purpose,
         })
     }
+
+    /// Fetch the `statuslist+jwt` at `reference.uri` and read its entry, the
+    /// token verified as signed by `expected_issuer`
+    /// (`vta_sdk::token_status_list`). A credential with no recorded issuer has
+    /// no one to bind the list to, so its status cannot be read.
+    async fn resolve_token_status(
+        &self,
+        reference: &StatusListReference,
+        expected_issuer: Option<&str>,
+    ) -> Result<TokenStatus, AppError> {
+        let issuer = expected_issuer.ok_or_else(|| {
+            AppError::Validation(
+                "a Token Status List is trusted only as its credential issuer's, and this \
+                 credential records no issuer"
+                    .to_string(),
+            )
+        })?;
+        vta_sdk::token_status_list::resolve_token_status(
+            &self.http,
+            reference,
+            issuer,
+            &self.vm_resolver,
+            chrono::Utc::now().timestamp(),
+        )
+        .await
+        .map_err(|e| AppError::Validation(e.to_string()))
+    }
 }
 
 /// Verify a fetched `BitstringStatusListCredential`'s own issuer signature and,
@@ -310,6 +344,24 @@ pub trait StatusListResolver: Send + Sync {
         url: &str,
         expected_issuer: Option<&str>,
     ) -> Result<ResolvedStatusList, AppError>;
+
+    /// Read the entry an IETF Token Status List holds for `reference` — the
+    /// `status.status_list` an SD-JWT-VC carries.
+    ///
+    /// The same obligations as [`Self::resolve`]: the `statuslist+jwt` MUST be
+    /// verified as signed by `expected_issuer` before its entry is read. The
+    /// default refuses, so a resolver that predates Token Status Lists leaves
+    /// such a credential's stored status unchanged rather than guessing it.
+    async fn resolve_token_status(
+        &self,
+        reference: &StatusListReference,
+        expected_issuer: Option<&str>,
+    ) -> Result<TokenStatus, AppError> {
+        let _ = (reference, expected_issuer);
+        Err(AppError::Validation(
+            "this status resolver does not read IETF Token Status Lists".to_string(),
+        ))
+    }
 }
 
 /// Extract the `credentialStatus` `BitstringStatusListEntry` from a stored
@@ -525,6 +577,13 @@ pub async fn refresh_status<R: StatusListResolver + ?Sized>(
         return Ok(RefreshOutcome::NotTracked);
     }
 
+    if let Some(reference) = token_status_reference(&cred)? {
+        let status = resolver
+            .resolve_token_status(&reference, cred.issuer_did.as_deref())
+            .await?;
+        return apply_token_status(vault, cred, status).await;
+    }
+
     let Some(status_ref) = extract_status_ref(&cred)? else {
         return Ok(RefreshOutcome::NotTracked);
     };
@@ -588,6 +647,72 @@ pub async fn refresh_status<R: StatusListResolver + ?Sized>(
         previous,
         current: new_status,
     })
+}
+
+/// The IETF Token Status List reference a credential carries, when it carries
+/// one and no W3C `credentialStatus` (which [`extract_status_ref`] prefers).
+fn token_status_reference(
+    cred: &StoredCredential,
+) -> Result<Option<StatusListReference>, AppError> {
+    let payload = decode_body_to_json(&cred.body)?;
+    if payload.get("credentialStatus").is_some() {
+        return Ok(None);
+    }
+    StatusListReference::from_claims(&payload)
+        .map_err(|e| AppError::Validation(format!("malformed status.status_list: {e}")))
+}
+
+/// Persist the status a Token Status List entry implies, and report it.
+async fn apply_token_status(
+    vault: &KeyspaceHandle,
+    mut cred: StoredCredential,
+    status: TokenStatus,
+) -> Result<RefreshOutcome, AppError> {
+    let previous = cred.status;
+    let was_suspended = cred.tags.contains_key(TOKEN_STATUS_SUSPENDED_TAG);
+    let (current, suspended) = next_token_status(previous, was_suspended, status);
+    if current != previous || suspended != was_suspended {
+        cred.status = current;
+        if suspended {
+            cred.tags
+                .insert(TOKEN_STATUS_SUSPENDED_TAG.to_string(), "true".to_string());
+        } else {
+            cred.tags.remove(TOKEN_STATUS_SUSPENDED_TAG);
+        }
+        storage::put(vault, &cred).await?;
+    }
+    Ok(RefreshOutcome::Refreshed { previous, current })
+}
+
+/// The status a Token Status List entry implies, and whether the credential is
+/// now held as suspended. Pure, so the rules are testable alone:
+///
+/// - `INVALID` → `Revoked`, terminal: a later `VALID` does not restore it.
+/// - `SUSPENDED` → `Revoked`, marked suspended, so a later `VALID` restores it.
+/// - `VALID` → `Valid`, except a revoked (not suspended) credential stays
+///   `Revoked` — a rolled-back list must not resurrect it — and a time-expired
+///   one stays `Expired`.
+/// - an application-specific or unregistered value → `Unknown`: its meaning
+///   cannot be read here, so the status is indeterminate (VTI-CRD-012), and the
+///   present gate, which takes only `Valid`, refuses it.
+fn next_token_status(
+    previous: CredentialStatus,
+    was_suspended: bool,
+    status: TokenStatus,
+) -> (CredentialStatus, bool) {
+    let revoked_for_good = previous == CredentialStatus::Revoked && !was_suspended;
+    match status {
+        TokenStatus::Invalid => (CredentialStatus::Revoked, false),
+        TokenStatus::Suspended if revoked_for_good => (CredentialStatus::Revoked, false),
+        TokenStatus::Suspended => (CredentialStatus::Revoked, true),
+        TokenStatus::Valid if revoked_for_good => (CredentialStatus::Revoked, false),
+        TokenStatus::Valid if previous == CredentialStatus::Expired => {
+            (CredentialStatus::Expired, false)
+        }
+        TokenStatus::Valid => (CredentialStatus::Valid, false),
+        _ if revoked_for_good => (CredentialStatus::Revoked, false),
+        _ => (CredentialStatus::Unknown, was_suspended),
+    }
 }
 
 /// Compute the new status from the prior status, the read bit, and the list's
@@ -1221,5 +1346,176 @@ mod tests {
             .expect_err("one bad proof refuses the list");
             assert!(matches!(err, AppError::Validation(_)), "{err:?}");
         }
+    }
+
+    // ---- IETF Token Status List (#1988) ---------------------------------
+
+    /// A held SD-JWT-VC referencing an IETF Token Status List at `idx`.
+    fn cred_with_token_status(id: &str, idx: u64) -> StoredCredential {
+        let body = serde_json::json!({
+            "vct": "https://validant.ai/credentials/IterationSeal",
+            "iss": "did:web:issuer.example",
+            "status": { "status_list": { "idx": idx, "uri": "https://issuer.example/sl/1" } },
+        });
+        let mut c = cred_with_status(id, 0, "revocation");
+        c.body = serde_json::to_vec(&body).unwrap();
+        c.status = CredentialStatus::Unknown;
+        c
+    }
+
+    /// Answers every Token Status List read with the next scripted status, and
+    /// records the reference and issuer it was asked about.
+    struct TokenResolver {
+        statuses: std::sync::Mutex<Vec<TokenStatus>>,
+        asked: std::sync::Mutex<Vec<(StatusListReference, Option<String>)>>,
+    }
+
+    impl TokenResolver {
+        fn scripted(mut statuses: Vec<TokenStatus>) -> Self {
+            statuses.reverse();
+            Self {
+                statuses: std::sync::Mutex::new(statuses),
+                asked: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StatusListResolver for TokenResolver {
+        async fn resolve(
+            &self,
+            _url: &str,
+            _expected_issuer: Option<&str>,
+        ) -> Result<ResolvedStatusList, AppError> {
+            panic!("a Token Status List reference must not be read as a Bitstring list")
+        }
+
+        async fn resolve_token_status(
+            &self,
+            reference: &StatusListReference,
+            expected_issuer: Option<&str>,
+        ) -> Result<TokenStatus, AppError> {
+            self.asked
+                .lock()
+                .unwrap()
+                .push((reference.clone(), expected_issuer.map(str::to_string)));
+            Ok(self
+                .statuses
+                .lock()
+                .unwrap()
+                .pop()
+                .expect("a scripted status"))
+        }
+    }
+
+    #[test]
+    fn token_status_transitions() {
+        use CredentialStatus::{Expired, Revoked, Unknown, Valid};
+        let reserved = TokenStatus::from_value(0x07);
+        for (previous, suspended, status, expected) in [
+            (Unknown, false, TokenStatus::Valid, (Valid, false)),
+            (Valid, false, TokenStatus::Invalid, (Revoked, false)),
+            (Valid, false, TokenStatus::Suspended, (Revoked, true)),
+            // A suspension lifts; a revocation does not.
+            (Revoked, true, TokenStatus::Valid, (Valid, false)),
+            (Revoked, false, TokenStatus::Valid, (Revoked, false)),
+            (Revoked, false, TokenStatus::Suspended, (Revoked, false)),
+            (Revoked, true, TokenStatus::Invalid, (Revoked, false)),
+            // A clear entry is no authority over time-expiry.
+            (Expired, false, TokenStatus::Valid, (Expired, false)),
+            // An uninterpretable value is indeterminate, never valid.
+            (Valid, false, reserved, (Unknown, false)),
+            (
+                Valid,
+                false,
+                TokenStatus::from_value(0x03),
+                (Unknown, false),
+            ),
+            (Revoked, false, reserved, (Revoked, false)),
+        ] {
+            assert_eq!(
+                next_token_status(previous, suspended, status),
+                expected,
+                "{previous:?} (suspended: {suspended}) + {status:?}"
+            );
+        }
+    }
+
+    /// End to end through `refresh_status`: the credential's own reference and
+    /// issuer reach the resolver, a suspension is held and then lifted, and a
+    /// revocation is terminal.
+    #[tokio::test]
+    async fn a_token_status_list_drives_the_stored_status() {
+        let (_dir, _store, vault) = fresh_vault();
+        put(&vault, &cred_with_token_status("tsl", 7))
+            .await
+            .unwrap();
+        let resolver = TokenResolver::scripted(vec![
+            TokenStatus::Valid,
+            TokenStatus::Suspended,
+            TokenStatus::Valid,
+            TokenStatus::Invalid,
+            TokenStatus::Valid,
+        ]);
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            refresh_status(&vault, "tsl", &resolver).await.unwrap();
+            let stored = storage::get(&vault, "tsl").await.unwrap().unwrap();
+            seen.push((
+                stored.status,
+                stored.tags.contains_key(TOKEN_STATUS_SUSPENDED_TAG),
+            ));
+        }
+        assert_eq!(
+            seen,
+            [
+                (CredentialStatus::Valid, false),
+                (CredentialStatus::Revoked, true),
+                (CredentialStatus::Valid, false),
+                (CredentialStatus::Revoked, false),
+                (CredentialStatus::Revoked, false),
+            ]
+        );
+        let asked = resolver.asked.lock().unwrap();
+        assert_eq!(asked[0].0.idx, 7);
+        assert_eq!(asked[0].0.uri, "https://issuer.example/sl/1");
+        assert_eq!(asked[0].1.as_deref(), Some("did:web:issuer.example"));
+    }
+
+    /// A resolver that predates Token Status Lists refuses, and the stored
+    /// status stands — an unread list is not a valid one.
+    #[tokio::test]
+    async fn a_resolver_without_token_support_leaves_the_status_alone() {
+        let (_dir, _store, vault) = fresh_vault();
+        put(&vault, &cred_with_token_status("tsl-old", 1))
+            .await
+            .unwrap();
+        let resolver = MockResolver::new(None, StatusPurpose::Revocation);
+        let err = refresh_status(&vault, "tsl-old", &resolver)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Token Status Lists"), "{err}");
+        let stored = storage::get(&vault, "tsl-old").await.unwrap().unwrap();
+        assert_eq!(stored.status, CredentialStatus::Unknown);
+    }
+
+    /// A W3C `credentialStatus` wins over a Token Status List reference, as
+    /// `extract_status_ref` already prefers it.
+    #[tokio::test]
+    async fn a_w3c_entry_is_preferred_over_a_token_reference() {
+        let (_dir, _store, vault) = fresh_vault();
+        let mut cred = cred_with_token_status("both", 1);
+        let mut body: serde_json::Value = serde_json::from_slice(&cred.body).unwrap();
+        body["credentialStatus"] = serde_json::json!({
+            "type": "BitstringStatusListEntry",
+            "statusPurpose": "revocation",
+            "statusListIndex": "5",
+            "statusListCredential": "https://issuer.example/status/1",
+        });
+        cred.body = serde_json::to_vec(&body).unwrap();
+        put(&vault, &cred).await.unwrap();
+        let resolver = MockResolver::new(Some(5), StatusPurpose::Revocation);
+        refresh_status(&vault, "both", &resolver).await.unwrap();
+        assert_eq!(resolver.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }
