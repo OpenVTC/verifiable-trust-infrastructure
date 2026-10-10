@@ -2,6 +2,97 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.57.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.56.0...vta-service-v0.57.0) — 2026-10-10
+
+
+### Added
+
+- Verify ES256 / ES256K SD-JWT-VCs from did:web and did:webvh issuers ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2010](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2010))
+
+Credentials issued on the swiyu stack and the EUDI profiles could not be
+  received or verified: the vault and the VTC verifier accepted only EdDSA,
+  the vault only a `did:key` issuer, the shared resolver only a
+  `publicKeyMultibase` key, and holder binding only an Ed25519 `cnf.jwk`.
+
+  - `vta_sdk::jws` (new): compact-JWS verification over a resolved key —
+    EdDSA, ES256 (P-256) and ES256K (secp256k1). The header's `alg` must be
+    the one the resolved key's curve signs with, checked before the
+    signature; `crit` is refused. `JwsKey::from_jwk` reads a `cnf.jwk`
+    (refusing one that carries `d`), `did_key()` names a P-256 holder
+    `did:key:zDn…` and a secp256k1 one `did:key:zQ3s…`.
+    `sd_jwt_issuer_method` binds the issuer JWS `kid` to `iss`: a `did:key`
+    issuer's own key whatever the fragment, any other DID must name its
+    method with a DID-URL `kid` (VTI-CRD-002: the issuer is resolved, not
+    guessed).
+  - `TrustTaskVmResolver` reads a `publicKeyJwk` method (Ed25519, X25519,
+    P-256, secp256k1) and a secp256k1 Multikey; PQC keys stay Multikey-only.
+  - `vta-vault`: `receive_sd_jwt_vc` and `stored_claims` take the issuer
+    resolver, so a `did:web` / `did:webvh` issuer resolves for
+    `assertionMethod`. `receive` with `IssuerKey::None` resolves locally
+    (`did:key` / `did:peer`); the VTA's issued-credential path passes its DID
+    cache. A credential carrying an IETF `status.status_list` reference is
+    stored `Unknown`, not `Valid`: no `statuslist+jwt` resolver exists yet, so
+    its status cannot be read (VTI-CRD-012).
+  - `vtc-service`: the SD-JWT-VC presentation verifier takes ES256 / ES256K
+    issuers and P-256 / secp256k1 `cnf.jwk` holders.
+
+- **vta-sdk**: Wallet sign-in with a trigger link: sign auth/oob grants, enrol UV keys, advertise TrustTaskHTTPS and SignInPortal ([#1997](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1997))
+
+* feat(vta-sdk)!: sign auth/oob/grant for assertionMethod (VTI-KEY-106)
+
+  Adds `auth/oob/grant` to `ATTESTATION_SLUGS`, so `vault/sign-trust-task`
+  signs a wallet sign-in grant for `assertionMethod`: the grant ("let this
+  browser key act as me at this origin until notAfter") is the approving
+  DID's attestation, which the service relies on to open a session, and it
+  verifies the grant against `assertionMethod` (sign-in trigger-link
+  contract C5, base design §10).
+
+  `auth/oob/identify` stays operational and is signed for `authentication`,
+  as the service verifies it; the other `auth/oob` documents are not
+  attestations either. Both are pinned in the classifier tests.
+
+
+
+### Performance
+
+- **vta-service**: Multi-core REST and direct vsock inbound, failing closed ([#2005](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2005))
+
+* perf(vta-service): serve REST on one worker per CPU
+
+  The REST server ran on its own current-thread tokio runtime, so every REST
+  handler shared one thread and the VTA could use at most one CPU however
+  many it had. In a Nitro enclave this showed as a 2-vCPU enclave half idle at
+  its ceiling (47%/62% per vCPU), with storage replies waiting for that one
+  thread to poll them.
+
+  With more than one CPU the REST runtime is now multi-threaded, one worker
+  per CPU. With one CPU it stays current-thread: a multi-threaded runtime was
+  measurably worse there (1-vCPU enclave at 220 keys/sign per second: 463
+  errors against 2).
+
+  Measured alone on c6g.4xlarge with a 2-vCPU enclave, in builds with extra
+  timing logging and an audit-key cache not in this series: at 320/s p95
+  840 -> 71 ms. With this series as it stands, c6g.4xlarge saturates at about
+  345/s with a 2-vCPU enclave and about 380 to 400/s with a 4-vCPU enclave.
+
+  Review note: handlers that interleaved only at await points now also run in
+  parallel. Existing non-atomic read-modify-write sequences were already racy
+  across await points; this makes those races more likely.
+
+- **vta-service**: Fewer storage reads per keys/sign without widening key custody ([#2001](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2001))
+
+* perf(vta-service): read the caller's ACL entry once per keys/sign
+
+  sign_payload read the caller's ACL entry twice: once for the sign
+  capability (gate 0) and again for the allowed-keys filter (gate 4). The
+  entry from gate 0 is now passed to gate 4, which reads it itself only when
+  gate 0 did not run (protocol-defined signing input). Both gates still run,
+  in the same order, and now see the same version of the entry.
+
+  One storage round trip fewer per keys/sign.
+
+
+
 ## [0.56.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.55.0...vta-service-v0.56.0) — 2026-10-06
 
 

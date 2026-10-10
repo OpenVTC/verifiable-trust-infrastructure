@@ -2,6 +2,25 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.15.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-support-v0.14.0...vta-support-v0.15.0) — 2026-10-10
+
+
+### Performance
+
+- **vta-service**: Fewer storage reads per keys/sign without widening key custody ([#2001](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2001))
+
+* perf(vta-service): read the caller's ACL entry once per keys/sign
+
+  sign_payload read the caller's ACL entry twice: once for the sign
+  capability (gate 0) and again for the allowed-keys filter (gate 4). The
+  entry from gate 0 is now passed to gate 4, which reads it itself only when
+  gate 0 did not run (protocol-defined signing input). Both gates still run,
+  in the same order, and now see the same version of the entry.
+
+  One storage round trip fewer per keys/sign.
+
+
+
 ## [0.14.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-support-v0.13.0...vta-support-v0.14.0) — 2026-10-06
 
 

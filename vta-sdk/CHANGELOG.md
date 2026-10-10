@@ -2,6 +2,99 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.65.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.64.2...vta-sdk-v0.65.0) — 2026-10-10
+
+
+### Added
+
+- Verify ES256 / ES256K SD-JWT-VCs from did:web and did:webvh issuers ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2010](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2010))
+
+Credentials issued on the swiyu stack and the EUDI profiles could not be
+  received or verified: the vault and the VTC verifier accepted only EdDSA,
+  the vault only a `did:key` issuer, the shared resolver only a
+  `publicKeyMultibase` key, and holder binding only an Ed25519 `cnf.jwk`.
+
+  - `vta_sdk::jws` (new): compact-JWS verification over a resolved key —
+    EdDSA, ES256 (P-256) and ES256K (secp256k1). The header's `alg` must be
+    the one the resolved key's curve signs with, checked before the
+    signature; `crit` is refused. `JwsKey::from_jwk` reads a `cnf.jwk`
+    (refusing one that carries `d`), `did_key()` names a P-256 holder
+    `did:key:zDn…` and a secp256k1 one `did:key:zQ3s…`.
+    `sd_jwt_issuer_method` binds the issuer JWS `kid` to `iss`: a `did:key`
+    issuer's own key whatever the fragment, any other DID must name its
+    method with a DID-URL `kid` (VTI-CRD-002: the issuer is resolved, not
+    guessed).
+  - `TrustTaskVmResolver` reads a `publicKeyJwk` method (Ed25519, X25519,
+    P-256, secp256k1) and a secp256k1 Multikey; PQC keys stay Multikey-only.
+  - `vta-vault`: `receive_sd_jwt_vc` and `stored_claims` take the issuer
+    resolver, so a `did:web` / `did:webvh` issuer resolves for
+    `assertionMethod`. `receive` with `IssuerKey::None` resolves locally
+    (`did:key` / `did:peer`); the VTA's issued-credential path passes its DID
+    cache. A credential carrying an IETF `status.status_list` reference is
+    stored `Unknown`, not `Valid`: no `statuslist+jwt` resolver exists yet, so
+    its status cannot be read (VTI-CRD-012).
+  - `vtc-service`: the SD-JWT-VC presentation verifier takes ES256 / ES256K
+    issuers and P-256 / secp256k1 `cnf.jwk` holders.
+
+- **vtc**: Member portal, with wallet sign-in by trigger link ([#2007](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2007))
+
+* feat(vtc): a member portal at /members, and a home page that explains the community
+
+  Members could not sign in anywhere: VTC sign-in admitted administrators only,
+  and every session it minted read as an admin session. This adds a member
+  portal as a separate application from the console, with the separation
+  enforced by the daemon rather than by what each page shows.
+
+  Member portal (`crate::member_portal`, `routes::member_portal`):
+  - Only an active member signs in — a live ACL entry that is not expired,
+    suspended or an `application` entry, plus a member record that has not been
+    removed — checked at challenge (VTI-SES-006/007 via the shared handler), at
+    authentication, on every refresh and on every request (VTI-SES-020..022).
+  - Sign-in by the browser wallet (SIOPv2 at `<origin>/v1/member/wallet`) or a
+    portal passkey only. A passkey is added from the portal after a wallet
+    sign-in; adding or removing one requires a wallet-proven session (`amr`
+    contains `did`). Audited as the new `MemberPasskeyChanged` event.
+  - Tokens carry audience `VTC-member` (`JwtKeys::for_audience`), so console
+    extractors refuse them and the portal refuses console tokens.
+  - Sessions and passkeys live in their own keyspaces (`member_sessions`,
+    `member_passkeys`, excluded from backup), so a member who is also an
+    administrator cannot redeem a portal refresh token or passkey at the console.
+  - Cookies `vtc_member_session` / `vtc_member_refresh` are `Path=/v1/member`;
+    `vtc_member_csrf` is the portal's own double-submit value, and the CSRF gate
+    picks the cookie pair by path.
+  - The portal is its own Vite bundle (`vite.members.config.ts`), baked by
+    build.rs into `$OUT_DIR/member-ui-dist` and served at `/members/`; it loads
+    no console code. In subdomain mode it is served on the API host.
+  - The sign-in page carries manual install steps for the VTA Wallet extension
+    (OpenVTC/vta-browser-plugin).
+
+  Default landing page: rebuilt around a visitor who does not know what a VTC
+  is — "Get started" at openvtc.net, member sign-in, capability cards (git
+  across GitHub, Forgejo/Codeberg and Gitea, verifiable data rooms, access
+  management, credentials, recognition), a quieter operator-console link, and
+  the existing status panel. Fixes hidden status rows rendering empty.
+
+  The step-up passkey route test now compares an unrouted response with the
+  website fallback byte for byte; its old "no 'credentials' in the body" check
+  tripped on the new landing page copy.
+
+- **vta-sdk**: Wallet sign-in with a trigger link: sign auth/oob grants, enrol UV keys, advertise TrustTaskHTTPS and SignInPortal ([#1997](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1997))
+
+* feat(vta-sdk)!: sign auth/oob/grant for assertionMethod (VTI-KEY-106)
+
+  Adds `auth/oob/grant` to `ATTESTATION_SLUGS`, so `vault/sign-trust-task`
+  signs a wallet sign-in grant for `assertionMethod`: the grant ("let this
+  browser key act as me at this origin until notAfter") is the approving
+  DID's attestation, which the service relies on to open a session, and it
+  verifies the grant against `assertionMethod` (sign-in trigger-link
+  contract C5, base design §10).
+
+  `auth/oob/identify` stays operational and is signed for `authentication`,
+  as the service verifies it; the other `auth/oob` documents are not
+  attestations either. Both are pinned in the classifier tests.
+
+
+
 ## [0.64.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.64.1...vta-sdk-v0.64.2) — 2026-10-07
 
 
