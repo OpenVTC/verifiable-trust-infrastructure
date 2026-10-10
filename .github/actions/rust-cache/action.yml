@@ -1,0 +1,50 @@
+name: Rust build cache
+description: >
+  mold as the linker (Linux), and a cache of compiled third-party crates.
+  Every Rust job in ci.yml uses it after installing its toolchain.
+inputs:
+  workspaces:
+    description: Workspace root(s), as Swatinem/rust-cache takes them.
+    default: "."
+  cache-directories:
+    description: Extra directories to cache alongside (e.g. ~/.npm).
+    default: ""
+runs:
+  using: composite
+  steps:
+    # ── Linker ──────────────────────────────────────────────────────────────
+    # Since Rust 1.90 x86_64 Linux links with the bundled LLD by default;
+    # mold is faster again on the large test binaries. `-Clinker-features=-lld`
+    # turns the bundled LLD off so `-fuse-ld=mold` is the one the cc driver
+    # sees. Target-scoped, so the wasm32 and cross builds keep their own linker.
+    - if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        bash scripts/install-build-deps.sh mold
+        echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-Clinker-features=-lld -Clink-arg=-fuse-ld=mold" >> "$GITHUB_ENV"
+
+    # ── Compiled dependencies ───────────────────────────────────────────────
+    # The workspace builds third-party crates at opt-level 2, and with no
+    # `target/` cache every job paid for that from scratch on every run.
+    #
+    # This is NOT the `target/` cache #1133 removed. That one restored the
+    # WORKSPACE's own artifacts: a source edit does not move Cargo.lock, so a
+    # stale `vta-policy` was reused and the build failed on code that was right
+    # there. rust-cache deletes every workspace member's artifacts before it
+    # saves (`cache-workspace-crates` is off), so only crates.io / git crates
+    # are restored — content-addressed by version, like the registry. Every
+    # local path crate here is a workspace member (checked when this landed:
+    # 32 of 32), so none slips through as a "dependency".
+    #
+    # The key is per job (rust-cache includes the job id), the rustc version,
+    # the lockfile and the CARGO_/RUST env — so a job never restores another
+    # job's feature set (#891), and the MSRV job never a stable build.
+    #
+    # Saved from main only. A pull request restores main's cache and saves
+    # nothing, which keeps the repository's cache storage to one entry per job
+    # instead of one per branch.
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        workspaces: ${{ inputs.workspaces }}
+        cache-directories: ${{ inputs.cache-directories }}
+        save-if: ${{ github.ref == 'refs/heads/main' }}

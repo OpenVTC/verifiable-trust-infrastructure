@@ -10,7 +10,7 @@ name: Docker
 # Path-filtered rather than run on every PR: a cold release build in a container
 # takes tens of minutes, and the container-specific risks are all
 # manifest/toolchain-shaped. Ordinary source changes are already covered by the
-# `Check` / `Test` jobs in ci.yml, which compile the same crates.
+# `Clippy` / `Test` jobs in ci.yml, which compile the same crates.
 on:
   push:
     branches: [main, nightly]

@@ -1,8 +1,7 @@
 name: Feature combos setup
 description: >
   The shared preamble of every `Feature combos (<group>)` job in ci.yml:
-  system packages, the stable toolchain, and the registry cache all the groups
-  share. The job checks the repository out first (this file lives in it).
+  system packages, the stable toolchain, and the build cache. The job checks the repository out first (this file lives in it).
 
 # One copy instead of five. When `Feature combos` was split into parallel
 # groups, each group needed the same three steps, and five hand-kept copies of
@@ -25,7 +24,7 @@ runs:
       run: bash scripts/install-build-deps.sh
 
     # From the runner image's rustup, not dtolnay/rust-toolchain: see the
-    # comment on the Check job in ci.yml (that action publishes only branches,
+    # comment on the Clippy job in ci.yml (that action publishes only branches,
     # so there is no immutable ref to pin).
     - name: Install the Rust toolchain
       shell: bash
@@ -33,30 +32,6 @@ runs:
         rustup toolchain install stable --profile minimal --no-self-update
         rustup default stable
 
-    # ONE registry cache for every feature group, deliberately.
-    #
-    # `target/` is not cached — every crate in this workspace is a path
-    # dependency, so a source-only change does not move this key and a restored
-    # `target/` would be stale (#1133). What is cached is `~/.cargo/registry`
-    # and `~/.cargo/git`, which are content-addressed by package version, so a
-    # stale entry is impossible by construction and sharing them between jobs
-    # is safe in a way sharing `target/` never is.
-    #
-    # Sharing is also what keeps the split inside the repo's 10 GB cache
-    # allowance, which is already full: five group-specific registry caches of
-    # ~200-500 MB each would evict other jobs' caches for no gain. The cost is
-    # small: the first group to finish saves the key, so a group whose crates
-    # that save lacks downloads the difference (seconds) until Cargo.lock moves.
-    #
-    # `-groups-` and not a bare `cargo-features-`: restore-keys are prefix
-    # matches, and `Linux-cargo-features-` would also match the all-features
-    # job's `Linux-cargo-features-all-` cache (see the Enclave proxy job for
-    # the same trap). Neither prefix is a prefix of the other.
-    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-        key: ${{ runner.os }}-cargo-features-groups-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-features-groups-
+    # mold + compiled third-party crates, keyed per calling job: each group
+    # builds its own feature sets, so they never share one (#891).
+    - uses: ./.github/actions/rust-cache

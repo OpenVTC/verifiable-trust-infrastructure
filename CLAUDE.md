@@ -1485,6 +1485,15 @@ its two big binaries under one core. nextest never runs doctests, so the
 `--doc` lines are not optional. `cargo test` still works and still means the
 same thing; it is only slower.
 
+**CI caches compiled third-party crates, never the workspace's own.**
+`.github/actions/rust-cache` (Swatinem/rust-cache, saved from `main` only, keyed
+per job) restores dependencies and deletes every workspace member's artifacts
+before saving — so the stale-artifact failure that removed the old `target/`
+cache (#1133) cannot recur. Keep every local path crate a workspace member, or it
+would be cached as a "dependency". The same action links with mold. There is no
+`Check` job (Clippy `--all-targets` covers it), tier-2 jobs wait for Clippy
+only, and `scripts/ci-affects.sh` skips every compile job for a prose-only PR.
+
 **Dependencies build at `opt-level = 2`** (`[profile.dev.package."*"]`;
 workspace crates stay at 0, so an edit-test loop recompiles nothing extra).
 At 0 the suites spent their CPU in other people's code — regorus re-parsing
