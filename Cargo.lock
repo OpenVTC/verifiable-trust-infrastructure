@@ -11549,6 +11549,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
+ "vsock",
  "vta-audit",
  "vta-backup",
  "vta-cli-common",

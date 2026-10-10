@@ -668,6 +668,9 @@ hmac = "0.13"
 # Vsock-store deps shared by vti-common's vsock keyspace and the enclave
 # bootstrap; libc is also used by vta-service's vsock-bridge helpers.
 tokio-vsock = "0.7"
+# The blocking listener tokio-vsock wraps: vta-service binds the REST vsock
+# listener with it once at boot and clones it per soft restart, as with TCP.
+vsock = "0.5"
 libc = "0.2"
 
 # Azure secret-store deps shared across SDK + both services.

@@ -78,8 +78,11 @@ async fn connect_vsock(cid: u32, port: u32) -> Result<BoxStream, AppError> {
 // VsockStore
 // ---------------------------------------------------------------------------
 
-/// CID 3 = parent/host in Nitro Enclaves.
-const PARENT_CID: u32 = 3;
+/// The vsock CID of a Nitro Enclave's parent instance, as seen from inside
+/// the enclave. The parent is the only peer an enclave can reach or be
+/// reached by: the storage proxy, the log sink and the REST ingress
+/// (`vta-service`'s vsock listener accepts this CID only) all sit there.
+pub const PARENT_CID: u32 = 3;
 /// Default vsock port for the storage proxy.
 const DEFAULT_STORAGE_PORT: u32 = 5500;
 /// Upper bound on simultaneous storage connections to the parent.

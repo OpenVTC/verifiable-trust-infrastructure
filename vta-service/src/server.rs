@@ -916,9 +916,11 @@ pub async fn run(
     // the boot: falling back to TCP would leave an enclave with no reachable
     // API and no error, since nothing forwards to its loopback port.
     //
-    // TCP binds once here and persists across soft restarts. Vsock binds in
-    // the REST thread, which reports the result back before the boot goes on
-    // (tokio-vsock registers with the runtime that owns it).
+    // Either listener binds once here and persists across soft restarts: each
+    // REST thread generation gets a clone. Rebinding per generation would race
+    // the previous thread, which `/vta/restart` does not join, for the port
+    // (EADDRINUSE would end the process). The REST thread reports back whether
+    // it could adopt its clone before the boot goes on.
     #[cfg(feature = "rest")]
     let std_listener = if rest_enabled {
         let raw = std::env::var_os(REST_VSOCK_PORT_ENV).map(|v| v.to_string_lossy().into_owned());
@@ -932,8 +934,20 @@ pub async fn run(
             }
             #[cfg(feature = "vsock-store")]
             RestIngressMode::Vsock(port) => {
-                info!(port, "REST will listen on vsock; no TCP listener is opened");
-                Some(RestListener::Vsock(port))
+                let listener =
+                    vsock::VsockListener::bind_with_cid_port(vsock::VMADDR_CID_ANY, port).map_err(
+                        |e| {
+                            AppError::Config(format!(
+                                "REST vsock listener on port {port} could not be opened: {e}"
+                            ))
+                        },
+                    )?;
+                info!(
+                    port,
+                    parent_cid = vti_common::store::vsock::PARENT_CID,
+                    "REST listening on vsock, parent only; no TCP listener is opened"
+                );
+                Some(RestListener::Vsock(listener))
             }
         }
     } else {
@@ -1857,14 +1871,16 @@ fn rest_ingress_mode(raw: Option<&str>) -> Result<RestIngressMode, String> {
     }
 }
 
-/// The REST listener handed to each run of the REST thread.
+/// The REST listener, bound once at boot. Each REST thread generation (one
+/// per soft restart) gets a [`RestListener::try_clone`]: a second descriptor
+/// for the same listening socket, so a restart never rebinds the port.
 #[cfg(feature = "rest")]
 enum RestListener {
-    /// Bound once at boot, cloned for each soft restart.
     Tcp(std::net::TcpListener),
-    /// Bound by the REST thread on its own runtime.
+    /// The blocking listener; the REST thread adopts its clone into its own
+    /// runtime ([`adopt_vsock_listener`]).
     #[cfg(feature = "vsock-store")]
-    Vsock(u32),
+    Vsock(vsock::VsockListener),
 }
 
 #[cfg(feature = "rest")]
@@ -1873,15 +1889,30 @@ impl RestListener {
         match self {
             Self::Tcp(l) => Ok(Self::Tcp(l.try_clone()?)),
             #[cfg(feature = "vsock-store")]
-            Self::Vsock(port) => Ok(Self::Vsock(*port)),
+            Self::Vsock(l) => Ok(Self::Vsock(l.try_clone()?)),
         }
     }
 }
 
-/// The Nitro parent instance's vsock CID, the only peer that can reach an
-/// enclave (same constant as `vti_common::store::vsock`).
+/// Hand a blocking vsock listener to the calling runtime's reactor.
+///
+/// Must run inside the REST thread's runtime: tokio-vsock registers the
+/// socket with the runtime it is created in, which is why the boot cannot
+/// create the async listener itself. tokio-vsock 0.7 adopts an existing
+/// socket only through `FromRawFd`.
 #[cfg(all(feature = "rest", feature = "vsock-store"))]
-const PARENT_CID: u32 = 3;
+fn adopt_vsock_listener(listener: vsock::VsockListener) -> VsockRestListener {
+    use std::os::fd::IntoRawFd;
+    use std::os::unix::io::FromRawFd;
+    let fd = listener.into_raw_fd();
+    // SAFETY: `into_raw_fd` has just released `fd` from a listener this
+    // function owned by value, so no other owner exists and nothing else will
+    // close it; ownership passes to the tokio listener, which closes it on
+    // drop. It is a listening AF_VSOCK socket, which is what
+    // `tokio_vsock::VsockListener` wraps.
+    let listener = unsafe { tokio_vsock::VsockListener::from_raw_fd(fd) };
+    VsockRestListener(listener)
+}
 
 /// A vsock listener for `axum::serve`, for enclave builds.
 ///
@@ -1901,7 +1932,7 @@ impl axum::serve::Listener for VsockRestListener {
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         loop {
             match self.0.accept().await {
-                Ok((stream, peer)) if peer.cid() == PARENT_CID => {
+                Ok((stream, peer)) if peer.cid() == vti_common::store::vsock::PARENT_CID => {
                     return (stream, vti_common::rate_limit::VSOCK_PARENT_PEER);
                 }
                 Ok((stream, peer)) => {
@@ -1924,6 +1955,33 @@ impl axum::serve::Listener for VsockRestListener {
     fn local_addr(&self) -> std::io::Result<Self::Addr> {
         Ok(vti_common::rate_limit::VSOCK_PARENT_PEER)
     }
+}
+
+/// The boot warning for a REST-on-vsock VTA whose `trust_xff_cidrs` names
+/// proxies but not the parent (`0.0.0.3`), or `None`.
+///
+/// An empty list is a deliberate choice — no proxy is trusted, as a
+/// byte-bridging parent (`parent-proxy.sh`) requires — and gets no warning. A
+/// list that trusts something but not `0.0.0.3` (typically a config written
+/// for the old socat ingress, `["127.0.0.1/32"]`) never reads
+/// `X-Forwarded-For` on vsock, so every client shares one bucket. Safe, but
+/// not what the operator meant.
+#[cfg(all(feature = "rest", feature = "vsock-store"))]
+fn vsock_parent_trust_warning(trust_xff_cidrs: &[ipnetwork::IpNetwork]) -> Option<String> {
+    let parent = vti_common::rate_limit::VSOCK_PARENT_PEER.ip();
+    if trust_xff_cidrs.is_empty() || trust_xff_cidrs.iter().any(|c| c.contains(parent)) {
+        return None;
+    }
+    Some(format!(
+        "[server] trust_xff_cidrs = {:?} does not include 0.0.0.3/32. REST is \
+         served on vsock and the parent arrives as 0.0.0.3, so X-Forwarded-For \
+         is never read and every client shares one rate-limit bucket. If the \
+         parent runs deploy/nitro/enclave-proxy, add \"0.0.0.3/32\"",
+        trust_xff_cidrs
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    ))
 }
 
 /// A listener ready to serve, inside the REST thread's runtime.
@@ -1965,23 +2023,15 @@ fn run_rest_thread(
         // restart loop in `run`); `state.metrics_handle` already carries the
         // handle. Installing here would panic on every soft restart.
 
-        // Bind (vsock) or adopt (TCP) the listener first, and tell the boot
-        // whether it worked: a REST server that cannot listen fails the boot.
+        // Adopt this generation's clone of the boot listener into the runtime
+        // first, and tell the boot whether it worked: a REST server that
+        // cannot listen fails the boot.
         let serving = match listener {
             RestListener::Tcp(std_listener) => {
                 tokio::net::TcpListener::from_std(std_listener).map(Serving::Tcp)
             }
             #[cfg(feature = "vsock-store")]
-            RestListener::Vsock(port) => tokio_vsock::VsockListener::bind(
-                tokio_vsock::VsockAddr::new(tokio_vsock::VMADDR_CID_ANY, port),
-            )
-            .map(|l| {
-                info!(
-                    port,
-                    "REST listening on vsock (parent CID {PARENT_CID} only)"
-                );
-                Serving::Vsock(VsockRestListener(l))
-            }),
+            RestListener::Vsock(listener) => Ok(Serving::Vsock(adopt_vsock_listener(listener))),
         };
         let serving = match serving {
             Ok(s) => {
@@ -2011,25 +2061,13 @@ fn run_rest_thread(
                 cfg.server.trust_xff_cidrs.clone(),
             )
         };
-        // An enclave config written for the socat ingress trusted loopback.
-        // On vsock the parent is 0.0.0.3, so that entry now trusts nothing
-        // that arrives (safe: one shared bucket), and says so.
+        // On vsock the parent arrives as 0.0.0.3; a trust list that means to
+        // trust a proxy but omits it reads no X-Forwarded-For at all.
         #[cfg(feature = "vsock-store")]
-        if matches!(serving, Serving::Vsock(_)) {
-            let parent = vti_common::rate_limit::VSOCK_PARENT_PEER.ip();
-            let trusts_parent = trust_xff_cidrs.iter().any(|c| c.contains(parent));
-            let trusts_loopback = trust_xff_cidrs
-                .iter()
-                .any(|c| c.contains(std::net::IpAddr::from([127, 0, 0, 1])));
-            if trusts_loopback && !trusts_parent {
-                warn!(
-                    "[server] trust_xff_cidrs trusts 127.0.0.1, but REST is served on \
-                     vsock and the parent arrives as 0.0.0.3, so X-Forwarded-For is \
-                     never read and every client shares one rate-limit bucket. If the \
-                     parent runs deploy/nitro/enclave-proxy, replace \"127.0.0.1/32\" \
-                     with \"0.0.0.3/32\""
-                );
-            }
+        if matches!(serving, Serving::Vsock(_))
+            && let Some(msg) = vsock_parent_trust_warning(&trust_xff_cidrs)
+        {
+            warn!("{msg}");
         }
 
         let traced_routes = routes::router_with_cors(
@@ -3194,6 +3232,80 @@ mod rest_ingress_tests {
             assert!(
                 err.contains(&format!("{bad:?}")),
                 "error names the value: {err}"
+            );
+        }
+    }
+
+    #[cfg(feature = "vsock-store")]
+    fn nets(list: &[&str]) -> Vec<ipnetwork::IpNetwork> {
+        list.iter().map(|n| n.parse().unwrap()).collect()
+    }
+
+    #[cfg(feature = "vsock-store")]
+    #[test]
+    fn no_warning_when_nothing_is_trusted() {
+        // parent-proxy.sh deployments: nothing may be trusted.
+        assert_eq!(vsock_parent_trust_warning(&[]), None);
+    }
+
+    #[cfg(feature = "vsock-store")]
+    #[test]
+    fn no_warning_when_the_parent_is_trusted() {
+        assert_eq!(vsock_parent_trust_warning(&nets(&["0.0.0.3/32"])), None);
+        // The shipped Nitro configs: the parent for the VTA, loopback for a
+        // TLS terminator in front of the parent's proxy.
+        assert_eq!(
+            vsock_parent_trust_warning(&nets(&["127.0.0.1/32", "0.0.0.3/32"])),
+            None
+        );
+    }
+
+    #[cfg(feature = "vsock-store")]
+    #[test]
+    fn a_socat_era_config_is_warned_with_the_fix() {
+        let msg = vsock_parent_trust_warning(&nets(&["127.0.0.1/32"])).expect("warns");
+        assert!(msg.contains("\"0.0.0.3/32\""), "{msg}");
+        assert!(
+            msg.contains("127.0.0.1/32"),
+            "names what is configured: {msg}"
+        );
+    }
+
+    #[cfg(feature = "vsock-store")]
+    #[test]
+    fn restart_generations_share_one_bound_listener() {
+        // `/vta/restart` starts a new REST thread without joining the old one,
+        // so each generation must clone the boot listener rather than rebind.
+        // The same shape for both kinds; TCP proves it portably: the original
+        // can be dropped (an old generation ending) and the clone still serves
+        // the same port.
+        let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = tcp.local_addr().unwrap();
+        let boot = RestListener::Tcp(tcp);
+        let next = boot.try_clone().unwrap();
+        drop(boot);
+        let RestListener::Tcp(next) = next else {
+            unreachable!()
+        };
+        assert_eq!(next.local_addr().unwrap(), addr);
+        std::net::TcpStream::connect(addr).expect("the clone still accepts");
+        next.accept()
+            .expect("connection queued on the shared socket");
+
+        // Vsock where the host supports it (a Linux host with vsock loopback);
+        // elsewhere AF_VSOCK cannot bind and there is nothing to check.
+        // u32::MAX is VMADDR_PORT_ANY: any free port.
+        if let Ok(v) = vsock::VsockListener::bind_with_cid_port(vsock::VMADDR_CID_ANY, u32::MAX) {
+            let port = v.local_addr().unwrap().port();
+            let boot = RestListener::Vsock(v);
+            let RestListener::Vsock(next) = boot.try_clone().unwrap() else {
+                unreachable!()
+            };
+            drop(boot);
+            assert_eq!(
+                next.local_addr().unwrap().port(),
+                port,
+                "same socket, not a rebind"
             );
         }
     }
