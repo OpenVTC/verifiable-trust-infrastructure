@@ -1287,3 +1287,149 @@ async fn a_did_web_holder_redeems_through_the_resolver() {
     .unwrap_err();
     assert!(matches!(err, AppError::Forbidden(_)), "{err}");
 }
+
+// ── ES256 issuers and P-256 holders (#1988) ──
+
+/// An ES256 (P-256) SD-JWT signer — the swiyu / EUDI shape — whose header may
+/// claim another `alg` to exercise the algorithm binding.
+struct Es256Signer {
+    private: Vec<u8>,
+    kid: Option<String>,
+    alg: &'static str,
+}
+impl affinidi_sd_jwt::signer::JwtSigner for Es256Signer {
+    fn algorithm(&self) -> &str {
+        self.alg
+    }
+    fn key_id(&self) -> Option<&str> {
+        self.kid.as_deref()
+    }
+    fn sign_jwt(&self, header: &Value, payload: &Value) -> Result<String, SdJwtError> {
+        let enc = |v: &Value| URL_SAFE_NO_PAD.encode(serde_json::to_vec(v).unwrap());
+        let input = format!("{}.{}", enc(header), enc(payload));
+        let sig = affinidi_crypto::p256::sign(&self.private, input.as_bytes())
+            .map_err(|e| SdJwtError::Verification(e.to_string()))?;
+        Ok(format!("{input}.{}", URL_SAFE_NO_PAD.encode(sig)))
+    }
+}
+
+/// A P-256 key pair's private scalar, its public JWK, and its `did:key`.
+fn p256(seed: u8) -> (Vec<u8>, Value, String) {
+    let kp = affinidi_crypto::p256::generate(Some(&[seed; 32])).unwrap();
+    let mut jwk = serde_json::to_value(&kp.jwk).unwrap();
+    jwk.as_object_mut().unwrap().remove("d");
+    let did = vta_sdk::jws::JwsKey::from_jwk(&jwk).unwrap().did_key();
+    (kp.private_bytes, jwk, did)
+}
+
+/// An SD-JWT-VC from `iss` (signed by a P-256 key, header `kid` = `issuer_kid`),
+/// bound to a P-256 holder, with a kb-jwt whose header claims `holder_alg`.
+/// Returns `(holder_did, vp_token)`.
+fn make_p256_presentation(
+    iss: &str,
+    issuer_kid: Option<String>,
+    aud: &str,
+    nonce: &str,
+    holder_alg: &'static str,
+) -> (String, Value) {
+    use affinidi_sd_jwt::holder::{KbJwtInput, present, select_disclosures};
+
+    let now = Utc::now();
+    let iat = now.timestamp() as u64;
+    let (issuer_priv, _, _) = p256(0x81);
+    let (holder_priv, holder_jwk, holder_did) = p256(0x82);
+    let issuer = Es256Signer {
+        private: issuer_priv,
+        kid: issuer_kid,
+        alg: "ES256",
+    };
+    let holder = Es256Signer {
+        private: holder_priv,
+        kid: Some(holder_did.clone()),
+        alg: holder_alg,
+    };
+    let claims = json!({
+        "iss": iss, "sub": holder_did, "vct": MEMBERSHIP_VCT,
+        "iat": iat, "exp": (now + Duration::hours(1)).timestamp(), "givenName": "Alice"
+    });
+    let hasher = Sha256Hasher;
+    let sd = affinidi_sd_jwt::issuer::issue(
+        &claims,
+        &json!({ "_sd": ["givenName"] }),
+        &issuer,
+        &hasher,
+        Some(&holder_jwk),
+    )
+    .unwrap();
+    let selected = select_disclosures(&sd, &["givenName"]);
+    let kb = KbJwtInput {
+        audience: aud,
+        nonce,
+        signer: &holder,
+        iat,
+    };
+    let presentation = present(&sd, &selected, Some(&kb), &hasher).unwrap();
+    (holder_did, json!(presentation.serialize()))
+}
+
+/// The P-256 `did:key` issuer of [`make_p256_presentation`].
+fn p256_issuer_did() -> String {
+    p256(0x81).2
+}
+
+/// #1988: an ES256 issuer and a P-256 `cnf.jwk` holder verify end to end, and
+/// the proven holder is the P-256 key's `did:key`.
+#[tokio::test]
+async fn verifies_an_es256_presentation_with_a_p256_holder() {
+    let (aud, nonce) = ("did:web:vtc.example", "n-es256");
+    let iss = p256_issuer_did();
+    let (holder_did, vp) =
+        make_p256_presentation(&iss, Some(format!("{iss}#key-0")), aud, nonce, "ES256");
+    let verified = verify_presentation(&vp, aud, nonce, None, Utc::now())
+        .await
+        .expect("ES256 issuer + P-256 holder");
+    assert_eq!(verified.issuer_did, iss);
+    assert_eq!(verified.holder_did, holder_did);
+    assert!(
+        verified.holder_did.starts_with("did:key:zDn"),
+        "{}",
+        verified.holder_did
+    );
+    assert!(verified.holder_bound);
+    assert_eq!(verified.claims["givenName"], "Alice");
+
+    // The wrong audience still fails the binding.
+    assert!(
+        verify_presentation(&vp, "did:web:other.example", nonce, None, Utc::now())
+            .await
+            .is_err()
+    );
+}
+
+/// The holder's algorithm comes from its `cnf.jwk`: a kb-jwt claiming EdDSA
+/// for a P-256 binding key is refused, whatever its signature.
+#[tokio::test]
+async fn a_kb_jwt_alg_that_disagrees_with_the_cnf_key_is_refused() {
+    let (aud, nonce) = ("did:web:vtc.example", "n-alg");
+    let iss = p256_issuer_did();
+    let (_, vp) = make_p256_presentation(&iss, None, aud, nonce, "EdDSA");
+    let err = verify_presentation(&vp, aud, nonce, None, Utc::now())
+        .await
+        .expect_err("alg must match the cnf key");
+    assert!(
+        matches!(&err, AppError::Validation(m) if m.contains("does not match")),
+        "{err:?}"
+    );
+}
+
+/// A `did:web` issuer that names no `kid` is refused at parse, before any
+/// resolution — the #1988 vector has this shape.
+#[test]
+fn a_did_web_issuer_without_a_kid_is_refused_at_parse() {
+    let (_, vp) = make_p256_presentation("did:web:validant.ai", None, "a", "n", "ES256");
+    let err = parse_sd_jwt_presentation(vp.as_str().unwrap()).unwrap_err();
+    assert!(
+        matches!(&err, AppError::Validation(m) if m.contains("DID-URL kid")),
+        "{err:?}"
+    );
+}

@@ -23,6 +23,11 @@ use vta_service::vault::{self, CredentialFormat, CredentialPurpose, CredentialSt
 use vti_common::config::StoreConfig;
 use vti_common::store::{KeyspaceHandle, Store};
 
+/// The no-I/O issuer resolver: every issuer here is a `did:key`.
+fn did_key_only() -> vti_common::auth::TrustTaskVmResolver {
+    vti_common::auth::TrustTaskVmResolver::did_key_only()
+}
+
 /// A production-shape EdDSA (Ed25519) JWT signer for issuing test credentials.
 struct EddsaSigner {
     key: SigningKey,
@@ -107,6 +112,7 @@ async fn valid_credential_is_stored_and_findable_by_type_and_issuer() {
         &vault,
         "inv-1",
         &compact,
+        &did_key_only(),
         Some("link:qr-onboarding".into()),
         1_800_000_000,
     )
@@ -156,9 +162,16 @@ async fn tampered_credential_is_rejected_and_not_stored() {
     chars[pos] = if chars[pos] == 'A' { 'B' } else { 'A' };
     let tampered: String = chars.into_iter().collect();
 
-    let err = vault::receive_sd_jwt_vc(&vault, "inv-bad", &tampered, None, 1_800_000_000)
-        .await
-        .expect_err("tampered credential rejected");
+    let err = vault::receive_sd_jwt_vc(
+        &vault,
+        "inv-bad",
+        &tampered,
+        &did_key_only(),
+        None,
+        1_800_000_000,
+    )
+    .await
+    .expect_err("tampered credential rejected");
     assert!(matches!(err, vti_common::error::AppError::Validation(_)));
 
     // Nothing stored, no index rows.
@@ -177,9 +190,16 @@ async fn expired_credential_is_rejected_and_not_stored() {
     let (signer, did) = issuer();
     let compact = issue_invitation(&signer, &did, 1_700_000_000, Some(1_701_000_000));
 
-    let err = vault::receive_sd_jwt_vc(&vault, "inv-exp", &compact, None, 1_900_000_000)
-        .await
-        .expect_err("expired credential rejected");
+    let err = vault::receive_sd_jwt_vc(
+        &vault,
+        "inv-exp",
+        &compact,
+        &did_key_only(),
+        None,
+        1_900_000_000,
+    )
+    .await
+    .expect_err("expired credential rejected");
     assert!(matches!(err, vti_common::error::AppError::Validation(_)));
 
     assert!(vault::get(&vault, "inv-exp").await.unwrap().is_none());

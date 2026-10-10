@@ -11438,6 +11438,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "hpke",
+ "k256 0.14.0",
  "keyring-core",
  "multibase",
  "nitro_attest",

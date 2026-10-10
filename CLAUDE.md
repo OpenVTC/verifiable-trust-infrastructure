@@ -137,6 +137,12 @@ This applies to both sides of `sealed_transfer` (`client_did`, `producer_did`),
 to CLI recipient flags (`--recipient-did`), and to any new protocol we add.
 Tests and docs refer to DIDs, not pubkeys.
 
+The one place other curves are accepted is **verifying credentials others
+issue**: an SD-JWT-VC issuer or `cnf.jwk` holder may sign EdDSA, ES256 (P-256)
+or ES256K (secp256k1), so swiyu / EUDI credentials verify (#1988). That goes
+through `vta_sdk::jws` — the algorithm fixed by the resolved key, never by the
+token — and a P-256 / secp256k1 holder is named by that key's `did:key`.
+
 ## Prefer TSP, then DIDComm, then REST
 
 **Preference order for inter-component transport is TSP > DIDComm > REST** —

@@ -325,6 +325,7 @@ pub(super) fn store(state: &AppState) -> PersonaStore {
     PersonaStore::new(state.persona_ks.clone(), state.persona_correlation_key).with_credentials(
         std::sync::Arc::new(VaultCredentials {
             vault: state.vault_ks.clone(),
+            resolver: state.trust_task_vm_resolver(),
         }),
     )
 }
@@ -339,6 +340,9 @@ pub(super) fn store(state: &AppState) -> PersonaStore {
 /// a value nothing can vouch for is not presented as though something did.
 struct VaultCredentials {
     vault: vti_common::store::KeyspaceHandle,
+    /// Re-verifies an SD-JWT-VC's issuer before its claims are read — a
+    /// `did:web` / `did:webvh` issuer through the DID cache.
+    resolver: vti_common::auth::TrustTaskVmResolver,
 }
 
 #[async_trait::async_trait]
@@ -383,7 +387,7 @@ impl vta_persona::CredentialSource for VaultCredentials {
         if parse(&cred.valid_from).is_some_and(|f| f > now) {
             return Ok(Derived::Stale(StaleReason::NotFound));
         }
-        let Ok(claims) = crate::vault::receive::stored_claims(&cred) else {
+        let Ok(claims) = crate::vault::receive::stored_claims(&cred, &self.resolver).await else {
             return Ok(Derived::Stale(StaleReason::NotFound));
         };
         Ok(match claims.pointer(claim_path) {
