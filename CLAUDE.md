@@ -876,14 +876,16 @@ new flow, update both this section and the relevant `docs/*.md`.
   downscoped credential, sealed to it. Served model: `s3-static-presign`
   (presigned URLs; the secret never leaves the VTA).
 - **Invariants to preserve**: management needs `external-accounts-manage` in the
-  account's context (act scope); issuance checks, in the spec's order, account
-  → binding (the authenticated caller, never a payload DID) →
-  `external-auth-use` → scope ⊆ ceiling → TTL → rate, before anything is signed.
+  account's context (act scope); issuance checks, in the spec's order, the
+  binding first (the authenticated caller, never a payload DID — an unbound
+  caller and an unknown account get the same `notFound`) → `external-auth-use`
+  → account state → scope ⊆ ceiling → TTL → rate → a key-agreement key to seal
+  to, before the provider is contacted.
   Scope values are validated identifiers, never interpolated caller strings.
   A credential leaves only inside `SealedPayloadV1::ExternalCredential`, and is
   never logged or audited. Secrets live wrapped in `external_secrets`
   (excluded from backup) and are never returned; `providerSetupRequired` holds
-  issuance until a probe succeeds. The VTA needs no inbound surface for any
+  issuance until a probe that is both `ok` and `complete`. The VTA needs no inbound surface for any
   model.
 - **Code**: `vta-external/src/`, `vta-service/src/trust_tasks/external.rs`,
   `vta_sdk::client::external`, `vta-cli-common/src/commands/external.rs`

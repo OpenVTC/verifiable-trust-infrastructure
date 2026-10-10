@@ -32,18 +32,28 @@ pnm external bind r2-rooms --context community --consumer did:webvh:…:vtc \
 pnm external setup r2-rooms --context community
 
 # 4. The secret half: read without echo, sealed in pnm to a single-use
-#    wrapping key, never shown again. Only a keyed fingerprint comes back.
+#    wrapping key together with the account's access key id, never shown
+#    again. Only a keyed fingerprint (`hmacsha256:…`) comes back.
 pnm external secret-set r2-rooms --context community
 
-# 5. Prove it works. A successful probe clears `providerSetupRequired`;
-#    nothing is issued before that.
+# 5. Prove it works. Only a probe that is ok *and* complete (the canary was
+#    written, read and deleted) clears `providerSetupRequired`; nothing is
+#    issued before that. Before anything is bound, set `probePrefix` in the
+#    settings, or the probe stops early with `complete: false`.
 pnm external probe r2-rooms --context community
 ```
 
 The consumer (here the VTC) holds `external-auth-use` in the context — every
 role that holds `sign` derives it — and calls `external/credentials/issue/0.1`.
-The credential comes back sealed to its own key-agreement key, inside a signed
-response.
+The credential comes back sealed to its own key-agreement key (the X25519
+derivation of a `did:key`, otherwise the first X25519 `keyAgreement` method of
+its DID document — with neither, the VTA refuses with `noKeyAgreement` before
+signing anything), inside a signed response. The consumer verifies that
+response's proof before opening the bundle: it is what anchors it.
+
+A caller with no binding on the account — or naming an account that does not
+exist — gets `external:notFound`, the same answer either way. Only a bound
+consumer learns an account's state.
 
 **The kill switch** is `pnm external suspend r2-rooms --context community`:
 immediate, alone, never consent-gated. `resume` turns it back on.
@@ -72,3 +82,7 @@ are **not** (`external_secrets` is excluded): a portable, password-protected
 backup must not be a way to take a provider key away. After a restore, set
 each secret again and probe; until then the account reports
 `providerSetupRequired` and issues nothing.
+
+An archived account answers `external:archived` to anything that would change
+or use it (update, secret, bindings, probe, suspend, resume); restore it first.
+Reads still answer.
