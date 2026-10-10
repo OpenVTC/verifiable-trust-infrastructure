@@ -283,6 +283,54 @@ impl FileManifest {
     pub fn padding(&self) -> Padding {
         self.padding.unwrap_or(Padding::None)
     }
+
+    /// The length of the plaintext as sealed: `padme(size)` when padded, else `size`.
+    #[must_use]
+    pub fn padded_len(&self) -> u64 {
+        match self.padding() {
+            Padding::None => self.size,
+            Padding::Padme => padme_len(self.size),
+        }
+    }
+
+    /// The checks a reader makes before trusting a byte of `blob`, from
+    /// `FileManifest`'s *Reading* rules: the blob is the one this manifest's author named,
+    /// it is self-consistent, its `chunkSize` is `segmentSize + 16`, and its `chunkCount`
+    /// is `max(1, ceil(paddedLength / segmentSize))`.
+    pub fn check_blob(&self, blob: &BlobManifest) -> Result<(), FileError> {
+        blob.check()?;
+        if !same_digest(&blob.blob_ref()?, &self.blob_ref) {
+            return Err(FileError::Decode(
+                "the blob manifest is not the one the file's author named".into(),
+            ));
+        }
+        let segment =
+            usize::try_from(self.segment_size).map_err(|_| FileError::SegmentSize(usize::MAX))?;
+        check_segment_size(segment)?;
+        if blob.chunks.chunk_size != self.segment_size + TAG_LEN as u64 {
+            return Err(FileError::Decode(format!(
+                "chunkSize {} is not segmentSize {} + {TAG_LEN}",
+                blob.chunks.chunk_size, self.segment_size
+            )));
+        }
+        let expected = segment_count(self.padded_len(), segment);
+        if blob.chunks.chunk_count != expected {
+            return Err(FileError::Decode(format!(
+                "chunkCount {} is not the {expected} a {}-byte plaintext in {segment}-byte \
+                 segments needs",
+                blob.chunks.chunk_count,
+                self.padded_len()
+            )));
+        }
+        if blob.size != self.padded_len() + expected * TAG_LEN as u64 {
+            return Err(FileError::Decode(format!(
+                "a {}-byte blob cannot hold a {}-byte plaintext in {expected} segments",
+                blob.size,
+                self.padded_len()
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// How the plaintext was padded before sealing.
@@ -719,24 +767,20 @@ mod keyed {
     }
 
     impl StreamOpener {
+        /// For the file `file` describes, stored as `blob`.
+        ///
+        /// Runs [`FileManifest::check_blob`] first, so no byte is opened from a blob whose
+        /// shape the author's manifest does not account for.
         pub fn new(
             key: &FileKey,
             room_id: &str,
             file: &FileManifest,
-            chunk_count: u64,
+            blob: &BlobManifest,
         ) -> Result<Self, FileError> {
-            let segment_size = usize::try_from(file.segment_size)
-                .map_err(|_| FileError::SegmentSize(usize::MAX))?;
-            let padded = match file.padding() {
-                Padding::None => file.size,
-                Padding::Padme => padme_len(file.size),
-            };
-            if chunk_count != segment_count(padded, segment_size) {
-                return Err(FileError::Decode(format!(
-                    "{chunk_count} chunks for a {padded}-byte plaintext in {segment_size}-byte \
-                     segments"
-                )));
-            }
+            file.check_blob(blob)?;
+            let segment_size = file.segment_size as usize;
+            let padded = file.padded_len();
+            let chunk_count = blob.chunks.chunk_count;
             let binding = FileBinding {
                 room_id: room_id.to_string(),
                 file_id: file.file_id_bytes()?,
@@ -773,6 +817,9 @@ mod keyed {
         }
 
         /// Check that every chunk arrived and the file is the one its author signed.
+        ///
+        /// Only after this returns `Ok` may a caller treat what [`StreamOpener::push`]
+        /// emitted as received; on an error it discards it.
         pub fn finish(self) -> Result<(), FileError> {
             self.opener.finish()?;
             if self.position != self.padded {
@@ -824,9 +871,10 @@ mod keyed {
         key: &FileKey,
         room_id: &str,
         file: &FileManifest,
+        blob: &BlobManifest,
         chunks: &[Vec<u8>],
     ) -> Result<Vec<u8>, FileError> {
-        let mut opener = StreamOpener::new(key, room_id, file, chunks.len() as u64)?;
+        let mut opener = StreamOpener::new(key, room_id, file, blob)?;
         let mut plain = Vec::with_capacity(file.size as usize);
         for chunk in chunks {
             plain.extend_from_slice(&opener.push(chunk)?);
@@ -873,7 +921,7 @@ mod tests {
                 segment_count(len as u64, SEG),
                 "len {len}"
             );
-            let opened = open_file(&key(), ROOM, &s.file, &s.chunks).unwrap();
+            let opened = open_file(&key(), ROOM, &s.file, &s.blob, &s.chunks).unwrap();
             assert_eq!(opened, data(len), "len {len}");
         }
     }
@@ -900,7 +948,7 @@ mod tests {
     fn truncation_fails() {
         let s = sealed(3 * SEG);
         // The signed manifest's size already says three segments…
-        assert!(open_file(&key(), ROOM, &s.file, &s.chunks[..2]).is_err());
+        assert!(open_file(&key(), ROOM, &s.file, &s.blob, &s.chunks[..2]).is_err());
         // …and a host that also lies about the count still fails at the AEAD: the segment
         // it calls final was sealed non-final.
         let mut opener = FileOpener::new(&key(), binding(), 2).unwrap();
@@ -916,7 +964,7 @@ mod tests {
         let s = sealed(2 * SEG);
         let mut more = s.chunks.clone();
         more.push(s.chunks[0].clone());
-        assert!(open_file(&key(), ROOM, &s.file, &more).is_err());
+        assert!(open_file(&key(), ROOM, &s.file, &s.blob, &more).is_err());
     }
 
     #[test]
@@ -925,7 +973,7 @@ mod tests {
         let mut swapped = s.chunks.clone();
         swapped.swap(0, 1);
         assert_eq!(
-            open_file(&key(), ROOM, &s.file, &swapped),
+            open_file(&key(), ROOM, &s.file, &s.blob, &swapped),
             Err(FileError::DidNotOpen(0))
         );
     }
@@ -946,7 +994,7 @@ mod tests {
         )
         .unwrap();
         let spliced = vec![a.chunks[0].clone(), b.chunks[1].clone()];
-        assert!(open_file(&key(), ROOM, &a.file, &spliced).is_err());
+        assert!(open_file(&key(), ROOM, &a.file, &a.blob, &spliced).is_err());
     }
 
     #[test]
@@ -962,15 +1010,15 @@ mod tests {
     #[test]
     fn the_wrong_room_epoch_or_file_does_not_open() {
         let s = sealed(SEG + 1);
-        assert!(open_file(&key(), "did:webvh:zOther", &s.file, &s.chunks).is_err());
+        assert!(open_file(&key(), "did:webvh:zOther", &s.file, &s.blob, &s.chunks).is_err());
         let mut other_epoch = s.file.clone();
         other_epoch.epoch = 4;
-        assert!(open_file(&key(), ROOM, &other_epoch, &s.chunks).is_err());
+        assert!(open_file(&key(), ROOM, &other_epoch, &s.blob, &s.chunks).is_err());
         let mut other_id = s.file.clone();
         other_id.file_id = encode_file_id(&[9u8; 32]);
-        assert!(open_file(&key(), ROOM, &other_id, &s.chunks).is_err());
+        assert!(open_file(&key(), ROOM, &other_id, &s.blob, &s.chunks).is_err());
         let wrong_key = derive_file_key(&[8u8; 32], ROOM, &[1u8; 32], 3);
-        assert!(open_file(&wrong_key, ROOM, &s.file, &s.chunks).is_err());
+        assert!(open_file(&wrong_key, ROOM, &s.file, &s.blob, &s.chunks).is_err());
     }
 
     #[test]
@@ -990,7 +1038,7 @@ mod tests {
         let mut lying = s.file.clone();
         lying.digest = digest_multibase(b"something else");
         assert_eq!(
-            open_file(&key(), ROOM, &lying, &s.chunks),
+            open_file(&key(), ROOM, &lying, &s.blob, &s.chunks),
             Err(FileError::DigestMismatch)
         );
     }
@@ -1018,7 +1066,7 @@ mod tests {
         assert_eq!(blob, whole.blob);
         assert_eq!(file, whole.file);
 
-        let mut opener = StreamOpener::new(&key(), ROOM, &file, chunks.len() as u64).unwrap();
+        let mut opener = StreamOpener::new(&key(), ROOM, &file, &blob).unwrap();
         let mut out = Vec::new();
         for c in &chunks {
             out.extend(opener.push(c).unwrap());
@@ -1037,6 +1085,49 @@ mod tests {
     }
 
     #[test]
+    fn a_reader_refuses_a_blob_the_file_manifest_does_not_account_for() {
+        let s = sealed(2 * SEG + 1);
+        s.file.check_blob(&s.blob).unwrap();
+
+        // Another file's blob: the author named a different one.
+        let other = sealed(2 * SEG + 2);
+        assert!(s.file.check_blob(&other.blob).is_err());
+
+        // A blob shaped for another segment size, under a manifest that names it.
+        let mut wrong_size = s.file.clone();
+        wrong_size.segment_size = SEG as u64 + 1;
+        assert!(wrong_size.check_blob(&s.blob).is_err());
+
+        // The right blob, but a manifest claiming a size that needs another count.
+        let mut wrong_count = s.file.clone();
+        wrong_count.size = 4 * SEG as u64;
+        assert!(wrong_count.check_blob(&s.blob).is_err());
+
+        // An empty file is one 16-byte chunk.
+        let empty = sealed(0);
+        empty.file.check_blob(&empty.blob).unwrap();
+        assert_eq!((empty.blob.size, empty.blob.chunks.chunk_count), (16, 1));
+    }
+
+    #[test]
+    fn padding_that_is_not_zero_is_refused() {
+        let size = 100u64;
+        let padded = padme_len(size) as usize;
+        assert!(padded > size as usize, "the case needs padding to exist");
+        let mut plain = data(size as usize);
+        plain.resize(padded, 0xff);
+        // Sealed as if unpadded, then described as padded: the tail is 0xff.
+        let mut s = seal_file(&key(), binding(), "f", None, &plain, Padding::None).unwrap();
+        s.file.size = size;
+        s.file.padding = Some(Padding::Padme);
+        s.file.digest = digest_multibase(&plain[..size as usize]);
+        assert_eq!(
+            open_file(&key(), ROOM, &s.file, &s.blob, &s.chunks),
+            Err(FileError::Padding("padding bytes are not zero"))
+        );
+    }
+
+    #[test]
     fn padme_pads_and_unpads() {
         for len in [0u64, 1, 2, 9, 100, 1000, 70_000, 1 << 20] {
             let p = padme_len(len);
@@ -1047,7 +1138,10 @@ mod tests {
         let plain = data(SEG + 100);
         let s = seal_file(&key(), binding(), "f", None, &plain, Padding::Padme).unwrap();
         assert_eq!(s.file.padding, Some(Padding::Padme));
-        assert_eq!(open_file(&key(), ROOM, &s.file, &s.chunks).unwrap(), plain);
+        assert_eq!(
+            open_file(&key(), ROOM, &s.file, &s.blob, &s.chunks).unwrap(),
+            plain
+        );
     }
 
     #[test]

@@ -1143,7 +1143,7 @@ pub(super) async fn handle_file_key(
                          at epoch {held}; a commit has not been delivered",
                     req.room_id
                 ),
-                Some(serde_json::json!({ "reason": "notDelivered" })),
+                Some(serde_json::json!({ "reason": "notDelivered", "heldEpoch": held })),
             );
         }
         Err(room_groups::FileKeyError::BeyondChain { epoch, earliest }) => {

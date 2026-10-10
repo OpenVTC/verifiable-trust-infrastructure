@@ -568,12 +568,10 @@ pub async fn cmd_rooms_file_open(
     }
     let file: FileManifest = serde_json::from_slice(&std::fs::read(dir.join(FILE_MANIFEST))?)?;
     let blob: BlobManifest = serde_json::from_slice(&std::fs::read(dir.join(BLOB_MANIFEST))?)?;
-    blob.check()?;
     // The file manifest is the author's; the blob manifest is whoever served it.
-    // They agree, or the blob is not the one the author meant.
-    if !files::same_digest(&blob.blob_ref()?, &file.blob_ref) {
-        return Err("the blob manifest is not the one the file's author named".into());
-    }
+    // Before a byte is trusted: it is the blob the author named, and its chunk size
+    // and count are the ones the author's segment size and length give.
+    file.check_blob(&blob)?;
     let mut chunks = Vec::with_capacity(blob.chunks.chunk_count as usize);
     for (i, expected) in blob.chunks.chunk_digests.iter().enumerate() {
         let chunk = std::fs::read(chunk_path(dir, i))?;
@@ -587,7 +585,7 @@ pub async fn cmd_rooms_file_open(
         .room_file_key(room_id, &file.file_id, Some(file.epoch))
         .await?;
     let key = file_key_bytes(&resp)?;
-    let plaintext = files::open_file(&key, room_id, &file, &chunks)?;
+    let plaintext = files::open_file(&key, room_id, &file, &blob, &chunks)?;
 
     // Written beside the target and moved into place, so a failure leaves nothing that
     // looks like the file.

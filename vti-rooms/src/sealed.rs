@@ -472,7 +472,7 @@ mod tests {
         let k_open = r.file_key_for_open(&id, epoch).unwrap();
         assert_eq!(k_open, k);
         assert_eq!(
-            open_file(&k_open, "did:webvh:zRoom", &s.file, &s.chunks).unwrap(),
+            open_file(&k_open, "did:webvh:zRoom", &s.file, &s.blob, &s.chunks).unwrap(),
             b"a file"
         );
         assert!(matches!(
