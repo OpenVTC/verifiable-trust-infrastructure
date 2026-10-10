@@ -469,10 +469,9 @@ pub async fn delete_refresh_index(sessions: &KeyspaceHandle, token: &str) -> Res
 ///
 /// Used by the canonical `/auth/refresh` handler to close the
 /// rotation TOCTOU: a leaked refresh token cannot be presented
-/// twice. On single-process fjall the atomicity comes from
-/// running both ops in one `blocking_with_timeout` closure; on
-/// the vsock backend the fallback is non-atomic
-/// (see [`crate::store::KeyspaceHandle::take_raw`]).
+/// twice. Atomic on both stores — the local store under its keyspace
+/// write lock, the vsock store under the key's lock (see
+/// [`crate::store::KeyspaceHandle::take_raw`]).
 pub async fn take_session_id_by_refresh(
     sessions: &KeyspaceHandle,
     token: &str,
@@ -1119,6 +1118,32 @@ mod tests {
             Some("sess-b"),
             "untouched token must still resolve"
         );
+    }
+
+    /// The REST server runs on one worker per CPU, so two presentations of one
+    /// refresh token can be claimed on two threads at once. Exactly one may
+    /// win (RFC 9700 §4.14.2) — on the local store as on the vsock store.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_claims_of_one_refresh_token_admit_exactly_one() {
+        let (ks, _dir) = temp_sessions_ks();
+        for round in 0..20 {
+            let token = format!("contested-{round}");
+            store_refresh_index(&ks, &token, "sess-c").await.unwrap();
+            let tasks: Vec<_> = (0..16)
+                .map(|_| {
+                    let ks = ks.clone();
+                    let token = token.clone();
+                    tokio::spawn(async move { take_session_id_by_refresh(&ks, &token).await })
+                })
+                .collect();
+            let mut wins = 0;
+            for t in tasks {
+                if t.await.unwrap().unwrap().is_some() {
+                    wins += 1;
+                }
+            }
+            assert_eq!(wins, 1, "round {round}: one rotation per token");
+        }
     }
 
     #[tokio::test]
