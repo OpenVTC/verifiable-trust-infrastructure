@@ -147,9 +147,12 @@ port = 8100
 #                 (`src/http_forward.rs`).
 #   127.0.0.1/32  the parent proxy's (`trusted_upstream_cidrs`): a TLS
 #                 terminator on the parent's own loopback in front of it, whose
-#                 `X-Forwarded-For` it extends rather than discards. It means
-#                 nothing to the VTA: with no TCP listener in the enclave, no
-#                 VTA peer is ever 127.0.0.1.
+#                 `X-Forwarded-For` it extends rather than discards. The VTA
+#                 binds no TCP in the enclave, so no VTA peer is ever 127.0.0.1;
+#                 on vsock it reads a trusted 127.0.0.1 as the legacy name for
+#                 the parent (the old socat hop) and trusts 0.0.0.3 with it, so a
+#                 config that lists only 127.0.0.1/32 keeps working. Listing
+#                 0.0.0.3/32 says so explicitly.
 #
 # Delete this line if you front the enclave with anything that bridges bytes
 # rather than rewriting that header — `parent-proxy.sh` does, and refuses to

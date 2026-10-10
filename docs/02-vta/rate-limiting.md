@@ -106,23 +106,26 @@ inside the enclave can present it.
 `trust_xff_cidrs = ["127.0.0.1/32", "0.0.0.3/32"]`. The VTA reads it for
 `0.0.0.3` — the parent and nothing else. The parent's `enclave-proxy` reads the
 same key as its own `trusted_upstream_cidrs`, for `127.0.0.1`: a TLS
-terminator on the parent's loopback whose header it extends. Neither entry
-means anything to the other program: the enclave VTA opens no TCP port, so
-none of its peers is ever `127.0.0.1`, and no TCP peer of the proxy is ever
-`0.0.0.3`. Trusting the parent is safe **only** with
+terminator on the parent's loopback whose header it extends. No TCP peer of
+the proxy is ever `0.0.0.3`, and the enclave VTA opens no TCP port, so none of
+its peers is ever `127.0.0.1`. Trusting the parent is safe **only** with
 `deploy/nitro/enclave-proxy` on the parent: it
 terminates HTTP/1.1, strips every client-supplied identity header and sets
 `X-Forwarded-For` from the address it accepted the connection from. The
 socat-based `parent-proxy.sh` cannot do this, and refuses to start against a
 config that sets `trust_xff_cidrs`.
 
-Before the VTA served vsock directly, an in-enclave `socat` made the peer
-`127.0.0.1` and the configs trusted `127.0.0.1/32` — which anything else inside
-the enclave could also have been. A config that still trusts only loopback now
-reads no `X-Forwarded-For` in the VTA (one shared bucket, never a client-chosen
-one), and the VTA logs a warning at boot naming the fix: add `"0.0.0.3/32"`.
-An empty list gets no warning — it is how a byte-bridging parent must be
-configured.
+**Upgrading.** Before the VTA served vsock directly, an in-enclave `socat` made
+the peer `127.0.0.1` and the configs trusted `127.0.0.1/32` — which anything
+else inside the enclave could also have been. A config that still trusts
+`127.0.0.1` keeps working: on vsock the VTA binds no TCP, so that entry can only
+ever have meant the hop from the parent, and the VTA trusts the parent
+(`0.0.0.3`) for it, logging once at boot how to make that explicit. That is
+safe because a non-empty `trust_xff_cidrs` implies `enclave-proxy` — the
+byte-bridging `parent-proxy.sh` refuses to start while it is set. A non-empty
+list naming neither address reads no header (one shared bucket) and is warned
+at boot. An empty list trusts nothing and is not warned — it is how a
+byte-bridging parent must be configured.
 
 ## Units: an interval is seconds per token, not a rate
 
