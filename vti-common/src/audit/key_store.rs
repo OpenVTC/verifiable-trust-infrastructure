@@ -134,9 +134,61 @@ fn key_storage_key(key_id: &KeyId) -> Vec<u8> {
 /// async. Concurrent rotations on the same store are *not*
 /// serialised in this layer — the caller (services) owns the
 /// invariant that rotation happens from a single coordinator path.
+///
+/// ## The active-key cache
+///
+/// Every audited operation asks for the active key, which is two reads
+/// (the marker, then the key it names). [`Self::active`] and
+/// [`Self::try_active`] keep the last answer under the keyspace's
+/// [cache ticket](KeyspaceHandle::cache_ticket) and reuse it while that
+/// ticket is current: no write to `audit_key` has begun, ended or been
+/// abandoned since, through *any* handle or instance.
+///
+/// That makes it coherent and fail-closed without this type seeing the
+/// writes:
+///
+/// - a rotation through another `AuditKeyStore`, or the marker deleted
+///   through a bare keyspace handle (VTI-APV-022's outage test), retires the
+///   ticket, so the next call re-reads and fails exactly as it did before the
+///   cache existed;
+/// - nothing read while a write is in flight, or while a write's outcome is
+///   unknown (cancelled after its request may have reached the vsock
+///   parent), is cached — so a rotation the parent applies after its caller
+///   gave up cannot leave the old key cached;
+/// - a read error is never cached;
+/// - and whatever the tickets say, no value is served once it is
+///   [`MAX_CACHE_AGE`] old.
+///
+/// The cached value is per instance (shared by clones); the write tracking
+/// is per keyspace. Sharing the *value* across every handle for the name
+/// would also share it between an encrypted and a bare handle, handing a
+/// decrypted key to an instance whose own read would fail.
 #[derive(Clone)]
 pub struct AuditKeyStore {
     ks: KeyspaceHandle,
+    cached: std::sync::Arc<std::sync::Mutex<Option<CachedKey>>>,
+    max_age: std::time::Duration,
+}
+
+/// How long a cached active key may be served, whatever the write tracking
+/// says.
+///
+/// The tracking is the correctness argument; this bounds the cost of any
+/// case it does not foresee (a write applied out of order behind a later
+/// one, a store change the process cannot observe) to half a minute of
+/// hashing under the previous key — which stays retained and verifiable, so
+/// the worst outcome is a row attributed to the epoch that just closed. At
+/// the rates where the cache matters (hundreds of audited operations a
+/// second) one re-read every 30 s costs nothing measurable; much shorter and
+/// the bound would start to show in latency, much longer and a rotation that
+/// RTBF depends on could be ignored for minutes.
+pub const MAX_CACHE_AGE: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[derive(Clone)]
+struct CachedKey {
+    ticket: u64,
+    read_at: std::time::Instant,
+    key: AuditKey,
 }
 
 /// HKDF info string for a VTC's audit key. The `/v2` is the rework recorded
@@ -153,13 +205,31 @@ impl AuditKeyStore {
     /// Wrap a keyspace handle. The caller is responsible for
     /// configuring encryption-at-rest if desired.
     pub fn new(ks: KeyspaceHandle) -> Self {
-        Self { ks }
+        Self {
+            ks,
+            cached: Default::default(),
+            max_age: MAX_CACHE_AGE,
+        }
+    }
+
+    /// Test-only: a shorter [`MAX_CACHE_AGE`].
+    #[cfg(test)]
+    pub(crate) fn with_max_age(mut self, max_age: std::time::Duration) -> Self {
+        self.max_age = max_age;
+        self
     }
 
     /// Read the currently active key. Returns
     /// [`AppError::NotFound`] if no initial key has been derived yet
     /// — callers should invoke [`Self::ensure_initial`] on boot.
+    ///
+    /// Served from the cache while `audit_key` is unchanged (see the type
+    /// docs); otherwise read, exactly as before the cache.
     pub async fn active(&self) -> Result<AuditKey, AppError> {
+        let ticket = self.ks.cache_ticket();
+        if let Some(key) = self.cached_at(ticket) {
+            return Ok(key);
+        }
         let id_bytes = self
             .ks
             .get_raw(ACTIVE_MARKER_KEY.to_vec())
@@ -175,11 +245,51 @@ impl AuditKeyStore {
             Uuid::parse_str(&id_str)
                 .map_err(|e| AppError::Internal(format!("invalid audit_key uuid: {e}")))?,
         );
-        self.fetch(&key_id).await?.ok_or_else(|| {
+        let key = self.fetch(&key_id).await?.ok_or_else(|| {
             AppError::Internal(format!(
                 "active marker points at unknown audit_key {key_id}"
             ))
-        })
+        })?;
+        self.remember(ticket, &key);
+        Ok(key)
+    }
+
+    /// The cached active key, if it was cached under `ticket` (taken just
+    /// now, so nothing has been written since) and is younger than the
+    /// maximum age. No ticket — a write in flight or of unknown outcome —
+    /// means no hit.
+    fn cached_at(&self, ticket: Option<u64>) -> Option<AuditKey> {
+        let ticket = ticket?;
+        let cached = self
+            .cached
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &*cached {
+            Some(c) if c.ticket == ticket && c.read_at.elapsed() < self.max_age => {
+                Some(c.key.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// Cache `key`, read after taking `ticket`, if that ticket is still
+    /// current: no write began, ended or was abandoned during the reads.
+    /// Otherwise the value may predate a write, and is not kept.
+    fn remember(&self, ticket: Option<u64>, key: &AuditKey) {
+        let Some(ticket) = ticket else { return };
+        // `read_at` before the check, so the age is never understated.
+        let read_at = std::time::Instant::now();
+        if !self.ks.ticket_is_current(ticket) {
+            return;
+        }
+        *self
+            .cached
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(CachedKey {
+            ticket,
+            read_at,
+            key: key.clone(),
+        });
     }
 
     /// Fetch a specific key by id. Used by verifiers walking history
@@ -332,6 +442,10 @@ impl AuditKeyStore {
     /// establishing one — the question a sink asks before deciding whether
     /// this write is the one that opens the chain.
     pub async fn try_active(&self) -> Result<Option<AuditKey>, AppError> {
+        let ticket = self.ks.cache_ticket();
+        if let Some(key) = self.cached_at(ticket) {
+            return Ok(Some(key));
+        }
         let id_bytes = match self.ks.get_raw(ACTIVE_MARKER_KEY.to_vec()).await? {
             Some(b) => b,
             None => return Ok(None),
@@ -342,7 +456,11 @@ impl AuditKeyStore {
             Uuid::parse_str(&id_str)
                 .map_err(|e| AppError::Internal(format!("invalid audit_key uuid: {e}")))?,
         );
-        self.fetch(&key_id).await
+        let key = self.fetch(&key_id).await?;
+        if let Some(key) = &key {
+            self.remember(ticket, key);
+        }
+        Ok(key)
     }
 
     async fn persist(&self, key: &AuditKey) -> Result<(), AppError> {
@@ -595,5 +713,148 @@ mod domain_separation_tests {
 
         assert_eq!(first.key_id, second.key_id);
         assert_eq!(first.key, second.key);
+    }
+}
+
+/// The active-key cache: coherent across instances, fail-closed, and a hit
+/// reads nothing.
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    use crate::config::StoreConfig;
+    use crate::store::Store;
+
+    /// A store and two independently obtained handles on one keyspace — how
+    /// the VTC holds several `AuditKeyStore`s over `audit_key`.
+    fn shared_store() -> (Store, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        };
+        (Store::open(&cfg).expect("store"), dir)
+    }
+
+    /// A rotation through one instance is seen by another that had the old
+    /// key cached: the rotation's writes moved the shared generation.
+    #[tokio::test]
+    async fn a_rotation_through_another_instance_is_seen() {
+        let (store, _dir) = shared_store();
+        let reader = AuditKeyStore::new(store.keyspace("audit_key").unwrap());
+        let rotator = AuditKeyStore::new(store.keyspace("audit_key").unwrap());
+
+        let initial = reader.ensure_initial(&[0x11; 32]).await.unwrap();
+        assert_eq!(reader.active().await.unwrap().key_id, initial.key_id);
+
+        let successor = rotator.rotate(RotationReason::Manual).await.unwrap();
+        assert_eq!(reader.active().await.unwrap().key_id, successor.key_id);
+        assert_eq!(
+            reader.try_active().await.unwrap().unwrap().key_id,
+            successor.key_id
+        );
+    }
+
+    /// VTI-APV-022's outage, at this layer: the marker deleted through a bare
+    /// handle, after the key was cached, fails the next read exactly as an
+    /// uncached store would.
+    #[tokio::test]
+    async fn deleting_the_marker_through_any_handle_fails_closed() {
+        let (store, _dir) = shared_store();
+        let keys = AuditKeyStore::new(store.keyspace("audit_key").unwrap());
+        keys.ensure_initial(&[0x22; 32]).await.unwrap();
+        keys.active().await.unwrap();
+
+        store
+            .keyspace("audit_key")
+            .unwrap()
+            .remove(ACTIVE_MARKER_KEY.to_vec())
+            .await
+            .unwrap();
+
+        let err = keys.active().await.expect_err("no active key any more");
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+        assert!(keys.try_active().await.unwrap().is_none());
+    }
+
+    /// A hit reads nothing: with the marker removed *behind the generation's
+    /// back* the cached key is still served, which only a call that never
+    /// touched storage could do. The next real write ends it.
+    #[tokio::test]
+    async fn a_cache_hit_reads_nothing_and_any_write_ends_it() {
+        let (store, _dir) = shared_store();
+        let ks = store.keyspace("audit_key").unwrap();
+        let keys = AuditKeyStore::new(ks.clone());
+        let initial = keys.ensure_initial(&[0x33; 32]).await.unwrap();
+        keys.active().await.unwrap();
+
+        ks.remove_untracked(ACTIVE_MARKER_KEY.to_vec())
+            .await
+            .unwrap();
+        assert_eq!(keys.active().await.unwrap().key_id, initial.key_id);
+
+        // Any write to the keyspace, of any row, invalidates.
+        ks.insert_raw(b"unrelated".to_vec(), b"x".to_vec())
+            .await
+            .unwrap();
+        assert!(keys.active().await.is_err());
+    }
+
+    /// A failed read is not cached: once the key exists, the next call finds
+    /// it.
+    #[tokio::test]
+    async fn a_failed_read_is_not_remembered() {
+        let (store, _dir) = shared_store();
+        let keys = AuditKeyStore::new(store.keyspace("audit_key").unwrap());
+        assert!(keys.active().await.is_err());
+        assert!(keys.try_active().await.unwrap().is_none());
+
+        let initial = keys.ensure_initial(&[0x44; 32]).await.unwrap();
+        assert_eq!(keys.active().await.unwrap().key_id, initial.key_id);
+    }
+
+    /// The age bound holds whatever the write tracking says: with the marker
+    /// removed behind the tracking's back, the cached key is served until it
+    /// is `max_age` old, and the next call after that re-reads (and fails).
+    #[tokio::test]
+    async fn max_age_forces_a_re_read() {
+        let (store, _dir) = shared_store();
+        let ks = store.keyspace("audit_key").unwrap();
+        let keys =
+            AuditKeyStore::new(ks.clone()).with_max_age(std::time::Duration::from_millis(200));
+        let initial = keys.ensure_initial(&[0x55; 32]).await.unwrap();
+        keys.active().await.unwrap();
+
+        ks.remove_untracked(ACTIVE_MARKER_KEY.to_vec())
+            .await
+            .unwrap();
+        assert_eq!(
+            keys.active().await.unwrap().key_id,
+            initial.key_id,
+            "young: a hit"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        assert!(keys.active().await.is_err(), "old: re-read, and fail");
+    }
+
+    /// While a local write is running (its blocking closure holds the
+    /// keyspace's write lock here), reads go through and are not cached.
+    #[tokio::test]
+    async fn a_local_write_in_flight_suppresses_caching() {
+        let (store, _dir) = shared_store();
+        let ks = store.keyspace("audit_key").unwrap();
+        let keys = AuditKeyStore::new(ks.clone());
+        keys.ensure_initial(&[0x66; 32]).await.unwrap();
+
+        let write = ks.begin_local_write_for_test();
+        assert!(ks.cache_ticket().is_none(), "in flight: no ticket");
+        keys.active().await.unwrap();
+        ks.remove_untracked(ACTIVE_MARKER_KEY.to_vec())
+            .await
+            .unwrap();
+        assert!(
+            keys.active().await.is_err(),
+            "the read during the write was not cached"
+        );
+        drop(write);
     }
 }

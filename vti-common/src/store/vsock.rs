@@ -43,6 +43,15 @@ const OP_INSERT_IF_ABSENT: u8 = 0x09;
 const OP_SWAP_IF_ABSENT: u8 = 0x0A;
 const OP_MOVE_IF_EQUAL: u8 = 0x0B;
 
+/// Requests that cannot modify a keyspace. Everything else is tracked as a
+/// write (`VsockKeyspaceHandle::send`).
+fn is_read_only(payload: &[u8]) -> bool {
+    matches!(
+        payload.first(),
+        Some(&(OP_GET | OP_PREFIX_ITER | OP_PREFIX_KEYS | OP_HELLO | OP_PERSIST))
+    )
+}
+
 const CAP_TAKE: u32 = 1 << 0;
 const CAP_INSERT_IF_ABSENT: u32 = 1 << 1;
 const CAP_SWAP_IF_ABSENT: u32 = 1 << 2;
@@ -232,6 +241,10 @@ pub struct VsockStore {
     /// Atomic operations the proxy serves (OP_HELLO), shared by every handle;
     /// see [`Capabilities`].
     caps: Arc<Capabilities>,
+    /// Per-keyspace write tracking, shared by every handle for a name, so a
+    /// cache over one handle sees writes through any other — see
+    /// `super::generation`.
+    writes: super::generation::Generations,
 }
 
 impl VsockStore {
@@ -260,6 +273,7 @@ impl VsockStore {
             pool,
             locks: Arc::new(KeyLocks::default()),
             caps: Arc::new(Capabilities::new(caps, REPROBE_AFTER)),
+            writes: Default::default(),
         })
     }
 
@@ -270,6 +284,7 @@ impl VsockStore {
             pool: Arc::clone(&self.pool),
             locks: Arc::clone(&self.locks),
             caps: Arc::clone(&self.caps),
+            writes: self.writes.for_keyspace(name),
             keyspace: name.to_string(),
             #[cfg(feature = "encryption")]
             encryption_key: None,
@@ -297,6 +312,11 @@ pub struct VsockKeyspaceHandle {
     pool: Arc<ConnectionPool>,
     locks: Arc<KeyLocks>,
     caps: Arc<Capabilities>,
+    /// This keyspace's write tracking, shared with every handle for the name.
+    /// [`Self::send`] begins a write before any request that can modify the
+    /// keyspace leaves the enclave, and ends it when the response arrives —
+    /// or marks its outcome unknown if the request fails or is cancelled.
+    writes: Arc<super::generation::KeyspaceWrites>,
     keyspace: String,
     #[cfg(feature = "encryption")]
     encryption_key: Option<Arc<zeroize::Zeroizing<[u8; 32]>>>,
@@ -713,7 +733,13 @@ impl VsockKeyspaceHandle {
     /// "outcome unknown" — is returned as is: falling back after a request
     /// that may have been applied could apply it twice.
     async fn send_atomic(&self, payload: &[u8]) -> Result<Option<Vec<u8>>, AppError> {
-        let resp = self.pool.request_once(payload).await?;
+        // Every atomic opcode is a write; tracked as `send` tracks one.
+        let write = self.writes.begin();
+        let resp = self
+            .pool
+            .request_once_tracked(payload, write.sent())
+            .await?;
+        write.completed();
         if is_unknown_opcode(&resp) {
             if self.caps.downgrade() {
                 warn!("storage proxy no longer serves atomic operations; using single operations");
@@ -733,10 +759,33 @@ impl VsockKeyspaceHandle {
         decode_ok(&resp)
     }
 
-    /// Send one request over a pooled connection (reconnecting once on
+    /// This keyspace's write tracking — see
+    /// [`crate::store::KeyspaceHandle::cache_ticket`].
+    pub(crate) fn writes(&self) -> &super::generation::KeyspaceWrites {
+        &self.writes
+    }
+
+    /// Send one idempotent request over a pooled connection (resent once on
     /// failure) and return the response.
+    ///
+    /// The store's requests leave the enclave through here or
+    /// [`Self::send_atomic`] — single operations, the atomic opcodes, their
+    /// single-operation fallbacks, the restore after a failed take — and both
+    /// track writes. Here anything that is not a known read counts as a
+    /// write, so an opcode added later is tracked until someone decides
+    /// otherwise.
     async fn send(&self, payload: &[u8]) -> Result<Vec<u8>, AppError> {
-        self.pool.request(payload).await
+        if is_read_only(payload) {
+            return self.pool.request(payload).await;
+        }
+        // Begun before the frame leaves. Dropped without `completed` — an
+        // error, or this future cancelled — it marks the outcome unknown only
+        // if the frame had completely left (`sent`); before that, the parent
+        // cannot have applied it.
+        let write = self.writes.begin();
+        let resp = self.pool.request_tracked(payload, write.sent()).await?;
+        write.completed();
+        Ok(resp)
     }
 
     fn maybe_encrypt(&self, store_key: &[u8], plaintext: Vec<u8>) -> Result<Vec<u8>, AppError> {
@@ -1230,6 +1279,16 @@ mod atomicity_tests {
         hang_up_after: Arc<StdMutex<Option<u8>>>,
         /// Refuse HELLO with an ordinary error (not "unknown opcode").
         refuse_hello: Arc<AtomicBool>,
+        /// Write tracking shared by every handle this parent hands out, as
+        /// `VsockStore` shares it across its handles.
+        writes: crate::store::generation::Generations,
+        /// While set, a write is received and then held, unapplied, until
+        /// [`Self::release_writes`] — a parent that has the frame but has not
+        /// acted on it yet.
+        hold: Arc<AtomicBool>,
+        gate: Arc<tokio::sync::Notify>,
+        /// Writes received and currently held.
+        held: Arc<AtomicUsize>,
     }
 
     impl FakeParent {
@@ -1240,7 +1299,111 @@ mod atomicity_tests {
                 requests: Arc::new(AtomicUsize::new(0)),
                 hang_up_after: Arc::default(),
                 refuse_hello: Arc::default(),
+                writes: Default::default(),
+                hold: Arc::new(AtomicBool::new(false)),
+                gate: Arc::new(tokio::sync::Notify::new()),
+                held: Arc::new(AtomicUsize::new(0)),
             }
+        }
+
+        /// As [`Self::new`], with a short unknown-settle period.
+        fn with_settle(atomic: bool, settle: Duration) -> Self {
+            Self {
+                writes: crate::store::generation::Generations::with_settle(settle),
+                ..Self::new(atomic)
+            }
+        }
+
+        /// A handle that can never get a frame out: its only connection is
+        /// already closed and reconnecting fails — a connect error before
+        /// anything is written. Shares this parent's write tracking.
+        fn unreachable_handle(&self) -> VsockKeyspaceHandle {
+            let (dead, peer) = tokio::io::duplex(64);
+            drop(peer);
+            let connect: Connector =
+                Arc::new(|| Box::pin(async { Err(AppError::Internal("connect refused".into())) }));
+            VsockKeyspaceHandle {
+                pool: Arc::new(ConnectionPool::new(connect, 8, Box::new(dead))),
+                locks: Arc::new(KeyLocks::default()),
+                caps: Arc::new(Capabilities::new(ALL_CAPS, REPROBE_AFTER)),
+                writes: self.writes.for_keyspace("ks"),
+                keyspace: "ks".into(),
+                #[cfg(feature = "encryption")]
+                encryption_key: None,
+            }
+        }
+
+        /// A handle on this parent whose round trips time out after
+        /// `timeout` — for a write the parent holds past its deadline.
+        async fn handle_timing_out_after(&self, timeout: Duration) -> VsockKeyspaceHandle {
+            let parent = self.clone();
+            let connect: Connector = Arc::new(move || {
+                let parent = parent.clone();
+                Box::pin(async move { Ok(parent.open()) })
+            });
+            let pool = Arc::new(ConnectionPool::new(connect, 8, self.open()).with_timeout(timeout));
+            VsockKeyspaceHandle {
+                pool,
+                locks: Arc::new(KeyLocks::default()),
+                caps: Arc::new(Capabilities::new(ALL_CAPS, REPROBE_AFTER)),
+                writes: self.writes.for_keyspace("ks"),
+                keyspace: "ks".into(),
+                #[cfg(feature = "encryption")]
+                encryption_key: None,
+            }
+        }
+
+        /// A handle whose every connection accepts one byte and is then never
+        /// read: a request frame can never be completely written, so each
+        /// round trip times out *before* sending. Shares this parent's write
+        /// tracking.
+        fn unwritable_handle(&self, timeout: Duration) -> VsockKeyspaceHandle {
+            fn stuck() -> BoxStream {
+                let (client, peer) = tokio::io::duplex(1);
+                // Kept open and never read, so writes stall instead of failing.
+                std::mem::forget(peer);
+                Box::new(client)
+            }
+            let connect: Connector = Arc::new(|| Box::pin(async { Ok(stuck()) }));
+            VsockKeyspaceHandle {
+                pool: Arc::new(ConnectionPool::new(connect, 8, stuck()).with_timeout(timeout)),
+                locks: Arc::new(KeyLocks::default()),
+                caps: Arc::new(Capabilities::new(ALL_CAPS, REPROBE_AFTER)),
+                writes: self.writes.for_keyspace("ks"),
+                keyspace: "ks".into(),
+                #[cfg(feature = "encryption")]
+                encryption_key: None,
+            }
+        }
+
+        fn hold_writes(&self) {
+            self.hold.store(true, Ordering::SeqCst);
+        }
+
+        fn release_writes(&self) {
+            self.hold.store(false, Ordering::SeqCst);
+            self.gate.notify_waiters();
+        }
+
+        /// Wait until `n` writes are being held.
+        async fn until_held(&self, n: usize) {
+            for _ in 0..400 {
+                if self.held.load(Ordering::SeqCst) >= n {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            panic!("fake parent: {n} held write(s) never arrived");
+        }
+
+        /// The raw bytes at `key` in keyspace "ks", for waiting on a held
+        /// write to land.
+        fn raw(&self, key: &[u8]) -> Option<Vec<u8>> {
+            self.rows
+                .lock()
+                .unwrap()
+                .get(&("ks".to_string(), key.to_vec()))
+                .cloned()
         }
 
         /// A handle wired the way `VsockStore::connect` wires one, HELLO
@@ -1261,6 +1424,7 @@ mod atomicity_tests {
                 pool,
                 locks: Arc::new(KeyLocks::default()),
                 caps: Arc::new(Capabilities::new(caps, reprobe_after)),
+                writes: self.writes.for_keyspace("ks"),
                 keyspace: "ks".into(),
                 #[cfg(feature = "encryption")]
                 encryption_key: None,
@@ -1314,6 +1478,19 @@ mod atomicity_tests {
                     return;
                 }
                 self.requests.fetch_add(1, Ordering::SeqCst);
+                if !is_read_only(&req) && self.hold.load(Ordering::SeqCst) {
+                    self.held.fetch_add(1, Ordering::SeqCst);
+                    loop {
+                        let released = self.gate.notified();
+                        tokio::pin!(released);
+                        released.as_mut().enable();
+                        if !self.hold.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        released.await;
+                    }
+                    self.held.fetch_sub(1, Ordering::SeqCst);
+                }
                 tokio::time::sleep(Duration::from_millis(3)).await;
                 let resp = self.apply(&req);
                 {
@@ -1886,5 +2063,387 @@ mod atomicity_tests {
             wins > 1,
             "unlocked read-then-delete should double-claim here, got {wins}"
         );
+    }
+
+    // ── The audit-key cache over vsock ──────────────────────────────────
+    //
+    // `AuditKeyStore` caches the active key under the keyspace's write
+    // tracking. Over vsock every request goes through `send`; these prove
+    // each write path — single operations, every atomic opcode, each one's
+    // fallback, and the restore after an undecryptable take — retires a
+    // cached key, and that a write the parent applies after its writer gave
+    // up can never leave the old key cached.
+
+    use crate::audit::{AuditKey, AuditKeyStore, KeyId, RotationReason};
+    use crate::store::{KeyspaceHandle, MoveOutcome};
+
+    const MARKER: &[u8] = b"audit_key:active";
+
+    /// An `AuditKeyStore` over its own handle on `parent`, with the key
+    /// established and cached: a second `active` reads nothing.
+    async fn cached_keys(parent: &FakeParent) -> AuditKeyStore {
+        let keys = AuditKeyStore::new(KeyspaceHandle::Vsock(parent.handle().await));
+        keys.ensure_initial(&[9u8; 32]).await.unwrap();
+        keys.active().await.unwrap();
+        let n = parent.requests();
+        keys.active().await.unwrap();
+        assert_eq!(parent.requests(), n, "warm: a hit reads nothing");
+        keys
+    }
+
+    /// The next `active` went to the parent: the cache was retired.
+    async fn assert_retired(parent: &FakeParent, keys: &AuditKeyStore, path: &str, atomic: bool) {
+        let n = parent.requests();
+        keys.active().await.unwrap();
+        assert!(
+            parent.requests() > n,
+            "{path} ({}) left the cached key in place",
+            mode(atomic)
+        );
+    }
+
+    /// Every write path the store can send, through a *different* handle than
+    /// the cache's, on both proxy generations (atomic opcodes and the
+    /// single-operation fallbacks).
+    #[tokio::test]
+    async fn every_vsock_write_path_retires_the_cached_key() {
+        type Op = for<'a> fn(
+            &'a VsockKeyspaceHandle,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = ()> + Send + 'a>,
+        >;
+        let paths: [(&str, Op); 8] = [
+            ("insert", |w| {
+                Box::pin(async { w.insert(b"p:ins".to_vec(), &"v").await.unwrap() })
+            }),
+            ("insert_raw", |w| {
+                Box::pin(async {
+                    w.insert_raw(b"p:raw".to_vec(), b"v".to_vec())
+                        .await
+                        .unwrap()
+                })
+            }),
+            ("remove", |w| {
+                Box::pin(async { w.remove(b"p:seed".to_vec()).await.unwrap() })
+            }),
+            ("insert_if_absent", |w| {
+                Box::pin(async {
+                    assert!(w.insert_if_absent(b"p:iia".to_vec(), &"v").await.unwrap());
+                })
+            }),
+            ("insert_raw_if_absent", |w| {
+                Box::pin(async {
+                    assert!(
+                        w.insert_raw_if_absent(b"p:iria".to_vec(), b"v".to_vec())
+                            .await
+                            .unwrap()
+                    );
+                })
+            }),
+            ("take_raw", |w| {
+                Box::pin(async {
+                    assert!(w.take_raw(b"p:seed".to_vec()).await.unwrap().is_some());
+                })
+            }),
+            ("swap", |w| {
+                Box::pin(async {
+                    assert!(
+                        w.swap(b"p:seed".to_vec(), b"p:swapped".to_vec(), &"v")
+                            .await
+                            .unwrap()
+                    );
+                })
+            }),
+            ("move_if_unchanged", |w| {
+                Box::pin(async {
+                    let outcome = w
+                        .move_if_unchanged(
+                            b"p:seed".to_vec(),
+                            b"seed".to_vec(),
+                            b"p:moved".to_vec(),
+                            &"v",
+                        )
+                        .await
+                        .unwrap();
+                    assert!(matches!(outcome, MoveOutcome::Moved), "{outcome:?}");
+                })
+            }),
+        ];
+        for atomic in BOTH {
+            for (path, op) in paths {
+                let parent = FakeParent::new(atomic);
+                let writer = parent.handle().await;
+                writer
+                    .insert_raw(b"p:seed".to_vec(), b"seed".to_vec())
+                    .await
+                    .unwrap();
+                let keys = cached_keys(&parent).await;
+                op(&writer).await;
+                assert_retired(&parent, &keys, path, atomic).await;
+            }
+        }
+    }
+
+    /// Only what is sent counts. Taking an absent key on an older proxy is a
+    /// lone GET — nothing written, so the cached key stays (correctly). On a
+    /// current proxy it is an OP_TAKE request, tracked as a write whatever it
+    /// found.
+    #[tokio::test]
+    async fn an_absent_take_retires_the_cache_only_when_it_sends_a_write() {
+        for atomic in BOTH {
+            let parent = FakeParent::new(atomic);
+            let writer = parent.handle().await;
+            let keys = cached_keys(&parent).await;
+            assert!(writer.take_raw(b"p:none".to_vec()).await.unwrap().is_none());
+            let n = parent.requests();
+            keys.active().await.unwrap();
+            assert_eq!(
+                parent.requests() > n,
+                atomic,
+                "{}: an absent take retires the cache iff it sent OP_TAKE",
+                mode(atomic)
+            );
+        }
+    }
+
+    /// The restore after an undecryptable OP_TAKE is a write of its own
+    /// (OP_INSERT_IF_ABSENT): two tracked writes, each moving the generation
+    /// twice (begin and end), and the cached key retired.
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn the_restore_after_an_undecryptable_take_is_tracked() {
+        let parent = FakeParent::new(true);
+        let writer = parent.handle().await.with_encryption([1u8; 32]);
+        writer
+            .insert_raw(b"victim".to_vec(), b"x".to_vec())
+            .await
+            .unwrap();
+        let keys = cached_keys(&parent).await;
+        let probe = KeyspaceHandle::Vsock(parent.handle().await);
+        let before = probe.cache_ticket().expect("idle");
+
+        let wrong = parent.handle().await.with_encryption([2u8; 32]);
+        let n = parent.requests();
+        assert!(wrong.take_raw(b"victim".to_vec()).await.is_err());
+        assert_eq!(parent.requests() - n, 2, "OP_TAKE, then the restore");
+
+        let after = probe.cache_ticket().expect("idle");
+        assert_eq!(after - before, 4, "both requests tracked as writes");
+        assert_retired(&parent, &keys, "restore", true).await;
+    }
+
+    /// The gap the tracking closes: a rotation's marker write reaches the
+    /// parent, its writer gives up (the future is dropped), and the parent
+    /// applies it afterwards. Nothing read in between is cached, so the read
+    /// after the parent applies it sees the new key — not the old one, cached
+    /// under a generation that has already moved.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_rotation_applied_after_its_writer_gave_up_is_never_cached_stale() {
+        for atomic in BOTH {
+            let parent = FakeParent::new(atomic);
+            let keys = cached_keys(&parent).await;
+            let old = keys.active().await.unwrap();
+
+            // The successor key row lands normally; only the marker flip is
+            // abandoned.
+            let new = AuditKey {
+                key_id: KeyId::new(),
+                key: [2u8; 32],
+                valid_from: chrono::Utc::now(),
+                valid_until: None,
+                rotation_reason: RotationReason::Manual,
+            };
+            let writer = parent.handle().await;
+            writer
+                .insert(format!("audit_key:{}", new.key_id.0).into_bytes(), &new)
+                .await
+                .unwrap();
+            assert_eq!(keys.active().await.unwrap().key_id, old.key_id);
+
+            parent.hold_writes();
+            let flip = writer.insert_raw(MARKER.to_vec(), new.key_id.0.to_string().into_bytes());
+            let gave_up = tokio::time::timeout(Duration::from_millis(100), async {
+                tokio::join!(flip, parent.until_held(1)).0
+            })
+            .await;
+            assert!(gave_up.is_err(), "the writer gave up with the write held");
+
+            // In the gap the old key is still what the parent holds; it may
+            // be read, but must not be cached.
+            assert_eq!(keys.active().await.unwrap().key_id, old.key_id);
+
+            // The parent applies the abandoned write.
+            parent.release_writes();
+            for _ in 0..400 {
+                if parent.raw(MARKER) == Some(new.key_id.0.to_string().into_bytes()) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                keys.active().await.unwrap().key_id,
+                new.key_id,
+                "{}: the old key was served after the parent applied the rotation",
+                mode(atomic)
+            );
+
+            // Caching resumes once a later write completes.
+            writer
+                .insert_raw(b"later".to_vec(), b"x".to_vec())
+                .await
+                .unwrap();
+            keys.active().await.unwrap();
+            let n = parent.requests();
+            keys.active().await.unwrap();
+            assert_eq!(parent.requests(), n, "cached again after a known write");
+        }
+    }
+
+    /// While a write is in flight every read goes through and nothing is
+    /// cached; once it completes, caching resumes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_write_in_flight_suppresses_caching() {
+        let parent = FakeParent::new(true);
+        let keys = cached_keys(&parent).await;
+        let writer = parent.handle().await;
+
+        parent.hold_writes();
+        let pending = tokio::spawn(async move {
+            writer
+                .insert_raw(b"slow".to_vec(), b"x".to_vec())
+                .await
+                .unwrap();
+        });
+        parent.until_held(1).await;
+
+        for _ in 0..2 {
+            let n = parent.requests();
+            keys.active().await.unwrap();
+            assert!(
+                parent.requests() > n,
+                "read through while a write is in flight"
+            );
+        }
+
+        parent.release_writes();
+        pending.await.unwrap();
+        keys.active().await.unwrap();
+        let n = parent.requests();
+        keys.active().await.unwrap();
+        assert_eq!(parent.requests(), n, "cached again once it completed");
+    }
+
+    /// Whether `keys` caches again: a re-read, then a hit that reads nothing.
+    async fn caches_again(parent: &FakeParent, keys: &AuditKeyStore) -> bool {
+        keys.active().await.unwrap();
+        let n = parent.requests();
+        keys.active().await.unwrap();
+        parent.requests() == n
+    }
+
+    /// A write that fails before its frame leaves — no connection to be had —
+    /// cannot have been applied: a known outcome, not an unknown one. On a
+    /// keyspace written once in weeks (`audit_key`), treating it as unknown
+    /// would switch the cache off until the next write. Both pool paths: a
+    /// plain insert and an atomic opcode.
+    #[tokio::test]
+    async fn a_write_that_never_left_does_not_disable_caching() {
+        let parent = FakeParent::new(true);
+        let keys = cached_keys(&parent).await;
+        let dead = parent.unreachable_handle();
+
+        assert!(dead.insert_raw(b"x".to_vec(), b"v".to_vec()).await.is_err());
+        assert!(caches_again(&parent, &keys).await, "plain insert");
+
+        assert!(
+            dead.insert_raw_if_absent(b"y".to_vec(), b"v".to_vec())
+                .await
+                .is_err()
+        );
+        assert!(caches_again(&parent, &keys).await, "atomic opcode");
+    }
+
+    /// A write whose frame left and got no reply is unknown: caching stays
+    /// off — until a later write completes, or the mark settles on its own.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_after_send_unknown_disables_caching_until_it_settles() {
+        let settle = Duration::from_millis(300);
+        let parent = FakeParent::with_settle(true, settle);
+        let keys = cached_keys(&parent).await;
+        let writer = parent.handle().await;
+
+        // The parent applies the atomic insert, then hangs up: the enclave
+        // gets "outcome unknown".
+        parent.hang_up_after(OP_INSERT_IF_ABSENT);
+        assert!(
+            writer
+                .insert_raw_if_absent(b"z".to_vec(), b"v".to_vec())
+                .await
+                .is_err()
+        );
+        assert!(!caches_again(&parent, &keys).await, "unknown: read through");
+        assert!(!caches_again(&parent, &keys).await, "still unknown");
+
+        tokio::time::sleep(settle + Duration::from_millis(100)).await;
+        assert!(caches_again(&parent, &keys).await, "settled: caching again");
+    }
+
+    /// The pool's per-round-trip deadline, expiring *after* the frame left:
+    /// the parent holds the write, the enclave gives up. The parent may still
+    /// apply it, so caching is off — both pool paths.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_timeout_after_the_frame_was_sent_disables_caching() {
+        for (path, atomic_op) in [("plain insert", false), ("atomic opcode", true)] {
+            let parent = FakeParent::new(true);
+            let keys = cached_keys(&parent).await;
+            let writer = parent
+                .handle_timing_out_after(Duration::from_millis(100))
+                .await;
+
+            parent.hold_writes();
+            let failed = if atomic_op {
+                writer
+                    .insert_raw_if_absent(b"late".to_vec(), b"v".to_vec())
+                    .await
+                    .is_err()
+            } else {
+                writer
+                    .insert_raw(b"late".to_vec(), b"v".to_vec())
+                    .await
+                    .is_err()
+            };
+            assert!(failed, "{path}: the deadline expired");
+            assert!(
+                !caches_again(&parent, &keys).await,
+                "{path}: a timeout after sending is an unknown outcome"
+            );
+            parent.release_writes();
+        }
+    }
+
+    /// The deadline expiring *before* the frame was completely written: the
+    /// parent cannot act on a partial frame, so the outcome is known (not
+    /// applied) and caching stays on — both pool paths.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_timeout_before_the_frame_was_sent_does_not_disable_caching() {
+        let parent = FakeParent::new(true);
+        let keys = cached_keys(&parent).await;
+        let stuck = parent.unwritable_handle(Duration::from_millis(100));
+
+        assert!(
+            stuck
+                .insert_raw(b"x".to_vec(), b"v".to_vec())
+                .await
+                .is_err()
+        );
+        assert!(caches_again(&parent, &keys).await, "plain insert");
+
+        assert!(
+            stuck
+                .insert_raw_if_absent(b"y".to_vec(), b"v".to_vec())
+                .await
+                .is_err()
+        );
+        assert!(caches_again(&parent, &keys).await, "atomic opcode");
     }
 }
