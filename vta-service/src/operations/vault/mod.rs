@@ -26,6 +26,9 @@ use crate::operations::internal_authority::InternalAuthority;
 use crate::store::KeyspaceHandle;
 use vta_sdk::did_key::decode_private_key_multibase;
 
+/// Default policy for wallet sign-in documents (`auth/oob/identify`,
+/// `auth/oob/grant`) on `vault/sign-trust-task`.
+pub mod oob_sign_in;
 /// `vault/proxy-login/0.1` driver dispatch + session-blob sealing.
 pub mod proxy_login;
 /// `vault/release/0.1` sealing logic.

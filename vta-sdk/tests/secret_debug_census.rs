@@ -121,10 +121,31 @@ const NOT_SECRET: &[(&str, &str, &str, &str)] = &[
          `token/event/<id>`), public values every applicant and vetter reads from the join \
          manifest — names of labels, not tokens",
     ),
+    (
+        "vta-service/src/operations/vault/oob_sign_in.rs",
+        "GrantPayload",
+        "approver_key",
+        "a wallet sign-in key named as an Ed25519 `did:key` — the public half the \
+         service checks a proof against (`K_a` / `K_b`, base design §10), never key material",
+    ),
+    (
+        "vta-service/src/operations/vault/oob_sign_in.rs",
+        "GrantPayload",
+        "session_key",
+        "a wallet sign-in key named as an Ed25519 `did:key` — the public half the \
+         service checks a proof against (`K_a` / `K_b`, base design §10), never key material",
+    ),
+    (
+        "vta-service/src/operations/vault/oob_sign_in.rs",
+        "IdentifyPayload",
+        "approver_key",
+        "a wallet sign-in key named as an Ed25519 `did:key` — the public half the \
+         service checks a proof against (`K_a` / `K_b`, base design §10), never key material",
+    ),
 ];
 
 /// The size of [`NOT_SECRET`], asserted so the list cannot grow quietly.
-const NOT_SECRET_COUNT: usize = 12;
+const NOT_SECRET_COUNT: usize = 15;
 
 /// Field names that are exactly one of these are record or index keys, not
 /// key material.

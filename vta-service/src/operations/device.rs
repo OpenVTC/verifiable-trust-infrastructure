@@ -41,6 +41,26 @@ use trust_tasks_rs::specs::device::register::v0_1 as register_spec;
 // weakens nothing: the binding, its `deviceId` and its `registeredAt` are
 // untouched, and no new binding can be claimed this way.
 use vta_sdk::protocols::device_management::EXT_DEVICE_NAME;
+use vta_sdk::protocols::device_management::{EXT_UV_KEY, UvKeyEnrolment, UvKeyMaterial};
+use vti_common::acl::UvKey;
+
+/// The UV key a `device/register` or `device/heartbeat` payload's `ext`
+/// carries under [`EXT_UV_KEY`], if any.
+///
+/// Unlike [`extension_display_name`], a malformed one is **refused**, not
+/// ignored: enrolling a UV key is a security decision the device is waiting
+/// on, and a device told "ok" for a key that was dropped would believe it can
+/// approve sign-ins when the VTA will refuse every one.
+pub fn extension_uv_key<'a>(
+    ext: impl IntoIterator<Item = (&'a str, &'a Value)>,
+) -> Result<Option<UvKeyEnrolment>, AppError> {
+    let Some((_, value)) = ext.into_iter().find(|(k, _)| *k == EXT_UV_KEY) else {
+        return Ok(None);
+    };
+    UvKeyEnrolment::from_ext_value(value)
+        .map(Some)
+        .map_err(|e| AppError::Validation(format!("device:uvKeyInvalid — {e}")))
+}
 
 /// Ceiling on a display name, mirroring the `device/register` schema's
 /// `maxLength: 128`. The `ext` slot is untyped, so a bound the schema would have
@@ -77,6 +97,14 @@ fn extension_display_name(ext: Option<&heartbeat_spec::Ext>) -> Option<String> {
 /// swapped in at enrolment). Re-registration is refused — the device rotates
 /// keys and retries — per the spec. Returns the `{ binding }` response payload.
 ///
+/// **One device, one row.** Each of a member's devices — every browser
+/// install, every phone — enrols under a DID of its own and so has an ACL
+/// entry of its own; this writes the binding and `consumerKind` of that row
+/// and no other. A member with N devices has N entries, and registering,
+/// renaming (heartbeat), re-keying (heartbeat), disabling or wiping one leaves
+/// the others — and the member's own administrative entries, which are not
+/// devices — exactly as they were.
+///
 /// `attestation` is **accepted but not yet verified** (the spec treats it as a
 /// policy input, not a gate; platform-attestation verification — Apple App
 /// Attest / Play Integrity — is a follow-up). A stricter deployment will gate
@@ -90,6 +118,7 @@ pub async fn register_device(
     display_name: String,
     platform: Option<String>,
     hpke_public_key: Option<String>,
+    uv_key: Option<UvKeyEnrolment>,
     channel: &str,
 ) -> Result<Value, AppError> {
     let did = auth.did.clone();
@@ -116,19 +145,24 @@ pub async fn register_device(
         display_name,
         platform,
         registered_at: now.clone(),
-        last_seen_at: Some(now),
+        last_seen_at: Some(now.clone()),
         disabled_at: None,
         wiped_at: None,
         hpke_public_key,
         wake: None,
+        uv_key: uv_key.map(|enrolment| UvKey {
+            enrolment,
+            enrolled_at: now.clone(),
+        }),
     };
+    let uv_detail = binding.uv_key.as_ref().map(uv_key_audit_detail);
 
     entry.kind = consumer_kind;
     entry.device = Some(binding);
     entry.version = entry.version.saturating_add(1);
     store_acl_entry(acl_ks, &entry).await?;
 
-    info!(channel, did = %did, "device registered");
+    info!(channel, did = %did, uv_key = uv_detail.is_some(), "device registered");
     audit::record_best_effort(
         audit,
         "device.register",
@@ -139,6 +173,19 @@ pub async fn register_device(
         None,
     )
     .await;
+    if let Some(detail) = uv_detail {
+        crate::audit::record_with_detail_best_effort(
+            audit,
+            "device.uv-key.enrol",
+            &did,
+            Some(&did),
+            "success",
+            Some(channel),
+            None,
+            Some(&detail),
+        )
+        .await;
+    }
 
     Ok(json!({ "binding": to_wire_binding(&entry) }))
 }
@@ -165,10 +212,17 @@ pub async fn register_device(
 /// not yet acted on).
 pub async fn heartbeat_device(
     acl_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     platform: Option<String>,
     ext: Option<&heartbeat_spec::Ext>,
 ) -> Result<Value, AppError> {
+    // Read (and refuse) a UV key replacement before touching the row, so a bad
+    // one leaves the binding exactly as it was.
+    let uv_replacement = extension_uv_key(
+        ext.into_iter()
+            .flat_map(|e| e.iter().map(|(k, v)| (k.as_str(), v))),
+    )?;
     let did = auth.did.clone();
     let mut entry = get_acl_entry(acl_ks, &did).await?.ok_or_else(|| {
         AppError::NotFound(format!(
@@ -197,7 +251,47 @@ pub async fn heartbeat_device(
         );
         binding.display_name = renamed;
     }
+    // A replacement UV key (base design §11 item 5) is accepted only here: the
+    // entry was fetched by `auth.did`, the device's own transport key, so no
+    // other caller — an administrator included — can put a key on this row. A
+    // disabled or wiped device approves nothing, so it may not re-key either.
+    let uv_detail = match uv_replacement {
+        Some(enrolment) => {
+            if binding.disabled_at.is_some() || binding.wiped_at.is_some() {
+                return Err(AppError::Forbidden(format!(
+                    "device/heartbeat:deviceDisabled — {did} is disabled and cannot enrol a UV key"
+                )));
+            }
+            let replaced = binding.uv_key.is_some();
+            let key = UvKey {
+                enrolment,
+                enrolled_at: now.clone(),
+            };
+            let detail = uv_key_audit_detail(&key);
+            binding.uv_key = Some(key);
+            Some((replaced, detail))
+        }
+        None => None,
+    };
     store_acl_entry(acl_ks, &entry).await?;
+    if let Some((replaced, detail)) = uv_detail {
+        info!(did = %did, replaced, "device enrolled a UV key");
+        crate::audit::record_with_detail_best_effort(
+            audit,
+            if replaced {
+                "device.uv-key.replace"
+            } else {
+                "device.uv-key.enrol"
+            },
+            &did,
+            Some(&did),
+            "success",
+            None,
+            None,
+            Some(&detail),
+        )
+        .await;
+    }
 
     Ok(json!({
         "serverTime": now,
@@ -551,14 +645,20 @@ pub fn to_wire_binding(entry: &AclEntry) -> Value {
         "capabilities": published_caps,
     });
     let map = out.as_object_mut().expect("json object");
+    let mut openvtc = serde_json::Map::new();
     if !local_caps.is_empty() {
         // Reverse-DNS namespaced per SPEC §4.5.1: these are this ecosystem's
         // capabilities, not the framework's, so they travel in the slot the
         // framework provides rather than widening its closed enum.
-        map.insert(
-            "ext".into(),
-            json!({ "org.openvtc": { "capabilities": local_caps } }),
-        );
+        openvtc.insert("capabilities".into(), json!(local_caps));
+    }
+    if let Some(uv) = &b.uv_key {
+        // The binding schema has no UV-key member yet, so its summary rides
+        // in the same slot.
+        openvtc.insert("uvKey".into(), uv_key_summary(uv));
+    }
+    if !openvtc.is_empty() {
+        map.insert("ext".into(), json!({ "org.openvtc": openvtc }));
     }
     if let Some(p) = &b.platform {
         map.insert("platform".into(), json!(p));
@@ -573,6 +673,38 @@ pub fn to_wire_binding(entry: &AclEntry) -> Value {
         map.insert("wipedAt".into(), json!(t));
     }
     out
+}
+
+/// What the audit trail records about a UV key: its kind, its public
+/// identifier and the device's claims about it — never anything secret, since
+/// nothing about a UV key is.
+fn uv_key_audit_detail(key: &UvKey) -> String {
+    json!({
+        "uvKey": uv_key_summary(key),
+        "publicKey": match &key.enrolment.key {
+            UvKeyMaterial::HardwareKey { did } => did.clone(),
+            UvKeyMaterial::Webauthn { credential_id, .. } => credential_id.clone(),
+            _ => String::new(),
+        },
+    })
+    .to_string()
+}
+
+/// The binding's view of its UV key, for `device/list` and the register
+/// response: enough for a device to know whether it can approve grants.
+fn uv_key_summary(key: &UvKey) -> Value {
+    let kind = match &key.enrolment.key {
+        UvKeyMaterial::HardwareKey { .. } => "hardwareKey",
+        UvKeyMaterial::Webauthn { .. } => "webauthn",
+        _ => "unknown",
+    };
+    json!({
+        "kind": kind,
+        "hardwareBacked": key.enrolment.hardware_backed,
+        "biometricGated": key.enrolment.biometric_gated,
+        "attestationPresented": key.enrolment.attestation.is_some(),
+        "enrolledAt": key.enrolled_at,
+    })
 }
 
 /// Wire `ConsumerKind` (register payload) → internal [`ConsumerKind`].
@@ -724,6 +856,7 @@ mod tests {
             wiped_at: None,
             hpke_public_key: Some("did:key:zHpke".into()),
             wake: None,
+            uv_key: None,
         });
         e
     }
@@ -885,6 +1018,7 @@ mod tests {
             "Phone".into(),
             None,
             Some("did:key:zHpke".into()),
+            None,
             "test",
         )
         .await
@@ -912,6 +1046,7 @@ mod tests {
             "Glenn's iPhone".into(),
             Some("iOS 19".into()),
             Some("did:key:zHpke".into()),
+            None,
             "test",
         )
         .await
@@ -934,6 +1069,7 @@ mod tests {
             "Glenn's iPhone".into(),
             None,
             Some("did:key:zHpke".into()),
+            None,
             "test",
         )
         .await
@@ -959,14 +1095,21 @@ mod tests {
             "Phone".into(),
             Some("iOS 19.0".into()),
             Some("did:key:zHpke".into()),
+            None,
             "test",
         )
         .await
         .unwrap();
 
-        let body = heartbeat_device(&acl_ks, &device_auth(did), Some("iOS 19.1".into()), None)
-            .await
-            .expect("heartbeat on a registered device succeeds");
+        let body = heartbeat_device(
+            &acl_ks,
+            &audit,
+            &device_auth(did),
+            Some("iOS 19.1".into()),
+            None,
+        )
+        .await
+        .expect("heartbeat on a registered device succeeds");
         assert_eq!(body["syncHint"], "up-to-date");
         assert!(body["queuedOperations"].as_array().unwrap().is_empty());
         assert!(body["serverTime"].is_string());
@@ -990,6 +1133,95 @@ mod tests {
         .expect("the ext key matches the schema's reverse-DNS pattern")
     }
 
+    const UV_DID: &str = "did:key:zDnaerDaTF5BXEavCrfRZEk316dpbLsfPDZ3WJ5hRTPFU2169";
+
+    fn uv_ext(gated: bool) -> heartbeat_spec::Ext {
+        serde_json::from_value(serde_json::json!({ EXT_UV_KEY: {
+            "kind": "hardwareKey", "did": UV_DID,
+            "hardwareBacked": true, "biometricGated": gated } }))
+        .expect("ext")
+    }
+
+    /// Base design §11 item 1: the UV key is recorded with the device's claims
+    /// about it, and the binding reports it (without the key) so a wallet can
+    /// tell whether it can approve sign-ins.
+    #[tokio::test]
+    async fn a_uv_key_is_enrolled_on_heartbeat_and_reported_on_the_binding() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        let did = "did:key:zUvDevice";
+        registered(&acl_ks, &audit, did, "Phone").await;
+
+        heartbeat_device(
+            &acl_ks,
+            &audit,
+            &device_auth(did),
+            None,
+            Some(&uv_ext(true)),
+        )
+        .await
+        .expect("enrol");
+        let entry = get_acl_entry(&acl_ks, did).await.unwrap().unwrap();
+        let uv = entry
+            .device
+            .as_ref()
+            .unwrap()
+            .uv_key
+            .clone()
+            .expect("enrolled");
+        assert!(uv.enrolment.biometric_gated && uv.enrolment.hardware_backed);
+        let wire = to_wire_binding(&entry);
+        let summary = &wire["ext"]["org.openvtc"]["uvKey"];
+        assert_eq!(summary["kind"], "hardwareKey");
+        assert_eq!(summary["biometricGated"], true);
+        assert!(
+            !wire.to_string().contains(UV_DID),
+            "the key itself is not listed"
+        );
+    }
+
+    /// A UV key that is not biometric-gated is refused, and the refusal leaves
+    /// the binding untouched rather than half-updated.
+    #[tokio::test]
+    async fn a_bad_uv_key_on_heartbeat_is_refused_and_changes_nothing() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        let did = "did:key:zUvDevice2";
+        registered(&acl_ks, &audit, did, "Phone").await;
+        let err = heartbeat_device(
+            &acl_ks,
+            &audit,
+            &device_auth(did),
+            None,
+            Some(&uv_ext(false)),
+        )
+        .await
+        .expect_err("refused");
+        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+        let entry = get_acl_entry(&acl_ks, did).await.unwrap().unwrap();
+        assert!(entry.device.unwrap().uv_key.is_none());
+    }
+
+    /// Base design §11 item 5: a disabled device approves nothing, so it may
+    /// not enrol a UV key either.
+    #[tokio::test]
+    async fn a_disabled_device_cannot_enrol_a_uv_key() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        let did = "did:key:zUvDevice3";
+        registered(&acl_ks, &audit, did, "Phone").await;
+        let mut entry = get_acl_entry(&acl_ks, did).await.unwrap().unwrap();
+        entry.device.as_mut().unwrap().disabled_at = Some("2026-01-01T00:00:00Z".into());
+        store_acl_entry(&acl_ks, &entry).await.unwrap();
+        let err = heartbeat_device(
+            &acl_ks,
+            &audit,
+            &device_auth(did),
+            None,
+            Some(&uv_ext(true)),
+        )
+        .await
+        .expect_err("refused");
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+    }
+
     /// Enrol a device and give it a binding, returning its DID.
     async fn registered(
         acl_ks: &KeyspaceHandle,
@@ -1011,6 +1243,7 @@ mod tests {
             display_name.into(),
             None,
             Some("did:key:zHpke".into()),
+            None,
             "test",
         )
         .await
@@ -1030,6 +1263,7 @@ mod tests {
 
         heartbeat_device(
             &acl_ks,
+            &audit,
             &device_auth(did),
             None,
             Some(&name_ext("OpenVTC on new-host (default)")),
@@ -1060,6 +1294,7 @@ mod tests {
 
         heartbeat_device(
             &acl_ks,
+            &audit,
             &device_auth("did:key:zMine"),
             None,
             Some(&name_ext("Renamed")),
@@ -1091,7 +1326,7 @@ mod tests {
             serde_json::json!({ "org.example.unrelated": { "displayName": "Hijack" } }),
         ] {
             let ext: heartbeat_spec::Ext = serde_json::from_value(bad.clone()).unwrap();
-            heartbeat_device(&acl_ks, &device_auth(did), None, Some(&ext))
+            heartbeat_device(&acl_ks, &audit, &device_auth(did), None, Some(&ext))
                 .await
                 .unwrap_or_else(|e| panic!("heartbeat must survive {bad}: {e:?}"));
 
@@ -1114,6 +1349,7 @@ mod tests {
 
         heartbeat_device(
             &acl_ks,
+            &audit,
             &device_auth(did),
             None,
             Some(&name_ext("  Trimmed  ")),
@@ -1123,9 +1359,15 @@ mod tests {
         let entry = get_acl_entry(&acl_ks, did).await.unwrap().unwrap();
         assert_eq!(entry.device.unwrap().display_name, "Trimmed");
 
-        heartbeat_device(&acl_ks, &device_auth(did), None, Some(&name_ext("Trimmed")))
-            .await
-            .unwrap();
+        heartbeat_device(
+            &acl_ks,
+            &audit,
+            &device_auth(did),
+            None,
+            Some(&name_ext("Trimmed")),
+        )
+        .await
+        .unwrap();
         let entry = get_acl_entry(&acl_ks, did).await.unwrap().unwrap();
         assert_eq!(entry.device.unwrap().display_name, "Trimmed");
         assert_eq!(entry.version, 1);
@@ -1147,7 +1389,7 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeat_rejects_unregistered_device() {
-        let (acl_ks, _audit, _dir) = fresh().await;
+        let (acl_ks, audit, _dir) = fresh().await;
         // ACL entry exists but no DeviceBinding attached.
         store_acl_entry(
             &acl_ks,
@@ -1155,7 +1397,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let err = heartbeat_device(&acl_ks, &device_auth("did:key:zBare"), None, None)
+        let err = heartbeat_device(&acl_ks, &audit, &device_auth("did:key:zBare"), None, None)
             .await
             .expect_err("heartbeat without a binding must be refused");
         assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
@@ -1208,6 +1450,7 @@ mod tests {
             name.into(),
             None,
             Some("did:key:zHpke".into()),
+            None,
             "test",
         )
         .await
@@ -1363,6 +1606,7 @@ mod tests {
             "root-box".into(),
             None,
             Some("did:key:zHpke".into()),
+            None,
             "test",
         )
         .await
@@ -1473,6 +1717,7 @@ mod tests {
             name.into(),
             None,
             Some("did:key:zHpke".into()),
+            None,
             "test",
         )
         .await

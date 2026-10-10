@@ -931,9 +931,28 @@ fn vtc_host_renders_with_minimal_vars() {
         out["service"][1]["serviceEndpoint"],
         "https://vtc.example.com/v1/status-lists",
     );
-    // Exactly two: the optional `SERVICE_TRUST_REGISTRY` slot defaults to
+    // The optional `SERVICE_TRUST_REGISTRY` slot defaults to
     // `null` and is pruned, so a community with no registry is unchanged.
-    assert_eq!(out["service"].as_array().unwrap().len(), 2);
+    assert_eq!(out["service"][2]["type"], "TrustTaskHTTPS");
+    assert_eq!(
+        out["service"][2]["serviceEndpoint"], "https://vtc.example.com/v1",
+        "the Trust-Task base (binding 0.2 §6): clients POST to <base>/trust-tasks, \
+         which is the /v1/trust-tasks vtc-service serves"
+    );
+    // The workspace's own reader takes it as the REST/Trust-Task base.
+    assert_eq!(
+        crate::protocol::matching::ServiceCapabilities::from_did_document(&out)
+            .endpoint(crate::protocol::matching::Protocol::Rest),
+        Some("https://vtc.example.com/v1")
+    );
+    assert_eq!(out["service"][3]["type"], "SignInPortal");
+    assert_eq!(
+        out["service"][3]["serviceEndpoint"],
+        "https://vtc.example.com/members/"
+    );
+    // Exactly four: the optional `SERVICE_TRUST_REGISTRY` slot defaults to
+    // `null` and is pruned, so a community with no registry is unchanged.
+    assert_eq!(out["service"].as_array().unwrap().len(), 4);
 }
 
 /// A community that names its registry gets a third entry: a `TrustRegistry`
@@ -953,12 +972,12 @@ fn vtc_host_advertises_a_trust_registry_referral_when_given_one() {
     let out = tpl.render(&vars).unwrap();
 
     let services = out["service"].as_array().unwrap();
-    assert_eq!(services.len(), 3, "appended, not replacing");
+    assert_eq!(services.len(), 5, "appended, not replacing");
     // Appended last, so the two pinned entries keep their indices.
     assert_eq!(services[0]["type"], "VTCRest");
     assert_eq!(services[1]["type"], "VTCStatusList");
 
-    let referral = &services[2];
+    let referral = &services[4];
     assert_eq!(referral["type"], TRUST_REGISTRY_SERVICE_TYPE);
     assert_eq!(
         referral["serviceEndpoint"]["uri"], "did:webvh:xyz:registry.example.com",
@@ -988,7 +1007,7 @@ fn vtc_host_omits_the_referral_when_no_registry_is_named() {
     let out = tpl.render(&vars).unwrap();
 
     let services = out["service"].as_array().unwrap();
-    assert_eq!(services.len(), 2);
+    assert_eq!(services.len(), 4);
     assert!(
         !services
             .iter()
@@ -1021,7 +1040,11 @@ fn vtc_host_advertises_both_transports_in_canonical_order() {
     let out = tpl.render(&vars).unwrap();
     let services = out["service"].as_array().unwrap();
 
-    assert_eq!(services.len(), 4, "tsp + didcomm + rest + status-list");
+    assert_eq!(
+        services.len(),
+        6,
+        "tsp + didcomm + rest + status-list + trust-tasks + sign-in portal"
+    );
     assert_eq!(
         services
             .iter()
@@ -1031,7 +1054,9 @@ fn vtc_host_advertises_both_transports_in_canonical_order() {
             "TSPTransport",
             "DIDCommMessaging",
             "VTCRest",
-            "VTCStatusList"
+            "VTCStatusList",
+            "TrustTaskHTTPS",
+            "SignInPortal"
         ],
     );
 
@@ -1057,7 +1082,7 @@ fn vtc_host_advertises_didcomm_alone_when_tsp_is_not_selected() {
     let out = tpl.render(&vars).unwrap();
     let services = out["service"].as_array().unwrap();
 
-    assert_eq!(services.len(), 3);
+    assert_eq!(services.len(), 5);
     assert_eq!(services[0]["type"], "DIDCommMessaging");
     assert!(
         !services.iter().any(|s| s["type"] == "TSPTransport"),
@@ -1080,7 +1105,7 @@ fn vtc_host_advertises_no_messaging_when_neither_transport_is_selected() {
     let out = tpl.render(&vars).unwrap();
     let services = out["service"].as_array().unwrap();
 
-    assert_eq!(services.len(), 2);
+    assert_eq!(services.len(), 4);
     assert_eq!(services[0]["type"], "VTCRest");
     assert_eq!(services[1]["type"], "VTCStatusList");
     assert!(
@@ -1117,6 +1142,8 @@ fn transport_and_registry_slots_prune_independently() {
             "TSPTransport",
             "VTCRest",
             "VTCStatusList",
+            "TrustTaskHTTPS",
+            "SignInPortal",
             TRUST_REGISTRY_SERVICE_TYPE
         ],
     );
