@@ -511,7 +511,7 @@ pub(crate) async fn list_v2(state: &HostState, doc: &TrustTask<Value>, payload: 
 /// `blobs` is exactly what the stored version names: absent when it names
 /// none, which includes a retraction (which released them) and a 0.1 write.
 pub(crate) async fn get_v2_response(
-    state: &HostState,
+    snapshot: &vti_rooms::blobs::ReadSnapshot<'_>,
     doc: &TrustTask<Value>,
     room_id: &str,
     key: &str,
@@ -521,7 +521,7 @@ pub(crate) async fn get_v2_response(
         Ok(v) => v,
         Err(e) => return from_app_error(doc, &AppError::Serialization(e)),
     };
-    match state.files.record_blobs(room_id, key).await {
+    match snapshot.record_blobs(room_id, key).await {
         Ok(blobs) if !blobs.is_empty() => body["blobs"] = json!(blobs),
         Ok(_) => {}
         Err(e) => return from_app_error(doc, &e),
@@ -531,7 +531,7 @@ pub(crate) async fn get_v2_response(
 
 /// A 0.1 listing with each row's `blobs` added, answered as 0.2.
 pub(crate) async fn list_v2_response(
-    state: &HostState,
+    snapshot: &vti_rooms::blobs::ReadSnapshot<'_>,
     doc: &TrustTask<Value>,
     room_id: &str,
     response: impl serde::Serialize,
@@ -545,7 +545,7 @@ pub(crate) async fn list_v2_response(
             let Some(key) = row["key"].as_str().map(str::to_string) else {
                 continue;
             };
-            match state.files.record_blobs(room_id, &key).await {
+            match snapshot.record_blobs(room_id, &key).await {
                 Ok(blobs) if !blobs.is_empty() => row["blobs"] = json!(blobs),
                 Ok(_) => {}
                 Err(e) => return from_app_error(doc, &e),
@@ -1414,5 +1414,81 @@ mod tests {
         .await;
         assert_eq!(code(&out), "malformedRequest");
         assert!(out["message"].as_str().unwrap().contains("327680"), "{out}");
+    }
+
+    /// A 0.2 read never pairs one version's record with another's `blobs`:
+    /// writes flip a record between two files while reads run beside them,
+    /// and every read must see a title and a blob from the same write.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reads_at_0_2_never_mix_versions_under_concurrent_writes() {
+        let h = Arc::new(host(HostLimits::default()));
+        let f = Arc::new(room(&h).await);
+        let ra = upload(&h, &f, &blob(CHUNK, 80)).await;
+        let rb = upload(&h, &f, &blob(CHUNK, 81)).await;
+        let expected = |title: &str| if title == "A" { ra.clone() } else { rb.clone() };
+
+        let writer = {
+            let (h, f, ra, rb) = (h.clone(), f.clone(), ra.clone(), rb.clone());
+            tokio::spawn(async move {
+                for i in 0..40 {
+                    let (title, b) = if i % 2 == 0 { ("A", &ra) } else { ("B", &rb) };
+                    let (status, out) = call(
+                        &h.app,
+                        PUT_V2_TYPE,
+                        json!({
+                            "roomId": f.room.room_id,
+                            "key": "flip",
+                            "presentation": f.as_owner(),
+                            "cleartext": { "title": title, "body": title },
+                            "blobs": [b],
+                        }),
+                        &f.owner,
+                    )
+                    .await;
+                    assert_eq!(status, StatusCode::OK, "{out}");
+                }
+            })
+        };
+        let mut reads = 0;
+        while !writer.is_finished() {
+            let (status, got) = call(
+                &h.app,
+                GET_V2_TYPE,
+                json!({ "roomId": f.room.room_id, "key": "flip", "presentation": f.as_owner() }),
+                &f.owner,
+            )
+            .await;
+            if status == StatusCode::OK {
+                let title = got["record"]["cleartext"]["title"]
+                    .as_str()
+                    .or_else(|| got["cleartext"]["title"].as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                assert_eq!(
+                    got["blobs"],
+                    json!([expected(&title)]),
+                    "get mixed versions: {got}"
+                );
+                reads += 1;
+            }
+            let (status, listed) = call(
+                &h.app,
+                LIST_V2_TYPE,
+                json!({ "roomId": f.room.room_id, "prefix": "flip", "presentation": f.as_owner() }),
+                &f.owner,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{listed}");
+            if let Some(row) = listed["records"].as_array().and_then(|r| r.first()) {
+                let title = row["title"].as_str().unwrap_or_default().to_string();
+                assert_eq!(
+                    row["blobs"],
+                    json!([expected(&title)]),
+                    "list mixed versions: {row}"
+                );
+            }
+        }
+        writer.await.unwrap();
+        assert!(reads > 0, "the reads ran beside the writes");
     }
 }
