@@ -1,0 +1,35 @@
+# Named release eucalyptus: what release/eucalyptus was cut from, and the
+# compatibility line of every published crate it owns. Written by
+# scripts/cut-release.py; read by scripts/check-release-line-ownership.py.
+# Dates and support status live in RELEASES.md.
+
+[release]
+name = "eucalyptus"
+support = "standard"
+cut = "2026-10-10"
+cut_from = "1a85c2f76ef703bd263ede4500c2acfbffec9851"
+
+[crates]
+cnm-cli = "0.30.0"
+pnm-cli = "0.36.0"
+vta-audit = "0.12.0"
+vta-backup = "0.16.0"
+vta-cli-common = "0.37.0"
+vta-config = "0.17.0"
+vta-keys = "0.17.0"
+vta-keyspaces = "0.13.0"
+vta-persona = "0.17.0"
+vta-policy = "0.12.0"
+vta-sdk = "0.64.2"
+vta-service = "0.56.0"
+vta-support = "0.14.0"
+vta-sweepers = "0.12.0"
+vta-tee = "0.16.0"
+vta-vault = "0.15.0"
+vta-webvh = "0.13.0"
+vtc-client = "0.19.0"
+vti-common = "0.40.0"
+vti-rooms = "0.11.0"
+vti-rooms-dtg = "0.13.0"
+vti-secrets = "0.13.0"
+vti-webauthn = "0.2.2"
