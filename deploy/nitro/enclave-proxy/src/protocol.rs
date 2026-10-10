@@ -24,6 +24,44 @@ pub const OP_PREFIX_ITER: u8 = 0x04;
 pub const OP_PREFIX_KEYS: u8 = 0x05;
 pub const OP_PERSIST: u8 = 0x06;
 
+// Atomic multi-step operations. Each runs under the keyspace's lock in the
+// parent, so the enclave's take / insert-if-absent / swap / compare-and-move
+// cost one round trip instead of two to four. The enclave learns which ones a
+// proxy serves from OP_HELLO; a proxy that predates them answers
+// "unknown opcode" and the enclave falls back to single operations under its
+// own per-key locks. Either side may be upgraded first.
+//
+// None of them needs plaintext. Values are AES-256-GCM ciphertext bound to
+// (keyspace, key); OP_MOVE_IF_EQUAL compares the stored ciphertext with bytes
+// the enclave just read and compared in plaintext itself.
+
+/// `[op]` → `[OK][u32 capability bits]`.
+pub const OP_HELLO: u8 = 0x07;
+/// `[op][ks][key]` → value response (OK + bytes, or NOT_FOUND). Get + delete.
+pub const OP_TAKE: u8 = 0x08;
+/// `[op][ks][key][value]` → `[OK][bool inserted]`.
+pub const OP_INSERT_IF_ABSENT: u8 = 0x09;
+/// `[op][ks][old][new][value]` → `[OK][bool moved]`. If `new` is absent:
+/// write `value` there and delete `old`. Otherwise write nothing.
+pub const OP_SWAP_IF_ABSENT: u8 = 0x0A;
+/// `[op][ks][old][expected][new][value]` → `[OK][outcome]`: move only while
+/// `old` holds exactly `expected` and `new` is absent.
+pub const OP_MOVE_IF_EQUAL: u8 = 0x0B;
+
+pub const CAP_TAKE: u32 = 1 << 0;
+pub const CAP_INSERT_IF_ABSENT: u32 = 1 << 1;
+pub const CAP_SWAP_IF_ABSENT: u32 = 1 << 2;
+pub const CAP_MOVE_IF_EQUAL: u32 = 1 << 3;
+/// Everything this proxy serves.
+pub const CAPABILITIES: u32 =
+    CAP_TAKE | CAP_INSERT_IF_ABSENT | CAP_SWAP_IF_ABSENT | CAP_MOVE_IF_EQUAL;
+
+/// OP_MOVE_IF_EQUAL outcomes (the enclave's `MoveOutcome`).
+pub const MOVE_MOVED: u8 = 0;
+pub const MOVE_SOURCE_MISSING: u8 = 1;
+pub const MOVE_SOURCE_CHANGED: u8 = 2;
+pub const MOVE_TARGET_EXISTS: u8 = 3;
+
 // ---------------------------------------------------------------------------
 // Response status
 // ---------------------------------------------------------------------------
@@ -53,13 +91,30 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(reader: &mut R) -> std::io::Res
     Ok(buf)
 }
 
+/// Largest frame coalesced with its length prefix into one write (the
+/// enclave client uses the same bound).
+const COALESCE_MAX: usize = 64 * 1024;
+
 /// Write a length-prefixed frame to the stream.
+///
+/// A small frame goes out as one write: separate writes for the length and
+/// the payload went out as two packets. A large one (a prefix scan can answer
+/// with up to 16 MB) spans many packets whatever we do, so it is not copied
+/// just to save the header's.
 pub async fn write_frame<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
     data: &[u8],
 ) -> std::io::Result<()> {
-    writer.write_u32(data.len() as u32).await?;
-    writer.write_all(data).await?;
+    let len = (data.len() as u32).to_be_bytes();
+    if data.len() <= COALESCE_MAX {
+        let mut frame = Vec::with_capacity(4 + data.len());
+        frame.extend_from_slice(&len);
+        frame.extend_from_slice(data);
+        writer.write_all(&frame).await?;
+    } else {
+        writer.write_all(&len).await?;
+        writer.write_all(data).await?;
+    }
     writer.flush().await?;
     Ok(())
 }
@@ -179,6 +234,16 @@ pub fn build_ok_value(value: &[u8]) -> Vec<u8> {
 
 pub fn build_ok_bool(value: bool) -> Vec<u8> {
     vec![STATUS_OK, if value { 0x01 } else { 0x00 }]
+}
+
+pub fn build_ok_u32(value: u32) -> Vec<u8> {
+    let mut buf = vec![STATUS_OK];
+    buf.extend_from_slice(&value.to_be_bytes());
+    buf
+}
+
+pub fn build_ok_byte(value: u8) -> Vec<u8> {
+    vec![STATUS_OK, value]
 }
 
 pub fn build_ok_kv_list(pairs: &[(&[u8], &[u8])]) -> Vec<u8> {
@@ -405,6 +470,59 @@ mod tests {
         let resp = build_ok_key_list(&[b"a", b"b", b"c"]);
         let keys = decode_key_list_response(&resp).unwrap();
         assert_eq!(keys, vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+    }
+
+    /// Records each write call, so a test can see how a frame was written.
+    #[derive(Default)]
+    struct Writes(Vec<Vec<u8>>);
+
+    impl tokio::io::AsyncWrite for Writes {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.0.push(buf.to_vec());
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn small_frames_are_one_write_large_ones_are_not_copied() {
+        let mut w = Writes::default();
+        write_frame(&mut w, b"small").await.unwrap();
+        assert_eq!(w.0.len(), 1, "header and payload in one write");
+        assert_eq!(w.0[0], [&5u32.to_be_bytes()[..], b"small"].concat());
+
+        let big = vec![0x5Au8; COALESCE_MAX + 1];
+        let mut w = Writes::default();
+        write_frame(&mut w, &big).await.unwrap();
+        assert_eq!(w.0.len(), 2, "header, then the payload as given");
+        assert_eq!(w.0[0], (big.len() as u32).to_be_bytes());
+        assert_eq!(w.0[1], big);
+    }
+
+    #[tokio::test]
+    async fn a_large_frame_round_trips() {
+        let big: Vec<u8> = (0..(COALESCE_MAX * 3)).map(|i| i as u8).collect();
+        let (mut a, mut b) = tokio::io::duplex(8 * 1024);
+        let sent = big.clone();
+        let writer = tokio::spawn(async move { write_frame(&mut a, &sent).await });
+        let got = read_frame(&mut b).await.unwrap();
+        writer.await.unwrap().unwrap();
+        assert_eq!(got, big);
     }
 
     #[test]

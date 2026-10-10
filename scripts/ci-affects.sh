@@ -62,11 +62,25 @@ set -euo pipefail
 # package modes (not a PR, no base, no diff -> run). The cost of this mode, a
 # source-level MSRV break that only the push to main reports, is recorded where
 # the gate is wired, in ci.yml's `affects` job.
+#
+# ci-affects.sh --any [base-ref]
+#
+# Clippy's gate: does anything that can reach a compiler change at all? `false`
+# only when every changed file is prose (the INERT list below). Global files and
+# unattributable paths are `true`, as everywhere.
+#
+# ci-affects.sh --paths <extended-regex> [base-ref]
+#
+# For a crate outside the workspace (deploy/nitro/enclave-proxy has its own
+# lockfile), where there is no closure to derive: `true` if any changed file
+# matches the pattern. Same fail-safes (not a PR, no base, no diff -> run).
 EXCEPT=""
+PATTERN=""
 case "${1:-}" in
-  --except|--own|--toolchain) EXCEPT="$1"; shift ;;
+  --except|--own|--toolchain|--any) EXCEPT="$1"; shift ;;
+  --paths) EXCEPT="$1"; PATTERN="${2:?usage: ci-affects.sh --paths <regex> [base-ref]}"; shift 2 ;;
 esac
-if [ "$EXCEPT" = "--toolchain" ]; then
+if [ "$EXCEPT" = "--toolchain" ] || [ "$EXCEPT" = "--any" ] || [ "$EXCEPT" = "--paths" ]; then
   PKG=""
 else
   PKG="${1:?usage: ci-affects.sh [--except|--own] <package>[,<package>...] [base-ref] | --toolchain [base-ref]}"
@@ -76,6 +90,8 @@ case "$EXCEPT" in
   --except) SCOPE="everything except $PKG" ;;
   --own) SCOPE="$PKG (own sources)" ;;
   --toolchain) SCOPE="compiler requirements (MSRV)" ;;
+  --any) SCOPE="any build" ;;
+  --paths) SCOPE="paths matching $PATTERN" ;;
   *) SCOPE="$PKG" ;;
 esac
 
@@ -139,6 +155,13 @@ if [ "$EXCEPT" = "--toolchain" ]; then
   emit false "no manifest, lockfile, toolchain, .cargo or ci.yml change"
 fi
 
+if [ "$EXCEPT" = "--paths" ]; then
+  if path_hit=$(echo "$CHANGED" | grep -E "$PATTERN" | head -3) && [ -n "$path_hit" ]; then
+    emit true "matching path changed: $(echo "$path_hit" | tr '\n' ' ')"
+  fi
+  emit false "no changed file matches $PATTERN"
+fi
+
 # Files that can change any build regardless of which crate they sit in.
 GLOBAL='^(Cargo\.lock|Cargo\.toml|rust-toolchain(\.toml)?|deny\.toml|\.cargo/|\.github/|scripts/)'
 if global_hit=$(echo "$CHANGED" | grep -E "$GLOBAL" | head -3); then
@@ -153,6 +176,9 @@ INERT='^(docs/|[^/]*\.md$|LICENSE|\.gitignore$|\.editorconfig$|\.gitattributes$)
 CHANGED=$(echo "$CHANGED" | grep -Ev "$INERT" || true)
 if [ -z "$CHANGED" ]; then
   emit false "only prose and non-build files changed"
+fi
+if [ "$EXCEPT" = "--any" ]; then
+  emit true "build-relevant files changed: $(echo "$CHANGED" | head -3 | tr '\n' ' ')"
 fi
 
 # crate directory -> crate name, tagged IN/OUT of $PKG's closure. The graph walk

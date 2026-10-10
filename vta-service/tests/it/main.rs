@@ -47,6 +47,7 @@ mod vault_consent;
 mod vault_present;
 mod vault_receive;
 mod vault_release_didcomm;
+mod vault_sign_in_oob;
 mod vault_sign_trust_task_purpose;
 mod vault_trust_task;
 mod vault_unseal_authcrypt;

@@ -94,6 +94,224 @@ pub fn device_name_ext(display_name: &str) -> Value {
     serde_json::json!({ EXT_DEVICE_NAME: { "displayName": display_name } })
 }
 
+/// Extension member that enrols (on `device/register`) or replaces (on
+/// `device/heartbeat`) a device's **user-verification (UV) key**. Its value is
+/// a [`UvKeyEnrolment`].
+///
+/// A UV key is the one key a device can only use after the person holding it
+/// passes a biometric (or, for a passkey, the authenticator's own user
+/// verification). The VTA signs an `auth/oob/grant` only on a
+/// `task-consent/decision` that this key approved, so a compromised wallet
+/// process cannot approve a sign-in on its own (sign-in trigger-link contract
+/// C6; base design §5 and §11).
+///
+/// An extension because `device/register/0.2` and `device/heartbeat/0.2` are
+/// closed schemas (`additionalProperties: false`) and the registry has no UV
+/// key member yet. A replacement is accepted on heartbeat only, which the
+/// device's transport key authenticates: no other caller can reach that row.
+// TODO: replace with generated trust-tasks types once device/* carries a UV key.
+pub const EXT_UV_KEY: &str = "org.openvtc.uv-key";
+
+/// Extension member of a `vault/sign-trust-task` payload that carries the
+/// device's UV approval of the envelope being signed. Its value is
+/// `{ "decision": <signed task-consent/decision/0.2 document> }`.
+///
+/// Required for an `auth/oob/grant` envelope and ignored for every other type.
+// TODO: replace with generated trust-tasks types once vault/sign-trust-task
+// carries a consent member.
+pub const EXT_UV_CONSENT: &str = "org.openvtc.uv-consent";
+
+/// What a device sends under [`EXT_UV_KEY`]: the public half of its UV key and
+/// the device's own account of how the private half is held.
+///
+/// `hardwareBacked` and `biometricGated` are **claims** — recorded, shown and
+/// available to policy, but not proven unless `attestation` is verified (it is
+/// stored, not yet verified, exactly as `device/register`'s own `attestation`).
+// TODO: replace with generated trust-tasks types once device/* carries a UV key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+// Not `deny_unknown_fields`: serde cannot combine it with `flatten`.
+// [`UvKeyEnrolment::from_ext_value`] refuses unknown members itself.
+#[serde(rename_all = "camelCase")]
+pub struct UvKeyEnrolment {
+    /// The key itself, by kind.
+    #[serde(flatten)]
+    pub key: UvKeyMaterial,
+    /// The private key is non-exportable in a secure element.
+    pub hardware_backed: bool,
+    /// The platform refuses to use the key without a fresh biometric.
+    pub biometric_gated: bool,
+    /// Platform attestation of the key, opaque here (Android key attestation
+    /// chain, App Attest object, WebAuthn attestation object).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<Value>,
+}
+
+/// The two kinds of UV key.
+// TODO: replace with generated trust-tasks types once device/* carries a UV key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+#[non_exhaustive]
+pub enum UvKeyMaterial {
+    /// A raw key in the phone's Secure Enclave / StrongBox, named as a
+    /// `did:key` (P-256, `did:key:zDn…`, as the Secure Enclave requires; or
+    /// Ed25519). It signs the `task-consent/decision` document itself.
+    #[serde(rename_all = "camelCase")]
+    HardwareKey {
+        /// The UV key as a `did:key`.
+        did: String,
+    },
+    /// A WebAuthn passkey (the browser plugin). The decision document is
+    /// signed by the device's transport key and carries a WebAuthn assertion
+    /// from this credential, made with `userVerification: "required"`.
+    #[serde(rename_all = "camelCase")]
+    Webauthn {
+        /// The credential id, base64url without padding.
+        credential_id: String,
+        /// The credential's public key as a P-256 Multikey (`zDn…`) — the only
+        /// algorithm `vti-webauthn` verifies.
+        public_key_multibase: String,
+        /// The relying-party id the credential is scoped to (for an extension,
+        /// its runtime id).
+        rp_id: String,
+        /// The origin `clientDataJSON.origin` must carry
+        /// (`chrome-extension://<id>`, `https://…`).
+        origin: String,
+    },
+}
+
+/// Why a [`UvKeyEnrolment`] was refused. The text names the rule, never the
+/// key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UvKeyError(pub &'static str);
+
+impl std::fmt::Display for UvKeyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for UvKeyError {}
+
+/// Multicodec prefixes (varint) of the key types a UV key may be.
+const MULTICODEC_P256: [u8; 2] = [0x80, 0x24];
+const MULTICODEC_ED25519: [u8; 2] = [0xed, 0x01];
+
+fn is_p256_multikey(multibase_value: &str) -> bool {
+    match multibase::decode(multibase_value) {
+        Ok((multibase::Base::Base58Btc, bytes)) => {
+            bytes.len() == 35 && bytes[..2] == MULTICODEC_P256 && matches!(bytes[2], 0x02 | 0x03)
+        }
+        _ => false,
+    }
+}
+
+fn is_ed25519_multikey(multibase_value: &str) -> bool {
+    match multibase::decode(multibase_value) {
+        Ok((multibase::Base::Base58Btc, bytes)) => {
+            bytes.len() == 34 && bytes[..2] == MULTICODEC_ED25519
+        }
+        _ => false,
+    }
+}
+
+impl UvKeyEnrolment {
+    /// Read an enrolment from an `ext` value, refusing anything a UV key
+    /// cannot be.
+    pub fn from_ext_value(value: &Value) -> Result<Self, UvKeyError> {
+        let enrolment: Self = serde_json::from_value(value.clone())
+            .map_err(|_| UvKeyError("uv-key is not a UV key enrolment"))?;
+        // A member this type does not keep would be silently dropped from the
+        // stored record; refuse it instead (the schema it stands in for would
+        // be `additionalProperties: false`).
+        let kept = serde_json::to_value(&enrolment)
+            .map_err(|_| UvKeyError("uv-key is not a UV key enrolment"))?;
+        let unknown = value
+            .as_object()
+            .into_iter()
+            .flatten()
+            .any(|(k, _)| kept.get(k).is_none());
+        if unknown {
+            return Err(UvKeyError(
+                "uv-key carries a member a UV key enrolment does not define",
+            ));
+        }
+        enrolment.validate()?;
+        Ok(enrolment)
+    }
+
+    /// The structural rules: a key the VTA can verify, and for a raw hardware
+    /// key, the device's statement that it is biometric-gated (a key the
+    /// platform will use without one is not a user-verification key).
+    pub fn validate(&self) -> Result<(), UvKeyError> {
+        match &self.key {
+            UvKeyMaterial::HardwareKey { did } => {
+                let id = did
+                    .strip_prefix("did:key:")
+                    .ok_or(UvKeyError("a hardware UV key must be a did:key"))?;
+                if !(is_p256_multikey(id) || is_ed25519_multikey(id)) {
+                    return Err(UvKeyError(
+                        "a hardware UV key must be a P-256 or Ed25519 did:key",
+                    ));
+                }
+                if !self.biometric_gated {
+                    return Err(UvKeyError(
+                        "a hardware UV key must be biometric-gated; a key usable without user \
+                         verification cannot approve a grant",
+                    ));
+                }
+            }
+            UvKeyMaterial::Webauthn {
+                credential_id,
+                public_key_multibase,
+                rp_id,
+                origin,
+            } => {
+                use base64::Engine as _;
+                let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(credential_id)
+                    .map_err(|_| UvKeyError("credentialId must be base64url without padding"))?;
+                if raw.is_empty() || raw.len() > 1023 {
+                    return Err(UvKeyError("credentialId must be 1 to 1023 bytes"));
+                }
+                if !is_p256_multikey(public_key_multibase) {
+                    return Err(UvKeyError(
+                        "a passkey UV key must be a P-256 Multikey (ES256 credential)",
+                    ));
+                }
+                if rp_id.is_empty() || rp_id.len() > 253 || rp_id.contains(['/', ':', ' ']) {
+                    return Err(UvKeyError("rpId must be a bare relying-party id"));
+                }
+                if !is_origin(origin) {
+                    return Err(UvKeyError(
+                        "origin must be a scheme://host[:port] origin with no path",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `scheme://host[:port]` and nothing more — the form `clientDataJSON.origin`
+/// carries.
+fn is_origin(origin: &str) -> bool {
+    let Some((scheme, rest)) = origin.split_once("://") else {
+        return false;
+    };
+    !scheme.is_empty()
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '-' | '.'))
+        && !rest.is_empty()
+        && !rest.contains(['/', '?', '#', '@', ' '])
+}
+
+/// The `ext` member that enrols or replaces a UV key — see [`EXT_UV_KEY`].
+#[must_use]
+pub fn uv_key_ext(enrolment: &UvKeyEnrolment) -> Value {
+    serde_json::json!({ EXT_UV_KEY: enrolment })
+}
+
 /// `device/disable/0.1` — disable a device by id; the record is kept.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,6 +389,108 @@ mod tests {
                 }
             })
         );
+    }
+
+    const P256_DID_KEY: &str = "did:key:zDnaerDaTF5BXEavCrfRZEk316dpbLsfPDZ3WJ5hRTPFU2169";
+
+    fn hardware(did: &str, gated: bool) -> Value {
+        serde_json::json!({ "kind": "hardwareKey", "did": did,
+                            "hardwareBacked": true, "biometricGated": gated })
+    }
+
+    #[test]
+    fn a_biometric_gated_hardware_key_enrols() {
+        let e = UvKeyEnrolment::from_ext_value(&hardware(P256_DID_KEY, true)).expect("valid");
+        assert!(matches!(e.key, UvKeyMaterial::HardwareKey { .. }));
+        // Round trip: what is stored is what was sent.
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            hardware(P256_DID_KEY, true)
+        );
+        UvKeyEnrolment::from_ext_value(&hardware(
+            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            true,
+        ))
+        .expect("an Ed25519 did:key is accepted too");
+    }
+
+    #[test]
+    fn a_hardware_key_that_is_not_biometric_gated_is_refused() {
+        assert!(UvKeyEnrolment::from_ext_value(&hardware(P256_DID_KEY, false)).is_err());
+    }
+
+    #[test]
+    fn a_hardware_key_must_be_a_signing_did_key() {
+        for bad in [
+            "did:web:example.com",
+            "did:key:z6LSbysY2xFMRpGMhb7tFTLMpeuPRaqaWM1yECx2AtzE3KCc", // X25519
+            "did:key:not-multibase",
+        ] {
+            assert!(
+                UvKeyEnrolment::from_ext_value(&hardware(bad, true)).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    fn passkey(origin: &str, key: &str) -> Value {
+        serde_json::json!({
+            "kind": "webauthn",
+            "credentialId": "AAECAwQFBgc",
+            "publicKeyMultibase": key,
+            "rpId": "abcdefghijklmnopabcdefghijklmnop",
+            "origin": origin,
+            "hardwareBacked": false,
+            "biometricGated": false,
+        })
+    }
+
+    #[test]
+    fn a_p256_passkey_enrols_and_others_are_refused() {
+        let key = P256_DID_KEY.strip_prefix("did:key:").unwrap();
+        UvKeyEnrolment::from_ext_value(&passkey(
+            "chrome-extension://abcdefghijklmnopabcdefghijklmnop",
+            key,
+        ))
+        .expect("an ES256 passkey");
+        // EdDSA passkeys cannot be verified by vti-webauthn.
+        assert!(
+            UvKeyEnrolment::from_ext_value(&passkey(
+                "chrome-extension://abcdefghijklmnopabcdefghijklmnop",
+                "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            ))
+            .is_err()
+        );
+        for bad_origin in ["https://a.example/path", "a.example", "https://"] {
+            assert!(
+                UvKeyEnrolment::from_ext_value(&passkey(bad_origin, key)).is_err(),
+                "{bad_origin}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_members_and_kinds_are_refused() {
+        let mut v = hardware(P256_DID_KEY, true);
+        v["extra"] = serde_json::json!(1);
+        assert!(UvKeyEnrolment::from_ext_value(&v).is_err());
+        let mut v = hardware(P256_DID_KEY, true);
+        v["kind"] = serde_json::json!("softwareKey");
+        assert!(UvKeyEnrolment::from_ext_value(&v).is_err());
+    }
+
+    #[test]
+    fn the_uv_extension_keys_match_the_schema_pattern() {
+        for key in [EXT_UV_KEY, EXT_UV_CONSENT] {
+            assert!(
+                key.split('.').count() >= 2
+                    && key.starts_with(|c: char| c.is_ascii_lowercase())
+                    && key.split('.').all(|s| !s.is_empty()
+                        && s.chars()
+                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')),
+                "{key}"
+            );
+        }
     }
 
     /// The `ext` key has to satisfy the schema's reverse-DNS pattern

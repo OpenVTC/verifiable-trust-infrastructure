@@ -13,8 +13,12 @@ pub mod counter;
 #[cfg(feature = "encryption")]
 pub(crate) mod encryption;
 
+#[cfg(any(feature = "vsock-store", test))]
+mod key_locks;
 #[cfg(feature = "vsock-store")]
 pub mod vsock;
+#[cfg(any(feature = "vsock-store", test))]
+mod vsock_pool;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixture;
@@ -230,15 +234,10 @@ impl KeyspaceHandle {
     /// Returns `true` when the insert happened, `false` when the key
     /// already existed (the stored value is left untouched).
     ///
-    /// On the [`KeyspaceHandle::Local`] variant the check and insert
-    /// run inside one blocking closure, so exactly one of two racing
-    /// callers observes `true`. On the [`KeyspaceHandle::Vsock`]
-    /// variant the vsock RPC does not yet carry a native
-    /// insert-if-absent opcode; the fallback is `get_raw` + `insert`,
-    /// which has a TOCTOU window across two vsock round-trips — the
-    /// same documented gap as [`KeyspaceHandle::take_raw`] (TEE
-    /// enclaves are single-replica, so the window is per-connection
-    /// rather than cross-replica).
+    /// Atomic on both variants: exactly one of two racing callers observes
+    /// `true`. The local store runs the check and insert under its keyspace
+    /// write lock; the vsock store holds the key's lock across its two round
+    /// trips (see `key_locks`).
     pub async fn insert_if_absent<V: Serialize>(
         &self,
         key: impl Into<Vec<u8>>,
@@ -247,25 +246,13 @@ impl KeyspaceHandle {
         match self {
             KeyspaceHandle::Local(h) => h.insert_if_absent(key, value).await,
             #[cfg(feature = "vsock-store")]
-            KeyspaceHandle::Vsock(h) => {
-                tracing::warn!(
-                    "KeyspaceHandle::Vsock::insert_if_absent using non-atomic get+insert \
-                     fallback; vsock proto lacks a native insert-if-absent opcode. \
-                     Single-replica TEE deployments are unaffected in practice."
-                );
-                let key = key.into();
-                if h.get_raw(key.clone()).await?.is_some() {
-                    return Ok(false);
-                }
-                h.insert(key, value).await?;
-                Ok(true)
-            }
+            KeyspaceHandle::Vsock(h) => h.insert_if_absent(key, value).await,
         }
     }
 
     /// Raw-bytes variant of [`KeyspaceHandle::insert_if_absent`] — same
-    /// semantics and the same vsock TOCTOU caveat, for values that are
-    /// stored via `insert_raw`/`get_raw` rather than as serde JSON.
+    /// semantics, for values that are stored via `insert_raw`/`get_raw`
+    /// rather than as serde JSON.
     pub async fn insert_raw_if_absent(
         &self,
         key: impl Into<Vec<u8>>,
@@ -274,19 +261,7 @@ impl KeyspaceHandle {
         match self {
             KeyspaceHandle::Local(h) => h.insert_raw_if_absent(key, value).await,
             #[cfg(feature = "vsock-store")]
-            KeyspaceHandle::Vsock(h) => {
-                tracing::warn!(
-                    "KeyspaceHandle::Vsock::insert_raw_if_absent using non-atomic get+insert \
-                     fallback; vsock proto lacks a native insert-if-absent opcode. \
-                     Single-replica TEE deployments are unaffected in practice."
-                );
-                let key = key.into();
-                if h.get_raw(key.clone()).await?.is_some() {
-                    return Ok(false);
-                }
-                h.insert_raw(key, value).await?;
-                Ok(true)
-            }
+            KeyspaceHandle::Vsock(h) => h.insert_raw_if_absent(key, value).await,
         }
     }
 
@@ -310,34 +285,15 @@ impl KeyspaceHandle {
     }
 
     /// Atomic `GET` + `DELETE` — see
-    /// [`LocalKeyspaceHandle::take_raw`].
-    ///
-    /// On the [`KeyspaceHandle::Vsock`] variant the vsock RPC does
-    /// not yet carry a native `take` opcode. The fallback is
-    /// `get_raw` + `remove`, which has a TOCTOU window across two
-    /// vsock round-trips — two concurrent presenters could both
-    /// observe `Some`. The canonical refresh-token claim treats
-    /// this as a documented gap (TEE enclaves are single-replica,
-    /// so the window is per-connection rather than cross-replica)
-    /// and emits a `warn!` on every call so it stays visible
-    /// until the vsock proto gains a `take` opcode.
+    /// [`LocalKeyspaceHandle::take_raw`]. Exactly one of two racing callers
+    /// receives the value: this is what makes a refresh token single-use
+    /// (RFC 9700 §4.14.2). The vsock store holds the key's lock across the
+    /// read and the delete (see `key_locks`).
     pub async fn take_raw(&self, key: impl Into<Vec<u8>>) -> Result<Option<Vec<u8>>, AppError> {
-        let key = key.into();
         match self {
             KeyspaceHandle::Local(h) => h.take_raw(key).await,
             #[cfg(feature = "vsock-store")]
-            KeyspaceHandle::Vsock(h) => {
-                tracing::warn!(
-                    "KeyspaceHandle::Vsock::take_raw using non-atomic get+remove fallback; \
-                     vsock proto lacks a native take opcode. Single-replica TEE deployments \
-                     are unaffected in practice."
-                );
-                let val = h.get_raw(key.clone()).await?;
-                if val.is_some() {
-                    h.remove(key).await?;
-                }
-                Ok(val)
-            }
+            KeyspaceHandle::Vsock(h) => h.take_raw(key).await,
         }
     }
 
@@ -424,8 +380,7 @@ impl KeyspaceHandle {
     /// (its plaintext as read earlier), writing `value` at `new_key`. See
     /// [`LocalKeyspaceHandle::move_if_unchanged`].
     ///
-    /// On the [`KeyspaceHandle::Vsock`] variant this has the same documented
-    /// non-atomic fallback as [`KeyspaceHandle::take_raw`].
+    /// Atomic on both variants; the vsock store holds both keys' locks.
     pub async fn move_if_unchanged<V: Serialize>(
         &self,
         old_key: impl Into<Vec<u8>>,

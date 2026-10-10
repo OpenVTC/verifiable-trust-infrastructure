@@ -177,10 +177,17 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md). Workspace-wide design
 principles live in [`CLAUDE.md`](CLAUDE.md); each crate has its own
 `CLAUDE.md` with crate-scoped guidance.
 
-Changes are recorded in [`CHANGELOG.md`](CHANGELOG.md) for released versions
-and in [`changelog.d/`](changelog.d/) — one file per PR — for everything not
-yet released. A PR adds a fragment there rather than editing `CHANGELOG.md`;
-see [`changelog.d/README.md`](changelog.d/README.md).
+Every PR targets `main`; a fix a supported release also needs is backported
+from there by label. Changelogs are generated from conventional-commit PR
+titles — a PR adds no changelog file and edits no version.
+
+## Releases and branches
+
+- **[`RELEASES.md`](RELEASES.md)** — named releases (Eucalyptus, Fig, …),
+  cut every 4–6 weeks onto `release/<name>` branches and patched there; the
+  `nightly` branch; the schedule; which releases are supported; backports.
+- **[`RELEASING.md`](RELEASING.md)** — how crates are versioned and published
+  to crates.io, from `main` and from release branches.
 
 ## License
 

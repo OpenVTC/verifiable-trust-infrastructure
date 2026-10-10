@@ -42,6 +42,18 @@ pub(super) async fn handle_register(
     let hpke_public_key = payload.hpke_public_key.as_ref().map(|k| k.to_string());
     // `attestation` and `keyCustody` are accepted but not yet acted on (spec:
     // policy input, not gate; verification is a follow-up).
+    //
+    // The UV key rides in `ext` (`org.openvtc.uv-key`) until the registry's
+    // `device/register` carries one; a malformed one refuses the registration.
+    let uv_key = match operations::device::extension_uv_key(
+        payload
+            .ext
+            .iter()
+            .flat_map(|e| e.iter().map(|(k, v)| (k.as_str(), v))),
+    ) {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
 
     match operations::device::register_device(
         &state.acl_ks,
@@ -51,6 +63,7 @@ pub(super) async fn handle_register(
         display_name,
         payload.platform,
         hpke_public_key,
+        uv_key,
         TRANSPORT_TRUST_TASK,
     )
     .await
@@ -74,6 +87,7 @@ pub(super) async fn handle_heartbeat(
     };
     match operations::device::heartbeat_device(
         &state.acl_ks,
+        &state.audit_sink,
         auth,
         payload.platform,
         payload.ext.as_ref(),

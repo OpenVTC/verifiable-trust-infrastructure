@@ -482,6 +482,24 @@ pub struct DeviceBinding {
     /// absent on legacy rows. The push token is never stored here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake: Option<WakeChannel>,
+    /// The device's user-verification key: the one key the platform uses only
+    /// after a biometric (or a passkey's own user verification). Enrolled on
+    /// `device/register` and replaced on `device/heartbeat`, both under the
+    /// `org.openvtc.uv-key` extension, and so only ever written by the device's
+    /// own transport key. `None` means the device cannot approve an
+    /// `auth/oob/grant` (base design §5 and §11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uv_key: Option<UvKey>,
+}
+
+/// A device's enrolled user-verification key and when it was enrolled.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UvKey {
+    /// What the device sent, as it sent it.
+    pub enrolment: vta_sdk::protocols::device_management::UvKeyEnrolment,
+    /// RFC 3339 — when this key was enrolled (or last replaced).
+    pub enrolled_at: String,
 }
 
 impl DeviceBinding {
@@ -1988,6 +2006,7 @@ mod tests {
             wiped_at: None,
             hpke_public_key: None,
             wake: None,
+            uv_key: None,
         }
     }
 

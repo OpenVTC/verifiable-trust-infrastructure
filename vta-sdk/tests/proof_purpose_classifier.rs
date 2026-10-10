@@ -36,6 +36,9 @@ fn approver_decisions_are_signed_for_assertion_method() {
         "https://trusttasks.org/spec/auth/step-up/approve-response/0.3#request",
         "https://trusttasks.org/spec/task-consent/decision/0.1",
         "https://trusttasks.org/spec/confirm/response/0.1",
+        // The wallet sign-in grant is the approving DID's attestation
+        // (VTI-KEY-106; sign-in trigger-link contract C5).
+        "https://trusttasks.org/spec/auth/oob/grant/0.1",
     ] {
         assert_eq!(purpose_of(uri), ProofPurpose::AssertionMethod, "{uri}");
     }
@@ -61,6 +64,13 @@ fn operational_documents_are_signed_for_authentication() {
         // A slug that only ends in, or nests, an attestation slug.
         "https://trusttasks.org/spec/x/task-consent/decision/0.1",
         "https://trusttasks.org/spec/task-consent/decision-extra/0.1",
+        // `identify` grants no authority on its own: operational.
+        "https://trusttasks.org/spec/auth/oob/identify/0.1",
+        // The service's reply to a grant is its own message.
+        "https://trusttasks.org/spec/auth/oob/grant/0.1#response",
+        // The other `auth/oob` documents are operational too.
+        "https://trusttasks.org/spec/auth/oob/claim/0.1",
+        "https://trusttasks.org/spec/auth/oob/respond/0.1",
     ] {
         assert_eq!(purpose_of(uri), ProofPurpose::Authentication, "{uri}");
     }

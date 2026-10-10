@@ -1349,6 +1349,37 @@ These are load-bearing — know they exist before adjusting nearby code.
   concurrent requests both pass the `is_some()` check and both mint
   admins. New TEE flows must not provide a back door.
 
+## Branches: where a PR goes
+
+The release cycle and branch model are in [`RELEASES.md`](RELEASES.md); crate
+publishing is in [`RELEASING.md`](RELEASING.md). What an agent opening a PR
+needs:
+
+| Branch | Open a PR against it? |
+|---|---|
+| `main` | **Yes — the default for everything**: features, fixes, docs, refactors. Branch from `origin/main` (`feat/…`, `fix/…`, `docs/…`). |
+| `nightly` | **Never.** A bot fast-forwards it to the last fully green `main` commit. |
+| `release/<name>` (Eucalyptus, Fig, …) | **Not directly, as a rule.** A fix lands on `main` first; then label the merged PR `backport release/<name>` and `backport.yml` opens the cherry-pick PR. Open one by hand only when the code no longer exists on `main` — base it on `origin/release/<name>` and say why in the description. |
+| `release-plz-*`, `release-prep/*`, `release-cut/*` | **Never** — bots and release scripts open these. |
+
+Rules for anything that does land on a release branch:
+
+- **Fixes, security changes and docs only.** No features. No breaking change
+  to a published crate — `prepare-release-branch.py` refuses one
+  (`cargo semver-checks --release-type patch`); rework the fix to keep the API.
+- **Never edit `version =` or `RELEASE`** — only the *Prepare a named release*
+  workflow does, same as the Release PR on `main`.
+- **Never edit `releases/*.toml`** — `cut-release.py` writes it. Each one gives
+  a release branch the compatibility line of every crate it was cut with, and
+  `check-release-line-ownership.py` keeps `main` out of those lines.
+- CI is a **required** check on `release/**`, unlike `main`.
+- The `branch rules` check (`scripts/check-branch-rules.py`) enforces the table
+  above and the version rule, on every PR into `main` or `release/**`. If it
+  fails, it names the fix — read it rather than working around it.
+- Which supported release a fix should go to is a maintainer's call (support
+  status is in the `RELEASES.md` table); if the task doesn't say, ask rather
+  than labelling every branch.
+
 ## Versioning & publishing (workspace-specific)
 
 **Never edit a `version = ` field in a feature PR.** Versions are assigned by
@@ -1520,6 +1551,15 @@ a time, and vtc-service's tests serialise on process-global locks, which kept
 its two big binaries under one core. nextest never runs doctests, so the
 `--doc` lines are not optional. `cargo test` still works and still means the
 same thing; it is only slower.
+
+**CI caches compiled third-party crates, never the workspace's own.**
+`.github/actions/rust-cache` (Swatinem/rust-cache, saved from `main` only, keyed
+per job) restores dependencies and deletes every workspace member's artifacts
+before saving — so the stale-artifact failure that removed the old `target/`
+cache (#1133) cannot recur. Keep every local path crate a workspace member, or it
+would be cached as a "dependency". The same action links with mold. There is no
+`Check` job (Clippy `--all-targets` covers it), tier-2 jobs wait for Clippy
+only, and `scripts/ci-affects.sh` skips every compile job for a prose-only PR.
 
 **Dependencies build at `opt-level = 2`** (`[profile.dev.package."*"]`;
 workspace crates stay at 0, so an edit-test loop recompiles nothing extra).

@@ -597,6 +597,20 @@ mod tests {
         assert_eq!(types, ["TSPTransport", "DIDCommMessaging", "VTARest"]);
     }
 
+    /// A DID the VTA mints with its default shape — a persona included —
+    /// lists its signing key under `assertionMethod`, so it can sign an
+    /// `auth/oob/grant` a service will accept (VTI-KEY-106, VTI-KEY-022).
+    #[test]
+    fn a_minted_document_lists_its_signing_key_under_assertion_method() {
+        let config = crate::test_support::test_app_config(std::path::PathBuf::from("/tmp/x"));
+        for include_ka in [true, false] {
+            let doc =
+                build_did_document_inner(&fake_keys(), None, &config, include_ka, false, &None);
+            assert_eq!(doc["assertionMethod"][0], "{DID}#key-0", "{doc}");
+            assert_eq!(doc["verificationMethod"][0]["id"], "{DID}#key-0");
+        }
+    }
+
     const MEDIATOR: &str = "did:webvh:mediator.example.com:mediator";
 
     /// A VTA config with a mediator and `services.tsp` set as asked.

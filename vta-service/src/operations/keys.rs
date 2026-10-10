@@ -863,14 +863,45 @@ pub(crate) async fn ensure_may_sign(
     auth: &AuthClaims,
     what: &str,
 ) -> Result<(), AppError> {
+    ensure_may_sign_caller(acl_ks, auth, what).await.map(drop)
+}
+
+/// [`ensure_may_sign`], returning the caller's row it read so the rest of a
+/// signature (gate 4) uses the same one instead of reading it again.
+async fn ensure_may_sign_caller(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    what: &str,
+) -> Result<CallerAcl, AppError> {
     let entry = entry_for_capability_gate(acl_ks, auth, what, "sign").await?;
     if entry_or_role_has(entry.as_ref(), auth, Capability::Sign) {
-        return Ok(());
+        return Ok(CallerAcl(entry));
     }
     Err(AppError::Forbidden(format!(
         "{what} denied: {} does not carry the sign capability",
         auth.did
     )))
+}
+
+/// The caller's own ACL row, read once per signature and shared by gate 0
+/// ([`ensure_may_sign`]) and gate 4 ([`require_key_in_caller_scope`]).
+///
+/// Holding one means the read happened. There is no "not loaded yet" state for
+/// a gate to mistake for "no row", which is the trap an
+/// `Option<Option<AclEntry>>` sets: a caller passing `Some(None)` for a lookup
+/// it skipped would silently pass gate 4. Inside, `None` is a caller with no
+/// row, which gate 4 treats as nothing to narrow (see its docs).
+#[derive(Debug)]
+struct CallerAcl(Option<vti_common::acl::AclEntry>);
+
+impl CallerAcl {
+    /// Read the caller's row. Read errors propagate: a gate that cannot see
+    /// the row refuses rather than passes.
+    async fn read(acl_ks: &KeyspaceHandle, auth: &AuthClaims) -> Result<Self, AppError> {
+        Ok(Self(
+            vti_common::acl::get_acl_entry(acl_ks, &auth.did).await?,
+        ))
+    }
 }
 
 /// The key-creation gate: the caller must hold [`Capability::KeyMint`].
@@ -1619,12 +1650,11 @@ pub async fn get_key_secret_internal(
 ///
 /// [`KeyScope`]: vti_common::acl::KeyScope
 /// [`AclEntry::key_scope`]: vti_common::acl::AclEntry::key_scope
-async fn require_key_in_caller_scope(
-    acl_ks: &KeyspaceHandle,
-    auth: &AuthClaims,
-    key_id: &str,
-) -> Result<(), AppError> {
-    let Some(entry) = vti_common::acl::get_acl_entry(acl_ks, &auth.did).await? else {
+///
+/// `caller` is the row this signature read once (at gate 0 when it ran), so
+/// both gates judge the same version of it.
+fn require_key_in_caller_scope(caller: &CallerAcl, key_id: &str) -> Result<(), AppError> {
+    let Some(entry) = caller.0.as_ref() else {
         return Ok(());
     };
     if entry.key_scope().allows(key_id) {
@@ -1726,9 +1756,11 @@ async fn sign_payload_recorded(
     // instance) — and VTI-VTA-007 is precisely that such a grant must not have
     // to carry the general one. Before any lookup, so a refused caller learns
     // nothing about which key ids exist.
-    if domain == SigningDomain::Opaque {
-        ensure_may_sign(acl_ks, auth, "keys/sign").await?;
-    }
+    let gate0_caller = if domain == SigningDomain::Opaque {
+        Some(ensure_may_sign_caller(acl_ks, auth, "keys/sign").await?)
+    } else {
+        None
+    };
 
     // Scope before existence: an out-of-scope caller gets the same refusal for
     // a key that exists and one that does not.
@@ -1740,6 +1772,16 @@ async fn sign_payload_recorded(
         ));
     }
 
+    // The caller's row for gate 4: the one gate 0 read, or read now. Either
+    // way it is read once per signature.
+    let caller = match gate0_caller {
+        Some(caller) => caller,
+        None => CallerAcl::read(acl_ks, auth).await?,
+    };
+
+    // The key's context as key custody reads it: the policy below and the
+    // custody base path come from this one read.
+    let mut custody_context = None;
     if let Some(ref ctx) = record.context_id {
         auth.require_context(ctx)?;
         // Gate 4 (#818) — the caller's own ACL row may narrow which key ids
@@ -1748,7 +1790,7 @@ async fn sign_payload_recorded(
         // contexts by naming it here — the filter intersects with the context
         // scope, never widens it. Placed BEFORE the policy quota so a refused
         // call burns none of the context's daily sign budget.
-        require_key_in_caller_scope(acl_ks, auth, key_id).await?;
+        require_key_in_caller_scope(&caller, key_id)?;
         // Context policy is a resource-bound guardrail: it constrains the key's
         // context regardless of the actor — even the super-admin. This is what
         // lets a higher authority (e.g. a VTC/fleet-pushed policy) or the
@@ -1757,7 +1799,8 @@ async fn sign_payload_recorded(
         // chain, so a child context can only narrow the set, never widen it. An
         // unscoped key (no context) has no policy and is naturally unrestricted
         // (and super-admin-only, gated below).
-        let policy = crate::contexts::effective_context_policy(contexts_ks, ctx).await?;
+        let context = super::key_custody::load_sign_context(contexts_ks, ctx).await?;
+        let policy = context.policy();
         if !policy.allows_signing_key(key_id) {
             return Err(AppError::Forbidden(format!(
                 "signing key {key_id} is not permitted by the policy of context {ctx}"
@@ -1766,6 +1809,7 @@ async fn sign_payload_recorded(
         if let Some(limit) = policy.quota_for("sign") {
             crate::contexts::enforce_daily_quota(contexts_ks, ctx, "sign", limit).await?;
         }
+        custody_context = Some(context);
     } else {
         if !auth.is_super_admin() {
             return Err(AppError::Forbidden(
@@ -1775,7 +1819,7 @@ async fn sign_payload_recorded(
         // Gate 4 applies to unscoped keys too: the filter can only ever
         // *narrow* whatever the context dimension allowed, and a super-admin
         // whose entry names specific keys asked to be bound to them.
-        require_key_in_caller_scope(acl_ks, auth, key_id).await?;
+        require_key_in_caller_scope(&caller, key_id)?;
     }
 
     // What gets signed, which is not always what was handed in: an opaque
@@ -1859,13 +1903,14 @@ async fn sign_payload_recorded(
                     algorithm, record.key_type
                 )));
             }
-            let key = super::key_custody::derive_record_key(
+            let key = super::key_custody::derive_record_key_in(
                 contexts_ks,
                 keys_ks,
                 &**seed_store,
                 audit,
                 &auth.did,
                 &record,
+                custody_context.as_ref(),
                 channel,
             )
             .await?;
@@ -3416,6 +3461,93 @@ mod tests {
                 "an EMPTY allowed_keys must refuse every key (got {denied:?} for {key})"
             );
         }
+    }
+
+    /// Gate 4 still binds when gate 0 does not run. A `ProtocolDefined`
+    /// signature skips the `Sign` capability gate (VTI-VTA-007), so the row
+    /// gate 4 judges is read on its own path. That is the case a "not loaded"
+    /// state could have let through as "no row": [`CallerAcl`] has no such
+    /// state, and this pins that the narrowing still refuses.
+    #[tokio::test]
+    async fn gate_4_binds_a_protocol_defined_signature_too() {
+        use vti_common::acl::{AclEntry, store_acl_entry};
+
+        let h = TestHarness::new().await;
+        let admin = h.super_admin_auth();
+        for id in ["proto-key-a", "proto-key-b"] {
+            create_key(
+                &h.keys_ks,
+                &h.internal_ks,
+                &h.contexts_ks,
+                &h.seed_store,
+                &h.audit,
+                &h.acl_ks,
+                &admin,
+                CreateKeyParams {
+                    internal: false,
+                    key_type: KeyType::Ed25519,
+                    derivation_path: None,
+                    key_id: Some(id.into()),
+                    mnemonic: None,
+                    label: None,
+                    context_id: Some("test-ctx".into()),
+                },
+                "test",
+            )
+            .await
+            .expect("create key");
+        }
+
+        let caller_did = "did:key:z6MkProtocolSigner";
+        let claims = AuthClaims {
+            did: caller_did.to_string(),
+            role: Role::Application,
+            allowed_contexts: vec!["test-ctx".to_string()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            issued_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        };
+        store_acl_entry(
+            &h.acl_ks,
+            &AclEntry::new(caller_did, Role::Application, "did:key:zSetup")
+                .with_contexts(vec!["test-ctx".into()])
+                .with_allowed_keys(Some(["proto-key-a".to_string()].into_iter().collect())),
+        )
+        .await
+        .unwrap();
+
+        let sign = |key_id: &'static str| {
+            let claims = claims.clone();
+            let h = &h;
+            async move {
+                sign_payload(
+                    &h.keys_ks,
+                    &h.imported_ks,
+                    &h.internal_ks,
+                    &h.contexts_ks,
+                    &h.acl_ks,
+                    &h.seed_store,
+                    &h.audit,
+                    &claims,
+                    key_id,
+                    b"payload",
+                    &SignAlgorithm::EdDSA,
+                    SigningDomain::ProtocolDefined,
+                    "test",
+                )
+                .await
+            }
+        };
+        sign("proto-key-a")
+            .await
+            .expect("the key the filter names signs");
+        let denied = sign("proto-key-b").await;
+        assert!(
+            matches!(denied, Err(crate::error::AppError::Forbidden(_))),
+            "gate 4 must refuse a key outside allowed_keys without gate 0, got {denied:?}"
+        );
     }
 
     /// Gate 4 intersects — it never widens. A filter naming a key outside the

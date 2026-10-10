@@ -1,0 +1,71 @@
+name: Prepare a named release
+
+# Opens the PR that prepares the next rc, GA or patch of a named release
+# (RELEASES.md). Run it from the Actions tab with the release branch selected
+# as the ref. Merging the PR it opens is the release: publish.yml publishes the
+# patched crates and tags the release (VTI-<Name>-R<n> …, RELEASES.md).
+#
+# release-plz's Release PR does not run on release branches — it derives
+# versions from the newest crate on crates.io, which is main's line. See the
+# header of scripts/prepare-release-branch.py.
+on:
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: "rc (next candidate), ga (rcN -> .0) or patch (.N -> .N+1)"
+        required: true
+        type: choice
+        options: [patch, rc, ga]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-prep-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare ${{ inputs.kind }} on ${{ github.ref_name }}
+    if: startsWith(github.ref, 'refs/heads/release/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Tags: every crate's last release is found by its `<crate>-v<version>` tag.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install system dependencies
+        run: bash scripts/install-build-deps.sh
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-semver-checks,git-cliff
+      - name: Bump changed crates, write changelogs, move RELEASE
+        env:
+          KIND: ${{ inputs.kind }}
+        run: python3 scripts/prepare-release-branch.py --kind "$KIND" --pr-body "$RUNNER_TEMP/body.md"
+      - name: Open the PR
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          BASE: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          target=$(cat RELEASE)
+          head="release-prep/${BASE#release/}/$target"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$head"
+          git add -A
+          git commit -s -m "chore(release): $target"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/$head"
+          gh pr create --base "$BASE" --head "$head" --title "chore(release): $target" \
+            --body-file "$RUNNER_TEMP/body.md" --label release
