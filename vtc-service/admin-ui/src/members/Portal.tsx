@@ -7,6 +7,7 @@ import { BadgeCheck, LogOut, Sparkles } from "lucide-react";
 
 import { MemberApiError, memberFetch, postMember, type MemberMe } from "./api";
 import { Passkeys } from "./Passkeys";
+import { forgetSessionKey } from "./oob";
 import { SignIn } from "./SignIn";
 
 async function fetchMe(): Promise<MemberMe | null> {
@@ -49,6 +50,8 @@ export function Portal() {
     try {
       await postMember("/v1/member/sign-out");
     } finally {
+      // A wallet sign-in's browser key ends with the session (base design §13.5).
+      forgetSessionKey();
       qc.setQueryData(["member-me"], null);
       qc.removeQueries({ queryKey: ["member-passkeys"] });
     }
