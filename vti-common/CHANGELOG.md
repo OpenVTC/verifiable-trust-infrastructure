@@ -2,6 +2,184 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.41.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.40.0...vti-common-v0.41.0) — 2026-10-10
+
+
+### Added
+
+- **vtc**: Member portal, with wallet sign-in by trigger link ([#2007](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2007))
+
+* feat(vtc): a member portal at /members, and a home page that explains the community
+
+  Members could not sign in anywhere: VTC sign-in admitted administrators only,
+  and every session it minted read as an admin session. This adds a member
+  portal as a separate application from the console, with the separation
+  enforced by the daemon rather than by what each page shows.
+
+  Member portal (`crate::member_portal`, `routes::member_portal`):
+  - Only an active member signs in — a live ACL entry that is not expired,
+    suspended or an `application` entry, plus a member record that has not been
+    removed — checked at challenge (VTI-SES-006/007 via the shared handler), at
+    authentication, on every refresh and on every request (VTI-SES-020..022).
+  - Sign-in by the browser wallet (SIOPv2 at `<origin>/v1/member/wallet`) or a
+    portal passkey only. A passkey is added from the portal after a wallet
+    sign-in; adding or removing one requires a wallet-proven session (`amr`
+    contains `did`). Audited as the new `MemberPasskeyChanged` event.
+  - Tokens carry audience `VTC-member` (`JwtKeys::for_audience`), so console
+    extractors refuse them and the portal refuses console tokens.
+  - Sessions and passkeys live in their own keyspaces (`member_sessions`,
+    `member_passkeys`, excluded from backup), so a member who is also an
+    administrator cannot redeem a portal refresh token or passkey at the console.
+  - Cookies `vtc_member_session` / `vtc_member_refresh` are `Path=/v1/member`;
+    `vtc_member_csrf` is the portal's own double-submit value, and the CSRF gate
+    picks the cookie pair by path.
+  - The portal is its own Vite bundle (`vite.members.config.ts`), baked by
+    build.rs into `$OUT_DIR/member-ui-dist` and served at `/members/`; it loads
+    no console code. In subdomain mode it is served on the API host.
+  - The sign-in page carries manual install steps for the VTA Wallet extension
+    (OpenVTC/vta-browser-plugin).
+
+  Default landing page: rebuilt around a visitor who does not know what a VTC
+  is — "Get started" at openvtc.net, member sign-in, capability cards (git
+  across GitHub, Forgejo/Codeberg and Gitea, verifiable data rooms, access
+  management, credentials, recognition), a quieter operator-console link, and
+  the existing status panel. Fixes hidden status rows rendering empty.
+
+  The step-up passkey route test now compares an unrouted response with the
+  website fallback byte for byte; its old "no 'credentials' in the body" check
+  tripped on the new landing page copy.
+
+- **vta-sdk**: Wallet sign-in with a trigger link: sign auth/oob grants, enrol UV keys, advertise TrustTaskHTTPS and SignInPortal ([#1997](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1997))
+
+* feat(vta-sdk)!: sign auth/oob/grant for assertionMethod (VTI-KEY-106)
+
+  Adds `auth/oob/grant` to `ATTESTATION_SLUGS`, so `vault/sign-trust-task`
+  signs a wallet sign-in grant for `assertionMethod`: the grant ("let this
+  browser key act as me at this origin until notAfter") is the approving
+  DID's attestation, which the service relies on to open a session, and it
+  verifies the grant against `assertionMethod` (sign-in trigger-link
+  contract C5, base design §10).
+
+  `auth/oob/identify` stays operational and is signed for `authentication`,
+  as the service verifies it; the other `auth/oob` documents are not
+  attestations either. Both are pinned in the classifier tests.
+
+
+
+### Fixed
+
+- **vti-common**: Pooled enclave storage with atomic multi-step operations ([#1999](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1999))
+
+* fix(vti-common): pool the enclave's vsock storage connections
+
+  Inside a Nitro enclave every storage operation went through one vsock
+  connection behind one mutex held for the whole round trip, so all storage
+  I/O in the VTA ran strictly one operation at a time. Throughput of anything
+  that touches storage was capped by the round-trip time, whatever the
+  enclave's vCPU count: a keys/sign costs about ten round trips, and load
+  tests saw the same ceiling (about 85 signs/s) with one and with two enclave
+  vCPUs, with neither the enclave nor the parent CPU saturated.
+
+  VsockStore now keeps a bounded pool of connections (up to 8). A request
+  owns a connection for one complete round trip and returns it only after a
+  full response; the parent's storage proxy already serves each connection in
+  its own task, so independent operations now run in parallel. Each
+  operation is still a single request, and the multi-step operations (swap,
+  take_raw, move_if_unchanged) are no less atomic than before: the old lock
+  was released between their steps too.
+
+  This also fixes a latent correctness bug. The old code kept the shared
+  connection after a cancelled request: if a request future was dropped
+  after writing its request but before reading the response (a request
+  timeout, a client disconnect), the next caller read the previous caller's
+  response. A pooled connection that fails or is cancelled mid-round-trip is
+  dropped instead of reused.
+
+  The pool is transport-agnostic and compiled under `test` as well as
+  `vsock-store`, so its tests run on every platform, not only Linux.
+
+
+
+### Performance
+
+- **audit**: Cache the active audit key per keyspace, failing closed ([#2004](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2004))
+
+Every audited operation read the active audit key from storage twice: the
+  `audit_key:active` marker, then the key it names. #1951 measured removing
+  both reads at roughly +13-25% keys/sign throughput in a Nitro Enclave.
+
+  Per-keyspace write tracking in the store (store/generation.rs), shared by
+  every handle for a keyspace name:
+
+  - A write begins before its request leaves (generation bumped, counted in
+    flight) and ends when it completes or is dropped (bumped again).
+  - A write that ends without a reply after its frame had completely left
+    the enclave - transport failure, or its future dropped - marks the
+    keyspace unknown: the parent may still apply it. A write that ends before
+    its frame left (no connection, pool closed, write error) cannot have been
+    applied, so it marks nothing. The pool reports which via a `sent` flag set
+    in round_trip once the whole frame is written (request_tracked /
+    request_once_tracked).
+  - The unknown mark clears when a write that began after it completes, or
+    after UNKNOWN_SETTLE (30 s) - longer than any plausible late apply of an
+    abandoned frame; without it one timed-out write would switch the
+    audit_key cache off until the next rotation.
+  - Readers take a ticket before reading: none while a write is in flight or
+    unknown, and a fresh read is cached only if its ticket is still current.
+  - Vsock: both pool paths are tracked - `send` (request_tracked: plain ops,
+    fallbacks, the restore's plain insert) and `send_atomic`
+    (request_once_tracked: OP_TAKE, OP_INSERT_IF_ABSENT, OP_SWAP_IF_ABSENT,
+    OP_MOVE_IF_EQUAL, the restore). Anything not a known read-only opcode is a
+    write.
+  - Local: each write's guard runs inside the blocking closure that writes, so
+    its outcome is always known (a panic excepted).
+
+- **vta-service**: Multi-core REST and direct vsock inbound, failing closed ([#2005](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2005))
+
+* perf(vta-service): serve REST on one worker per CPU
+
+  The REST server ran on its own current-thread tokio runtime, so every REST
+  handler shared one thread and the VTA could use at most one CPU however
+  many it had. In a Nitro enclave this showed as a 2-vCPU enclave half idle at
+  its ceiling (47%/62% per vCPU), with storage replies waiting for that one
+  thread to poll them.
+
+  With more than one CPU the REST runtime is now multi-threaded, one worker
+  per CPU. With one CPU it stays current-thread: a multi-threaded runtime was
+  measurably worse there (1-vCPU enclave at 220 keys/sign per second: 463
+  errors against 2).
+
+  Measured alone on c6g.4xlarge with a 2-vCPU enclave, in builds with extra
+  timing logging and an audit-key cache not in this series: at 320/s p95
+  840 -> 71 ms. With this series as it stands, c6g.4xlarge saturates at about
+  345/s with a 2-vCPU enclave and about 380 to 400/s with a 4-vCPU enclave.
+
+  Review note: handlers that interleaved only at await points now also run in
+  parallel. Existing non-atomic read-modify-write sequences were already racy
+  across await points; this makes those races more likely.
+
+- **storage**: Atomic take / insert-if-absent / swap / compare-and-move in the parent proxy ([#2003](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2003))
+
+* perf(enclave-proxy): atomic take / insert-if-absent / swap / compare-and-move
+
+  The enclave store's claims and moves were sequences of single operations
+  over vsock: two round trips for a take or an insert-if-absent, three for a
+  swap, four for a compare-and-move. The proxy now serves each as one
+  operation (OP_TAKE, OP_INSERT_IF_ABSENT, OP_SWAP_IF_ABSENT,
+  OP_MOVE_IF_EQUAL), advertised by OP_HELLO, under a per-keyspace lock held
+  across its fjall steps. A plain mutex rather than fjall's transactional
+  database: the critical sections are a few fjall calls with no await, and
+  switching the database type would touch every operation.
+
+  None needs plaintext. Values are ciphertext bound to (keyspace, key);
+  OP_MOVE_IF_EQUAL compares the stored ciphertext with bytes the enclave has
+  just read and compared in plaintext itself.
+
+  Each reply frame now goes out in one write (it was two packets). A DID-log
+  write through any of the new operations still lands on disk.
+
+
+
 ## [0.40.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.39.0...vti-common-v0.40.0) — 2026-10-06
 
 
