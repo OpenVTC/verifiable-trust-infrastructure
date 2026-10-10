@@ -34,6 +34,7 @@ pub mod active;
 pub mod backend;
 pub mod cookies;
 pub mod extractor;
+pub mod oob;
 
 pub use active::{ActiveMember, active_member, require_active_member};
 pub use backend::MemberAuthBackend;

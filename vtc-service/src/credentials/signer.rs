@@ -259,6 +259,39 @@ impl LocalSigner {
         self.sign_operational(doc, EnvelopeRole::Response).await
     }
 
+    /// Sign a Trust Task response this VTC **attests** — one a third party is
+    /// meant to rely on — with `proofPurpose: assertionMethod` under the
+    /// primary key.
+    ///
+    /// Only for responses whose specification requires the service's
+    /// `assertionMethod` key: the `auth/oob` step 1 and step 2 responses
+    /// (sign-in contract C5), which a wallet verifies against this VTC's DID
+    /// document before showing anything to the member. Every other response
+    /// is operational and goes through
+    /// [`sign_operational_response`](Self::sign_operational_response).
+    pub async fn sign_attested_response(
+        &self,
+        doc: &mut serde_json::Value,
+    ) -> Result<(), AppError> {
+        seal_envelope(doc, &self.issuer_did, EnvelopeRole::Response)
+            .map_err(|e| AppError::Internal(format!("cannot sign as this VTC: {e}")))?;
+        let obj = doc
+            .as_object_mut()
+            .ok_or_else(|| AppError::Internal("response document is not a JSON object".into()))?;
+        obj.remove("proof");
+        let proof_value = self
+            .proof_value_from(
+                std::slice::from_ref(self.primary()),
+                &*doc,
+                SignOptions::new().with_proof_purpose("assertionMethod"),
+            )
+            .await?;
+        doc.as_object_mut()
+            .expect("checked above")
+            .insert("proof".into(), proof_value);
+        Ok(())
+    }
+
     async fn sign_operational(
         &self,
         doc: &mut serde_json::Value,

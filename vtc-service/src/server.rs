@@ -1720,6 +1720,12 @@ fn run_storage_thread(
                         if let Err(e) = cleanup_expired_sessions(&member_sessions_ks, auth_config.challenge_ttl).await {
                             warn!("member session cleanup error: {e}");
                         }
+                        // Wallet sign-in requests share that keyspace: end
+                        // the expired ones (dropping their addresses) and
+                        // drop the long-ended ones.
+                        if let Err(e) = crate::member_portal::oob::sweep(&member_sessions_ks).await {
+                            warn!("wallet sign-in request sweep error: {e}");
+                        }
                     }
                     _ = shutdown_rx.changed() => {
                         info!("storage thread shutting down");

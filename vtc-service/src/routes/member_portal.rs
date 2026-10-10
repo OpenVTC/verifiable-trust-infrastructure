@@ -1,7 +1,9 @@
 //! `/v1/member/*` — the member portal's routes.
 //!
-//! Sign-in is by SIOPv2 issued by the member's own VTA or by a portal passkey,
-//! and only for an active member; see [`crate::member_portal`] for how these
+//! Sign-in is by the trigger-link key grant (`auth/oob/*` on the Trust Task
+//! door, [`crate::trust_tasks::oob_tasks`]) — the default — by a portal
+//! passkey, or, **deprecated**, by SIOPv2 issued by the member's own VTA; and
+//! only for an active member. See [`crate::member_portal`] for how these
 //! sessions are kept apart from the console's.
 //!
 //! **Why these are plain REST routes with no Trust Task binding.** They are the
@@ -47,7 +49,11 @@ const REFRESH_TASK_URI: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
 /// row stays small.
 const PASSKEY_LABEL_MAX: usize = 64;
 
-// ── SIOPv2 sign-in ──────────────────────────────────────────────────────────
+// ── SIOPv2 sign-in (deprecated) ─────────────────────────────────────────────
+//
+// **Deprecated** (sign-in contract C7): kept for older wallets, behind "Using
+// an older wallet?" on the sign-in page, until a removal date is set. New
+// wallets use `auth/oob/*`.
 //
 // The portal takes a challenge here for the member's VTA persona, has the VTA
 // mint the `id_token` through the wallet extension (`proxyLogin`), and posts it
@@ -55,6 +61,8 @@ const PASSKEY_LABEL_MAX: usize = 64;
 // care which holder minted the token; the active-member gate decides who gets
 // in, and only a member's VTA identity is on the ACL.
 
+/// **Deprecated** (contract C7): legacy SIOPv2 sign-in.
+///
 /// `POST /v1/member/wallet/auth/challenge`. Answers every caller alike; a
 /// session is persisted only for an active member (VTI-SES-006, -007).
 pub async fn wallet_challenge(
@@ -73,6 +81,8 @@ pub async fn wallet_challenge(
     Ok(Json(resp))
 }
 
+/// **Deprecated** (contract C7): legacy SIOPv2 sign-in.
+///
 /// `POST /v1/member/wallet/auth/`. The SIOP `id_token` envelope only — the
 /// verifier is the console's own ([`super::auth::authenticate_siop_with`]),
 /// pointed at the member keyspace and backend.
@@ -114,6 +124,66 @@ pub async fn wallet_refresh(
     )
     .await?;
     Ok(Json(resp))
+}
+
+// ── Wallet sign-in (trigger link) ───────────────────────────────────────────
+//
+// The flow itself is `auth/oob/*` on `POST /v1/trust-tasks`
+// (`crate::trust_tasks::oob_tasks`). The page needs three facts to draw the
+// trigger link the wallet scans or the plugin catches: this community's DID,
+// the link host, and the flow.
+
+/// What the portal page needs to build a sign-in trigger link (contract C1).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignInConfigResponse {
+    /// `_from`: this community's DID.
+    pub vtc_did: String,
+    /// The link host (`admin_ui.sign_in_link_host`, default
+    /// `link.trustoverip.org`).
+    pub link_host: String,
+    /// `_type`, path form.
+    pub flow: String,
+}
+
+/// `GET /v1/member/sign-in/config`. Refuses, naming the fix, when the
+/// configured link host breaks VTI-LNK-060 or VTI-LNK-084, rather than letting
+/// the page show a code that cannot open a wallet.
+pub async fn sign_in_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let cfg = state.config.read().await;
+    let vtc_did = cfg.vtc_did.clone().ok_or_else(|| {
+        AppError::NotFound(
+            "this community has not finished setting up, so sign-in isn't available yet".into(),
+        )
+    })?;
+    let link_host = cfg.admin_ui.sign_in_link_host().to_string();
+    let portal_host = cfg
+        .public_url
+        .as_deref()
+        .and_then(|u| url::Url::parse(u).ok())
+        .and_then(|u| u.host_str().map(str::to_string))
+        .or_else(|| {
+            headers
+                .get(axum::http::header::HOST)
+                .and_then(|v| v.to_str().ok())
+                .map(|h| h.split(':').next().unwrap_or(h).to_string())
+        });
+    crate::member_portal::oob::check_link_host(&link_host, portal_host.as_deref())
+        .map_err(AppError::Config)?;
+    let mut response = Json(SignInConfigResponse {
+        vtc_did,
+        link_host,
+        flow: crate::member_portal::oob::SIGN_IN_FLOW.into(),
+    })
+    .into_response();
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    Ok(response)
 }
 
 // ── Cookie session ──────────────────────────────────────────────────────────

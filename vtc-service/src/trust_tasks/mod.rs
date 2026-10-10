@@ -100,6 +100,9 @@ pub(crate) mod website_tasks;
 
 // Pre-session auth: `auth/{challenge,authenticate/{0.2,0.3},refresh/0.2}`.
 mod auth_tasks;
+// Wallet sign-in started by a trigger link: `auth/oob/*` (the key-grant
+// flow). Pre-session, like `auth_tasks`; its state is `member_portal::oob`.
+pub(crate) mod oob_tasks;
 // First-admin onboarding: `vtc/install/claim/{start,finish}/0.2`,
 // `vtc/admin/bootstrap/0.1`. Pre-session, like `auth_tasks`.
 mod install_tasks;
@@ -507,6 +510,14 @@ async fn dispatch_trust_task_validated(
             "document refused by its specification's own policy"
         );
         return reject_with(&doc, reason);
+    }
+
+    // 2d. The `auth/oob` family's signer must be an Ed25519 `did:key`, decided
+    //     from the identifier before any proof is read (T21), and it requires
+    //     `proof` and `recipient` — rules `spec_policy_for` cannot state yet,
+    //     since `trust-tasks-rs` has not published these specifications.
+    if let Some(refused) = oob_tasks::precheck(&doc, &type_uri) {
+        return refused;
     }
 
     // 3. Framework §7.2 item 7, *first* clause — the proof, verified here
@@ -1179,6 +1190,12 @@ fn dispatch_typed<'a>(
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("admin_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
+        uri if oob_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match oob_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                None => unreachable!("oob_tasks::URIS names {uri}, which it does not route"),
             }
         }),
         uri if auth_tasks::URIS.contains(&uri) => Box::pin(async move {
@@ -2145,8 +2162,11 @@ mod spine_proof_tests {
         let mut unexplained = Vec::new();
         let mut stale = Vec::new();
         for &uri in &dispatched {
+            // `auth/oob/*` is dispatched ahead of its publication; until then
+            // `oob_tasks::precheck` holds its proof requirement.
             let required = trust_tasks_rs::schema_index::spec_policy_for(uri)
-                .is_some_and(|p| p.is_proof_required);
+                .is_some_and(|p| p.is_proof_required)
+                || oob_tasks::URIS.contains(&uri);
             let allow_listed = DISPATCHED_WITHOUT_PROOF.iter().any(|&(u, _)| u == uri);
             match (required, allow_listed) {
                 (false, false) => unexplained.push(uri),
@@ -2877,6 +2897,14 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // `POST /v1/auth/{challenge,,refresh}`. The bare `/auth/` path served
     // `authenticate`; `refresh`'s cookie-bound REST route stays for the admin
     // console's own session renewal (see `auth_tasks`'s module doc).
+    // Wallet sign-in started by a trigger link (`oob_tasks`). `identify` and
+    // `grant` are carried inside `prove` and `respond` only.
+    crate::member_portal::oob::types::REQUEST_TYPE,
+    crate::member_portal::oob::types::CLAIM_TYPE,
+    crate::member_portal::oob::types::PROVE_TYPE,
+    crate::member_portal::oob::types::RESPOND_TYPE,
+    crate::member_portal::oob::types::REDEEM_TYPE,
+    crate::member_portal::oob::types::CANCEL_TYPE,
     auth_tasks::CHALLENGE_TYPE,
     auth_tasks::AUTHENTICATE_V0_2_TYPE,
     auth_tasks::AUTHENTICATE_V0_3_TYPE,
@@ -5761,6 +5789,19 @@ mod tests {
     #[test]
     fn dispatcher_routes_every_dispatched_uri() {
         for uri in DISPATCHED_URIS {
+            // The one counted exception: `auth/oob/*`, bound ahead of its
+            // specification (authored in parallel against the sign-in
+            // trigger-link contract). `oob_tasks::precheck` holds the proof,
+            // recipient and key rules the policy would. The day the registry
+            // publishes them this arm fails, and the exception goes.
+            if oob_tasks::URIS.contains(uri) {
+                assert!(
+                    trust_tasks_rs::schema_index::spec_policy_for(uri).is_none(),
+                    "`{uri}` is now published: drop the auth/oob exception here and \
+                     in `oob_tasks::precheck`, and swap the local types for the generated ones"
+                );
+                continue;
+            }
             assert!(
                 trust_tasks_rs::schema_index::spec_policy_for(uri).is_some(),
                 "`{uri}` is dispatched but the spec registry has no policy for it — either it \

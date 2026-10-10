@@ -338,6 +338,14 @@ pub struct AdminUiConfig {
     /// is dropped from the manifest endpoint with a `warn!`.
     #[serde(default)]
     pub plugin_dir: Option<std::path::PathBuf>,
+    /// Host of the **trigger link** the member portal's wallet sign-in shows
+    /// as a QR code and a link (`https://<host>/t#_from=…`). `None` (default)
+    /// means `link.trustoverip.org`, the shared host every participating
+    /// wallet declares. Must be a public DNS name and must **not** be on the
+    /// portal's own domain: a universal link tapped on a page of the same
+    /// domain opens in the browser, not the wallet (VTI-LNK-060, VTI-LNK-084).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_in_link_host: Option<String>,
 }
 
 impl Default for AdminUiConfig {
@@ -349,6 +357,7 @@ impl Default for AdminUiConfig {
             external_origin: (),
             rp_id: None,
             plugin_dir: None,
+            sign_in_link_host: None,
         }
     }
 }
@@ -372,6 +381,13 @@ fn default_admin_ui_mode() -> String {
 }
 
 impl AdminUiConfig {
+    /// The trigger-link host the portal's wallet sign-in uses.
+    pub fn sign_in_link_host(&self) -> &str {
+        self.sign_in_link_host
+            .as_deref()
+            .unwrap_or(crate::member_portal::oob::DEFAULT_LINK_HOST)
+    }
+
     /// The directory to serve the console from, when `mode = "directory"`.
     /// `None` for every other mode.
     pub fn serve_dir(&self) -> Option<&std::path::Path> {

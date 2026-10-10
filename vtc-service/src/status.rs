@@ -99,6 +99,26 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
                         vta_sdk::protocol::matching::ServiceCapabilities::from_did_document(&doc)
                     });
 
+                    // Wallet sign-in needs a `SignInPortal` service naming
+                    // this portal (contract C4, VTI-LNK-102).
+                    if let (Some(url), Ok(doc)) = (
+                        config.public_url.as_deref(),
+                        serde_json::to_value(&resolved.doc),
+                    ) {
+                        match crate::member_portal::oob::check_sign_in_portal(&doc, did, url) {
+                            Ok(()) => eprintln!(
+                                "                {GREEN}✓{RESET} lists the member portal (SignInPortal)"
+                            ),
+                            Err(why) => eprintln!("                {YELLOW}!{RESET} {why}"),
+                        }
+                        match crate::member_portal::oob::check_trust_task_https(&doc, did, url) {
+                            Ok(()) => eprintln!(
+                                "                {GREEN}✓{RESET} lists its trust-task door (TrustTaskHTTPS)"
+                            ),
+                            Err(why) => eprintln!("                {YELLOW}!{RESET} {why}"),
+                        }
+                    }
+
                     // Look for mediator DID in DIDCommMessaging service
                     for svc in &resolved.doc.service {
                         if svc.type_.iter().any(|t| t == "DIDCommMessaging")
