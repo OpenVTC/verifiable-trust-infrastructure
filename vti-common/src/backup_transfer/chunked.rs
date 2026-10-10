@@ -179,6 +179,44 @@ pub struct ChunkPlan {
     pub done: Vec<bool>,
     /// The latest `expires_at` activity may extend the bundle to.
     pub expiry_ceiling: DateTime<Utc>,
+    /// How far each accepted chunk slides the expiry, when the transfer's
+    /// terms set one other than [`bundle_ttl`]. Absent on every backup and
+    /// website transfer, which keep the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_ttl_secs: Option<u64>,
+}
+
+/// How long an import slot lives: idle, and in all.
+///
+/// A backup or a website upload is an administrator at a console, so it keeps
+/// the short defaults ([`TransferTerms::backup`]). A room file is a member on
+/// whatever link they have, and `rooms/blobs/upload/begin` requires a slot to
+/// survive 15 minutes of silence and to keep extending for at least 24 hours
+/// ([`TransferTerms::room_file`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransferTerms {
+    /// How far the expiry is set from begin, and slid by each accepted chunk.
+    pub idle_ttl: Duration,
+    /// The total a slot may be extended to from begin.
+    pub lifetime: Duration,
+}
+
+impl TransferTerms {
+    /// The backup and website default: five minutes idle, an hour in all.
+    pub fn backup() -> Self {
+        Self {
+            idle_ttl: bundle_ttl(),
+            lifetime: Duration::seconds(MAX_BUNDLE_TTL_SECS as i64),
+        }
+    }
+
+    /// A room file: fifteen minutes idle, a day in all.
+    pub fn room_file() -> Self {
+        Self {
+            idle_ttl: Duration::minutes(15),
+            lifetime: Duration::hours(24),
+        }
+    }
 }
 
 impl ChunkPlan {
@@ -351,6 +389,7 @@ pub async fn stage_export(
         digests: digests.clone(),
         done: vec![false; count as usize],
         expiry_ceiling: now + Duration::seconds(MAX_BUNDLE_TTL_SECS as i64),
+        idle_ttl_secs: None,
     };
     // Plan first: a record without its plan would be a chunked bundle nothing
     // can serve, where a plan without its record is inert.
@@ -541,6 +580,31 @@ pub async fn initiate_import_for(
     declared_chunk_count: u64,
     digests: Vec<String>,
 ) -> Result<ChunkedBundle, ChunkedError> {
+    initiate_import_with(
+        bundles_ks,
+        owner,
+        expected_sha256,
+        expected_size_bytes,
+        chunk_size,
+        declared_chunk_count,
+        digests,
+        TransferTerms::backup(),
+    )
+    .await
+}
+
+/// [`initiate_import_for`] on explicit [`TransferTerms`].
+#[allow(clippy::too_many_arguments)]
+pub async fn initiate_import_with(
+    bundles_ks: &KeyspaceHandle,
+    owner: &str,
+    expected_sha256: &str,
+    expected_size_bytes: u64,
+    chunk_size: u64,
+    declared_chunk_count: u64,
+    digests: Vec<String>,
+    terms: TransferTerms,
+) -> Result<ChunkedBundle, ChunkedError> {
     enforce_open_bundle_cap(bundles_ks, owner).await?;
 
     if expected_sha256.len() != 64
@@ -585,7 +649,7 @@ pub async fn initiate_import_for(
         kind: BundleKind::Import,
         state: BundleState::ImportPending,
         created_at: now,
-        expires_at: now + bundle_ttl(),
+        expires_at: now + terms.idle_ttl,
         created_by: owner.to_string(),
         algorithm: ALGORITHM_CHUNKED.into(),
         expected_sha256: expected_sha256.to_string(),
@@ -600,7 +664,9 @@ pub async fn initiate_import_for(
         chunk_count: count,
         digests: digests.clone(),
         done: vec![false; count as usize],
-        expiry_ceiling: now + Duration::seconds(MAX_BUNDLE_TTL_SECS as i64),
+        expiry_ceiling: now + terms.lifetime,
+        idle_ttl_secs: (terms != TransferTerms::backup())
+            .then(|| terms.idle_ttl.num_seconds().max(1) as u64),
     };
     store_plan(bundles_ks, &plan).await?;
     backup_bundle_store::store_bundle(bundles_ks, &record).await?;
@@ -835,7 +901,11 @@ async fn load_chunked(
 /// Slide the bundle's expiry to one TTL from now, never past the ceiling and
 /// never backwards.
 fn extend_expiry(record: &mut BundleRecord, plan: &ChunkPlan, now: DateTime<Utc>) {
-    let proposed = (now + bundle_ttl()).min(plan.expiry_ceiling);
+    let idle = plan
+        .idle_ttl_secs
+        .map(|s| Duration::seconds(s as i64))
+        .unwrap_or_else(bundle_ttl);
+    let proposed = (now + idle).min(plan.expiry_ceiling);
     if proposed > record.expires_at {
         record.expires_at = proposed;
     }
@@ -1410,5 +1480,62 @@ mod tests {
         }
         // Budgets are per DID.
         limiter.check("did:key:z6MkAnotherOperator").unwrap();
+    }
+
+    /// Room-file terms: a slot outlives fifteen minutes of silence and keeps
+    /// extending for a day, where a backup keeps its five minutes and an hour.
+    #[tokio::test]
+    async fn import_terms_set_the_idle_window_and_the_lifetime() {
+        let env = env();
+        let bytes = bundle_bytes();
+        let digests: Vec<String> = bytes.chunks(MIN as usize).map(digest).collect();
+        let before = Utc::now();
+        let slot = initiate_import_with(
+            &env.ks,
+            OWNER,
+            &sha256_hex(&bytes),
+            bytes.len() as u64,
+            MIN,
+            digests.len() as u64,
+            digests.clone(),
+            TransferTerms::room_file(),
+        )
+        .await
+        .unwrap();
+        assert!(slot.expires_at >= before + Duration::minutes(15));
+        let plan = get_plan(&env.ks, &slot.bundle_id).await.unwrap().unwrap();
+        assert!(plan.expiry_ceiling >= before + Duration::hours(24));
+
+        let out = put_chunk_for(
+            &env.ks,
+            &env.blob_dir,
+            &unlimited(),
+            OWNER,
+            ChunkWrite {
+                bundle_id: &slot.bundle_id.to_string(),
+                index: 0,
+                digest_multibase: &digests[0],
+                data: &bytes[..MIN as usize],
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.expires_at >= Utc::now() + Duration::minutes(14));
+
+        // The default is unchanged.
+        let backup = initiate_import_for(
+            &env.ks,
+            "did:key:z6MkOther",
+            &sha256_hex(&bytes),
+            bytes.len() as u64,
+            MIN,
+            digests.len() as u64,
+            digests,
+        )
+        .await
+        .unwrap();
+        assert!(backup.expires_at <= Utc::now() + bundle_ttl());
+        let plan = get_plan(&env.ks, &backup.bundle_id).await.unwrap().unwrap();
+        assert_eq!(plan.idle_ttl_secs, None);
     }
 }
