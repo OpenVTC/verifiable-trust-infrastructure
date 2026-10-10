@@ -816,6 +816,43 @@ mod tests {
     }
 
     #[test]
+    fn signed_claim_verifies_and_round_trips() {
+        let (seed, ed_pub) = generate_ed25519_keypair();
+        let req = BootstrapRequest::new_signed_claim(&seed, [7u8; 16], None);
+        assert_eq!(req.decode_client_ed25519_pub().unwrap(), ed_pub);
+        let back: BootstrapRequest =
+            serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        back.verify_claim_signature().unwrap();
+    }
+
+    #[test]
+    fn claim_signature_rejects_missing_tampered_or_foreign() {
+        let (seed, _) = generate_ed25519_keypair();
+        let signed = BootstrapRequest::new_signed_claim(&seed, [7u8; 16], None);
+
+        let (_, other_pub) = generate_ed25519_keypair();
+        assert!(
+            BootstrapRequest::new(other_pub, [7u8; 16], None)
+                .verify_claim_signature()
+                .is_err()
+        );
+
+        // Another nonce: a captured signature can't be reused on a new request.
+        let mut renonced = signed.clone();
+        renonced.nonce = BootstrapRequest::new(other_pub, [8u8; 16], None).nonce;
+        assert!(renonced.verify_claim_signature().is_err());
+
+        // Another client_did: the signature doesn't transfer to a different key.
+        let mut swapped = signed.clone();
+        swapped.client_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&other_pub);
+        assert!(swapped.verify_claim_signature().is_err());
+
+        let mut garbled = signed;
+        garbled.claim_signature = Some("AAAA".into());
+        assert!(garbled.verify_claim_signature().is_err());
+    }
+
+    #[test]
     fn bootstrap_request_derives_x25519_pub_from_did_key() {
         // The producer only ever sees the did:key; it must derive the same
         // X25519 pubkey that would pair with the consumer-side X25519 secret

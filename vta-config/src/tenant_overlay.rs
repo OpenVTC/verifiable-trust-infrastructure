@@ -43,6 +43,12 @@ pub struct TenantConfigOverlay {
     pub tee_kms: Option<TenantKmsOverlay>,
     #[serde(default)]
     pub messaging: Option<TenantMessagingOverlay>,
+    /// Public Ed25519 `did:key` the operator minted (`pnm bootstrap claim-did
+    /// create`); only its holder may claim first-boot admin. Distinct from
+    /// `admin_did`, which stays forbidden: this authorizes who may claim, it
+    /// grants nothing itself.
+    #[serde(default)]
+    pub bootstrap_claim_did: Option<String>,
 }
 
 /// The tenant-scoped subset of `[tee.kms]` an operator may deliver at runtime.
@@ -116,6 +122,8 @@ pub enum TenantOverlayError {
     /// The baked base has no `[messaging]` section and the overlay's `messaging`
     /// block omits `mediator_did`, which is required to construct one.
     MessagingMediatorDidRequired,
+    /// The overlay's `bootstrap_claim_did` is not an Ed25519 `did:key`.
+    MalformedBootstrapClaimDid(String),
 }
 
 impl std::fmt::Display for TenantOverlayError {
@@ -158,6 +166,10 @@ impl std::fmt::Display for TenantOverlayError {
                 f,
                 "tenant overlay carries a messaging block and the baked base has \
                  no [messaging] section — the overlay must supply mediator_did"
+            ),
+            Self::MalformedBootstrapClaimDid(did) => write!(
+                f,
+                "tenant overlay bootstrap_claim_did is not an Ed25519 did:key: {did}"
             ),
         }
     }
@@ -287,6 +299,13 @@ pub fn apply_tenant_overlay(
         }
     }
 
+    if let Some(did) = overlay.bootstrap_claim_did {
+        // Fail at boot, not at the one-shot claim, if the DID can't be a claimant.
+        affinidi_crypto::did_key::did_key_to_ed25519_pub(&did)
+            .map_err(|_| TenantOverlayError::MalformedBootstrapClaimDid(did.clone()))?;
+        base.tee.bootstrap_claim_did = Some(did);
+    }
+
     if let Some(m) = overlay.messaging {
         match base.messaging.as_mut() {
             Some(msg) => {
@@ -383,11 +402,13 @@ mod tests {
                              "vta_did_template":"did:webvh:{{SCID}}:acme.example.com:vta",
                              "anchor_table_name":"vta-rollback-anchor-acme",
                              "anchor_writer_credential_ciphertext":"base64=="}},
-                 "messaging":{{"mediator_did":"did:webvh:scid:mediator","mediator_url":"wss://m"}}}}"#
+                 "messaging":{{"mediator_did":"did:webvh:scid:mediator","mediator_url":"wss://m"}},
+                 "bootstrap_claim_did":"{CLAIM_DID}"}}"#
         );
         let parsed: TenantConfigOverlay =
             serde_json::from_str(&ok).expect("well-formed overlay must parse");
         assert_eq!(parsed.vta_name.as_deref(), Some("acme"));
+        assert_eq!(parsed.bootstrap_claim_did.as_deref(), Some(CLAIM_DID));
         let kms = parsed.tee_kms.expect("tee_kms present");
         assert_eq!(kms.key_arn, GOOD_ARN);
     }
@@ -622,6 +643,54 @@ mod tests {
         let msg = base.messaging.as_ref().unwrap();
         assert_eq!(msg.mediator_did, "did:web:mediator.test");
         assert_eq!(msg.mediator_url, "wss://mediator.test/ws");
+    }
+
+    const CLAIM_DID: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+
+    #[cfg(feature = "tee")]
+    fn empty_base() -> crate::AppConfig {
+        toml::from_str("").unwrap()
+    }
+
+    #[cfg(feature = "tee")]
+    fn claim_overlay(did: &str) -> TenantConfigOverlay {
+        serde_json::from_value(serde_json::json!({ "bootstrap_claim_did": did })).unwrap()
+    }
+
+    #[cfg(feature = "tee")]
+    #[test]
+    fn apply_overlay_sets_bootstrap_claim_did() {
+        let mut base = empty_base();
+        apply_tenant_overlay(&mut base, claim_overlay(CLAIM_DID)).expect("apply succeeds");
+        assert_eq!(base.tee.bootstrap_claim_did.as_deref(), Some(CLAIM_DID));
+    }
+
+    #[cfg(feature = "tee")]
+    #[test]
+    fn apply_overlay_rejects_a_claim_did_that_is_not_ed25519_did_key() {
+        for bad in ["did:web:example.com", "did:key:zNotMultibase", ""] {
+            let mut base = empty_base();
+            assert_eq!(
+                apply_tenant_overlay(&mut base, claim_overlay(bad)),
+                Err(TenantOverlayError::MalformedBootstrapClaimDid(bad.into())),
+            );
+            assert!(base.tee.bootstrap_claim_did.is_none());
+        }
+    }
+
+    /// A substituted claim DID must be visible to a remote verifier.
+    #[cfg(feature = "tee")]
+    #[test]
+    fn effective_config_digest_reflects_bootstrap_claim_did() {
+        let other = affinidi_crypto::did_key::ed25519_pub_to_did_key(&[2u8; 32]);
+        let mut a = empty_base();
+        let mut b = empty_base();
+        let unset = a.compute_config_attestation_digest().unwrap();
+        apply_tenant_overlay(&mut a, claim_overlay(CLAIM_DID)).unwrap();
+        apply_tenant_overlay(&mut b, claim_overlay(&other)).unwrap();
+        let da = a.compute_config_attestation_digest().unwrap();
+        assert_ne!(da, b.compute_config_attestation_digest().unwrap());
+        assert_ne!(da, unset);
     }
 
     #[cfg(feature = "tee")]

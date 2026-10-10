@@ -25,7 +25,11 @@
 #     [--mediator-url wss://mediator.example.com] \
 #     [--anchor-table-name vta-rollback-anchor-acme] \
 #     [--anchor-writer-credential-ciphertext <base64>] \
+#     [--bootstrap-claim-did did:key:z6Mk...] \
 #     > tenant-overlay.json
+#
+# --bootstrap-claim-did is the public DID from `pnm bootstrap claim-did create`;
+# only its holder can claim first-boot admin. Without it no claim is accepted.
 # =============================================================================
 set -euo pipefail
 
@@ -37,6 +41,7 @@ VTA_NAME=""
 PUBLIC_URL=""
 ANCHOR_TABLE_NAME=""
 ANCHOR_WRITER_CIPHERTEXT=""
+BOOTSTRAP_CLAIM_DID=""
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -50,6 +55,7 @@ while [ $# -gt 0 ]; do
         --public-url)                           PUBLIC_URL="$2"; shift 2 ;;
         --anchor-table-name)                    ANCHOR_TABLE_NAME="$2"; shift 2 ;;
         --anchor-writer-credential-ciphertext)  ANCHOR_WRITER_CIPHERTEXT="$2"; shift 2 ;;
+        --bootstrap-claim-did)                  BOOTSTRAP_CLAIM_DID="$2"; shift 2 ;;
         --help|-h)  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)          die "unknown argument: $1 (see --help)" ;;
     esac
@@ -71,6 +77,12 @@ case "$KEY_ARN" in
     *) die "--key-arn is not an arn:aws:kms:<region>:<account>:key/<id>: $KEY_ARN" ;;
 esac
 
+# Ed25519 did:key only; the enclave decodes and re-validates it at boot.
+case "$BOOTSTRAP_CLAIM_DID" in
+    ""|did:key:z6Mk*) : ;;
+    *) die "--bootstrap-claim-did is not an Ed25519 did:key (did:key:z6Mk...): $BOOTSTRAP_CLAIM_DID" ;;
+esac
+
 # Build the envelope with jq so every value is correctly JSON-escaped. Optional
 # fields are dropped (not emitted as null/empty) so the overlay stays minimal.
 jq -n \
@@ -82,6 +94,7 @@ jq -n \
     --arg public_url "$PUBLIC_URL" \
     --arg anchor_table_name "$ANCHOR_TABLE_NAME" \
     --arg anchor_writer_credential_ciphertext "$ANCHOR_WRITER_CIPHERTEXT" \
+    --arg bootstrap_claim_did "$BOOTSTRAP_CLAIM_DID" \
     '
     def put($k; $v): if $v == "" then . else . + {($k): $v} end;
 
@@ -91,6 +104,7 @@ jq -n \
         {}
         | put("vta_name"; $vta_name)
         | put("public_url"; $public_url)
+        | put("bootstrap_claim_did"; $bootstrap_claim_did)
         | . + { tee_kms: (
               { key_arn: $key_arn }
               | put("vta_did_template"; $vta_did_template)

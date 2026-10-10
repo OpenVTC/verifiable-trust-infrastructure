@@ -20,7 +20,7 @@ use serde::Deserialize;
 use vta_sdk::attestation::verify_nitro_assertion;
 use vta_sdk::sealed_transfer::{
     BootstrapRequest, SealedPayloadV1, armor, bundle_digest, ed25519_seed_to_x25519_secret,
-    generate_ed25519_keypair, open_bundle,
+    open_bundle,
 };
 
 use crate::auth;
@@ -513,12 +513,14 @@ fn validate_connect_anchor(
 /// `pnm bootstrap connect --vta-did <DID> [--expect-digest <HEX>]
 ///   [--expect-pcr0 <HEX>] [--expect-pcr8 <HEX>]`
 ///
-/// Online TEE first-boot bootstrap. Generates an ephemeral Ed25519 keypair,
-/// POSTs the `did:key` as `client_did` to `/bootstrap/request`, verifies
-/// the attestation quote (optionally pinning the enclave PCR0/PCR8 — P3.4),
-/// installs the minted admin credential, and
-/// registers the VTA under a slug in `pnm` config. Only the first successful
-/// call against a fresh TEE VTA succeeds — the carve-out closes on success.
+/// Online TEE first-boot bootstrap. Loads the claim DID created by
+/// `pnm bootstrap claim-did create` for the slug from the OS keyring, POSTs it
+/// as `client_did` to `/bootstrap/request` with a signature proving control
+/// of it, verifies the attestation quote (optionally pinning the enclave
+/// PCR0/PCR8 — P3.4), installs the minted admin credential, and registers the
+/// VTA under a slug in `pnm` config. Only the first successful
+/// call against a fresh TEE VTA succeeds — the carve-out closes on success,
+/// and the claim key is discarded once a genuine enclave has minted for it.
 ///
 /// For non-TEE VTAs use `pnm setup` (temp did:key + admin grant via
 /// `vta acl create` + auto-rotate on first authenticated connect).
@@ -540,6 +542,10 @@ pub async fn run_connect(
         expect_pcr8.as_deref(),
     )?;
 
+    // Resolved before any network I/O: the slug selects the claim key.
+    let slug = connect_slug(vta_slug, vta_did.as_deref())?;
+    let claim = crate::bootstrap_claim::load_for_connect(&slug)?;
+
     let vta_url = match (vta_did.as_deref(), vta_url) {
         (Some(did), None) => {
             let resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
@@ -552,14 +558,14 @@ pub async fn run_connect(
         _ => return Err("provide exactly one of --vta-did or --vta-url".into()),
     };
 
-    let (ed_seed, ed_pub) = generate_ed25519_keypair();
     let nonce: [u8; 16] = rand::random();
     let bundle_id_hex = hex_lower(&nonce);
 
     // Reuse the SDK's canonical wire type so pnm speaks the same shape the
-    // server `BootstrapRequestBody` deserializes. Emits `client_did` as a
-    // `did:key:z6Mk…` string.
-    let body = BootstrapRequest::new(ed_pub, nonce, None);
+    // server `BootstrapRequestBody` deserializes. `client_did` is the
+    // pre-registered claim DID, signed so the enclave can refuse anyone else.
+    let body = BootstrapRequest::new_signed_claim(&claim.seed, nonce, None);
+    let ed_pub = body.decode_client_ed25519_pub()?;
 
     // Largest bootstrap response read into memory: one armored bundle plus an
     // attestation document, a few KiB in practice.
@@ -592,6 +598,13 @@ pub async fn run_connect(
             );
             return Err(rl.into());
         }
+        // Not auto-discarded: an unauthenticated 410 could come from anyone.
+        if status == reqwest::StatusCode::GONE {
+            eprintln!(
+                "This VTA's first-boot claim is already used. If its claim DID is no longer \
+                 needed, remove it with: pnm bootstrap claim-did discard --slug {slug}"
+            );
+        }
         return Err(format!("bootstrap request failed ({status}): {body}").into());
     }
     let wire: BootstrapResponseWire = serde_json::from_slice(&bytes)?;
@@ -623,7 +636,7 @@ pub async fn run_connect(
     }
 
     // HPKE decryption uses the X25519 secret derived from our Ed25519 seed.
-    let x_secret = ed25519_seed_to_x25519_secret(&ed_seed);
+    let x_secret = ed25519_seed_to_x25519_secret(&claim.seed);
     let opened = open_bundle(&x_secret, bundle, expect_digest.as_deref())?;
 
     // The attestation quote binds the did:key-visible bytes end-to-end:
@@ -642,6 +655,9 @@ pub async fn run_connect(
                  PCR against the deployed EIF / KMS key policy."
             )
         })?;
+    // A genuine enclave minted for this key, so its carve-out is closed and
+    // the claim DID is spent.
+    crate::bootstrap_claim::discard_after_claim(&slug);
     println!("TEE attestation verified.");
     println!("  Enclave module: {}", attest.module_id);
     if !attest.pcr0_hex.is_empty() {
@@ -674,7 +690,6 @@ pub async fn run_connect(
 
     check_connect_vta_did(vta_did.as_deref(), &credential.vta_did)?;
 
-    let slug = vta_slug.unwrap_or_else(|| default_slug(&credential.vta_did));
     pnm_config.vtas.insert(
         slug.clone(),
         crate::config::VtaConfig {
@@ -918,6 +933,22 @@ fn variant_name(p: &SealedPayloadV1) -> &'static str {
     }
 }
 
+/// `--slug`, else the VTA DID's tail. `--vta-url` has no DID to derive from.
+fn connect_slug(
+    explicit: Option<String>,
+    vta_did: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    match (explicit, vta_did) {
+        (Some(slug), _) => Ok(slug),
+        (None, Some(did)) => Ok(default_slug(did)),
+        (None, None) => Err(
+            "--slug is required with --vta-url: it selects the claim DID \
+             created by `pnm bootstrap claim-did create`"
+                .into(),
+        ),
+    }
+}
+
 fn default_slug(vta_did: &str) -> String {
     vta_did.rsplit(':').next().unwrap_or("vta").to_string()
 }
@@ -1060,6 +1091,20 @@ mod tests {
             .to_string();
         assert!(error.contains(did));
         assert!(error.contains("--vta-url"));
+    }
+
+    #[test]
+    fn connect_slug_needs_a_source() {
+        assert_eq!(
+            super::connect_slug(Some("acme".into()), Some(VTA_DID)).unwrap(),
+            "acme"
+        );
+        assert_eq!(
+            super::connect_slug(None, Some(VTA_DID)).unwrap(),
+            "identity.example.com"
+        );
+        let error = super::connect_slug(None, None).unwrap_err().to_string();
+        assert!(error.contains("--slug"), "{error}");
     }
 
     #[test]
