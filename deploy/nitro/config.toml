@@ -133,21 +133,29 @@ port = 8100
 # `host`/`port` are unused in the enclave: the entrypoint sets
 # VTA_REST_VSOCK_PORT and the VTA serves REST on vsock, opening no TCP port.
 #
-# Inbound reaches the VTA over vsock from the parent only, reported as the
-# peer 0.0.0.3 — an address no TCP connection can carry — so every client
-# shares that peer and the per-IP limiters would share one bucket. Trusting
-# 0.0.0.3 splits them apart again, and trusts nothing but the parent (the
-# socat ingress this replaces made the peer 127.0.0.1, which anything inside
-# the enclave could also be). It is sound only because
-# `deploy/nitro/enclave-proxy` terminates HTTP on the parent and replaces
-# `X-Forwarded-For` with the address it actually accepted the connection
-# from (`src/http_forward.rs`).
+# This one list is read by two programs, for two different peers:
+#
+#   0.0.0.3/32    the VTA's. Inbound reaches it over vsock from the parent
+#                 only, reported as the peer 0.0.0.3 — never a valid TCP
+#                 source — so every client shares that peer and the per-IP
+#                 limiters would share one bucket. Trusting it splits them
+#                 apart and trusts nothing but the parent (the old in-enclave
+#                 socat made the peer 127.0.0.1, which anything inside the
+#                 enclave could also be). Sound only because
+#                 `deploy/nitro/enclave-proxy` terminates HTTP on the parent and
+#                 sets `X-Forwarded-For` from the address it accepted
+#                 (`src/http_forward.rs`).
+#   127.0.0.1/32  the parent proxy's (`trusted_upstream_cidrs`): a TLS
+#                 terminator on the parent's own loopback in front of it, whose
+#                 `X-Forwarded-For` it extends rather than discards. It means
+#                 nothing to the VTA: with no TCP listener in the enclave, no
+#                 VTA peer is ever 127.0.0.1.
 #
 # Delete this line if you front the enclave with anything that bridges bytes
 # rather than rewriting that header — `parent-proxy.sh` does, and refuses to
 # start while this is set. A layer-4 forwarder plus this line lets every
 # client pick its own rate-limit bucket.
-trust_xff_cidrs = ["0.0.0.3/32"]
+trust_xff_cidrs = ["127.0.0.1/32", "0.0.0.3/32"]
 
 [log]
 level = "info"

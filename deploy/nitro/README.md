@@ -1191,13 +1191,15 @@ It has to, because the VTA serves REST on vsock:5100 itself and accepts only
 the parent (CID 3), which it reports as the peer `0.0.0.3` for every client
 alike — so without this its per-IP rate limiters would put the whole internet
 in one bucket. The baked configs answer that with
-`[server] trust_xff_cidrs = ["0.0.0.3/32"]`, which tells the VTA to believe
-`X-Forwarded-For` from the parent and from nothing else — sound precisely
-because this proxy is the one writing it. `0.0.0.3` is never a valid TCP
-source, so nothing inside the enclave can claim that trust. (Before the VTA
-served vsock directly, an in-enclave `socat` made the peer `127.0.0.1` and the
-configs trusted loopback; a config still trusting `127.0.0.1/32` now trusts
-nothing that arrives, and the VTA logs a warning naming the fix.)
+`[server] trust_xff_cidrs = ["127.0.0.1/32", "0.0.0.3/32"]`. The VTA reads it
+for `0.0.0.3`: believe `X-Forwarded-For` from the parent and from nothing else
+— sound precisely because this proxy is the one writing it, and `0.0.0.3` is
+never a valid TCP source, so nothing inside the enclave can claim that trust.
+This proxy reads the same key as its `trusted_upstream_cidrs`, for
+`127.0.0.1`: a TLS terminator on the parent's loopback in front of it. (Before
+the VTA served vsock directly, an in-enclave `socat` made its peer `127.0.0.1`;
+a config that trusts only loopback now reads no header in the VTA, and the VTA
+logs a warning naming the fix.)
 
 The VTA opens no TCP port in the enclave. A `VTA_REST_VSOCK_PORT` that is not a
 valid vsock port, or a VTA build without vsock support, refuses to boot rather
