@@ -28,6 +28,15 @@ pub async fn effective_context_policy(
     ks: &KeyspaceHandle,
     context_id: &str,
 ) -> Result<ContextPolicy, AppError> {
+    Ok(effective_context_policy_and_record(ks, context_id).await?.0)
+}
+
+/// [`effective_context_policy`], plus the record of `context_id` itself (read
+/// on the way), for a caller that needs both without reading it twice.
+pub async fn effective_context_policy_and_record(
+    ks: &KeyspaceHandle,
+    context_id: &str,
+) -> Result<(ContextPolicy, Option<ContextRecord>), AppError> {
     // Collect ids leaf→root, then resolve root→leaf.
     let mut ids: Vec<String> = Vec::new();
     let mut cur: Option<String> = Some(context_id.to_string());
@@ -37,15 +46,20 @@ pub async fn effective_context_policy(
     }
     ids.reverse();
 
-    let mut policies: Vec<ContextPolicy> = Vec::new();
+    // Keep the records and resolve over borrowed policies: nothing is cloned
+    // per ancestor on the keys/sign path, and the leaf comes back whole (its
+    // own policy included). `ids` runs root→leaf, so the leaf is the last.
+    let mut records: Vec<Option<ContextRecord>> = Vec::with_capacity(ids.len());
     for id in &ids {
-        if let Some(rec) = get_context(ks, id).await?
-            && let Some(policy) = rec.context_policy
-        {
-            policies.push(policy);
-        }
+        records.push(get_context(ks, id).await?);
     }
-    Ok(ContextPolicy::resolve(policies.iter()))
+    let policy = ContextPolicy::resolve(
+        records
+            .iter()
+            .filter_map(|r| r.as_ref()?.context_policy.as_ref()),
+    );
+    let leaf = records.pop().flatten();
+    Ok((policy, leaf))
 }
 
 /// Enforce a per-day operation quota for a context (the `quotas` arm of
