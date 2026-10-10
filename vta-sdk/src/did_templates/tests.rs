@@ -935,8 +935,15 @@ fn vtc_host_renders_with_minimal_vars() {
     // `null` and is pruned, so a community with no registry is unchanged.
     assert_eq!(out["service"][2]["type"], "TrustTaskHTTPS");
     assert_eq!(
-        out["service"][2]["serviceEndpoint"], "https://vtc.example.com/v1/trust-tasks",
-        "the full URL documents are POSTed to, never a base a client extends"
+        out["service"][2]["serviceEndpoint"], "https://vtc.example.com/v1",
+        "the Trust-Task base (binding 0.2 §6): clients POST to <base>/trust-tasks, \
+         which is the /v1/trust-tasks vtc-service serves"
+    );
+    // The workspace's own reader takes it as the REST/Trust-Task base.
+    assert_eq!(
+        crate::protocol::matching::ServiceCapabilities::from_did_document(&out)
+            .endpoint(crate::protocol::matching::Protocol::Rest),
+        Some("https://vtc.example.com/v1")
     );
     assert_eq!(out["service"][3]["type"], "SignInPortal");
     assert_eq!(
