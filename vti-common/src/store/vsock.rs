@@ -101,21 +101,94 @@ async fn connect_vsock(cid: u32, port: u32) -> Result<BoxStream, AppError> {
 
 /// Ask the proxy which atomic operations it serves.
 ///
-/// A proxy that predates OP_HELLO answers with an error status ("unknown
-/// opcode"); that, and only that, means "none". A malformed answer is an
-/// error: guessing would either lose atomicity or send opcodes the proxy
-/// cannot serve.
+/// A proxy that predates OP_HELLO answers "unknown opcode"; that, and only
+/// that, means "none". Any other error, or a malformed answer, is an error,
+/// and at connect it fails the boot: HELLO reads no storage and takes no
+/// input, so a working proxy has no reason to refuse it, and one that does is
+/// broken or not the proxy we expect. Treating that as "none" would silently
+/// run on the slower path and hide the fault; retrying would not change the
+/// answer of a proxy that cannot answer HELLO.
 async fn probe_capabilities(pool: &ConnectionPool) -> Result<u32, AppError> {
     let resp = pool.request(&[OP_HELLO]).await?;
     match resp.first() {
         Some(&STATUS_OK) if resp.len() >= 5 => {
             Ok(u32::from_be_bytes([resp[1], resp[2], resp[3], resp[4]]))
         }
-        Some(&STATUS_ERROR) => Ok(0),
+        _ if is_unknown_opcode(&resp) => Ok(0),
+        Some(&STATUS_ERROR) => {
+            decode_ok(&resp)?;
+            Err(AppError::Internal("storage proxy refused HELLO".into()))
+        }
         _ => Err(AppError::Internal(format!(
             "malformed HELLO response from storage proxy ({} bytes)",
             resp.len()
         ))),
+    }
+}
+
+/// How long after finding no atomic operations to ask the proxy again.
+const REPROBE_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The atomic operations the proxy serves, shared by every handle.
+///
+/// A proxy found without them — an older build at boot, or one swapped for an
+/// older build while the enclave runs ("unknown opcode" on an atomic op) — may
+/// be upgraded later, so with none known the next operation after
+/// `REPROBE_AFTER` asks again (one caller does; the rest keep the single-op
+/// path meanwhile). Without this, a brief downgrade would cost two to four
+/// round trips per claim until the enclave restarted.
+struct Capabilities {
+    bits: AtomicU32,
+    /// While `bits` is 0: when to ask again.
+    next_probe: std::sync::Mutex<Option<std::time::Instant>>,
+    reprobe_after: std::time::Duration,
+}
+
+impl Capabilities {
+    fn new(bits: u32, reprobe_after: std::time::Duration) -> Self {
+        let next_probe = (bits == 0).then(|| std::time::Instant::now() + reprobe_after);
+        Self {
+            bits: AtomicU32::new(bits),
+            next_probe: std::sync::Mutex::new(next_probe),
+            reprobe_after,
+        }
+    }
+
+    fn has(&self, cap: u32) -> bool {
+        self.bits.load(Ordering::Relaxed) & cap != 0
+    }
+
+    fn next_probe(&self) -> std::sync::MutexGuard<'_, Option<std::time::Instant>> {
+        self.next_probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The proxy answered "unknown opcode": stop sending atomic opcodes and
+    /// schedule a re-probe. `true` if it had any before.
+    fn downgrade(&self) -> bool {
+        *self.next_probe() = Some(std::time::Instant::now() + self.reprobe_after);
+        self.bits.swap(0, Ordering::Relaxed) != 0
+    }
+
+    /// Whether this caller should re-probe now. Pushes the next probe out, so
+    /// concurrent callers do not all probe at once.
+    fn claim_probe(&self) -> bool {
+        let mut next = self.next_probe();
+        match *next {
+            Some(at) if std::time::Instant::now() >= at => {
+                *next = Some(std::time::Instant::now() + self.reprobe_after);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn set(&self, bits: u32) {
+        self.bits.store(bits, Ordering::Relaxed);
+        if bits != 0 {
+            *self.next_probe() = None;
+        }
     }
 }
 
@@ -153,9 +226,9 @@ pub struct VsockStore {
     /// Shared by every keyspace handle, so multi-step operations on one key
     /// exclude each other however the handles were obtained.
     locks: Arc<KeyLocks>,
-    /// Atomic operations the proxy serves (OP_HELLO), shared by every handle
-    /// and cleared if the proxy turns out not to know one after all.
-    caps: Arc<AtomicU32>,
+    /// Atomic operations the proxy serves (OP_HELLO), shared by every handle;
+    /// see [`Capabilities`].
+    caps: Arc<Capabilities>,
 }
 
 impl VsockStore {
@@ -183,7 +256,7 @@ impl VsockStore {
         Ok(Self {
             pool,
             locks: Arc::new(KeyLocks::default()),
-            caps: Arc::new(AtomicU32::new(caps)),
+            caps: Arc::new(Capabilities::new(caps, REPROBE_AFTER)),
         })
     }
 
@@ -220,7 +293,7 @@ impl VsockStore {
 pub struct VsockKeyspaceHandle {
     pool: Arc<ConnectionPool>,
     locks: Arc<KeyLocks>,
-    caps: Arc<AtomicU32>,
+    caps: Arc<Capabilities>,
     keyspace: String,
     #[cfg(feature = "encryption")]
     encryption_key: Option<Arc<zeroize::Zeroizing<[u8; 32]>>>,
@@ -416,7 +489,7 @@ impl VsockKeyspaceHandle {
         stored: Vec<u8>,
     ) -> Result<bool, AppError> {
         let _guard = self.locks.lock(&self.keyspace, &[&key]).await;
-        if self.has(CAP_INSERT_IF_ABSENT) {
+        if self.has(CAP_INSERT_IF_ABSENT).await {
             let mut p = vec![OP_INSERT_IF_ABSENT];
             encode_keyspace(&mut p, &self.keyspace);
             encode_bytes(&mut p, &key);
@@ -442,7 +515,7 @@ impl VsockKeyspaceHandle {
     pub async fn take_raw(&self, key: impl Into<Vec<u8>>) -> Result<Option<Vec<u8>>, AppError> {
         let key = key.into();
         let _guard = self.locks.lock(&self.keyspace, &[&key]).await;
-        if self.has(CAP_TAKE) {
+        if self.has(CAP_TAKE).await {
             let mut p = vec![OP_TAKE];
             encode_keyspace(&mut p, &self.keyspace);
             encode_bytes(&mut p, &key);
@@ -495,7 +568,7 @@ impl VsockKeyspaceHandle {
         new_key: &[u8],
         stored: &[u8],
     ) -> Result<bool, AppError> {
-        if self.has(CAP_SWAP_IF_ABSENT) {
+        if self.has(CAP_SWAP_IF_ABSENT).await {
             let mut p = vec![OP_SWAP_IF_ABSENT];
             encode_keyspace(&mut p, &self.keyspace);
             encode_bytes(&mut p, old_key);
@@ -539,7 +612,7 @@ impl VsockKeyspaceHandle {
             return Ok(MoveOutcome::SourceChanged);
         }
         let stored = self.maybe_encrypt(&new_key, serde_json::to_vec(value)?)?;
-        if self.has(CAP_MOVE_IF_EQUAL) {
+        if self.has(CAP_MOVE_IF_EQUAL).await {
             let mut p = vec![OP_MOVE_IF_EQUAL];
             encode_keyspace(&mut p, &self.keyspace);
             encode_bytes(&mut p, &old_key);
@@ -575,7 +648,7 @@ impl VsockKeyspaceHandle {
     /// way, and a failed restore is logged as a security alert.
     async fn restore_after_failed_take(&self, key: &[u8], stored: &[u8]) {
         let restored: Result<(), AppError> = async {
-            if self.has(CAP_INSERT_IF_ABSENT) {
+            if self.has(CAP_INSERT_IF_ABSENT).await {
                 let mut p = vec![OP_INSERT_IF_ABSENT];
                 encode_keyspace(&mut p, &self.keyspace);
                 encode_bytes(&mut p, key);
@@ -603,19 +676,43 @@ impl VsockKeyspaceHandle {
         }
     }
 
-    /// Whether the proxy serves an atomic operation.
-    fn has(&self, cap: u32) -> bool {
-        self.caps.load(Ordering::Relaxed) & cap != 0
+    /// Whether the proxy serves an atomic operation, re-probing first if none
+    /// is known and a re-probe is due (see [`Capabilities`]).
+    async fn has(&self, cap: u32) -> bool {
+        if self.caps.has(cap) {
+            return true;
+        }
+        if self.caps.claim_probe() {
+            match probe_capabilities(&self.pool).await {
+                Ok(bits) => {
+                    self.caps.set(bits);
+                    if bits != 0 {
+                        info!(
+                            capabilities = format_args!("{bits:#x}"),
+                            "storage proxy serves atomic operations again"
+                        );
+                    }
+                }
+                Err(e) => warn!(error = %e, "storage proxy re-probe failed"),
+            }
+            return self.caps.has(cap);
+        }
+        false
     }
 
-    /// Send an atomic-operation request. `None` when the proxy does not know
-    /// the opcode after all (replaced by an older build since HELLO): nothing
-    /// was applied, so the caller falls back to single operations, and every
-    /// handle stops sending atomic opcodes.
+    /// Send an atomic-operation request, never resent once it may have been
+    /// applied (see [`ConnectionPool::request_once`]).
+    ///
+    /// `Ok(None)` when the proxy does not know the opcode after all (replaced
+    /// by an older build since HELLO): nothing was applied, so the caller
+    /// falls back to single operations, and every handle stops sending atomic
+    /// opcodes until a re-probe finds them again. An error — including
+    /// "outcome unknown" — is returned as is: falling back after a request
+    /// that may have been applied could apply it twice.
     async fn send_atomic(&self, payload: &[u8]) -> Result<Option<Vec<u8>>, AppError> {
-        let resp = self.send(payload).await?;
+        let resp = self.pool.request_once(payload).await?;
         if is_unknown_opcode(&resp) {
-            if self.caps.swap(0, Ordering::Relaxed) != 0 {
+            if self.caps.downgrade() {
                 warn!("storage proxy no longer serves atomic operations; using single operations");
             }
             return Ok(None);
@@ -1125,6 +1222,11 @@ mod atomicity_tests {
         atomic: Arc<AtomicBool>,
         /// Requests served, HELLO included.
         requests: Arc<AtomicUsize>,
+        /// Apply the next request with this opcode, then hang up without
+        /// replying: the enclave cannot know whether it was applied.
+        hang_up_after: Arc<StdMutex<Option<u8>>>,
+        /// Refuse HELLO with an ordinary error (not "unknown opcode").
+        refuse_hello: Arc<AtomicBool>,
     }
 
     impl FakeParent {
@@ -1133,12 +1235,18 @@ mod atomicity_tests {
                 rows: Rows::default(),
                 atomic: Arc::new(AtomicBool::new(atomic)),
                 requests: Arc::new(AtomicUsize::new(0)),
+                hang_up_after: Arc::default(),
+                refuse_hello: Arc::default(),
             }
         }
 
         /// A handle wired the way `VsockStore::connect` wires one, HELLO
         /// probe included.
         async fn handle(&self) -> VsockKeyspaceHandle {
+            self.handle_reprobing_after(REPROBE_AFTER).await
+        }
+
+        async fn handle_reprobing_after(&self, reprobe_after: Duration) -> VsockKeyspaceHandle {
             let parent = self.clone();
             let connect: Connector = Arc::new(move || {
                 let parent = parent.clone();
@@ -1149,7 +1257,7 @@ mod atomicity_tests {
             VsockKeyspaceHandle {
                 pool,
                 locks: Arc::new(KeyLocks::default()),
-                caps: Arc::new(AtomicU32::new(caps)),
+                caps: Arc::new(Capabilities::new(caps, reprobe_after)),
                 keyspace: "ks".into(),
                 #[cfg(feature = "encryption")]
                 encryption_key: None,
@@ -1159,6 +1267,15 @@ mod atomicity_tests {
         /// Replace the proxy with one that predates the atomic opcodes.
         fn downgrade(&self) {
             self.atomic.store(false, Ordering::SeqCst);
+        }
+
+        /// Replace it again with a proxy that serves them.
+        fn upgrade(&self) {
+            self.atomic.store(true, Ordering::SeqCst);
+        }
+
+        fn hang_up_after(&self, op: u8) {
+            *self.hang_up_after.lock().unwrap() = Some(op);
         }
 
         fn requests(&self) -> usize {
@@ -1196,6 +1313,13 @@ mod atomicity_tests {
                 self.requests.fetch_add(1, Ordering::SeqCst);
                 tokio::time::sleep(Duration::from_millis(3)).await;
                 let resp = self.apply(&req);
+                {
+                    let mut hang_up = self.hang_up_after.lock().unwrap();
+                    if *hang_up == Some(req[0]) {
+                        *hang_up = None;
+                        return; // applied, never answered
+                    }
+                }
                 let mut frame = (resp.len() as u32).to_be_bytes().to_vec();
                 frame.extend_from_slice(&resp);
                 if s.write_all(&frame).await.is_err() {
@@ -1214,6 +1338,11 @@ mod atomicity_tests {
                 // The real proxy's dispatcher, before these opcodes existed.
                 let mut out = vec![STATUS_ERROR];
                 encode_bytes(&mut out, format!("unknown opcode: {op:#04x}").as_bytes());
+                return out;
+            }
+            if op == OP_HELLO && self.refuse_hello.load(Ordering::SeqCst) {
+                let mut out = vec![STATUS_ERROR];
+                encode_bytes(&mut out, b"internal: something broke");
                 return out;
             }
             if op == OP_HELLO {
@@ -1488,9 +1617,9 @@ mod atomicity_tests {
     #[tokio::test]
     async fn an_older_proxy_is_probed_as_having_no_atomic_opcodes() {
         let h = FakeParent::new(false).handle().await;
-        assert_eq!(h.caps.load(Ordering::SeqCst), 0);
+        assert_eq!(h.caps.bits.load(Ordering::SeqCst), 0);
         let h = FakeParent::new(true).handle().await;
-        assert_eq!(h.caps.load(Ordering::SeqCst), ALL_CAPS);
+        assert_eq!(h.caps.bits.load(Ordering::SeqCst), ALL_CAPS);
     }
 
     /// The proxy replaced by an older build while the enclave runs: the
@@ -1509,7 +1638,11 @@ mod atomicity_tests {
             h.take_raw(b"t".to_vec()).await.unwrap(),
             Some(b"session".to_vec())
         );
-        assert_eq!(h.caps.load(Ordering::SeqCst), 0, "capabilities cleared");
+        assert_eq!(
+            h.caps.bits.load(Ordering::SeqCst),
+            0,
+            "capabilities cleared"
+        );
         assert_eq!(h.get_raw(b"t".to_vec()).await.unwrap(), None);
 
         let before = parent.requests();
@@ -1620,6 +1753,111 @@ mod atomicity_tests {
             2,
             "restore path: OP_TAKE, then OP_INSERT_IF_ABSENT"
         );
+    }
+
+    /// OP_TAKE applied, then the connection drops before the reply: the
+    /// enclave gets an error, the request is not resent and no single-op
+    /// fallback runs (either would make a legitimate claim find nothing), and
+    /// the take happened exactly once.
+    #[tokio::test]
+    async fn an_atomic_take_with_an_unknown_outcome_is_not_resent() {
+        let parent = FakeParent::new(true);
+        let h = parent.handle().await;
+        h.insert_raw(b"refresh:t".to_vec(), b"session".to_vec())
+            .await
+            .unwrap();
+        parent.hang_up_after(OP_TAKE);
+
+        let n = parent.requests();
+        let err = h.take_raw(b"refresh:t".to_vec()).await.unwrap_err();
+        assert!(err.to_string().contains("outcome unknown"), "{err}");
+        assert_eq!(
+            parent.requests() - n,
+            1,
+            "one frame: no resend, no fallback"
+        );
+        assert_eq!(
+            h.get_raw(b"refresh:t".to_vec()).await.unwrap(),
+            None,
+            "applied once"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_atomic_swap_with_an_unknown_outcome_is_not_resent() {
+        let parent = FakeParent::new(true);
+        let h = parent.handle().await;
+        h.insert(b"old".to_vec(), &"v").await.unwrap();
+        parent.hang_up_after(OP_SWAP_IF_ABSENT);
+
+        let n = parent.requests();
+        let err = h
+            .swap(b"old".to_vec(), b"new".to_vec(), &"v")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("outcome unknown"), "{err}");
+        assert_eq!(
+            parent.requests() - n,
+            1,
+            "one frame: no resend, no fallback"
+        );
+        // A resend would have found `new` occupied and reported a refusal for
+        // a move that happened. It happened once.
+        assert_eq!(h.get_raw(b"old".to_vec()).await.unwrap(), None);
+        assert!(h.get_raw(b"new".to_vec()).await.unwrap().is_some());
+    }
+
+    /// HELLO refused for any reason but "unknown opcode" fails the probe,
+    /// and so the connect: a proxy that cannot answer it is not one to guess
+    /// about.
+    #[tokio::test]
+    async fn hello_refused_otherwise_fails_the_probe() {
+        let parent = FakeParent::new(true);
+        parent.refuse_hello.store(true, Ordering::SeqCst);
+        let connect: Connector = {
+            let parent = parent.clone();
+            Arc::new(move || {
+                let parent = parent.clone();
+                Box::pin(async move { Ok(parent.open()) })
+            })
+        };
+        let pool = ConnectionPool::new(connect, 2, parent.open());
+        let err = probe_capabilities(&pool).await.unwrap_err();
+        assert!(err.to_string().contains("something broke"), "{err}");
+    }
+
+    /// A proxy downgraded and then upgraded again is used atomically again
+    /// once the re-probe is due — not only after an enclave restart.
+    #[tokio::test]
+    async fn a_downgraded_proxy_is_re_probed_and_used_again() {
+        let parent = FakeParent::new(true);
+        let h = parent.handle_reprobing_after(Duration::ZERO).await;
+        parent.downgrade();
+        assert!(h.insert_if_absent(b"a".to_vec(), &1u32).await.unwrap());
+        assert_eq!(h.caps.bits.load(Ordering::SeqCst), 0);
+
+        parent.upgrade();
+        let n = parent.requests();
+        assert!(h.insert_if_absent(b"b".to_vec(), &1u32).await.unwrap());
+        assert_eq!(parent.requests() - n, 2, "HELLO, then the atomic op");
+        assert_eq!(h.caps.bits.load(Ordering::SeqCst), ALL_CAPS);
+
+        let n = parent.requests();
+        assert!(h.insert_if_absent(b"c".to_vec(), &1u32).await.unwrap());
+        assert_eq!(parent.requests() - n, 1, "atomic again, no re-probe");
+    }
+
+    #[tokio::test]
+    async fn no_re_probe_before_it_is_due() {
+        let parent = FakeParent::new(true);
+        let h = parent.handle().await; // REPROBE_AFTER: a minute
+        parent.downgrade();
+        assert!(h.insert_if_absent(b"a".to_vec(), &1u32).await.unwrap());
+        parent.upgrade();
+        let n = parent.requests();
+        assert!(h.insert_if_absent(b"b".to_vec(), &1u32).await.unwrap());
+        assert_eq!(parent.requests() - n, 2, "single ops, no HELLO yet");
+        assert_eq!(h.caps.bits.load(Ordering::SeqCst), 0);
     }
 
     /// Control: the same harness catches the race the locks close. Without
