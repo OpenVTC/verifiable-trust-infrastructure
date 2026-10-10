@@ -39,8 +39,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use vti_common::backup_transfer::bundle_store::{self, BundleState};
-use vti_common::backup_transfer::chunked::{self, ChunkRateLimiter, ChunkWrite, ChunkedError};
-use vti_common::backup_transfer::{self, MAX_BUNDLE_TTL_SECS};
+use vti_common::backup_transfer::chunked::{
+    self, ChunkRateLimiter, ChunkWrite, ChunkedError, TransferTerms,
+};
+use vti_common::backup_transfer::{self, MAX_OPEN_BUNDLES_PER_DID};
 use vti_common::blob_store::{self, BackendRef, BlobKey, BlobStore, Deletion, MAX_BLOB_BYTES};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
@@ -62,8 +64,13 @@ pub const ROOM_BLOB_TRANSFERS_KEYSPACE: &str = "room_blob_transfers";
 pub const DEFAULT_ORPHAN_GRACE_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// A download handle's idle lifetime; fetching chunks slides it forward, never
-/// past [`MAX_BUNDLE_TTL_SECS`] from opening.
-const DOWNLOAD_TTL_SECS: i64 = 300;
+/// past [`DOWNLOAD_LIFETIME_SECS`] from opening. The same floors an upload slot
+/// has, so a slow link that can upload a file can download it too.
+const DOWNLOAD_TTL_SECS: i64 = 15 * 60;
+const DOWNLOAD_LIFETIME_SECS: i64 = 24 * 60 * 60;
+
+/// How long an upload that `begin` answered `alreadyCommitted` stays committable.
+const ALREADY_COMMITTED_TTL_SECS: u64 = 15 * 60;
 
 /// How long a finished upload's record is kept, so a repeated commit or abort is
 /// answered with what happened rather than `notFound`.
@@ -205,6 +212,11 @@ impl LimitExceeded {
 pub enum BlobError {
     FilesDisabled,
     InvalidManifest(String),
+    /// The opener already holds as many open uploads as the host allows one
+    /// party. Retryable once one finishes.
+    TooManyUploads {
+        max_open: usize,
+    },
     LimitExceeded(LimitExceeded),
     /// No such upload, download or blob for this caller, in this room.
     /// Deliberately conflates absent, finished, expired and somebody else's.
@@ -235,6 +247,10 @@ impl std::fmt::Display for BlobError {
         match self {
             Self::FilesDisabled => write!(f, "this host stores no files for this room"),
             Self::InvalidManifest(why) => write!(f, "invalid manifest: {why}"),
+            Self::TooManyUploads { max_open } => write!(
+                f,
+                "you already hold {max_open} open uploads; commit, abort or let one lapse"
+            ),
             Self::LimitExceeded(l) => write!(
                 f,
                 "the upload would exceed the {} {} limit: {} of {} used, {} more requested",
@@ -427,6 +443,10 @@ struct UploadRecord {
     created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     finished_at: Option<u64>,
+    /// Begun on a blob already committed in the room: no slot, no chunks, no
+    /// reservation, and a commit that answers with the existing blob.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    already_committed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -454,6 +474,8 @@ pub struct Begun {
     pub upload_id: Uuid,
     pub missing: Vec<u64>,
     pub expires_at: DateTime<Utc>,
+    /// The BlobRef is already committed in this room; commit answers with it.
+    pub already_committed: bool,
 }
 
 /// What a stored chunk answers.
@@ -560,6 +582,12 @@ fn member_usage_key(room_id: &str, member: &str) -> String {
 }
 const STORAGE_USAGE_KEY: &str = "usage:storage";
 
+/// When an `alreadyCommitted` upload stops being committable.
+fn already_expiry(rec: &UploadRecord) -> DateTime<Utc> {
+    DateTime::from_timestamp((rec.created_at + ALREADY_COMMITTED_TTL_SECS) as i64, 0)
+        .unwrap_or_else(Utc::now)
+}
+
 fn now_secs() -> u64 {
     Utc::now().timestamp().max(0) as u64
 }
@@ -662,7 +690,18 @@ impl BlobHost {
             && let Some(mut rec) = self.blobs.get::<UploadRecord>(upload_key(&id)).await?
             && rec.phase == UploadPhase::Open
         {
-            if let Some(slot) = self.live_slot(&id).await? {
+            if rec.already_committed {
+                if rec.created_at + ALREADY_COMMITTED_TTL_SECS > now_secs()
+                    && self.blob(&room.room_id, &rec.blob_ref).await?.is_some()
+                {
+                    return Ok(Begun {
+                        upload_id: id,
+                        missing: Vec::new(),
+                        expires_at: already_expiry(&rec),
+                        already_committed: true,
+                    });
+                }
+            } else if let Some(slot) = self.live_slot(&id).await? {
                 let plan = chunked::get_plan(&self.transfers, &id)
                     .await?
                     .ok_or(BlobError::NotFound)?;
@@ -677,19 +716,52 @@ impl BlobHost {
                     upload_id: id,
                     missing,
                     expires_at: slot.expires_at,
+                    already_committed: false,
                 });
             }
             // Its slot lapsed: give its reservation back and open a new one.
-            self.release_reservation(&rec).await?;
+            if !rec.already_committed {
+                self.release_reservation(&rec).await?;
+            }
             rec.phase = UploadPhase::Released;
             rec.finished_at = Some(now_secs());
             self.blobs.insert(upload_key(&id), &rec).await?;
         }
 
+        // Already committed in this room: nothing to send, nothing to reserve.
+        // A BlobRef in another room is never reported; it is stored again here.
+        if self
+            .blob(&room.room_id, &manifest.blob_ref)
+            .await?
+            .is_some()
+        {
+            let rec = UploadRecord {
+                upload_id: Uuid::new_v4(),
+                room_id: room.room_id.clone(),
+                opener: opener.to_string(),
+                charged_to: member.map(str::to_string),
+                blob_ref: manifest.blob_ref.clone(),
+                size: manifest.size,
+                manifest: manifest.raw.clone(),
+                phase: UploadPhase::Open,
+                created_at: now_secs(),
+                finished_at: None,
+                already_committed: true,
+            };
+            self.blobs.insert(upload_key(&rec.upload_id), &rec).await?;
+            self.blobs.insert(index, &rec.upload_id).await?;
+            return Ok(Begun {
+                upload_id: rec.upload_id,
+                missing: Vec::new(),
+                expires_at: already_expiry(&rec),
+                already_committed: true,
+            });
+        }
+
         self.check_limits(&room.room_id, member, manifest.size)
             .await?;
 
-        let slot = match chunked::initiate_import_for(
+        let slot = match chunked::initiate_import_with(
             &self.transfers,
             opener,
             &manifest.sha256_hex(),
@@ -697,15 +769,18 @@ impl BlobHost {
             manifest.chunk_size,
             manifest.chunk_count,
             manifest.chunk_digests.clone(),
+            TransferTerms::room_file(),
         )
         .await
         {
             Ok(s) => s,
             Err(ChunkedError::InvalidManifest(why)) => return Err(BlobError::InvalidManifest(why)),
-            Err(ChunkedError::App(AppError::Conflict(why))) => {
+            Err(ChunkedError::App(AppError::Conflict(_))) => {
                 // The per-opener cap on open slots. Not a limit of the room's,
                 // and retryable once a slot finishes.
-                return Err(BlobError::App(AppError::ResourceExhausted(why)));
+                return Err(BlobError::TooManyUploads {
+                    max_open: MAX_OPEN_BUNDLES_PER_DID,
+                });
             }
             Err(e) => return Err(chunked_error(e)),
         };
@@ -721,6 +796,7 @@ impl BlobHost {
             phase: UploadPhase::Open,
             created_at: now_secs(),
             finished_at: None,
+            already_committed: false,
         };
         self.reserve(&rec).await?;
         self.blobs.insert(upload_key(&rec.upload_id), &rec).await?;
@@ -729,6 +805,7 @@ impl BlobHost {
             upload_id: slot.bundle_id,
             missing: (0..slot.chunk_count).collect(),
             expires_at: slot.expires_at,
+            already_committed: false,
         })
     }
 
@@ -785,6 +862,21 @@ impl BlobHost {
                 });
             }
             UploadPhase::Aborted | UploadPhase::Released => return Err(BlobError::NotFound),
+        }
+
+        // Begun on a blob this room already holds: answer with it, charging
+        // nothing. Gone since (collected), the upload is gone with it.
+        if rec.already_committed {
+            let Some(entry) = self.blob(&rec.room_id, &rec.blob_ref).await? else {
+                return Err(BlobError::NotFound);
+            };
+            rec.phase = UploadPhase::Committed;
+            rec.finished_at = Some(now_secs());
+            self.blobs.insert(upload_key(&id), &rec).await?;
+            return Ok(Committed {
+                blob_ref: entry.blob_ref,
+                size: entry.size,
+            });
         }
 
         match chunked::finalize_precheck_for(&self.transfers, opener, upload_id).await {
@@ -871,12 +963,14 @@ impl BlobHost {
             // aborting; an expired upload is not one this caller can abort.
             UploadPhase::Committed | UploadPhase::Released => return Err(BlobError::NotFound),
         }
-        if let Err(e) = backup_transfer::abort(&self.transfers, opener, &id).await
-            && !matches!(e, AppError::NotFound(_))
-        {
-            return Err(e.into());
+        if !rec.already_committed {
+            if let Err(e) = backup_transfer::abort(&self.transfers, opener, &id).await
+                && !matches!(e, AppError::NotFound(_))
+            {
+                return Err(e.into());
+            }
+            self.release_reservation(&rec).await?;
         }
-        self.release_reservation(&rec).await?;
         rec.phase = UploadPhase::Aborted;
         rec.finished_at = Some(now_secs());
         self.blobs.insert(upload_key(&id), &rec).await?;
@@ -907,7 +1001,7 @@ impl BlobHost {
             opener: opener.to_string(),
             blob_ref: blob_ref.to_string(),
             expires_at: now + Duration::seconds(DOWNLOAD_TTL_SECS),
-            ceiling: now + Duration::seconds(MAX_BUNDLE_TTL_SECS as i64),
+            ceiling: now + Duration::seconds(DOWNLOAD_LIFETIME_SECS),
         };
         self.blobs
             .insert(download_key(&rec.download_id), &rec)
@@ -978,44 +1072,101 @@ impl BlobHost {
 
     // ─── records ─────────────────────────────────────────────────────────
 
-    /// Refuse unless every one of `blobs` is committed in `room_id`.
-    ///
-    /// The same refusal whether a blob was never uploaded, is still uploading,
-    /// belongs to another room or has been collected.
-    pub async fn check_committed(&self, room_id: &str, blobs: &[String]) -> Result<(), BlobError> {
-        for b in blobs {
-            if blob_store::validate_blob_ref(b).is_err() || self.blob(room_id, b).await?.is_none() {
-                return Err(BlobError::NotFound);
-            }
-        }
-        Ok(())
-    }
-
-    /// Record that the current version of record `record_key` names exactly
-    /// `blobs`: reference the ones it gained, release the ones it dropped.
-    ///
-    /// A blob whose last reference goes is orphaned, and stops counting against
-    /// its room and member at once. Re-referencing an orphan that has not been
-    /// collected restores it, so rewriting a retracted record undoes the
-    /// retraction's effect on its file.
-    pub async fn set_record_blobs(
+    /// The blobs the current version of record `record_key` names.
+    pub async fn record_blobs(
         &self,
         room_id: &str,
         record_key: &str,
+    ) -> Result<Vec<String>, AppError> {
+        Ok(self
+            .blobs
+            .get(refs_key(room_id, record_key))
+            .await?
+            .unwrap_or_default())
+    }
+
+    /// Prepare a record write that will name exactly `blobs`, holding the lock
+    /// until it is applied or dropped.
+    ///
+    /// Refuses with [`BlobError::NotFound`] unless every blob is committed in
+    /// `room_id` — the same refusal whether one was never uploaded, is still
+    /// uploading, belongs to another room or was collected. A blob that is
+    /// orphaned and not yet collected is re-referenced: it is charged again, to
+    /// `member` (the writer's, `None` on a `private` room), and refused with
+    /// [`BlobError::LimitExceeded`] if the member's or the room's counts and
+    /// totals would not hold it.
+    ///
+    /// The caller writes the record while it holds the returned value, then
+    /// calls [`RecordBlobs::apply`]; a write that fails drops it and changes
+    /// nothing.
+    pub async fn prepare_record(
+        &self,
+        room: &Room,
+        member: Option<&str>,
+        record_key: &str,
         blobs: &[String],
-    ) -> Result<(), AppError> {
+    ) -> Result<RecordBlobs<'_>, BlobError> {
+        let guard = self.lock.lock().await;
+        let member = match room.visibility {
+            Visibility::Private => None,
+            _ => member,
+        };
+        let previous = self.record_blobs(&room.room_id, record_key).await?;
+        let (mut files, mut bytes) = (0u64, 0u64);
+        for b in blobs {
+            if blob_store::validate_blob_ref(b).is_err() {
+                return Err(BlobError::NotFound);
+            }
+            let entry = self
+                .blob(&room.room_id, b)
+                .await?
+                .ok_or(BlobError::NotFound)?;
+            if entry.state == BlobState::Orphaned && !previous.contains(b) {
+                files += 1;
+                bytes += entry.size;
+            }
+        }
+        if files > 0 {
+            self.check_totals(&room.room_id, member, files, bytes, false)
+                .await?;
+        }
+        Ok(RecordBlobs {
+            host: self,
+            _guard: guard,
+            room_id: room.room_id.clone(),
+            record_key: record_key.to_string(),
+            blobs: blobs.to_vec(),
+            previous,
+            member: member.map(str::to_string),
+        })
+    }
+
+    /// Release every blob record `record_key` names, as a retraction does.
+    pub async fn release_record(&self, room_id: &str, record_key: &str) -> Result<(), AppError> {
         let _guard = self.lock.lock().await;
-        let key = refs_key(room_id, record_key);
-        let previous: Vec<String> = self.blobs.get(key.clone()).await?.unwrap_or_default();
+        let previous = self.record_blobs(room_id, record_key).await?;
+        self.apply_refs(room_id, record_key, &previous, &[], None)
+            .await
+    }
+
+    async fn apply_refs(
+        &self,
+        room_id: &str,
+        record_key: &str,
+        previous: &[String],
+        blobs: &[String],
+        member: Option<&str>,
+    ) -> Result<(), AppError> {
         if previous.is_empty() && blobs.is_empty() {
             return Ok(());
         }
         for b in blobs.iter().filter(|b| !previous.contains(b)) {
-            self.adjust_refs(room_id, b, 1).await?;
+            self.adjust_refs(room_id, b, 1, member).await?;
         }
         for b in previous.iter().filter(|b| !blobs.contains(b)) {
-            self.adjust_refs(room_id, b, -1).await?;
+            self.adjust_refs(room_id, b, -1, member).await?;
         }
+        let key = refs_key(room_id, record_key);
         if blobs.is_empty() {
             self.blobs.remove(key).await
         } else {
@@ -1023,7 +1174,13 @@ impl BlobHost {
         }
     }
 
-    async fn adjust_refs(&self, room_id: &str, blob_ref: &str, delta: i64) -> Result<(), AppError> {
+    async fn adjust_refs(
+        &self,
+        room_id: &str,
+        blob_ref: &str,
+        delta: i64,
+        member: Option<&str>,
+    ) -> Result<(), AppError> {
         let key = blob_key(room_id, blob_ref);
         let Some(mut entry) = self.blobs.get::<BlobEntry>(key.clone()).await? else {
             // Collected between the check and the write. The record names a
@@ -1038,8 +1195,11 @@ impl BlobHost {
         if delta > 0 {
             entry.refs += 1;
             if entry.state == BlobState::Orphaned {
+                // Charged again, as a new upload of it would be: to the member
+                // whose record now names it.
                 entry.state = BlobState::Committed;
                 entry.orphaned_at = None;
+                entry.charged_to = member.map(str::to_string);
                 self.charge(&entry, true).await?;
             }
         } else {
@@ -1115,8 +1275,15 @@ impl BlobHost {
             match rec.phase {
                 UploadPhase::Open => {
                     let _guard = self.lock.lock().await;
-                    if self.live_slot(&rec.upload_id).await?.is_none() {
-                        self.release_reservation(&rec).await?;
+                    let lapsed = if rec.already_committed {
+                        rec.created_at + ALREADY_COMMITTED_TTL_SECS <= now
+                    } else {
+                        self.live_slot(&rec.upload_id).await?.is_none()
+                    };
+                    if lapsed {
+                        if !rec.already_committed {
+                            self.release_reservation(&rec).await?;
+                        }
                         rec.phase = UploadPhase::Released;
                         rec.finished_at = Some(now);
                         self.blobs.insert(key, &rec).await?;
@@ -1189,81 +1356,106 @@ impl BlobHost {
         Ok(self.blobs.get(STORAGE_USAGE_KEY).await?.unwrap_or_default())
     }
 
-    /// Every limit an upload of `size` must fit, narrowest scope first. Called
-    /// under the lock, immediately before [`Self::reserve`].
+    /// Every limit an upload of `size` must fit. Called under the lock,
+    /// immediately before [`Self::reserve`].
+    ///
+    /// For `maxFileBytes` the refusal names the scope the smallest applicable
+    /// limit was set at, and of two scopes setting the same value the narrower;
+    /// for a count or a total, the narrowest scope that would be exceeded.
     async fn check_limits(
         &self,
         room_id: &str,
         member: Option<&str>,
         size: u64,
     ) -> Result<(), BlobError> {
-        let fits = |scope: LimitScope, limits: &ScopeLimits, usage: &Usage| {
-            if let Some(max) = limits.max_file_bytes
-                && size > max
+        let mut smallest: Option<(LimitScope, u64)> = None;
+        let candidates = [
+            (
+                LimitScope::Member,
+                member.and(self.limits.member.max_file_bytes),
+            ),
+            (LimitScope::Room, self.limits.room.max_file_bytes),
+            (LimitScope::Host, Some(self.limits.max_file_bytes)),
+        ];
+        // Narrowest first, replaced only by a strictly smaller limit, so a tie
+        // keeps the narrower scope.
+        for (scope, limit) in candidates {
+            if let Some(limit) = limit
+                && smallest.is_none_or(|(_, s)| limit < s)
             {
-                return Err(LimitExceeded {
-                    scope,
-                    measure: "maxFileBytes",
-                    limit: max,
-                    used: 0,
-                    requested: size,
-                });
+                smallest = Some((scope, limit));
             }
-            let files = usage.files + usage.reserved_files;
+        }
+        if let Some((scope, limit)) = smallest
+            && size > limit
+        {
+            return Err(BlobError::LimitExceeded(LimitExceeded {
+                scope,
+                measure: "maxFileBytes",
+                limit,
+                used: 0,
+                requested: size,
+            }));
+        }
+        self.check_totals(room_id, member, 1, size, true).await
+    }
+
+    /// Whether adding `files` blobs of `bytes` in total fits the member's and
+    /// the room's counts and totals (reservations included), and, when
+    /// `storage`, the storage's capacity. Narrowest scope first.
+    async fn check_totals(
+        &self,
+        room_id: &str,
+        member: Option<&str>,
+        files: u64,
+        bytes: u64,
+        storage: bool,
+    ) -> Result<(), BlobError> {
+        let fits = |scope: LimitScope, limits: &ScopeLimits, usage: &Usage| {
+            let used_files = usage.files + usage.reserved_files;
             if let Some(max) = limits.max_files
-                && files + 1 > max
+                && used_files + files > max
             {
-                return Err(LimitExceeded {
+                return Err(BlobError::LimitExceeded(LimitExceeded {
                     scope,
                     measure: "maxFiles",
                     limit: max,
-                    used: files,
-                    requested: 1,
-                });
+                    used: used_files,
+                    requested: files,
+                }));
             }
-            let bytes = usage.bytes + usage.reserved_bytes;
+            let used_bytes = usage.bytes + usage.reserved_bytes;
             if let Some(max) = limits.max_bytes
-                && bytes + size > max
+                && used_bytes + bytes > max
             {
-                return Err(LimitExceeded {
+                return Err(BlobError::LimitExceeded(LimitExceeded {
                     scope,
                     measure: "maxBytes",
                     limit: max,
-                    used: bytes,
-                    requested: size,
-                });
+                    used: used_bytes,
+                    requested: bytes,
+                }));
             }
             Ok(())
         };
         if let Some(member) = member {
             let usage = self.member_usage(room_id, member).await?;
-            fits(LimitScope::Member, &self.limits.member, &usage)
-                .map_err(BlobError::LimitExceeded)?;
+            fits(LimitScope::Member, &self.limits.member, &usage)?;
         }
         let usage = self.room_usage(room_id).await?;
-        fits(LimitScope::Room, &self.limits.room, &usage).map_err(BlobError::LimitExceeded)?;
-
-        if let Some(capacity) = self.limits.storage_capacity_bytes {
-            let storage = self.storage_usage().await?;
-            let used = storage.bytes + storage.reserved_bytes;
-            if used + size > capacity {
+        fits(LimitScope::Room, &self.limits.room, &usage)?;
+        if storage && let Some(capacity) = self.limits.storage_capacity_bytes {
+            let s = self.storage_usage().await?;
+            let used = s.bytes + s.reserved_bytes;
+            if used + bytes > capacity {
                 return Err(BlobError::LimitExceeded(LimitExceeded {
                     scope: LimitScope::Storage,
                     measure: "maxBytes",
                     limit: capacity,
                     used,
-                    requested: size,
+                    requested: bytes,
                 }));
             }
-        }
-        if size > self.limits.max_file_bytes {
-            return Err(BlobError::LimitExceeded(LimitExceeded {
-                scope: LimitScope::Host,
-                measure: "maxFileBytes",
-                limit: self.limits.max_file_bytes,
-                used: 0,
-                requested: size,
-            }));
         }
         Ok(())
     }
@@ -1347,6 +1539,37 @@ impl BlobHost {
                 .await?;
         }
         Ok(())
+    }
+}
+
+/// A record write's blob references, prepared and waiting for the write.
+///
+/// Holds the host's lock, so nothing about these blobs changes between the
+/// check and [`RecordBlobs::apply`].
+pub struct RecordBlobs<'a> {
+    host: &'a BlobHost,
+    _guard: tokio::sync::MutexGuard<'a, ()>,
+    room_id: String,
+    record_key: String,
+    blobs: Vec<String>,
+    previous: Vec<String>,
+    member: Option<String>,
+}
+
+impl RecordBlobs<'_> {
+    /// The record is written: reference what it gained, release what it
+    /// dropped. A blob whose last reference goes is orphaned, and stops
+    /// counting against its room and member at once.
+    pub async fn apply(self) -> Result<(), AppError> {
+        self.host
+            .apply_refs(
+                &self.room_id,
+                &self.record_key,
+                &self.previous,
+                &self.blobs,
+                self.member.as_deref(),
+            )
+            .await
     }
 }
 
