@@ -35,6 +35,12 @@ impl LocalDirStore {
         Ok(Self { root })
     }
 
+    /// A store rooted at `root`, which is created (owner-only) on the first
+    /// write. For a caller that cannot await at construction.
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
     /// The directory blobs are written under.
     pub fn root(&self) -> &Path {
         &self.root
@@ -78,6 +84,7 @@ impl BlobStore for LocalDirStore {
         })?;
         // Each level owner-only, not only the last: `create_dir_all` would leave
         // the intermediate `rooms/<prefix>` at the umask's mode.
+        create_dir_private(&self.root).await?;
         let mut dir = self.root.clone();
         for part in parent
             .strip_prefix(&self.root)
@@ -155,6 +162,12 @@ impl BlobStore for LocalDirStore {
     }
 
     async fn health(&self) -> Health {
+        if let Err(e) = create_dir_private(&self.root).await {
+            return Health {
+                ok: false,
+                detail: Some(e.to_string()),
+            };
+        }
         let probe = self.root.join(format!(".health-{}", uuid::Uuid::new_v4()));
         match tokio::fs::write(&probe, b"ok").await {
             Ok(()) => {
