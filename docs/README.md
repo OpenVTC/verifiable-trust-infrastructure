@@ -242,6 +242,9 @@ are implementer-facing rather than operator-facing.
   **the trust boundary is per operator, not per service**.
   ([v1](05-design-notes/data-rooms-security-review-v1.md) is the dated
   record of the revision-2 review that reshaped the design.)
+- **[Data rooms — files and the VTC experience](05-design-notes/data-rooms-files.md)** —
+  encrypted file attachments in a pluggable blob store (local, S3, Walrus), per-room
+  limits set by the hosting VTC, and the console and member-portal surfaces. Proposal.
 - **[Data rooms — epoch anchoring](05-design-notes/data-rooms-epoch-anchoring.md)** —
   the one open *decision* in the rooms design: §9 says a renewal anchors the MLS
   epoch authenticator and version watermark in the room's witnessed log, but not
