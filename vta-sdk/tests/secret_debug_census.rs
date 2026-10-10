@@ -142,10 +142,52 @@ const NOT_SECRET: &[(&str, &str, &str, &str)] = &[
         "a wallet sign-in key named as an Ed25519 `did:key` — the public half the \
          service checks a proof against (`K_a` / `K_b`, base design §10), never key material",
     ),
+    (
+        "vtc-service/src/member_portal/oob.rs",
+        "GrantPayload",
+        "approver_key",
+        "a wallet sign-in key named as an Ed25519 `did:key` — the public half the \
+         service checks a proof against (`K_a` / `K_b`, base design §10), never key material",
+    ),
+    (
+        "vtc-service/src/member_portal/oob.rs",
+        "GrantPayload",
+        "session_key",
+        "a wallet sign-in key named as an Ed25519 `did:key` — the public half the \
+         service checks a proof against (`K_a` / `K_b`, base design §10), never key material",
+    ),
+    (
+        "vtc-service/src/member_portal/oob.rs",
+        "IdentifyPayload",
+        "approver_key",
+        "a wallet sign-in key named as an Ed25519 `did:key` — the public half the \
+         service checks a proof against (`K_a` / `K_b`, base design §10), never key material",
+    ),
+    (
+        "vtc-service/src/member_portal/oob.rs",
+        "OobRequest",
+        "approver_key",
+        "a wallet sign-in key named as an Ed25519 `did:key` — the public half the \
+         service checks a proof against (`K_a` / `K_b`, base design §10), never key material",
+    ),
+    (
+        "vtc-service/src/member_portal/oob.rs",
+        "OobRequest",
+        "start_key",
+        "a wallet sign-in key named as an Ed25519 `did:key` — the public half the \
+         service checks a proof against (`K_a` / `K_b`, base design §10), never key material",
+    ),
+    (
+        "vtc-service/src/member_portal/oob.rs",
+        "Step2",
+        "session_key",
+        "a wallet sign-in key named as an Ed25519 `did:key` — the public half the \
+         service checks a proof against (`K_a` / `K_b`, base design §10), never key material",
+    ),
 ];
 
 /// The size of [`NOT_SECRET`], asserted so the list cannot grow quietly.
-const NOT_SECRET_COUNT: usize = 15;
+const NOT_SECRET_COUNT: usize = 21;
 
 /// Field names that are exactly one of these are record or index keys, not
 /// key material.
