@@ -40,6 +40,13 @@ pub(crate) const MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024;
 /// bundle chunk) is not copied.
 const COALESCE_MAX: usize = 64 * 1024;
 
+/// Deadline for one request and its response. The parent answers a storage
+/// request in tens of microseconds; one that has not answered in this long is
+/// wedged, and waiting longer only holds a pool permit — and, for a multi-step
+/// operation, its key lock (`super::key_locks`) — for nothing. On expiry the
+/// connection is dropped, never reused: its next bytes could be this answer.
+pub(crate) const ROUND_TRIP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// A bidirectional byte stream a storage connection runs over.
 pub(crate) trait FrameStream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> FrameStream for T {}
@@ -58,6 +65,8 @@ pub(crate) struct ConnectionPool {
     idle: Mutex<Vec<BoxStream>>,
     /// One permit per connection that may exist; held for a whole round trip.
     permits: Semaphore,
+    /// Per-round-trip deadline; [`ROUND_TRIP_TIMEOUT`] outside tests.
+    timeout: std::time::Duration,
 }
 
 impl ConnectionPool {
@@ -68,7 +77,15 @@ impl ConnectionPool {
             connect,
             idle: Mutex::new(vec![first]),
             permits: Semaphore::new(max_connections.max(1)),
+            timeout: ROUND_TRIP_TIMEOUT,
         }
+    }
+
+    /// A shorter deadline, so a test can watch one expire.
+    #[cfg(test)]
+    pub(crate) fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// Send one request frame and return the response frame.
@@ -84,7 +101,7 @@ impl ConnectionPool {
             .map_err(|_| AppError::Internal("storage connection pool closed".into()))?;
 
         if let Some(mut stream) = self.take_idle() {
-            match round_trip(&mut stream, payload).await {
+            match round_trip_within(&mut stream, payload, self.timeout).await {
                 Ok(resp) => {
                     self.put_idle(stream);
                     return Ok(resp);
@@ -95,7 +112,7 @@ impl ConnectionPool {
 
         let mut stream = (self.connect)().await?;
         trace!("storage connection opened");
-        let resp = round_trip(&mut stream, payload).await?;
+        let resp = round_trip_within(&mut stream, payload, self.timeout).await?;
         self.put_idle(stream);
         Ok(resp)
     }
@@ -124,7 +141,25 @@ impl ConnectionPool {
 }
 
 /// Write one length-prefixed request frame and read one response frame.
+#[cfg(test)]
 async fn round_trip(stream: &mut BoxStream, payload: &[u8]) -> Result<Vec<u8>, AppError> {
+    round_trip_within(stream, payload, ROUND_TRIP_TIMEOUT).await
+}
+
+async fn round_trip_within(
+    stream: &mut BoxStream,
+    payload: &[u8],
+    timeout: std::time::Duration,
+) -> Result<Vec<u8>, AppError> {
+    match tokio::time::timeout(timeout, round_trip_inner(stream, payload)).await {
+        Ok(result) => result,
+        Err(_) => Err(AppError::Internal(format!(
+            "storage request timed out after {timeout:?}"
+        ))),
+    }
+}
+
+async fn round_trip_inner(stream: &mut BoxStream, payload: &[u8]) -> Result<Vec<u8>, AppError> {
     let len = u32::try_from(payload.len())
         .map_err(|_| AppError::Internal("storage request too large".into()))?;
     // On an unbuffered vsock stream every write is its own packet across the
@@ -378,6 +413,30 @@ mod tests {
         let big = vec![0xA5u8; COALESCE_MAX + 1];
         let resp = pool.request(&big).await.expect("request");
         assert_eq!(resp, big);
+    }
+
+    #[tokio::test]
+    async fn test_unanswered_request_times_out_and_frees_its_permit() {
+        // A parent that takes the frame and never answers: the request fails
+        // at the deadline instead of hanging, and the permit and the
+        // connection are released, so the pool is not wedged.
+        let gate = Arc::new(Notify::new());
+        let server = Server {
+            gate: Some(gate.clone()),
+            ..Server::default()
+        };
+        let pool = server.pool(1).with_timeout(Duration::from_millis(100));
+        let started = std::time::Instant::now();
+        let err = pool.request(b"x").await.expect_err("times out");
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(pool.idle_len(), 0, "a timed-out connection is never reused");
+        // The single permit is free again: the next request gets a fresh
+        // connection (and also times out, the gate is still closed).
+        tokio::time::timeout(Duration::from_secs(2), pool.request(b"y"))
+            .await
+            .expect("permit was released")
+            .expect_err("still unanswered");
     }
 
     #[tokio::test]

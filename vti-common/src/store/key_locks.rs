@@ -17,6 +17,13 @@
 //! operations on the same key never interleave. Plain `insert`/`remove` do not
 //! take it, on either store.
 //!
+//! These locks are held across awaits on purpose — that is what makes the
+//! steps one operation — which CLAUDE.md's R1.3 otherwise forbids. What R1.3
+//! guards against is an unbounded hold; here every await under the lock is a
+//! storage round trip bounded by `vsock_pool::ROUND_TRIP_TIMEOUT`, so a wedged
+//! parent holds a stripe for at most that long per step, then the operation
+//! fails and releases it.
+//!
 //! It does not rely on the parent behaving. The enclave is the only writer to
 //! its store, so excluding its own concurrent callers is the whole of
 //! atomicity here; a parent that misbehaves can deny service or replay, which
