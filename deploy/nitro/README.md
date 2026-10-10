@@ -1062,6 +1062,27 @@ The proxy starts four channels:
 | Storage | `Enclave → vsock:5500 → fjall on EBS` | Persistent K/V store |
 | DID Resolver | `Enclave → vsock:5600 → resolver sidecar` | DID resolution (WebSocket) |
 
+### Storage: atomic operations and version compatibility
+
+The storage channel carries ciphertext only: the enclave encrypts every value
+(AES-256-GCM, bound to keyspace and key) before it reaches the parent. Beyond
+get / insert / delete / prefix scans, the proxy serves four atomic operations
+the enclave uses for claims and moves: **take** (get + delete — a refresh
+token is single-use because of it), **insert-if-absent**, **swap-if-absent**
+and **move-if-equal**. Each runs under the keyspace's lock in the parent, in
+one round trip instead of two to four. Move-if-equal compares the stored
+ciphertext with bytes the enclave has just read and compared in plaintext
+itself, so the parent never needs plaintext for any of them.
+
+**Either side may be upgraded first.** At connect the enclave asks the proxy
+which atomic operations it serves (`HELLO`). A proxy that predates them
+answers "unknown opcode", and the enclave uses single operations instead, under
+its own per-key locks — the same exactly-one guarantee, more round trips. A
+proxy replaced by an older build while the enclave runs is detected the same
+way on the next atomic operation, which falls back without failing. A newer
+proxy serves an older enclave unchanged: the older enclave never sends the new
+opcodes.
+
 The HTTPS channel implements an **HTTP CONNECT proxy** with an allowlist.
 Inside the enclave, `HTTPS_PROXY=http://127.0.0.1:4444` routes all HTTPS
 traffic through it. KMS calls and WebVH server access flow through this proxy.
