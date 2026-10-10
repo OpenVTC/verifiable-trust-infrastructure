@@ -1824,6 +1824,7 @@ pub(super) async fn handle_sign_trust_task(
         let deps = oob_sign_in::OobDeps {
             acl_ks: &state.acl_ks,
             task_consent_ks: &state.task_consent_ks,
+            #[cfg(feature = "webvh")]
             webvh_ks: &state.webvh_ks,
             vta_did,
         };

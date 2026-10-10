@@ -298,6 +298,7 @@ pub struct OobDeps<'a> {
     /// Where signed grant ids are recorded.
     pub task_consent_ks: &'a KeyspaceHandle,
     /// Locally hosted DID logs, to check a persona's `assertionMethod`.
+    #[cfg(feature = "webvh")]
     pub webvh_ks: &'a KeyspaceHandle,
     /// This VTA's DID: a UV decision addressed elsewhere is refused.
     pub vta_did: Option<String>,
@@ -447,7 +448,7 @@ pub async fn authorize(
             check_grant(&p, now)?;
             let uv =
                 verify_uv_decision(deps, device_did, binding, envelope, payload_ext, now).await?;
-            check_assertion_method(deps.webvh_ks, &principal, secret).await?;
+            check_assertion_method(deps, &principal, secret).await?;
             // Last, so a refusal above never burns the id. One signature per
             // grant id, ever (base design §11 item 3).
             let marker = json!({
@@ -798,7 +799,7 @@ async fn verify_passkey(
 /// `did:key` authorises its key for every purpose; any other DID is not ours
 /// to read, and the service checks it.
 async fn check_assertion_method(
-    #[cfg_attr(not(feature = "webvh"), allow(unused_variables))] webvh_ks: &KeyspaceHandle,
+    #[cfg_attr(not(feature = "webvh"), allow(unused_variables))] deps: &OobDeps<'_>,
     principal: &str,
     secret: &VaultSecret,
 ) -> Result<(), OobError> {
@@ -814,7 +815,7 @@ async fn check_assertion_method(
     // to read; the service checks the document it resolves.
     #[cfg(feature = "webvh")]
     {
-        let Some(log) = crate::webvh_store::get_did_log(webvh_ks, principal).await? else {
+        let Some(log) = crate::webvh_store::get_did_log(deps.webvh_ks, principal).await? else {
             return Ok(());
         };
         let doc = crate::operations::protocol::document::current_document_from_log(&log)
