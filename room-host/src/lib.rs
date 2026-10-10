@@ -45,6 +45,9 @@
 
 pub mod mirror;
 
+/// Room files: `rooms/blobs/*`, `rooms/records/put` 0.2 and `rooms/info`.
+mod files;
+
 /// Being reachable at a mediator, as well as at a URL.
 #[cfg(feature = "didcomm")]
 pub mod didcomm;
@@ -102,6 +105,9 @@ pub struct HostState {
     records: KeyspaceHandle,
     /// The rooms' epoch key chains. Wrapped key material this host cannot read.
     epoch_links: KeyspaceHandle,
+    /// Room files: the blob index, transfers, limits and usage, and the store
+    /// the ciphertext lives in. Ciphertext this host cannot read, again.
+    files: Arc<vti_rooms::blobs::BlobHost>,
     /// How a DID resolves to the key that signed a credential.
     ///
     /// A room's credentials are issued by the room, which is normally a `did:webvh`, so a
@@ -463,6 +469,14 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         ROOMS_EPOCH_COMMITS_TYPE => epoch_commits(state, &doc, payload).await,
         ROOMS_OWNER_TRANSFER_TYPE => transfer_owner(state, &doc, payload).await,
         ROOMS_OWNER_CLAIM_TYPE => claim_owner(state, &doc, payload).await,
+        files::PUT_V2_TYPE => files::put_v2(state, &doc, payload).await,
+        files::UPLOAD_BEGIN_TYPE => files::begin(state, &doc, payload).await,
+        files::UPLOAD_CHUNK_TYPE => files::upload_chunk(state, &doc, payload).await,
+        files::UPLOAD_COMMIT_TYPE => files::commit(state, &doc, payload).await,
+        files::UPLOAD_ABORT_TYPE => files::abort(state, &doc, payload).await,
+        files::BLOB_GET_TYPE => files::get(state, &doc, payload).await,
+        files::DOWNLOAD_CHUNK_TYPE => files::download_chunk(state, &doc, payload).await,
+        files::INFO_TYPE => files::info(state, &doc, payload).await,
         other => reject(
             &doc,
             // The framework's own code for this: a host that does not implement a task
@@ -488,6 +502,9 @@ fn is_consequential(type_uri: &str) -> bool {
             | ROOMS_RECORDS_LIST_TYPE
             | ROOMS_EPOCH_CHAIN_TYPE
             | ROOMS_EPOCH_COMMITS_TYPE
+            | files::BLOB_GET_TYPE
+            | files::DOWNLOAD_CHUNK_TYPE
+            | files::INFO_TYPE
     )
 }
 
@@ -574,6 +591,20 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
 }
 
 async fn put(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    put_with_blobs(state, doc, payload, None).await
+}
+
+/// Write a record: `rooms/records/put` 0.1 (`blobs: None`) or 0.2.
+///
+/// A 0.1 write names no blobs, so rewriting a record that carried a file under
+/// 0.1 releases it — the new version does not name it, which is what 0.2 says a
+/// release is.
+async fn put_with_blobs(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+    blobs: Option<Vec<String>>,
+) -> Answer {
     let req: PutRecordBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -606,6 +637,17 @@ async fn put(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answe
         Ok(a) => a,
         Err(e) => return from_app_error(doc, &e),
     };
+
+    let blobs = blobs.unwrap_or_default();
+    if !blobs.is_empty()
+        && state
+            .files
+            .check_committed(&req.room_id, &blobs)
+            .await
+            .is_err()
+    {
+        return files::blob_not_found(doc);
+    }
 
     let record = Record {
         key: req.key.clone(),
@@ -640,6 +682,16 @@ async fn put(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answe
     .await
     {
         Ok(stored) => {
+            if let Err(e) = state
+                .files
+                .set_record_blobs(&req.room_id, &stored.key, &blobs)
+                .await
+            {
+                // The record is written; only its blob references are not. Said
+                // loudly, because usage now disagrees with the room by one file.
+                tracing::error!(error = %e, room = %req.room_id, record = %stored.key,
+                    "record stored but its blob references were not updated");
+            }
             audit_room(
                 &room,
                 &authorized,
@@ -1329,6 +1381,17 @@ async fn curate(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
     .await
     {
         Ok(curated) => {
+            // A retraction keeps no body, so it keeps no file: every blob the
+            // record named is released, and orphaned if nothing else names it.
+            if curated.status == RecordStatus::Retracted
+                && let Err(e) = state
+                    .files
+                    .set_record_blobs(&req.room_id, &curated.key, &[])
+                    .await
+            {
+                tracing::error!(error = %e, room = %req.room_id, record = %curated.key,
+                    "record retracted but its blobs were not released");
+            }
             audit_room(
                 &room,
                 &authorized,
@@ -1429,20 +1492,62 @@ pub fn open_state(data_dir: &std::path::Path) -> anyhow::Result<Arc<HostState>> 
     )
 }
 
-/// Open the store with a specific verification-method resolver.
+/// Open the store with a specific verification-method resolver, and room files
+/// in a local directory under `data_dir` with the default limits.
 pub fn open_state_with_resolver(
     data_dir: &std::path::Path,
     resolver: vti_common::auth::TrustTaskVmResolver,
 ) -> anyhow::Result<Arc<HostState>> {
+    open_state_with_files(data_dir, resolver, FilesConfig::default())
+}
+
+/// How this host stores room files: one storage config, as a standalone host has.
+#[derive(Clone, Default)]
+pub struct FilesConfig {
+    /// The limits applied to every room this host serves.
+    pub limits: vti_rooms::blobs::HostLimits,
+    /// Where committed blobs go. `None` is a local directory, `<data_dir>/blobs`.
+    pub store: Option<Arc<dyn vti_common::blob_store::BlobStore>>,
+    /// The storage config's name, recorded on every blob. `local` when unset.
+    pub config_id: Option<String>,
+}
+
+/// Open the store with a resolver and an explicit room-file configuration.
+pub fn open_state_with_files(
+    data_dir: &std::path::Path,
+    resolver: vti_common::auth::TrustTaskVmResolver,
+    files: FilesConfig,
+) -> anyhow::Result<Arc<HostState>> {
     let store = Store::open(&StoreConfig {
         data_dir: data_dir.to_path_buf(),
     })?;
+    let blob_store = files.store.unwrap_or_else(|| {
+        Arc::new(vti_common::blob_store::local::LocalDirStore::new(
+            data_dir.join("blobs"),
+        ))
+    });
     Ok(Arc::new(HostState {
         rooms: store.keyspace(ROOMS_KEYSPACE)?,
         records: store.keyspace(ROOM_RECORDS_KEYSPACE)?,
         epoch_links: store.keyspace(vti_rooms::ROOM_EPOCH_LINKS_KEYSPACE)?,
+        files: Arc::new(vti_rooms::blobs::BlobHost::new(
+            store.keyspace(vti_rooms::blobs::ROOM_BLOBS_KEYSPACE)?,
+            store.keyspace(vti_rooms::blobs::ROOM_BLOB_TRANSFERS_KEYSPACE)?,
+            data_dir.join("blob-staging"),
+            blob_store,
+            files.config_id.unwrap_or_else(|| "local".into()),
+            files.limits,
+        )),
         resolver,
     }))
+}
+
+impl HostState {
+    /// Room files, for the collection task an embedder runs
+    /// ([`vti_rooms::blobs::BlobHost::sweep`]).
+    pub fn files(&self) -> &Arc<vti_rooms::blobs::BlobHost> {
+        &self.files
+    }
 }
 
 #[cfg(test)]

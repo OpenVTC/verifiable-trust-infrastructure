@@ -25,7 +25,7 @@ fn parse_secrets_file(text: &str) -> anyhow::Result<(SecretsFile, Vec<String>)> 
     Ok((file, unknown_keys))
 }
 
-use room_host::{open_state_with_resolver, router_with_origins};
+use room_host::{FilesConfig, open_state_with_files, router_with_origins};
 
 #[derive(Parser, Debug)]
 #[command(name = "room-host", about = "Store and serve data-room records")]
@@ -124,6 +124,110 @@ struct Args {
     /// Shorter intervals cost the primary a listing per room per pass.
     #[arg(long, default_value_t = 300)]
     mirror_interval_secs: u64,
+
+    #[command(flatten)]
+    files: FileArgs,
+}
+
+/// How this host stores room files. One storage config: a local directory, with
+/// the same limits for every room it serves. Sizes take `KiB`, `MiB` or `GiB`.
+#[derive(clap::Args, Debug)]
+struct FileArgs {
+    /// Refuse every file upload. Records without files are unaffected, and
+    /// files already stored are still served.
+    #[arg(long)]
+    files_disabled: bool,
+    /// Where committed files are stored. Default `<data-dir>/blobs`. Not part of
+    /// anything this host backs up: back it up beside the data directory.
+    #[arg(long)]
+    blob_dir: Option<std::path::PathBuf>,
+    /// The largest single file this host accepts, at most 1 GiB.
+    #[arg(long, value_parser = parse_size)]
+    max_file_bytes: Option<u64>,
+    /// Files per room.
+    #[arg(long)]
+    room_max_files: Option<u64>,
+    /// Largest file in a room.
+    #[arg(long, value_parser = parse_size)]
+    room_max_file_bytes: Option<u64>,
+    /// Total stored per room.
+    #[arg(long, value_parser = parse_size)]
+    room_max_bytes: Option<u64>,
+    /// Files each member may add to a room.
+    #[arg(long)]
+    member_max_files: Option<u64>,
+    /// Largest file a member may add.
+    #[arg(long, value_parser = parse_size)]
+    member_max_file_bytes: Option<u64>,
+    /// Total each member may store in a room.
+    #[arg(long, value_parser = parse_size)]
+    member_max_bytes: Option<u64>,
+    /// Total this host stores across every room.
+    #[arg(long, value_parser = parse_size)]
+    storage_capacity_bytes: Option<u64>,
+    /// How long a file nothing names any more is kept before it is deleted.
+    #[arg(long, default_value_t = 168)]
+    orphan_grace_hours: u64,
+    /// How often deleted and abandoned files are collected.
+    #[arg(long, default_value_t = 600)]
+    blob_sweep_interval_secs: u64,
+}
+
+impl FileArgs {
+    fn config(&self) -> FilesConfig {
+        let mut limits = vti_rooms::blobs::HostLimits {
+            files_enabled: !self.files_disabled,
+            orphan_grace_secs: self.orphan_grace_hours * 3600,
+            storage_capacity_bytes: self.storage_capacity_bytes,
+            ..Default::default()
+        };
+        if let Some(v) = self.max_file_bytes {
+            limits.max_file_bytes = v;
+        }
+        let set = |slot: &mut Option<u64>, v: Option<u64>| {
+            if v.is_some() {
+                *slot = v;
+            }
+        };
+        set(&mut limits.room.max_files, self.room_max_files);
+        set(&mut limits.room.max_file_bytes, self.room_max_file_bytes);
+        set(&mut limits.room.max_bytes, self.room_max_bytes);
+        set(&mut limits.member.max_files, self.member_max_files);
+        set(
+            &mut limits.member.max_file_bytes,
+            self.member_max_file_bytes,
+        );
+        set(&mut limits.member.max_bytes, self.member_max_bytes);
+        FilesConfig {
+            limits,
+            store: self.blob_dir.as_ref().map(|dir| {
+                std::sync::Arc::new(vti_common::blob_store::local::LocalDirStore::new(dir))
+                    as std::sync::Arc<dyn vti_common::blob_store::BlobStore>
+            }),
+            config_id: None,
+        }
+    }
+}
+
+/// `1048576`, `512KiB`, `100MiB` or `5GiB`.
+fn parse_size(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (number, unit) = match s.find(|c: char| !c.is_ascii_digit()) {
+        Some(i) => s.split_at(i),
+        None => (s, ""),
+    };
+    let n: u64 = number.parse().map_err(|_| {
+        format!("`{s}` is not a size: a number, optionally followed by KiB, MiB or GiB")
+    })?;
+    let scale = match unit.trim() {
+        "" | "B" => 1,
+        "KiB" => 1 << 10,
+        "MiB" => 1 << 20,
+        "GiB" => 1 << 30,
+        other => return Err(format!("unknown size unit `{other}`; use KiB, MiB or GiB")),
+    };
+    n.checked_mul(scale)
+        .ok_or_else(|| format!("`{s}` is too large"))
 }
 
 #[tokio::main]
@@ -158,7 +262,28 @@ async fn main() -> anyhow::Result<()> {
     } else {
         vti_common::auth::TrustTaskVmResolver::did_key_only()
     };
-    let state = open_state_with_resolver(&args.data_dir, resolver)?;
+    let state = open_state_with_files(&args.data_dir, resolver, args.files.config())?;
+
+    // Room files: deleted files past their grace window and abandoned uploads
+    // are collected on a timer. A pass that fails is logged and retried at the
+    // next tick; nothing it does is lost by waiting.
+    {
+        let files = state.files().clone();
+        let every = std::time::Duration::from_secs(args.files.blob_sweep_interval_secs.max(60));
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(every);
+            loop {
+                tick.tick().await;
+                match files.sweep().await {
+                    Ok(stats) if stats != Default::default() => {
+                        tracing::info!(?stats, "room files collected")
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "room-file collection failed"),
+                }
+            }
+        });
+    }
 
     // Mirrors start before the listener: a host that is going to serve a copy
     // should begin catching up before it starts answering reads from it, and a
