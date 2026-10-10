@@ -1493,6 +1493,14 @@ jobs:
       # build can still break the un-baked one.
       - run: cargo check -p vta-enclave --no-default-features --features rest,didcomm,vsock-store,tenant-overlay
 
+      # The enclave's store: connection pool, per-key locks, and the
+      # exactly-one tests that run its multi-step operations (refresh-token
+      # take, insert-if-absent, swap, compare-and-move) against a fake parent
+      # on a multi-thread runtime. Behind `vsock-store`, so no other job
+      # compiles them.
+      - name: vsock store tests
+        run: 'cargo test -p vti-common --features vsock-store,encryption --lib store::'
+
   enclave-proxy:
     # Standalone crate (own [workspace], excluded from the root workspace —
     # tokio-vsock is Linux-only) with its own Cargo.lock. No job above builds

@@ -15,7 +15,8 @@
 //!
 //! The pool does not make multi-step operations atomic, and never did: the old
 //! single-connection lock was released between the steps of `swap`,
-//! `take_raw` and `move_if_unchanged` too.
+//! `take_raw` and `move_if_unchanged` too. `super::key_locks` does that,
+//! independently of how many connections there are.
 //!
 //! Transport-agnostic so the pool is testable off Linux; the vsock store
 //! supplies the connector.
