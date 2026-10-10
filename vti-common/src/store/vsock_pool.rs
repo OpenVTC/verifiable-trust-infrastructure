@@ -88,40 +88,98 @@ impl ConnectionPool {
         self
     }
 
-    /// Send one request frame and return the response frame.
+    /// Send one **idempotent** request frame (get, insert, delete, scans,
+    /// persist, HELLO) and return the response frame.
     ///
-    /// Waits for a free connection slot, reuses an idle connection if there is
-    /// one, and retries once on a fresh connection if the idle one fails (it
-    /// may have been closed by the parent).
+    /// Waits for a free connection slot, reuses a live idle connection if
+    /// there is one, and resends once on a fresh connection if that fails at
+    /// any point. Resending is harmless only because applying these twice is
+    /// the same as applying them once; anything else goes through
+    /// [`Self::request_once`].
     pub(crate) async fn request(&self, payload: &[u8]) -> Result<Vec<u8>, AppError> {
-        let _permit = self
-            .permits
-            .acquire()
-            .await
-            .map_err(|_| AppError::Internal("storage connection pool closed".into()))?;
+        let _permit = self.permit().await?;
 
-        if let Some(mut stream) = self.take_idle() {
+        if let Some(mut stream) = self.take_live_idle() {
             match round_trip_within(&mut stream, payload, self.timeout).await {
                 Ok(resp) => {
                     self.put_idle(stream);
                     return Ok(resp);
                 }
-                Err(e) => warn!(error = %e, "storage request failed, reconnecting"),
+                Err(e) => warn!(error = %e.error(), "storage request failed, reconnecting"),
             }
         }
 
         let mut stream = (self.connect)().await?;
         trace!("storage connection opened");
-        let resp = round_trip_within(&mut stream, payload, self.timeout).await?;
+        let resp = round_trip_within(&mut stream, payload, self.timeout)
+            .await
+            .map_err(RoundTripError::into_error)?;
         self.put_idle(stream);
         Ok(resp)
     }
 
-    fn take_idle(&self) -> Option<BoxStream> {
-        self.idle
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop()
+    /// Send one **non-idempotent** request frame (take, insert-if-absent,
+    /// swap, compare-and-move) and return the response frame.
+    ///
+    /// It is resent only if it failed before its frame was completely
+    /// written: the proxy reads a whole frame before acting, so a partial one
+    /// cannot have been applied. Once the frame is fully written, a failure is
+    /// [`OnceError::OutcomeUnknown`] and is never resent — a resent take would
+    /// find the row it had just deleted gone and refuse a legitimate claim, and
+    /// a resent move would report the target it had just written as occupied.
+    ///
+    /// A connection the parent closed while idle would otherwise make that
+    /// error routine (the write lands in a dead socket, the read gets EOF), so
+    /// idle connections are checked first; see [`is_stale`].
+    pub(crate) async fn request_once(&self, payload: &[u8]) -> Result<Vec<u8>, OnceError> {
+        let _permit = self.permit().await.map_err(OnceError::NotSent)?;
+
+        if let Some(mut stream) = self.take_live_idle() {
+            match round_trip_within(&mut stream, payload, self.timeout).await {
+                Ok(resp) => {
+                    self.put_idle(stream);
+                    return Ok(resp);
+                }
+                Err(RoundTripError::Unsent(e)) => {
+                    warn!(error = %e, "storage request not sent, retrying on a new connection");
+                }
+                Err(RoundTripError::Sent(e)) => return Err(OnceError::OutcomeUnknown(e)),
+            }
+        }
+
+        let mut stream = (self.connect)().await.map_err(OnceError::NotSent)?;
+        trace!("storage connection opened");
+        match round_trip_within(&mut stream, payload, self.timeout).await {
+            Ok(resp) => {
+                self.put_idle(stream);
+                Ok(resp)
+            }
+            Err(RoundTripError::Unsent(e)) => Err(OnceError::NotSent(e)),
+            Err(RoundTripError::Sent(e)) => Err(OnceError::OutcomeUnknown(e)),
+        }
+    }
+
+    async fn permit(&self) -> Result<tokio::sync::SemaphorePermit<'_>, AppError> {
+        self.permits
+            .acquire()
+            .await
+            .map_err(|_| AppError::Internal("storage connection pool closed".into()))
+    }
+
+    /// An idle connection the parent has not closed, discarding any it has.
+    fn take_live_idle(&self) -> Option<BoxStream> {
+        loop {
+            let mut stream = self
+                .idle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop()?;
+            if is_stale(&mut stream) {
+                trace!("discarding a storage connection the parent closed");
+                continue;
+            }
+            return Some(stream);
+        }
     }
 
     fn put_idle(&self, stream: BoxStream) {
@@ -140,69 +198,149 @@ impl ConnectionPool {
     }
 }
 
+/// Why a [`ConnectionPool::request_once`] failed.
+#[derive(Debug)]
+pub(crate) enum OnceError {
+    /// The request frame never completely left the enclave, so it cannot have
+    /// been applied.
+    NotSent(AppError),
+    /// The frame was fully written and then the exchange failed: the proxy
+    /// may or may not have applied it. Never resent, never "fallen back" from
+    /// (a fallback could apply it a second time).
+    OutcomeUnknown(AppError),
+}
+
+impl From<OnceError> for AppError {
+    fn from(e: OnceError) -> Self {
+        match e {
+            OnceError::NotSent(e) => e,
+            OnceError::OutcomeUnknown(e) => {
+                AppError::Internal(format!("storage operation outcome unknown: {e}"))
+            }
+        }
+    }
+}
+
+/// Where a round trip failed.
+enum RoundTripError {
+    /// Before the request frame was completely written.
+    Unsent(AppError),
+    /// After it was: the proxy may have acted on it.
+    Sent(AppError),
+}
+
+impl RoundTripError {
+    fn error(&self) -> &AppError {
+        match self {
+            Self::Unsent(e) | Self::Sent(e) => e,
+        }
+    }
+
+    fn into_error(self) -> AppError {
+        match self {
+            Self::Unsent(e) | Self::Sent(e) => e,
+        }
+    }
+}
+
+/// Whether an idle connection is unusable: the parent closed it (EOF), it
+/// errored, or it holds bytes nobody asked for.
+///
+/// One non-blocking poll of the read side with a no-op waker. An idle
+/// connection owes us nothing, so on a live one the poll is `Pending`;
+/// `Ready` means EOF, an error, or unsolicited bytes, all of which make it
+/// unfit to carry a request. This catches the common case — the proxy
+/// restarted or dropped the connection while it sat idle — before any byte is
+/// written, so a non-idempotent request never has to report "outcome unknown"
+/// merely because its connection was already dead. It cannot catch a close
+/// that lands after the check; that case is reported as outcome unknown, which
+/// is the safe direction. Registering a no-op waker is harmless: the next
+/// real read replaces it.
+fn is_stale(stream: &mut BoxStream) -> bool {
+    use std::task::{Context, Poll, Waker};
+    let mut cx = Context::from_waker(Waker::noop());
+    let mut byte = [0u8; 1];
+    let mut buf = tokio::io::ReadBuf::new(&mut byte);
+    !matches!(
+        Pin::new(&mut **stream).poll_read(&mut cx, &mut buf),
+        Poll::Pending
+    )
+}
+
 /// Write one length-prefixed request frame and read one response frame.
 #[cfg(test)]
-async fn round_trip(stream: &mut BoxStream, payload: &[u8]) -> Result<Vec<u8>, AppError> {
+async fn round_trip(stream: &mut BoxStream, payload: &[u8]) -> Result<Vec<u8>, RoundTripError> {
     round_trip_within(stream, payload, ROUND_TRIP_TIMEOUT).await
 }
 
+/// [`round_trip_inner`] under a deadline. A deadline that expires after the
+/// frame was completely written is [`RoundTripError::Sent`] — the proxy may be
+/// applying it right now — and before that, [`RoundTripError::Unsent`]: a
+/// partial frame is never acted on. Either way the caller drops the
+/// connection.
 async fn round_trip_within(
     stream: &mut BoxStream,
     payload: &[u8],
     timeout: std::time::Duration,
-) -> Result<Vec<u8>, AppError> {
-    match tokio::time::timeout(timeout, round_trip_inner(stream, payload)).await {
+) -> Result<Vec<u8>, RoundTripError> {
+    let mut sent = false;
+    let result = tokio::time::timeout(timeout, round_trip_inner(stream, payload, &mut sent)).await;
+    match result {
         Ok(result) => result,
-        Err(_) => Err(AppError::Internal(format!(
-            "storage request timed out after {timeout:?}"
-        ))),
+        Err(_) => {
+            let e = AppError::Internal(format!("storage request timed out after {timeout:?}"));
+            Err(if sent {
+                RoundTripError::Sent(e)
+            } else {
+                RoundTripError::Unsent(e)
+            })
+        }
     }
 }
 
-async fn round_trip_inner(stream: &mut BoxStream, payload: &[u8]) -> Result<Vec<u8>, AppError> {
-    let len = u32::try_from(payload.len())
-        .map_err(|_| AppError::Internal("storage request too large".into()))?;
+/// `*sent` becomes `true` once every byte of the request frame is written.
+async fn round_trip_inner(
+    stream: &mut BoxStream,
+    payload: &[u8],
+    sent: &mut bool,
+) -> Result<Vec<u8>, RoundTripError> {
+    let len = u32::try_from(payload.len()).map_err(|_| {
+        RoundTripError::Unsent(AppError::Internal("storage request too large".into()))
+    })?;
+    let unsent = |e| RoundTripError::Unsent(AppError::vsock("vsock write")(e));
     // On an unbuffered vsock stream every write is its own packet across the
     // enclave boundary, so a small frame goes out as one write. Above
     // `COALESCE_MAX` the frame spans many packets whatever we do, and copying
     // it just to save the header's packet costs more than it saves.
+    //
+    // A failed `write_all` means the frame did not completely leave: the
+    // proxy reads a whole frame before acting, so it cannot have been applied.
     if payload.len() <= COALESCE_MAX {
         let mut frame = Vec::with_capacity(4 + payload.len());
         frame.extend_from_slice(&len.to_be_bytes());
         frame.extend_from_slice(payload);
-        stream
-            .write_all(&frame)
-            .await
-            .map_err(AppError::vsock("vsock write"))?;
+        stream.write_all(&frame).await.map_err(unsent)?;
     } else {
-        stream
-            .write_all(&len.to_be_bytes())
-            .await
-            .map_err(AppError::vsock("vsock write"))?;
-        stream
-            .write_all(payload)
-            .await
-            .map_err(AppError::vsock("vsock write"))?;
+        stream.write_all(&len.to_be_bytes()).await.map_err(unsent)?;
+        stream.write_all(payload).await.map_err(unsent)?;
     }
-    stream
-        .flush()
-        .await
-        .map_err(AppError::vsock("vsock flush"))?;
+    // From here on every byte of the frame has been handed over, so any
+    // failure — or the deadline — leaves the outcome unknown.
+    *sent = true;
+    let sent = |op| move |e| RoundTripError::Sent(AppError::vsock(op)(e));
+    stream.flush().await.map_err(sent("vsock flush"))?;
 
-    let len = stream
-        .read_u32()
-        .await
-        .map_err(AppError::vsock("vsock read"))?;
+    let len = stream.read_u32().await.map_err(sent("vsock read"))?;
     if len > MAX_MESSAGE_SIZE {
-        return Err(AppError::Internal(format!(
+        return Err(RoundTripError::Sent(AppError::Internal(format!(
             "vsock response too large: {len} > {MAX_MESSAGE_SIZE}"
-        )));
+        ))));
     }
     let mut buf = vec![0u8; len as usize];
     stream
         .read_exact(&mut buf)
         .await
-        .map_err(AppError::vsock("vsock read"))?;
+        .map_err(sent("vsock read"))?;
     Ok(buf)
 }
 
@@ -229,6 +367,11 @@ mod tests {
         gate: Option<Arc<Notify>>,
         /// When set, close the first connection without answering.
         drop_first: bool,
+        /// When set, the first connection reads one whole frame and then
+        /// hangs up without answering it.
+        hangup_after_first_frame: bool,
+        /// Complete request frames received, across all connections.
+        frames: Arc<AtomicUsize>,
     }
 
     impl Server {
@@ -252,16 +395,21 @@ mod tests {
                     drop(server_end);
                     return;
                 }
-                server.serve(server_end).await;
+                let hang_up = server.hangup_after_first_frame && n == 0;
+                server.serve(server_end, hang_up).await;
             });
             Box::new(client)
         }
 
         /// Echo every request frame back as its response.
-        async fn serve(self, mut stream: DuplexStream) {
+        async fn serve(self, mut stream: DuplexStream, hang_up: bool) {
             while let Ok(len) = stream.read_u32().await {
                 let mut buf = vec![0u8; len as usize];
                 if stream.read_exact(&mut buf).await.is_err() {
+                    return;
+                }
+                self.frames.fetch_add(1, Ordering::SeqCst);
+                if hang_up {
                     return;
                 }
                 let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
@@ -453,8 +601,186 @@ mod tests {
         });
         let mut stream: BoxStream = Box::new(client);
         match round_trip(&mut stream, b"big").await {
-            Err(AppError::Internal(msg)) => assert!(msg.contains("too large"), "got {msg}"),
-            other => panic!("expected a too-large error, got {other:?}"),
+            Err(RoundTripError::Sent(AppError::Internal(msg))) => {
+                assert!(msg.contains("too large"), "got {msg}")
+            }
+            Err(e) => panic!("expected a too-large error, got {:?}", e.error()),
+            Ok(_) => panic!("expected a too-large error"),
         }
+    }
+
+    /// A connection whose reads never complete and whose writes fail: a
+    /// request on it fails before any byte of its frame leaves.
+    struct WriteFails;
+
+    impl AsyncRead for WriteFails {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for WriteFails {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+        }
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn request_once_is_not_resent_after_its_frame_was_sent() {
+        // The proxy receives the whole frame, then the connection drops
+        // before the reply: it may have applied it.
+        let server = Server {
+            hangup_after_first_frame: true,
+            ..Server::default()
+        };
+        let pool = server.pool(4);
+        match pool.request_once(b"take").await {
+            Err(OnceError::OutcomeUnknown(_)) => {}
+            other => panic!("expected outcome unknown, got {other:?}"),
+        }
+        assert_eq!(server.frames.load(Ordering::SeqCst), 1, "never resent");
+        assert_eq!(server.connects.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn an_idempotent_request_is_resent_in_the_same_situation() {
+        let server = Server {
+            hangup_after_first_frame: true,
+            ..Server::default()
+        };
+        let pool = server.pool(4);
+        assert_eq!(pool.request(b"get").await.expect("request"), b"get");
+        assert_eq!(server.frames.load(Ordering::SeqCst), 2, "resent once");
+    }
+
+    #[tokio::test]
+    async fn request_once_is_retried_when_its_frame_was_never_written() {
+        let server = Server::default();
+        let s = server.clone();
+        let connect: Connector = Arc::new(move || {
+            let s = s.clone();
+            Box::pin(async move { Ok(s.open()) })
+        });
+        let pool = ConnectionPool::new(connect, 4, Box::new(WriteFails));
+        assert_eq!(pool.request_once(b"take").await.expect("retried"), b"take");
+        assert_eq!(server.frames.load(Ordering::SeqCst), 1, "applied once");
+        assert_eq!(pool.idle_len(), 1, "only the working connection is kept");
+    }
+
+    /// An atomic request whose reply never comes: the deadline expires after
+    /// its frame was received, so the outcome is unknown, and it is not
+    /// resent — applied at most once.
+    #[tokio::test]
+    async fn request_once_timing_out_after_sending_is_outcome_unknown() {
+        let gate = Arc::new(Notify::new());
+        let server = Server {
+            gate: Some(gate.clone()),
+            ..Server::default()
+        };
+        let pool = server.pool(2).with_timeout(Duration::from_millis(100));
+        match pool.request_once(b"take").await {
+            Err(OnceError::OutcomeUnknown(e)) => {
+                assert!(e.to_string().contains("timed out"), "{e}")
+            }
+            other => panic!("expected outcome unknown, got {other:?}"),
+        }
+        assert_eq!(server.frames.load(Ordering::SeqCst), 1, "never resent");
+        assert_eq!(server.connects.load(Ordering::SeqCst), 1);
+        assert_eq!(pool.idle_len(), 0, "the connection is dropped");
+    }
+
+    /// A connection that accepts no bytes: a write that never completes.
+    struct WriteHangs;
+
+    impl AsyncRead for WriteHangs {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for WriteHangs {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Pending
+        }
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// The deadline expiring before the frame was written: nothing can have
+    /// been applied, so the request goes out once on a new connection.
+    #[tokio::test]
+    async fn request_once_timing_out_before_sending_is_retried() {
+        let server = Server::default();
+        let s = server.clone();
+        let connect: Connector = Arc::new(move || {
+            let s = s.clone();
+            Box::pin(async move { Ok(s.open()) })
+        });
+        let pool = ConnectionPool::new(connect, 2, Box::new(WriteHangs))
+            .with_timeout(Duration::from_millis(100));
+        assert_eq!(pool.request_once(b"take").await.expect("retried"), b"take");
+        assert_eq!(server.frames.load(Ordering::SeqCst), 1, "applied once");
+    }
+
+    #[tokio::test]
+    async fn a_stale_idle_connection_is_discarded_without_error() {
+        // The parent closed the idle connection (proxy restart): it is
+        // noticed before anything is written, so even a non-idempotent
+        // request just uses a new one.
+        let server = Server {
+            drop_first: true,
+            ..Server::default()
+        };
+        let pool = server.pool(4);
+        tokio::task::yield_now().await; // let the server side close
+        assert_eq!(pool.request_once(b"take").await.expect("request"), b"take");
+        assert_eq!(server.frames.load(Ordering::SeqCst), 1);
+        assert_eq!(server.connects.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_live_idle_connection_is_not_stale() {
+        let pool = Server::default().pool(1);
+        pool.request(b"warm").await.expect("request");
+        let mut stream = pool.take_live_idle().expect("kept");
+        assert!(!is_stale(&mut stream));
     }
 }
