@@ -29,12 +29,13 @@
 set -euo pipefail
 
 pkgs=""
-for p in libdbus-1-dev pkg-config; do
+# Extra packages a caller needs (the rust-cache action passes `mold`).
+for p in libdbus-1-dev pkg-config "$@"; do
   dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
 done
 
 if [ -z "$pkgs" ]; then
-  echo "libdbus-1-dev and pkg-config already present; nothing to do"
+  echo "libdbus-1-dev pkg-config $* already present; nothing to do"
   exit 0
 fi
 

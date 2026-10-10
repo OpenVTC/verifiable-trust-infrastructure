@@ -66,10 +66,20 @@ jobs:
   #   tier 0  Format, lockfile self-pins, lockfile resolves, cargo-deny,
   #           authorization-context types, `affects`: seconds to a minute
   #           each, little or no compile. Every tier-1 job `needs` all of them.
-  #   tier 1  Check, Clippy, Test (workspace), Test (VTC), Test (VTC admin UI).
+  #   tier 1  Clippy, Test (workspace), Test (VTC), Test (VTC, vetting-pcs),
+  #           Test (VTC admin UI).
   #   tier 2  the Feature combos groups, Feature combos (all-features), Mobile
-  #           build, Enclave build, Enclave proxy, MSRV. Each `needs` every
-  #           tier-1 job, and runs only if none of them FAILED.
+  #           build, Enclave build, Enclave proxy, MSRV. Each `needs` Clippy
+  #           only, and runs unless it (or tier 0) FAILED.
+  #
+  # Tier 2 used to wait for every tier-1 job, which put the longest test job
+  # (~36 min) and the longest tier-2 job (Mobile, ~39-55 min) end to end on
+  # the critical path. What tier 2 needs to know is that the tree compiles and
+  # lints — Clippy says that. A failing test does not make a feature
+  # combination's compile any less informative.
+  #
+  # There is no separate `cargo check` job: `clippy --all-targets` compiles
+  # everything it did and more, so it was ~8 runner-minutes saying less.
   #
   # Why tiers: without them a formatting slip or a stale lockfile still started
   # every compile job in the workflow, and a PR that breaks `cargo check` learns
@@ -83,110 +93,6 @@ jobs:
   #
   # Tier 2's condition is `!cancelled() && !failure() && <its affects gate>`,
   # never the default. See the `affects` job for why.
-  check:
-    name: Check
-    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      # Nothing in this workflow pushes, so the checkout keeps no credentials.
-      # By default actions/checkout leaves the job's token in
-      # `.git/config`, where every later step — including a build script and
-      # every third-party action in the job — can read it.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install system dependencies
-        run: |
-          # `apt-get update` is the operation that hangs here — three runs
-          # stalled on it, and once each attempt was bounded the timings showed
-          # every failure landing on the 90s `update` ceiling, never on the
-          # install. The mirror is unresponsive; retrying it harder does not
-          # help.
-          #
-          # So don't run it unless it is actually needed. The runner image ships
-          # a usable package index, and pkg-config is already present on
-          # ubuntu-24.04, so the fast path is to check what is missing and
-          # install straight from the shipped index. Refreshing the index is the
-          # fallback, still bounded and retried, for the case where the package
-          # genuinely is not in it.
-          pkgs=""
-          for p in libdbus-1-dev pkg-config; do
-            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
-          done
-          if [ -z "$pkgs" ]; then
-            echo "libdbus-1-dev and pkg-config already present; nothing to do"
-            exit 0
-          fi
-          echo "missing:$pkgs"
-          if sudo timeout 120 apt-get install -y $pkgs; then
-            exit 0
-          fi
-          echo "::warning::install from the shipped index failed; refreshing"
-          for attempt in 1 2 3; do
-            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
-              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
-              exit 0
-            fi
-            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
-            sleep 10
-          done
-          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
-          exit 1
-
-      # The toolchain comes from the runner image's rustup rather than from
-      # dtolnay/rust-toolchain. That action publishes no release tags: every ref
-      # it offers (`@stable`, `@master`) is a BRANCH, so there is no immutable
-      # ref to pin and nothing for Dependabot to bump afterwards — and the tip
-      # does move under us. The CI log captured in #1239 shows `@stable`
-      # resolving to 4360b525 on 2026-09-02; by 2026-09-11 it was 6bed0761.
-      # Every Check, Test, Clippy and *publish* job in between ran whatever that
-      # branch happened to point at, unreviewed.
-      #
-      # rustup ships on every hosted runner, so the lines below are the whole of
-      # what the action was doing here.
-      - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # `target/` is deliberately NOT cached. Every crate in this
-          # workspace is a **path** dependency, so a source-only change does not
-          # move `Cargo.lock` and therefore does not move this key: the job
-          # restores a `target/` built from *other* source and reuses stale
-          # artifacts. The failure names a field that is plainly there in the
-          # diff, so it reads as the author's bug — see #1133, where a
-          # clean-room checkout of the same commit compiled fine.
-          #
-          # The registry and git caches stay: content-addressed by package
-          # version, so a stale entry is impossible by construction.
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-check-
-          # Deliberately NO `${{ runner.os }}-cargo-` fallback on any job.
-          # It let a job restore a DIFFERENT job's cache, whose `target/` was
-          # built with other feature sets — so almost none of it is reusable
-          # (fingerprints differ) while all of it costs disk and download time.
-          # #891's Test failure logged the proof: `Cache restored from key:
-          # Linux-cargo-features-…`, ~3 GB of the Feature-combos tree unpacked
-          # before Test built its own, on a runner that then ran out of disk.
-          # The same shared key is what let one fat Enclave cache evict the
-          # repo's whole 10 GB allowance. Each job keeps its OWN prefix
-          # fallback, which is what actually warms a branch build from main.
-
-      # A type-check never reads the baked admin-ui bundle's content, only
-      # that `include_dir!`'s target directory exists — the npm build is
-      # minutes this job doesn't need to spend.
-      - run: cargo check --workspace
-        env:
-          VTC_SKIP_ADMIN_UI_BUILD: "1"
-
   test:
     name: Test (workspace)
     needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
@@ -223,24 +129,9 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # `target/` is deliberately NOT cached. Every crate in this
-          # workspace is a **path** dependency, so a source-only change does not
-          # move `Cargo.lock` and therefore does not move this key: the job
-          # restores a `target/` built from *other* source and reuses stale
-          # artifacts. The failure names a field that is plainly there in the
-          # diff, so it reads as the author's bug — see #1133, where a
-          # clean-room checkout of the same commit compiled fine.
-          #
-          # The registry and git caches stay: content-addressed by package
-          # version, so a stale entry is impossible by construction.
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-test-
+      # mold + compiled third-party crates; see the action for why this
+      # is safe where the old `target/` cache (#1133) was not.
+      - uses: ./.github/actions/rust-cache
 
       # The failure this guards against reports as `No space left on device`
       # from the runner's own log writer — no failing step, no job log, just a
@@ -315,31 +206,10 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: ./.github/actions/rust-cache
         with:
-          # `target/` is deliberately NOT cached. Every crate in this
-          # workspace is a **path** dependency, so a source-only change does not
-          # move `Cargo.lock` and therefore does not move this key: the job
-          # restores a `target/` built from *other* source and reuses stale
-          # artifacts. The failure names a field that is plainly there in the
-          # diff, so it reads as the author's bug — see #1133, where a
-          # clean-room checkout of the same commit compiled fine.
-          #
-          # The registry and git caches stay: content-addressed by package
-          # version, so a stale entry is impossible by construction. So is
-          # `~/.npm`, the tarball cache build.rs's `npm install` reads from.
-          #
-          # Its own prefix: this used to share `cargo-test-` with Test
-          # (workspace), so whichever job saved first decided what the other
-          # restored — the VTC subset of the registry for the whole workspace,
-          # or the whole registry for two crates.
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.npm
-          key: ${{ runner.os }}-cargo-test-vtc-${{ hashFiles('**/Cargo.lock', 'vtc-service/admin-ui/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-test-vtc-
+          # `~/.npm`: the tarball cache build.rs's `npm install` reads from.
+          cache-directories: ~/.npm
 
       # The failure this guards against reports as `No space left on device`
       # from the runner's own log writer — no failing step, no job log, just a
@@ -360,21 +230,6 @@ jobs:
       - name: Doctests
         if: ${{ !cancelled() }}
         run: cargo test -p vtc-service -p vtc-client --doc --no-fail-fast
-
-      # Hidden-vetter admission (development branch `zkp-pcs`). The feature is
-      # off by default, which means the line above compiles none of it — about
-      # 1,500 lines of service code, four Trust Task handlers and their tests,
-      # invisible to every job here. That is the workspace's own "green and
-      # wrong" failure mode with a feature flag in front of it.
-      #
-      # `predicate-credential-system` is published (crates.io); `vti-vetting-pcs`
-      # is a path dependency within this workspace, so this job needs no
-      # special network or registry allowance.
-      - name: hidden vetting (vetting-pcs)
-        run: |
-          cargo clippy -p vtc-service --features vetting-pcs --all-targets -- -D warnings
-          cargo nextest run --profile ci -p vtc-service --features vetting-pcs --no-fail-fast
-          cargo test -p vtc-service --features vetting-pcs --doc --no-fail-fast
 
       # #1243: `vtc-service`'s build.rs used to write into the source tree —
       # `npm install` refreshed `admin-ui/package-lock.json` (a
@@ -420,6 +275,52 @@ jobs:
             git diff --stat
           fi
           df -h /
+
+  test-vtc-vetting:
+    # Hidden-vetter admission (development branch `zkp-pcs`). The feature is
+    # off by default, which means Test (VTC) compiles none of it — about
+    # 1,500 lines of service code, four Trust Task handlers and their tests,
+    # invisible to every job here. That is the workspace's own "green and
+    # wrong" failure mode with a feature flag in front of it.
+    #
+    # `predicate-credential-system` is published (crates.io); `vti-vetting-pcs`
+    # is a path dependency within this workspace, so this job needs no
+    # special network or registry allowance.
+    #
+    # Its own job, not a step of Test (VTC): it rebuilds vtc-service under
+    # another feature set and reruns the suite — ~17 minutes that used to run
+    # after Test (VTC)'s own ~19 instead of beside them.
+    name: Test (VTC, vetting-pcs)
+    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
+    if: needs.affects.outputs.vtc_tests != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: bash scripts/install-build-deps.sh
+
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update \
+            --component clippy
+          rustup default stable
+
+      - uses: ./.github/actions/rust-cache
+        with:
+          cache-directories: ~/.npm
+
+      - name: Install cargo-nextest
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+
+      - name: hidden vetting (vetting-pcs)
+        run: |
+          cargo clippy -p vtc-service --features vetting-pcs --all-targets -- -D warnings
+          cargo nextest run --profile ci -p vtc-service --features vetting-pcs --no-fail-fast
+          cargo test -p vtc-service --features vetting-pcs --doc --no-fail-fast
 
   test-vtc-admin-ui:
     # The admin console's own checks. `cargo build -p vtc-service` runs
@@ -493,6 +394,8 @@ jobs:
   clippy:
     name: Clippy
     needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
+    # Prose-only and other non-build changes compile nothing (ci-affects.sh --any).
+    if: needs.affects.outputs.rust != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -538,30 +441,26 @@ jobs:
           echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
           exit 1
 
+      # The toolchain comes from the runner image's rustup rather than from
+      # dtolnay/rust-toolchain. That action publishes no release tags: every ref
+      # it offers (`@stable`, `@master`) is a BRANCH, so there is no immutable
+      # ref to pin and nothing for Dependabot to bump afterwards — and the tip
+      # does move under us. The CI log captured in #1239 shows `@stable`
+      # resolving to 4360b525 on 2026-09-02; by 2026-09-11 it was 6bed0761.
+      # Every Check, Test, Clippy and *publish* job in between ran whatever that
+      # branch happened to point at, unreviewed.
+      #
+      # rustup ships on every hosted runner, so the lines below are the whole of
+      # what the action was doing here.
       - name: Install the Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal --no-self-update \
             --component clippy
           rustup default stable
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # `target/` is deliberately NOT cached. Every crate in this
-          # workspace is a **path** dependency, so a source-only change does not
-          # move `Cargo.lock` and therefore does not move this key: the job
-          # restores a `target/` built from *other* source and reuses stale
-          # artifacts. The failure names a field that is plainly there in the
-          # diff, so it reads as the author's bug — see #1133, where a
-          # clean-room checkout of the same commit compiled fine.
-          #
-          # The registry and git caches stay: content-addressed by package
-          # version, so a stale entry is impossible by construction.
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-clippy-
+      # mold + compiled third-party crates; see the action for why this
+      # is safe where the old `target/` cache (#1133) was not.
+      - uses: ./.github/actions/rust-cache
 
       # `--all-targets` so tests, benches and examples are linted too. Without
       # it clippy sees only the lib/bin targets, and dead code in `tests/`
@@ -597,7 +496,7 @@ jobs:
     # than the MSRV; without this job a `let-else` introduced under a
     # newer compiler can silently break consumers on the documented MSRV.
     name: MSRV
-    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    needs: [clippy, affects]
     # On a pull request, only when something that decides which compiler the
     # tree needs changed; see the `msrv` step of `affects`.
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.msrv != 'false' }}
@@ -669,38 +568,13 @@ jobs:
           rustup toolchain install "$MSRV" --profile minimal --no-self-update
           rustup default "$MSRV"
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # `target/` is deliberately NOT cached here any more.
-          #
-          # It was, keyed on `hashFiles('**/Cargo.lock')` with a prefix
-          # `restore-keys` fallback — and every crate in this workspace is a
-          # **path** dependency, so changing one member's source does not move
-          # `Cargo.lock` and therefore does not move the key. A PR that edits
-          # `vta-policy` and nothing else restores `main`'s `target/`
-          # byte-for-byte, and `cargo check` reuses the stale `vta-policy`
-          # artifact: the build then fails on the *new* code with
-          # `no field ... on type ...`, naming a field that is right there in
-          # the source.
-          #
-          # That is a false red on a green tree, and it is the worst kind: it
-          # points at the author's own diff. It failed #1133 exactly this way,
-          # which a clean-room checkout of the same commit compiled without
-          # complaint.
-          #
-          # The registry and git caches stay: they are content-addressed by
-          # package version, so a stale entry is impossible by construction.
-          # `cargo check` on a warm registry is under two minutes, which is not
-          # worth a class of failure that costs an afternoon to disbelieve.
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-msrv-${{ steps.msrv.outputs.msrv }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-msrv-${{ steps.msrv.outputs.msrv }}-
+      # mold + compiled third-party crates; see the action for why this
+      # is safe where the old `target/` cache (#1133) was not.
+      - uses: ./.github/actions/rust-cache
 
-      # Same reasoning as Check: a type-check never reads the baked admin-ui
-      # bundle's content, so the npm build buys this job nothing.
+      # A type-check never reads the baked admin-ui bundle's content, only that
+      # `include_dir!`'s target directory exists, so the npm build buys this
+      # job nothing.
       - run: cargo check --workspace --locked
         env:
           VTC_SKIP_ADMIN_UI_BUILD: "1"
@@ -1057,7 +931,7 @@ jobs:
   # each, grouped so the steps of a group share their dependency builds. Every
   # step, command and comment is the same as in the single job; only which job
   # it runs in changed. The shared preamble (system packages, toolchain, one
-  # registry cache for all five) is `.github/actions/feature-combos-setup`.
+  # build cache, per job) is `.github/actions/feature-combos-setup`.
   #
   # Each group is gated on its OWN packages: `affects` derives a list from
   # the group's `-p` flags (scripts/ci-feature-combo-pkgs.sh <job-key>), so a
@@ -1065,8 +939,8 @@ jobs:
   # must stay package-scoped for that to be sound; that script refuses a
   # `--workspace` step, which belongs in `features-all`.
   #
-  # Tier 2 also means: runs only once every tier-1 job (Check, Clippy, both
-  # Test jobs, the admin UI tests) succeeded or was skipped by its own filter.
+  # Tier 2 also means: runs only once Clippy succeeded or was skipped by its
+  # own filter (a prose-only change), and never after a tier-0 failure.
   # See the `affects` job for why the condition is spelled
   # `!cancelled() && !failure()` rather than left to the default.
   #
@@ -1079,7 +953,7 @@ jobs:
     # 3.3, didcomm without webvh 2.1, the three clippy builds ~1.5 each, the two
     # secrets backends 0.7 each).
     name: Feature combos (vta-service builds)
-    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    needs: [clippy, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.features_vta_service_builds != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1134,7 +1008,7 @@ jobs:
     # The two vta-service steps that RUN tests under a non-default feature set.
     # ~10.5 min (setup wizard 5.8, TEE Mode B carve-out 4.6).
     name: Feature combos (vta-service tests)
-    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    needs: [clippy, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.features_vta_service_tests != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1176,7 +1050,7 @@ jobs:
     # (attest-verify 1.7, client + sealed-transfer 1.9, vetting 2.6,
     # all-features 1.5, tenant-overlay 2.7).
     name: Feature combos (vta-sdk, vta-tee)
-    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    needs: [clippy, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.features_sdk_tee != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1224,7 +1098,7 @@ jobs:
     # The room member half, natively and on wasm32, and the wasm artifact.
     # ~6.5 min (clippy 1.6, wasm32 check 1.7, artifact 3.0).
     name: Feature combos (vti-rooms)
-    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    needs: [clippy, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.features_rooms != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1270,7 +1144,7 @@ jobs:
     # they share the messaging/mediator dependency stack. ~9 min (room-host 3.2,
     # transport harness 3.5, VTC TSP receive 2.0, registry round trip 0.1).
     name: Feature combos (mediator-backed)
-    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    needs: [clippy, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.features_mediator != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1351,7 +1225,7 @@ jobs:
     # `test-support`) sat uncompilable for as long as it took
     # `ProvisionIntegrationRequest.request` to become a `serde_json::Value`.
     name: Feature combos (all-features)
-    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    needs: [clippy, affects]
     # The whole workspace, expressed with the two answers that already exist:
     # anything inside "everything except vtc-service" or inside the VTC closure
     # is, between them, every crate. So this skips only a change that touches
@@ -1395,17 +1269,9 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # Its own prefix, like every other job here: sharing one would let
-          # this restore a `target/`-less registry built for other feature
-          # sets and, worse, let one job's cache evict the repo's allowance.
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-features-all-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-features-all-
+      # mold + compiled third-party crates; see the action for why this
+      # is safe where the old `target/` cache (#1133) was not.
+      - uses: ./.github/actions/rust-cache
 
       # Lint only, same as Clippy above — the npm build is minutes this job
       # doesn't need to spend.
@@ -1462,6 +1328,8 @@ jobs:
       features_rooms: ${{ steps.features_rooms.outputs.run }}
       features_mediator: ${{ steps.features_mediator.outputs.run }}
       msrv: ${{ steps.msrv.outputs.run }}
+      rust: ${{ steps.rust.outputs.run }}
+      enclave_proxy: ${{ steps.enclave_proxy.outputs.run }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1542,18 +1410,25 @@ jobs:
       #
       # The trade, stated plainly: a PR whose SOURCE uses a feature newer than
       # the MSRV (a std API stabilised after it, a new syntax form) no longer
-      # hears it from this job; Check/Clippy/Test run a newer stable and accept
+      # hears it from this job; Clippy and Test run a newer stable and accept
       # it. The push to main still runs MSRV unconditionally and reports it
       # there, one merge late. `ci-affects.sh --toolchain` has the path list.
       - id: msrv
         run: bash scripts/ci-affects.sh --toolchain
+      # Clippy's gate: anything but prose. Same fail-safes as every mode.
+      - id: rust
+        run: bash scripts/ci-affects.sh --any
+      # Not a workspace member, so no closure to derive: its own directory, the
+      # toolchain, or this workflow.
+      - id: enclave_proxy
+        run: bash scripts/ci-affects.sh --paths '^deploy/nitro/enclave-proxy/|^rust-toolchain|^\.github/workflows/ci\.yml$|^\.github/actions/'
 
   enclave:
     # The Nitro enclave binary uses a TEE-only feature combo that the
     # default `check` job never touches. Linux-only because vsock-store
     # depends on `tokio-vsock` which doesn't build on macOS/Windows.
     name: Enclave build
-    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    needs: [clippy, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.enclave != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1605,24 +1480,9 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # `target/` is deliberately NOT cached. Every crate in this
-          # workspace is a **path** dependency, so a source-only change does not
-          # move `Cargo.lock` and therefore does not move this key: the job
-          # restores a `target/` built from *other* source and reuses stale
-          # artifacts. The failure names a field that is plainly there in the
-          # diff, so it reads as the author's bug — see #1133, where a
-          # clean-room checkout of the same commit compiled fine.
-          #
-          # The registry and git caches stay: content-addressed by package
-          # version, so a stale entry is impossible by construction.
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-enclave-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-enclave-
+      # mold + compiled third-party crates; see the action for why this
+      # is safe where the old `target/` cache (#1133) was not.
+      - uses: ./.github/actions/rust-cache
 
       - run: cargo check -p vta-enclave --no-default-features --features rest,didcomm,vsock-store
       # The fleet build. `tenant-overlay` pulls in a different module set (the
@@ -1643,8 +1503,9 @@ jobs:
     # Not gated on `affects` — this crate's lock can break on a crates.io
     # move with no diff here at all.
     name: Enclave proxy (standalone crate)
-    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
-    if: ${{ !cancelled() && !failure() }}
+    needs: [clippy, affects]
+    # A standalone crate with its own lockfile: nothing in the workspace reaches it.
+    if: ${{ !cancelled() && !failure() && needs.affects.outputs.enclave_proxy != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -1660,23 +1521,10 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Its own workspace and lockfile, so its own cache root.
+      - uses: ./.github/actions/rust-cache
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          # `encproxy`, not `enclave-proxy`: restore-keys are PREFIX matches,
-          # so `Linux-cargo-enclave-proxy-<hash>` is a hit for the `enclave`
-          # job's `Linux-cargo-enclave-` restore-key above. That job hashes
-          # `**/Cargo.lock`, which now includes this crate's lock, so it falls
-          # through to its restore-key routinely — and would get this job's
-          # ~400-package registry instead of the root workspace's, then
-          # silently re-download the difference. Same shape as #891
-          # (`Cache restored from key: Linux-cargo-features-`), documented at
-          # the top of this file.
-          key: ${{ runner.os }}-cargo-encproxy-${{ hashFiles('deploy/nitro/enclave-proxy/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-encproxy-
+          workspaces: deploy/nitro/enclave-proxy
 
       # Neither `fmt --all` nor `clippy --workspace` reaches an excluded crate,
       # so this job is the only place either can run for it.
@@ -1722,7 +1570,7 @@ jobs:
     # 60 minutes, not 45: a warm run on main takes ~40, and a PR run on a busy
     # runner hit 45 and was cancelled (#1807), which reads as a failure.
     name: Mobile build
-    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    needs: [clippy, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.mobile != 'false' }}
     runs-on: macos-latest
     timeout-minutes: 60
@@ -1741,6 +1589,10 @@ jobs:
         with:
           tool: cargo-ndk
 
+      # Registry only, deliberately not .github/actions/rust-cache: this job
+      # runs on few PRs (its gate is vta-mobile-core's own sources), and its
+      # compiled iOS + Android trees would be the largest entry in a cache
+      # allowance the frequent jobs need more.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # `target/` is deliberately NOT cached. Every crate in this
