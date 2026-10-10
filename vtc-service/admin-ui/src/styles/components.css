@@ -69,6 +69,212 @@
   display: contents;
 }
 
+/* ── Page header (components/PageHeader.tsx) ─────────────────────
+ *
+ * Breadcrumb (group / page), the title with an optional count, the primary
+ * action on the right, an optional lead paragraph.
+ */
+
+.page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.page-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.breadcrumb ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.breadcrumb li + li::before {
+  content: "/";
+  margin: 0 var(--space-2);
+  color: var(--text-faint);
+}
+
+.breadcrumb a {
+  color: var(--text-muted);
+}
+
+.breadcrumb [aria-current="page"] {
+  color: var(--text-muted);
+}
+
+.page-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.page-header h2.page-title {
+  margin: 0;
+  font-size: var(--text-xl);
+  line-height: var(--text-xl-leading);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tighter);
+  overflow-wrap: anywhere;
+}
+
+.page-count {
+  color: var(--text-faint);
+  font-size: var(--text-md);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.page-header .lead {
+  margin: var(--space-1) 0 0;
+  max-width: 65ch;
+  color: var(--text-muted);
+}
+
+.page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* ── Tabs (components/Tabs.tsx) ──────────────────────────────── */
+
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.tabs-list {
+  display: flex;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.tabs-end {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  margin: 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  text-decoration: none;
+  transition:
+    color var(--motion-fast),
+    background var(--motion-fast),
+    border-color var(--motion-fast);
+}
+
+.tab:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tab-hint {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 400;
+}
+
+.tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.6em;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-pill);
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+/* Underline: a row of tabs over the content. */
+.tabs--underline {
+  border-bottom: 1px solid var(--border);
+}
+
+.tabs--underline .tab {
+  height: var(--control-h);
+  padding: 0 var(--space-3);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.tabs--underline .tab[aria-selected="true"],
+.tabs--underline .tab.active {
+  color: var(--text);
+  border-bottom-color: var(--brand);
+  font-weight: 600;
+}
+
+.tabs--underline .tab[aria-selected="true"] .tab-count,
+.tabs--underline .tab.active .tab-count {
+  background: var(--brand);
+  color: var(--brand-fg);
+}
+
+/* Segmented: a compact pill group for a view toggle. */
+.tabs--segmented .tabs-list {
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.tabs--segmented .tab {
+  height: var(--control-h-sm);
+  padding: 0 var(--space-3);
+  border-radius: calc(var(--radius-md) - 2px);
+  font-size: var(--text-sm);
+}
+
+.tabs--segmented .tab[aria-selected="true"] {
+  background: var(--bg-elev);
+  color: var(--text);
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+
 /* ── Card ────────────────────────────────────────────────────── */
 
 .card {
@@ -289,6 +495,12 @@ button.link:disabled {
   margin: 0;
 }
 
+/* The <label> inside a wrapping Field that carries a hint or an error
+   (components/Field.tsx): laid out as if it were the .field itself. */
+.field-wrap {
+  display: contents;
+}
+
 .field-label {
   color: var(--text-muted);
   font-size: var(--text-xs);
@@ -414,7 +626,8 @@ select {
 
 .data-table thead th {
   position: sticky;
-  top: 0;
+  /* Under the shell's top bar, which is sticky too. */
+  top: var(--topbar-h, 0);
   background: var(--bg-elev);
   z-index: 1;
 }
@@ -892,6 +1105,28 @@ pre {
   max-width: 40ch;
   font-size: var(--text-sm);
   line-height: 1.5;
+}
+
+.empty-state .empty-action {
+  margin-top: var(--space-2);
+}
+
+/* One muted line inside a card that has other content. */
+.empty-state.compact {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  text-align: left;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) 0;
+  font-size: var(--text-base);
+}
+
+.empty-state.compact .empty-icon,
+.empty-state.compact .empty-icon svg {
+  width: 16px;
+  height: 16px;
 }
 
 /* ── Inline copy button ──────────────────────────────────────── */

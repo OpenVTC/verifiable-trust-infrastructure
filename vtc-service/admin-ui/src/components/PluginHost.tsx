@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+import { PluginContext } from "@/lib/plugin-context";
 import type { PluginManifest } from "@/plugin-api";
 
 /**
@@ -24,7 +25,13 @@ import type { PluginManifest } from "@/plugin-api";
 export function PluginHost({ plugin }: { plugin: PluginManifest }) {
   if (plugin.reactComponent) {
     const Component = plugin.reactComponent;
-    return <Component />;
+    // Built-ins read which plugin they are (the page header's breadcrumb,
+    // `lib/plugin-context.ts`). A custom element gets nothing new.
+    return (
+      <PluginContext.Provider value={plugin}>
+        <Component />
+      </PluginContext.Provider>
+    );
   }
   if (!plugin.elementTag) {
     return <PluginMisconfigured id={plugin.id} />;

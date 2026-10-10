@@ -19,10 +19,18 @@ admin-ui/
 ├── index.html            Vite entry shim
 └── src/
     ├── main.tsx          React root + QueryClient + plugin registry boot
-    ├── App.tsx           Layout (nav + content) + plugin routes
+    ├── App.tsx           Shell (top bar, grouped nav, attention strip)
+    │                     + plugin routes
     ├── plugin-api.ts     Framework-agnostic plugin registration API
-    ├── styles.css        Shell + plugin shared styles
+    ├── styles/
+    │   ├── index.css     Imports the rest, in cascade order
+    │   ├── tokens.css    Design tokens shared with the member portal
+    │   │                 and the home page (website-default/ copies it)
+    │   ├── base.css, shell.css, components.css, pages.css
+    │   └── plugins/      Layout particular to one built-in screen
     ├── components/
+    │   ├── PageHeader.tsx, Tabs.tsx, DataTable.tsx, Field.tsx,
+    │   │   EmptyState.tsx  The shared components every screen uses
     │   └── PluginHost.tsx  Renders either a React component (in-tree)
     │                       or a custom element (third-party plugin)
     ├── lib/
