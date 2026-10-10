@@ -177,7 +177,7 @@ echo "Using config at $CONFIG_PATH"
 # Start VTA
 # ---------------------------------------------------------------------------
 echo ""
-echo "Starting VTA on 127.0.0.1:${VTA_PORT} (TEE mode: required)"
+echo "Starting VTA, REST on vsock:${VSOCK_INBOUND_PORT} from the parent only (TEE mode: required)"
 echo ""
 
 # Run VTA (not exec, so we can capture crash output). Call in an `if` so `set -eu`
