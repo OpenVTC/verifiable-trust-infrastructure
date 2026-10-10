@@ -85,6 +85,9 @@ pub mod audit;
 /// Deciding whether a room operation is allowed, behind the `host` feature.
 #[cfg(feature = "host")]
 pub mod authz;
+/// Room files on the host side: the blob index, uploads, downloads, limits and usage.
+#[cfg(feature = "host")]
+pub mod blobs;
 pub mod error;
 /// Files: the blob manifest everywhere; the file key and STREAM sealing behind `files`.
 pub mod files;
