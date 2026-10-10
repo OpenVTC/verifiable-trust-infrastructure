@@ -36,10 +36,32 @@
 //!
 //! # Both documents
 //!
-//! The caller is an enrolled, active device; `issuer` is the entry's principal
-//! and `recipient` is a DID the entry targets; the document is fresh. Every
-//! signature is audited with the device, the persona, the `requestId` and, for
-//! a grant, the UV decision ([`record_signature`]).
+//! The caller is an enrolled, active device; `issuer` is the vault entry's
+//! principal (the persona's DID) and `recipient` is a DID the vault entry
+//! targets; the document is fresh. Every signature is audited with the device,
+//! the persona, the `requestId` and, for a grant, the UV decision
+//! ([`record_signature`]).
+//!
+//! # Many devices, one member
+//!
+//! A member signs in from any of their devices — several browser installs, a
+//! phone, a desktop — and each is a device in its own right: its own DID (its
+//! transport key), its own ACL entry, its own [`DeviceBinding`] on that entry
+//! and so its own UV key, `consumerKind` and form factor. Nothing about one
+//! device is stored on another's row.
+//!
+//! So "the member's device" needs no table of its own. The caller reached this
+//! gate through the ordinary `vault/sign-trust-task` checks — the
+//! `sign-trust-task` capability and context scope over the vault entry — which
+//! is what makes the persona the caller's to sign as. This gate adds only that
+//! the caller's **own** ACL entry carries an active binding, and checks a
+//! grant's UV decision against that binding's UV key and the caller's own
+//! transport key, never another device's. Disabling or wiping one device
+//! changes one row, and every other device of the member signs in as before.
+//!
+//! A caller with no binding is [`OobError::NotEnrolledDevice`] (the device can
+//! fix it itself with `device/register`); a disabled or wiped one is
+//! [`OobError::DeviceDisabled`] (it cannot, and must not try).
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -52,7 +74,7 @@ use vta_sdk::protocols::backup_management::chunked::{
     sha256_digest_multibase, sha256_from_digest_multibase,
 };
 use vta_sdk::protocols::device_management::{EXT_UV_CONSENT, UvKeyMaterial};
-use vti_common::acl::{DeviceBinding, UvKey, get_acl_entry};
+use vti_common::acl::{AclEntry, DeviceBinding, UvKey, get_acl_entry};
 use vti_common::error::AppError;
 use vti_common::vault::{SiteTarget, VaultEntry, VaultSecret};
 
@@ -201,8 +223,10 @@ pub struct OobAuthorization {
 
 /// Why the vault refuses to sign an `identify` or a `grant`. Each maps onto a
 /// `vault/sign-trust-task:<code>` reject; the text names the rule, never key
-/// material.
+/// material. Non-exhaustive: the sign-in policy will gain refusals, and a
+/// caller must already carry a `_ =>` arm for the ones it does not know.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum OobError {
     /// An `auth/oob/*` document other than `identify/0.1` and `grant/0.1`.
     UnsupportedType,
@@ -214,8 +238,13 @@ pub enum OobError {
     RecipientNotTarget,
     /// `issuedAt` is missing, malformed or outside [`MAX_SKEW_SECS`].
     Stale,
-    /// The caller is not an enrolled, active device.
+    /// The caller's ACL entry carries no device binding: it has not run
+    /// `device/register`.
     NotEnrolledDevice,
+    /// The caller is a registered device that has been disabled or wiped.
+    /// Registering again cannot fix it (`device/register` refuses a second
+    /// binding); an administrator re-provisions the device.
+    DeviceDisabled,
     /// A grant arrived without a UV decision.
     UvRequired,
     /// The device has no UV key, so it cannot approve grants.
@@ -260,7 +289,15 @@ impl OobError {
             ),
             OobError::NotEnrolledDevice => (
                 "oobNotEnrolledDevice",
-                "sign-in documents are signed only for an enrolled, active device".into(),
+                "sign-in documents are signed only for an enrolled, active device; register \
+                 this device with device/register first"
+                    .into(),
+            ),
+            OobError::DeviceDisabled => (
+                "oobDeviceDisabled",
+                "this device has been disabled or wiped, so it cannot sign in; enrol it again \
+                 under a new key"
+                    .into(),
             ),
             OobError::UvRequired => (
                 "oobUvRequired",
@@ -424,15 +461,12 @@ pub async fn authorize(
         return Err(OobError::Stale);
     }
 
-    // An enrolled, active device.
+    // An enrolled, active device: the caller's own row, so each of the
+    // member's devices stands or falls on its own binding.
     let device_entry = get_acl_entry(deps.acl_ks, device_did)
         .await?
         .ok_or(OobError::NotEnrolledDevice)?;
-    let binding = device_entry
-        .device
-        .as_ref()
-        .filter(|b| b.disabled_at.is_none() && b.wiped_at.is_none())
-        .ok_or(OobError::NotEnrolledDevice)?;
+    let binding = active_binding(&device_entry)?;
 
     let payload = obj.get("payload").cloned().unwrap_or(Value::Null);
     let (request_id, uv) = match document {
@@ -480,6 +514,15 @@ pub async fn authorize(
         device_id: binding.device_id.clone(),
         uv,
     }))
+}
+
+/// The entry's device binding, if it is enrolled and active.
+fn active_binding(entry: &AclEntry) -> Result<&DeviceBinding, OobError> {
+    let binding = entry.device.as_ref().ok_or(OobError::NotEnrolledDevice)?;
+    if binding.disabled_at.is_some() || binding.wiped_at.is_some() {
+        return Err(OobError::DeviceDisabled);
+    }
+    Ok(binding)
 }
 
 fn is_request_id(s: &str) -> bool {

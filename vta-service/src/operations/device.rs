@@ -97,6 +97,14 @@ fn extension_display_name(ext: Option<&heartbeat_spec::Ext>) -> Option<String> {
 /// swapped in at enrolment). Re-registration is refused — the device rotates
 /// keys and retries — per the spec. Returns the `{ binding }` response payload.
 ///
+/// **One device, one row.** Each of a member's devices — every browser
+/// install, every phone — enrols under a DID of its own and so has an ACL
+/// entry of its own; this writes the binding and `consumerKind` of that row
+/// and no other. A member with N devices has N entries, and registering,
+/// renaming (heartbeat), re-keying (heartbeat), disabling or wiping one leaves
+/// the others — and the member's own administrative entries, which are not
+/// devices — exactly as they were.
+///
 /// `attestation` is **accepted but not yet verified** (the spec treats it as a
 /// policy input, not a gate; platform-attestation verification — Apple App
 /// Attest / Play Integrity — is a follow-up). A stricter deployment will gate
