@@ -1952,6 +1952,7 @@ mod tests {
             Ok(vti_rooms::authz::VerifiedChain {
                 subject: presenter.to_string(),
                 actions: vec!["read".into()],
+                member: Some(presenter.to_string()),
             })
         }
     }

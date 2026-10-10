@@ -103,6 +103,14 @@ pub struct VerifiedChain {
     pub subject: String,
     /// The actions the chain confers, already narrowed by every link above the leaf.
     pub actions: Vec<String>,
+    /// The member this authority descends from: the subject of the chain's **root**, the
+    /// party the room itself granted to. `None` where the tier withholds it (`private`).
+    ///
+    /// Distinct from [`Self::subject`], which is who may act — frequently an agent a member
+    /// attenuated a chain to, and an agent is not a member of anything. A host charging
+    /// usage to a member charges it here, so a member cannot multiply an allowance by
+    /// minting agents.
+    pub member: Option<String>,
 }
 
 /// Cryptographic verification of a presentation.
@@ -206,6 +214,11 @@ impl AuthorizedAction {
     /// Everything the chain confers, which is at least the action asked for.
     pub fn conferred(&self) -> &[String] {
         &self.verified.actions
+    }
+    /// The member the chain descends from, where the tier discloses one
+    /// ([`VerifiedChain::member`]).
+    pub fn member(&self) -> Option<&str> {
+        self.verified.member.as_deref()
     }
 }
 
@@ -634,6 +647,7 @@ mod tests {
             Ok(VerifiedChain {
                 subject: presenter.to_string(),
                 actions: self.0.clone(),
+                member: Some(presenter.to_string()),
             })
         }
     }
@@ -653,6 +667,7 @@ mod tests {
             Ok(VerifiedChain {
                 subject: "did:key:zSomeoneElse".into(),
                 actions: vec!["read".into()],
+                member: Some("did:key:zSomeoneElse".into()),
             })
         }
     }

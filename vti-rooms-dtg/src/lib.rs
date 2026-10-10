@@ -321,7 +321,7 @@ impl ChainVerifier for DtgChainVerifier {
         // *which layer* refuses it.
 
         // The pooling defence: membership and authority must describe one subject.
-        match room.visibility {
+        let member = match room.visibility {
             // The subject is withheld, so it is proved rather than compared. `authorize`
             // has already refused a presentation with no binding at all; this is whether
             // the one present actually proves it.
@@ -332,6 +332,8 @@ impl ChainVerifier for DtgChainVerifier {
                 self.zk
                     .verify_same_subject(room, &presentation.membership, binding, &verified.subject)
                     .await?;
+                // Proved, not disclosed: the host does not learn which member this is.
+                None
             }
             // The subject is disclosed, so it is compared.
             Visibility::Open | Visibility::Attributed => {
@@ -377,12 +379,14 @@ impl ChainVerifier for DtgChainVerifier {
                         root.subject()
                     )));
                 }
+                Some(root.subject().to_string())
             }
-        }
+        };
 
         Ok(VerifiedChain {
             subject: verified.subject,
             actions: verified.actions,
+            member,
         })
     }
 }
@@ -871,6 +875,12 @@ mod signed {
         assert_eq!(
             v.subject, f.agent_did,
             "and it acts as itself, not as its human"
+        );
+        assert_eq!(
+            v.member.as_deref(),
+            Some(f.owner_did.as_str()),
+            "while the member its authority descends from is its human, which is who a host \
+             charges for what the agent stores"
         );
     }
 
