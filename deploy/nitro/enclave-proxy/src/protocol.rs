@@ -91,16 +91,30 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(reader: &mut R) -> std::io::Res
     Ok(buf)
 }
 
-/// Write a length-prefixed frame to the stream, in one write: separate
-/// writes for the length and the payload went out as two packets.
+/// Largest frame coalesced with its length prefix into one write (the
+/// enclave client uses the same bound).
+const COALESCE_MAX: usize = 64 * 1024;
+
+/// Write a length-prefixed frame to the stream.
+///
+/// A small frame goes out as one write: separate writes for the length and
+/// the payload went out as two packets. A large one (a prefix scan can answer
+/// with up to 16 MB) spans many packets whatever we do, so it is not copied
+/// just to save the header's.
 pub async fn write_frame<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
     data: &[u8],
 ) -> std::io::Result<()> {
-    let mut frame = Vec::with_capacity(4 + data.len());
-    frame.extend_from_slice(&(data.len() as u32).to_be_bytes());
-    frame.extend_from_slice(data);
-    writer.write_all(&frame).await?;
+    let len = (data.len() as u32).to_be_bytes();
+    if data.len() <= COALESCE_MAX {
+        let mut frame = Vec::with_capacity(4 + data.len());
+        frame.extend_from_slice(&len);
+        frame.extend_from_slice(data);
+        writer.write_all(&frame).await?;
+    } else {
+        writer.write_all(&len).await?;
+        writer.write_all(data).await?;
+    }
     writer.flush().await?;
     Ok(())
 }
@@ -456,6 +470,59 @@ mod tests {
         let resp = build_ok_key_list(&[b"a", b"b", b"c"]);
         let keys = decode_key_list_response(&resp).unwrap();
         assert_eq!(keys, vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+    }
+
+    /// Records each write call, so a test can see how a frame was written.
+    #[derive(Default)]
+    struct Writes(Vec<Vec<u8>>);
+
+    impl tokio::io::AsyncWrite for Writes {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.0.push(buf.to_vec());
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn small_frames_are_one_write_large_ones_are_not_copied() {
+        let mut w = Writes::default();
+        write_frame(&mut w, b"small").await.unwrap();
+        assert_eq!(w.0.len(), 1, "header and payload in one write");
+        assert_eq!(w.0[0], [&5u32.to_be_bytes()[..], b"small"].concat());
+
+        let big = vec![0x5Au8; COALESCE_MAX + 1];
+        let mut w = Writes::default();
+        write_frame(&mut w, &big).await.unwrap();
+        assert_eq!(w.0.len(), 2, "header, then the payload as given");
+        assert_eq!(w.0[0], (big.len() as u32).to_be_bytes());
+        assert_eq!(w.0[1], big);
+    }
+
+    #[tokio::test]
+    async fn a_large_frame_round_trips() {
+        let big: Vec<u8> = (0..(COALESCE_MAX * 3)).map(|i| i as u8).collect();
+        let (mut a, mut b) = tokio::io::duplex(8 * 1024);
+        let sent = big.clone();
+        let writer = tokio::spawn(async move { write_frame(&mut a, &sent).await });
+        let got = read_frame(&mut b).await.unwrap();
+        writer.await.unwrap().unwrap();
+        assert_eq!(got, big);
     }
 
     #[test]
