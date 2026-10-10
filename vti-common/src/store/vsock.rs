@@ -448,7 +448,18 @@ impl VsockKeyspaceHandle {
             encode_bytes(&mut p, &key);
             if let Some(resp) = self.send_atomic(&p).await? {
                 return match decode_value(&resp)? {
-                    Some(stored) => Ok(Some(self.maybe_decrypt(&key, &stored)?)),
+                    Some(stored) => match self.maybe_decrypt(&key, &stored) {
+                        Ok(value) => Ok(Some(value)),
+                        Err(e) => {
+                            // The parent has already deleted the row. Put the
+                            // exact bytes back before reporting: a storage-key
+                            // misconfiguration must fail the claim, not wipe
+                            // every row a claim touches. Still under the key's
+                            // lock, so no other enclave claim sees the gap.
+                            self.restore_after_failed_take(&key, &stored).await;
+                            Err(e)
+                        }
+                    },
                     None => Ok(None),
                 };
             }
@@ -551,6 +562,44 @@ impl VsockKeyspaceHandle {
             Ok(MoveOutcome::Moved)
         } else {
             Ok(MoveOutcome::TargetExists)
+        }
+    }
+
+    /// Re-insert the exact bytes an OP_TAKE returned and the enclave could not
+    /// decrypt or authenticate. The caller holds the key's lock.
+    ///
+    /// Insert-if-absent where the proxy serves it, so a legitimate value
+    /// written meanwhile is never overwritten (the lock makes that moot, but
+    /// a restore must never be the thing that destroys data); plain insert
+    /// otherwise. Best effort: the caller returns the decrypt error either
+    /// way, and a failed restore is logged as a security alert.
+    async fn restore_after_failed_take(&self, key: &[u8], stored: &[u8]) {
+        let restored: Result<(), AppError> = async {
+            if self.has(CAP_INSERT_IF_ABSENT) {
+                let mut p = vec![OP_INSERT_IF_ABSENT];
+                encode_keyspace(&mut p, &self.keyspace);
+                encode_bytes(&mut p, key);
+                encode_bytes(&mut p, stored);
+                if let Some(resp) = self.send_atomic(&p).await? {
+                    if !decode_bool(&resp)? {
+                        warn!(
+                            keyspace = %self.keyspace,
+                            "a value was written while an undecryptable take was being restored; kept it"
+                        );
+                    }
+                    return Ok(());
+                }
+            }
+            self.put_stored(key, stored).await
+        }
+        .await;
+        if let Err(e) = restored {
+            tracing::error!(
+                security_alert = true,
+                keyspace = %self.keyspace,
+                error = %e,
+                "could not restore a row whose taken value failed to decrypt; the row is lost"
+            );
         }
     }
 
@@ -1116,6 +1165,16 @@ mod atomicity_tests {
             self.requests.load(Ordering::SeqCst)
         }
 
+        /// The bytes the parent holds at `key` in keyspace "ks".
+        #[cfg(feature = "encryption")]
+        fn row(&self, key: &[u8]) -> Option<Vec<u8>> {
+            self.rows
+                .lock()
+                .unwrap()
+                .get(&("ks".to_string(), key.to_vec()))
+                .cloned()
+        }
+
         #[cfg(feature = "encryption")]
         fn stored(&self) -> Vec<Vec<u8>> {
             self.rows.lock().unwrap().values().cloned().collect()
@@ -1499,6 +1558,68 @@ mod atomicity_tests {
                 Some(b"secret-token".to_vec())
             );
         }
+    }
+
+    /// A take whose value the enclave cannot decrypt (here: the wrong storage
+    /// key) fails without destroying the row, in both modes: the row the
+    /// parent deleted is put back byte for byte.
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn an_undecryptable_take_leaves_the_row_byte_identical() {
+        for atomic in BOTH {
+            let parent = FakeParent::new(atomic);
+            let writer = parent.handle().await.with_encryption([1u8; 32]);
+            writer
+                .insert_raw(b"refresh:t".to_vec(), b"session".to_vec())
+                .await
+                .unwrap();
+            let before = parent.row(b"refresh:t").expect("written");
+
+            let misconfigured = parent.handle().await.with_encryption([2u8; 32]);
+            assert!(
+                misconfigured.take_raw(b"refresh:t".to_vec()).await.is_err(),
+                "{}: the decrypt error is returned",
+                mode(atomic)
+            );
+            assert_eq!(
+                parent.row(b"refresh:t"),
+                Some(before),
+                "{}: the row survives, byte-identical",
+                mode(atomic)
+            );
+            // And the right key still claims it, once.
+            assert_eq!(
+                writer.take_raw(b"refresh:t".to_vec()).await.unwrap(),
+                Some(b"session".to_vec())
+            );
+        }
+    }
+
+    /// Round trips with encryption on: a successful take is still one; a take
+    /// that fails to decrypt costs one more, the restore.
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn take_round_trips_on_success_and_on_restore() {
+        let parent = FakeParent::new(true);
+        let h = parent.handle().await.with_encryption([1u8; 32]);
+        h.insert_raw(b"a".to_vec(), b"x".to_vec()).await.unwrap();
+        h.insert_raw(b"b".to_vec(), b"x".to_vec()).await.unwrap();
+
+        let n = parent.requests();
+        assert_eq!(
+            h.take_raw(b"a".to_vec()).await.unwrap(),
+            Some(b"x".to_vec())
+        );
+        assert_eq!(parent.requests() - n, 1, "happy path: OP_TAKE only");
+
+        let wrong = parent.handle().await.with_encryption([2u8; 32]);
+        let n = parent.requests();
+        assert!(wrong.take_raw(b"b".to_vec()).await.is_err());
+        assert_eq!(
+            parent.requests() - n,
+            2,
+            "restore path: OP_TAKE, then OP_INSERT_IF_ABSENT"
+        );
     }
 
     /// Control: the same harness catches the race the locks close. Without
