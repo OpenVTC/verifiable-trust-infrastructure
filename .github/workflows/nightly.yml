@@ -43,7 +43,11 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          current=$(gh api "repos/$REPO/git/ref/heads/nightly" --jq .object.sha 2>/dev/null || true)
+          # Test the exit status, not the output: on a 404 `gh api` prints the
+          # error body to stdout, so `$(… || true)` would hold that JSON.
+          if ! current=$(gh api "repos/$REPO/git/ref/heads/nightly" --jq .object.sha 2>/dev/null); then
+            current=""
+          fi
           echo "nightly is at ${current:-<none>}"
 
           # Newest first. Only completed push runs on main whose latest attempt succeeded.
