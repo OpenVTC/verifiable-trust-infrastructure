@@ -31,16 +31,19 @@ host = ["dep:vti-common"]
 # substantial dependency to make such a host carry. Mirrors how `vtc-service`
 # gates its `bbs` verifier.
 mls = [
+  "files",
   "dep:openmls",
   "dep:openmls_rust_crypto",
   "dep:openmls_basic_credential",
   "dep:openmls_traits",
   "dep:tls_codec",
-  "dep:chacha20poly1305",
-  "dep:hkdf",
-  "dep:getrandom",
   "dep:getrandom_02",
 ]
+# A file's key and its STREAM sealing (`files`), without the group layer. For a
+# party that is handed one file's key — a CLI or the wallet extension, which get
+# it from the member's VTA — and so needs no OpenMLS. `mls` implies it, because a
+# member holding the group derives file keys itself.
+files = ["dep:chacha20poly1305", "dep:hkdf", "dep:getrandom"]
 
 [dependencies]
 # The Trust Task framework. A normal dependency rather than a dev one, because

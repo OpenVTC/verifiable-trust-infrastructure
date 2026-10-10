@@ -17,7 +17,7 @@
 use vta_cli_common::commands::rooms::{self, RoomSigner, RoomTarget};
 use vta_sdk::client::VtaClient;
 
-use crate::cli::RoomCommands;
+use crate::cli::{RoomCommands, RoomFileCommands};
 
 /// The operator's DID and key, from the session this CLI authenticates with.
 fn signer(keyring_key: &str) -> Result<vta_sdk::session::SessionInfo, Box<dyn std::error::Error>> {
@@ -33,6 +33,22 @@ pub(crate) async fn run(
     keyring_key: &str,
     command: RoomCommands,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Files need no host and no signing identity of their own: the VTA is the only
+    // party, and the client is already authenticated to it.
+    if let RoomCommands::File { command } = command {
+        return match command {
+            RoomFileCommands::Seal {
+                path,
+                room_id,
+                out,
+                pad,
+            } => rooms::cmd_rooms_file_seal(client, &room_id, &path, &out, pad).await,
+            RoomFileCommands::Open { dir, room_id, out } => {
+                rooms::cmd_rooms_file_open(client, &room_id, &dir, &out).await
+            }
+        };
+    }
+
     let session = signer(keyring_key)?;
     let signer = RoomSigner {
         did: &session.client_did,
@@ -40,6 +56,7 @@ pub(crate) async fn run(
     };
 
     match command {
+        RoomCommands::File { .. } => unreachable!("files are dispatched before the signer is read"),
         RoomCommands::List {
             room_id,
             host,

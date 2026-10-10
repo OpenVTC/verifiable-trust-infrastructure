@@ -45,7 +45,8 @@
 //!
 //! The manifest, the digests and Padmé are plain arithmetic and build everywhere, because a
 //! host checks manifests and digests without holding any key. The key derivation and the
-//! sealer and opener sit behind the `mls` feature with the rest of the member half.
+//! sealer and opener sit behind the `files` feature, which `mls` implies: a party handed one
+//! file's key (a CLI, the wallet extension) needs them and not OpenMLS.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -349,17 +350,19 @@ pub fn check_segment_size(segment_size: usize) -> Result<(), FileError> {
     }
 }
 
-#[cfg(feature = "mls")]
+#[cfg(feature = "files")]
 pub use keyed::*;
 
-#[cfg(feature = "mls")]
+#[cfg(feature = "files")]
 mod keyed {
     use super::*;
     use chacha20poly1305::aead::{Aead, KeyInit, Payload};
     use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
     use hkdf::Hkdf;
 
-    use crate::retention::StorageKey;
+    /// A room's per-epoch storage key — `retention::StorageKey`, restated so this half
+    /// builds without the group layer.
+    pub type StorageKey = [u8; 32];
 
     /// One file's key. Opens that file and nothing else.
     pub type FileKey = [u8; 32];
@@ -833,7 +836,7 @@ mod keyed {
     }
 }
 
-#[cfg(all(test, feature = "mls"))]
+#[cfg(all(test, feature = "files"))]
 mod tests {
     use super::*;
 

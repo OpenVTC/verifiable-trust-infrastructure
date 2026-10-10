@@ -34,6 +34,11 @@ vti-common = { path = "../vti-common", version = "0.40" }
 # copy of the `rooms/*` wire types into this crate is what the type duplication
 # in `vtc-client` was deleted to avoid.
 vtc-client = { path = "../vtc-client", version = "0.19" }
+# `pnm rooms file …`: a file's STREAM sealing, without the group layer. The key
+# comes from the operator's VTA (`rooms/keys/file-key/0.1`), so OpenMLS is not needed.
+vti-rooms = { path = "../vti-rooms", version = "0.11", default-features = false, features = [
+  "files",
+] }
 affinidi-crypto = { workspace = true }
 chrono = { workspace = true }
 ed25519-dalek = { workspace = true }

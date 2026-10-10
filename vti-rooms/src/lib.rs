@@ -86,7 +86,7 @@ pub mod audit;
 #[cfg(feature = "host")]
 pub mod authz;
 pub mod error;
-/// Files: the blob manifest everywhere, the file key and STREAM sealing behind `mls`.
+/// Files: the blob manifest everywhere; the file key and STREAM sealing behind `files`.
 pub mod files;
 pub mod lifecycle;
 /// The record commitment — a Merkle tree over a room's records, so a listing
