@@ -350,6 +350,27 @@ async fn dispatch_received(state: &Arc<HostState>, body: &[u8]) -> Answer {
         }
     };
 
+    // SPEC §12.4 and each task's `maxDocumentBytes`: a document larger than
+    // its specification declares is refused. Measured over the document as
+    // received. Tasks that declare no bound keep the transport's own limit, so
+    // the large-document tasks are exactly the ones that may be large — a chunk
+    // document is admitted at its bound, and nothing else is.
+    let type_uri = doc.type_uri.to_string();
+    let bare = type_uri.split('#').next().unwrap_or(&type_uri);
+    if let Some(max) = trust_tasks_rs::schema_index::max_document_bytes_for(bare)
+        && body.len() > max
+    {
+        return reject(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: format!(
+                    "a `{bare}` document is {} bytes; its specification bounds it at {max}",
+                    body.len()
+                ),
+            },
+        );
+    }
+
     // SPEC §7.2 item 11 — the duplicate-execution record.
     //
     // Every carrier that reaches here is at-least-once. The mediator re-pushes a
@@ -470,6 +491,8 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         ROOMS_OWNER_TRANSFER_TYPE => transfer_owner(state, &doc, payload).await,
         ROOMS_OWNER_CLAIM_TYPE => claim_owner(state, &doc, payload).await,
         files::PUT_V2_TYPE => files::put_v2(state, &doc, payload).await,
+        files::GET_V2_TYPE => files::get_v2(state, &doc, payload).await,
+        files::LIST_V2_TYPE => files::list_v2(state, &doc, payload).await,
         files::UPLOAD_BEGIN_TYPE => files::begin(state, &doc, payload).await,
         files::UPLOAD_CHUNK_TYPE => files::upload_chunk(state, &doc, payload).await,
         files::UPLOAD_COMMIT_TYPE => files::commit(state, &doc, payload).await,
@@ -505,6 +528,8 @@ fn is_consequential(type_uri: &str) -> bool {
             | files::BLOB_GET_TYPE
             | files::DOWNLOAD_CHUNK_TYPE
             | files::INFO_TYPE
+            | files::GET_V2_TYPE
+            | files::LIST_V2_TYPE
     )
 }
 
@@ -639,15 +664,16 @@ async fn put_with_blobs(
     };
 
     let blobs = blobs.unwrap_or_default();
-    if !blobs.is_empty()
-        && state
-            .files
-            .check_committed(&req.room_id, &blobs)
-            .await
-            .is_err()
+    // Held across the write: the blobs it names cannot be collected, and their
+    // limits cannot change, between this check and the references it records.
+    let references = match state
+        .files
+        .prepare_record(&room, authorized.member(), &req.key, &blobs)
+        .await
     {
-        return files::blob_not_found(doc);
-    }
+        Ok(r) => r,
+        Err(e) => return files::record_blobs_refused(doc, e),
+    };
 
     let record = Record {
         key: req.key.clone(),
@@ -682,11 +708,7 @@ async fn put_with_blobs(
     .await
     {
         Ok(stored) => {
-            if let Err(e) = state
-                .files
-                .set_record_blobs(&req.room_id, &stored.key, &blobs)
-                .await
-            {
+            if let Err(e) = references.apply().await {
                 // The record is written; only its blob references are not. Said
                 // loudly, because usage now disagrees with the room by one file.
                 tracing::error!(error = %e, room = %req.room_id, record = %stored.key,
@@ -712,6 +734,16 @@ async fn put_with_blobs(
 }
 
 async fn get(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    get_versioned(state, doc, payload, false).await
+}
+
+/// `rooms/records/get` 0.1, or 0.2 (`v2`), which also names the record's blobs.
+async fn get_versioned(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+    v2: bool,
+) -> Answer {
     let req: GetRecordBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -750,16 +782,27 @@ async fn get(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answe
             // Answered through the response type for the same reason the VTC is:
             // `respond(doc, record)` put the *storage* record on the wire.
             let (commitment, trace) = record_verification(state, &req.room_id, &req.key).await;
-            respond(
-                doc,
-                GetRecordResponse::of(&record, commitment.as_ref(), trace),
-            )
+            let response = GetRecordResponse::of(&record, commitment.as_ref(), trace);
+            if !v2 {
+                return respond(doc, response);
+            }
+            files::get_v2_response(state, doc, &req.room_id, &req.key, response).await
         }
         Err(e) => from_app_error(doc, &e),
     }
 }
 
 async fn list(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    list_versioned(state, doc, payload, false).await
+}
+
+/// `rooms/records/list` 0.1, or 0.2 (`v2`), whose rows also name their blobs.
+async fn list_versioned(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+    v2: bool,
+) -> Answer {
     let req: ListRecordsBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -811,23 +854,24 @@ async fn list(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answ
             // A listing names no single record; the event is that the room was surveyed.
             audit_room(&room, &authorized, RoomOperation::ListRecords, None);
             let head = room_head(state, &req.room_id).await;
-            respond(
-                doc,
-                ListRecordsResponse {
-                    records: page.records.iter().map(|r| r.metadata()).collect(),
-                    cursor: page.cursor,
-                    // The reference host commits too. A host that served
-                    // listings without one would be a working example of the
-                    // thing the commitment exists to make detectable.
-                    // One head, so the three values a reader compares cannot come
-                    // from three moments.
-                    data_commitment: head
-                        .as_ref()
-                        .map(|h| vti_rooms::merkle::to_multibase(&h.root)),
-                    record_count: head.as_ref().map(|h| h.record_count),
-                    head_version: head.as_ref().map(|h| h.head_version),
-                },
-            )
+            let response = ListRecordsResponse {
+                records: page.records.iter().map(|r| r.metadata()).collect(),
+                cursor: page.cursor,
+                // The reference host commits too. A host that served
+                // listings without one would be a working example of the
+                // thing the commitment exists to make detectable.
+                // One head, so the three values a reader compares cannot come
+                // from three moments.
+                data_commitment: head
+                    .as_ref()
+                    .map(|h| vti_rooms::merkle::to_multibase(&h.root)),
+                record_count: head.as_ref().map(|h| h.record_count),
+                head_version: head.as_ref().map(|h| h.head_version),
+            };
+            if !v2 {
+                return respond(doc, response);
+            }
+            files::list_v2_response(state, doc, &req.room_id, response).await
         }
         Err(e) => from_app_error(doc, &e),
     }
@@ -1384,10 +1428,7 @@ async fn curate(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
             // A retraction keeps no body, so it keeps no file: every blob the
             // record named is released, and orphaned if nothing else names it.
             if curated.status == RecordStatus::Retracted
-                && let Err(e) = state
-                    .files
-                    .set_record_blobs(&req.room_id, &curated.key, &[])
-                    .await
+                && let Err(e) = state.files.release_record(&req.room_id, &curated.key).await
             {
                 tracing::error!(error = %e, room = %req.room_id, record = %curated.key,
                     "record retracted but its blobs were not released");
