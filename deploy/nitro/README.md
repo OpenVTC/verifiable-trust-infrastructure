@@ -260,7 +260,7 @@ admin credentials and can't modify its own KMS policy.
 │  │  Boot: ephemeral RSA key → NSM attestation → KMS Decrypt    │   │
 │  │        → seed + JWT key in TEE memory only                   │   │
 │  │                                                              │   │
-│  │  Runtime: REST :8100 + DIDComm (via vsock proxies)          │   │
+│  │  Runtime: REST vsock:5100 + DIDComm (via vsock proxies)     │   │
 │  │           All storage AES-256-GCM encrypted                  │   │
 │  │           /dev/nsm for attestation reports                   │   │
 │  └──────────────────────────────────────────────────────────────┘   │
@@ -1055,7 +1055,7 @@ The proxy starts four channels:
 
 | Channel | Flow | Purpose |
 |---------|------|---------|
-| Inbound REST | `TCP:8443 → vsock:5100 → Enclave :8100` | External clients access VTA API. **Terminated as HTTP/1.1, not bridged** — see below |
+| Inbound REST | `TCP:8443 → vsock:5100 → Enclave VTA (vsock)` | External clients access VTA API. **Terminated as HTTP/1.1, not bridged** — see below |
 | Outbound DIDComm | `Enclave → vsock:5200 → TLS → mediator` | VTA DIDComm messaging |
 | Outbound HTTPS | `Enclave → vsock:5300 → allowlisted hosts` | KMS, WebVH, enclave HTTPS |
 | Outbound IMDS | `Enclave → vsock:5400 → 169.254.169.254:80` | AWS IAM credentials |
@@ -1208,13 +1208,26 @@ terminates HTTP/1.1, removes every client-supplied identity header
 (`X-Forwarded-For`, `Forwarded`, `X-Real-IP` and the vendor variants) and sets
 `X-Forwarded-For` to the address it actually accepted the connection from.
 
-It has to, because the last leg inside the enclave is
-`socat VSOCK-LISTEN:5100 → TCP-CONNECT:127.0.0.1:8100`: the VTA's socket peer
-is `127.0.0.1` for every client alike, so without this its per-IP rate limiters
-would put the whole internet in one bucket. The baked configs answer that with
-`[server] trust_xff_cidrs = ["127.0.0.1/32"]`, which tells the VTA to believe
-`X-Forwarded-For` from a loopback peer — sound precisely because this proxy is
-the one writing it.
+It has to, because the VTA serves REST on vsock:5100 itself and accepts only
+the parent (CID 3), which it reports as the peer `0.0.0.3` for every client
+alike — so without this its per-IP rate limiters would put the whole internet
+in one bucket. The baked configs answer that with
+`[server] trust_xff_cidrs = ["127.0.0.1/32", "0.0.0.3/32"]`. The VTA reads it
+for `0.0.0.3`: believe `X-Forwarded-For` from the parent and from nothing else
+— sound precisely because this proxy is the one writing it, and `0.0.0.3` is
+never a valid TCP source, so nothing inside the enclave can claim that trust.
+This proxy reads the same key as its `trusted_upstream_cidrs`, for
+`127.0.0.1`: a TLS terminator on the parent's loopback in front of it. (Before
+the VTA served vsock directly, an in-enclave `socat` made its peer `127.0.0.1`.
+A config that still trusts only `127.0.0.1/32` keeps working: on vsock the VTA
+reads it as the parent and logs once at boot how to make that explicit.)
+
+The VTA opens no TCP port in the enclave. A `VTA_REST_VSOCK_PORT` that is not a
+valid vsock port, or a VTA build without vsock support, refuses to boot rather
+than falling back to a TCP port nothing forwards to.
+
+The entrypoint is part of the enclave image, so this change produces a new
+PCR0: operators who pin `--expect-pcr0` must re-measure the image.
 
 `parent-proxy.sh` bridges bytes and cannot rewrite the header, so pairing it
 with that config would let any client claim any client IP and never be rate

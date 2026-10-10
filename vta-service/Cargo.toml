@@ -105,7 +105,7 @@ tee = [
   "vta-keys/tee",
   "vta-backup/tee",
 ]
-vsock-store = ["vti-common/vsock-store"]
+vsock-store = ["vti-common/vsock-store", "dep:tokio-vsock", "dep:vsock"]
 # Exposes the test-harness helpers (in-memory keyspaces, VTA bootstrap
 # for provision-integration) as `pub` items so integration tests under
 # `tests/` can build complete VTA state the same way the lib unit tests
@@ -295,6 +295,9 @@ affinidi-did-resolver-cache-sdk = { workspace = true }
 tokio-util = { workspace = true, features = ["rt"] }
 base64 = { workspace = true }
 axum = { workspace = true }
+# Enclave builds (`vsock-store`) serve REST on vsock directly.
+tokio-vsock = { workspace = true, optional = true }
+vsock = { workspace = true, optional = true }
 axum-extra = { workspace = true }
 # OpenAPI: `OpenApiRouter` makes the router the source of truth for the served
 # `/openapi.json`; `utoipa` provides the `#[utoipa::path]` + `ToSchema` derives.

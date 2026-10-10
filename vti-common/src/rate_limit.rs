@@ -24,12 +24,26 @@
 //! each hop the operator declared and still lands on the client. Anything the
 //! attacker wrote sits further left and is never reached.
 //!
+//! ## A Nitro enclave's parent has an address of its own
+//!
+//! A Nitro-enclave VTA serves REST on vsock, and the VTA's vsock listener
+//! accepts only the parent instance (CID 3), reporting it as
+//! [`VSOCK_PARENT_PEER`] — an address no TCP connection can carry. Naming it
+//! in `trust_xff_cidrs` (`0.0.0.3/32`) trusts exactly the parent's proxy and
+//! nothing else. Through the old in-enclave `socat` the peer was `127.0.0.1`,
+//! which anything inside the enclave could also be.
+//!
+//! It is still a declaration, not a default: only the operator knows whether
+//! the parent runs `deploy/nitro/enclave-proxy` (which rewrites
+//! `X-Forwarded-For`) or `parent-proxy.sh` (which bridges bytes, so must not be
+//! trusted, and refuses to start while `trust_xff_cidrs` is set).
+//!
 //! Every uncertainty resolves to the peer, which is the un-spoofable value:
 //! no `ConnectInfo`, an untrusted peer, a malformed entry, an absurdly long
 //! chain, or a chain that is trusted end to end. Falling back costs a shared
 //! bucket; guessing costs the limiter.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, HeaderName, Request};
@@ -38,6 +52,17 @@ use tower_governor::errors::GovernorError;
 use tower_governor::key_extractor::KeyExtractor;
 
 const X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
+
+/// The peer address a Nitro-enclave VTA's REST vsock listener reports for its
+/// parent instance — the only vsock peer it accepts.
+///
+/// `0.0.0.3` is in `0.0.0.0/8`, "this host on this network" (RFC 1122
+/// §3.2.1.3, RFC 6890): never a valid source address, so a TCP connection
+/// cannot present it (Linux drops such packets as martians). A
+/// `trust_xff_cidrs` entry of `0.0.0.3/32` therefore trusts the parent and
+/// nothing else — no TCP peer, nothing inside the enclave. The `3` is the
+/// parent's vsock CID, as a reminder.
+pub const VSOCK_PARENT_PEER: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 3)), 0);
 
 /// Upper bound on entries considered across all `X-Forwarded-For` headers.
 ///
@@ -209,6 +234,59 @@ mod tests {
 
     fn loopback() -> TrustedProxyKeyExtractor {
         TrustedProxyKeyExtractor::new(cidrs(&["127.0.0.1/32"]))
+    }
+
+    const PARENT: &str = "0.0.0.3:0";
+
+    #[test]
+    fn vsock_parent_peer_constant_is_the_documented_address() {
+        assert_eq!(VSOCK_PARENT_PEER, PARENT.parse::<SocketAddr>().unwrap());
+    }
+
+    fn parent_trusted() -> TrustedProxyKeyExtractor {
+        TrustedProxyKeyExtractor::new(cidrs(&["0.0.0.3/32"]))
+    }
+
+    #[test]
+    fn xff_from_the_vsock_parent_is_honoured_when_declared() {
+        let req = req_with(Some(PARENT), Some("9.9.9.9, 203.0.113.9"));
+        assert_eq!(parent_trusted().extract(&req).unwrap(), ip("203.0.113.9"));
+    }
+
+    #[test]
+    fn the_vsock_parent_without_xff_is_charged_to_itself() {
+        let req = req_with(Some(PARENT), None);
+        assert_eq!(parent_trusted().extract(&req).unwrap(), ip("0.0.0.3"));
+    }
+
+    #[test]
+    fn the_vsock_parent_is_not_trusted_undeclared() {
+        // A byte-bridging parent (parent-proxy.sh) forwards the client's own
+        // header; with nothing declared it must not be read.
+        let none = TrustedProxyKeyExtractor::new(vec![]);
+        let req = req_with(Some(PARENT), Some("203.0.113.9"));
+        assert_eq!(none.extract(&req).unwrap(), ip("0.0.0.3"));
+    }
+
+    #[test]
+    fn a_stale_loopback_entry_does_not_trust_the_vsock_parent() {
+        // The pre-vsock config trusted 127.0.0.1/32. It fails safe: one shared
+        // bucket, never a header the client chose.
+        let req = req_with(Some(PARENT), Some("203.0.113.9"));
+        assert_eq!(loopback().extract(&req).unwrap(), ip("0.0.0.3"));
+    }
+
+    #[test]
+    fn declaring_the_parent_does_not_trust_loopback() {
+        // Nothing inside the enclave can claim the parent's trust.
+        let req = req_with(Some("127.0.0.1:1234"), Some("203.0.113.9"));
+        assert_eq!(parent_trusted().extract(&req).unwrap(), ip("127.0.0.1"));
+    }
+
+    #[test]
+    fn xff_from_an_untrusted_tcp_peer_is_ignored_even_naming_the_parent() {
+        let req = req_with(Some("203.0.113.9:1234"), Some("0.0.0.3"));
+        assert_eq!(parent_trusted().extract(&req).unwrap(), ip("203.0.113.9"));
     }
 
     #[test]
