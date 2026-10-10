@@ -46,18 +46,20 @@ pub async fn effective_context_policy_and_record(
     }
     ids.reverse();
 
-    let mut policies: Vec<ContextPolicy> = Vec::new();
-    let mut leaf = None;
+    // Keep the records and resolve over borrowed policies: nothing is cloned
+    // per ancestor on the keys/sign path, and the leaf comes back whole (its
+    // own policy included). `ids` runs root→leaf, so the leaf is the last.
+    let mut records: Vec<Option<ContextRecord>> = Vec::with_capacity(ids.len());
     for id in &ids {
-        let rec = get_context(ks, id).await?;
-        if let Some(policy) = rec.as_ref().and_then(|r| r.context_policy.clone()) {
-            policies.push(policy);
-        }
-        if id == context_id {
-            leaf = rec;
-        }
+        records.push(get_context(ks, id).await?);
     }
-    Ok((ContextPolicy::resolve(policies.iter()), leaf))
+    let policy = ContextPolicy::resolve(
+        records
+            .iter()
+            .filter_map(|r| r.as_ref()?.context_policy.as_ref()),
+    );
+    let leaf = records.pop().flatten();
+    Ok((policy, leaf))
 }
 
 /// Enforce a per-day operation quota for a context (the `quotas` arm of
