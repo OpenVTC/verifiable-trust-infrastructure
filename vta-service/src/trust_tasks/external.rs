@@ -374,9 +374,10 @@ pub(super) async fn handle_create(
     match vta_support::contexts::get_context(&state.contexts_ks, &context).await {
         Ok(Some(_)) => {}
         Ok(None) => {
-            return app_error_to_reject(
+            return reject_declared(
                 &doc,
-                AppError::NotFound(format!("context {context} does not exist")),
+                t::error_codes::NOT_FOUND,
+                format!("context {context} does not exist"),
             );
         }
         Err(e) => return app_error_to_reject(&doc, e),
@@ -576,7 +577,7 @@ pub(super) async fn handle_secret_set(
     let unseal_failed = |why: String| reject_declared(&doc, t::error_codes::UNSEAL_FAILED, why);
     let (opened, wrapping_pub) = match state
         .wrapping_cache
-        .open_sealed(req.sealed_secret.as_str())
+        .open_sealed_with(req.wrapping_key_id.as_str(), req.sealed_secret.as_str())
         .await
     {
         Ok(o) => o,
@@ -1525,7 +1526,12 @@ mod tests {
 
     /// Seal a secret the way an administrator's client does: to a wrapping key
     /// the VTA just handed out, through the SDK helper a client uses.
-    async fn sealed_secret(state: &AppState, context: &str, account: &str, secret: &str) -> String {
+    async fn sealed_secret(
+        state: &AppState,
+        context: &str,
+        account: &str,
+        secret: &str,
+    ) -> (String, String) {
         sealed_secret_for_key(state, context, account, secret, Some("AKIDEXAMPLE")).await
     }
 
@@ -1535,9 +1541,9 @@ mod tests {
         account: &str,
         secret: &str,
         access_key_id: Option<&str>,
-    ) -> String {
+    ) -> (String, String) {
         let key = state.wrapping_cache.generate().await;
-        vta_sdk::client::seal_external_secret(
+        let armored = vta_sdk::client::seal_external_secret(
             &key.public_did,
             context,
             account,
@@ -1545,7 +1551,8 @@ mod tests {
             access_key_id,
         )
         .await
-        .unwrap()
+        .unwrap();
+        (armored, key.kid)
     }
 
     async fn grant(state: &AppState, id: &str, consumer: &str, rate: u32) {
@@ -1587,13 +1594,13 @@ mod tests {
     /// An account ready to issue: secret set, consumer bound, set up.
     async fn ready(id: &str, rate: u32) -> (AppState, tempfile::TempDir) {
         let (state, dir) = state_with_account(id).await;
-        let armored = sealed_secret(&state, CTX, id, "wJalrXUtnFEMI/K7MDENG").await;
+        let (armored, kid) = sealed_secret(&state, CTX, id, "wJalrXUtnFEMI/K7MDENG").await;
         let out = handle_secret_set(
             &state,
             &manager(),
             doc(
                 uris::TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1,
-                json!({ "context": CTX, "id": id, "sealedSecret": armored }),
+                json!({ "context": CTX, "id": id, "sealedSecret": armored, "wrappingKeyId": kid }),
             ),
         )
         .await;
@@ -1892,25 +1899,25 @@ mod tests {
     #[tokio::test]
     async fn a_secret_is_write_only_and_bound_to_its_account() {
         let (state, _dir) = state_with_account("r2-secret").await;
-        let armored = sealed_secret(&state, CTX, "some-other-account", "s3cr3t").await;
+        let (armored, kid) = sealed_secret(&state, CTX, "some-other-account", "s3cr3t").await;
         let out = handle_secret_set(
             &state,
             &manager(),
             doc(
                 uris::TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1,
-                json!({ "context": CTX, "id": "r2-secret", "sealedSecret": armored }),
+                json!({ "context": CTX, "id": "r2-secret", "sealedSecret": armored, "wrappingKeyId": kid }),
             ),
         )
         .await;
         assert_eq!(code(&out), "external/accounts/secret/set:unsealFailed");
 
-        let armored = sealed_secret(&state, CTX, "r2-secret", "s3cr3t").await;
+        let (armored, kid) = sealed_secret(&state, CTX, "r2-secret", "s3cr3t").await;
         let out = handle_secret_set(
             &state,
             &manager(),
             doc(
                 uris::TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1,
-                json!({ "context": CTX, "id": "r2-secret", "sealedSecret": armored }),
+                json!({ "context": CTX, "id": "r2-secret", "sealedSecret": armored, "wrappingKeyId": kid }),
             ),
         )
         .await;
@@ -2075,13 +2082,13 @@ mod tests {
         )
         .await;
         assert_eq!(code(&probe), "external:archived");
-        let armored = sealed_secret(&state, CTX, "r2-arch", "s").await;
+        let (armored, kid) = sealed_secret(&state, CTX, "r2-arch", "s").await;
         let secret = handle_secret_set(
             &state,
             &manager(),
             doc(
                 uris::TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1,
-                json!({ "context": CTX, "id": "r2-arch", "sealedSecret": armored }),
+                json!({ "context": CTX, "id": "r2-arch", "sealedSecret": armored, "wrappingKeyId": kid }),
             ),
         )
         .await;
@@ -2101,13 +2108,14 @@ mod tests {
     #[tokio::test]
     async fn a_secret_for_another_access_key_is_refused() {
         let (state, _dir) = state_with_account("r2-akid").await;
-        let armored = sealed_secret_for_key(&state, CTX, "r2-akid", "s", Some("OTHERKEY")).await;
+        let (armored, kid) =
+            sealed_secret_for_key(&state, CTX, "r2-akid", "s", Some("OTHERKEY")).await;
         let out = handle_secret_set(
             &state,
             &manager(),
             doc(
                 uris::TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1,
-                json!({ "context": CTX, "id": "r2-akid", "sealedSecret": armored }),
+                json!({ "context": CTX, "id": "r2-akid", "sealedSecret": armored, "wrappingKeyId": kid }),
             ),
         )
         .await;
@@ -2119,13 +2127,13 @@ mod tests {
     #[tokio::test]
     async fn an_incomplete_probe_does_not_make_an_account_usable() {
         let (state, _dir) = state_with_account("r2-probe").await;
-        let armored = sealed_secret(&state, CTX, "r2-probe", "s").await;
+        let (armored, kid) = sealed_secret(&state, CTX, "r2-probe", "s").await;
         handle_secret_set(
             &state,
             &manager(),
             doc(
                 uris::TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1,
-                json!({ "context": CTX, "id": "r2-probe", "sealedSecret": armored }),
+                json!({ "context": CTX, "id": "r2-probe", "sealedSecret": armored, "wrappingKeyId": kid }),
             ),
         )
         .await;
@@ -2146,5 +2154,49 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(rec.provider_setup_required);
+    }
+
+    /// secret/set opens only with the wrapping key it names, and spends that
+    /// key whether or not the bundle opens.
+    #[tokio::test]
+    async fn the_named_wrapping_key_is_spent_on_every_attempt() {
+        let (state, _dir) = state_with_account("r2-kid").await;
+        let set = |kid: &str, armored: &str| {
+            doc(
+                uris::TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1,
+                json!({ "context": CTX, "id": "r2-kid", "sealedSecret": armored, "wrappingKeyId": kid }),
+            )
+        };
+        // Sealed for another account, so it does not pass; the key is spent.
+        let (wrong, kid) = sealed_secret(&state, CTX, "other", "s").await;
+        let out = handle_secret_set(&state, &manager(), set(&kid, &wrong)).await;
+        assert_eq!(code(&out), "external/accounts/secret/set:unsealFailed");
+        // The same key, now with a good bundle sealed to it, is gone.
+        let (good, _) = sealed_secret(&state, CTX, "r2-kid", "s").await;
+        let out = handle_secret_set(&state, &manager(), set(&kid, &good)).await;
+        assert_eq!(code(&out), "external/accounts/secret/set:unsealFailed");
+        // An id the VTA never issued.
+        let out = handle_secret_set(&state, &manager(), set("not-a-key", &good)).await;
+        assert_eq!(code(&out), "external/accounts/secret/set:unsealFailed");
+        // A bundle sealed to one key cannot be opened by naming another.
+        let (good, _) = sealed_secret(&state, CTX, "r2-kid", "s").await;
+        let other = state.wrapping_cache.generate().await;
+        let out = handle_secret_set(&state, &manager(), set(&other.kid, &good)).await;
+        assert_eq!(code(&out), "external/accounts/secret/set:unsealFailed");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_context_is_external_not_found() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let out = handle_create(
+            &state,
+            &manager(),
+            doc(
+                uris::TASK_EXTERNAL_ACCOUNTS_CREATE_0_1,
+                json!({ "context": CTX, "id": "r2", "label": "R2", "settings": settings() }),
+            ),
+        )
+        .await;
+        assert_eq!(code(&out), "external:notFound", "{}", body(&out));
     }
 }

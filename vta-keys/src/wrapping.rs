@@ -286,6 +286,47 @@ impl WrappingKeyCache {
         }))
     }
 
+    /// Consume the wrapping key `kid` and open a sealed-transfer armored
+    /// bundle with it, and only it. The key is discarded whether or not the
+    /// bundle opens, so a failed attempt cannot be retried against it; an
+    /// unknown, used or expired `kid` opens nothing. Returns the opened bundle
+    /// and the key's X25519 public half, which a `DidSigned` producer
+    /// assertion commits to.
+    pub async fn open_sealed_with(
+        &self,
+        kid: &str,
+        armored: &str,
+    ) -> Result<(vta_sdk::sealed_transfer::OpenedBundle, [u8; 32]), AppError> {
+        use vta_sdk::sealed_transfer::{PinnedOnlyPolicy, armor, open_bundle_with_policy};
+
+        // Taken out before anything is checked: consumed on every path.
+        let entry = self
+            .entries
+            .lock()
+            .await
+            .remove(kid)
+            .ok_or_else(|| AppError::NotFound("wrapping key not found or expired".into()))?;
+        if entry.used || entry.created_at.elapsed() > TTL {
+            return Err(AppError::Validation("wrapping key used or expired".into()));
+        }
+        let bundles = armor::decode(armored)
+            .map_err(|e| AppError::Validation(format!("sealed bundle armor: {e}")))?;
+        let [bundle] = bundles.as_slice() else {
+            return Err(AppError::Validation(format!(
+                "expected exactly one sealed bundle, got {}",
+                bundles.len()
+            )));
+        };
+        let opened = open_bundle_with_policy(
+            &entry.private_key.to_bytes(),
+            bundle,
+            None,
+            PinnedOnlyPolicy::CallerHasIndependentTrustAnchor,
+        )
+        .map_err(|e| AppError::Authentication(format!("sealed bundle open failed: {e}")))?;
+        Ok((opened, entry.public_key.to_bytes()))
+    }
+
     /// Remove expired entries. Call periodically.
     pub async fn reap_expired(&self) {
         let mut entries = self.entries.lock().await;

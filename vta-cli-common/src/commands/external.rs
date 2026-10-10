@@ -140,7 +140,7 @@ pub async fn cmd_secret_set(client: &VtaClient, context: &str, id: &str) -> CliR
     drop(secret);
     let req = payload::<ext::accounts::secret::set::v0_1::Payload>(
         "external/accounts/secret/set",
-        json!({ "context": context, "id": id, "sealedSecret": armored }),
+        json!({ "context": context, "id": id, "wrappingKeyId": wrapping.key_id, "sealedSecret": armored }),
     )?;
     show(&client.external_accounts_secret_set(&req).await?)
 }

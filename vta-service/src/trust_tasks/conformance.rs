@@ -2040,7 +2040,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::external::accounts::secret::set::v0_1::Payload,
                 specs::external::accounts::secret::set::v0_1::Response,
-                json!({ "context": "community", "id": "r2-main", "sealedSecret": SEALED_ARMOR }),
+                json!({ "context": "community", "id": "r2-main", "wrappingKeyId": "6f1c2a0e-1b7d-4c8e-9a3f-2d5e7b9c0a11", "sealedSecret": SEALED_ARMOR }),
                 json!({ "fingerprint": vta_external::fingerprint::of(&[7; 32], b"secret"), "setAt": TS })
             ),
         ),

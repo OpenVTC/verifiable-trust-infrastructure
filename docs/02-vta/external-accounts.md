@@ -32,7 +32,8 @@ pnm external bind r2-rooms --context community --consumer did:webvh:…:vtc \
 pnm external setup r2-rooms --context community
 
 # 4. The secret half: read without echo, sealed in pnm to a single-use
-#    wrapping key together with the account's access key id, never shown
+#    wrapping key (named by its keyId, and spent whether or not the bundle
+#    opens) together with the account's access key id, never shown
 #    again. Only a keyed fingerprint (`hmacsha256:…`) comes back.
 pnm external secret-set r2-rooms --context community
 

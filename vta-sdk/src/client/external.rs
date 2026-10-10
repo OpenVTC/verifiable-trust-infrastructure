@@ -91,8 +91,11 @@ impl VtaClient {
         .await
     }
 
-    /// `external/accounts/secret/set/0.1`. Seal the secret with
-    /// [`seal_external_secret`] first; the answer is only a fingerprint.
+    /// `external/accounts/secret/set/0.1`. Fetch a wrapping key with
+    /// [`VtaClient::get_wrapping_key`], seal the secret to it with
+    /// [`seal_external_secret`], and send its `keyId` as `wrappingKeyId`: the
+    /// VTA opens with that key only and spends it either way. The answer is
+    /// only a fingerprint.
     pub async fn external_accounts_secret_set(
         &self,
         req: &ext::accounts::secret::set::v0_1::Payload,
