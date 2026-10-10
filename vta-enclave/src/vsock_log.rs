@@ -32,6 +32,10 @@
 //!   from parsing the text). INFO and below keep the fast path and are only
 //!   counted.
 //!
+//! A receiver that stops reading but keeps the socket open counts as a
+//! disconnect: every write is bounded ([`WRITE_TIMEOUT`]), so `connected`
+//! cannot stay true while nothing is delivered.
+//!
 //! The one remaining loss is a line already handed to a write that then
 //! fails twice in a row (on the old connection and on the new one).
 
@@ -115,6 +119,7 @@ pub async fn start() -> TeeMakeWriter {
         shared.clone(),
         move || VsockStream::connect(addr),
         HEARTBEAT_INTERVAL,
+        WRITE_TIMEOUT,
     ));
 
     // Install panic hook that flushes remaining logs before aborting.
@@ -149,19 +154,50 @@ const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1
 /// Heartbeat line — the proxy recognizes this and doesn't print it.
 const HEARTBEAT_LINE: &[u8] = b"__heartbeat__\n";
 
+/// Longest a single write to the parent may block before the connection is
+/// treated as dead.
+///
+/// A write to a receiver that is reading completes in well under a
+/// millisecond; the socket's send buffer absorbs ordinary bursts. A write
+/// blocked for this long means the receiver has stopped reading while
+/// keeping the socket open, which no error would ever report. Without a
+/// bound the drain task blocks forever, `connected` stays true (a latched
+/// status, R6.2), stderr stays silent and the queue fills.
+///
+/// Two seconds: long against any healthy write, short against the heartbeat
+/// (15 s) and against how fast a busy enclave fills the queue, so the
+/// console fallback starts before most of the queue is spent.
+const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Write `buf`, bounded by `timeout`. `false` is an error *or* a timeout —
+/// either way the connection is no longer delivering.
+async fn write_bounded<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    buf: &[u8],
+    timeout: std::time::Duration,
+) -> bool {
+    matches!(
+        tokio::time::timeout(timeout, stream.write_all(buf)).await,
+        Ok(Ok(()))
+    )
+}
+
 /// Background task: drains the channel and writes to the stream. Sends
 /// periodic heartbeats when idle so the proxy can detect dead connections.
 /// Reconnects with backoff if the connection drops.
 ///
 /// Generic over the stream and how to open it, so the policy is tested
-/// without vsock. `shared.connected` is true while a connection is up; the
-/// writer sends lines to stderr only while it is false.
+/// without vsock. `shared.connected` is true while a connection is
+/// delivering; the writer sends lines to stderr only while it is false.
+/// Every write is bounded by `write_timeout`, so a receiver that stops
+/// reading turns `connected` false like one that closes.
 async fn drain_task<S, C, F>(
     mut rx: mpsc::Receiver<Vec<u8>>,
     initial_stream: Option<S>,
     shared: Arc<Shared>,
     mut connect: C,
     heartbeat: std::time::Duration,
+    write_timeout: std::time::Duration,
 ) where
     S: AsyncWrite + Unpin,
     C: FnMut() -> F,
@@ -177,21 +213,27 @@ async fn drain_task<S, C, F>(
         tokio::select! {
             msg = rx.recv() => {
                 let Some(buf) = msg else { return }; // Channel closed — shutting down
-                if stream.write_all(&buf).await.is_err() {
-                    // Connection lost. The queue is left alone while we
-                    // reconnect (stderr is the fallback meanwhile), so
-                    // nothing written during the outage is thrown away.
+                if !write_bounded(&mut stream, &buf, write_timeout).await {
+                    // Connection lost, or the receiver stopped reading. The
+                    // queue is left alone while we reconnect (stderr is the
+                    // fallback meanwhile), so nothing written during the
+                    // outage is thrown away.
                     shared.connected.store(false, Ordering::SeqCst);
                     stream = connect_with_backoff(&mut connect).await;
                     shared.connected.store(true, Ordering::SeqCst);
                     // This line first, then the queue, in order.
-                    let _ = stream.write_all(&buf).await;
+                    if !write_bounded(&mut stream, &buf, write_timeout).await {
+                        // Dead again at once: say so, so writers fall back to
+                        // stderr; the next write fails the same way and
+                        // reconnects. This line is the one that is lost.
+                        shared.connected.store(false, Ordering::SeqCst);
+                    }
                 }
             }
             _ = tokio::time::sleep(heartbeat) => {
                 // No log data for a while — send heartbeat to keep connection alive
                 // and let the proxy know we're still running.
-                if stream.write_all(HEARTBEAT_LINE).await.is_err() {
+                if !write_bounded(&mut stream, HEARTBEAT_LINE, write_timeout).await {
                     shared.connected.store(false, Ordering::SeqCst);
                     stream = connect_with_backoff(&mut connect).await;
                     shared.connected.store(true, Ordering::SeqCst);
@@ -567,6 +609,8 @@ mod tests {
     struct FakeStream {
         out: Arc<Mutex<Vec<u8>>>,
         broken: Arc<AtomicBool>,
+        /// Accepts the connection but never takes a byte: every write pends.
+        hang: bool,
     }
 
     impl AsyncWrite for FakeStream {
@@ -575,6 +619,9 @@ mod tests {
             _: &mut Context<'_>,
             buf: &[u8],
         ) -> Poll<std::io::Result<usize>> {
+            if self.hang {
+                return Poll::Pending;
+            }
             if self.broken.load(Ordering::SeqCst) {
                 return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
             }
@@ -600,6 +647,7 @@ mod tests {
         let first = FakeStream {
             out: Arc::new(Mutex::new(Vec::new())),
             broken: Arc::new(AtomicBool::new(true)), // fails on first write
+            hang: false,
         };
         let second_out = Arc::new(Mutex::new(Vec::new()));
         // Two failed attempts, then a working connection.
@@ -610,6 +658,7 @@ mod tests {
                 Ok(FakeStream {
                     out: second_out.clone(),
                     broken: Arc::new(AtomicBool::new(false)),
+                    hang: false,
                 }),
             ])));
         let connect = {
@@ -630,6 +679,7 @@ mod tests {
             shared.clone(),
             connect,
             Duration::from_secs(3600),
+            Duration::from_secs(2),
         ));
 
         // The first line hits the broken stream; the rest queue up during
@@ -654,5 +704,84 @@ mod tests {
             "line-1\nline-2\nline-3\n"
         );
         assert!(shared.connected.load(Ordering::SeqCst));
+    }
+
+    /// A receiver that keeps the socket open but stops reading (#2000
+    /// review, R6.2): the write times out, `connected` goes false so new
+    /// lines reach stderr, and the queue is replayed after a working
+    /// reconnect.
+    #[tokio::test]
+    async fn test_stalled_receiver_is_a_disconnect_not_a_latched_connected() {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>(16);
+        let shared = Arc::new(Shared::default());
+        let make = TeeMakeWriter {
+            tx: Arc::new(tx.clone()),
+            shared: shared.clone(),
+            console: test_console,
+        };
+
+        let stalled = FakeStream {
+            out: Arc::new(Mutex::new(Vec::new())),
+            broken: Arc::new(AtomicBool::new(false)),
+            hang: true,
+        };
+        let good_out = Arc::new(Mutex::new(Vec::new()));
+        // Three refusals keep the reconnect going ~700 ms, long enough to
+        // observe the fallback; then a receiver that reads.
+        let attempts: Arc<Mutex<VecDeque<std::io::Result<FakeStream>>>> =
+            Arc::new(Mutex::new(VecDeque::from([
+                Err(std::io::ErrorKind::ConnectionRefused.into()),
+                Err(std::io::ErrorKind::ConnectionRefused.into()),
+                Err(std::io::ErrorKind::ConnectionRefused.into()),
+                Ok(FakeStream {
+                    out: good_out.clone(),
+                    broken: Arc::new(AtomicBool::new(false)),
+                    hang: false,
+                }),
+            ])));
+        let connect = move || {
+            let next = attempts
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("connect called too often");
+            async move { next }
+        };
+
+        let task = tokio::spawn(drain_task(
+            rx,
+            Some(stalled),
+            shared.clone(),
+            connect,
+            Duration::from_secs(3600),
+            Duration::from_millis(100),
+        ));
+
+        // Connected to a receiver that will never read.
+        line(&make, false, b"stall-1\n");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while shared.connected.load(Ordering::SeqCst) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "connected latched true on a stalled receiver"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // Now a disconnect: the line reaches stderr, and is queued for replay.
+        line(&make, false, b"stall-during-outage\n");
+        assert!(console_has(b"stall-during-outage"));
+
+        let want = "stall-1\nstall-during-outage\n";
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while String::from_utf8(good_out.lock().unwrap().clone()).unwrap() != want {
+            assert!(tokio::time::Instant::now() < deadline, "queue not replayed");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(shared.connected.load(Ordering::SeqCst));
+
+        drop(make);
+        drop(tx);
+        task.await.unwrap();
     }
 }
