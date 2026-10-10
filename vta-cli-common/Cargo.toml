@@ -40,6 +40,8 @@ ed25519-dalek = { workspace = true }
 ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Wipes an external account secret read at the terminal (`pnm external secret-set`).
+zeroize = "1"
 multibase = { workspace = true }
 x25519-dalek = { workspace = true }
 sha2 = { workspace = true }

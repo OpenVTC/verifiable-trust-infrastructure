@@ -22,6 +22,7 @@ pub(crate) mod contexts;
 pub(crate) mod cred_vault;
 pub(crate) mod device;
 pub(crate) mod did_templates;
+pub(crate) mod external;
 pub(crate) mod health;
 pub(crate) mod keys;
 pub(crate) mod memory;
