@@ -1530,6 +1530,11 @@ pre {
   text-align: left;
 }
 
+/* Wide enough for an abbreviated DID on one line beside its buttons. */
+.login-card {
+  max-width: 36rem;
+}
+
 .login-card h2,
 .install-card h2 {
   margin: 0;
@@ -1545,23 +1550,63 @@ pre {
   font-size: var(--text-base);
 }
 
-/* The community's DID, shown before sign-in. A DID is long and unbreakable at
-   spaces, so it wraps on any character rather than widening the card past its
-   max-width. */
+/* The community's DID, shown before sign-in: abbreviated (`DidText`), the
+   whole identifier on hover and behind the copy button. */
 .login-did {
   margin: 0;
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-2);
+  flex-direction: column;
+  gap: var(--space-1);
   font-size: var(--text-sm);
 }
 
-.login-did code {
-  flex: 1 1 100%;
-  min-width: 0;
+/* A VTA identity to sign in as: its vault label, then its DID, abbreviated
+   (full on hover). Two personas can share a label, so the DID is always
+   shown. */
+.identity-choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.identity-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast);
+}
+
+.identity-choice:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--brand);
+}
+
+.identity-choice:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.identity-choice-label {
+  font-weight: 600;
+}
+
+.identity-choice-did {
+  max-width: 100%;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
   overflow-wrap: anywhere;
-  word-break: break-all;
 }
 
 .login-card button.primary,

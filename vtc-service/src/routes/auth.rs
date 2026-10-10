@@ -135,6 +135,26 @@ async fn authenticate_siop(
     state: &AppState,
     body: &str,
 ) -> Result<Option<AuthenticateResponse>, AppError> {
+    let backend = crate::auth::VtcAuthBackend::from_state(state).await?;
+    authenticate_siop_with(state, body, &state.sessions_ks, &backend).await
+}
+
+/// [`authenticate_siop`] against a given session keyspace and backend.
+///
+/// Shared with the member portal (`crate::member_portal`), whose sessions live
+/// in their own keyspace and whose backend admits active members only and
+/// mints for its own audience. The token checks — signature, `aud` bound to
+/// this VTC's DID, freshness — are identical for both, which is why they are
+/// one function: a member sign-in must not be a weaker SIOP verifier.
+pub(crate) async fn authenticate_siop_with<B>(
+    state: &AppState,
+    body: &str,
+    sessions_ks: &vti_common::store::KeyspaceHandle,
+    backend: &B,
+) -> Result<Option<AuthenticateResponse>, AppError>
+where
+    B: vti_common::auth::AuthBackend<Error = AppError>,
+{
     // Not a SIOP envelope → fall through to the DIDComm path.
     let Ok(env) = serde_json::from_str::<SiopAuthEnvelope>(body) else {
         return Ok(None);
@@ -154,7 +174,7 @@ async fn authenticate_siop(
     // re-verifies everything; they exist purely to gate the network call.
     let unverified_iss = vti_common::auth::parse_unverified_iss(&env.payload.id_token)
         .map_err(|e| AppError::Authentication(format!("id_token: {e}")))?;
-    let session = crate::auth::session::get_session(&state.sessions_ks, &env.payload.session_id)
+    let session = crate::auth::session::get_session(sessions_ks, &env.payload.session_id)
         .await?
         .ok_or_else(|| AppError::Authentication("session not found".into()))?;
     if unverified_iss != session.did {
@@ -210,9 +230,8 @@ async fn authenticate_siop(
         ));
     }
 
-    let backend = crate::auth::VtcAuthBackend::from_state(state).await?;
     let resp = vti_common::auth::handlers::handle_authenticate(
-        &backend,
+        backend,
         vti_common::auth::AuthenticateInput {
             session_id: env.payload.session_id,
             // The SIOP `nonce` is the challenge the session was issued.

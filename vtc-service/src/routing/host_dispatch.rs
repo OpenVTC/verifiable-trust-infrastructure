@@ -98,7 +98,7 @@ impl HostMap {
     /// Compile the surface map from [`RoutingConfig`].
     pub fn from_routing(routing: &RoutingConfig) -> Self {
         let mut hosts = HashSet::new();
-        let mut surfaces = Vec::with_capacity(3);
+        let mut surfaces = Vec::with_capacity(4);
         // Priority order mirrors the parent router's nest precedence:
         // api, then admin_ui, then the website catch-all.
         for (priority, surface) in [&routing.api, &routing.admin_ui, &routing.website]
@@ -115,6 +115,16 @@ impl HostMap {
                 priority: priority as u8,
             });
         }
+        // The member portal (`/members`, `crate::member_portal`) is a fixed
+        // mount with no host of its own: it calls `/v1/member/*` on its own
+        // origin, so it lives on the API's host. Classified as the website
+        // catch-all it would be served where `/v1` 404s, and nobody could
+        // sign in.
+        surfaces.push(Surface {
+            mount: "/members".into(),
+            host: routing.api.host.as_deref().map(str::to_ascii_lowercase),
+            priority: 3,
+        });
         Self {
             hosts: Arc::new(hosts),
             surfaces: Arc::new(surfaces),
@@ -313,6 +323,22 @@ mod tests {
         assert!(!map.surface_allowed("/admin/users", "api.example.com"));
         // The website catch-all is not served on the api/admin hosts.
         assert!(!map.surface_allowed("/index.html", "api.example.com"));
+    }
+
+    #[test]
+    fn member_portal_is_served_beside_the_api_it_calls() {
+        let map = HostMap::from_routing(&cfg(
+            Some("api.example.com"),
+            Some("admin.example.com"),
+            Some("example.com"),
+        ));
+        assert!(map.surface_allowed("/members/", "api.example.com"));
+        assert!(map.surface_allowed("/members/assets/index.js", "api.example.com"));
+        // Not on the website host, where its `/v1/member/*` calls would 404.
+        assert!(!map.surface_allowed("/members/", "example.com"));
+        assert!(!map.surface_allowed("/members/", "admin.example.com"));
+        // A website path that merely starts with the letters is unaffected.
+        assert!(map.surface_allowed("/membership", "example.com"));
     }
 
     #[test]

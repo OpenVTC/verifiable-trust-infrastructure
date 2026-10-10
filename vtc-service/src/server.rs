@@ -137,6 +137,12 @@ pub struct AppState {
     /// Members' step-up passkeys — see `crate::step_up_passkey`. Never read
     /// by login or session step-up.
     pub step_up_passkeys_ks: KeyspaceHandle,
+    /// Member-portal sessions — see `crate::member_portal`. Never read by the
+    /// administrator auth path.
+    pub member_sessions_ks: KeyspaceHandle,
+    /// Member-portal passkeys — see `crate::member_portal`. Never read by
+    /// console login or step-up.
+    pub member_passkey_ks: KeyspaceHandle,
     /// Step-up approvers — see `crate::acl::approver`. Read only by the bound
     /// step-up gate (VTI-APV-015).
     pub step_up_approvers_ks: KeyspaceHandle,
@@ -400,6 +406,19 @@ pub async fn run(
     store: Store,
     secret_store: Box<dyn SecretStore>,
 ) -> Result<(), AppError> {
+    // A console served from a directory must be there, and not writable by
+    // everyone, before anything is served — see `check_serve_dir`.
+    #[cfg(feature = "admin-ui")]
+    if let Some(dir) = config.admin_ui.serve_dir() {
+        crate::admin_ui::check_serve_dir(dir).map_err(AppError::Config)?;
+        info!(dir = %dir.display(), "admin console served from directory");
+    }
+    #[cfg(feature = "admin-ui")]
+    if let Some(dir) = config.admin_ui.members_dir.as_deref() {
+        crate::admin_ui::check_serve_dir(dir).map_err(AppError::Config)?;
+        info!(dir = %dir.display(), "member portal served from directory");
+    }
+
     // Open cached keyspace handles
     let sessions_ks = store.keyspace(keyspaces::SESSIONS)?;
     let acl_ks = store.keyspace(keyspaces::ACL)?;
@@ -476,6 +495,8 @@ pub async fn run(
     let console_keys_ks = store.keyspace(keyspaces::CONSOLE_KEYS)?;
     let step_up_marks_ks = store.keyspace(keyspaces::STEP_UP_MARKS)?;
     let step_up_passkeys_ks = store.keyspace(keyspaces::STEP_UP_PASSKEYS)?;
+    let member_sessions_ks = store.keyspace(keyspaces::MEMBER_SESSIONS)?;
+    let member_passkey_ks = store.keyspace(keyspaces::MEMBER_PASSKEYS)?;
     let admin_actions_ks = store.keyspace(keyspaces::ADMIN_ACTIONS)?;
     let step_up_approvers_ks = store.keyspace(keyspaces::STEP_UP_APPROVERS)?;
     let member_pushes_ks = store.keyspace(keyspaces::MEMBER_PUSHES)?;
@@ -749,6 +770,7 @@ pub async fn run(
 
     // Gather storage thread inputs
     let storage_sessions_ks = sessions_ks.clone();
+    let storage_member_sessions_ks = member_sessions_ks.clone();
     let storage_auth_config = config.auth.clone();
     let has_auth = jwt_keys.is_some();
 
@@ -816,6 +838,8 @@ pub async fn run(
         console_keys_ks,
         step_up_marks_ks,
         step_up_passkeys_ks,
+        member_sessions_ks,
+        member_passkey_ks,
         admin_actions_ks,
         step_up_approvers_ks,
         member_pushes_ks,
@@ -1437,8 +1461,7 @@ pub async fn run(
     // who suspects a compromise can pin the running build.
     #[cfg(feature = "admin-ui")]
     if let Some(writer) = state.audit_writer.as_ref() {
-        let mode = boot_cfg.admin_ui.mode.clone();
-        let info = crate::admin_ui::AdminUiInfo::from_embedded(&mode);
+        let info = crate::admin_ui::AdminUiInfo::for_config(&boot_cfg.admin_ui);
         let _ = writer
             .write(
                 "daemon",
@@ -1493,6 +1516,7 @@ pub async fn run(
             run_storage_thread(
                 store,
                 storage_sessions_ks,
+                storage_member_sessions_ks,
                 storage_auth_config,
                 has_auth,
                 &mut storage_shutdown_rx,
@@ -1666,6 +1690,7 @@ async fn heal_missing_admin_entries(state: &AppState) -> Result<(), AppError> {
 fn run_storage_thread(
     store: Store,
     sessions_ks: KeyspaceHandle,
+    member_sessions_ks: KeyspaceHandle,
     auth_config: AuthConfig,
     has_auth: bool,
     shutdown_rx: &mut watch::Receiver<bool>,
@@ -1689,6 +1714,17 @@ fn run_storage_thread(
                     _ = timer.tick() => {
                         if let Err(e) = cleanup_expired_sessions(&sessions_ks, auth_config.challenge_ttl).await {
                             warn!("session cleanup error: {e}");
+                        }
+                        // Member-portal sessions live in their own keyspace
+                        // (`crate::member_portal`) and expire the same way.
+                        if let Err(e) = cleanup_expired_sessions(&member_sessions_ks, auth_config.challenge_ttl).await {
+                            warn!("member session cleanup error: {e}");
+                        }
+                        // Wallet sign-in requests share that keyspace: end
+                        // the expired ones (dropping their addresses) and
+                        // drop the long-ended ones.
+                        if let Err(e) = crate::member_portal::oob::sweep(&member_sessions_ks).await {
+                            warn!("wallet sign-in request sweep error: {e}");
                         }
                     }
                     _ = shutdown_rx.changed() => {

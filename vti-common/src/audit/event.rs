@@ -219,6 +219,20 @@ pub enum AuditEvent {
     /// `inviteInvalidated`. The invite token and claim code are never recorded.
     StepUpPasskeyChanged(StepUpPasskeyData),
 
+    /// A member added or removed a **member-portal** passkey for their own
+    /// DID (VTC). Such a passkey opens a member-portal session and nothing
+    /// else: it is kept apart from administrator and step-up passkeys, never
+    /// opens a console session and never answers a step-up. The actor is the
+    /// member, whose wallet-proven session is the only one that may change it.
+    MemberPasskeyChanged(MemberPasskeyData),
+
+    /// A step of a **wallet sign-in** to the member portal (`auth/oob/*`, the
+    /// key-grant flow started by a trigger link): a request opened, a claim,
+    /// a proof (failed and "peeking" ones included), an approval with the
+    /// signed grant, a decline, a cancellation, a redemption or an expiry.
+    /// Never the requester's address — city and country only (T22).
+    MemberWalletSignIn(MemberWalletSignInData),
+
     /// A step in the life of a **step-up approver** binding — a `did:key`
     /// bound to one subject as that subject's step-up factor (VTI-APV-015):
     /// an invite issued, voided after five wrong claim codes, an approver
@@ -913,6 +927,8 @@ impl AuditEvent {
             Self::AuthSteppedUp(..) => "AuthSteppedUp",
             Self::OperationStepUpRecorded(..) => "OperationStepUpRecorded",
             Self::StepUpPasskeyChanged(..) => "StepUpPasskeyChanged",
+            Self::MemberPasskeyChanged(..) => "MemberPasskeyChanged",
+            Self::MemberWalletSignIn(..) => "MemberWalletSignIn",
             Self::StepUpApproverChanged(..) => "StepUpApproverChanged",
             Self::OperationStepUpApproved(..) => "OperationStepUpApproved",
             Self::TaskConsentRecorded(..) => "TaskConsentRecorded",
@@ -1765,6 +1781,44 @@ pub struct StepUpPasskeyData {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
+/// Payload for [`AuditEvent::MemberWalletSignIn`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberWalletSignInData {
+    /// `requested`, `claimed`, `proved`, `proofFailed`, `approved`,
+    /// `declined`, `cancelled`, `redeemed` or `expired`.
+    pub stage: String,
+    /// The request's id.
+    pub request_id: String,
+    /// The member DID, once one has proved (or tried to).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<String>,
+    /// Why a step failed, in the words the caller was given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The requester's approximate location (`City, Country` or `unknown`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// The signed grant, at `approved` and `declined` by the member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant: Option<serde_json::Value>,
+}
+
+/// Payload for [`AuditEvent::MemberPasskeyChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberPasskeyData {
+    /// `registered` or `removed`.
+    pub stage: String,
+    /// The member whose passkey it is — always the actor too.
+    pub subject: String,
+    /// Credential id (hex).
+    pub credential_id: String,
+    /// The label the member gave it, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
 /// Payload for [`AuditEvent::TaskConsentRecorded`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -2493,8 +2547,10 @@ pub struct AdminUiServedData {
     /// Number of files baked into the binary (informational —
     /// surfaces accidental directory bloat).
     pub file_count: u32,
-    /// `"embedded"` or `"external"`. Embedded serves the baked
-    /// SPA; external delegates to an operator-supplied origin.
+    /// `"embedded"` or `"directory"`. Embedded serves the baked SPA;
+    /// directory serves the operator's console from `admin_ui.dir` (the
+    /// hash is of its `index.html` at boot). `"external"` appears only on
+    /// rows written before that mode was retired.
     pub mode: String,
     /// Daemon build version (`CARGO_PKG_VERSION`) that served this
     /// SPA, so the running admin-UI build correlates with a specific

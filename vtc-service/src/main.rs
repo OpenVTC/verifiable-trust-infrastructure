@@ -111,6 +111,31 @@ enum Commands {
         #[command(subcommand)]
         command: SyncJobCommands,
     },
+    /// The admin console's files (offline).
+    ///
+    /// To customise the console's look and feel, export it to a directory,
+    /// edit it there, and set `admin_ui.mode = "directory"` and
+    /// `admin_ui.dir` in config.toml. The daemon then serves that
+    /// directory instead of the console built into the binary. The member
+    /// portal works the same way (`--members`, `admin_ui.members_dir`).
+    AdminUi {
+        #[command(subcommand)]
+        command: AdminUiCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdminUiCommands {
+    /// Write the console built into this binary to a new or empty directory.
+    Export {
+        /// Directory to write into. Created if missing; refused if it
+        /// already holds anything.
+        dir: PathBuf,
+        /// Export the member portal (`/members`) instead of the admin
+        /// console; serve it with `admin_ui.members_dir`.
+        #[arg(long)]
+        members: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -413,6 +438,40 @@ async fn main() {
             };
             if let Err(e) = result {
                 eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::AdminUi { command }) => {
+            #[cfg(feature = "admin-ui")]
+            {
+                let AdminUiCommands::Export { dir, members } = command;
+                let (bundle, what, setting) = if members {
+                    (&vtc_service::admin_ui::MEMBER_UI_DIR, "Member portal", "")
+                } else {
+                    (
+                        &vtc_service::admin_ui::ADMIN_UI_DIR,
+                        "Admin console",
+                        "mode = \"directory\"\n",
+                    )
+                };
+                if let Err(e) = vtc_service::admin_ui::export(&dir, bundle) {
+                    eprintln!("Export failed: {e}");
+                    std::process::exit(1);
+                }
+                let key = if members { "members_dir" } else { "dir" };
+                println!(
+                    "{what} written to {}.\n\
+                     To serve it, set in config.toml and restart the daemon:\n\n\
+                     [admin_ui]\n\
+                     {setting}{key} = \"{}\"",
+                    dir.display(),
+                    std::path::absolute(&dir).unwrap_or(dir.clone()).display()
+                );
+            }
+            #[cfg(not(feature = "admin-ui"))]
+            {
+                let _ = command;
+                eprintln!("admin-ui subcommands are unavailable (compiled without 'admin-ui')");
                 std::process::exit(1);
             }
         }

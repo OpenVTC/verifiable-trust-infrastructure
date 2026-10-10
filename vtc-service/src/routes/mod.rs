@@ -16,6 +16,7 @@ pub(crate) mod health;
 pub(crate) mod install;
 pub(crate) mod invitations;
 pub mod join_requests;
+pub(crate) mod member_portal;
 pub(crate) mod members;
 pub(crate) mod policies;
 pub mod recognise;
@@ -39,7 +40,7 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{any, get, post};
+use axum::routing::{any, delete, get, post};
 use ipnetwork::IpNetwork;
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
@@ -733,6 +734,24 @@ fn build_api_chain(
     // P3.9 — encrypted backup / restore has no route: a backup is the
     // `vtc/backup/export` + `backup/*` Trust Tasks, over TSP or DIDComm only.
 
+    // The member portal's session-gated routes (`MemberAuth`): off the
+    // governor, like every other authenticated route — the session is the gate.
+    let api = api
+        .route("/member/me", get(member_portal::me))
+        .route("/member/passkeys", get(member_portal::list_passkeys))
+        .route(
+            "/member/passkeys/register/start",
+            post(member_portal::register_start),
+        )
+        .route(
+            "/member/passkeys/register/finish",
+            post(member_portal::register_finish),
+        )
+        .route(
+            "/member/passkeys/{credential_id}",
+            delete(member_portal::remove_passkey),
+        );
+
     let api = api
         // §14.4 — every authenticated API route inherits the 1 MiB
         // global body cap. The per-route overrides above for
@@ -873,6 +892,39 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         // past its access token still holds a refresh cookie only this
         // response can clear.
         .routes(routes!(auth::sign_out))
+        // The member portal's sign-in surface (`crate::member_portal`): the
+        // wallet's header-less SIOP round-trip at `<origin>/v1/member/wallet`,
+        // the portal passkey ceremony, and the cookie session. Unbound for the
+        // reason the console's wallet aliases and sign-out are — browser
+        // plumbing, documented in `member_portal`'s route module — and here,
+        // behind the governor, because none of them requires a session.
+        .route(
+            "/member/wallet/auth/challenge",
+            post(member_portal::wallet_challenge),
+        )
+        .route(
+            "/member/wallet/auth/",
+            post(member_portal::wallet_authenticate),
+        )
+        .route(
+            "/member/wallet/auth/refresh",
+            post(member_portal::wallet_refresh),
+        )
+        .route(
+            "/member/sign-in/config",
+            get(member_portal::sign_in_config),
+        )
+        .route("/member/session", post(member_portal::session))
+        .route("/member/auth/refresh", post(member_portal::cookie_refresh))
+        .route("/member/sign-out", post(member_portal::sign_out))
+        .route(
+            "/member/passkey-login/start",
+            post(member_portal::passkey_login_start),
+        )
+        .route(
+            "/member/passkey-login/finish",
+            post(member_portal::passkey_login_finish),
+        )
         .routes(tt(
             routes!(auth::admin_session),
             "https://trusttasks.org/spec/vtc/auth/admin-session/0.1",
@@ -1131,6 +1183,20 @@ pub fn assemble_with_website(
     #[cfg(feature = "admin-ui")]
     {
         app = app.route(admin_slash.as_str(), get(admin_ui::serve_spa));
+    }
+    // The member portal (`/members/*`): its own bundle beside the console's,
+    // under the same security headers. Fixed path — the public site links to
+    // it — and registered before the website fallback, so it takes precedence
+    // over an operator site's own `/members` path. `/members/` is registered
+    // explicitly for the reason `/admin/` is above.
+    #[cfg(feature = "admin-ui")]
+    {
+        let members: Router<AppState> = Router::new()
+            .route("/", get(admin_ui::serve_members_spa))
+            .route("/{*path}", get(admin_ui::serve_members_spa))
+            .layer(from_fn(security_headers));
+        app = app.nest("/members", members);
+        app = app.route("/members/", get(admin_ui::serve_members_spa));
     }
     #[cfg(not(feature = "admin-ui"))]
     {

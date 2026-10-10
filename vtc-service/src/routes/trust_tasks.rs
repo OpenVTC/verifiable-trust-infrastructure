@@ -41,6 +41,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use crate::admin_events::{StreamSlot, accepts_event_stream};
+use crate::member_portal::oob::HttpContext;
 use crate::routing::trust_task_admission::{Admission, ClientAddress, TrustTaskLimits};
 use crate::server::AppState;
 use crate::trust_tasks::{JoinAuthCtx, dispatch_trust_task_core_admitted};
@@ -115,17 +116,36 @@ pub async fn dispatch(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string),
     );
-    let outcome = slot
-        // Boxed: see `StreamSlot::scope` — inline, the task-local wrapper
-        // would add the spine's whole future to this handler's poll frame.
-        .scope(Box::pin(dispatch_trust_task_core_admitted(
-            &state,
-            &JoinAuthCtx::rest(),
-            &body,
-            &admission,
-            address,
-        )))
-        .await;
+    // What the `auth/oob` handlers read from the connection — the browser's
+    // `Origin`, address and `User-Agent` — and the cookies a `redeem` sets
+    // (`crate::member_portal::oob`). No other task reads it.
+    let header = |name: header::HeaderName| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let http = HttpContext::new(
+        address,
+        header(header::USER_AGENT),
+        header(header::ORIGIN),
+        header(header::HOST),
+    );
+    let outcome = HttpContext::scope(
+        http.clone(),
+        slot
+            // Boxed: see `StreamSlot::scope` — inline, the task-local wrapper
+            // would add the spine's whole future to this handler's poll frame.
+            .scope(Box::pin(dispatch_trust_task_core_admitted(
+                &state,
+                &JoinAuthCtx::rest(),
+                &body,
+                &admission,
+                address,
+            ))),
+    )
+    .await;
+    let set_cookies = http.take_cookies();
     if outcome.status == StatusCode::OK
         && headers.contains_key(USER_ACTIVITY_HEADER)
         && let Some(principal) = admission.verified_principal()
@@ -140,8 +160,35 @@ pub async fn dispatch(
             Some(grant) if outcome.status == StatusCode::OK => {
                 crate::admin_events::respond(state, grant, outcome.body)
             }
-            _ => outcome.into_response(),
+            _ => {
+                let mut response = outcome.into_response();
+                // `auth/oob/*` responses carry a sign-in's state and, on
+                // `redeem`, its session: never cached (base design §10).
+                if is_oob_document(&body) {
+                    response.headers_mut().insert(
+                        header::CACHE_CONTROL,
+                        header::HeaderValue::from_static("no-store"),
+                    );
+                }
+                if !set_cookies.is_empty()
+                    && let Err(e) =
+                        crate::member_portal::cookies::append(response.headers_mut(), set_cookies)
+                {
+                    return e.into_response();
+                }
+                response
+            }
         },
         Err(limited) => limited.into_response(),
     }
+}
+
+/// Whether `body` names an `auth/oob/*` type — read off the raw bytes, since
+/// the spine has parsed and dropped the document by the time the response is
+/// built. A false positive only adds `no-store`.
+fn is_oob_document(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_string))
+        .is_some_and(|t| t.starts_with("https://trusttasks.org/spec/auth/oob/"))
 }

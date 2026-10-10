@@ -1058,6 +1058,42 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Docs**: `docs/03-vtc/admin-access.md` §2–3,
   `docs/05-design-notes/vtc-action-list.md`.
 
+### VTC member portal (`/members`, `/v1/member/*`)
+- **What**: Where a community's members sign in — a separate application from
+  the console, enforced by the daemon, not by what the page shows. Sign-in is
+  the **trigger-link key grant** (`auth/oob/*` on `/v1/trust-tasks`,
+  `trust_tasks::oob_tasks` + `member_portal::oob`: the browser's
+  non-extractable `K_b` opens a request, a wallet claims it with a throwaway
+  `K_a`, proves membership and the on-screen number, and returns a grant
+  signed by the member's DID naming `K_b`; only `K_b` redeems it), a portal
+  passkey, or — **deprecated** (contract C7) — SIOPv2 issued by the member's
+  VTA (wallet `walletProfile` + `proxyLogin`, against
+  `<origin>/v1/member/wallet`). Never the extension's self-issued `login()`,
+  which presents its own `did:key`. For `auth/oob`: the ACL string check comes
+  before any DID resolution; every state change is a compare-and-set under one
+  process lock; a failed step from the lock holder declines the request; step
+  1 and 2 responses are signed for `assertionMethod`; `identify` is verified
+  for `authentication`, `grant` for `assertionMethod`.
+- **Invariants to preserve**: only an **active member** (live ACL entry, not
+  expired/suspended/`application`, member record not removed) signs in, and
+  that is re-read on every request and refresh — never trusted from the
+  session. Portal tokens carry audience `VTC-member`; console extractors
+  validate `aud = VTC`, so the two never cross — do not add a shared audience
+  or make a console extractor accept both. Portal sessions and passkeys live in
+  `member_sessions` / `member_passkeys`, never `sessions` / `passkey`: that is
+  what stops a member-who-is-also-an-admin from redeeming a portal refresh
+  token, or a portal passkey, at the console. Portal cookies are
+  `Path=/v1/member` (`vtc_member_csrf` is `Path=/`), and the CSRF gate pairs
+  them by path. Adding or removing a portal passkey requires a wallet-proven
+  session (`amr` contains `did`). The bundle imports no console shell, plugins
+  or API client.
+- **Code**: `vtc-service/src/member_portal/`, `vtc-service/src/routes/member_portal.rs`,
+  `vtc-service/src/routing/{csrf,host_dispatch}.rs`, `vtc-service/src/admin_ui.rs`
+  (`MEMBER_UI_DIR`), `vtc-service/admin-ui/src/members/` +
+  `vite.members.config.ts`, `vtc-service/website-default/` (the landing page
+  that links to it).
+- **Docs**: `docs/03-vtc/website-and-admin.md` (*Member portal*).
+
 ### VTC step-up: passkeys and approver devices
 - **What**: Authority-changing VTC acts need a step-up bound to a digest of
   that one operation (`acl::bound_step_up`, one use within 300 s). It is

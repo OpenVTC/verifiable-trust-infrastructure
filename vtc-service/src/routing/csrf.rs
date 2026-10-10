@@ -88,6 +88,9 @@ const CSRF_EXEMPT_PATHS: &[&str] = &[
     // same rationale as `/v1/auth/*` above — no session cookie yet).
     "/v1/wallet/auth/challenge",
     "/v1/wallet/auth/",
+    // The member portal's wallet aliases, for the same reason.
+    "/v1/member/wallet/auth/challenge",
+    "/v1/member/wallet/auth/",
     // `/v1/auth/refresh` was exempt here until the admin console gained a
     // refresh cookie. While the only way to present a refresh token was
     // to put it in the request body, the endpoint was structurally
@@ -151,7 +154,7 @@ fn is_csrf_exempt(path: &str) -> bool {
 /// only that one is every bit as forgeable as a request holding only the
 /// session cookie — and a browser whose access cookie has already lapsed
 /// is in exactly that state.
-fn has_session_cookie(headers: &HeaderMap) -> bool {
+fn has_session_cookie(headers: &HeaderMap, jar: &CookieJar) -> bool {
     headers
         .get_all(axum::http::header::COOKIE)
         .iter()
@@ -159,7 +162,43 @@ fn has_session_cookie(headers: &HeaderMap) -> bool {
         .flat_map(|s| s.split(';'))
         .map(|s| s.trim())
         .filter_map(|kv| kv.split_once('='))
-        .any(|(name, _)| name == ADMIN_SESSION_COOKIE || name == ADMIN_REFRESH_COOKIE)
+        .any(|(name, _)| jar.session.contains(&name))
+}
+
+/// The cookies that authenticate a request on a given path, and the CSRF
+/// cookie that pairs with them.
+///
+/// Two applications share this origin. The console's cookies are `Path=/`;
+/// the member portal's session and refresh cookies are `Path=/v1/member`
+/// (`crate::member_portal`), and its double-submit value is
+/// `vtc_member_csrf` rather than `csrf`, so the two never overwrite each
+/// other's. Under `/v1/member/` only the member cookies authenticate anything —
+/// the member routes never read the console's — so they are the ones a forged
+/// request could ride, and the member CSRF value is the one to match.
+struct CookieJar {
+    session: &'static [&'static str],
+    csrf: &'static str,
+}
+
+const ADMIN_JAR: CookieJar = CookieJar {
+    session: &[ADMIN_SESSION_COOKIE, ADMIN_REFRESH_COOKIE],
+    csrf: "csrf",
+};
+
+const MEMBER_JAR: CookieJar = CookieJar {
+    session: &[
+        crate::member_portal::MEMBER_SESSION_COOKIE,
+        crate::member_portal::MEMBER_REFRESH_COOKIE,
+    ],
+    csrf: crate::member_portal::MEMBER_CSRF_COOKIE,
+};
+
+fn jar_for(path: &str) -> &'static CookieJar {
+    if path.starts_with("/v1/member/") {
+        &MEMBER_JAR
+    } else {
+        &ADMIN_JAR
+    }
 }
 
 /// Tower middleware function. Wire via
@@ -194,7 +233,8 @@ pub async fn enforce(request: Request, next: Next) -> Response<Body> {
     // request with no `vtc_admin_session` cookie can't be forged, so
     // it passes here and the per-route auth layer returns a clean 401
     // if it's actually unauthenticated.
-    if !has_session_cookie(request.headers()) {
+    let jar = jar_for(path);
+    if !has_session_cookie(request.headers(), jar) {
         return next.run(request).await;
     }
 
@@ -216,7 +256,8 @@ pub async fn enforce(request: Request, next: Next) -> Response<Body> {
         .filter_map(|v| v.to_str().ok())
         .flat_map(|s| s.split(';'))
         .map(|s| s.trim())
-        .find_map(|kv| kv.strip_prefix("csrf="));
+        .filter_map(|kv| kv.split_once('='))
+        .find_map(|(k, v)| (k == jar.csrf).then_some(v));
     let header_token = request
         .headers()
         .get("x-csrf-token")
@@ -271,6 +312,7 @@ mod tests {
             .route("/v1/join-requests/{id}/status", post(ok))
             .route("/v1/join-requests/{id}/decide", post(ok))
             .route("/v1/auth/challenge", post(ok))
+            .route("/v1/member/passkeys/register/start", post(ok))
             .layer(axum::middleware::from_fn(enforce))
     }
 
@@ -529,10 +571,57 @@ mod tests {
             "cookie",
             "foo=1; vtc_admin_session=abc; csrf=t".parse().unwrap(),
         );
-        assert!(has_session_cookie(&present));
+        assert!(has_session_cookie(&present, &ADMIN_JAR));
 
         let mut absent = HeaderMap::new();
         absent.insert("cookie", "csrf=t; other_session=abc".parse().unwrap());
-        assert!(!has_session_cookie(&absent));
+        assert!(!has_session_cookie(&absent, &ADMIN_JAR));
+    }
+
+    async fn member_post(cookie: &str, header: Option<&str>) -> StatusCode {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/v1/member/passkeys/register/start")
+            .header("cookie", cookie);
+        if let Some(h) = header {
+            req = req.header("x-csrf-token", h);
+        }
+        app()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn member_cookie_session_needs_the_member_csrf_pair() {
+        // A member cookie session with no token is gated...
+        assert_eq!(
+            member_post("vtc_member_session=j", None).await,
+            StatusCode::FORBIDDEN
+        );
+        // ...passes with the member pair...
+        assert_eq!(
+            member_post("vtc_member_session=j; vtc_member_csrf=m", Some("m")).await,
+            StatusCode::OK
+        );
+        // ...and the console's `csrf` value does not stand in for it: the two
+        // applications share an origin, and one must not satisfy the other.
+        assert_eq!(
+            member_post("vtc_member_session=j; csrf=a", Some("a")).await,
+            StatusCode::FORBIDDEN
+        );
+        // A refresh cookie alone is a credential too.
+        assert_eq!(
+            member_post("vtc_member_refresh=r", None).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[test]
+    fn member_paths_use_the_member_jar_and_nothing_else_does() {
+        assert_eq!(jar_for("/v1/member/me").csrf, "vtc_member_csrf");
+        assert_eq!(jar_for("/v1/members").csrf, "csrf");
+        assert_eq!(jar_for("/v1/auth/refresh").csrf, "csrf");
     }
 }

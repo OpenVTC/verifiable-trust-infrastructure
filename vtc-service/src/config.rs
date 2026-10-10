@@ -76,11 +76,9 @@ pub struct AppConfig {
     /// the cargo feature is default-on.
     #[serde(default)]
     pub website: WebsiteConfig,
-    /// Admin UX settings (Phase 5 M5.7). When `mode = "external"`,
-    /// the embedded SPA is skipped and `/admin/*` returns 404; the
-    /// configured `external_origin` is added to
-    /// `cors.allowed_origins` so an external SPA hosted on that
-    /// origin can drive the API.
+    /// Admin UX settings (Phase 5 M5.7): where the console and the member
+    /// portal are served from — the binary, or a directory an owner has
+    /// customised.
     #[serde(default)]
     pub admin_ui: AdminUiConfig,
     /// Trust Task document-dispatch settings (#1641). Holds no switch any more
@@ -293,15 +291,38 @@ where
 #[serde(rename_all = "snake_case")]
 pub struct AdminUiConfig {
     /// `"embedded"` (default): serve the baked admin SPA at
-    /// `routing.admin_ui.mount`. `"external"`: skip embedding;
-    /// the operator hosts the SPA elsewhere and the daemon
-    /// merely allowlists their origin.
+    /// `routing.admin_ui.mount`. `"directory"`: serve the console
+    /// from [`Self::dir`] on disk instead, so a community owner can
+    /// restyle or rebuild it without rebuilding the daemon.
+    ///
+    /// `"external"` (an SPA hosted on another origin) is retired and
+    /// refused: it was never served, and the console cannot work from
+    /// another origin — it reads the CSRF cookie, calls the API by
+    /// relative URL, and passkeys are bound to the VTC's own origin.
     #[serde(default = "default_admin_ui_mode")]
     pub mode: String,
-    /// Origin the external SPA serves from. Required when
-    /// `mode = "external"`; ignored otherwise.
-    #[serde(default)]
-    pub external_origin: Option<String>,
+    /// Directory the console is served from when `mode = "directory"`.
+    /// Must hold an `index.html` (the SPA shell); every other path is
+    /// served from it or falls back to that shell. `vtc admin-ui export
+    /// <dir>` writes the baked console here as a starting point.
+    /// Required with `mode = "directory"`, refused with any other mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<std::path::PathBuf>,
+    /// Directory the **member portal** (`/members/*`) is served from instead
+    /// of the binary, independent of `mode`. Must hold an `index.html`;
+    /// `vtc admin-ui export --members <dir>` writes the baked portal there
+    /// as a starting point. `None` (default) serves the baked portal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub members_dir: Option<std::path::PathBuf>,
+    /// Retired with `mode = "external"`. Present only to **refuse** a config
+    /// that still declares it; absent (the only accepted state)
+    /// deserializes to `()`.
+    #[serde(
+        default,
+        deserialize_with = "refuse_retired_external_origin",
+        skip_serializing
+    )]
+    pub external_origin: (),
     /// WebAuthn RP-ID override. When `None`, derived from the
     /// routing mode (path-mode → base host; subdomain-mode →
     /// base domain).
@@ -317,21 +338,92 @@ pub struct AdminUiConfig {
     /// is dropped from the manifest endpoint with a `warn!`.
     #[serde(default)]
     pub plugin_dir: Option<std::path::PathBuf>,
+    /// Host of the **trigger link** the member portal's wallet sign-in shows
+    /// as a QR code and a link (`https://<host>/t#_from=…`). `None` (default)
+    /// means `link.trustoverip.org`, the shared host every participating
+    /// wallet declares. Must be a public DNS name and must **not** be on the
+    /// portal's own domain: a universal link tapped on a page of the same
+    /// domain opens in the browser, not the wallet (VTI-LNK-060, VTI-LNK-084).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_in_link_host: Option<String>,
 }
 
 impl Default for AdminUiConfig {
     fn default() -> Self {
         Self {
             mode: default_admin_ui_mode(),
-            external_origin: None,
+            dir: None,
+            members_dir: None,
+            external_origin: (),
             rp_id: None,
             plugin_dir: None,
+            sign_in_link_host: None,
         }
     }
 }
 
+/// Reject `admin_ui.external_origin` with the replacement. Only called when
+/// the key is present, so reaching it *is* the error.
+fn refuse_retired_external_origin<'de, D>(_: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Err(serde::de::Error::custom(RETIRED_EXTERNAL_MODE))
+}
+
+const RETIRED_EXTERNAL_MODE: &str = "admin_ui `mode = \"external\"` and `external_origin` have been \
+     retired — the console cannot run from another origin. To customise it, serve it from a \
+     directory instead: `vtc admin-ui export <dir>`, then `mode = \"directory\"` and \
+     `dir = \"<dir>\"`, and remove `external_origin`.";
+
 fn default_admin_ui_mode() -> String {
     "embedded".into()
+}
+
+impl AdminUiConfig {
+    /// The trigger-link host the portal's wallet sign-in uses.
+    pub fn sign_in_link_host(&self) -> &str {
+        self.sign_in_link_host
+            .as_deref()
+            .unwrap_or(crate::member_portal::oob::DEFAULT_LINK_HOST)
+    }
+
+    /// The directory to serve the console from, when `mode = "directory"`.
+    /// `None` for every other mode.
+    pub fn serve_dir(&self) -> Option<&std::path::Path> {
+        match self.mode.as_str() {
+            "directory" => self.dir.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Shape checks: a known mode, and `dir` set exactly when the mode is
+    /// `"directory"`. A `dir` beside another mode is refused rather than
+    /// ignored — an owner who customised a console and sees the stock one
+    /// would otherwise have no clue why. Whether the directory exists is
+    /// checked at boot ([`crate::admin_ui::check_serve_dir`]), not here,
+    /// so a config can be written before the directory is.
+    fn validate(&self) -> Result<(), AppError> {
+        match (self.mode.as_str(), self.dir.is_some()) {
+            ("directory", true) | ("embedded", false) => Ok(()),
+            ("external", _) => Err(AppError::Config(RETIRED_EXTERNAL_MODE.into())),
+            ("directory", false) => Err(AppError::Config(
+                "admin_ui.mode = \"directory\" needs admin_ui.dir — the directory \
+                 holding the console's index.html (`vtc admin-ui export <dir>` writes \
+                 the built-in console there to start from)"
+                    .into(),
+            )),
+            ("embedded", true) => Err(AppError::Config(format!(
+                "admin_ui.dir is set but admin_ui.mode = \"{}\", so it would be \
+                 ignored — set mode = \"directory\" to serve the console from it, or \
+                 remove dir",
+                self.mode
+            ))),
+            (other, _) => Err(AppError::Config(format!(
+                "admin_ui.mode = \"{other}\" is not one of \"embedded\", \"directory\""
+            ))),
+        }
+    }
 }
 
 /// Public community website (§12.1, Phase 5 M5.4.1). Filesystem-
@@ -1353,6 +1445,7 @@ impl AppConfig {
         validate_routing(&self.routing)?;
         validate_website_isolation(&self.routing, self.website.root_dir.is_some())?;
         validate_cors(&self.cors)?;
+        self.admin_ui.validate()?;
         Ok(())
     }
 
@@ -1395,6 +1488,49 @@ fn unknown_key_message(config_path: &std::path::Path, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admin_ui_dir_goes_with_directory_mode_only() {
+        let parse = |s: &str| toml::from_str::<AdminUiConfig>(s).expect("parse admin_ui");
+
+        let directory = parse("mode = \"directory\"\ndir = \"/srv/console\"");
+        directory.validate().unwrap();
+        assert_eq!(
+            directory.serve_dir(),
+            Some(std::path::Path::new("/srv/console"))
+        );
+
+        parse("").validate().unwrap();
+        assert_eq!(parse("").serve_dir(), None);
+
+        // Directory mode without a directory, a directory the mode would
+        // ignore, and an unknown mode are each refused.
+        for bad in [
+            "mode = \"directory\"",
+            "dir = \"/srv/console\"",
+            "mode = \"custom\"",
+        ] {
+            assert!(parse(bad).validate().is_err(), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn retired_external_mode_is_refused_naming_directory_mode() {
+        let err = parse_admin_ui("mode = \"external\"")
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("mode = \"directory\""), "{err}");
+
+        let err = toml::from_str::<AdminUiConfig>("external_origin = \"https://a.example\"")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("vtc admin-ui export"), "{err}");
+    }
+
+    fn parse_admin_ui(s: &str) -> AdminUiConfig {
+        toml::from_str(s).expect("parse admin_ui")
+    }
 
     #[test]
     fn secret_backend_selector_parses_each_variant() {

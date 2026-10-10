@@ -91,6 +91,72 @@ async fn path_mode_admin_surface_serves_embedded_spa() {
     assert!(json["indexSha256"].is_string(), "got {json}");
 }
 
+#[cfg(feature = "admin-ui")]
+#[tokio::test]
+async fn path_mode_admin_surface_serves_a_console_directory() {
+    // `admin_ui.mode = "directory"`: the owner's console on disk replaces
+    // the baked one at every admin path, and build-info pins what is on disk.
+    let console = tempfile::tempdir().unwrap();
+    std::fs::write(
+        console.path().join("index.html"),
+        "<title>Our Console</title>",
+    )
+    .unwrap();
+    let routing = RoutingConfig::default();
+    let (router, vtc) = build_router(&routing).await;
+    {
+        let mut config = vtc.state.config.write().await;
+        config.admin_ui.mode = "directory".into();
+        config.admin_ui.dir = Some(console.path().to_path_buf());
+    }
+
+    for path in ["/admin", "/admin/", "/admin/settings"] {
+        let req = Request::builder().uri(path).body(Body::empty()).unwrap();
+        let (status, body) = request(&router, req).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert_eq!(body, b"<title>Our Console</title>", "{path}");
+    }
+
+    let req = Request::builder()
+        .uri("/admin/build-info.json")
+        .body(Body::empty())
+        .unwrap();
+    let (_, body) = request(&router, req).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["mode"], "directory");
+    assert_eq!(json["fileCount"], 1);
+}
+
+#[cfg(feature = "admin-ui")]
+#[tokio::test]
+async fn member_portal_is_served_from_its_directory_when_configured() {
+    // `admin_ui.members_dir` replaces the baked portal at `/members/*`,
+    // leaving the console untouched.
+    let portal = tempfile::tempdir().unwrap();
+    std::fs::write(
+        portal.path().join("index.html"),
+        "<title>Our Portal</title>",
+    )
+    .unwrap();
+    let routing = RoutingConfig::default();
+    let (router, vtc) = build_router(&routing).await;
+    vtc.state.config.write().await.admin_ui.members_dir = Some(portal.path().to_path_buf());
+
+    for path in ["/members", "/members/", "/members/profile"] {
+        let req = Request::builder().uri(path).body(Body::empty()).unwrap();
+        let (status, body) = request(&router, req).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert_eq!(body, b"<title>Our Portal</title>", "{path}");
+    }
+
+    let req = Request::builder()
+        .uri("/admin/")
+        .body(Body::empty())
+        .unwrap();
+    let (_, body) = request(&router, req).await;
+    assert!(String::from_utf8_lossy(&body).contains("VTC Admin"));
+}
+
 #[tokio::test]
 async fn path_mode_admin_bare_prefix_serves_admin_spa() {
     // `GET /admin` (no trailing slash) must hit the admin SPA's

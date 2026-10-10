@@ -318,6 +318,12 @@ impl TestVtcBuilder {
         let step_up_passkeys_ks = store
             .keyspace(crate::store::keyspaces::STEP_UP_PASSKEYS)
             .expect("step_up_passkeys ks");
+        let member_sessions_ks = store
+            .keyspace(crate::store::keyspaces::MEMBER_SESSIONS)
+            .expect("member_sessions ks");
+        let member_passkey_ks = store
+            .keyspace(crate::store::keyspaces::MEMBER_PASSKEYS)
+            .expect("member_passkeys ks");
         let step_up_approvers_ks = store
             .keyspace(crate::store::keyspaces::STEP_UP_APPROVERS)
             .expect("step_up_approvers ks");
@@ -498,6 +504,8 @@ impl TestVtcBuilder {
             console_keys_ks,
             step_up_marks_ks,
             step_up_passkeys_ks,
+            member_sessions_ks,
+            member_passkey_ks,
             admin_actions_ks,
             step_up_approvers_ks,
             member_pushes_ks,

@@ -964,12 +964,26 @@ async fn select_webvh_target(
         return Ok(WebvhTarget::default());
     };
 
-    let server_id = prompt_webvh_server(&client).await?;
+    // A DIDComm-connected client holds a live, auto-reconnecting session for
+    // the setup key. Shut it down on every path — success or a `?` out of a
+    // prompt — before returning: left to drop, it keeps the mediator's one
+    // socket for that DID and fights the provision round-trip's own session
+    // (and trips `vta-sdk`'s leak guard, a panic in debug builds).
+    let target = prompt_webvh_target(&client).await;
+    client.shutdown().await;
+    target
+}
+
+/// The server, tenant-domain and path prompts, against a connected client.
+/// Split out of [`select_webvh_target`] so the client is shut down however
+/// these end.
+async fn prompt_webvh_target(client: &VtaClient) -> Result<WebvhTarget, AppError> {
+    let server_id = prompt_webvh_server(client).await?;
     let (domain, path) = match server_id.as_deref() {
         // A hosting server is selected: the `<path>` is a real label
         // under that server, so offer it (and the tenant-domain picker).
         Some(sid) => {
-            let domain = prompt_webvh_domain(&client, sid).await?;
+            let domain = prompt_webvh_domain(client, sid).await?;
             let path = prompt_webvh_path(sid)?;
             (domain, path)
         }

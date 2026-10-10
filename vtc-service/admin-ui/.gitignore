@@ -2,6 +2,7 @@
 # vtc-service's build.rs). Not committed: every `cargo build`
 # regenerates it, so a stale committed copy would diverge silently.
 dist/
+dist-members/
 
 # npm install output.
 node_modules/

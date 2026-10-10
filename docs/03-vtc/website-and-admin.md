@@ -15,17 +15,21 @@ graph TB
         HEALTH["/health<br/>Trust-Task exempt"]
         API["/v1/*<br/>JSON API"]
         ADMIN["/admin/*<br/>SPA + build-info"]
+        MEMBERS["/members/*<br/>member portal"]
         WEB["/<br/>filesystem or default"]
     end
 
     OPSCLI[cnm-cli<br/>bearer JWT]
     SPA[Admin SPA<br/>session cookie + CSRF]
+    MEM[Members<br/>member cookie + CSRF]
     PUB[Public site visitors<br/>browser]
     APP[Application<br/>bearer JWT]
 
     OPSCLI --> API
     SPA --> ADMIN
     SPA --> API
+    MEM --> MEMBERS
+    MEM --> API
     PUB --> WEB
     APP --> API
     PUB -. POST form .-> API
@@ -33,7 +37,7 @@ graph TB
     classDef pub fill:#fff3e0,stroke:#c77a00,color:#5a3b00
     classDef priv fill:#e9d7f7,stroke:#7e3fa6,color:#3a0a5a
     class WEB,PUB pub
-    class API,ADMIN,SPA,OPSCLI,APP,HEALTH priv
+    class API,ADMIN,SPA,OPSCLI,APP,HEALTH,MEMBERS,MEM priv
 ```
 
 The default routing assignment:
@@ -43,6 +47,7 @@ The default routing assignment:
 | `/health` | Health probe (Trust-Task exempt) | 1 MiB | — |
 | `/v1/*` | JSON API | 1 MiB global, per-route override on website mgmt | — (JSON wire) |
 | `/admin/*` | Admin SPA + `/admin/build-info.json` | 1 MiB | default-src 'self' |
+| `/members/*` | Member portal (fixed mount; see [Member portal](#member-portal)) | 1 MiB | default-src 'self' |
 | `/` (catch-all) | Public website | 1 MiB | default-src 'self' (overridable per site) |
 
 Operators can rewrite these mounts via `routing.api.mount`,
@@ -184,9 +189,20 @@ or missing file → default CSP applies.
 
 When `website.root_dir` is **unset**, the daemon serves a small
 in-tree landing page (HTML/CSS/JS at `vtc-service/website-default/`)
-that fetches `/v1/community/profile` + `/health` and renders them.
+that fetches `/v1/community/public-profile` + `/health` and renders them.
 The moment an operator sets `root_dir`, the filesystem handler
 takes over and the default is unreachable.
+
+It is written for a visitor who has never heard of a VTC: the main
+call to action is **Get started** at [openvtc.net](https://openvtc.net),
+which explains what a community is and how to get a wallet and join.
+Beside it is **Member sign-in** (`/members/`). The page then outlines
+what the community runs on — git repositories governed across GitHub,
+Forgejo/Codeberg and Gitea, verifiable data rooms, access management,
+membership credentials, cross-community recognition — and ends with
+the service status. The operator console is linked, deliberately
+quietly. An operator site replacing the default should keep a link to
+`/members/`.
 
 ### Community DID as a QR code
 
@@ -425,10 +441,70 @@ VTC sends `X-Accel-Buffering: no` for nginx) and must allow an idle read of at
 least twice the heartbeat. `cnm actions watch` prints the same hints on a
 terminal.
 
-Operators wanting a different UX point `admin_ui.mode = "external"`
-at their own origin; that knob skips the embedded SPA and adds the
-operator-supplied origin to `cors.allowed_origins` so an
-externally-hosted SPA can drive the API.
+Operators wanting a different UX serve their own console from a
+directory (below). The console cannot be hosted on another origin: it
+reads the `csrf` cookie, calls the API by relative URL, and passkeys
+are bound to the VTC's own origin. The former `admin_ui.mode =
+"external"` and `external_origin`, which never served anything, are
+refused at config load.
+
+### Customising the console (`admin_ui.mode = "directory"`)
+
+To change the console's look and feel without rebuilding the daemon,
+serve it from a directory instead of from the binary:
+
+```sh
+vtc admin-ui export /var/lib/community/console   # the built-in console, as a starting point
+# edit it there, then in config.toml:
+#   [admin_ui]
+#   mode = "directory"
+#   dir  = "/var/lib/community/console"
+# and restart the daemon
+```
+
+The daemon serves that directory at `/admin/*` exactly as it serves the
+built-in console: `index.html` is the shell, extensionless paths fall
+back to it (client-side routing), and `/assets/*` is cached for five
+minutes. Files are read on every request, so an edit shows on the next
+page load with no restart. Every path goes through the website's
+[path-safety chain](#path-safety): hidden files, symlinks out of the
+directory and files with the executable bit are never served.
+
+Two ways to customise:
+
+- **Restyle.** Add a stylesheet to the directory and link it from
+  `index.html` (`<link rel="stylesheet" href="/admin/theme.css">`)
+  after the bundled one. The bundled CSS is minified; override it
+  rather than editing it.
+- **Rebuild.** Change the source under `vtc-service/admin-ui/`, run
+  `npm run build`, and point `admin_ui.dir` at the output. The build
+  emits asset URLs under `/admin/`, so keep the default
+  `routing.admin_ui.mount`.
+
+The console's [security headers](#path-safety) still apply: the CSP
+allows scripts only from the console's own origin, so a customised
+console cannot load scripts from a CDN or run inline ones. Styles,
+fonts and images may be inline or local.
+
+**Whoever can write this directory can act as every administrator.**
+The console's scripts run in the administrator's session and sign with
+their console key, so treat the directory like the binary: owned by
+the operator, not writable by the daemon's user if that can be
+avoided. The daemon refuses to start if the directory has no
+`index.html`, or if it or `index.html` is world-writable; it never
+falls back to the built-in console. `admin_ui.dir` is host
+configuration only — `config/patch` cannot set it.
+
+The `AdminUiServed` audit row records `mode = "directory"` and the
+SHA-256 of `index.html` **as it was at start-up**;
+`/admin/build-info.json` reports the directory as it is now. If the two
+differ, the console was edited after the daemon started.
+
+The member portal (`/members/*`) is customised the same way, independently
+of the console: `vtc admin-ui export --members <dir>`, then
+`admin_ui.members_dir = "<dir>"`. It gets the same serving rules and the same
+start-up checks, for the same reason: the portal's scripts run in members'
+sessions. Its build emits asset URLs under `/members/`.
 
 ### `/admin/build-info.json`
 
@@ -592,6 +668,163 @@ the same signed `vtc/admin/actions/list` the Actions badge makes
 What each means, and what to do, is in
 [`admin-access.md`](admin-access.md) §2.1a, §3.4 and §3.5.
 
+## Member portal
+
+`/members/` is where a community's **members** sign in. It is a
+separate application from the operator console, not the console with
+fewer menus, and the separation is enforced by the daemon rather than
+by what the page chooses to show:
+
+| | Console (`/admin/`) | Member portal (`/members/`) |
+|---|---|---|
+| Who may sign in | An administrator (any administrative role) | An **active member** |
+| Sign-in methods | Passkey, wallet (SIOPv2), VTA identity | Wallet sign-in by trigger link (`auth/oob/*`, the default), a portal passkey, or — deprecated — SIOPv2 issued by the member's VTA |
+| Token audience | `VTC` | `VTC-member` |
+| Session store | `sessions` | `member_sessions` |
+| Passkey store | `passkey` | `member_passkeys` |
+| Cookies | `vtc_admin_session`, `vtc_admin_refresh` (`Path=/`), `csrf` | `vtc_member_session`, `vtc_member_refresh` (`Path=/v1/member`), `vtc_member_csrf` |
+| Bundle | console shell + plugins | its own; loads no console code |
+
+**Active member** means a live ACL entry — not expired, not suspended,
+not an `application` entry — and a member record that has not been
+removed. It is checked at the challenge (a non-member gets an unusable
+challenge that looks like any other, VTI-SES-006/007), at
+authentication, at every refresh and on **every request**: a member
+removed or suspended mid-session is refused on their next call
+(VTI-SES-020–022). An administrator with no member record cannot sign
+in here; an administrator who is also a member can, and gets a
+member session that the console refuses.
+
+**Why the token classes cannot cross.** Every console route validates
+`aud = VTC`, so a portal token is refused there exactly as a VTA token
+is. Portal sessions live in their own keyspace, so a portal refresh
+token presented at `/v1/auth/refresh` is simply not found — which
+matters most for a member who is also an administrator, whose console
+backend would otherwise accept the subject. Portal passkeys live in
+their own keyspace too, so one can never open a console session or
+answer a step-up.
+
+**Signing in with your wallet** (the default, first option). The page
+shows a sign-in code: a QR code that is also a link, so a wallet on the
+same device can be clicked instead of scanned. Its text is a **trigger
+link** (VTI spec §7a, flow `/vti/flow/sign-in/0.1`):
+
+```
+https://link.trustoverip.org/t#_from=<VTC DID>&_id=<requestId>&_exp=<claim deadline>&_type=/vti/flow/sign-in/0.1
+```
+
+The link host is `admin_ui.sign_in_link_host` (default
+`link.trustoverip.org`), and must not be on the portal's own domain —
+a universal link tapped on a page of the same domain opens in the
+browser, not the wallet (VTI-LNK-084). `GET /v1/member/sign-in/config`
+hands the page the DID, host and flow, and refuses with the fix when
+the host breaks those rules.
+
+The exchange is the **key grant** of `auth/oob/*`, every step a signed
+Trust Task document on `POST /v1/trust-tasks`:
+
+1. The browser generates a non-extractable WebCrypto Ed25519 key `K_b`
+   and signs `auth/oob/request`. Accepted only from the portal's own
+   `Origin`; at most five open codes per address. The code lives 120 s.
+2. The wallet, which knows this community, signs `auth/oob/claim` with a
+   throwaway key `K_a` (`parentThreadId` = the request id, VTI-LNK-054).
+   The first claim locks the request; the VTC answers step 1 (community,
+   portal origin, purpose, decision deadline) signed with its
+   `assertionMethod` key. A claim starts a fresh 120 s decision window.
+3. The browser's long poll (`auth/oob/redeem`, 25 s, one open poll per
+   request) now shows **"Your number is 47"** — only to the holder of
+   `K_b`.
+4. The wallet sends `auth/oob/prove` carrying `auth/oob/identify`, signed
+   by the member's DID for `authentication`, with the typed number. The
+   VTC checks the DID against the ACL **before** resolving anything, then
+   the proof, then the number, and answers step 2 (the requester's
+   browser, OS, approximate location and whether it is on the phone's
+   network — never an address), again signed for `assertionMethod`. Any
+   failure — a non-member, a bad signature, a wrong number — ends the
+   request.
+5. The member approves; their VTA signs `auth/oob/grant` for
+   `assertionMethod` (after a user-verification gesture on the device),
+   naming `K_b`, `K_a`, the origin, `notAfter` and the digest of step 2.
+   The wallet sends it in `auth/oob/respond`.
+6. The browser's next poll redeems: the VTC creates a member session
+   bound to `K_b` (`amr = ["did","oob","uv"]`, ending no later than the
+   grant's `notAfter`), sets the usual portal cookies, and the page asks
+   **"Continue as Alice?"** before using it. *Not me* signs out.
+
+The page hides the code when the tab is hidden (the request keeps
+running). It is served with `Referrer-Policy: no-referrer`,
+`Cache-Control: no-store` and a CSP with `frame-ancestors 'none'`, and
+every `auth/oob` response is `no-store`. Each step is audited as
+`MemberWalletSignIn` (city and country, never the address).
+
+**Wallets find this portal in the community's DID document.** A wallet
+refuses a sign-in link unless the VTC's DID document lists a
+`SignInPortal` service whose origin is the portal's
+(`{"id":"<did>#sign-in-portal","type":"SignInPortal","serviceEndpoint":"<public_url>/members/"}`),
+and sends the trust tasks to its trust-task HTTPS service
+(`{"id":"<did>#trust-tasks","type":"TrustTaskHTTPS","serviceEndpoint":"<public_url>/v1"}`).
+That endpoint is the Trust-Task base (HTTPS binding 0.2 §6): a client posts
+to `<base>/trust-tasks`, which is `POST /v1/trust-tasks`. `vtc status`
+reports whether both services are there. Adding it is a VTA-side
+`dids edit`, then `cnm did-log install` for a VTC that serves its own
+`did.jsonl`.
+
+**Using an older wallet? (deprecated).** The SIOPv2 sign-in below is
+kept for wallets that cannot do the above, behind a link on the
+sign-in page. It will be removed; a date has not been set.
+
+A member signs in as their **VTA identity**: the
+portal asks the wallet extension which VTA persona this community
+knows them as (`walletProfile`, which binds one on first use), takes a
+challenge for that DID from `<origin>/v1/member/wallet/auth/challenge`,
+has the VTA mint the SIOPv2 `id_token` with the challenge as nonce
+(`proxyLogin` — the key never leaves the VTA), and posts it to
+`wallet/auth/` — the same header-less shapes as the console's
+`/v1/wallet`, with a different audience at the end. The portal then
+mirrors the bearer into its cookies via `POST /v1/member/session`.
+There is no button for the extension's own `login()`: it self-issues
+with the extension's holder `did:key` unless a persona is bound, and a
+community admits members by their VTA identity, so it would present a
+DID no community admitted. When the daemon refuses a sign-in, the page
+names the DID the VTA presented.
+**Sign in as a different identity…** is for a member whose wallet holds
+more than one VTA identity for this community: it lists the wallet's
+`did-self-issued` entries pinned to this community's DID (`vaultList`,
+which asks the member's consent because it discloses those entries to
+the page), shows each by its label and abbreviated DID, and runs the
+same round-trip as the chosen one. A refused sign-in offers it too.
+A **portal passkey** signs in without going through the VTA; a member
+adds one from the portal after a VTA sign-in. Adding or removing a
+passkey requires a session established by DID proof (`amr` contains
+`did`) — the DID is the anchor, so a stolen passkey cannot enrol more
+or remove the member's others. Changes are audited as
+`MemberPasskeyChanged`.
+
+**The browser wallet** is the VTA Wallet extension
+([OpenVTC/vta-browser-plugin](https://github.com/OpenVTC/vta-browser-plugin)).
+It is not in a browser store yet; the sign-in page carries the manual
+install steps (build with Node 24+, load `packages/extension/dist/`
+unpacked in a Chromium browser, finish its setup) and opens them when
+no wallet that can sign in as a VTA identity is detected.
+
+**Routes** (all under `/v1/member/`): `sign-in/config`,
+`wallet/auth/{challenge,,refresh}` (deprecated),
+`session`, `auth/refresh`, `sign-out`, `passkey-login/{start,finish}`
+— unauthenticated, behind the per-IP governor — and `me`, `passkeys`,
+`passkeys/register/{start,finish}`, `passkeys/{credentialId}` (DELETE)
+— member-session only. They carry no Trust Task binding for the reason
+the console's wallet aliases and sign-out carry none: they are a
+WebAuthn ceremony, the wallet's header-less SIOP exchange, and cookie
+plumbing. Anything a member *does* in the portal beyond signing in
+belongs on the Trust Task surface, signed by the member's own DID.
+
+**Routing.** The mount is fixed at `/members` and takes precedence
+over an operator website's own `/members` path. In subdomain mode it
+is served on the **API's** host, since its calls go to `/v1/member/*`
+on its own origin. WebAuthn accepts the single origin derived from
+`public_url`, so portal passkeys work where that origin serves the
+portal — the default path mode does.
+
 ## Routing modes
 
 ```mermaid
@@ -669,6 +902,8 @@ cnm website rollback --to-gen 2
 
 # Admin UX
 cnm admin build-info     # → /admin/build-info.json output
+vtc admin-ui export <dir>             # write the built-in console out to customise
+vtc admin-ui export --members <dir>   # the same for the member portal
 ```
 
 ## Configuration
@@ -686,8 +921,9 @@ max_file_size_mb = 10
 csp_override_file = ".vtc-website.toml"
 
 [admin_ui]
-mode = "embedded"                          # or "external"
-external_origin = "https://admin.example.com"   # only when mode=external
+mode = "embedded"                          # or "directory"
+dir = "/var/lib/community/console"         # only (and required) when mode=directory
+members_dir = "/var/lib/community/portal"  # optional: serve /members from here
 rp_id = "example.com"                      # WebAuthn RP ID
 
 [routing]

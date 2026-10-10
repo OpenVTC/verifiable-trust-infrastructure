@@ -270,6 +270,9 @@ async function refresh() {
     if (profile && typeof profile === "object") {
       if (profile.name) {
         setText("community-name", profile.name);
+        // The top bar names the community too, so a visitor who has
+        // scrolled past the hero still knows whose page this is.
+        setText("nav-name", profile.name);
         document.title = profile.name;
       } else {
         // Profile exists but the operator hasn't set a name. Replace

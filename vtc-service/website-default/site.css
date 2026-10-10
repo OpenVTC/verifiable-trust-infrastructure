@@ -2,8 +2,8 @@
  *
  * Standalone — no build step, no framework. Echoes the admin UX
  * design language (indigo brand, Inter-style stack, 4px grid) but
- * leans more marketing-y in the hero. CSP forbids inline JS; styles
- * stay external too.
+ * leans more marketing-y in the hero. CSP is `default-src 'self'`:
+ * no inline JS, no inline style attributes, so every rule lives here.
  */
 
 :root {
@@ -38,6 +38,8 @@
   --text-faint: light-dark(#7a7a82, #6f6f78);
   --brand: light-dark(var(--brand-500), var(--brand-400));
   --brand-hover: light-dark(var(--brand-600), var(--brand-300));
+  --brand-soft: light-dark(var(--brand-50), #1d1d3a);
+  --on-brand: #ffffff;
   --success: light-dark(#16a34a, #4ade80);
   --warning: light-dark(#d97706, #fbbf24);
   --danger: light-dark(#dc2626, #f87171);
@@ -46,6 +48,9 @@
   --radius-lg: 12px;
   --radius-xl: 20px;
   --radius-pill: 999px;
+
+  --page-max: 72rem;
+  --gutter: clamp(1rem, 4vw, 2.5rem);
 
   --shadow-card: light-dark(
     0 1px 2px rgb(0 0 0 / 0.04),
@@ -59,6 +64,17 @@
 
 * {
   box-sizing: border-box;
+}
+
+/* `hidden` must win over any `display` a class sets: site.js reveals rows
+ * (mediator, transports, the QR code) by clearing it, and `.status-row`'s
+ * `display: grid` used to leave them showing empty before the data came. */
+[hidden] {
+  display: none !important;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 html,
@@ -81,9 +97,52 @@ body {
   overflow-x: hidden;
 }
 
-/* Soft brand-tinted backdrop. Two large radial blobs sit behind
- * everything, very low opacity so they read as a gradient wash rather
- * than discrete shapes. */
+a {
+  color: var(--brand);
+}
+
+a:hover {
+  color: var(--brand-hover);
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -3rem;
+  z-index: 100;
+  padding: 0.5rem 0.9rem;
+  background: var(--brand-500);
+  color: var(--on-brand);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.skip-link:focus {
+  top: 1rem;
+  color: var(--on-brand);
+}
+
+/* Soft brand-tinted backdrop. Large radial blobs sit behind everything,
+ * very low opacity so they read as a gradient wash rather than shapes. */
 .bg-accent {
   position: fixed;
   inset: 0;
@@ -107,20 +166,222 @@ body {
     );
 }
 
-main {
-  max-width: 72rem;
+/* ── Buttons ─────────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.6rem 1.1rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.95rem;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    transform 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.btn-sm {
+  padding: 0.45rem 0.9rem;
+  font-size: 0.875rem;
+}
+
+.btn-lg {
+  padding: 0.8rem 1.35rem;
+  font-size: 1rem;
+}
+
+/* Fill stays brand-500 in both themes: white text on the lighter dark-theme
+ * brand (#7c7ce8) falls short of 4.5:1. */
+.btn-primary {
+  background: var(--brand-500);
+  color: var(--on-brand);
+  box-shadow: 0 8px 24px -10px color-mix(in srgb, var(--brand-500) 70%, transparent);
+}
+
+.btn-primary:hover {
+  background: var(--brand-600);
+  color: var(--on-brand);
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background: var(--bg-elev);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.btn-secondary:hover {
+  color: var(--text);
+  border-color: var(--brand);
+  transform: translateY(-1px);
+}
+
+/* ── Top bar ─────────────────────────────────────────────── */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
+  -webkit-backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar-inner {
+  max-width: var(--page-max);
   margin: 0 auto;
-  padding: clamp(2rem, 4vw, 4rem) clamp(1.25rem, 4vw, 2.5rem) 4rem;
+  padding: 0.7rem var(--gutter);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 650;
+}
+
+.brand:hover {
+  color: var(--text);
+}
+
+.brand-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-md);
+  color: var(--on-brand);
+  background: linear-gradient(135deg, var(--brand-500), var(--accent-violet));
+}
+
+.brand-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topnav {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex: none;
+}
+
+.topnav-link {
+  padding: 0.45rem 0.7rem;
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.topnav-link:hover {
+  color: var(--text);
+  background: var(--bg-subtle);
+}
+
+/* On a phone the brand name and the two text links give way: the
+ * member button is the one action that must stay reachable. */
+@media (max-width: 640px) {
+  .topnav-link {
+    display: none;
+  }
+}
+
+@media (max-width: 380px) {
+  .brand-name {
+    display: none;
+  }
+}
+
+/* ── Page frame ──────────────────────────────────────────── */
+
+main {
+  max-width: var(--page-max);
+  margin: 0 auto;
+  padding: clamp(1.5rem, 4vw, 3rem) var(--gutter) 4rem;
   display: flex;
   flex-direction: column;
-  gap: clamp(2rem, 4vw, 3rem);
+  gap: clamp(3rem, 7vw, 5.5rem);
+}
+
+/* Section headings. The DID pass and the status card keep the small
+ * uppercase label style; content sections get a real heading. */
+h2 {
+  margin: 0 0 0.75rem;
+  font-size: clamp(1.5rem, 1.4vw + 1rem, 2.1rem);
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  color: var(--text);
+}
+
+.pass-head h2,
+.status-card h2 {
+  margin: 0 0 0.75rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+h3 {
+  margin: 0;
+  font-size: 1.125rem;
+  line-height: 1.3;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+.kicker {
+  display: inline-block;
+  margin-bottom: 0.6rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--brand);
+}
+
+.section-head {
+  max-width: 44rem;
+  margin-bottom: clamp(1.5rem, 3vw, 2.25rem);
+}
+
+.section-lead {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--text-muted);
 }
 
 /* ── Hero ────────────────────────────────────────────────── */
 
 .hero {
   text-align: left;
-  padding-block: clamp(2rem, 6vw, 4rem) 0;
+  padding-block: clamp(1rem, 5vw, 3rem) 0;
+  min-width: 0;
 }
 
 .eyebrow {
@@ -159,10 +420,11 @@ main {
 
 .hero h1 {
   margin: 1.25rem 0 0;
-  font-size: clamp(2.25rem, 4.5vw + 0.5rem, 3.5rem);
-  line-height: 1.05;
-  font-weight: 700;
-  letter-spacing: -0.028em;
+  font-size: clamp(2.25rem, 4.5vw + 0.5rem, 3.75rem);
+  line-height: 1.04;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  overflow-wrap: anywhere;
   background: linear-gradient(
     135deg,
     var(--brand-500) 0%,
@@ -177,8 +439,7 @@ main {
 }
 
 /* Optional operator-supplied logo. Sits above the headline in the
- * hero. `hidden` by default; site.js sets `src` + clears the
- * `hidden` attribute when the public profile includes `logoUrl`. */
+ * hero. `hidden` by default; site.js sets `src` + clears `hidden`. */
 .community-logo {
   display: block;
   margin: 1.5rem 0 0;
@@ -186,12 +447,8 @@ main {
   height: auto;
   max-height: 96px;
   max-width: min(220px, 100%);
-  /* Subtle elevation so PNGs with transparent backgrounds read on
-   * either theme without a hard border. */
   border-radius: var(--radius-md);
   object-fit: contain;
-  /* Soft drop shadow on light theme — invisible on dark, which is
-   * fine since dark backgrounds rarely need the lift. */
   filter: drop-shadow(0 2px 8px rgb(0 0 0 / 0.06));
 }
 
@@ -203,8 +460,28 @@ main {
   margin: 1rem 0 0;
   font-size: clamp(1.05rem, 1vw + 0.85rem, 1.25rem);
   line-height: 1.55;
-  max-width: 44rem;
+  max-width: 40rem;
   color: var(--text-muted);
+}
+
+.cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 2rem;
+}
+
+.cta-note {
+  margin: 1rem 0 0;
+  max-width: 36rem;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+@media (max-width: 480px) {
+  .cta-row .btn {
+    flex: 1 1 100%;
+  }
 }
 
 /* ── Hero grid + community DID pass ──────────────────────── */
@@ -224,6 +501,356 @@ main {
     gap: clamp(2.5rem, 5vw, 4rem);
   }
 }
+
+/* ── What is this? ───────────────────────────────────────── */
+
+.explainer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.5rem 3rem;
+  padding: clamp(1.5rem, 4vw, 2.75rem);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-card);
+}
+
+.explainer-text p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 1.05rem;
+  max-width: 38rem;
+}
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.steps li {
+  display: flex;
+  gap: 0.85rem;
+  align-items: flex-start;
+}
+
+.step-num {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 50%;
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.step-body {
+  color: var(--text-muted);
+}
+
+.step-body strong {
+  display: block;
+  color: var(--text);
+}
+
+.text-link {
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.text-link:hover {
+  text-decoration: underline;
+}
+
+@media (min-width: 860px) {
+  .explainer {
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .text-link {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ── Capabilities ────────────────────────────────────────── */
+
+.cap-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+
+@media (min-width: 720px) {
+  .cap-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cap-wide {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (min-width: 1040px) {
+  .cap-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  /* Two columns, one row: the git card and data rooms fill the first
+   * row, the remaining three cards the second — no empty cell. */
+  .cap-wide {
+    grid-column: span 2;
+  }
+}
+
+.cap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 1.5rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  min-width: 0;
+}
+
+.cap p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+}
+
+.cap-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  margin-bottom: 0.35rem;
+  border-radius: var(--radius-md);
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+.badge-new {
+  position: absolute;
+  top: 1.5rem;
+  right: 1.5rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--accent-pink) 16%, transparent);
+  color: light-dark(#a3249f, #f0a6ee);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.cap-git {
+  background:
+    radial-gradient(
+      circle at 100% 0%,
+      color-mix(in srgb, var(--brand-500) 12%, transparent) 0,
+      transparent 55%
+    ),
+    var(--bg-elev);
+}
+
+.cap-git h3 {
+  font-size: 1.35rem;
+  padding-right: 4rem;
+}
+
+.cap-git p {
+  font-size: 1rem;
+  max-width: 40rem;
+}
+
+.forge-list {
+  list-style: none;
+  margin: auto 0 0;
+  padding: 1rem 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: 0.75rem;
+}
+
+.forge {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 0.7rem;
+  align-items: center;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.forge-logo {
+  grid-row: 1 / span 2;
+  width: 28px;
+  height: 28px;
+  flex: none;
+}
+
+.forge-github {
+  color: var(--text);
+}
+
+.forge-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.forge-sub {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* ── Where to next ───────────────────────────────────────── */
+
+.path-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+
+@media (min-width: 760px) {
+  .path-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.path {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 1.35rem 1.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elev);
+  color: var(--text);
+  text-decoration: none;
+  box-shadow: var(--shadow-card);
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease,
+    transform 150ms ease;
+}
+
+.path:hover {
+  color: var(--text);
+  border-color: var(--brand);
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-2px);
+}
+
+.path-title {
+  font-weight: 650;
+  font-size: 1.05rem;
+}
+
+.path-sub {
+  color: var(--text-muted);
+  font-size: 0.925rem;
+}
+
+.path-go {
+  margin-top: auto;
+  padding-top: 0.6rem;
+  color: var(--brand);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.path-featured {
+  border-color: color-mix(in srgb, var(--brand) 45%, var(--border));
+  background:
+    linear-gradient(
+      160deg,
+      color-mix(in srgb, var(--brand-500) 10%, transparent),
+      transparent 70%
+    ),
+    var(--bg-elev);
+}
+
+/* Operators know where they're going: no shadow, muted link. */
+.path-quiet {
+  background: transparent;
+  box-shadow: none;
+}
+
+.path-quiet .path-go {
+  color: var(--text-muted);
+}
+
+/* ── Footer ──────────────────────────────────────────────── */
+
+.site-footer {
+  border-top: 1px solid var(--border);
+}
+
+.footer-inner {
+  max-width: var(--page-max);
+  margin: 0 auto;
+  padding: 2rem var(--gutter) 3rem;
+  color: var(--text-faint);
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+.footer-inner p {
+  margin: 0.5rem 0 0;
+  max-width: 48rem;
+}
+
+.footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.footer-links a,
+.footer-meta a {
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.footer-links a:hover,
+.footer-meta a:hover {
+  color: var(--brand);
+  text-decoration: underline;
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+/* The DID value boxes style their own code element. */
+.did-value {
+  overflow-wrap: normal;
+}
+
+/* ── DID pass (continued) ────────────────────────────────── */
 
 .hero-hint {
   margin: 1.25rem 0 0;
@@ -307,17 +934,6 @@ main {
   .hero-hint {
     display: none;
   }
-}
-
-/* ── Status card ─────────────────────────────────────────── */
-
-h2 {
-  margin: 0 0 0.75rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--text-muted);
 }
 
 .status-card {
@@ -526,158 +1142,19 @@ h2 {
   opacity: 0.5;
 }
 
-/* ── Resource grid ───────────────────────────────────────── */
-
-.resource-grid ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 0.75rem;
-}
-
-@media (min-width: 720px) {
-  .resource-grid ul {
-    grid-template-columns: repeat(3, 1fr);
-  }
-}
-
-.resource {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 1.25rem 1.25rem 1rem;
-  color: var(--text);
-  text-decoration: none;
-  height: 100%;
-  position: relative;
-  transition:
-    transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
-    border-color 180ms cubic-bezier(0.16, 1, 0.3, 1),
-    box-shadow 180ms cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: var(--shadow-card);
-}
-
-.resource:hover,
-.resource:focus-visible {
-  border-color: color-mix(in srgb, var(--brand) 50%, var(--border-strong));
-  box-shadow: var(--shadow-hover);
-  transform: translateY(-2px);
-  outline: none;
-}
-
-.resource:focus-visible {
-  outline: 2px solid var(--brand);
-  outline-offset: 2px;
-}
-
-.resource-icon {
-  display: inline-flex;
-  width: 36px;
-  height: 36px;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--brand) 14%, transparent);
-  color: var(--brand);
-}
-
-.resource-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  flex: 1 1 auto;
-}
-
-.resource-title {
-  font-size: 0.95rem;
-  font-weight: 600;
-  letter-spacing: -0.011em;
-  color: var(--text);
-}
-
-.resource-sub {
-  font-size: 0.85rem;
-  color: var(--text-muted);
-  line-height: 1.5;
-}
-
-.resource-arrow {
-  position: absolute;
-  top: 1.25rem;
-  right: 1.25rem;
-  color: var(--text-faint);
-  transition:
-    color 180ms cubic-bezier(0.16, 1, 0.3, 1),
-    transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.resource:hover .resource-arrow {
-  color: var(--brand);
-  transform: translate(2px, -2px);
-}
-
-.resource-internal:hover .resource-arrow {
-  transform: translateX(3px);
-}
-
-/* ── Code + footer ───────────────────────────────────────── */
-
-code {
-  font-family: var(--font-mono);
-  font-size: 0.85em;
-  padding: 0.1em 0.4em;
-  background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
-  word-break: break-all;
-}
-
-footer {
-  margin-top: 1rem;
-  padding-top: 1.5rem;
-  border-top: 1px solid var(--border);
-  font-size: 0.85rem;
-  color: var(--text-muted);
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-footer p {
-  margin: 0;
-  max-width: 50rem;
-}
-
-footer a {
-  color: var(--brand);
-  text-decoration: none;
-  font-weight: 500;
-}
-
-footer a:hover {
-  color: var(--brand-hover);
-  text-decoration: underline;
-  text-underline-offset: 0.2em;
-}
-
-.footer-meta {
-  color: var(--text-faint);
-}
-
 /* Respect reduced-motion preferences. */
 @media (prefers-reduced-motion: reduce) {
-  .resource,
-  .resource-arrow {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .btn,
+  .path {
     transition: none;
   }
 
-  .resource:hover {
+  .btn:hover,
+  .path:hover {
     transform: none;
   }
 }
