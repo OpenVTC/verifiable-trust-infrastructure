@@ -485,6 +485,43 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── Memory ──────────────────────────────────────────────────────────
     (trust_tasks::TASK_VTA_MEMORY_PUT_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_MEMORY_LIST_0_1, ReadOnly),
+    // ── External accounts (`external/*`) ────────────────────────────────
+    (trust_tasks::TASK_EXTERNAL_ACCOUNTS_LIST_0_1, ReadOnly),
+    (trust_tasks::TASK_EXTERNAL_ACCOUNTS_GET_0_1, ReadOnly),
+    (trust_tasks::TASK_EXTERNAL_ACCOUNTS_SETUP_0_1, ReadOnly),
+    // Writes canary objects and deletes them again, and records the report on
+    // the account; a second probe converges on the same state.
+    (trust_tasks::TASK_EXTERNAL_ACCOUNTS_PROBE_0_1, RetrySafe),
+    // A create names its id, so a retry after a lost reply answers
+    // `alreadyExists` instead of the account it made. Keyed so the retry gets
+    // the original answer.
+    (trust_tasks::TASK_EXTERNAL_ACCOUNTS_CREATE_0_1, Keyed),
+    (trust_tasks::TASK_EXTERNAL_ACCOUNTS_UPDATE_0_1, RetrySafe),
+    // The sealed bundle opens once (its wrapping key is single-use), so a
+    // blind retry fails where the first succeeded. The response is only a
+    // fingerprint, never the secret, so caching it is safe.
+    (trust_tasks::TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1, Keyed),
+    (
+        trust_tasks::TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_1,
+        RetrySafe,
+    ),
+    (
+        trust_tasks::TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_1,
+        Keyed,
+    ),
+    (trust_tasks::TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_1, Keyed),
+    // State transitions refuse a second application (`invalidTransition`),
+    // so a lost reply needs the original answer replayed, not a refusal.
+    (trust_tasks::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_1, Keyed),
+    (trust_tasks::TASK_EXTERNAL_ACCOUNTS_RESUME_0_1, Keyed),
+    (trust_tasks::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_1, Keyed),
+    (trust_tasks::TASK_EXTERNAL_ACCOUNTS_RESTORE_0_1, Keyed),
+    (trust_tasks::TASK_EXTERNAL_ACCOUNTS_DELETE_0_1, Keyed),
+    // Issuance is idempotent in effect: a second credential for the same scope
+    // is harmless and expires within the binding's TTL ceiling. The response
+    // carries a sealed credential, so it must never be cached — which
+    // `RetrySafe` guarantees by keeping no record at all.
+    (trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1, RetrySafe),
     // The room oracle mints a presentation and **stores nothing** — the spec's
     // own `sideEffects: none`. A second execution leaves this VTA's state
     // byte-identical, which is what `RetrySafe` means; it does not mean the

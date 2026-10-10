@@ -401,6 +401,17 @@ pub fn extract_admin_credential(
              words down offline"
                 .into(),
         ),
+        SealedPayloadV1::ExternalSecret(_) => Err(
+            "ExternalSecret payloads carry an external account's provider secret on its way to \
+             a VTA (external/accounts/secret/set), not an admin CredentialBundle"
+                .into(),
+        ),
+        SealedPayloadV1::ExternalCredential(_) => Err(
+            "ExternalCredential payloads carry a short-lived provider credential for the \
+             integration that asked for it (external/credentials/issue), not an admin \
+             CredentialBundle"
+                .into(),
+        ),
     }
 }
 

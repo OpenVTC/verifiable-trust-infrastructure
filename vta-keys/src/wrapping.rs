@@ -40,7 +40,6 @@ const NONCE_LEN: usize = 12;
 
 struct WrappingEntry {
     private_key: StaticSecret,
-    #[allow(dead_code)]
     public_key: PublicKey,
     created_at: Instant,
     used: bool,
@@ -208,9 +207,37 @@ impl WrappingKeyCache {
     /// The caller must cross-check the tag against the outer request's
     /// declared `key_type` to reject mismatches.
     pub async fn unwrap_sealed(&self, armored: &str) -> Result<(String, Vec<u8>), AppError> {
-        use vta_sdk::sealed_transfer::{
-            PinnedOnlyPolicy, SealedPayloadV1, armor, open_bundle_with_policy,
-        };
+        use vta_sdk::sealed_transfer::SealedPayloadV1;
+
+        match self.open_sealed(armored).await?.0.payload {
+            SealedPayloadV1::RawPrivateKey(raw) => {
+                let key_bytes = BASE64
+                    .decode(raw.key_bytes_b64.as_bytes())
+                    .map_err(|e| AppError::Validation(format!("key bytes base64: {e}")))?;
+                Ok((raw.key_type, key_bytes))
+            }
+            other => Err(AppError::Validation(format!(
+                "sealed payload is not RawPrivateKey (got {:?})",
+                std::mem::discriminant(&other)
+            ))),
+        }
+    }
+
+    /// Consume a wrapping key and open a sealed-transfer armored bundle sealed
+    /// to it, whatever its payload. Returns the opened bundle and the wrapping
+    /// key's X25519 public half, which a `DidSigned` producer assertion commits
+    /// to. The caller matches the variant it expects and checks the producer
+    /// assertion against its own trust policy.
+    ///
+    /// The trust anchor for a `PinnedOnly` producer is the authenticated
+    /// request that carried the bundle: the wrapping key is single-use,
+    /// ephemeral, and was handed out to an authenticated caller seconds before,
+    /// so only that exchange could have sealed to it.
+    pub async fn open_sealed(
+        &self,
+        armored: &str,
+    ) -> Result<(vta_sdk::sealed_transfer::OpenedBundle, [u8; 32]), AppError> {
+        use vta_sdk::sealed_transfer::{PinnedOnlyPolicy, armor, open_bundle_with_policy};
 
         let bundles = armor::decode(armored)
             .map_err(|e| AppError::Validation(format!("sealed bundle armor: {e}")))?;
@@ -222,13 +249,7 @@ impl WrappingKeyCache {
         }
         let bundle = &bundles[0];
 
-        // Chunk 0's producer_assertion carries the wrapping-key kid via the
-        // producer_pubkey_b64 field by convention — the sealed envelope
-        // already constrains who could have produced this bundle because it
-        // had to be sealed to this cache's X25519 pubkey.
-        //
-        // Operationally we need to identify which cached wrapping secret to
-        // try. Sealed-transfer doesn't expose the recipient pubkey in the
+        // Sealed-transfer doesn't expose the recipient pubkey in the
         // ciphertext (that would defeat sender-anonymity), so we attempt
         // open against each unexpired, unused entry.
         let mut entries = self.entries.lock().await;
@@ -236,16 +257,8 @@ impl WrappingKeyCache {
         entries.retain(|_, e| now.duration_since(e.created_at) < TTL && !e.used);
 
         let mut last_err: Option<AppError> = None;
-        let mut matched_kid: Option<String> = None;
-        let mut matched_payload: Option<SealedPayloadV1> = None;
-
         for (kid, entry) in entries.iter() {
             let secret_bytes = entry.private_key.to_bytes();
-            // Trust anchor: this is the POST /keys/import handshake; the
-            // caller has already authenticated to the VTA and the
-            // wrapping key is one-shot + ephemeral. PinnedOnly without
-            // an OOB digest is expected here — the HTTP session is the
-            // integrity anchor.
             match open_bundle_with_policy(
                 &secret_bytes,
                 bundle,
@@ -253,9 +266,10 @@ impl WrappingKeyCache {
                 PinnedOnlyPolicy::CallerHasIndependentTrustAnchor,
             ) {
                 Ok(opened) => {
-                    matched_kid = Some(kid.clone());
-                    matched_payload = Some(opened.payload);
-                    break;
+                    let kid = kid.clone();
+                    let recipient = entry.public_key.to_bytes();
+                    entries.remove(&kid);
+                    return Ok((opened, recipient));
                 }
                 Err(e) => {
                     last_err = Some(AppError::Authentication(format!(
@@ -263,22 +277,6 @@ impl WrappingKeyCache {
                     )));
                 }
             }
-        }
-
-        if let (Some(kid), Some(payload)) = (matched_kid, matched_payload) {
-            entries.remove(&kid);
-            return match payload {
-                SealedPayloadV1::RawPrivateKey(raw) => {
-                    let key_bytes = BASE64
-                        .decode(raw.key_bytes_b64.as_bytes())
-                        .map_err(|e| AppError::Validation(format!("key bytes base64: {e}")))?;
-                    Ok((raw.key_type, key_bytes))
-                }
-                other => Err(AppError::Validation(format!(
-                    "sealed payload is not RawPrivateKey (got {:?})",
-                    std::mem::discriminant(&other)
-                ))),
-            };
         }
 
         Err(last_err.unwrap_or_else(|| {

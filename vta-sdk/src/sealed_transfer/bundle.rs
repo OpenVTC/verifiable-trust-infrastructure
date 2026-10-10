@@ -112,6 +112,15 @@ pub enum SealedPayloadV1 {
     /// readable only by that key and provably came from the enclave. Additive
     /// variant — no existing variant changes.
     SeedMnemonic(Box<SeedMnemonicBundle>),
+    /// An external account's secret half (an S3 secret access key, an API
+    /// key), sealed in the administrator's client to the custodian for
+    /// `external/accounts/secret/set/0.1`. Write-only: no task ever returns
+    /// it. Additive variant — no existing variant changes.
+    ExternalSecret(Box<super::external::ExternalSecretBundle>),
+    /// A short-lived, downscoped provider credential issued by
+    /// `external/credentials/issue/0.1`, sealed to the consumer that asked.
+    /// Additive variant — no existing variant changes.
+    ExternalCredential(Box<super::external::ExternalCredentialBundle>),
 }
 
 /// The payload of [`SealedPayloadV1::SeedMnemonic`].

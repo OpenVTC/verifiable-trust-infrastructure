@@ -95,6 +95,24 @@ impl fmt::Display for Risk {
 /// different class: `acl/grant` and `contexts/create` are both "add a row", but
 /// only one of them hands out authority.
 const SLUG_OVERRIDES: &[(&str, Risk)] = &[
+    // External accounts (`external/*`). Issuance mints a provider credential,
+    // so a standing approval would let an agent mint them indefinitely: the
+    // specification asks for approval per call, which `Sensitive` gives.
+    ("external/credentials/issue", Risk::Sensitive),
+    // A provider secret, set; who may use an account, widened; an account
+    // switched back on. Each moves authority.
+    ("external/accounts/secret/set", Risk::Sensitive),
+    ("external/accounts/bindings/grant", Risk::Sensitive),
+    ("external/accounts/resume", Risk::Sensitive),
+    // The provider-side setup, generated: reads only, contacts nothing.
+    ("external/accounts/setup", Risk::ReadOnly),
+    // Writes and deletes a canary object at the provider.
+    ("external/accounts/probe", Risk::Mutating),
+    // The kill switch: withdraws every consumer's access at once, like
+    // `disable`. Reversible, and a host should still confirm it.
+    ("external/accounts/suspend", Risk::Destructive),
+    ("external/accounts/archive", Risk::Destructive),
+    ("external/accounts/restore", Risk::Mutating),
     // Key authority, exercised.
     ("keys/sign", Risk::Sensitive),
     ("keys/sign-sshsig", Risk::Sensitive),
