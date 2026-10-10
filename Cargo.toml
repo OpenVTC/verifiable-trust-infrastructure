@@ -566,8 +566,12 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # (trust-tasks-tf #732), which the VTA serves for git commit signing. 0.27.7
 # makes a `pcs-tokens` tick a window of time (`tickNotYet`) and adds
 # publish/0.1's `tickLength`, `signerChanged` and `otherCriterion`
-# (trust-tasks-tf #734).
-trust-tasks-rs = { version = "0.27.7", default-features = false, features = [
+# (trust-tasks-tf #734). 0.27.8 adds the `auth/oob/*` family (trust-tasks-tf
+# #738), room files — `rooms/blobs/*`, `rooms/records/{put,get,list}/0.2`,
+# `rooms/info`, `rooms/usage`, `rooms/keys/file-key` and the VTC's
+# `vtc/rooms/*` / `vtc/storage/*` (#739) — and the VTA's `external/*`
+# accounts (#740).
+trust-tasks-rs = { version = "0.27.8", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
