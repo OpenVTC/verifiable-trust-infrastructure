@@ -74,7 +74,7 @@ nothing it does not already learn from the blob's size.
   "size":       4718592,                         // plaintext bytes
   "digest":     "<DigestMultibase of the plaintext>",
   "epoch":      7,                               // epoch the file key derives from
-  "chunkSize":  262144,                          // plaintext bytes per chunk
+  "segmentSize": 262128,                         // plaintext bytes per segment
   "blobRef":    "<DigestMultibase of the ciphertext manifest>"
 }
 ```
@@ -135,7 +135,7 @@ file_key        = HKDF-SHA256(ikm  = storage_key(E),
 
 ### 3.2 Chunking: the STREAM construction
 
-The plaintext is cut into `chunkSize` pieces, and each is sealed independently
+The plaintext is cut into `segmentSize` pieces, and each is sealed independently
 with ChaCha20-Poly1305, the AEAD records already use:
 
 ```
@@ -155,9 +155,15 @@ The **ciphertext manifest** lists each chunk's digest and the whole ciphertext's
 digest:
 
 ```jsonc
-{ "chunkSize": 262160, "chunkCount": 18, "size": 4718880,
-  "chunkDigests": ["…", "…"], "digest": "…" }
+{ "size": 4718896,
+  "chunks": { "chunkSize": 262144, "chunkCount": 19, "chunkDigests": ["…", "…"] },
+  "digest": "…" }
 ```
+
+One sealed segment is one transfer chunk, so `chunkSize` is `segmentSize` plus
+the 16-byte tag. Transfer chunks top out at 262 144 bytes, so a plaintext segment
+tops out at 262 128. The normative shapes are `FileManifest` and `BlobManifest`
+in `rooms/_shared/0.1/blobs.schema.json` (trust-tasks-tf).
 
 `blobRef = digest(manifest)`. This is exactly `vti_common::backup_transfer`'s
 chunked manifest, committed up front, so upload integrity, resume and idempotent
