@@ -1133,6 +1133,16 @@ pub(super) async fn handle_file_key(
     .await
     {
         Ok(k) => k,
+        // Declared rather than `taskFailed` + a reason: the framework has no standard
+        // not-found code, and a caller deciding whether to deliver a welcome needs to tell
+        // this apart from a failure.
+        Err(room_groups::FileKeyError::NoGroup) => {
+            return super::helpers::reject_declared(
+                &doc,
+                spec::error_codes::NO_GROUP,
+                format!("this VTA holds no group for room `{}`", req.room_id),
+            );
+        }
         Err(room_groups::FileKeyError::App(e)) => return app_error_to_reject(&doc, e),
         Err(room_groups::FileKeyError::NotDelivered { epoch, held }) => {
             return super::helpers::reject_with_code(
@@ -1348,5 +1358,148 @@ mod verification_tests {
         assert!(head_of(Some(&"zQm…".to_string()), None, Some(412)).is_none());
         assert!(head_of(Some(&"zQm…".to_string()), Some(118), None).is_none());
         assert!(head_of(None, Some(118), Some(412)).is_none());
+    }
+}
+
+/// `rooms/keys/file-key` refusals, as a caller receives them: the declared code, and
+/// `details` that validate against the `detailsSchema` the specification declares.
+#[cfg(test)]
+mod file_key_refusal_tests {
+    use super::*;
+    use trust_tasks_rs::TypeUri;
+    use vti_rooms::mls::{IdentitySnapshot, RoomGroup};
+    use vti_rooms::sealed::SealedRoom;
+
+    const ROOM: &str = "did:webvh:example.com:rooms:northwind";
+    const FILE_ID: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+
+    /// `rooms/keys/file-key/0.1`'s declared `unknownEpoch` `detailsSchema`, copied from the
+    /// specification's front matter: the generated bindings carry codes, not their schemas.
+    /// Keep in step with `specs/rooms/keys/file-key/0.1/spec.md` in dtgwg-trust-tasks-tf.
+    fn unknown_epoch_details_schema() -> Value {
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["reason"],
+            "properties": {
+                "reason": { "type": "string", "enum": ["notDelivered", "beyondChain"] },
+                "earliestEpoch": { "type": "integer", "minimum": 1 },
+                "heldEpoch": { "type": "integer", "minimum": 1 }
+            }
+        })
+    }
+
+    fn request(payload: Value) -> TrustTask<Value> {
+        let uri: TypeUri = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1
+            .parse()
+            .unwrap();
+        TrustTask::new("urn:uuid:file-key-test", uri, payload)
+    }
+
+    fn body(outcome: TrustTaskOutcome) -> Value {
+        serde_json::from_slice(&outcome.body).expect("the outcome is a document")
+    }
+
+    /// A room this VTA holds at epoch 2, with no rung back to 1.
+    async fn hold_room_at_epoch_2(state: &AppState) {
+        let mut room = SealedRoom::new(ROOM, RoomGroup::create("did:key:zAlice").unwrap());
+        let (_bob, kp) = IdentitySnapshot::mint("did:key:zBob").unwrap();
+        room.add_member(&kp).unwrap();
+        room_groups::store_for_test(
+            &state.room_groups_ks,
+            ROOM,
+            "did:key:zAlice",
+            room.group(),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn ask(state: &AppState, payload: Value) -> Value {
+        let auth = crate::test_support::super_admin_claims();
+        body(handle_file_key(state, &auth, request(payload)).await)
+    }
+
+    fn assert_unknown_epoch(doc: &Value, reason: &str) {
+        assert_eq!(
+            doc["payload"]["code"], "rooms/keys/file-key:unknownEpoch",
+            "{doc}"
+        );
+        let details = &doc["payload"]["details"];
+        assert_eq!(details["reason"], reason, "{doc}");
+        let schema = jsonschema::validator_for(&unknown_epoch_details_schema()).unwrap();
+        assert!(
+            schema.is_valid(details),
+            "details must match the declared detailsSchema: {details}"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_group_is_the_declared_no_group_code() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let doc = ask(
+            &state,
+            serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "seal" }),
+        )
+        .await;
+        assert_eq!(
+            doc["payload"]["code"], "rooms/keys/file-key:noGroup",
+            "{doc}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_epoch_not_yet_delivered_says_so_and_names_the_held_epoch() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        hold_room_at_epoch_2(&state).await;
+        let doc = ask(
+            &state,
+            serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "open", "epoch": 3 }),
+        )
+        .await;
+        assert_unknown_epoch(&doc, "notDelivered");
+        assert_eq!(doc["payload"]["details"]["heldEpoch"], 2, "{doc}");
+    }
+
+    #[tokio::test]
+    async fn an_epoch_beyond_the_chain_names_the_earliest_reachable() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        hold_room_at_epoch_2(&state).await;
+        let doc = ask(
+            &state,
+            serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "open", "epoch": 1 }),
+        )
+        .await;
+        assert_unknown_epoch(&doc, "beyondChain");
+        assert_eq!(doc["payload"]["details"]["earliestEpoch"], 2, "{doc}");
+    }
+
+    #[tokio::test]
+    async fn a_held_room_releases_a_sealing_key_under_its_current_epoch() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        hold_room_at_epoch_2(&state).await;
+        let doc = ask(
+            &state,
+            serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "seal" }),
+        )
+        .await;
+        let response: trust_tasks_rs::specs::rooms::keys::file_key::v0_1::Response =
+            serde_json::from_value(doc["payload"].clone()).expect("a typed response");
+        assert_eq!(response.epoch.get(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_epoch_with_seal_or_without_it_on_open_is_malformed() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        hold_room_at_epoch_2(&state).await;
+        for payload in [
+            serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "seal", "epoch": 2 }),
+            serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "open" }),
+            serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "open", "epoch": 4_294_967_296u64 }),
+        ] {
+            let doc = ask(&state, payload).await;
+            assert_eq!(doc["payload"]["code"], "malformedRequest", "{doc}");
+        }
     }
 }
