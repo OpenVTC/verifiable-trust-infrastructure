@@ -20,10 +20,10 @@ vta-keys = { path = "../vta-keys", version = "0.17" }
 vti-common = { path = "../vti-common", version = "0.40" }
 vta-sdk = { path = "../vta-sdk", version = "0.64", features = ["client"] }
 async-trait = "0.1"
+base64 = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
-multibase = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

@@ -12,12 +12,11 @@
 //! writes when the secrets are set again are new ones.
 
 use hmac::{Hmac, KeyInit, Mac};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
 const KEY_ROW: &str = "fingerprint-key";
-const DOMAIN: &[u8] = b"vta-external-secret-fingerprint/v1\0";
 
 /// The custodian's fingerprint key, created on first use. Concurrent first uses
 /// converge on one key (`insert_raw_if_absent`), so no fingerprint is ever
@@ -47,23 +46,20 @@ fn to_key(bytes: &[u8]) -> Result<[u8; 32], AppError> {
         .map_err(|_| AppError::Internal("stored fingerprint key is not 32 bytes".into()))
 }
 
-/// The fingerprint of `secret` under `key`, as a `DigestMultibase`
-/// (base58btc multihash).
-///
-/// The multihash names sha2-256 truthfully: it is SHA-256 over the HMAC tag,
-/// not the HMAC tag labelled as a hash. Multihash has no code for a keyed MAC.
+/// The fingerprint of `secret` under `key`, as a `SecretFingerprint`:
+/// `hmacsha256:` and the base64url (no padding) of the first 16 bytes of
+/// HMAC-SHA256. Deliberately not a multihash, which has no code for a keyed
+/// digest.
 pub fn of(key: &[u8; 32], secret: &[u8]) -> String {
+    use base64::Engine as _;
     let mut mac =
         <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("HMAC takes any key length");
-    mac.update(DOMAIN);
     mac.update(secret);
     let tag = mac.finalize().into_bytes();
-    let digest = Sha256::digest(tag);
-    let mut multihash = Vec::with_capacity(34);
-    multihash.push(0x12);
-    multihash.push(0x20);
-    multihash.extend_from_slice(&digest);
-    multibase::encode(multibase::Base::Base58Btc, multihash)
+    format!(
+        "hmacsha256:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&tag[..16])
+    )
 }
 
 #[cfg(test)]
@@ -73,7 +69,8 @@ mod tests {
     #[test]
     fn a_fingerprint_depends_on_the_key_and_the_secret() {
         let a = of(&[1; 32], b"secret");
-        assert!(a.starts_with("zQm"), "{a}");
+        assert!(a.starts_with("hmacsha256:"), "{a}");
+        assert_eq!(a.len(), "hmacsha256:".len() + 22, "{a}");
         assert_eq!(a, of(&[1; 32], b"secret"));
         assert_ne!(a, of(&[2; 32], b"secret"), "keyed");
         assert_ne!(a, of(&[1; 32], b"secreT"));

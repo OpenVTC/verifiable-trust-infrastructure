@@ -554,7 +554,7 @@ fn external_record() -> vta_external::model::AccountRecord {
         state: AccountState::Active,
         public_material: None,
         secret: Some(SecretInfo {
-            fingerprint: DIGEST_MULTIBASE.into(),
+            fingerprint: vta_external::fingerprint::of(&[7; 32], b"secret"),
             set_at: dt(),
             seed_id: 0,
         }),
@@ -2041,7 +2041,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::external::accounts::secret::set::v0_1::Payload,
                 specs::external::accounts::secret::set::v0_1::Response,
                 json!({ "context": "community", "id": "r2-main", "sealedSecret": SEALED_ARMOR }),
-                json!({ "fingerprint": DIGEST_MULTIBASE, "setAt": TS })
+                json!({ "fingerprint": vta_external::fingerprint::of(&[7; 32], b"secret"), "setAt": TS })
             ),
         ),
         (
@@ -2077,7 +2077,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::external::accounts::probe::v0_1::Payload,
                 specs::external::accounts::probe::v0_1::Response,
                 json!({ "context": "community", "id": "r2-main" }),
-                json!({ "report": { "at": TS, "ok": false, "steps": [{ "step": "sign", "ok": true, "durationMs": 1 }, { "step": "put", "ok": false, "providerError": "HTTP 403: AccessDenied" }] } })
+                json!({ "report": { "at": TS, "ok": false, "complete": false, "steps": [{ "step": "sign", "ok": true, "durationMs": 1 }, { "step": "put", "ok": false, "providerError": "HTTP 403: AccessDenied" }] } })
             ),
         ),
         (

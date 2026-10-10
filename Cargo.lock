@@ -11281,10 +11281,10 @@ name = "vta-external"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "chrono",
  "hex",
  "hmac 0.13.0",
- "multibase",
  "rand 0.10.2",
  "reqwest",
  "serde",

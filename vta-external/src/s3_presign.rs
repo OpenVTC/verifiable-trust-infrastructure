@@ -15,9 +15,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use vta_sdk::sealed_transfer::ExternalCredential;
+use vta_sdk::sealed_transfer::ExternalCredentialPayload;
 
-use crate::driver::{DriverError, ExternalAuthDriver, IssueRequest, Issued};
+use crate::driver::{DriverError, ExternalAuthDriver, IssueRequest, Issued, SettingsError};
 use crate::model::{AccountRecord, rfc3339};
 
 /// The driver.
@@ -30,27 +30,33 @@ struct Settings {
     bucket: String,
     path_style: bool,
     access_key_id: String,
+    probe_prefix: Option<String>,
 }
 
-fn settings(v: &Value) -> Result<Settings, String> {
-    let s = |k: &str| {
+fn settings(v: &Value) -> Result<Settings, SettingsError> {
+    let s = |k: &'static str| {
         v.get(k)
             .and_then(Value::as_str)
             .map(str::to_string)
-            .ok_or_else(|| format!("settings.{k} is required"))
+            .ok_or_else(|| SettingsError::new(k, format!("{k} is required")))
     };
-    let endpoint = Url::parse(&s("endpoint")?).map_err(|e| format!("settings.endpoint: {e}"))?;
+    let bad = |member: &'static str, why: &str| SettingsError::new(member, why);
+    let endpoint =
+        Url::parse(&s("endpoint")?).map_err(|e| SettingsError::new("endpoint", e.to_string()))?;
     if endpoint.scheme() != "https" {
-        return Err("settings.endpoint must be https".into());
+        return Err(bad("endpoint", "must be https"));
     }
     if endpoint.host_str().is_none() {
-        return Err("settings.endpoint has no host".into());
+        return Err(bad("endpoint", "has no host"));
     }
     if endpoint.query().is_some() || endpoint.fragment().is_some() || endpoint.path() != "/" {
-        return Err("settings.endpoint must be a bare origin, with no path or query".into());
+        return Err(bad(
+            "endpoint",
+            "must be a bare origin, with no path or query",
+        ));
     }
     if !endpoint.username().is_empty() || endpoint.password().is_some() {
-        return Err("settings.endpoint must not carry credentials".into());
+        return Err(bad("endpoint", "must not carry credentials"));
     }
     let region = s("region")?;
     if region.is_empty()
@@ -58,7 +64,7 @@ fn settings(v: &Value) -> Result<Settings, String> {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
     {
-        return Err("settings.region must be lowercase letters, digits and '-'".into());
+        return Err(bad("region", "must be lowercase letters, digits and '-'"));
     }
     let bucket = s("bucket")?;
     let bucket_ok = (3..=63).contains(&bucket.len())
@@ -68,11 +74,19 @@ fn settings(v: &Value) -> Result<Settings, String> {
         && !bucket.starts_with(['.', '-'])
         && !bucket.ends_with(['.', '-']);
     if !bucket_ok {
-        return Err("settings.bucket is not a valid bucket name".into());
+        return Err(bad("bucket", "is not a valid bucket name"));
     }
     let access_key_id = s("accessKeyId")?;
     if access_key_id.is_empty() || !access_key_id.chars().all(|c| c.is_ascii_alphanumeric()) {
-        return Err("settings.accessKeyId must be letters and digits".into());
+        return Err(bad("accessKeyId", "must be letters and digits"));
+    }
+    let probe_prefix = v
+        .get("probePrefix")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if let Some(p) = &probe_prefix {
+        crate::scope::validate_prefix(p)
+            .map_err(|e| SettingsError::new("probePrefix", e.to_string()))?;
     }
     Ok(Settings {
         endpoint,
@@ -80,7 +94,13 @@ fn settings(v: &Value) -> Result<Settings, String> {
         bucket,
         path_style: v.get("pathStyle").and_then(Value::as_bool).unwrap_or(false),
         access_key_id,
+        probe_prefix,
     })
+}
+
+/// The account's access key id, for checking a sealed secret's claim.
+pub fn access_key_id(settings_value: &Value) -> Option<&str> {
+    settings_value.get("accessKeyId").and_then(Value::as_str)
 }
 
 /// A presigned request.
@@ -214,7 +234,7 @@ impl ExternalAuthDriver for S3StaticPresign {
         true
     }
 
-    fn validate_settings(&self, v: &Value) -> Result<(), String> {
+    fn validate_settings(&self, v: &Value) -> Result<(), SettingsError> {
         settings(v).map(|_| ())
     }
 
@@ -285,13 +305,15 @@ impl ExternalAuthDriver for S3StaticPresign {
                     external/accounts/secret/set. Do not paste it anywhere else: the access key \
                     id is the only half that belongs in the account's settings."},
                 {"description": "Run external/accounts/probe. It writes, reads and deletes one canary \
-                    object under the first bound prefix, so the key must allow exactly that."},
+                    object under the narrowest bound prefix (or the settings' probePrefix before \
+                    anything is bound), so the key must allow exactly that. Only a probe that is \
+                    ok and complete makes the account usable."},
             ],
         })
     }
 
     async fn issue(&self, req: IssueRequest<'_>) -> Result<Issued, DriverError> {
-        let s = settings(&req.account.settings).map_err(DriverError::Internal)?;
+        let s = settings(&req.account.settings).map_err(|e| DriverError::Internal(e.why))?;
         let Some(secret) = req.secret else {
             return Err(DriverError::SetupRequired(
                 "the account's secret has not been set (external/accounts/secret/set)".into(),
@@ -307,14 +329,16 @@ impl ExternalAuthDriver for S3StaticPresign {
         };
         let key = format!("{prefix}{object}");
         let p = presign(&s, secret, method, &key, req.ttl_seconds, req.now);
+        let expires_at = req.now + Duration::seconds(i64::from(req.ttl_seconds));
         Ok(Issued {
-            credential: ExternalCredential::PresignedRequest {
+            credential: ExternalCredentialPayload::PresignedRequest {
                 method: p.method.to_string(),
                 url: p.url,
-                headers: Vec::new(),
+                headers: Default::default(),
+                expires_at: rfc3339(expires_at),
+                provider_request_id: None,
             },
-            expires_at: req.now + Duration::seconds(i64::from(req.ttl_seconds)),
-            provider_request_id: None,
+            expires_at,
         })
     }
 
@@ -326,25 +350,30 @@ impl ExternalAuthDriver for S3StaticPresign {
         now: DateTime<Utc>,
     ) -> Value {
         let mut steps: Vec<Value> = Vec::new();
+        // `complete` is true only when the canary steps ran: put, get and
+        // delete, the account exercised end to end.
         let report = |steps: Vec<Value>| {
             let ok = !steps.is_empty() && steps.iter().all(|s| s["ok"] == true);
-            json!({ "at": rfc3339(now), "ok": ok, "steps": steps })
+            let complete = steps.iter().any(|s| s["step"] == "delete");
+            json!({ "at": rfc3339(now), "ok": ok, "complete": complete, "steps": steps })
         };
 
         // sign: build the three presigned requests.
         let started = std::time::Instant::now();
         let signed = (|| {
-            let s = settings(&account.settings)?;
+            let s = settings(&account.settings).map_err(|e| format!("{}: {}", e.member, e.why))?;
             let secret = secret.ok_or("the account's secret has not been set")?;
             // The narrowest bound prefix: the canary goes where the tightest
-            // binding can reach, so a key scoped to it passes.
+            // binding can reach, so a key scoped to it passes. With no
+            // bindings, the settings' `probePrefix`.
             let prefix = account
                 .bindings
                 .iter()
                 .filter_map(|b| b.scope_ceiling.as_ref())
                 .flat_map(|c| c.prefixes.iter())
                 .max_by_key(|p| p.len())
-                .cloned();
+                .cloned()
+                .or_else(|| s.probe_prefix.clone());
             let key = format!(
                 "{}vta-probe-{}",
                 prefix.as_deref().unwrap_or("vta-probe/"),
@@ -359,8 +388,9 @@ impl ExternalAuthDriver for S3StaticPresign {
         let presigned = match signed {
             Ok((bound, p)) => {
                 steps.push(json!({ "step": "sign", "ok": true, "durationMs": started.elapsed().as_millis() as u64 }));
-                // With no bindings there is no prefix the key is meant to
-                // reach, so nothing is written.
+                // With no binding and no `probePrefix` there is nowhere the
+                // key is meant to reach, so nothing is written and the report
+                // is `complete: false`.
                 if !bound {
                     return report(steps);
                 }
@@ -486,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_that_could_smuggle_anything_are_refused() {
+    fn settings_that_could_smuggle_anything_are_refused_naming_the_member() {
         for (k, v) in [
             ("endpoint", "http://s3.example.org"),
             ("endpoint", "https://s3.example.org/path"),
@@ -500,7 +530,10 @@ mod tests {
                 "region": "auto", "bucket": "rooms", "accessKeyId": "AKID",
             });
             v0[k] = Value::String(v.into());
-            assert!(settings(&v0).is_err(), "{k}={v} accepted");
+            let err = settings(&v0)
+                .err()
+                .unwrap_or_else(|| panic!("{k}={v} accepted"));
+            assert_eq!(err.member, k);
         }
     }
 
@@ -511,5 +544,35 @@ mod tests {
         assert!(!r.contains("abc"), "{r}");
         let r = redact("echo X-Amz-Signature=deadbeef trailing", url);
         assert!(!r.contains("deadbeef"), "{r}");
+    }
+
+    /// With no binding and no `probePrefix` nothing is written: the probe stops
+    /// after `sign`, ok but not complete, so it cannot make the account usable.
+    #[tokio::test]
+    async fn an_unbound_probe_without_a_probe_prefix_is_not_complete() {
+        let now = Utc::now();
+        let account = AccountRecord {
+            id: "r2".into(),
+            label: "R2".into(),
+            context: "c".into(),
+            settings: json!({
+                "model": "s3-static-presign", "endpoint": "https://s3.example.invalid",
+                "region": "auto", "bucket": "rooms", "accessKeyId": "AKID",
+            }),
+            state: crate::model::AccountState::Active,
+            public_material: None,
+            secret: None,
+            bindings: vec![],
+            provider_setup_required: true,
+            last_probe: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let report = S3StaticPresign
+            .probe(&account, Some("secret"), crate::driver::probe_client(), now)
+            .await;
+        assert_eq!(report["ok"], true, "{report}");
+        assert_eq!(report["complete"], false, "{report}");
+        assert_eq!(report["steps"].as_array().unwrap().len(), 1);
     }
 }

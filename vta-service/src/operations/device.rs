@@ -919,23 +919,15 @@ mod tests {
             "room-present",
             "room-open",
             "key-export",
+            "external-accounts-manage",
+            "external-auth-use",
         ] {
             assert!(
                 p.contains(&cap.to_string()),
                 "{cap} must be published: {p:?}"
             );
         }
-        // The two external-account capabilities are not in the device
-        // binding's `Capability` registry yet (device/_shared 0.2), so they
-        // ride under `ext` until the specification registers them.
-        assert_eq!(
-            l,
-            vec![
-                "externalAccountsManage".to_string(),
-                "externalAuthUse".to_string()
-            ],
-            "only unregistered ones go in ext: {l:?}"
-        );
+        assert!(l.is_empty(), "only unregistered ones go in ext: {l:?}");
     }
 
     /// An entry whose stored list is only an additive grant holds its whole role
@@ -952,13 +944,7 @@ mod tests {
                 "role-derived {cap} missing: {p:?}"
             );
         }
-        // `externalAuthUse` is role-derived and not yet in the device
-        // registry, so it rides under `ext` beside the additive grant.
-        assert_eq!(
-            l,
-            vec!["externalAuthUse".to_string(), "personaHolder".to_string()],
-            "{l:?}"
-        );
+        assert_eq!(l, vec!["personaHolder".to_string()], "{l:?}");
     }
 
     /// A stored list naming a capability the role does not carry lists only what

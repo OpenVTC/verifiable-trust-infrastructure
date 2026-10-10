@@ -392,16 +392,17 @@ pub(super) async fn handle_create(
         )
     };
     let Some(d) = driver::driver_for(&model) else {
-        return invalid(
-            "model",
+        return reject_declared(
+            &doc,
+            t::error_codes::MODEL_UNSUPPORTED,
             format!(
-                "model {model} is not served by this custodian (it serves: {})",
+                "model {model} is not implemented by this custodian (it serves: {})",
                 driver::SUPPORTED_MODELS.join(", ")
             ),
         );
     };
-    if let Err(why) = d.validate_settings(&settings) {
-        return invalid("settings", why);
+    if let Err(e) = d.validate_settings(&settings) {
+        return invalid(e.member, e.why);
     }
 
     let now = Utc::now();
@@ -477,11 +478,10 @@ pub(super) async fn handle_update(
         Err(resp) => return resp,
     };
     if rec.state == AccountState::Archived {
-        return app_error_to_reject(
+        return reject_declared(
             &doc,
-            AppError::Conflict(format!(
-                "account {id} is archived; restore it before changing it"
-            )),
+            t::error_codes::ARCHIVED,
+            format!("account {id} is archived; restore it before changing it"),
         );
     }
     if let Some(label) = &req.label {
@@ -509,8 +509,8 @@ pub(super) async fn handle_update(
                 AppError::Internal(format!("no driver for {}", rec.model())),
             );
         };
-        if let Err(why) = d.validate_settings(&settings) {
-            return invalid("settings", why);
+        if let Err(e) = d.validate_settings(&settings) {
+            return invalid(e.member, e.why);
         }
         if settings != rec.settings {
             // Replaced whole, never merged: what is stored is what was approved.
@@ -558,6 +558,13 @@ pub(super) async fn handle_secret_set(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    if rec.state == AccountState::Archived {
+        return reject_declared(
+            &doc,
+            t::error_codes::ARCHIVED,
+            format!("account {id} is archived; restore it before setting its secret"),
+        );
+    }
     if !driver::driver_for(rec.model()).is_some_and(|d| d.holds_secret()) {
         return reject_declared(
             &doc,
@@ -589,6 +596,14 @@ pub(super) async fn handle_secret_set(
     }
     if bundle.secret.is_empty() {
         return unseal_failed("the sealed secret is empty".into());
+    }
+    // A secret cannot be paired with the wrong key id.
+    if let Some(claimed) = &bundle.access_key_id
+        && vta_external::s3_presign::access_key_id(&rec.settings) != Some(claimed.as_str())
+    {
+        return unseal_failed(format!(
+            "the bundle's secret belongs to access key {claimed}, not this account's"
+        ));
     }
 
     let seed_id = match store::store_secret(
@@ -707,11 +722,10 @@ pub(super) async fn handle_bindings_grant(
         Err(resp) => return resp,
     };
     if rec.state == AccountState::Archived {
-        return app_error_to_reject(
+        return reject_declared(
             &doc,
-            AppError::Conflict(format!(
-                "account {id} is archived; restore it before binding to it"
-            )),
+            t::error_codes::ARCHIVED,
+            format!("account {id} is archived; restore it before binding to it"),
         );
     }
     if let Err(why) = scope::validate_ceiling(rec.model(), binding.scope_ceiling.as_ref()) {
@@ -814,8 +828,8 @@ pub(super) async fn handle_probe(
     if rec.state == AccountState::Archived {
         return reject_declared(
             &doc,
-            t::error_codes::NOT_ACTIVE,
-            format!("account {id} is archived"),
+            t::error_codes::ARCHIVED,
+            format!("account {id} is archived; restore it first"),
         );
     }
     let Some(d) = driver::driver_for(rec.model()) else {
@@ -839,6 +853,9 @@ pub(super) async fn handle_probe(
         .await;
     drop(secret);
     let ok = report["ok"] == true;
+    // An exchange alone proves the provider trusts the key, not that the
+    // account can do what its bindings will ask: only a complete probe clears.
+    let complete = report["complete"] == true;
 
     {
         let _guard = store::write_lock().await;
@@ -848,7 +865,7 @@ pub(super) async fn handle_probe(
                 Err(resp) => return resp,
             };
         rec.last_probe = Some(report.clone());
-        if ok {
+        if ok && complete {
             rec.provider_setup_required = false;
         }
         rec.updated_at = Utc::now();
@@ -892,8 +909,8 @@ pub(super) async fn handle_keys_rotate(
     if rec.state == AccountState::Archived {
         return reject_declared(
             &doc,
-            t::error_codes::NOT_ACTIVE,
-            format!("account {id} is archived"),
+            t::error_codes::ARCHIVED,
+            format!("account {id} is archived; restore it first"),
         );
     }
     reject_declared(
@@ -934,6 +951,7 @@ async fn transition<R: DeserializeOwned + Serialize>(
     doc: &TrustTask<Value>,
     not_found: trust_tasks_rs::DeclaredErrorCode,
     invalid: trust_tasks_rs::DeclaredErrorCode,
+    archived: Option<trust_tasks_rs::DeclaredErrorCode>,
     allowed: &[AccountState],
     to: AccountState,
     action: &str,
@@ -948,6 +966,17 @@ async fn transition<R: DeserializeOwned + Serialize>(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    // An archived account answers `external:archived` from the tasks for
+    // which it is not a starting state; restore it first.
+    if rec.state == AccountState::Archived
+        && let Some(code) = archived
+    {
+        return reject_declared(
+            doc,
+            code,
+            format!("account {id} is archived; restore it first"),
+        );
+    }
     if !allowed.contains(&rec.state) {
         return reject_declared(
             doc,
@@ -991,6 +1020,7 @@ pub(super) async fn handle_suspend(
         &doc,
         t::error_codes::NOT_FOUND,
         t::error_codes::INVALID_TRANSITION,
+        Some(t::error_codes::ARCHIVED),
         &[AccountState::Active],
         AccountState::Suspended,
         "external.account.suspend",
@@ -1029,6 +1059,7 @@ pub(super) async fn handle_resume(
         &doc,
         t::error_codes::NOT_FOUND,
         t::error_codes::INVALID_TRANSITION,
+        Some(t::error_codes::ARCHIVED),
         &[AccountState::Suspended],
         AccountState::Active,
         "external.account.resume",
@@ -1053,6 +1084,7 @@ pub(super) async fn handle_archive(
         &doc,
         t::error_codes::NOT_FOUND,
         t::error_codes::INVALID_TRANSITION,
+        Some(t::error_codes::ARCHIVED),
         &[AccountState::Active, AccountState::Suspended],
         AccountState::Archived,
         "external.account.archive",
@@ -1078,6 +1110,7 @@ pub(super) async fn handle_restore(
         &doc,
         t::error_codes::NOT_FOUND,
         t::error_codes::INVALID_TRANSITION,
+        None,
         &[AccountState::Archived],
         AccountState::Suspended,
         "external.account.restore",
@@ -1168,18 +1201,67 @@ pub(super) async fn handle_issue(
     let ttl = u32::try_from(req.ttl_seconds).unwrap_or(u32::MAX);
     let resource = format!("{context}/{id}");
 
-    // 1. The account: present, active, brokered, set up.
+    // 1. The caller is a binding's consumer on the named account — the DID the
+    //    proof or the transport established (`auth.did`), never one named in
+    //    the payload. Every other caller, and every caller naming an account
+    //    that does not exist, gets the same `notFound`: issuance is no oracle
+    //    for which accounts exist or what state they are in.
     let rec = match store::get(&state.external_accounts_ks, &context, &id).await {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            return reject_declared(
-                &doc,
-                t::error_codes::NOT_FOUND,
-                format!("no external account {id} in context {context}"),
-            );
-        }
+        Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, e),
     };
+    let bound = rec
+        .as_ref()
+        .and_then(|r| r.binding_for(&auth.did).cloned().map(|b| (r, b)));
+    let Some((rec, binding)) = bound else {
+        // A caller that holds the capability and is still unbound is what a
+        // compromised or misconfigured consumer looks like.
+        if holds(state, auth, Capability::ExternalAuthUse).await {
+            tracing::warn!(security_alert = true, consumer = %auth.did, account = %resource,
+                "external credential requested by a DID with no binding on the account");
+            audit_detail(
+                state,
+                "external.credential.issue",
+                auth,
+                &resource,
+                "denied",
+                &context,
+                "notBound",
+            )
+            .await;
+        }
+        return reject_declared(
+            &doc,
+            t::error_codes::NOT_FOUND,
+            format!("no external account {id} in context {context} is bound to the caller"),
+        );
+    };
+
+    // 2. The capability, in the account's context, through the act scope.
+    if !(holds(state, auth, Capability::ExternalAuthUse).await && auth.has_context_access(&context))
+    {
+        audit_detail(
+            state,
+            "external.credential.issue",
+            auth,
+            &resource,
+            "denied",
+            &context,
+            "permissionDenied",
+        )
+        .await;
+        return reject_with(
+            &doc,
+            RejectReason::PermissionDenied {
+                reason: format!(
+                    "{} does not hold external-auth-use in context {context}",
+                    auth.did
+                ),
+            },
+        );
+    }
+
+    // 3. Only now, to a bound consumer: the account's state.
     if rec.state != AccountState::Active {
         return reject_declared(
             &doc,
@@ -1201,53 +1283,7 @@ pub(super) async fn handle_issue(
         return reject_declared(
             &doc,
             t::error_codes::PROVIDER_SETUP_REQUIRED,
-            format!("account {id} needs its provider setup completed and a successful probe"),
-        );
-    }
-
-    // 2. The caller is a binding's consumer — the DID the proof or the
-    //    transport established (`auth.did`), never one named in the payload.
-    let Some(binding) = rec.binding_for(&auth.did).cloned() else {
-        tracing::warn!(security_alert = true, consumer = %auth.did, account = %resource,
-            "external credential requested by a DID with no binding on the account");
-        audit_detail(
-            state,
-            "external.credential.issue",
-            auth,
-            &resource,
-            "denied",
-            &context,
-            "notBound",
-        )
-        .await;
-        return reject_declared(
-            &doc,
-            t::error_codes::NOT_BOUND,
-            format!("{} has no binding on account {id}", auth.did),
-        );
-    };
-
-    // 3. The capability, in the account's context, through the act scope.
-    if !(holds(state, auth, Capability::ExternalAuthUse).await && auth.has_context_access(&context))
-    {
-        audit_detail(
-            state,
-            "external.credential.issue",
-            auth,
-            &resource,
-            "denied",
-            &context,
-            "permissionDenied",
-        )
-        .await;
-        return reject_with(
-            &doc,
-            RejectReason::PermissionDenied {
-                reason: format!(
-                    "{} does not hold external-auth-use in context {context}",
-                    auth.did
-                ),
-            },
+            format!("account {id} needs its provider setup completed and a complete probe"),
         );
     }
 
@@ -1297,14 +1333,21 @@ pub(super) async fn handle_issue(
         );
     }
 
+    // The key to seal to, found before the provider is contacted: a credential
+    // that cannot be delivered is never minted.
+    let recipient = match sealing_key(&auth.did).await {
+        Ok(k) => k,
+        Err(why) => return reject_declared(&doc, t::error_codes::NO_KEY_AGREEMENT, why),
+    };
+
     // Build the credential.
-    let secret = match load_secret(state, &rec).await {
+    let secret = match load_secret(state, rec).await {
         Ok(s) => s,
         Err(e) => return app_error_to_reject(&doc, e),
     };
     let issued = d
         .issue(IssueRequest {
-            account: &rec,
+            account: rec,
             secret: secret.as_deref().map(String::as_str),
             scope: &requested,
             ttl_seconds: ttl,
@@ -1329,17 +1372,7 @@ pub(super) async fn handle_issue(
 
     let scope_json = serde_json::to_value(&requested).unwrap_or(Value::Null);
     let expires_at = rfc3339(issued.expires_at);
-    let sealed = match seal_credential(
-        state,
-        &auth.did,
-        &context,
-        &id,
-        &scope_json,
-        &expires_at,
-        issued,
-    )
-    .await
-    {
+    let sealed = match seal_credential(state, &recipient, issued).await {
         Ok(s) => s,
         Err(e) => return app_error_to_reject(&doc, e),
     };
@@ -1361,30 +1394,30 @@ pub(super) async fn handle_issue(
     )
 }
 
+/// The consumer's key-agreement key: for a `did:key`, the X25519 derivation of
+/// its Ed25519 key; otherwise the first X25519 `keyAgreement` method of its
+/// resolved DID document.
+async fn sealing_key(consumer: &str) -> Result<[u8; 32], String> {
+    vta_sdk::didcomm_light::resolve_vta_keyagreement(consumer)
+        .await
+        .map(|(_, key)| key)
+        .map_err(|e| format!("no X25519 key-agreement key for {consumer}: {e}"))
+}
+
 /// Seal an issued credential to the consumer's key-agreement key.
 ///
-/// The producer assertion is `PinnedOnly`: the bundle travels inside this
-/// task's `#response`, whose proof the specification makes REQUIRED, so the
-/// custodian's signature over the response — the armor included — is the
-/// integrity anchor a consumer checks before it opens the bundle.
+/// The producer assertion is `PinnedOnly`, as the specification requires: the
+/// bundle travels inside this task's `#response`, whose proof is REQUIRED and
+/// covers `sealedCredential`, and that proof is the anchor a consumer checks
+/// before it opens the bundle.
 async fn seal_credential(
     state: &AppState,
-    consumer: &str,
-    context: &str,
-    account: &str,
-    scope: &Value,
-    expires_at: &str,
+    recipient: &[u8; 32],
     issued: driver::Issued,
 ) -> Result<String, AppError> {
     use vta_sdk::sealed_transfer::{
-        AssertionProof, ExternalCredentialBundle, ProducerAssertion, SealedPayloadV1, armor,
-        seal_payload,
+        AssertionProof, ProducerAssertion, SealedPayloadV1, armor, seal_payload,
     };
-    let (_, recipient) = vta_sdk::didcomm_light::resolve_vta_keyagreement(consumer)
-        .await
-        .map_err(|e| {
-            AppError::Validation(format!("cannot find a key to seal to for {consumer}: {e}"))
-        })?;
     let vta_did = state
         .config
         .read()
@@ -1394,18 +1427,11 @@ async fn seal_credential(
         .unwrap_or_default();
     let mut bundle_id = [0u8; 16];
     rand::fill(&mut bundle_id);
-    let payload = SealedPayloadV1::ExternalCredential(Box::new(ExternalCredentialBundle {
-        context: context.to_string(),
-        account: account.to_string(),
-        scope: scope.clone(),
-        expires_at: expires_at.to_string(),
-        provider_request_id: issued.provider_request_id.clone(),
-        credential: issued.credential.clone(),
-    }));
+    let payload = SealedPayloadV1::ExternalCredential(Box::new(issued.credential));
     let nonce_store =
         crate::sealed_nonce_store::PersistentNonceStore::new(state.sealed_nonces_ks.clone());
     let bundle = seal_payload(
-        &recipient,
+        recipient,
         bundle_id,
         ProducerAssertion {
             producer_did: vta_did,
@@ -1425,7 +1451,7 @@ mod tests {
     use crate::acl::Role;
     use crate::test_support::{build_signing_test_app_state, did_for_seed};
     use trust_tasks_rs::TypeUri;
-    use vta_sdk::sealed_transfer::{ExternalCredential, ed25519_seed_to_x25519_secret};
+    use vta_sdk::sealed_transfer::{ExternalCredentialPayload, ed25519_seed_to_x25519_secret};
     use vta_sdk::trust_tasks as uris;
 
     const CTX: &str = "community";
@@ -1500,10 +1526,26 @@ mod tests {
     /// Seal a secret the way an administrator's client does: to a wrapping key
     /// the VTA just handed out, through the SDK helper a client uses.
     async fn sealed_secret(state: &AppState, context: &str, account: &str, secret: &str) -> String {
+        sealed_secret_for_key(state, context, account, secret, Some("AKIDEXAMPLE")).await
+    }
+
+    async fn sealed_secret_for_key(
+        state: &AppState,
+        context: &str,
+        account: &str,
+        secret: &str,
+        access_key_id: Option<&str>,
+    ) -> String {
         let key = state.wrapping_cache.generate().await;
-        vta_sdk::client::seal_external_secret(&key.public_did, context, account, secret)
-            .await
-            .unwrap()
+        vta_sdk::client::seal_external_secret(
+            &key.public_did,
+            context,
+            account,
+            secret,
+            access_key_id,
+        )
+        .await
+        .unwrap()
     }
 
     async fn grant(state: &AppState, id: &str, consumer: &str, rate: u32) {
@@ -1583,9 +1625,13 @@ mod tests {
         let x_secret = ed25519_seed_to_x25519_secret(&[CONSUMER_SEED; 32]);
         let c = vta_sdk::client::open_external_credential(armored, &x_secret)
             .expect("the consumer opens what was sealed to it");
-        assert_eq!((c.context.as_str(), c.account.as_str()), (CTX, "r2-main"));
-        match &c.credential {
-            ExternalCredential::PresignedRequest { method, url, .. } => {
+        match &c {
+            ExternalCredentialPayload::PresignedRequest {
+                method,
+                url,
+                expires_at,
+                ..
+            } => {
                 assert_eq!(method, "PUT");
                 assert!(
                     url.starts_with("https://s3.example.invalid/rooms/rooms/3f9a/blob?"),
@@ -1593,6 +1639,7 @@ mod tests {
                 );
                 assert!(url.contains("X-Amz-Expires=600"), "{url}");
                 assert!(url.contains("X-Amz-Signature="), "{url}");
+                assert_eq!(expires_at, payload["expiresAt"].as_str().unwrap());
             }
             _ => panic!("expected a presigned request"),
         }
@@ -1611,7 +1658,8 @@ mod tests {
                 )
                 .await
             ),
-            "external:notBound"
+            "external:notFound",
+            "an unbound caller learns nothing"
         );
         assert_eq!(
             code(
@@ -1645,6 +1693,18 @@ mod tests {
                 .await
             ),
             "external/credentials/issue:ttlTooLong"
+        );
+        assert_eq!(
+            code(
+                &handle_issue(
+                    &state,
+                    &stranger,
+                    issue_doc("no-such-account", "rooms/a/", "get", "k", 60)
+                )
+                .await
+            ),
+            "external:notFound",
+            "nor does a caller naming an account that does not exist"
         );
         // A reader holds no external-auth-use: bound or not, refused.
         let reader = claims(&consumer().did, Role::Reader);
@@ -1888,8 +1948,12 @@ mod tests {
             ),
         )
         .await;
-        assert_eq!(code(&out), "external:invalidSettings", "{}", body(&out));
-        assert_eq!(body(&out)["details"]["member"], "model");
+        assert_eq!(
+            code(&out),
+            "external/accounts/create:modelUnsupported",
+            "{}",
+            body(&out)
+        );
     }
 
     #[tokio::test]
@@ -1950,5 +2014,137 @@ mod tests {
         let resp: Value = serde_json::from_slice(&out.body).unwrap();
         assert!(resp["payload"]["sealedCredential"].is_string(), "{resp}");
         assert!(resp["proof"].is_object(), "the response is signed: {resp}");
+    }
+
+    /// A setting the schema accepts and this custodian cannot use is answered
+    /// `invalidSettings`, naming the member.
+    #[tokio::test]
+    async fn an_unusable_setting_names_its_member() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        crate::contexts::create_context(&state.contexts_ks, CTX, "Community")
+            .await
+            .unwrap();
+        let mut bad = settings();
+        bad["endpoint"] = json!("https://s3.example.invalid/some/path");
+        let out = handle_create(
+            &state,
+            &manager(),
+            doc(
+                uris::TASK_EXTERNAL_ACCOUNTS_CREATE_0_1,
+                json!({ "context": CTX, "id": "r2-bad", "label": "bad", "settings": bad }),
+            ),
+        )
+        .await;
+        assert_eq!(code(&out), "external:invalidSettings", "{}", body(&out));
+        assert_eq!(body(&out)["details"]["member"], "endpoint");
+    }
+
+    /// An archived account answers `external:archived` from every task that
+    /// would change or use it; restore it first.
+    #[tokio::test]
+    async fn an_archived_account_is_refused_as_archived() {
+        let (state, _dir) = state_with_account("r2-arch").await;
+        let base = json!({ "context": CTX, "id": "r2-arch" });
+        handle_archive(
+            &state,
+            &manager(),
+            doc(uris::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_1, base.clone()),
+        )
+        .await;
+        let update = handle_update(
+            &state,
+            &manager(),
+            doc(
+                uris::TASK_EXTERNAL_ACCOUNTS_UPDATE_0_1,
+                json!({ "context": CTX, "id": "r2-arch", "label": "renamed" }),
+            ),
+        )
+        .await;
+        assert_eq!(code(&update), "external:archived");
+        let suspend = handle_suspend(
+            &state,
+            &manager(),
+            doc(uris::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_1, base.clone()),
+        )
+        .await;
+        assert_eq!(code(&suspend), "external:archived");
+        let probe = handle_probe(
+            &state,
+            &manager(),
+            doc(uris::TASK_EXTERNAL_ACCOUNTS_PROBE_0_1, base.clone()),
+        )
+        .await;
+        assert_eq!(code(&probe), "external:archived");
+        let armored = sealed_secret(&state, CTX, "r2-arch", "s").await;
+        let secret = handle_secret_set(
+            &state,
+            &manager(),
+            doc(
+                uris::TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1,
+                json!({ "context": CTX, "id": "r2-arch", "sealedSecret": armored }),
+            ),
+        )
+        .await;
+        assert_eq!(code(&secret), "external:archived");
+        // Reads still answer.
+        let get = handle_get(
+            &state,
+            &manager(),
+            doc(uris::TASK_EXTERNAL_ACCOUNTS_GET_0_1, base),
+        )
+        .await;
+        assert_eq!(body(&get)["account"]["state"], "archived");
+    }
+
+    /// A secret sealed for another access key is refused, so a secret cannot
+    /// be paired with the wrong key id.
+    #[tokio::test]
+    async fn a_secret_for_another_access_key_is_refused() {
+        let (state, _dir) = state_with_account("r2-akid").await;
+        let armored = sealed_secret_for_key(&state, CTX, "r2-akid", "s", Some("OTHERKEY")).await;
+        let out = handle_secret_set(
+            &state,
+            &manager(),
+            doc(
+                uris::TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1,
+                json!({ "context": CTX, "id": "r2-akid", "sealedSecret": armored }),
+            ),
+        )
+        .await;
+        assert_eq!(code(&out), "external/accounts/secret/set:unsealFailed");
+    }
+
+    /// A probe with no binding and no `probePrefix` writes nothing: ok, not
+    /// complete, and the account stays unusable.
+    #[tokio::test]
+    async fn an_incomplete_probe_does_not_make_an_account_usable() {
+        let (state, _dir) = state_with_account("r2-probe").await;
+        let armored = sealed_secret(&state, CTX, "r2-probe", "s").await;
+        handle_secret_set(
+            &state,
+            &manager(),
+            doc(
+                uris::TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1,
+                json!({ "context": CTX, "id": "r2-probe", "sealedSecret": armored }),
+            ),
+        )
+        .await;
+        let out = handle_probe(
+            &state,
+            &manager(),
+            doc(
+                uris::TASK_EXTERNAL_ACCOUNTS_PROBE_0_1,
+                json!({ "context": CTX, "id": "r2-probe" }),
+            ),
+        )
+        .await;
+        let report = &body(&out)["report"];
+        assert_eq!(report["ok"], true, "{report}");
+        assert_eq!(report["complete"], false, "{report}");
+        let rec = store::get(&state.external_accounts_ks, CTX, "r2-probe")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(rec.provider_setup_required);
     }
 }

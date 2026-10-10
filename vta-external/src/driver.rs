@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use vta_sdk::sealed_transfer::ExternalCredential;
+use vta_sdk::sealed_transfer::ExternalCredentialPayload;
 
 use crate::model::AccountRecord;
 use crate::scope::RequestedScope;
@@ -30,11 +30,28 @@ pub struct IssueRequest<'a> {
     pub now: DateTime<Utc>,
 }
 
-/// An issued credential, before sealing.
+/// An issued credential, before sealing. The payload carries the provider's
+/// request id, when there is one.
 pub struct Issued {
-    pub credential: ExternalCredential,
+    pub credential: ExternalCredentialPayload,
     pub expires_at: DateTime<Utc>,
-    pub provider_request_id: Option<String>,
+}
+
+/// A setting this custodian cannot use, naming the member at fault
+/// (`external:invalidSettings`, `details.member`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsError {
+    pub member: &'static str,
+    pub why: String,
+}
+
+impl SettingsError {
+    pub fn new(member: &'static str, why: impl Into<String>) -> Self {
+        Self {
+            member,
+            why: why.into(),
+        }
+    }
 }
 
 /// Why a driver could not issue. Each maps onto a family error code.
@@ -77,7 +94,7 @@ pub trait ExternalAuthDriver: Send + Sync {
 
     /// Checks beyond the schema: whatever the settings must satisfy for this
     /// custodian to drive them.
-    fn validate_settings(&self, settings: &Value) -> Result<(), String>;
+    fn validate_settings(&self, settings: &Value) -> Result<(), SettingsError>;
 
     /// The provider hosts this account's use connects to (`egressHosts`).
     fn egress_hosts(&self, settings: &Value) -> Vec<String>;
@@ -89,7 +106,8 @@ pub trait ExternalAuthDriver: Send + Sync {
     /// Build one credential.
     async fn issue(&self, req: IssueRequest<'_>) -> Result<Issued, DriverError>;
 
-    /// Exercise the account end to end; `AccountProbeReport` JSON.
+    /// Exercise the account end to end; `AccountProbeReport` JSON. `complete`
+    /// is true only when the canary steps ran.
     async fn probe(
         &self,
         account: &AccountRecord,
