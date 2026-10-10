@@ -23,11 +23,12 @@ use vti_common::store::KeyspaceHandle;
 
 use crate::audit;
 use crate::auth::AuthClaims;
-use crate::contexts::{ContextRecord, get_context, list_contexts};
+use crate::contexts::{get_context, list_contexts};
 use crate::error::AppError;
 use crate::keys::KeyRecord;
 use crate::keys::custody::{self, CustodyViolation, RecordKey};
 use crate::keys::seed_store::SeedStore;
+use vta_sdk::context_policy::ContextPolicy;
 use vta_sdk::keys::KeyOrigin;
 
 /// Audit action for a refused derivation or path.
@@ -99,41 +100,107 @@ pub async fn derive_record_key(
     record: &KeyRecord,
     channel: &str,
 ) -> Result<RecordKey, AppError> {
-    derive_record_key_in_context(
-        contexts_ks,
-        keys_ks,
-        seed_store,
-        audit_sink,
-        actor,
-        record,
-        None,
-        channel,
+    let base = match record.context_id.as_deref() {
+        Some(ctx) => get_context(contexts_ks, ctx).await?.map(|c| c.base_path),
+        None => None,
+    };
+    derive_with_base(
+        keys_ks, seed_store, audit_sink, actor, record, base, channel,
     )
     .await
 }
 
-/// [`derive_record_key`] with the record's context already read in this
-/// request. `context` is used only when its id is the record's context;
-/// otherwise the context is read here, so a wrong record can never supply the
-/// base path.
+/// One key's context as key custody reads it for a signature: the effective
+/// policy of the whole context chain and the context's own custody base path,
+/// from a single walk of the chain.
+///
+/// Only [`load_sign_context`] constructs one (the fields are private), so the
+/// base path [`derive_record_key_in`] checks a derivation against always comes
+/// from key custody's own read, made in the same request. A caller cannot hand
+/// in a cached, stale or foreign context record. That is what lets the signing
+/// path read the context once, for its policy and for custody, without
+/// widening what key custody trusts.
+#[derive(Debug)]
+pub struct CustodyContext {
+    context_id: String,
+    base_path: Option<String>,
+    policy: ContextPolicy,
+}
+
+impl CustodyContext {
+    /// The effective policy of the context chain (root to leaf, narrowed).
+    pub fn policy(&self) -> &ContextPolicy {
+        &self.policy
+    }
+
+    /// The context this was read for.
+    pub fn context_id(&self) -> &str {
+        &self.context_id
+    }
+}
+
+/// Read `context_id` for a signature: its effective [`ContextPolicy`] and its
+/// custody base path, in one walk of the context chain.
+pub async fn load_sign_context(
+    contexts_ks: &KeyspaceHandle,
+    context_id: &str,
+) -> Result<CustodyContext, AppError> {
+    let (policy, record) =
+        crate::contexts::effective_context_policy_and_record(contexts_ks, context_id).await?;
+    Ok(CustodyContext {
+        context_id: context_id.to_string(),
+        base_path: record.map(|r| r.base_path),
+        policy,
+    })
+}
+
+/// [`derive_record_key`] for a record whose context this request has already
+/// read with [`load_sign_context`].
+///
+/// `context` supplies the base path only when it was read for the record's own
+/// context. Anything else (a context-less record, or a context read for another
+/// key) falls back to [`derive_record_key`]'s own read, so a mismatched
+/// `CustodyContext` can cost a read but never supply a base path.
 #[allow(clippy::too_many_arguments)]
-pub async fn derive_record_key_in_context(
+pub async fn derive_record_key_in(
     contexts_ks: &KeyspaceHandle,
     keys_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     audit_sink: &vta_audit::SharedAuditSink,
     actor: &str,
     record: &KeyRecord,
-    context: Option<&ContextRecord>,
+    context: &CustodyContext,
     channel: &str,
 ) -> Result<RecordKey, AppError> {
-    let base = match record.context_id.as_deref() {
-        Some(ctx) => match context {
-            Some(c) if c.id == ctx => Some(c.base_path.clone()),
-            _ => get_context(contexts_ks, ctx).await?.map(|c| c.base_path),
-        },
-        None => None,
-    };
+    if record.context_id.as_deref() != Some(context.context_id.as_str()) {
+        return derive_record_key(
+            contexts_ks,
+            keys_ks,
+            seed_store,
+            audit_sink,
+            actor,
+            record,
+            channel,
+        )
+        .await;
+    }
+    let base = context.base_path.clone();
+    derive_with_base(
+        keys_ks, seed_store, audit_sink, actor, record, base, channel,
+    )
+    .await
+}
+
+/// Rule 6 against a base path key custody itself read.
+async fn derive_with_base(
+    keys_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    audit_sink: &vta_audit::SharedAuditSink,
+    actor: &str,
+    record: &KeyRecord,
+    base: Option<String>,
+    channel: &str,
+) -> Result<RecordKey, AppError> {
     let authorized = match custody::authorize_record_derivation(record, base.as_deref()) {
         Ok(a) => a,
         Err(v) => {
@@ -599,6 +666,46 @@ mod tests {
 
         let honest = record("fine", Some("tenant-a"), "m/26'/2'/1'/3'");
         assert!(derive(&honest).await.is_ok());
+    }
+
+    /// The signing path reads a key's context once, through
+    /// [`load_sign_context`], and the base path rule 6 checks comes from that
+    /// read and from nowhere else. A [`CustodyContext`] read for one context
+    /// cannot vouch for a record in another: the record's own context is read
+    /// instead, so a foreign path is still refused (and audited).
+    #[tokio::test]
+    async fn the_sign_contexts_base_comes_from_custodys_own_read() {
+        let h = harness().await;
+        let derive_in = async |r: &KeyRecord, c: &CustodyContext| {
+            derive_record_key_in(
+                &h.contexts_ks,
+                &h.keys_ks,
+                &*h.seed_store,
+                &h.audit,
+                "did:key:z6MkTenant",
+                r,
+                c,
+                "t",
+            )
+            .await
+        };
+
+        let tenant = load_sign_context(&h.contexts_ks, "tenant-a").await.unwrap();
+        assert_eq!(tenant.context_id(), "tenant-a");
+        let honest = record("fine", Some("tenant-a"), "m/26'/2'/1'/3'");
+        assert!(derive_in(&honest, &tenant).await.is_ok());
+
+        // In tenant-a, but under the `vta` context's base.
+        let planted = record("innocuous", Some("tenant-a"), "m/26'/2'/0'/1'");
+        let err = derive_in(&planted, &tenant).await.unwrap_err();
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+
+        // A context read for `vta` would accept that path, but it was not read
+        // for the record's context, so tenant-a's base decides and refuses.
+        let vta = load_sign_context(&h.contexts_ks, "vta").await.unwrap();
+        let err = derive_in(&planted, &vta).await.unwrap_err();
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+        assert_eq!(denied_rows(&h, CUSTODY_VIOLATION_ACTION).await.len(), 2);
     }
 
     /// Rule 7, end to end through the vault loader: a vault entry in tenant-a
