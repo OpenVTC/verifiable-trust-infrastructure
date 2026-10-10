@@ -14,13 +14,19 @@ Run by the release manager from a clean checkout with push access. It:
      at the cut. Its compatibility line (0.38 for 0.38.2) now belongs to the
      release branch, and `check-release-line-ownership.py` closes it to main;
   4. pushes `release/<name>` = source commit + one commit adding the manifest,
-     `RELEASE` (`<name>.rc1`) and `git_release_latest = false` in
+     `RELEASE` (`VTI-<Name>-RC-0`) and `git_release_latest = false` in
      release-plz.toml, so a patch's GitHub Releases never displace main's as
-     "latest". `publish.yml` then tags `<name>.rc1`;
+     "latest". `publish.yml` then tags `VTI-<Name>-RC-0`;
   5. opens a PR to main adding the manifest. **Merge it before main's next
      Release PR** — until it lands, main's guard does not know the lines are
      owned;
   6. creates the `backport release/<name>` label backport.yml reads.
+
+`--released-as <tag>` adopts a release that already shipped before it had a
+branch (Eucalyptus went GA as the tag VTI-Eucalyptus). `RELEASE` starts at that
+tag, so the next prep is its first patch (VTI-Eucalyptus-R1). The source commit
+may differ from the tag only outside every workspace crate and the root
+manifests — release tooling, docs — which the script checks.
 
 It also refuses when a crate's version at the source commit is in a line an
 earlier release already owns: a crate unchanged since that cut. Two branches in
@@ -150,13 +156,18 @@ def main():
     ap.add_argument("--lts", action="store_true", help="the maintainers have designated this release LTS (RELEASES.md)")
     ap.add_argument("--from", dest="source", default="origin/nightly")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--released-as", metavar="TAG",
+                    help="adopt a release already tagged GA (e.g. VTI-Eucalyptus); see the header")
     ap.add_argument("--claim", action="store_true",
                     help="if crates share a line with an earlier release, open the PR on main that fixes it")
     args = ap.parse_args()
 
     name = args.name
     if not re.fullmatch(r"[a-z]+", name):
-        sys.exit("a release name is lower-case letters only (it becomes release/<name> and <name>.N tags)")
+        sys.exit("a release name is lower-case letters only (release/<name>; its tags are VTI-<Name>…)")
+    first_tag = args.released_as or f"VTI-{name.capitalize()}-RC-0"
+    if args.released_as and not re.fullmatch(rf"VTI-{name.capitalize()}(-R\d+)?", args.released_as):
+        sys.exit(f"--released-as names a GA tag of this release: VTI-{name.capitalize()} or VTI-{name.capitalize()}-R<n>")
     branch = f"release/{name}"
     manifest_rel = f"releases/{name}.toml"
 
@@ -169,6 +180,9 @@ def main():
         sys.exit(f"{manifest_rel} already exists — names are never reused")
     sha = git("rev-parse", "--verify", f"{args.source}^{{commit}}").stdout.strip()
     print(f"cutting {branch} from {args.source} = {sha}")
+    if args.released_as:
+        if git("rev-parse", "-q", "--verify", f"refs/tags/{args.released_as}", check=False).returncode:
+            sys.exit(f"no tag {args.released_as}")
 
     with tempfile.TemporaryDirectory(prefix=f"cut-{name}-") as tmp:
         wt = pathlib.Path(tmp) / "wt"
@@ -183,6 +197,20 @@ def main():
             crates = {
                 p["name"]: p["version"] for p in meta["packages"] if p.get("publish") is None
             }
+            if args.released_as:
+                # The branch must carry the released code: no workspace crate
+                # and no root manifest may differ from the tag.
+                root = pathlib.Path(meta["workspace_root"])
+                dirs = sorted({
+                    pathlib.Path(p["manifest_path"]).parent.relative_to(root).as_posix()
+                    for p in meta["packages"]
+                })
+                drift = git("diff", "--name-only", args.released_as, sha, "--",
+                            *dirs, "Cargo.toml", "Cargo.lock", cwd=wt).stdout.split()
+                if drift:
+                    sys.exit(f"{args.source} differs from {args.released_as} in released code:\n  "
+                             + "\n  ".join(drift[:20]))
+                print(f"{args.source} carries {args.released_as}'s code unchanged")
             missing = [f"{c} {v}" for c, v in sorted(crates.items()) if not on_crates_io(c, v)]
             if missing:
                 sys.exit(
@@ -215,7 +243,7 @@ def main():
             # ── the release branch ──────────────────────────────────────
             (wt / "releases").mkdir(exist_ok=True)
             (wt / manifest_rel).write_text(text)
-            (wt / "RELEASE").write_text(f"{name}.rc1\n")
+            (wt / "RELEASE").write_text(f"{first_tag}\n")
             cfg = wt / "release-plz.toml"
             cfg_text = cfg.read_text()
             cfg_text, n = re.subn(

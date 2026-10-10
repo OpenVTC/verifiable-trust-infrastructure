@@ -183,7 +183,7 @@ titles — a PR adds no changelog file and edits no version.
 
 ## Releases and branches
 
-- **[`RELEASES.md`](RELEASES.md)** — named releases (Dogwood, Eucalyptus, …),
+- **[`RELEASES.md`](RELEASES.md)** — named releases (Eucalyptus, Fig, …),
   cut every 4–6 weeks onto `release/<name>` branches and patched there; the
   `nightly` branch; the schedule; which releases are supported; backports.
 - **[`RELEASING.md`](RELEASING.md)** — how crates are versioned and published
