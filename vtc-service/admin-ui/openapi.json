@@ -484,118 +484,6 @@
         }
       }
     },
-    "/v1/relationships/{id}/persona": {
-      "post": {
-        "tags": [
-          "relationships"
-        ],
-        "summary": "`POST /v1/relationships/{id}/persona` — attach a VPC to a published edge,\nasserting that the party behind the edge's `issuerDid` is this persona.",
-        "description": "## How the VPC is bound to the edge — and what is assumed\n\n**This is the part trustoverip/dtgwg-cred-spec#9 has not settled.** A VPC\nnames its persona (`issuer`) and the counterparty (`credentialSubject.id`).\nIt does *not* name the relationship DID the persona used, so a VPC on its\nown does not identify an edge, and nothing in the current specification\nsays how it should.\n\nRather than invent a credential-level binding and present it as settled,\nthe binding here is made at the *request* level, out of three parts:\n\n1. the caller names the edge, by id, in the URL;\n2. the caller proves control of that edge's `issuerDid` — the same\n   proof-of-possession construction publishing the edge required\n   (`docs/05-design-notes/vrc-publish-proof-of-possession.md`);\n3. the VPC's `credentialSubject.id` must equal the edge's `subjectDid`.\n\n(2) is what makes it safe: the only party who could have published this\nedge is the only party who can annotate it, so attaching a persona is\nexactly as authorized as publishing the edge was. (3) is a consistency\ncheck, not a binding — it rules out attaching a persona asserted to some\n*other* counterparty. Nothing is added to the VPC and no claim is made\nabout how the specification should resolve #9; if it lands an in-credential\nbinding (a `digest` over the VRC, as the VWC has), this endpoint can\nrequire that as well without changing the stored shape.\n\n**Known limitation of (3).** DTG Credentials says the VPC's subject is\n\"typically the R-DID or M-DID used in the relationship\". A VPC whose\nsubject is the counterparty's *M-DID*, on an edge whose `subjectDid` is\ntheir *R-DID*, is rejected here. That case is real and this endpoint\ncannot presently accept it — resolving it needs the same #9 answer.\n\n## The persona is the edge issuer's\n\nOne VRC is one direction of an edge, and the persona it carries belongs to\nthe party who issued it. The counterparty asserts their own persona on\ntheir own reciprocal VRC. This keeps each half-edge self-contained and\nmeans neither party can put words in the other's mouth.",
-        "operationId": "attach_persona",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Relationship (VRC) id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AttachPersonaBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Persona (VPC) attached",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PersonaResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller does not control the edge's issuer"
-          },
-          "404": {
-            "description": "Relationship not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      },
-      "delete": {
-        "tags": [
-          "relationships"
-        ],
-        "summary": "`DELETE /v1/relationships/{id}/persona` — withdraw the persona from an\nedge, leaving the edge itself in place.",
-        "description": "This exists because the assertion it reverses is a disclosure. A member who\ncan correlate their edges under a persona but can never stop is worse off\nthan one who never could, so the withdrawal has to be as available as the\nassertion — and gated the same way, or anyone could strip another member's\npersona.\n\nIdempotent: detaching from an edge that carries no persona is a 200 with a\nnull `personaDid`, matching `delete_relationship`'s convention. No audit\nentry is written in that case — nothing changed.\n\nThe authorization object is carried in the request body. `DELETE` with a\nbody is unusual, but the alternative is putting a signed object in a query\nstring, and the proof of control has to travel with the request somehow.",
-        "operationId": "detach_persona",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Relationship (VRC) id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DetachPersonaBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Persona (VPC) detached",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PersonaResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller does not control the edge's issuer"
-          },
-          "404": {
-            "description": "Relationship not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/status-lists/{purpose}": {
       "get": {
         "tags": [
@@ -855,29 +743,6 @@
           },
           "sessionId": {
             "type": "string"
-          }
-        }
-      },
-      "AttachPersonaBody": {
-        "type": "object",
-        "required": [
-          "vpc"
-        ],
-        "properties": {
-          "pop": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/Value",
-                "description": "Proof that the caller controls the key behind the edge's\n`issuerDid`, when that is not the caller's session DID.\nRequired for every pairwise edge, since a relationship\nDID is never the session DID by construction."
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "vpc": {
-            "$ref": "#/components/schemas/Value",
-            "description": "The self-issued VPC, in the DTG Credentials wire form:\n`type` including `PersonaCredential`, `issuer` the P-DID\nof the persona, `credentialSubject.id` the counterparty's\nDID, and a data-integrity proof. Built by\n`dtg_credentials::DTGCredential::new_vpc`."
           }
         }
       },
@@ -1389,22 +1254,6 @@
               {
                 "$ref": "#/components/schemas/Value",
                 "description": "Issued VMC (M2.12). Also pushed to the applicant's wallet over\nDIDComm on approve (best-effort); kept inline so the admin caller\ncan still hand it over out-of-band if that delivery doesn't land.\n`None` on the reject path."
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        }
-      },
-      "DetachPersonaBody": {
-        "type": "object",
-        "properties": {
-          "pop": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/Value",
-                "description": "As for [`AttachPersonaBody::pop`], with\n`type: \"VpcDetachAuthorization\"` and no `vpc` field."
               },
               {
                 "type": "null"
@@ -4686,25 +4535,6 @@
             "items": {
               "$ref": "#/components/schemas/ConfigRejectedKey"
             }
-          }
-        }
-      },
-      "PersonaResponse": {
-        "type": "object",
-        "required": [
-          "id"
-        ],
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "personaDid": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The P-DID now on the edge, or `null` after a detach."
           }
         }
       },

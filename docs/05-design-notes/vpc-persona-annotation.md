@@ -1,6 +1,13 @@
 # VPC: the persona annotation on a relationship edge
 
-Status: implemented (VTC half) — see `vtc-service/src/routes/relationships.rs`
+Status: **parked.** The VTC half was implemented in #1074 and its REST route
+removed in #2023: it had no caller (no client mints a VPC), no Trust Task
+specification, and the binding it rests on is still open upstream (#9, below).
+Stored edges keep their `persona` field and the console still groups edges by
+it. To revive it: settle #9, have a client mint VPCs, specify
+`vtc/relationships/persona` in dtgwg-trust-tasks-tf, and serve it on the spine.
+The handlers are in `vtc-service/src/routes/relationships.rs` as it stood
+before #2023.
 Tracking: OpenVTC/verifiable-trust-infrastructure#1067
 Upstream: trustoverip/dtgwg-cred-spec#9 (open — read §The binding, below)
 Companion: `docs/05-design-notes/vrc-publish-proof-of-possession.md`
@@ -161,10 +168,10 @@ asserting one.
 - **No client.** `openvtc` still has to mint the VPC and rename its
   `persona_did` field, which is what made the word ambiguous in the first
   place.
-- **No Trust Task spec.** `vtc/relationships/persona/0.1` is bound ahead of its
-  publication in the upstream registry, and recorded as such in
-  `UNPUBLISHED_CANONICAL_OK`. Authoring a payload schema now would mean
-  encoding this request-level binding as if #9 were closed.
+- **No Trust Task spec.** `vtc/relationships/persona/0.1` was never published
+  upstream, and the VTC served it only as bearer REST. Authoring a payload
+  schema now would mean encoding this request-level binding as if #9 were
+  closed, so the route was removed instead (#2023) until it is.
 
 ## Test matrix
 
