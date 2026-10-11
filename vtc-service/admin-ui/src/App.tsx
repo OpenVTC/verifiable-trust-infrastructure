@@ -222,7 +222,14 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const togglePalette = useCallback(() => setPaletteOpen((v) => !v), []);
   const closePalette = useCallback(() => setPaletteOpen(false), []);
-  usePaletteShortcut(togglePalette, !!probe.data && !pathname.startsWith("/install"));
+  // Only once the shell itself shows: not on sign-in, install, or while this
+  // browser's signing key is still being set up.
+  usePaletteShortcut(
+    togglePalette,
+    !!probe.data &&
+      !pathname.startsWith("/install") &&
+      (!needsSigning || signing.data?.state === "ready"),
+  );
   // The actions that run something rather than only navigate.
   const paletteActions = useMemo<ActionSpec[]>(
     () => [

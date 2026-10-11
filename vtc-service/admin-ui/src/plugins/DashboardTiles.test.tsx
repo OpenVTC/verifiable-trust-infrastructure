@@ -202,6 +202,31 @@ describe("the redesigned dashboard", () => {
     expect(row.textContent).toContain("Critical");
   });
 
+  it("says when a cooling-off lands, not how long ago", async () => {
+    reads.actions = [
+      {
+        actionId: "cool-1",
+        category: "coolingOff",
+        kind: "aclReduction",
+        typeUri: "https://trusttasks.org/spec/acl/revoke/0.2",
+        requester: "did:example:requester",
+        status: "open",
+        createdAt: new Date(Date.now() - 3600_000).toISOString(),
+        landsAt: new Date(Date.now() + 26 * 3600_000).toISOString(),
+        cancellableBy: "requester",
+        approvals: [],
+        callerRole: "observer",
+        payload: {},
+        payloadDigest: "00",
+        summary: { title: "x", fields: [] },
+      },
+    ];
+    renderWithProviders(<Dashboard />, { whoami: viewer([]) });
+    const link = await screen.findByRole("link", { name: /Summary refused/ });
+    expect(link.textContent).toMatch(/lands in 1 d/);
+    expect(link.closest("li")!.textContent).toContain("Cooling off");
+  });
+
   it("puts the daemon, agents and build in Service health, each with a word as well as a dot", async () => {
     renderWithProviders(<Dashboard />, { whoami: viewer([]) });
     await waitFor(() => expect(healthRow("Daemon status")?.textContent).toContain("ok"));

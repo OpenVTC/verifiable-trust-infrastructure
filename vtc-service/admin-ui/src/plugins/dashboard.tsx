@@ -32,6 +32,7 @@ import {
   fetchActionsAttention,
   isAcknowledgeItem,
   isQueueItem,
+  landsIn,
   listActions,
   type Action,
 } from "@/lib/actions-api";
@@ -725,7 +726,7 @@ function WaitingRow({ action, book }: { action: Action; book: NameBook }) {
           <time dateTime={action.createdAt} title={formatIso(action.createdAt)}>
             {formatRelative(action.createdAt)}
           </time>
-          {cooling && <> · lands {formatRelative(cooling.landsAt).replace(" ago", "")}</>}
+          {cooling && <> · {landsIn(cooling.landsAt)}</>}
         </span>
       </Link>
       <span className="waiting-chips">
