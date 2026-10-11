@@ -9,7 +9,10 @@
 // relative link outside the descendant `<Routes>` would resolve against the
 // current section rather than the plugin root.
 
-import { NavLink, Route, Routes } from "react-router-dom";
+import { Route, Routes } from "react-router-dom";
+
+import { PageHeader } from "@/components/PageHeader";
+import { TabLinks } from "@/components/Tabs";
 
 import { AutoGrantPanel } from "./AutoGrantPanel";
 import { RegistryPreview } from "./RegistryPreview";
@@ -29,23 +32,20 @@ const SECTIONS = [
 export function Vetting() {
   return (
     <section className="page">
-      <h2>Vetting</h2>
-      <p className="lead">
-        Choose which members vet applicants, check what applicants see when they
-        look for a vetter, and follow up when a vetter withdraws a statement.
-      </p>
+      <PageHeader
+        title="Vetting"
+        lead="Choose which members vet applicants, check what applicants see when they look for a vetter, and follow up when a vetter withdraws a statement."
+      />
 
-      <nav className="subnav" aria-label="Vetting sections">
-        {SECTIONS.map((section) => (
-          <NavLink
-            key={section.label}
-            to={`${VETTING_PATH}${section.path}`}
-            end={section.path === ""}
-          >
-            {section.label}
-          </NavLink>
-        ))}
-      </nav>
+      <TabLinks
+        label="Vetting sections"
+        items={SECTIONS.map((section) => ({
+          id: section.label,
+          label: section.label,
+          to: `${VETTING_PATH}${section.path}`,
+          end: section.path === "",
+        }))}
+      />
 
       <Routes>
         <Route index element={<VettersPanel />} />

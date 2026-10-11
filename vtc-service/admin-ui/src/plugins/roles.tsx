@@ -13,7 +13,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2, X } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
+import { DataTable, useSortedRows } from "@/components/DataTable";
 import { Field } from "@/components/Field";
+import { PageHeader } from "@/components/PageHeader";
 import { CAPABILITIES } from "@/lib/acl";
 import {
   ROLE_ADMIN_CAPABILITIES,
@@ -29,6 +31,8 @@ import {
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
 import { holds, useCapabilities } from "@/lib/viewer";
+
+type RoleSortKey = "name" | "kind";
 
 /** Capabilities a ceiling may name: every registry entry but the additive one. */
 const CEILING_CHOICES = CAPABILITIES.filter((c) => c.id !== "git.commit.sign");
@@ -75,18 +79,19 @@ export function Roles() {
     onError: (err) => toast.pushFromError(err, "Delete failed"),
   });
 
+  const roles = query.data ?? [];
+  const sorted = useSortedRows<RoleDefinition, RoleSortKey>(roles, (r, key) =>
+    key === "name" ? r.name : r.builtIn ? "built-in" : "custom",
+  );
+
   return (
     <section className="page">
-      <h2>Roles</h2>
-      <p className="muted">
-        A role is a ceiling: what an entry holding it may hold and may approve. It grants
-        nothing on its own.
-      </p>
-
-      {mayAdminister && (
-        <section className="card">
-          <div className="toolbar">
-            <div className="spacer" />
+      <PageHeader
+        count={query.data ? roles.length : undefined}
+        countLabel={`${roles.length} roles`}
+        lead="A role is a ceiling: what an entry holding it may hold and may approve. It grants nothing on its own."
+        actions={
+          mayAdminister && (
             <button
               type="button"
               className={defining ? "secondary" : "primary"}
@@ -102,9 +107,9 @@ export function Roles() {
                 </>
               )}
             </button>
-          </div>
-        </section>
-      )}
+          )
+        }
+      />
 
       {defining && mayAdminister && (
         <DefineRoleForm
@@ -123,53 +128,53 @@ export function Roles() {
       )}
 
       <section className="card">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Role</th>
-              <th>Kind</th>
-              <th>May hold</th>
-              <th>May approve</th>
-              <th>Holders</th>
-              {mayAdminister && <th />}
+        <DataTable
+          caption="Administrative roles"
+          sort={sorted.sort}
+          onSort={sorted.onSort}
+          columns={[
+            { key: "name", label: "Role", sortKey: "name" },
+            { key: "kind", label: "Kind", sortKey: "kind" },
+            { key: "hold", label: "May hold" },
+            { key: "approve", label: "May approve" },
+            { key: "holders", label: "Holders" },
+            ...(mayAdminister ? [{ key: "actions", label: "" }] : []),
+          ]}
+        >
+          {sorted.rows.map((r) => (
+            <tr key={r.name}>
+              <td>
+                <strong>{r.name}</strong>
+                {r.description && <div className="muted">{r.description}</div>}
+              </td>
+              <td>{r.builtIn ? "built-in" : "custom"}</td>
+              <td>
+                <CapList refs={r.ceiling} />
+              </td>
+              <td>
+                <CapList refs={r.approveScope} />
+              </td>
+              <td>
+                <Holders name={r.name} />
+              </td>
+              {mayAdminister && (
+                <td>
+                  {!r.builtIn && (
+                    <button
+                      type="button"
+                      className="secondary"
+                      aria-label={`Delete role ${r.name}`}
+                      disabled={remove.isPending}
+                      onClick={() => remove.mutate(r.name)}
+                    >
+                      <Trash2 size={14} aria-hidden="true" /> Delete
+                    </button>
+                  )}
+                </td>
+              )}
             </tr>
-          </thead>
-          <tbody>
-            {(query.data ?? []).map((r: RoleDefinition) => (
-              <tr key={r.name}>
-                <td>
-                  <strong>{r.name}</strong>
-                  {r.description && <div className="muted">{r.description}</div>}
-                </td>
-                <td>{r.builtIn ? "built-in" : "custom"}</td>
-                <td>
-                  <CapList refs={r.ceiling} />
-                </td>
-                <td>
-                  <CapList refs={r.approveScope} />
-                </td>
-                <td>
-                  <Holders name={r.name} />
-                </td>
-                {mayAdminister && (
-                  <td>
-                    {!r.builtIn && (
-                      <button
-                        type="button"
-                        className="secondary"
-                        aria-label={`Delete role ${r.name}`}
-                        disabled={remove.isPending}
-                        onClick={() => remove.mutate(r.name)}
-                      >
-                        <Trash2 size={14} aria-hidden="true" /> Delete
-                      </button>
-                    )}
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+          ))}
+        </DataTable>
       </section>
     </section>
   );

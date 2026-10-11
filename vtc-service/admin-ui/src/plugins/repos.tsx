@@ -61,6 +61,8 @@
 
 import { Route, Routes } from "react-router-dom";
 
+import { PageHeader } from "@/components/PageHeader";
+
 import { BindFlow } from "./repos/BindFlow";
 import { BreakGlassList } from "./repos/BreakGlass";
 import { DepartedReview } from "./repos/DepartedReview";
@@ -79,9 +81,12 @@ export function Repos() {
         <Route
           path="*"
           element={
-            <p className="muted">
-              There is no such Repos page. Go back to the list of namespaces.
-            </p>
+            <>
+              <PageHeader title="Repos" />
+              <p className="muted">
+                There is no such Repos page. Go back to the list of namespaces.
+              </p>
+            </>
           }
         />
       </Routes>

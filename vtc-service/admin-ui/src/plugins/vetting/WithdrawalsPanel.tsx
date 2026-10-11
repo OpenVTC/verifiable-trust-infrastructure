@@ -11,14 +11,27 @@ import { Link } from "react-router-dom";
 import { Undo2 } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
+import { DataTable, useSortedRows, type Column } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
 import { NamedDid } from "@/components/NamedDid";
 import { formatIso, shorten } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
 import { withdrawalReason } from "@/lib/vetting";
-import type { RevocationReviewState } from "@/lib/wire-types";
+import type { RevocationReviewState, VettingRevocationRow } from "@/lib/wire-types";
 
 import { fetchRevocations, vettingKeys } from "./api";
 import { FormField, joinRequestPath, LoadError, memberPath, ToneChip } from "./ui";
+
+type WithdrawalSortKey = "recorded" | "vetter" | "review";
+
+const WITHDRAWAL_COLUMNS: readonly Column<WithdrawalSortKey>[] = [
+  { key: "recorded", label: "Recorded", sortKey: "recorded" },
+  { key: "vetter", label: "Vetter", sortKey: "vetter" },
+  { key: "statement", label: "Statement" },
+  { key: "reason", label: "Reason" },
+  { key: "review", label: "Review", sortKey: "review" },
+  { key: "affected", label: "Affected" },
+];
 
 export function WithdrawalsPanel() {
   const book = useNameBook();
@@ -30,6 +43,21 @@ export function WithdrawalsPanel() {
 
   const all = query.data ?? [];
   const rows = all.filter((r) => review === "all" || r.reviewState === review);
+  // The notices are read whole, so their columns sort here.
+  const sorted = useSortedRows(
+    rows,
+    (row: VettingRevocationRow, key: WithdrawalSortKey) => {
+      switch (key) {
+        case "recorded":
+          return Date.parse(row.recordedAt) || null;
+        case "vetter":
+          return book.nameOrDid(row.issuer);
+        case "review":
+          return row.reviewState;
+      }
+    },
+    { initialDir: { recorded: "desc" } },
+  );
   const needing = all.filter((r) => r.reviewState === "needsReview").length;
 
   return (
@@ -56,7 +84,7 @@ export function WithdrawalsPanel() {
       )}
 
       <div className="toolbar">
-        <FormField id="withdrawals-review" label="Show" className="field inline">
+        <FormField id="withdrawals-review" label="Show" inline>
           <select
             id="withdrawals-review"
             value={review}
@@ -74,102 +102,87 @@ export function WithdrawalsPanel() {
       {query.error && <LoadError what="the withdrawal notices" error={query.error} />}
 
       <div className="table-scroll">
-        <table className="data-table">
-          <thead>
+        <DataTable columns={WITHDRAWAL_COLUMNS} sort={sorted.sort} onSort={sorted.onSort}>
+          {query.isPending && (
             <tr>
-              <th>Recorded</th>
-              <th>Vetter</th>
-              <th>Statement</th>
-              <th>Reason</th>
-              <th>Review</th>
-              <th>Affected</th>
+              <td colSpan={6}>Loading…</td>
             </tr>
-          </thead>
-          <tbody>
-            {query.isPending && (
-              <tr>
-                <td colSpan={6}>Loading…</td>
-              </tr>
-            )}
-            {query.data && rows.length === 0 && (
-              <tr>
-                <td colSpan={6}>
-                  <div className="empty-state">
-                    <span className="empty-icon" aria-hidden="true">
-                      <Undo2 />
-                    </span>
-                    <h4>
-                      {all.length === 0
-                        ? "No vetter has withdrawn a statement"
-                        : "No withdrawal matches this filter"}
-                    </h4>
-                    <p>
-                      {all.length === 0
-                        ? "Withdrawals appear here when a vetter takes back a statement they signed."
-                        : "Show all withdrawals to see the rest."}
-                    </p>
-                  </div>
-                </td>
-              </tr>
-            )}
-            {rows.map((row) => (
-              <tr key={`${row.issuer}|${row.statementId}`}>
-                <td>{formatIso(row.recordedAt)}</td>
-                <td>
-                  <NamedDid book={book} did={row.issuer} />
-                </td>
-                <td>
-                  <code title={row.statementId}>{shorten(row.statementId, 16, 6)}</code>
-                  <CopyButton
-                    value={row.statementId}
-                    label="Copy statement id"
-                    successMessage="Statement id copied"
-                  />
-                  <details>
-                    <summary className="muted">Digest</summary>
-                    <code>{row.statementDigestMultibase}</code>
-                  </details>
-                </td>
-                <td>
-                  <span title={row.reason ?? undefined}>{withdrawalReason(row)}</span>
-                </td>
-                <td>
-                  {row.reviewState === "needsReview" ? (
-                    <ToneChip tone="warn" title="needsReview">
-                      Needs review
-                    </ToneChip>
-                  ) : (
-                    <ToneChip tone="neutral" title="noAdmission">
-                      No current member affected
-                    </ToneChip>
-                  )}
-                </td>
-                <td>
-                  {row.affectedJoinRequests.length === 0 ? (
-                    <span className="muted">No approved join request counted it</span>
-                  ) : (
-                    <ul className="vet-list">
-                      {row.affectedJoinRequests.map((id) => (
-                        <li key={id}>
-                          <Link to={joinRequestPath(id)}>
-                            Join request <code>{id.slice(0, 8)}</code>
-                          </Link>
-                        </li>
-                      ))}
-                      {row.affectedMembers.map((did) => (
-                        <li key={did}>
-                          <Link to={memberPath(did)}>
-                            Member <NamedDid book={book} did={did} />
-                          </Link>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+          )}
+          {query.data && rows.length === 0 && (
+            <tr>
+              <td colSpan={6}>
+                <EmptyState
+                  icon={Undo2}
+                  title={
+                    all.length === 0
+                      ? "No vetter has withdrawn a statement"
+                      : "No withdrawal matches this filter"
+                  }
+                >
+                  {all.length === 0
+                    ? "Withdrawals appear here when a vetter takes back a statement they signed."
+                    : "Show all withdrawals to see the rest."}
+                </EmptyState>
+              </td>
+            </tr>
+          )}
+          {sorted.rows.map((row) => (
+            <tr key={`${row.issuer}|${row.statementId}`}>
+              <td>{formatIso(row.recordedAt)}</td>
+              <td>
+                <NamedDid book={book} did={row.issuer} />
+              </td>
+              <td>
+                <code title={row.statementId}>{shorten(row.statementId, 16, 6)}</code>
+                <CopyButton
+                  value={row.statementId}
+                  label="Copy statement id"
+                  successMessage="Statement id copied"
+                />
+                <details>
+                  <summary className="muted">Digest</summary>
+                  <code>{row.statementDigestMultibase}</code>
+                </details>
+              </td>
+              <td>
+                <span title={row.reason ?? undefined}>{withdrawalReason(row)}</span>
+              </td>
+              <td>
+                {row.reviewState === "needsReview" ? (
+                  <ToneChip tone="warn" title="needsReview">
+                    Needs review
+                  </ToneChip>
+                ) : (
+                  <ToneChip tone="neutral" title="noAdmission">
+                    No current member affected
+                  </ToneChip>
+                )}
+              </td>
+              <td>
+                {row.affectedJoinRequests.length === 0 ? (
+                  <span className="muted">No approved join request counted it</span>
+                ) : (
+                  <ul className="vet-list">
+                    {row.affectedJoinRequests.map((id) => (
+                      <li key={id}>
+                        <Link to={joinRequestPath(id)}>
+                          Join request <code>{id.slice(0, 8)}</code>
+                        </Link>
+                      </li>
+                    ))}
+                    {row.affectedMembers.map((did) => (
+                      <li key={did}>
+                        <Link to={memberPath(did)}>
+                          Member <NamedDid book={book} did={did} />
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </td>
+            </tr>
+          ))}
+        </DataTable>
       </div>
     </section>
   );

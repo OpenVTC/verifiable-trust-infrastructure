@@ -25,6 +25,7 @@ import {
 } from "@/lib/step-up-approvers";
 import { tokenFromHash } from "@/lib/step-up-passkeys";
 import { isWalletApproverEnrolmentAvailable, walletPersonaDid } from "@/lib/wallet";
+import { Field } from "@/components/Field";
 
 function Frame({ children }: { children: React.ReactNode }) {
   return (
@@ -127,17 +128,15 @@ export function EnrolApproverPage() {
               redeem.mutate();
             }}
           >
-            <label className="field">
-              <span className="field-label">Your DID</span>
+            <Field label="Your DID">
               <input
                 value={did}
                 onChange={(e) => setDid(e.target.value)}
                 placeholder="did:webvh:…"
                 required
               />
-            </label>
-            <label className="field">
-              <span className="field-label">Claim code</span>
+            </Field>
+            <Field label="Claim code">
               <input
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
@@ -145,16 +144,15 @@ export function EnrolApproverPage() {
                 autoComplete="off"
                 required
               />
-            </label>
-            <label className="field">
-              <span className="field-label">Label (optional)</span>
+            </Field>
+            <Field label="Label (optional)">
               <input
                 value={label}
                 maxLength={64}
                 onChange={(e) => setLabel(e.target.value)}
                 placeholder="Browser plugin — work laptop"
               />
-            </label>
+            </Field>
             <p className="muted">
               Your wallet asks you twice: to sign the redemption as your DID, and to unlock the
               approver so it can prove it holds its key.

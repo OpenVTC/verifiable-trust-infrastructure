@@ -1,0 +1,23 @@
+/* The DID column takes the spare width, so a webvh DID's path is never cut. */
+.members-did {
+  width: 40%;
+}
+
+/* The ticket beside a name that joined by invitation. */
+.members-invited {
+  margin-left: var(--space-1);
+  vertical-align: middle;
+}
+
+/* A member's stored credentials and published relationships. */
+.member-credential-list {
+  margin: 0;
+  padding-left: 1.1em;
+}
+.member-credential-list > li {
+  margin-bottom: var(--space-3);
+}
+.member-credential-json {
+  overflow-x: auto;
+  font-size: var(--text-sm);
+}

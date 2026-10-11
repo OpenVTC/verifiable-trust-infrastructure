@@ -16,6 +16,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useConfirm } from "@/components/ConfirmDialog";
+import { Field } from "@/components/Field";
 import { fetchEffectiveConfig } from "@/lib/api";
 import { saveConfig } from "@/lib/config-api";
 import { gestureFromConfirm } from "@/lib/signed-act";
@@ -127,10 +128,7 @@ export function SessionTimeoutCard() {
 
       {field && !envPinned && draft !== null && (
         <>
-          <label className="field">
-            <span className="field-label" id="idle-timeout-label">
-              Sign out after
-            </span>
+          <Field label="Sign out after" labelId="idle-timeout-label">
             <select
               aria-labelledby="idle-timeout-label"
               value={PRESETS.some((p) => p.secs === draft) ? draft : "custom"}
@@ -149,7 +147,7 @@ export function SessionTimeoutCard() {
                 <option value="custom">{describe(draft)} (current)</option>
               )}
             </select>
-          </label>
+          </Field>
           <p className="muted">
             Between {describe(MIN_SECS)} and {describe(MAX_SECS)}. The daemon
             enforces the same bounds, so a value set through the API is held to

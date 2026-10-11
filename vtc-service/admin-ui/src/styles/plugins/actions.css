@@ -1,0 +1,83 @@
+.action-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.action-card {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* An operator's offline write (VTI-VTC-023): Critical, like the banner. */
+.action-card.action-critical {
+  border: 2px solid var(--danger);
+  background: var(--danger-tint);
+}
+.action-severity {
+  margin: 0 0 var(--space-2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.action-severity strong {
+  color: var(--danger);
+}
+.action-title {
+  margin: 0;
+  font-size: var(--text-base);
+}
+.action-effect {
+  margin: var(--space-1) 0 0;
+  color: var(--text-muted);
+}
+.action-fields,
+.action-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-4);
+  margin: var(--space-2) 0 0;
+}
+.action-fields > div {
+  display: contents;
+}
+.action-fields dt,
+.action-facts dt {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+.action-fields dd,
+.action-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.action-approvers {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+}
+.action-code {
+  font-weight: 600;
+}
+.action-burst {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+.action-cnm pre {
+  margin: var(--space-1) 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.action-reason textarea {
+  width: 100%;
+}
+.action-link {
+  margin: 0;
+}

@@ -14,10 +14,14 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, ArrowUpDown, Smartphone } from "lucide-react";
+import { Smartphone } from "lucide-react";
 
 import { postSignedRead, postSignedTrustTask, WhoamiResponse } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
+import { DataTable } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { Field } from "@/components/Field";
+import { PageHeader } from "@/components/PageHeader";
 import { formatIso, shorten as shortId } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
 import { NamedDid } from "@/components/NamedDid";
@@ -162,12 +166,17 @@ export function Sessions() {
 
   return (
     <section className="page">
-      <h2>Sessions</h2>
-      <p className="lead">
-        Active server-side sessions in the daemon's session store. If a
-        cookie has been compromised, revoke its session here — the
-        browser holding it will be signed out on its next request.
-      </p>
+      <PageHeader
+        count={sessionsQuery.isPending ? undefined : allSessions.length}
+        countLabel={`${allSessions.length} active sessions`}
+        lead={
+          <>
+            Active server-side sessions in the daemon's session store. If a
+            cookie has been compromised, revoke its session here — the
+            browser holding it will be signed out on its next request.
+          </>
+        }
+      />
 
       {sessionsQuery.isPending && (
         <section className="card">
@@ -178,15 +187,14 @@ export function Sessions() {
       {!sessionsQuery.isPending && (
         <section className="card">
           <div className="toolbar">
-            <label className="field inline">
-              <span className="field-label">Filter</span>
+            <Field label="Filter" inline>
               <input
                 type="search"
                 placeholder="DID, session id, or assurance"
                 value={filterText}
                 onChange={(e) => setFilterText(e.target.value)}
               />
-            </label>
+            </Field>
             <span className="muted">
               {sessions.length} of {allSessions.length}
               {filterText.trim() && sessions.length !== allSessions.length
@@ -199,178 +207,119 @@ export function Sessions() {
 
       {sessions.length === 0 && !sessionsQuery.isPending && (
         <section className="card">
-          <div className="empty-state">
-            <span className="empty-icon" aria-hidden="true">
-              <Smartphone />
-            </span>
-            <h4>
-              {allSessions.length === 0
+          <EmptyState
+            icon={Smartphone}
+            title={
+              allSessions.length === 0
                 ? "No active sessions"
-                : "No sessions match this filter"}
-            </h4>
-            <p>
-              {allSessions.length === 0
-                ? "Sessions appear here when an operator signs in."
-                : "Clear the search box to see every active session."}
-            </p>
-          </div>
+                : "No sessions match this filter"
+            }
+          >
+            {allSessions.length === 0
+              ? "Sessions appear here when an operator signs in."
+              : "Clear the search box to see every active session."}
+          </EmptyState>
         </section>
       )}
 
       {sessions.length > 0 && (
         <section className="card">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <SortableTh
-                  label="DID"
-                  sortKey="subject"
-                  active={sortKey}
-                  dir={sortDir}
-                  onSort={handleSort}
-                />
-                <th>Session</th>
-                <SortableTh
-                  label="Assurance"
-                  sortKey="acr"
-                  active={sortKey}
-                  dir={sortDir}
-                  onSort={handleSort}
-                />
-                <SortableTh
-                  label="Created"
-                  sortKey="issuedAt"
-                  active={sortKey}
-                  dir={sortDir}
-                  onSort={handleSort}
-                />
-                <SortableTh
-                  label="Expires"
-                  sortKey="expiresAt"
-                  active={sortKey}
-                  dir={sortDir}
-                  onSort={handleSort}
-                />
-                <th aria-label="Actions"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {sessions.map((s) => {
-                const isMine = s.id === mySessionId;
-                const showBulk = !seenDids.has(s.subject);
-                seenDids.add(s.subject);
-                const sameDidCount = sessions.filter(
-                  (x) => x.subject === s.subject,
-                ).length;
-                return (
-                  <tr key={s.id}>
-                    <td>
-                      <NamedDid book={nameBook} did={s.subject} />
-                      {s.subject === myDid && (
-                        <span className="chip accent" title="Your DID">
-                          you
-                        </span>
-                      )}
-                    </td>
-                    <td>
-                      <code className="truncate" title={s.id}>
-                        {shortId(s.id)}
-                      </code>
-                      {isMine && (
-                        <span className="chip accent" title="This browser tab">
-                          this tab
-                        </span>
-                      )}
-                    </td>
-                    <td>
-                      {s.acr ? <code>{s.acr}</code> : <span className="muted">—</span>}
-                    </td>
-                    <td>{formatIso(s.issuedAt)}</td>
-                    <td>{formatIso(s.expiresAt)}</td>
-                    <td>
-                      <div className="row-actions">
+          <DataTable
+            caption="Active sessions"
+            sort={{ key: sortKey, dir: sortDir }}
+            onSort={handleSort}
+            columns={[
+              { key: "subject", label: "DID", sortKey: "subject" },
+              { key: "session", label: "Session" },
+              { key: "acr", label: "Assurance", sortKey: "acr" },
+              { key: "issuedAt", label: "Created", sortKey: "issuedAt" },
+              { key: "expiresAt", label: "Expires", sortKey: "expiresAt" },
+              { key: "actions", label: <span className="visually-hidden">Actions</span> },
+            ]}
+          >
+            {sessions.map((s) => {
+              const isMine = s.id === mySessionId;
+              const showBulk = !seenDids.has(s.subject);
+              seenDids.add(s.subject);
+              const sameDidCount = sessions.filter(
+                (x) => x.subject === s.subject,
+              ).length;
+              return (
+                <tr key={s.id}>
+                  <td>
+                    <NamedDid book={nameBook} did={s.subject} />
+                    {s.subject === myDid && (
+                      <span className="chip accent" title="Your DID">
+                        you
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <code className="truncate" title={s.id}>
+                      {shortId(s.id)}
+                    </code>
+                    {isMine && (
+                      <span className="chip accent" title="This browser tab">
+                        this tab
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    {s.acr ? <code>{s.acr}</code> : <span className="muted">—</span>}
+                  </td>
+                  <td>{formatIso(s.issuedAt)}</td>
+                  <td>{formatIso(s.expiresAt)}</td>
+                  <td>
+                    <div className="row-actions">
+                      <button
+                        type="button"
+                        className="secondary destructive"
+                        disabled={revokeOne.isPending}
+                        aria-busy={revokeOne.isPending}
+                        onClick={async () => {
+                          const ok = await confirm({
+                            title: isMine
+                              ? "Revoke your own session?"
+                              : `Revoke session ${shortId(s.id)}?`,
+                            message: isMine
+                              ? "You'll be signed out of this tab."
+                              : `${s.subject} loses this session immediately.`,
+                            confirmLabel: "Revoke",
+                            destructive: true,
+                          });
+                          if (ok) revokeOne.mutate(s.id);
+                        }}
+                      >
+                        Revoke
+                      </button>
+                      {showBulk && sameDidCount > 1 && (
                         <button
                           type="button"
                           className="secondary destructive"
-                          disabled={revokeOne.isPending}
-                          aria-busy={revokeOne.isPending}
+                          disabled={revokeMany.isPending}
+                          aria-busy={revokeMany.isPending}
+                          title={`Revoke all ${sameDidCount} sessions for ${s.subject}`}
                           onClick={async () => {
                             const ok = await confirm({
-                              title: isMine
-                                ? "Revoke your own session?"
-                                : `Revoke session ${shortId(s.id)}?`,
-                              message: isMine
-                                ? "You'll be signed out of this tab."
-                                : `${s.subject} loses this session immediately.`,
-                              confirmLabel: "Revoke",
+                              title: `Revoke all sessions for ${s.subject}?`,
+                              message: `${sameDidCount} active sessions will be terminated immediately.`,
+                              confirmLabel: "Revoke all",
                               destructive: true,
                             });
-                            if (ok) revokeOne.mutate(s.id);
+                            if (ok) revokeMany.mutate(s.subject);
                           }}
                         >
-                          Revoke
+                          Revoke all for DID
                         </button>
-                        {showBulk && sameDidCount > 1 && (
-                          <button
-                            type="button"
-                            className="secondary destructive"
-                            disabled={revokeMany.isPending}
-                            aria-busy={revokeMany.isPending}
-                            title={`Revoke all ${sameDidCount} sessions for ${s.subject}`}
-                            onClick={async () => {
-                              const ok = await confirm({
-                                title: `Revoke all sessions for ${s.subject}?`,
-                                message: `${sameDidCount} active sessions will be terminated immediately.`,
-                                confirmLabel: "Revoke all",
-                                destructive: true,
-                              });
-                              if (ok) revokeMany.mutate(s.subject);
-                            }}
-                          >
-                            Revoke all for DID
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </DataTable>
         </section>
       )}
     </section>
-  );
-}
-
-function SortableTh({
-  label,
-  sortKey,
-  active,
-  dir,
-  onSort,
-}: {
-  label: string;
-  sortKey: SortKey;
-  active: SortKey;
-  dir: SortDir;
-  onSort: (key: SortKey) => void;
-}) {
-  const isActive = active === sortKey;
-  const Icon = !isActive ? ArrowUpDown : dir === "asc" ? ArrowUp : ArrowDown;
-  return (
-    <th>
-      <button
-        type="button"
-        className="sortable-th"
-        aria-sort={
-          isActive ? (dir === "asc" ? "ascending" : "descending") : "none"
-        }
-        onClick={() => onSort(sortKey)}
-      >
-        <span>{label}</span>
-        <Icon size={12} aria-hidden="true" />
-      </button>
-    </th>
   );
 }

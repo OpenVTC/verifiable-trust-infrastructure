@@ -11,6 +11,8 @@ import { Link } from "react-router-dom";
 import { BadgeCheck } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
+import { DataTable, useSortedRows, type Column } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
 import { NamedDid } from "@/components/NamedDid";
 import { formatIso, shortenDid } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
@@ -59,6 +61,16 @@ const STATE_TONE: Record<GrantState, Tone | "neutral"> = {
   inactive: "neutral",
 };
 
+type GrantSortKey = "member" | "status" | "validity";
+
+const GRANT_COLUMNS: readonly Column<GrantSortKey>[] = [
+  { key: "member", label: "Member", sortKey: "member" },
+  { key: "status", label: "Status", sortKey: "status" },
+  { key: "validity", label: "Validity", sortKey: "validity" },
+  { key: "profile", label: "Vetter profile" },
+  { key: "actions", label: <span className="visually-hidden">Actions</span> },
+];
+
 const VALIDITY_PRESETS = [
   { value: "30", label: "30 days" },
   { value: "90", label: "90 days" },
@@ -98,6 +110,17 @@ export function VettersPanel() {
     () => filterGrants(grants.data ?? [], filter),
     [grants.data, filter],
   );
+  // The grants are read whole, so their columns sort here.
+  const sorted = useSortedRows(rows, (row: VetterGrantRow, key: GrantSortKey) => {
+    switch (key) {
+      case "member":
+        return book.nameOrDid(row.memberDid);
+      case "status":
+        return GRANT_STATE_LABELS[grantState(row)];
+      case "validity":
+        return row.validUntil ? Date.parse(row.validUntil) || null : null;
+    }
+  });
   const liveDids = useMemo(
     () =>
       new Set((grants.data ?? []).filter((g) => g.live).map((g) => g.memberDid)),
@@ -157,7 +180,7 @@ export function VettersPanel() {
       <section className="card" aria-labelledby="vetters-title">
         <h3 id="vetters-title">Vetter grants</h3>
         <div className="toolbar">
-          <FormField id="vetters-state" label="Status" className="field inline">
+          <FormField id="vetters-state" label="Status" inline>
             <select
               id="vetters-state"
               value={filter.state}
@@ -175,7 +198,7 @@ export function VettersPanel() {
               <option value="inactive">Not in force (holder left)</option>
             </select>
           </FormField>
-          <FormField id="vetters-origin" label="Granted by" className="field inline">
+          <FormField id="vetters-origin" label="Granted by" inline>
             <select
               id="vetters-origin"
               value={filter.origin}
@@ -191,7 +214,7 @@ export function VettersPanel() {
               <option value="auto">The automatic sweep</option>
             </select>
           </FormField>
-          <FormField id="vetters-search" label="Search" className="field inline">
+          <FormField id="vetters-search" label="Search" inline>
             <input
               id="vetters-search"
               type="search"
@@ -226,120 +249,104 @@ export function VettersPanel() {
         )}
 
         <div className="table-scroll">
-          <table className="data-table">
-            <thead>
+          <DataTable columns={GRANT_COLUMNS} sort={sorted.sort} onSort={sorted.onSort}>
+            {grants.isPending && (
               <tr>
-                <th>Member</th>
-                <th>Status</th>
-                <th>Validity</th>
-                <th>Vetter profile</th>
-                <th>
-                  <span className="visually-hidden">Actions</span>
-                </th>
+                <td colSpan={5}>Loading…</td>
               </tr>
-            </thead>
-            <tbody>
-              {grants.isPending && (
-                <tr>
-                  <td colSpan={5}>Loading…</td>
-                </tr>
-              )}
-              {grants.data && rows.length === 0 && (
-                <tr>
-                  <td colSpan={5}>
-                    <div className="empty-state">
-                      <span className="empty-icon" aria-hidden="true">
-                        <BadgeCheck />
-                      </span>
-                      <h4>
-                        {grants.data.length === 0
-                          ? "No vetters yet"
-                          : "No grant matches these filters"}
-                      </h4>
-                      <p>
-                        {grants.data.length === 0
-                          ? "Grant a member the vetter role above, or turn on automatic grants."
-                          : "Change the status, origin or search to see more grants."}
-                      </p>
-                    </div>
+            )}
+            {grants.data && rows.length === 0 && (
+              <tr>
+                <td colSpan={5}>
+                  <EmptyState
+                    icon={BadgeCheck}
+                    title={
+                      grants.data.length === 0
+                        ? "No vetters yet"
+                        : "No grant matches these filters"
+                    }
+                  >
+                    {grants.data.length === 0
+                      ? "Grant a member the vetter role above, or turn on automatic grants."
+                      : "Change the status, origin or search to see more grants."}
+                  </EmptyState>
+                </td>
+              </tr>
+            )}
+            {sorted.rows.map((row) => {
+              const state = grantState(row);
+              const name = book.nameOrDid(row.memberDid);
+              const busy = isBusy(row);
+              return (
+                <tr key={row.endorsementId}>
+                  <td>
+                    <Link to={memberPath(row.memberDid)}>
+                      <NamedDid book={book} did={row.memberDid} />
+                    </Link>
+                  </td>
+                  <td>
+                    <ToneChip tone={STATE_TONE[state]}>
+                      {GRANT_STATE_LABELS[state]}
+                    </ToneChip>
+                    <span
+                      className="chip"
+                      title={
+                        row.origin === "auto"
+                          ? "Issued by the automatic sweep"
+                          : "Granted by an admin"
+                      }
+                    >
+                      {row.origin === "auto" ? "Automatic" : "Manual"}
+                    </span>
+                  </td>
+                  <td>
+                    {formatDay(row.validFrom)} to{" "}
+                    {row.validUntil ? (
+                      formatDay(row.validUntil)
+                    ) : (
+                      <span className="muted">no end recorded</span>
+                    )}
+                    {row.revokedAt && (
+                      <div className="muted">Revoked {formatIso(row.revokedAt)}</div>
+                    )}
+                  </td>
+                  <td>
+                    <ProfileSummary profile={row.profile} />
+                  </td>
+                  <td>
+                    {row.live && (
+                      <div className="row-actions">
+                        <button
+                          type="button"
+                          className="secondary sm"
+                          disabled={busy}
+                          aria-label={`Resend vetter credential to ${name}`}
+                          onClick={() => resend.mutate(row)}
+                        >
+                          {resend.isPending &&
+                          resend.variables?.endorsementId === row.endorsementId
+                            ? "Resending…"
+                            : "Resend"}
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary destructive sm"
+                          disabled={busy}
+                          aria-label={`Revoke vetter role for ${name}`}
+                          onClick={() => void onRevoke(row)}
+                        >
+                          {revoke.isPending &&
+                          revoke.variables?.endorsementId === row.endorsementId
+                            ? "Revoking…"
+                            : "Revoke"}
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
-              )}
-              {rows.map((row) => {
-                const state = grantState(row);
-                const name = book.nameOrDid(row.memberDid);
-                const busy = isBusy(row);
-                return (
-                  <tr key={row.endorsementId}>
-                    <td>
-                      <Link to={memberPath(row.memberDid)}>
-                        <NamedDid book={book} did={row.memberDid} />
-                      </Link>
-                    </td>
-                    <td>
-                      <ToneChip tone={STATE_TONE[state]}>
-                        {GRANT_STATE_LABELS[state]}
-                      </ToneChip>
-                      <span
-                        className="chip"
-                        title={
-                          row.origin === "auto"
-                            ? "Issued by the automatic sweep"
-                            : "Granted by an admin"
-                        }
-                      >
-                        {row.origin === "auto" ? "Automatic" : "Manual"}
-                      </span>
-                    </td>
-                    <td>
-                      {formatDay(row.validFrom)} to{" "}
-                      {row.validUntil ? (
-                        formatDay(row.validUntil)
-                      ) : (
-                        <span className="muted">no end recorded</span>
-                      )}
-                      {row.revokedAt && (
-                        <div className="muted">Revoked {formatIso(row.revokedAt)}</div>
-                      )}
-                    </td>
-                    <td>
-                      <ProfileSummary profile={row.profile} />
-                    </td>
-                    <td>
-                      {row.live && (
-                        <div className="row-actions">
-                          <button
-                            type="button"
-                            className="secondary sm"
-                            disabled={busy}
-                            aria-label={`Resend vetter credential to ${name}`}
-                            onClick={() => resend.mutate(row)}
-                          >
-                            {resend.isPending &&
-                            resend.variables?.endorsementId === row.endorsementId
-                              ? "Resending…"
-                              : "Resend"}
-                          </button>
-                          <button
-                            type="button"
-                            className="secondary destructive sm"
-                            disabled={busy}
-                            aria-label={`Revoke vetter role for ${name}`}
-                            onClick={() => void onRevoke(row)}
-                          >
-                            {revoke.isPending &&
-                            revoke.variables?.endorsementId === row.endorsementId
-                              ? "Revoking…"
-                              : "Revoke"}
-                          </button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+              );
+            })}
+          </DataTable>
         </div>
       </section>
     </>

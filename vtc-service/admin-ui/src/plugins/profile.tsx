@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Field } from "@/components/Field";
+import { PageHeader } from "@/components/PageHeader";
 import { postSignedRead, postSignedTrustTask } from "@/lib/api";
 import { CommunityBrandingCard } from "@/plugins/vetting/BrandingCard";
 import { JoinDiscoveryCard } from "@/plugins/community/JoinDiscoveryCard";
@@ -100,7 +101,7 @@ export function Profile() {
   if (query.isPending) {
     return (
       <section className="page">
-        <h2>Community profile</h2>
+        <PageHeader />
         <p>Loading…</p>
       </section>
     );
@@ -109,7 +110,7 @@ export function Profile() {
   if (query.error) {
     return (
       <section className="page">
-        <h2>Community profile</h2>
+        <PageHeader />
         <section className="card error">
           <h3>Failed to load profile</h3>
           <p>{(query.error as Error).message}</p>
@@ -138,7 +139,7 @@ export function Profile() {
 
   return (
     <section className="page">
-      <h2>Community profile</h2>
+      <PageHeader />
 
       <form onSubmit={onSubmit} className="form-stack">
         <section className="card">

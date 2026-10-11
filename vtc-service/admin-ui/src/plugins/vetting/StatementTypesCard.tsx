@@ -25,6 +25,7 @@ import { type FormEvent, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useConfirm } from "@/components/ConfirmDialog";
+import { EmptyState } from "@/components/EmptyState";
 import { useToast } from "@/lib/toast";
 import { VETTED_PREDICATE } from "@/lib/vetting";
 import type { AcceptsCriterion, EndorsementType } from "@/lib/wire-types";
@@ -132,7 +133,7 @@ export function StatementTypesCard({
       {query.isPending ? (
         <p className="muted">Loading the accepted predicates…</p>
       ) : types.length === 0 ? (
-        <p className="muted">No predicates are accepted yet.</p>
+        <EmptyState compact title="No predicates are accepted yet." />
       ) : (
         <ul className="vet-list">
           {types.map((t, i) => (

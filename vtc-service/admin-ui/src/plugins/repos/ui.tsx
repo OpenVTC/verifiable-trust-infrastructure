@@ -579,14 +579,14 @@ export function SignTaskDialog({
         <details className="gitns-doc" open={(!signing && !canSign.isPending) || unavailable}>
           <summary>{signing ? "Or sign it from a terminal" : "Sign it from a terminal"}</summary>
           <div className="gitns-command">
-            <span className="field-label">
+            <span className="gitns-caption">
               <SquareTerminal aria-hidden="true" size={14} /> cnm
             </span>
             <div className="gitns-command-row">
               <pre aria-label="Command">{task.command}</pre>
               <CopyButton value={task.command} label="Copy command" />
             </div>
-            <span className="field-label">Document</span>
+            <span className="gitns-caption">Document</span>
             <div className="gitns-command-row">
               <pre aria-label="Document">{doc}</pre>
               <CopyButton value={doc} label="Copy document" />

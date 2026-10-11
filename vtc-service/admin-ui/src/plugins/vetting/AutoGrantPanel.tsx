@@ -9,6 +9,7 @@ import { type FormEvent, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
+import { EmptyState } from "@/components/EmptyState";
 import { formatIso } from "@/lib/format";
 import { fetchActivePolicy } from "@/lib/policies-api";
 import { useToast } from "@/lib/toast";
@@ -241,10 +242,10 @@ export function AutoGrantPanel() {
             )}
           </>
         ) : (
-          <p className="muted">
-            No sweep has run yet.
-            {status.data.enabled ? "" : " Turn automatic grants on to start it."}
-          </p>
+          <EmptyState
+            compact
+            title={`No sweep has run yet.${status.data.enabled ? "" : " Turn automatic grants on to start it."}`}
+          />
         )}
       </section>
 

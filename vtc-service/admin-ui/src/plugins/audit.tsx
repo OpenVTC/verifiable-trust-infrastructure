@@ -16,7 +16,11 @@ import { ClipboardList, RefreshCw } from "lucide-react";
 import { postSignedRead } from "@/lib/api";
 import { formatIso } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
+import { DataTable } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { Field } from "@/components/Field";
 import { NamedDid } from "@/components/NamedDid";
+import { PageHeader } from "@/components/PageHeader";
 import { useToast } from "@/lib/toast";
 
 // Human-readable label per event kind. Falls through to the
@@ -188,36 +192,33 @@ export function Audit() {
 
   return (
     <section className="page">
-      <h2>Audit trail</h2>
-      <p className="lead">
-        Tamper-evident operations log. Newest first. Super-admin only —
-        envelopes carry plaintext actor / target DIDs until an RTBF
-        redaction nulls them.
-      </p>
+      <PageHeader
+        lead={
+          <>
+            Tamper-evident operations log. Newest first. Super-admin only —
+            envelopes carry plaintext actor / target DIDs until an RTBF
+            redaction nulls them.
+          </>
+        }
+      />
 
       <section className="card">
         <div className="toolbar">
-          <label className="field inline">
-            <span className="field-label">Filter</span>
+          <Field label="Filter" inline>
             <input
               type="search"
               placeholder="kind, description, actor or target DID"
               value={filterText}
               onChange={(e) => setFilterText(e.target.value)}
             />
-          </label>
-          <label
-            className="field inline"
-            style={{ flex: "0 0 auto", minWidth: 0 }}
-          >
-            <span className="field-label">Show system events</span>
+          </Field>
+          <Field label="Show system events" inline className="audit-system-toggle">
             <input
               type="checkbox"
               checked={showSystem}
               onChange={(e) => setShowSystem(e.target.checked)}
-              style={{ width: "auto", height: "auto" }}
             />
-          </label>
+          </Field>
           <span className="muted">
             {visibleItems.length} of {items.length}
             {hiddenCount > 0 ? ` (${hiddenCount} filtered)` : ""}
@@ -256,48 +257,36 @@ export function Audit() {
       </section>
 
       <section className="card">
-        <table className="data-table">
-          <thead>
+        {/* Cursor-paged, newest first: no column sorts, since sorting the
+            pages read so far would misrepresent the whole trail. */}
+        <DataTable columns={AUDIT_COLUMNS}>
+          {visibleItems.length === 0 && !query.isPending && (
             <tr>
-              <th>Time</th>
-              <th>Event</th>
-              <th>Actor</th>
-              <th>Target</th>
-              <th></th>
+              <td colSpan={5}>
+                <EmptyState
+                  icon={ClipboardList}
+                  title={
+                    items.length === 0
+                      ? "No audit entries yet"
+                      : "No entries match this filter"
+                  }
+                >
+                  {items.length === 0
+                    ? "Audit envelopes appear here once the community starts emitting events."
+                    : "Clear the search box or enable system events to widen the view."}
+                </EmptyState>
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {visibleItems.length === 0 && !query.isPending && (
-              <tr>
-                <td colSpan={5}>
-                  <div className="empty-state">
-                    <span className="empty-icon" aria-hidden="true">
-                      <ClipboardList />
-                    </span>
-                    <h4>
-                      {items.length === 0
-                        ? "No audit entries yet"
-                        : "No entries match this filter"}
-                    </h4>
-                    <p>
-                      {items.length === 0
-                        ? "Audit envelopes appear here once the community starts emitting events."
-                        : "Clear the search box or enable system events to widen the view."}
-                    </p>
-                  </div>
-                </td>
-              </tr>
-            )}
-            {query.isPending && cursor === null && (
-              <tr>
-                <td colSpan={5}>Loading…</td>
-              </tr>
-            )}
-            {visibleItems.map((env) => (
-              <AuditRow key={env.eventId} env={env} />
-            ))}
-          </tbody>
-        </table>
+          )}
+          {query.isPending && cursor === null && (
+            <tr>
+              <td colSpan={5}>Loading…</td>
+            </tr>
+          )}
+          {visibleItems.map((env) => (
+            <AuditRow key={env.eventId} env={env} />
+          ))}
+        </DataTable>
         {nextCursor && (
           <div className="pagination">
             <button
@@ -316,6 +305,14 @@ export function Audit() {
   );
 }
 
+const AUDIT_COLUMNS = [
+  { key: "time", label: "Time" },
+  { key: "event", label: "Event" },
+  { key: "actor", label: "Actor" },
+  { key: "target", label: "Target" },
+  { key: "details", label: "" },
+] as const;
+
 function AuditRow({ env }: { env: AuditEntry }) {
   const nameBook = useNameBook();
   const [open, setOpen] = useState(false);
@@ -326,16 +323,9 @@ function AuditRow({ env }: { env: AuditEntry }) {
       <tr>
         <td title={env.recordedAt}>{formatIso(env.recordedAt)}</td>
         <td>
-          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <div className="audit-event">
             <span>{description ?? kind}</span>
-            {description && (
-              <code
-                className="muted"
-                style={{ fontSize: "var(--text-xs)" }}
-              >
-                {kind}
-              </code>
-            )}
+            {description && <code className="muted audit-event-kind">{kind}</code>}
           </div>
         </td>
         <td>

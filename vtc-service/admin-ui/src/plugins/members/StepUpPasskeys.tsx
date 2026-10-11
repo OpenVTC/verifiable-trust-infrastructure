@@ -17,6 +17,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fingerprint } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
+import { DataTable } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
 import { SigningUnavailableError } from "@/lib/api";
 import { answerStepUp, operationOf, stepUpRequestOf } from "@/lib/bound-step-up";
 import type { SignedTrustTaskDocument } from "@/lib/console-key";
@@ -109,52 +111,51 @@ export function StepUpPasskeysCard({ did }: { did: string }) {
       {!list.isPending && !list.error && (
         <>
           {creds.length === 0 ? (
-            <p className="muted">None enrolled.</p>
+            <EmptyState compact title="None enrolled." />
           ) : (
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Label</th>
-                  <th>Enrolled</th>
-                  <th>Last used</th>
-                  <th title="The authenticator's signature counter. One that goes backwards suggests a cloned authenticator.">
-                    Counter
-                  </th>
-                  <th />
+            <DataTable
+              columns={[
+                { key: "label", label: "Label" },
+                { key: "enrolled", label: "Enrolled" },
+                { key: "used", label: "Last used" },
+                {
+                  key: "counter",
+                  label: "Counter",
+                  tip: "The authenticator's signature counter. One that goes backwards suggests a cloned authenticator.",
+                },
+                { key: "actions", label: "" },
+              ]}
+            >
+              {creds.map((c) => (
+                <tr key={c.credentialId}>
+                  <td title={c.credentialId}>
+                    {c.deviceLabel ?? <span className="muted">unlabelled</span>}
+                  </td>
+                  <td>{formatDay(c.registeredAt)}</td>
+                  <td>{c.lastUsedAt ? formatDay(c.lastUsedAt) : <span className="muted">never</span>}</td>
+                  <td>{c.signCount ?? <span className="muted">—</span>}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={revoke.isPending}
+                      onClick={async () => {
+                        const ok = await confirm({
+                          title: "Revoke this step-up passkey?",
+                          message:
+                            "Signed by this browser's console key; you verify with your own passkey. The member can no longer answer a step-up with it — including one they have already been asked for — until they enrol another through a new invite.",
+                          confirmLabel: "Revoke",
+                          destructive: true,
+                        });
+                        if (ok) revoke.mutate(c.credentialId);
+                      }}
+                    >
+                      Revoke
+                    </button>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {creds.map((c) => (
-                  <tr key={c.credentialId}>
-                    <td title={c.credentialId}>
-                      {c.deviceLabel ?? <span className="muted">unlabelled</span>}
-                    </td>
-                    <td>{formatDay(c.registeredAt)}</td>
-                    <td>{c.lastUsedAt ? formatDay(c.lastUsedAt) : <span className="muted">never</span>}</td>
-                    <td>{c.signCount ?? <span className="muted">—</span>}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className="danger"
-                        disabled={revoke.isPending}
-                        onClick={async () => {
-                          const ok = await confirm({
-                            title: "Revoke this step-up passkey?",
-                            message:
-                              "Signed by this browser's console key; you verify with your own passkey. The member can no longer answer a step-up with it — including one they have already been asked for — until they enrol another through a new invite.",
-                            confirmLabel: "Revoke",
-                            destructive: true,
-                          });
-                          if (ok) revoke.mutate(c.credentialId);
-                        }}
-                      >
-                        Revoke
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+              ))}
+            </DataTable>
           )}
           {revoke.error && (
             <p className="error" role="alert">

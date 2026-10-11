@@ -15,7 +15,10 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { UserX } from "lucide-react";
 
+import { type Column, DataTable, useSortedRows } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
 import { NamedDid } from "@/components/NamedDid";
+import { PageHeader } from "@/components/PageHeader";
 import { useNameBook } from "@/lib/names";
 import type { GitNsRight, GitNsRightRow } from "@/lib/wire-types";
 
@@ -23,7 +26,7 @@ import type { SignedTask } from "./actions";
 import { RevokeDialog } from "./dialogs";
 import { fetchIssuedByDeparted, fetchRepos, gitNsKeys } from "./api";
 import { isRight, rightLabel, shortName } from "./model";
-import { formatDay, readErrorMessage, REPOS_PATH, repoPath, SignTaskDialog, ToneChip } from "./ui";
+import { formatDay, readErrorMessage, repoPath, SignTaskDialog, ToneChip } from "./ui";
 
 export function DepartedReview() {
   const book = useNameBook();
@@ -36,12 +39,17 @@ export function DepartedReview() {
 
   return (
     <>
-      <nav aria-label="Breadcrumb" className="gitns-crumbs">
-        <Link to={REPOS_PATH}>Repos</Link>
-        <span aria-hidden="true">/</span>
-        <span aria-current="page">Issued by departed members</span>
-      </nav>
-      <h2>Issued by departed members</h2>
+      <PageHeader
+        trail={[{ label: "Issued by departed members" }]}
+        title="Issued by departed members"
+        lead={
+          q.data
+            ? q.data.cascadeOnDeparture
+              ? "The active policy revokes grants a departed member issued (cascade_on_departure). Anything listed here is still on its way out."
+              : "These grants stay valid — they were issued under the community's authority — until someone decides otherwise. Keep a grant by leaving it; revoke one with a signed revoke."
+            : undefined
+        }
+      />
 
       {q.isPending && (
         <section className="card">
@@ -55,23 +63,11 @@ export function DepartedReview() {
         </section>
       )}
 
-      {q.data && (
-        <p className="lead">
-          {q.data.cascadeOnDeparture
-            ? "The active policy revokes grants a departed member issued (cascade_on_departure). Anything listed here is still on its way out."
-            : "These grants stay valid — they were issued under the community's authority — until someone decides otherwise. Keep a grant by leaving it; revoke one with a signed revoke."}
-        </p>
-      )}
-
       {q.data && q.data.granters.length === 0 && (
         <section className="card">
-          <div className="empty-state">
-            <span className="empty-icon" aria-hidden="true">
-              <UserX />
-            </span>
-            <h4>Nothing to review</h4>
-            <p>No live grant was issued by someone who has since left.</p>
-          </div>
+          <EmptyState icon={UserX} title="Nothing to review">
+            No live grant was issued by someone who has since left.
+          </EmptyState>
         </section>
       )}
 
@@ -81,68 +77,7 @@ export function DepartedReview() {
             Issued by <NamedDid did={g.granter} book={book} /> · {g.rights.length}{" "}
             {g.rights.length === 1 ? "grant" : "grants"}
           </h3>
-          <div className="table-scroll">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th scope="col">Holder</th>
-                  <th scope="col">Right</th>
-                  <th scope="col">Resource</th>
-                  <th scope="col">Granted</th>
-                  <th scope="col">
-                    <span className="visually-hidden">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {g.rights.map((r) => (
-                  <tr key={`${r.subject}|${r.right}|${r.resource}`}>
-                    <td>
-                      <NamedDid did={r.subject} book={book} />
-                      {!r.subjectMember && (
-                        <div>
-                          <ToneChip tone="warning">External signer</ToneChip>
-                        </div>
-                      )}
-                    </td>
-                    <td>
-                      <ToneChip tone="neutral" title={r.right}>
-                        {rightLabel(r.right)}
-                      </ToneChip>
-                    </td>
-                    <td>
-                      {isRepo(r.resource) ? (
-                        <Link to={repoPath(r.resource)} className="gitns-mono">
-                          {shortName(r.resource)}
-                        </Link>
-                      ) : (
-                        <code>{r.resource}</code>
-                      )}
-                    </td>
-                    <td>
-                      {formatDay(r.grantedAt)}
-                      {r.expiresAt && (
-                        <div className="muted gitns-small">expires {formatDay(r.expiresAt)}</div>
-                      )}
-                      {r.reason && <div className="muted gitns-small">“{r.reason}”</div>}
-                    </td>
-                    <td>
-                      {isRight(r.right) && (
-                        <button
-                          type="button"
-                          className="secondary sm destructive"
-                          aria-label={`Revoke ${rightLabel(r.right)} on ${shortName(r.resource)} from ${book.nameOf(r.subject) ?? r.subject}`}
-                          onClick={() => setRevoking(r)}
-                        >
-                          Revoke
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <GrantsTable rights={g.rights} isRepo={isRepo} onRevoke={setRevoking} />
         </section>
       ))}
 
@@ -162,5 +97,96 @@ export function DepartedReview() {
       )}
       {task && <SignTaskDialog task={task} onClose={() => setTask(null)} />}
     </>
+  );
+}
+
+type SortKey = "holder" | "right" | "resource" | "granted";
+
+const COLUMNS: readonly Column<SortKey>[] = [
+  { key: "holder", label: "Holder", sortKey: "holder" },
+  { key: "right", label: "Right", sortKey: "right" },
+  { key: "resource", label: "Resource", sortKey: "resource" },
+  { key: "granted", label: "Granted", sortKey: "granted" },
+  { key: "actions", label: <span className="visually-hidden">Actions</span> },
+];
+
+/** One departed granter's grants. The list is read whole, so it sorts here;
+ *  rows keep the daemon's order until a header is clicked. */
+function GrantsTable({
+  rights,
+  isRepo,
+  onRevoke,
+}: {
+  rights: readonly GitNsRightRow[];
+  isRepo: (resource: string) => boolean;
+  onRevoke: (row: GitNsRightRow) => void;
+}) {
+  const book = useNameBook();
+  const sorted = useSortedRows<GitNsRightRow, SortKey>(
+    rights,
+    (r, key) => {
+      switch (key) {
+        case "holder":
+          return book.nameOf(r.subject) ?? r.subject;
+        case "right":
+          return rightLabel(r.right);
+        case "resource":
+          return r.resource;
+        case "granted":
+          return r.grantedAt ?? null;
+      }
+    },
+    { initialDir: { granted: "desc" } },
+  );
+  return (
+    <div className="table-scroll">
+      <DataTable columns={COLUMNS} sort={sorted.sort} onSort={sorted.onSort}>
+        {sorted.rows.map((r) => (
+          <tr key={`${r.subject}|${r.right}|${r.resource}`}>
+            <td>
+              <NamedDid did={r.subject} book={book} />
+              {!r.subjectMember && (
+                <div>
+                  <ToneChip tone="warning">External signer</ToneChip>
+                </div>
+              )}
+            </td>
+            <td>
+              <ToneChip tone="neutral" title={r.right}>
+                {rightLabel(r.right)}
+              </ToneChip>
+            </td>
+            <td>
+              {isRepo(r.resource) ? (
+                <Link to={repoPath(r.resource)} className="gitns-mono">
+                  {shortName(r.resource)}
+                </Link>
+              ) : (
+                <code>{r.resource}</code>
+              )}
+            </td>
+            <td>
+              {formatDay(r.grantedAt)}
+              {r.expiresAt && (
+                <div className="muted gitns-small">expires {formatDay(r.expiresAt)}</div>
+              )}
+              {r.reason && <div className="muted gitns-small">“{r.reason}”</div>}
+            </td>
+            <td>
+              {isRight(r.right) && (
+                <button
+                  type="button"
+                  className="secondary sm destructive"
+                  aria-label={`Revoke ${rightLabel(r.right)} on ${shortName(r.resource)} from ${book.nameOf(r.subject) ?? r.subject}`}
+                  onClick={() => onRevoke(r)}
+                >
+                  Revoke
+                </button>
+              )}
+            </td>
+          </tr>
+        ))}
+      </DataTable>
+    </div>
   );
 }

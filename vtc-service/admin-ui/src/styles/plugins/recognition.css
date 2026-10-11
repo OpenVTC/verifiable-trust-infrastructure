@@ -1,0 +1,37 @@
+/* Recognition's records table: search takes the width; filters stay compact. */
+.records-toolbar .field.inline {
+  flex: 0 1 11rem;
+}
+.records-toolbar .field.inline.records-search {
+  flex: 3 1 20rem;
+}
+.records-toolbar > button {
+  align-self: flex-end;
+}
+.records-table td {
+  vertical-align: top;
+}
+.records-name {
+  font-weight: 500;
+}
+.records-entity {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.records-entity > .copy-icon-btn {
+  margin-left: 0;
+}
+.records-resource {
+  overflow-wrap: anywhere;
+}
+
+/* An icon set in a line of bold text, sitting on its baseline. */
+.recognition-inline-icon {
+  vertical-align: calc(var(--space-1) / -2);
+}
+/* The answer to "Check recognition", under its form. */
+.recognition-result {
+  margin-top: var(--space-3);
+}

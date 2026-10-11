@@ -30,6 +30,7 @@ import {
 import { formatIso, shortenDid } from "@/lib/format";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { isWalletSigningAvailable } from "@/lib/wallet";
+import { Field } from "@/components/Field";
 
 /** The query key the shell keeps this browser's signing status under. */
 export const SIGNING_STATUS_KEY = "signing-status";
@@ -193,15 +194,14 @@ export function SetupSigning({
               enrol.mutate({});
             }}
           >
-            <label className="field">
-              <span className="field-label">Name this browser</span>
+            <Field label="Name this browser">
               <input
                 type="text"
                 value={label}
                 maxLength={128}
                 onChange={(e) => setLabel(e.target.value)}
               />
-            </label>
+            </Field>
             <button type="submit" className="primary" disabled={enrol.isPending}>
               {enrol.isPending
                 ? waiting

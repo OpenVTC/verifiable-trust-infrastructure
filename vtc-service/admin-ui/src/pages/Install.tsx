@@ -47,6 +47,7 @@ import {
   serializeRegistration,
   type JsonPublicKeyOptions,
 } from "@/lib/webauthn";
+import { Field } from "@/components/Field";
 
 const TRUST_TASK_START =
   "https://trusttasks.org/spec/vtc/install/claim/start/0.2";
@@ -416,8 +417,7 @@ export function Install() {
             invite.
           </p>
           <form onSubmit={onSubmitCode} className="form-stack">
-            <label className="field">
-              <span className="field-label">Claim code</span>
+            <Field label="Claim code">
               <input
                 type="text"
                 inputMode="text"
@@ -429,7 +429,7 @@ export function Install() {
                 required
                 autoFocus
               />
-            </label>
+            </Field>
             {walletReady && (
               <p className="muted">
                 If the operator set this community up for a DID you already hold in your VTA

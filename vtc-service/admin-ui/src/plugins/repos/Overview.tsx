@@ -8,8 +8,11 @@ import { useQuery } from "@tanstack/react-query";
 import { FolderGit2, Plus } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
+import { type Column, DataTable, useSortedRows } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
 import { InfoTip } from "@/components/InfoTip";
 import { NamedDid } from "@/components/NamedDid";
+import { PageHeader } from "@/components/PageHeader";
 import { fetchActivePolicy } from "@/lib/policies-api";
 import { useNameBook } from "@/lib/names";
 import {
@@ -327,6 +330,77 @@ function NamespaceCard({
   );
 }
 
+type RepoSortKey = "name" | "maintainers" | "committers" | "sync";
+
+const REPO_COLUMNS: readonly Column<RepoSortKey>[] = [
+  { key: "repository", label: "Repository", sortKey: "name" },
+  {
+    key: "owners",
+    label: "Owners",
+    tip: (
+      <>
+        Hold git.repo.own: may grant owner, maintainer and committer on the
+        repository, and get the forge role the bridge maps ownership to.
+      </>
+    ),
+  },
+  {
+    key: "maintainers",
+    label: "Maintainers",
+    sortKey: "maintainers",
+    tip: (
+      <>
+        Hold git.repo.maintain: may merge, and get the forge's maintain role. They
+        cannot grant rights.
+      </>
+    ),
+  },
+  {
+    key: "committers",
+    label: "Committers",
+    sortKey: "committers",
+    tip: (
+      <>
+        Hold git.commit.sign: their DID-signed commits pass the commit-trust check.
+        They need no forge access — they contribute through fork pull requests.
+      </>
+    ),
+  },
+  {
+    key: "commit trust",
+    label: "Commit trust",
+    tip: (
+      <>
+        The four setup steps that make the forge refuse unsigned or untrusted
+        commits: workflow, keyring, variables, required check. A filled dot is in
+        place, an empty one missing, a dashed one not used by this repository's
+        setup. Hover a dot for details.
+      </>
+    ),
+  },
+  {
+    key: "sync",
+    label: "Forge sync",
+    sortKey: "sync",
+    tip: (
+      <>
+        Whether the forge still matches what the VTC projected — roles and branch
+        protection. Drift means someone changed it on the forge directly.
+      </>
+    ),
+  },
+];
+
+const NSR_COLUMNS: readonly Column[] = [
+  { key: "right", label: "Right", className: "gitns-col-nsr-right" },
+  { key: "held", label: "Held by" },
+  {
+    key: "actions",
+    label: <span className="visually-hidden">Actions</span>,
+    className: "gitns-col-actions",
+  },
+];
+
 function ReposTable({
   ns,
   repos,
@@ -342,144 +416,107 @@ function ReposTable({
   // Adopting and naming an owner are grants of `git.repo.own`, which the
   // namespace's administrators make.
   const administers = administersNamespace(useCapabilities(), ns.resource);
+  const sorted = useSortedRows<GitNsRepoRow, RepoSortKey>(repos, (r, key) => {
+    const unmanaged = r.state === "unmanaged";
+    switch (key) {
+      case "name":
+        return shortName(r.resource);
+      case "maintainers":
+        return unmanaged ? null : r.maintainers;
+      case "committers":
+        return unmanaged ? null : r.committers;
+      case "sync":
+        return repoStatus(r).label;
+    }
+  });
   if (repos.length === 0) {
     return (
-      <div className="empty-state">
-        <span className="empty-icon" aria-hidden="true">
-          <FolderGit2 />
-        </span>
-        <h4>No repositories in {ns.resource} yet</h4>
-        <p>
-          {ns.mode === "bridge"
-            ? "Repositories appear as they are created or adopted, and ones the bridge finds on the forge are listed here as unmanaged."
-            : "In manual mode the VTC knows only repositories adopted through it. Adopt one to bring it under governance."}
-        </p>
-      </div>
+      <EmptyState icon={FolderGit2} title={`No repositories in ${ns.resource} yet`}>
+        {ns.mode === "bridge"
+          ? "Repositories appear as they are created or adopted, and ones the bridge finds on the forge are listed here as unmanaged."
+          : "In manual mode the VTC knows only repositories adopted through it. Adopt one to bring it under governance."}
+      </EmptyState>
     );
   }
   return (
     <div className="table-scroll">
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th scope="col">Repository</th>
-            <th scope="col">
-              Owners
-              <InfoTip label="About owners" side="bottom">
-                Hold git.repo.own: may grant owner, maintainer and committer on the
-                repository, and get the forge role the bridge maps ownership to.
-              </InfoTip>
-            </th>
-            <th scope="col">
-              Maintainers
-              <InfoTip label="About maintainers" side="bottom">
-                Hold git.repo.maintain: may merge, and get the forge's maintain role. They
-                cannot grant rights.
-              </InfoTip>
-            </th>
-            <th scope="col">
-              Committers
-              <InfoTip label="About committers" side="bottom">
-                Hold git.commit.sign: their DID-signed commits pass the commit-trust check.
-                They need no forge access — they contribute through fork pull requests.
-              </InfoTip>
-            </th>
-            <th scope="col">
-              Commit trust
-              <InfoTip label="About commit trust" side="bottom">
-                The four setup steps that make the forge refuse unsigned or untrusted
-                commits: workflow, keyring, variables, required check. A filled dot is in
-                place, an empty one missing, a dashed one not used by this repository's
-                setup. Hover a dot for details.
-              </InfoTip>
-            </th>
-            <th scope="col">
-              Forge sync
-              <InfoTip label="About forge sync" side="bottom">
-                Whether the forge still matches what the VTC projected — roles and branch
-                protection. Drift means someone changed it on the forge directly.
-              </InfoTip>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {repos.map((r) => {
-            const status = repoStatus(r);
-            const unmanaged = r.state === "unmanaged";
-            return (
-              <tr key={r.id}>
-                <td>
-                  <Link to={repoPath(r.resource)} className="gitns-mono">
-                    {shortName(r.resource)}
-                  </Link>
-                  <div className="muted gitns-small">
-                    {r.visibility}
-                    {r.createdBy && (
-                      <>
-                        {" · created by "}
-                        <NamedDid did={r.createdBy} book={book} nameOnly={!!book.nameOf(r.createdBy)} />
-                      </>
-                    )}
-                  </div>
-                </td>
-                <td>
-                  {r.state === "orphaned" ? (
-                    <span className="gitns-bad">Orphaned · reassigned to admins</span>
-                  ) : unmanaged || r.owners.length === 0 ? (
-                    "—"
-                  ) : (
-                    r.owners.map((o) => (
-                      <div key={o}>
-                        <NamedDid did={o} book={book} />
-                      </div>
-                    ))
+      <DataTable columns={REPO_COLUMNS} sort={sorted.sort} onSort={sorted.onSort}>
+        {sorted.rows.map((r) => {
+          const status = repoStatus(r);
+          const unmanaged = r.state === "unmanaged";
+          return (
+            <tr key={r.id}>
+              <td>
+                <Link to={repoPath(r.resource)} className="gitns-mono">
+                  {shortName(r.resource)}
+                </Link>
+                <div className="muted gitns-small">
+                  {r.visibility}
+                  {r.createdBy && (
+                    <>
+                      {" · created by "}
+                      <NamedDid did={r.createdBy} book={book} nameOnly={!!book.nameOf(r.createdBy)} />
+                    </>
                   )}
-                </td>
-                <td className="tabular">{unmanaged ? "—" : r.maintainers}</td>
-                <td className="tabular">{unmanaged ? "—" : r.committers}</td>
-                <td>
-                  <BootstrapDots ns={ns} repo={r} />
-                </td>
-                <td>
-                  <div className="gitns-sync">
-                    <ToneChip tone={status.tone} title={r.lastError ?? undefined}>
-                      {status.label}
-                    </ToneChip>
-                    {administers && status.action === "adopt" && (
-                      <button
-                        type="button"
-                        className="link"
-                        onClick={() => onAdopt(r.resource)}
-                        aria-label={`Adopt ${shortName(r.resource)}`}
-                      >
-                        Adopt
-                      </button>
-                    )}
-                    {administers && status.action === "assignOwner" && (
-                      <button
-                        type="button"
-                        className="link"
-                        onClick={() => onAssignOwner(r.resource)}
-                        aria-label={`Assign an owner to ${shortName(r.resource)}`}
-                      >
-                        Assign owner
-                      </button>
-                    )}
-                    {(status.action === "resolve" || status.action === "view") && (
-                      <Link
-                        to={`${repoPath(r.resource)}${status.action === "resolve" ? "#drift" : ""}`}
-                        aria-label={`${status.actionLabel} ${shortName(r.resource)}`}
-                      >
-                        {status.actionLabel}
-                      </Link>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                </div>
+              </td>
+              <td>
+                {r.state === "orphaned" ? (
+                  <span className="gitns-bad">Orphaned · reassigned to admins</span>
+                ) : unmanaged || r.owners.length === 0 ? (
+                  "—"
+                ) : (
+                  r.owners.map((o) => (
+                    <div key={o}>
+                      <NamedDid did={o} book={book} />
+                    </div>
+                  ))
+                )}
+              </td>
+              <td className="tabular">{unmanaged ? "—" : r.maintainers}</td>
+              <td className="tabular">{unmanaged ? "—" : r.committers}</td>
+              <td>
+                <BootstrapDots ns={ns} repo={r} />
+              </td>
+              <td>
+                <div className="gitns-sync">
+                  <ToneChip tone={status.tone} title={r.lastError ?? undefined}>
+                    {status.label}
+                  </ToneChip>
+                  {administers && status.action === "adopt" && (
+                    <button
+                      type="button"
+                      className="link"
+                      onClick={() => onAdopt(r.resource)}
+                      aria-label={`Adopt ${shortName(r.resource)}`}
+                    >
+                      Adopt
+                    </button>
+                  )}
+                  {administers && status.action === "assignOwner" && (
+                    <button
+                      type="button"
+                      className="link"
+                      onClick={() => onAssignOwner(r.resource)}
+                      aria-label={`Assign an owner to ${shortName(r.resource)}`}
+                    >
+                      Assign owner
+                    </button>
+                  )}
+                  {(status.action === "resolve" || status.action === "view") && (
+                    <Link
+                      to={`${repoPath(r.resource)}${status.action === "resolve" ? "#drift" : ""}`}
+                      aria-label={`${status.actionLabel} ${shortName(r.resource)}`}
+                    >
+                      {status.actionLabel}
+                    </Link>
+                  )}
+                </div>
+              </td>
+            </tr>
+          );
+        })}
+      </DataTable>
     </div>
   );
 }
@@ -521,83 +558,72 @@ function NamespaceRights({
     <section className="card" aria-labelledby={`gitns-nsr-${ns.id}`}>
       <h3 id={`gitns-nsr-${ns.id}`}>Namespace rights in {ns.owner}</h3>
       <div className="table-scroll">
-        <table className="data-table gitns-table gitns-nsr-table">
-          <thead>
-            <tr>
-              <th scope="col" className="gitns-col-nsr-right">Right</th>
-              <th scope="col">Held by</th>
-              <th scope="col" className="gitns-col-actions">
-                <span className="visually-hidden">Actions</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>
-                <span className="gitns-right-name">Namespace admin</span>
-                <InfoTip label="About namespace admin">
-                  Can grant any right in {ns.resource} and manages its repositories —
-                  treat it like an org owner. Gives no role on the forge by itself.
-                  Granting it is destructive-class and needs a passkey step-up.
-                </InfoTip>
-                <div>
-                  <code className="gitns-right-admin gitns-small">git.ns.admin</code>
-                </div>
-              </td>
-              <td>
-                <div className="gitns-holders">{list(admins)}</div>
-              </td>
-              <td>
+        <DataTable columns={NSR_COLUMNS} className="gitns-table gitns-nsr-table">
+          <tr>
+            <td>
+              <span className="gitns-right-name">Namespace admin</span>
+              <InfoTip label="About namespace admin">
+                Can grant any right in {ns.resource} and manages its repositories —
+                treat it like an org owner. Gives no role on the forge by itself.
+                Granting it is destructive-class and needs a passkey step-up.
+              </InfoTip>
+              <div>
+                <code className="gitns-right-admin gitns-small">git.ns.admin</code>
+              </div>
+            </td>
+            <td>
+              <div className="gitns-holders">{list(admins)}</div>
+            </td>
+            <td>
+              <button
+                type="button"
+                className="secondary sm"
+                disabled={!bound}
+                title="Grant namespace admin to a current member"
+                onClick={() => onGrant("git.ns.admin")}
+              >
+                Grant
+              </button>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <span className="gitns-right-name">Repo creator</span>
+              <InfoTip label="About repo creator">
+                May create new repositories in {ns.resource} through the VTC and becomes
+                their first owner. Cannot pass the right on.
+              </InfoTip>
+              <div>
+                <code className="gitns-right-create gitns-small">git.repo.create</code>
+              </div>
+            </td>
+            <td>
+              <div className="gitns-holders">
+                {isPersonal(ns) ? (
+                  <span>
+                    The account holder only — a personal account cannot let anyone else
+                    create a repository.
+                  </span>
+                ) : (
+                  list(creators)
+                )}
+              </div>
+            </td>
+            <td>
+              {!isPersonal(ns) && (
                 <button
                   type="button"
                   className="secondary sm"
                   disabled={!bound}
-                  title="Grant namespace admin to a current member"
-                  onClick={() => onGrant("git.ns.admin")}
+                  title="Grant repo creator to a current member"
+                  onClick={() => onGrant("git.repo.create")}
                 >
                   Grant
                 </button>
-              </td>
-            </tr>
-            <tr>
-              <td>
-                <span className="gitns-right-name">Repo creator</span>
-                <InfoTip label="About repo creator">
-                  May create new repositories in {ns.resource} through the VTC and becomes
-                  their first owner. Cannot pass the right on.
-                </InfoTip>
-                <div>
-                  <code className="gitns-right-create gitns-small">git.repo.create</code>
-                </div>
-              </td>
-              <td>
-                <div className="gitns-holders">
-                  {isPersonal(ns) ? (
-                    <span>
-                      The account holder only — a personal account cannot let anyone else
-                      create a repository.
-                    </span>
-                  ) : (
-                    list(creators)
-                  )}
-                </div>
-              </td>
-              <td>
-                {!isPersonal(ns) && (
-                  <button
-                    type="button"
-                    className="secondary sm"
-                    disabled={!bound}
-                    title="Grant repo creator to a current member"
-                    onClick={() => onGrant("git.repo.create")}
-                  >
-                    Grant
-                  </button>
-                )}
-              </td>
-            </tr>
-          </tbody>
-        </table>
+              )}
+            </td>
+          </tr>
+        </DataTable>
       </div>
       <p className="muted gitns-small">
         A namespace admin can grant anything in the namespace — treat it like org
@@ -670,9 +696,7 @@ function DepartedCard() {
         </p>
       )}
       {q.data && count === 0 && (
-        <p className="muted">
-          No live grant was issued by someone who has since left.
-        </p>
+        <EmptyState compact title="No live grant was issued by someone who has since left." />
       )}
       {q.data && count > 0 && (
         <>
@@ -738,44 +762,48 @@ export function Overview() {
 
   return (
     <>
-      <header className="gitns-head">
-        <div>
-          <h2>Repos</h2>
-          <p className="lead">
+      <PageHeader
+        title="Repos"
+        lead={
+          <>
             Git namespaces this community governs. Rights are held here, published to
             the Trust Registry, and applied on the forge by the community's bridge.
-          </p>
-        </div>
-        <div className="gitns-head-actions">
-          {mayCreate && (
-            <button
-              type="button"
-              className="secondary"
-              disabled={!selected || selected.state !== "bound"}
-              onClick={() => selected && setDialog({ kind: "create", ns: selected })}
-            >
-              New repo
-            </button>
-          )}
-          {mayAdopt && (
-            <button
-              type="button"
-              className="secondary"
-              disabled={!selected || selected.state !== "bound"}
-              onClick={() =>
-                setDialog({ kind: "adopt", namespaceResource: selected?.resource })
-              }
-            >
-              Adopt existing repo
-            </button>
-          )}
-          {gitAdmin && (
-            <Link to={BIND_PATH} className="button primary">
-              <Plus aria-hidden="true" size={16} /> Bind namespace
-            </Link>
-          )}
-        </div>
-      </header>
+          </>
+        }
+        actions={
+          (mayCreate || mayAdopt || gitAdmin) && (
+            <>
+              {mayCreate && (
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={!selected || selected.state !== "bound"}
+                  onClick={() => selected && setDialog({ kind: "create", ns: selected })}
+                >
+                  New repo
+                </button>
+              )}
+              {mayAdopt && (
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={!selected || selected.state !== "bound"}
+                  onClick={() =>
+                    setDialog({ kind: "adopt", namespaceResource: selected?.resource })
+                  }
+                >
+                  Adopt existing repo
+                </button>
+              )}
+              {gitAdmin && (
+                <Link to={BIND_PATH} className="button primary">
+                  <Plus aria-hidden="true" size={16} /> Bind namespace
+                </Link>
+              )}
+            </>
+          )
+        }
+      />
 
       {nsQ.isPending && (
         <section className="card">
@@ -794,23 +822,22 @@ export function Overview() {
 
       {nsQ.isSuccess && namespaces.length === 0 && (
         <section className="card">
-          <div className="empty-state">
-            <span className="empty-icon" aria-hidden="true">
-              <FolderGit2 />
-            </span>
-            <h4>No namespace bound</h4>
-            <p>
-              Bind a forge organisation or account to govern its repositories: who
-              owns each, and who may commit.
-              {!gitAdmin &&
-                " Binding takes git.ns.admin held community-wide — a community administrator's."}
-            </p>
-            {gitAdmin && (
-              <Link to={BIND_PATH} className="button primary">
-                Bind namespace
-              </Link>
-            )}
-          </div>
+          <EmptyState
+            icon={FolderGit2}
+            title="No namespace bound"
+            action={
+              gitAdmin && (
+                <Link to={BIND_PATH} className="button primary">
+                  Bind namespace
+                </Link>
+              )
+            }
+          >
+            Bind a forge organisation or account to govern its repositories: who
+            owns each, and who may commit.
+            {!gitAdmin &&
+              " Binding takes git.ns.admin held community-wide — a community administrator's."}
+          </EmptyState>
         </section>
       )}
 

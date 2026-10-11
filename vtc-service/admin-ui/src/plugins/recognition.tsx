@@ -8,7 +8,7 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Check, Network, X } from "lucide-react";
+import { AlertTriangle, Check, X } from "lucide-react";
 
 import {
   checkRecognition,
@@ -22,6 +22,11 @@ import {
 } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { CopyButton } from "@/components/CopyButton";
+import { DataTable } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { Field } from "@/components/Field";
+import { PageHeader } from "@/components/PageHeader";
+import { Tabs } from "@/components/Tabs";
 import { InfoTip } from "@/components/InfoTip";
 import { fetchAllRegistryRecords } from "@/plugins/recognition/records";
 import { TrustRecords } from "@/plugins/recognition/TrustRecords";
@@ -40,6 +45,28 @@ function protocolName(protocol: string): string {
       return protocol;
   }
 }
+
+const FAILED_JOB_COLUMNS = [
+  { key: "member", label: "Member" },
+  { key: "operation", label: "Operation" },
+  { key: "attempts", label: "Attempts" },
+  { key: "gaveUp", label: "Gave up" },
+  { key: "said", label: "Registry said" },
+  { key: "actions", label: "Actions" },
+] as const;
+
+const DRIFT_COLUMNS = [
+  { key: "member", label: "Member" },
+  { key: "disagreement", label: "Disagreement" },
+  { key: "ours", label: "Ours" },
+  { key: "registry", label: "Registry" },
+] as const;
+
+/** The two answers the records card can enumerate. */
+const RECORD_VIEWS = [
+  { id: "registry", label: "Registry" },
+  { id: "local", label: "Ours" },
+] as const;
 
 export function Recognition() {
   const toast = useToast();
@@ -140,17 +167,10 @@ export function Recognition() {
 
   return (
     <div className="page">
-      <header className="page-header">
-        <h2>
-          <Network size={20} strokeWidth={1.75} /> Recognition
-        </h2>
-        <p className="muted">
-          The trust (recognition) graph decides which foreign issuers and
-          communities this community trusts — including which third parties may
-          issue invitations that auto-admit. Recognition is queried per-DID
-          against the trust registry.
-        </p>
-      </header>
+      <PageHeader
+        title="Recognition"
+        lead="The trust (recognition) graph decides which foreign issuers and communities this community trusts — including which third parties may issue invitations that auto-admit. Recognition is queried per-DID against the trust registry."
+      />
 
       <section className="card">
         <h3>Trust registry</h3>
@@ -328,7 +348,7 @@ export function Recognition() {
                     size={15}
                     strokeWidth={1.75}
                     aria-hidden
-                    style={{ verticalAlign: "-2px" }}
+                    className="recognition-inline-icon"
                   />{" "}
                   The trust registry does not route a Trust Task this VTC sends.
                 </strong>
@@ -357,34 +377,22 @@ export function Recognition() {
                   of a record the registry never held, for instance.
                 </p>
                 <div className="table-scroll">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Member</th>
-                        <th>Operation</th>
-                        <th>Attempts</th>
-                        <th>Gave up</th>
-                        <th>Registry said</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {failedJobs.map((job) => (
-                        <FailedJobRow
-                          key={job.jobId}
-                          job={job}
-                          busy={retry.isPending || discard.isPending}
-                          onRetry={() => retry.mutate({ jobId: job.jobId })}
-                          onDiscard={() =>
-                            discard.mutate({
-                              jobId: job.jobId,
-                              did: job.memberDid,
-                            })
-                          }
-                        />
-                      ))}
-                    </tbody>
-                  </table>
+                  <DataTable columns={FAILED_JOB_COLUMNS}>
+                    {failedJobs.map((job) => (
+                      <FailedJobRow
+                        key={job.jobId}
+                        job={job}
+                        busy={retry.isPending || discard.isPending}
+                        onRetry={() => retry.mutate({ jobId: job.jobId })}
+                        onDiscard={() =>
+                          discard.mutate({
+                            jobId: job.jobId,
+                            did: job.memberDid,
+                          })
+                        }
+                      />
+                    ))}
+                  </DataTable>
                 </div>
                 {failedJobs.length > 1 && (
                   <button
@@ -465,24 +473,14 @@ export function Recognition() {
             {drift.entries.length > 0 && (
               <>
                 <div className="table-scroll">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Member</th>
-                        <th>Disagreement</th>
-                        <th>Ours</th>
-                        <th>Registry</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {drift.entries.map((e) => (
-                        <DriftRow
-                          key={`${e.disagreement}:${e.memberDid}`}
-                          entry={e}
-                        />
-                      ))}
-                    </tbody>
-                  </table>
+                  <DataTable columns={DRIFT_COLUMNS}>
+                    {drift.entries.map((e) => (
+                      <DriftRow
+                        key={`${e.disagreement}:${e.memberDid}`}
+                        entry={e}
+                      />
+                    ))}
+                  </DataTable>
                 </div>
                 {drift.entries.length < drift.total && (
                   <p className="muted">
@@ -507,42 +505,30 @@ export function Recognition() {
           when the answers disagree.
         </p>
 
-        <div className="field">
-          <span className="field-label">
-            View
-            <InfoTip label="About the views">
-              Registry is the authoritative answer, read live from the trust registry
-              every time. Ours is this community's own record of what it published —
-              useful when the registry is unreachable, never a substitute for it.
-            </InfoTip>
-          </span>
-          <div role="group" aria-label="Which view to enumerate">
-            <button
-              type="button"
-              className={source === "registry" ? "primary sm" : "secondary sm"}
-              aria-pressed={source === "registry"}
-              onClick={() => setSource("registry")}
-            >
-              Registry
-            </button>{" "}
-            <button
-              type="button"
-              className={source === "local" ? "primary sm" : "secondary sm"}
-              aria-pressed={source === "local"}
-              onClick={() => setSource("local")}
-            >
-              Ours
-            </button>{" "}
-            <button
-              type="button"
-              className="secondary sm"
-              disabled={records.isFetching}
-              onClick={() => void records.refetch()}
-            >
-              {records.isFetching ? "Reading…" : "Refresh"}
-            </button>
-          </div>
-        </div>
+        <Tabs
+          variant="segmented"
+          label="Which view to enumerate"
+          items={RECORD_VIEWS}
+          value={source}
+          onChange={setSource}
+          end={
+            <>
+              <InfoTip label="About the views">
+                Registry is the authoritative answer, read live from the trust registry
+                every time. Ours is this community's own record of what it published —
+                useful when the registry is unreachable, never a substitute for it.
+              </InfoTip>
+              <button
+                type="button"
+                className="secondary sm"
+                disabled={records.isFetching}
+                onClick={() => void records.refetch()}
+              >
+                {records.isFetching ? "Reading…" : "Refresh"}
+              </button>
+            </>
+          }
+        />
 
         {records.isPending && <p className="muted">Reading…</p>}
 
@@ -569,12 +555,11 @@ export function Recognition() {
         )}
 
         {records.data && records.data.items.length === 0 && (
-          <p className="muted">
-            No records.{" "}
+          <EmptyState title="No records.">
             {records.data.source === "registry"
               ? "The registry holds nothing under this community's authority."
               : "This community has not recorded publishing anything."}
-          </p>
+          </EmptyState>
         )}
 
         {records.data && records.data.items.length > 0 && (
@@ -596,8 +581,7 @@ export function Recognition() {
             if (did.trim()) lookup.mutate(did.trim());
           }}
         >
-          <label className="field">
-            <span className="field-label">Issuer / community DID</span>
+          <Field label="Issuer / community DID">
             <input
               type="text"
               value={did}
@@ -606,7 +590,7 @@ export function Recognition() {
               autoComplete="off"
               spellCheck={false}
             />
-          </label>
+          </Field>
           <button
             type="submit"
             className="btn primary"
@@ -617,7 +601,7 @@ export function Recognition() {
         </form>
 
         {result && (
-          <p style={{ marginTop: 12 }}>
+          <p className="recognition-result">
             {result.recognised ? (
               <span>
                 <Check

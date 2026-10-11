@@ -16,6 +16,8 @@ import { Fragment, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
+import { DataTable } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
 import { NamedDid } from "@/components/NamedDid";
 import { useNameBook } from "@/lib/names";
 import type {
@@ -220,6 +222,13 @@ function RightRow({
   );
 }
 
+const RIGHT_COLUMNS = [
+  { key: "right", label: "Right" },
+  { key: "resource", label: "Resource" },
+  { key: "granted", label: "Granted by" },
+  { key: "expires", label: "Expires" },
+] as const;
+
 /** The member page's "Git rights" card. */
 export function MemberGitCard({ did }: { did: string }) {
   const { index, isPending, error } = useMemberGit();
@@ -243,36 +252,31 @@ export function MemberGitCard({ did }: { did: string }) {
       {!isPending && !error && (
         <>
           {rights.length === 0 ? (
-            <p className="muted">Holds no git right.</p>
+            <EmptyState compact title="Holds no git right." />
           ) : (
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Right</th>
-                  <th>Resource</th>
-                  <th>Granted by</th>
-                  <th>Expires</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rights.map((r) => (
-                  <RightRow
-                    key={`${r.right} ${r.resource} ${r.origin}`}
-                    row={r}
-                    waived={viewQ.data?.waived}
-                  />
-                ))}
-              </tbody>
-            </table>
+            <DataTable columns={RIGHT_COLUMNS}>
+              {rights.map((r) => (
+                <RightRow
+                  key={`${r.right} ${r.resource} ${r.origin}`}
+                  row={r}
+                  waived={viewQ.data?.waived}
+                />
+              ))}
+            </DataTable>
           )}
 
           <h4>Linked forge accounts</h4>
           {accounts.length === 0 ? (
-            <p className="muted">
-              None linked. The member links one with{" "}
-              <code>cnm git link --forge &lt;host&gt;</code>; until then they get no
-              forge role, and contribute by fork pull requests.
-            </p>
+            <EmptyState
+              compact
+              title={
+                <>
+                  None linked. The member links one with{" "}
+                  <code>cnm git link --forge &lt;host&gt;</code>; until then they get no
+                  forge role, and contribute by fork pull requests.
+                </>
+              }
+            />
           ) : (
             <dl>
               {accounts.map((a) => (

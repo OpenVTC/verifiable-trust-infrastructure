@@ -9,6 +9,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Check, X } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
+import { DataTable } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
 import { NamedDid } from "@/components/NamedDid";
 import { formatIso, shorten } from "@/lib/format";
 import { type NameBook, useNameBook } from "@/lib/names";
@@ -35,6 +37,14 @@ export function useJoinRequestVetting(id: string) {
   });
 }
 
+const STATEMENT_COLUMNS = [
+  { key: "vetter", label: "Vetter" },
+  { key: "method", label: "Method" },
+  { key: "relationship", label: "Relationship to applicant" },
+  { key: "checks", label: "Checks" },
+  { key: "outcome", label: "Outcome" },
+] as const;
+
 export function JoinRequestVettingCard({ id }: { id: string }) {
   const query = useJoinRequestVetting(id);
   return (
@@ -50,10 +60,10 @@ export function JoinRequestVettingCard({ id }: { id: string }) {
         </p>
       )}
       {query.data && !query.data.vetting && (
-        <p className="muted">
-          No vetting criterion applied to this request, so no vetting statements
-          were counted.
-        </p>
+        <EmptyState
+          compact
+          title="No vetting criterion applied to this request, so no vetting statements were counted."
+        />
       )}
       {query.data?.vetting && <VettingFacts facts={query.data.vetting} />}
     </section>
@@ -147,7 +157,7 @@ export function VettingFacts({ facts }: { facts: JoinRequestVetting }) {
       <div>
         <h4 className="vet-subhead">Still needed</h4>
         {needs.length === 0 ? (
-          <p className="muted">Nothing is missing.</p>
+          <EmptyState compact title="Nothing is missing." />
         ) : (
           <ul className="vet-list">
             {needs.map((need) => (
@@ -164,31 +174,21 @@ export function VettingFacts({ facts }: { facts: JoinRequestVetting }) {
           Statements presented ({facts.statements.length})
         </h4>
         {facts.statements.length === 0 ? (
-          <p className="muted">
-            The presentation carried no identity-vetting statements.
-          </p>
+          <EmptyState
+            compact
+            title="The presentation carried no identity-vetting statements."
+          />
         ) : (
           <div className="table-scroll">
-            <table className="data-table vet-statements">
-              <thead>
-                <tr>
-                  <th>Vetter</th>
-                  <th>Method</th>
-                  <th>Relationship to applicant</th>
-                  <th>Checks</th>
-                  <th>Outcome</th>
-                </tr>
-              </thead>
-              <tbody>
-                {facts.statements.map((statement, i) => (
-                  <StatementRow
-                    key={statement.id ?? `statement-${i}`}
-                    statement={statement}
-                    book={book}
-                  />
-                ))}
-              </tbody>
-            </table>
+            <DataTable columns={STATEMENT_COLUMNS} className="vet-statements">
+              {facts.statements.map((statement, i) => (
+                <StatementRow
+                  key={statement.id ?? `statement-${i}`}
+                  statement={statement}
+                  book={book}
+                />
+              ))}
+            </DataTable>
           </div>
         )}
       </div>

@@ -1,0 +1,180 @@
+/* ── Login + Install pages ───────────────────────────────────── */
+
+.login-page,
+.install-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  background:
+    radial-gradient(
+      circle at 0% 0%,
+      var(--brand-tint) 0,
+      transparent 50%
+    ),
+    radial-gradient(
+      circle at 100% 100%,
+      color-mix(in srgb, var(--brand) 6%, transparent) 0,
+      transparent 45%
+    ),
+    var(--bg);
+}
+
+.login-card,
+.install-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-8) var(--space-8);
+  box-shadow: var(--elev-2);
+  max-width: 26rem;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  text-align: left;
+}
+
+/* Wide enough for an abbreviated DID on one line beside its buttons. */
+.login-card {
+  max-width: 36rem;
+}
+
+.login-card h2,
+.install-card h2 {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tighter);
+}
+
+.login-card .lead,
+.install-card .lead {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-base);
+}
+
+/* The community's DID, shown before sign-in: abbreviated (`DidText`), the
+   whole identifier on hover and behind the copy button. */
+.login-did {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+}
+
+/* A VTA identity to sign in as: its vault label, then its DID, abbreviated
+   (full on hover). Two personas can share a label, so the DID is always
+   shown. */
+.identity-choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.identity-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast);
+}
+
+.identity-choice:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--brand);
+}
+
+.identity-choice:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.identity-choice-label {
+  font-weight: 600;
+}
+
+.identity-choice-did {
+  max-width: 100%;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.login-card button.primary,
+.install-card button.primary {
+  width: 100%;
+  height: 40px;
+  font-size: var(--text-md);
+}
+
+/* A wallet sign-in button and the line under it saying which identity it
+   presents. The ACL admits a DID, so two buttons that present different DIDs
+   must not look interchangeable. */
+.login-option {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.login-option-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+
+.login-card footer,
+.install-card footer {
+  margin: 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.login-card footer p,
+.install-card footer p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.install-page {
+  justify-content: flex-start;
+  align-items: center;
+  padding-top: var(--space-12);
+}
+
+.install-page > * {
+  width: 100%;
+  max-width: 32rem;
+}
+
+.install-page > h2 {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tighter);
+  margin: 0 0 var(--space-2);
+  text-align: center;
+}
+
+.install-page > p.lead {
+  text-align: center;
+  color: var(--text-muted);
+  margin: 0 0 var(--space-5);
+}

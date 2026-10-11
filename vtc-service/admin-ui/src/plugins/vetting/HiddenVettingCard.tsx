@@ -17,6 +17,8 @@ import { type FormEvent, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useConfirm } from "@/components/ConfirmDialog";
+import { DataTable } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
 import {
   DEFAULT_TICK_LENGTH,
   describeTickLength,
@@ -41,6 +43,15 @@ import { useViewerDid } from "@/lib/viewer";
 
 import { vettingKeys } from "./api";
 import { errorMessage, FormField } from "./ui";
+
+const EVENT_COLUMNS = [
+  { key: "event", label: "Event" },
+  { key: "dates", label: "Dates" },
+  { key: "asked", label: "Vetters asked" },
+  { key: "approved", label: "Approved by" },
+  { key: "state", label: "State" },
+  { key: "actions", label: "" },
+] as const;
 
 /** A positive whole number, or `null`. */
 function parsePositive(value: string): number | null {
@@ -473,82 +484,70 @@ function EventsSection({
         have asked to vet at it that a spend still hides who made it.
       </p>
       {events.length === 0 ? (
-        <p className="muted">No events.</p>
+        <EmptyState compact title="No events." />
       ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Event</th>
-              <th>Dates</th>
-              <th>Vetters asked</th>
-              <th>Approved by</th>
-              <th>State</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {events.map((e) => {
-              const s = byId.get(e.eventId);
-              return (
-                <tr key={e.eventId}>
-                  <td>
-                    <code>{e.eventId}</code>
-                    <div className="muted">
-                      {e.tiers.map((t) => `${t.name}: ${t.dripPerTick}/tick`).join(", ")}
-                    </div>
-                  </td>
-                  <td>
-                    {e.startDate} – {e.endDate}
-                    <div className="muted">+{e.graceDays} days grace</div>
-                  </td>
-                  <td>
-                    {s ? `${s.groupSize} of ${s.groupFloor} needed` : "—"}
-                  </td>
-                  <td>
-                    {e.approvedBy ? (
-                      <code>{e.approvedBy === viewerDid ? "you" : e.approvedBy}</code>
-                    ) : (
-                      <span className="muted">not yet</span>
-                    )}
-                  </td>
-                  <td>
-                    {s?.live
-                      ? "Open"
-                      : e.approvedBy && s && !s.approved
-                        ? "Approver is vetting at it"
-                        : !e.approvedBy
-                          ? "Needs approval"
-                          : s && s.groupSize < s.groupFloor
-                            ? "Waiting for vetters"
-                            : "Closed"}
-                  </td>
-                  <td>
-                    <div className="form-actions">
-                      {!e.approvedBy && (
-                        <button
-                          type="button"
-                          className="secondary"
-                          disabled={busy || !viewerDid}
-                          onClick={() => onApprove(e)}
-                        >
-                          Approve
-                        </button>
-                      )}
+        <DataTable columns={EVENT_COLUMNS}>
+          {events.map((e) => {
+            const s = byId.get(e.eventId);
+            return (
+              <tr key={e.eventId}>
+                <td>
+                  <code>{e.eventId}</code>
+                  <div className="muted">
+                    {e.tiers.map((t) => `${t.name}: ${t.dripPerTick}/tick`).join(", ")}
+                  </div>
+                </td>
+                <td>
+                  {e.startDate} – {e.endDate}
+                  <div className="muted">+{e.graceDays} days grace</div>
+                </td>
+                <td>
+                  {s ? `${s.groupSize} of ${s.groupFloor} needed` : "—"}
+                </td>
+                <td>
+                  {e.approvedBy ? (
+                    <code>{e.approvedBy === viewerDid ? "you" : e.approvedBy}</code>
+                  ) : (
+                    <span className="muted">not yet</span>
+                  )}
+                </td>
+                <td>
+                  {s?.live
+                    ? "Open"
+                    : e.approvedBy && s && !s.approved
+                      ? "Approver is vetting at it"
+                      : !e.approvedBy
+                        ? "Needs approval"
+                        : s && s.groupSize < s.groupFloor
+                          ? "Waiting for vetters"
+                          : "Closed"}
+                </td>
+                <td>
+                  <div className="form-actions">
+                    {!e.approvedBy && (
                       <button
                         type="button"
-                        className="secondary destructive"
-                        disabled={busy}
-                        onClick={() => onRemove(e)}
+                        className="secondary"
+                        disabled={busy || !viewerDid}
+                        onClick={() => onApprove(e)}
                       >
-                        Remove
+                        Approve
                       </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                    )}
+                    <button
+                      type="button"
+                      className="secondary destructive"
+                      disabled={busy}
+                      onClick={() => onRemove(e)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </DataTable>
       )}
       {adding ? (
         <EventForm

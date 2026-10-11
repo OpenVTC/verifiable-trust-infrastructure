@@ -75,12 +75,11 @@ export function JoinDiscoveryCard() {
   return (
     <section className="card">
       <h3>Joining</h3>
-      <label className="field inline">
+      <label className="field inline join-discovery-toggle">
         <input
           type="checkbox"
           checked={draft}
           onChange={(e) => setDraft(e.target.checked)}
-          style={{ width: "auto", height: "auto" }}
         />
         <span className="field-label">
           Answer “what do you require of people who join?” to anyone who asks

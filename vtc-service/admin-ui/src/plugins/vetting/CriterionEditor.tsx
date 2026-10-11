@@ -416,7 +416,7 @@ function VettingFields({
                 key={method}
                 id={`req-min-${method}`}
                 label={`${methodLabel(method)} statements`}
-                className="field inline"
+                inline
               >
                 <input
                   id={`req-min-${method}`}
@@ -558,7 +558,7 @@ function VettingFields({
               key={rel}
               id={`req-cap-${rel}`}
               label={relationshipLabel(rel)}
-              className="field inline"
+              inline
             >
               <input
                 id={`req-cap-${rel}`}

@@ -50,6 +50,9 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { TypedConfirmDialog } from "@/components/TypedConfirmDialog";
 import { immediateConfirmMatches } from "@/lib/immediate";
 import { Field } from "@/components/Field";
+import { DataTable } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { PageHeader } from "@/components/PageHeader";
 import { formatIso, shorten, shortenDid } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 import { SessionTimeoutCard } from "@/plugins/SessionTimeoutCard";
@@ -181,14 +184,13 @@ export function Acl() {
 
   return (
     <section className="page">
-      <h2>Access control</h2>
+      <PageHeader title="Access control" />
 
       <SessionTimeoutCard />
 
       <section className="card">
         <div className="toolbar">
-          <label className="field inline">
-            <span className="field-label">Filter by administrative role</span>
+          <Field label="Filter by administrative role" inline>
             <select
               aria-label="Filter by administrative role"
               value={roleFilter}
@@ -202,7 +204,7 @@ export function Acl() {
               ))}
               <option value={NO_ADMIN_ROLE}>no administrative role</option>
             </select>
-          </label>
+          </Field>
           <div className="spacer" />
           <button
             type="button"
@@ -273,172 +275,163 @@ export function Acl() {
       )}
 
       <section className="card">
-        <table className="data-table">
-          <thead>
+        <DataTable
+          columns={[
+            { key: "did", label: "DID" },
+            { key: "administrative-role", label: "Administrative role" },
+            { key: "administers", label: "Administers" },
+            { key: "community-role", label: "Community role" },
+            { key: "label", label: "Label" },
+            { key: "expires", label: "Expires" },
+            { key: "actions", label: "" },
+          ]}
+        >
+          {query.isPending && (
             <tr>
-              <th>DID</th>
-              <th>Administrative role</th>
-              <th>Administers</th>
-              <th>Community role</th>
-              <th>Label</th>
-              <th>Expires</th>
-              <th></th>
+              <td colSpan={7}>Loading…</td>
             </tr>
-          </thead>
-          <tbody>
-            {query.isPending && (
-              <tr>
-                <td colSpan={7}>Loading…</td>
-              </tr>
-            )}
-            {query.data?.entries.length === 0 && (
-              <tr>
-                <td colSpan={7}>
-                  <div className="empty-state">
-                    <span className="empty-icon" aria-hidden="true">
-                      <ShieldCheck />
+          )}
+          {query.data?.entries.length === 0 && (
+            <tr>
+              <td colSpan={7}>
+                <EmptyState icon={ShieldCheck} title="No ACL entries match this filter">
+                  Use <strong>Add entry</strong> to grant access,
+                  or clear the role filter to see every entry.
+                </EmptyState>
+              </td>
+            </tr>
+          )}
+          {query.data?.entries.map((e) => {
+            const review = e.ext?.["org.openvtc"]?.delegationReview;
+            // Your own entry (VTI-ACL-052): the label always; anything else
+            // only where the VTC would allow it, explained otherwise.
+            const own = me !== null && e.subject === me ? ownEntryEdits(e, singleAdminMode) : null;
+            const suspended = suspensionOf(e);
+            // Another unrestricted administrator: in single-administrator
+            // mode, removing them may skip the cooling-off (§8.5).
+            const mayRemoveNow = singleAdminMode && own === null && isUnrestricted(e);
+            return (
+              <tr key={e.subject}>
+                <td>
+                  <code title={e.subject}>{shortenDid(e.subject)}</code>
+                  {own && (
+                    <span className="chip" title="This is the entry you are signed in as">
+                      you
                     </span>
-                    <h4>No ACL entries match this filter</h4>
-                    <p>
-                      Use <strong>Add entry</strong> to grant access,
-                      or clear the role filter to see every entry.
-                    </p>
-                  </div>
+                  )}
                 </td>
-              </tr>
-            )}
-            {query.data?.entries.map((e) => {
-              const review = e.ext?.["org.openvtc"]?.delegationReview;
-              // Your own entry (VTI-ACL-052): the label always; anything else
-              // only where the VTC would allow it, explained otherwise.
-              const own = me !== null && e.subject === me ? ownEntryEdits(e, singleAdminMode) : null;
-              const suspended = suspensionOf(e);
-              // Another unrestricted administrator: in single-administrator
-              // mode, removing them may skip the cooling-off (§8.5).
-              const mayRemoveNow = singleAdminMode && own === null && isUnrestricted(e);
-              return (
-                <tr key={e.subject}>
-                  <td>
-                    <code title={e.subject}>{shortenDid(e.subject)}</code>
-                    {own && (
-                      <span className="chip" title="This is the entry you are signed in as">
-                        you
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    {e.role === NO_ADMIN_ROLE ? (
-                      <span className="muted">none</span>
-                    ) : (
-                      <code>{e.role}</code>
-                    )}
-                    {review && (
-                      <span
-                        className="chip warning"
-                        title={`Granted by ${review.granter}, who has left or narrowed. Withdrawn at ${review.deadline} unless an administrator re-affirms it (Edit, then Save).`}
+                <td>
+                  {e.role === NO_ADMIN_ROLE ? (
+                    <span className="muted">none</span>
+                  ) : (
+                    <code>{e.role}</code>
+                  )}
+                  {review && (
+                    <span
+                      className="chip warning"
+                      title={`Granted by ${review.granter}, who has left or narrowed. Withdrawn at ${review.deadline} unless an administrator re-affirms it (Edit, then Save).`}
+                    >
+                      under review
+                    </span>
+                  )}
+                  {suspended && (
+                    <span
+                      className="chip danger"
+                      data-testid="suspended"
+                      title={`A reduction of this entry is cooling off (action ${suspended.actionId}, requested by ${suspended.requester}). Until it lands or is cancelled the entry authorizes nothing; cancelling restores it.`}
+                    >
+                      suspended — removal lands {formatIso(suspended.landsAt)}
+                    </span>
+                  )}
+                </td>
+                <td data-testid="administers">
+                  <AuthorityCell entry={e} />
+                </td>
+                <td>
+                  <code>{communityRoleOf(e)}</code>
+                </td>
+                <td>
+                  <EditableLabelCell entry={e} label={e.label ?? null} />
+                  {labelSelfSet(e) && (
+                    <span
+                      className="chip warning"
+                      title="Set by the entry's own subject, not by another administrator (VTI-ACL-052)"
+                    >
+                      self-set
+                    </span>
+                  )}
+                </td>
+                <td>
+                  {e.expiresAt ? (
+                    <span title={String(e.expiresAt)}>
+                      {formatIso(e.expiresAt)}
+                    </span>
+                  ) : (
+                    <span className="muted">never</span>
+                  )}
+                </td>
+                <td>
+                  <div className="row-actions">
+                    {e.role !== NO_ADMIN_ROLE && (
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={own !== null && !own.other}
+                        title={
+                          own === null
+                            ? undefined
+                            : own.other
+                              ? "Single-administrator mode: your passkey gesture, bound to this change, is asked for (VTI-ACL-052)"
+                              : (own.why ?? undefined)
+                        }
+                        onClick={() => setEditing(e)}
                       >
-                        under review
-                      </span>
+                        Edit
+                      </button>
                     )}
-                    {suspended && (
-                      <span
-                        className="chip danger"
-                        data-testid="suspended"
-                        title={`A reduction of this entry is cooling off (action ${suspended.actionId}, requested by ${suspended.requester}). Until it lands or is cancelled the entry authorizes nothing; cancelling restores it.`}
-                      >
-                        suspended — removal lands {formatIso(suspended.landsAt)}
-                      </span>
-                    )}
-                  </td>
-                  <td data-testid="administers">
-                    <AuthorityCell entry={e} />
-                  </td>
-                  <td>
-                    <code>{communityRoleOf(e)}</code>
-                  </td>
-                  <td>
-                    <EditableLabelCell entry={e} label={e.label ?? null} />
-                    {labelSelfSet(e) && (
-                      <span
-                        className="chip warning"
-                        title="Set by the entry's own subject, not by another administrator (VTI-ACL-052)"
-                      >
-                        self-set
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    {e.expiresAt ? (
-                      <span title={String(e.expiresAt)}>
-                        {formatIso(e.expiresAt)}
-                      </span>
-                    ) : (
-                      <span className="muted">never</span>
-                    )}
-                  </td>
-                  <td>
-                    <div className="row-actions">
-                      {e.role !== NO_ADMIN_ROLE && (
-                        <button
-                          type="button"
-                          className="secondary"
-                          disabled={own !== null && !own.other}
-                          title={
-                            own === null
-                              ? undefined
-                              : own.other
-                                ? "Single-administrator mode: your passkey gesture, bound to this change, is asked for (VTI-ACL-052)"
-                                : (own.why ?? undefined)
-                          }
-                          onClick={() => setEditing(e)}
-                        >
-                          Edit
-                        </button>
-                      )}
+                    <button
+                      type="button"
+                      className="secondary destructive"
+                      disabled={revoke.isPending || own !== null}
+                      title={
+                        own !== null
+                          ? "You cannot revoke your own entry (VTI-ACL-052) — another administrator can"
+                          : undefined
+                      }
+                      onClick={async () => {
+                        const ok = await confirm({
+                          title: "Revoke ACL entry?",
+                          message: isUnrestricted(e)
+                            ? `${e.subject} is an unrestricted administrator. With nobody else to consent, the removal waits out a cooling-off, during which they are suspended — their entry authorizes nothing — and you can cancel it. Otherwise another administrator approves it.`
+                            : `${e.subject} loses access immediately. This cannot be undone.`,
+                          confirmLabel: "Revoke",
+                          destructive: true,
+                        });
+                        if (ok) revoke.mutate(e.subject);
+                      }}
+                    >
+                      Revoke
+                    </button>
+                    {mayRemoveNow && (
                       <button
                         type="button"
                         className="secondary destructive"
-                        disabled={revoke.isPending || own !== null}
-                        title={
-                          own !== null
-                            ? "You cannot revoke your own entry (VTI-ACL-052) — another administrator can"
-                            : undefined
-                        }
-                        onClick={async () => {
-                          const ok = await confirm({
-                            title: "Revoke ACL entry?",
-                            message: isUnrestricted(e)
-                              ? `${e.subject} is an unrestricted administrator. With nobody else to consent, the removal waits out a cooling-off, during which they are suspended — their entry authorizes nothing — and you can cancel it. Otherwise another administrator approves it.`
-                              : `${e.subject} loses access immediately. This cannot be undone.`,
-                            confirmLabel: "Revoke",
-                            destructive: true,
-                          });
-                          if (ok) revoke.mutate(e.subject);
-                        }}
+                        disabled={removeNow.isPending}
+                        title="Single-administrator mode: remove at once, without the cooling-off — after typing their DID and a passkey gesture bound to this removal"
+                        onClick={() => setRemovingNow(e)}
                       >
-                        Revoke
+                        Remove now
                       </button>
-                      {mayRemoveNow && (
-                        <button
-                          type="button"
-                          className="secondary destructive"
-                          disabled={removeNow.isPending}
-                          title="Single-administrator mode: remove at once, without the cooling-off — after typing their DID and a passkey gesture bound to this removal"
-                          onClick={() => setRemovingNow(e)}
-                        >
-                          Remove now
-                        </button>
-                      )}
-                    </div>
-                    {own && !own.other && e.role !== NO_ADMIN_ROLE && (
-                      <p className="muted own-entry-note">{own.why}</p>
                     )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                  </div>
+                  {own && !own.other && e.role !== NO_ADMIN_ROLE && (
+                    <p className="muted own-entry-note">{own.why}</p>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </DataTable>
       </section>
 
       <InvitesPanel />
@@ -534,8 +527,8 @@ function InvitesPanel() {
     <>
       <section className="card">
         <div className="toolbar">
-          <h3 style={{ margin: 0 }}>Admin invites</h3>
-          <p className="lead" style={{ margin: 0, flex: "1 1 auto" }}>
+          <h3 className="acl-invites-title">Admin invites</h3>
+          <p className="lead acl-invites-lead">
             Mint one-shot install URLs for new community administrators.
             Each invite grants its <code>did</code> the community-admin
             role on first passkey claim.
@@ -570,128 +563,121 @@ function InvitesPanel() {
       )}
 
       <section className="card">
-        <table className="data-table">
-          <thead>
+        <DataTable
+          columns={[
+            { key: "target-did", label: "Target DID" },
+            { key: "jti", label: "JTI" },
+            { key: "status", label: "Status" },
+            { key: "expires-consumed", label: "Expires / consumed" },
+            { key: "actions", label: "" },
+          ]}
+        >
+          {query.isPending && (
             <tr>
-              <th>Target DID</th>
-              <th>JTI</th>
-              <th>Status</th>
-              <th>Expires / consumed</th>
-              <th></th>
+              <td colSpan={5}>Loading…</td>
             </tr>
-          </thead>
-          <tbody>
-            {query.isPending && (
-              <tr>
-                <td colSpan={5}>Loading…</td>
-              </tr>
-            )}
-            {!query.isPending && invites.length === 0 && (
-              <tr>
-                <td colSpan={5}>
-                  <div className="empty-state">
-                    <span className="empty-icon" aria-hidden="true">
-                      <Mail />
-                    </span>
-                    <h4>No outstanding invites</h4>
-                    <p>Use <strong>Invite admin</strong> to mint an install URL.</p>
-                  </div>
-                </td>
-              </tr>
-            )}
-            {invites.map((i) => (
-              <tr key={i.jti}>
-                <td>
-                  {i.targetDid ? (
-                    <code title={i.targetDid}>{shortenDid(i.targetDid)}</code>
-                  ) : (
-                    <span className="muted">unknown</span>
-                  )}
-                </td>
-                <td>
-                  <code className="truncate" title={i.jti}>
-                    {shorten(i.jti)}
-                  </code>
-                </td>
-                <td>
-                  <span className={`chip ${chipForStatus(i.status)}`}>
-                    {i.status}
-                  </span>
-                </td>
-                <td>
-                  {i.status === "consumed" && i.consumedAt
-                    ? `consumed ${formatIso(i.consumedAt)}`
-                    : i.expiresAt
-                      ? formatIso(i.expiresAt)
-                      : "—"}
-                </td>
-                <td>
-                  <div className="row-actions">
-                    <button
-                      type="button"
-                      className="secondary"
-                      disabled={
-                        regenerate.isPending ||
-                        i.status === "consumed" ||
-                        !i.targetDid
-                      }
-                      title={
-                        i.status === "consumed"
-                          ? "Consumed invites cannot be regenerated"
-                          : !i.targetDid
-                            ? "Legacy invite — no stored target DID, revoke instead"
-                            : "Revoke this invite and mint a fresh URL + claim code for the same DID"
-                      }
-                      onClick={async () => {
-                        if (!i.targetDid) return;
-                        const ok = await confirm({
-                          title: `Regenerate invite for ${i.targetDid}?`,
-                          message: `Revokes ${shorten(i.jti)} and mints a fresh URL + claim code. The old install URL stops working immediately.`,
-                          confirmLabel: "Regenerate",
+          )}
+          {!query.isPending && invites.length === 0 && (
+            <tr>
+              <td colSpan={5}>
+                <EmptyState icon={Mail} title="No outstanding invites">
+                  Use <strong>Invite admin</strong> to mint an install URL.
+                </EmptyState>
+              </td>
+            </tr>
+          )}
+          {invites.map((i) => (
+            <tr key={i.jti}>
+              <td>
+                {i.targetDid ? (
+                  <code title={i.targetDid}>{shortenDid(i.targetDid)}</code>
+                ) : (
+                  <span className="muted">unknown</span>
+                )}
+              </td>
+              <td>
+                <code className="truncate" title={i.jti}>
+                  {shorten(i.jti)}
+                </code>
+              </td>
+              <td>
+                <span className={`chip ${chipForStatus(i.status)}`}>
+                  {i.status}
+                </span>
+              </td>
+              <td>
+                {i.status === "consumed" && i.consumedAt
+                  ? `consumed ${formatIso(i.consumedAt)}`
+                  : i.expiresAt
+                    ? formatIso(i.expiresAt)
+                    : "—"}
+              </td>
+              <td>
+                <div className="row-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={
+                      regenerate.isPending ||
+                      i.status === "consumed" ||
+                      !i.targetDid
+                    }
+                    title={
+                      i.status === "consumed"
+                        ? "Consumed invites cannot be regenerated"
+                        : !i.targetDid
+                          ? "Legacy invite — no stored target DID, revoke instead"
+                          : "Revoke this invite and mint a fresh URL + claim code for the same DID"
+                    }
+                    onClick={async () => {
+                      if (!i.targetDid) return;
+                      const ok = await confirm({
+                        title: `Regenerate invite for ${i.targetDid}?`,
+                        message: `Revokes ${shorten(i.jti)} and mints a fresh URL + claim code. The old install URL stops working immediately.`,
+                        confirmLabel: "Regenerate",
+                      });
+                      if (ok) {
+                        regenerate.mutate({
+                          oldJti: i.jti,
+                          targetDid: i.targetDid,
                         });
-                        if (ok) {
-                          regenerate.mutate({
-                            oldJti: i.jti,
-                            targetDid: i.targetDid,
-                          });
-                        }
-                      }}
-                    >
-                      <RefreshCw size={12} aria-hidden="true" />{" "}
-                      Regenerate
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary destructive"
-                      disabled={revoke.isPending}
-                      title={
-                        i.status === "issued"
-                          ? "Revoke this invite — the install URL stops working immediately"
-                          : "Remove this row from the list (the install URL is already inert)"
                       }
-                      onClick={async () => {
-                        const isIssued = i.status === "issued";
-                        const ok = await confirm({
-                          title: isIssued
-                            ? `Revoke invite ${shorten(i.jti)}?`
-                            : `Remove ${i.status} invite?`,
-                          message: isIssued
-                            ? "The install URL stops working immediately."
-                            : `${shorten(i.jti)} will be cleared from the list. The install URL is already inert.`,
-                          confirmLabel: isIssued ? "Revoke" : "Remove",
-                          destructive: true,
-                        });
-                        if (ok) revoke.mutate(i.jti);
-                      }}
-                    >
-                      {i.status === "issued" ? "Revoke" : "Remove"}
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                    }}
+                  >
+                    <RefreshCw size={12} aria-hidden="true" />{" "}
+                    Regenerate
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary destructive"
+                    disabled={revoke.isPending}
+                    title={
+                      i.status === "issued"
+                        ? "Revoke this invite — the install URL stops working immediately"
+                        : "Remove this row from the list (the install URL is already inert)"
+                    }
+                    onClick={async () => {
+                      const isIssued = i.status === "issued";
+                      const ok = await confirm({
+                        title: isIssued
+                          ? `Revoke invite ${shorten(i.jti)}?`
+                          : `Remove ${i.status} invite?`,
+                        message: isIssued
+                          ? "The install URL stops working immediately."
+                          : `${shorten(i.jti)} will be cleared from the list. The install URL is already inert.`,
+                        confirmLabel: isIssued ? "Revoke" : "Remove",
+                        destructive: true,
+                      });
+                      if (ok) revoke.mutate(i.jti);
+                    }}
+                  >
+                    {i.status === "issued" ? "Revoke" : "Remove"}
+                  </button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </DataTable>
       </section>
 
       {regenerated && (
@@ -870,16 +856,12 @@ function RegeneratedInviteCard({
         view). Both are required to claim the passkey. Expires{" "}
         <strong>{formatIso(invite.expiresAt)}</strong>.
       </p>
-      <label className="field">
-        <span className="field-label">Install URL</span>
+      <Field label="Install URL">
         <input type="text" readOnly value={invite.installUrl} />
-      </label>
-      <label className="field">
-        <span className="field-label">
-          Claim code (shown once — copy it now)
-        </span>
+      </Field>
+      <Field label="Claim code (shown once — copy it now)">
         <input type="text" readOnly value={invite.claimCode} />
-      </label>
+      </Field>
       <div className="form-actions">
         <button
           type="button"
@@ -1268,7 +1250,7 @@ function EditableLabelCell({
         }}
         // Inline edit shouldn't take the full default 36px height
         // — match the surrounding row.
-        style={{ height: 28, padding: "0 8px" }}
+        className="acl-label-input"
       />
     );
   }
@@ -1280,18 +1262,10 @@ function EditableLabelCell({
       title="Click to edit label"
       // Reuse `button.link` styling so it blends with the row;
       // a normal button would render as a chunky default button.
-      className="link"
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        color: label ? "inherit" : "var(--text-muted)",
-        textAlign: "left",
-        font: "inherit",
-      }}
+      className={`link acl-label-edit${label ? "" : " empty"}`}
     >
       {label ?? <em>add label</em>}
-      <Pencil size={12} aria-hidden="true" style={{ opacity: 0.5 }} />
+      <Pencil size={12} aria-hidden="true" className="acl-label-pencil" />
     </button>
   );
 }

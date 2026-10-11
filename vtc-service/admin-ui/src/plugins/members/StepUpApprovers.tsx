@@ -20,6 +20,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ShieldCheck } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
+import { DataTable } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
 import { SigningUnavailableError } from "@/lib/api";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import {
@@ -102,56 +104,53 @@ export function ApproverDevicesCard({ did, self = false }: { did: string; self?:
       {!list.isPending && !list.error && (
         <>
           {approvers.length === 0 ? (
-            <p className="muted">None enrolled.</p>
+            <EmptyState compact title="None enrolled." />
           ) : (
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Label</th>
-                  <th>Approver</th>
-                  <th>Bound via</th>
-                  <th>Enrolled</th>
-                  <th>Last used</th>
-                  <th />
+            <DataTable
+              columns={[
+                { key: "label", label: "Label" },
+                { key: "approver", label: "Approver" },
+                { key: "via", label: "Bound via" },
+                { key: "enrolled", label: "Enrolled" },
+                { key: "used", label: "Last used" },
+                { key: "actions", label: "" },
+              ]}
+            >
+              {approvers.map((a) => (
+                <tr key={a.approverDid}>
+                  <td>{a.label ?? <span className="muted">unlabelled</span>}</td>
+                  <td>
+                    <code className="truncate" title={a.approverDid}>
+                      {a.approverDid}
+                    </code>
+                  </td>
+                  <td>{ENROLLED_VIA_LABEL[a.enrolledVia] ?? a.enrolledVia}</td>
+                  <td>{formatDay(a.enrolledAt)}</td>
+                  <td>
+                    {a.lastUsedAt ? formatDay(a.lastUsedAt) : <span className="muted">never</span>}
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={revoke.isPending}
+                      onClick={async () => {
+                        const ok = await confirm({
+                          title: "Revoke this approver?",
+                          message:
+                            "It can never be bound again. The community asks you to confirm with a step-up factor you hold first. Revoking the last one is allowed: it removes the ability to step up with it, not any authority, and another can be enrolled by invite.",
+                          confirmLabel: "Revoke",
+                          destructive: true,
+                        });
+                        if (ok) revoke.mutate(a.approverDid);
+                      }}
+                    >
+                      Revoke
+                    </button>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {approvers.map((a) => (
-                  <tr key={a.approverDid}>
-                    <td>{a.label ?? <span className="muted">unlabelled</span>}</td>
-                    <td>
-                      <code className="truncate" title={a.approverDid}>
-                        {a.approverDid}
-                      </code>
-                    </td>
-                    <td>{ENROLLED_VIA_LABEL[a.enrolledVia] ?? a.enrolledVia}</td>
-                    <td>{formatDay(a.enrolledAt)}</td>
-                    <td>
-                      {a.lastUsedAt ? formatDay(a.lastUsedAt) : <span className="muted">never</span>}
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className="danger"
-                        disabled={revoke.isPending}
-                        onClick={async () => {
-                          const ok = await confirm({
-                            title: "Revoke this approver?",
-                            message:
-                              "It can never be bound again. The community asks you to confirm with a step-up factor you hold first. Revoking the last one is allowed: it removes the ability to step up with it, not any authority, and another can be enrolled by invite.",
-                            confirmLabel: "Revoke",
-                            destructive: true,
-                          });
-                          if (ok) revoke.mutate(a.approverDid);
-                        }}
-                      >
-                        Revoke
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+              ))}
+            </DataTable>
           )}
           {revoke.error && (
             <p className="error" role="alert">

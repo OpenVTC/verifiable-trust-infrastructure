@@ -11,7 +11,9 @@ import { Filter, X } from "lucide-react";
 
 import { DidText } from "@/components/DidText";
 import { InfoTip } from "@/components/InfoTip";
-import { SortableHeader } from "@/components/SortableHeader";
+import { DataTable, type Column } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { Field } from "@/components/Field";
 import { useNameBook } from "@/lib/names";
 import {
   compareValues,
@@ -126,24 +128,33 @@ export function TrustRecords({
     setAssertion("all");
   };
   const onSort = (key: SortKey) => setSort((s) => nextSort(s, key, INITIAL_DIR[key]));
-  const header = (key: SortKey, label: string) => (
-    <SortableHeader label={label} sortKey={key} sort={sort} onSort={onSort} tip={COLUMN_TIPS[key]} />
-  );
+  const column = (key: SortKey, label: string): Column<SortKey> => ({
+    key,
+    label,
+    sortKey: key,
+    tip: COLUMN_TIPS[key],
+  });
+  const columns: Column<SortKey>[] = [
+    column("entity", "Entity"),
+    ...(oneAuthority ? [] : [{ key: "authority", label: "Authority" }]),
+    column("action", "Action"),
+    column("resource", "Resource"),
+    column("kind", "Type"),
+    column("assertion", "Asserts"),
+  ];
 
   return (
     <>
       <div className="toolbar records-toolbar">
-        <label className="field inline records-search">
-          <span className="field-label">Search</span>
+        <Field label="Search" inline className="records-search">
           <input
             type="search"
             placeholder="Name, DID, action or repository"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-        </label>
-        <label className="field inline">
-          <span className="field-label">Type</span>
+        </Field>
+        <Field label="Type" inline>
           <select value={kind} onChange={(e) => setKind(e.target.value as RecordKind | "all")}>
             <option value="all">All types</option>
             {kinds.map((k) => (
@@ -152,9 +163,8 @@ export function TrustRecords({
               </option>
             ))}
           </select>
-        </label>
-        <label className="field inline">
-          <span className="field-label">Action</span>
+        </Field>
+        <Field label="Action" inline>
           <select value={action} onChange={(e) => setAction(e.target.value)}>
             <option value="all">All actions</option>
             {actions.map((a) => (
@@ -163,15 +173,14 @@ export function TrustRecords({
               </option>
             ))}
           </select>
-        </label>
-        <label className="field inline">
-          <span className="field-label">Asserts</span>
+        </Field>
+        <Field label="Asserts" inline>
           <select value={assertion} onChange={(e) => setAssertion(e.target.value as AssertionFilter)}>
             <option value="all">Anything</option>
             <option value="yes">Yes (recognised / authorised)</option>
             <option value="no">No (not recognised / not authorised)</option>
           </select>
-        </label>
+        </Field>
         {filtered && (
           <button type="button" className="secondary sm" onClick={clear}>
             <X size={12} aria-hidden="true" /> Clear filters
@@ -190,77 +199,77 @@ export function TrustRecords({
       )}
 
       <div className="table-scroll">
-        <table className="data-table records-table">
-          <caption className="visually-hidden">Trust records from {source}</caption>
-          <thead>
+        <DataTable
+          columns={columns}
+          sort={sort}
+          onSort={onSort}
+          caption={<>Trust records from {source}</>}
+          className="records-table"
+        >
+          {rows.length === 0 && (
             <tr>
-              {header("entity", "Entity")}
-              {!oneAuthority && <th scope="col">Authority</th>}
-              {header("action", "Action")}
-              {header("resource", "Resource")}
-              {header("kind", "Type")}
-              {header("assertion", "Asserts")}
+              <td colSpan={oneAuthority ? 5 : 6}>
+                <EmptyState
+                  title="No record matches."
+                  action={
+                    <button type="button" className="link" onClick={clear}>
+                      Clear the filters
+                    </button>
+                  }
+                />
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={oneAuthority ? 5 : 6} className="muted">
-                  No record matches. <button type="button" className="link" onClick={clear}>Clear the filters</button>
+          )}
+          {rows.map((r) => {
+            const a = assertionOf(r);
+            const which =
+              typeof r.recognized === "boolean"
+                ? "recognised"
+                : typeof r.authorized === "boolean"
+                  ? "authorised"
+                  : null;
+            const name = book.nameOf(r.entityId);
+            return (
+              <tr key={`${r.entityId}|${r.action}|${r.resource}`}>
+                <td>
+                  {name && <div className="records-name">{name}</div>}
+                  <span className="records-entity">
+                    <DidText did={r.entityId} />
+                    <button
+                      type="button"
+                      className="copy-icon-btn"
+                      aria-label="Show only records for this DID"
+                      title="Show only records for this DID"
+                      onClick={() => setSearch(r.entityId)}
+                    >
+                      <Filter size={13} strokeWidth={1.75} aria-hidden="true" />
+                    </button>
+                  </span>
+                </td>
+                {!oneAuthority && (
+                  <td>
+                    <DidText did={r.authorityId} />
+                  </td>
+                )}
+                <td>
+                  <code>{r.action}</code>
+                  <div className="muted gitns-small">{recordMeaning(r)}</div>
+                </td>
+                <td>
+                  <code className="records-resource">{r.resource}</code>
+                </td>
+                <td>{recordKindLabel(recordKind(r))}</td>
+                <td>
+                  {which === null ? (
+                    <span className="muted">— no assertion</span>
+                  ) : (
+                    <span className={a ? "chip success" : "chip danger"}>{a ? which : `not ${which}`}</span>
+                  )}
                 </td>
               </tr>
-            )}
-            {rows.map((r) => {
-              const a = assertionOf(r);
-              const which =
-                typeof r.recognized === "boolean"
-                  ? "recognised"
-                  : typeof r.authorized === "boolean"
-                    ? "authorised"
-                    : null;
-              const name = book.nameOf(r.entityId);
-              return (
-                <tr key={`${r.entityId}|${r.action}|${r.resource}`}>
-                  <td>
-                    {name && <div className="records-name">{name}</div>}
-                    <span className="records-entity">
-                      <DidText did={r.entityId} />
-                      <button
-                        type="button"
-                        className="copy-icon-btn"
-                        aria-label="Show only records for this DID"
-                        title="Show only records for this DID"
-                        onClick={() => setSearch(r.entityId)}
-                      >
-                        <Filter size={13} strokeWidth={1.75} aria-hidden="true" />
-                      </button>
-                    </span>
-                  </td>
-                  {!oneAuthority && (
-                    <td>
-                      <DidText did={r.authorityId} />
-                    </td>
-                  )}
-                  <td>
-                    <code>{r.action}</code>
-                    <div className="muted gitns-small">{recordMeaning(r)}</div>
-                  </td>
-                  <td>
-                    <code className="records-resource">{r.resource}</code>
-                  </td>
-                  <td>{recordKindLabel(recordKind(r))}</td>
-                  <td>
-                    {which === null ? (
-                      <span className="muted">— no assertion</span>
-                    ) : (
-                      <span className={a ? "chip success" : "chip danger"}>{a ? which : `not ${which}`}</span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+            );
+          })}
+        </DataTable>
       </div>
       <p className="muted" aria-live="polite">
         {rows.length === items.length
