@@ -45,6 +45,8 @@ pub mod member_portal;
 pub mod member_push;
 pub mod members;
 pub mod messaging;
+pub mod oid4vp;
+pub mod oid4vp_cli;
 /// The one place this service packs a Trust Task for the wire.
 mod outbound;
 pub mod policy;

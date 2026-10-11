@@ -53,6 +53,11 @@ pub use vti_rooms::ROOM_RECORDS_KEYSPACE as ROOM_RECORDS;
 /// Restoring the records without it hands the members a room they can see the shape of and
 /// cannot read.
 pub use vti_rooms::ROOM_EPOCH_LINKS_KEYSPACE as ROOM_EPOCH_LINKS;
+/// The VTC's OpenID4VP verifier identities (`crate::oid4vp`): one record per
+/// identity, each holding the private P-256 key its request objects are
+/// signed with. Encrypted at rest under the storage key, like `install` and
+/// `passkey`.
+pub const OID4VP_KEYS: &str = "oid4vp_keys";
 pub const AUDIT: &str = "audit";
 pub const AUDIT_KEY: &str = "audit_key";
 /// Signed audit checkpoints (#708) — periodic Ed25519-signed commitments to
@@ -239,6 +244,7 @@ pub const ALL: &[&str] = &[
     GIT_NS,
     GIT_NS_JOBS,
     GIT_NS_PROJECTION,
+    OID4VP_KEYS,
 ];
 
 /// Keyspaces captured by `POST /v1/backup/export` (P3.9). These hold
@@ -287,6 +293,11 @@ pub const BACKED_UP: &[&str] = &[
     // under the same label.
     VETTING_PCS_ISSUE,
     VETTING_REVOCATIONS,
+    // A verifier identity's key is re-deliverable from the VTA, but only by
+    // the operator repeating the hand-off — and a restored community that has
+    // lost it cannot answer a wallet until they do. The rows are encrypted
+    // under the storage key, which a restore of the same bundle reproduces.
+    OID4VP_KEYS,
     // A vetter's published profile is theirs to replace, not the community's to
     // reconstruct: a restore without it would silently unlist every vetter.
     VETTER_PROFILES,
@@ -397,7 +408,7 @@ mod tests {
         // the three `AppState::git_ns` carries, plus the 2 hidden-vetting
         // keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`) from the
         // `zkp-pcs` development branch.
-        assert_eq!(ALL.len(), 46, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 47, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

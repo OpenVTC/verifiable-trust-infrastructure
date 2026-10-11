@@ -613,6 +613,10 @@ fn backed_up_handle<'a>(state: &'a AppState, name: &str) -> Option<&'a KeyspaceH
         // and the forge are rebuilt from them.
         x if x == GIT_NS => &state.git_ns.ks,
         x if x == STEP_UP_APPROVERS => &state.step_up_approvers_ks,
+        // The encrypted handle, like `audit_key`: export reads the plaintext
+        // rows, and an import writes them back under the storage key the
+        // restored key bundle reproduces.
+        x if x == OID4VP_KEYS => &state.oid4vp_keys_ks,
         _ => return None,
     })
 }

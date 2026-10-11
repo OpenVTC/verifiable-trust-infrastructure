@@ -111,6 +111,17 @@ enum Commands {
         #[command(subcommand)]
         command: SyncJobCommands,
     },
+    /// The OpenID4VP verifier identities this VTC presents to wallets
+    /// (offline — run on a **stopped** daemon).
+    ///
+    /// A swiyu or EUDI wallet presents credentials to a verifier it can
+    /// identify, signed with a key the VTA minted for that identity. The key
+    /// reaches this VTC by a sealed hand-off: `request` writes a request,
+    /// `pnm keys bundle` seals the key to it, `install` stores it encrypted.
+    Oid4vp {
+        #[command(subcommand)]
+        command: Oid4vpCommands,
+    },
     /// The admin console's files (offline).
     ///
     /// To customise the console's look and feel, export it to a directory,
@@ -135,6 +146,43 @@ enum AdminUiCommands {
         /// console; serve it with `admin_ui.members_dir`.
         #[arg(long)]
         members: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum Oid4vpCommands {
+    /// Write a sealed-transfer request for a verifier identity's key, and keep
+    /// its private half here until `install`.
+    Request {
+        /// Your name for the identity, e.g. `swiyu`.
+        #[arg(long)]
+        identity: String,
+        /// Write the request here instead of to stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Open the sealed bundle `pnm keys bundle` produced for the request and
+    /// store the identity's request-signing key, encrypted.
+    Install {
+        #[arg(long)]
+        identity: String,
+        /// The armored bundle file.
+        #[arg(long)]
+        bundle: PathBuf,
+        /// The digest `pnm keys bundle` printed, carried here separately.
+        #[arg(long)]
+        digest: String,
+        /// The verification method that signs request objects, when the
+        /// bundle holds more than one P-256 key.
+        #[arg(long)]
+        kid: Option<String>,
+    },
+    /// List the installed verifier identities.
+    List,
+    /// Remove a verifier identity and its key.
+    Remove {
+        #[arg(long)]
+        identity: String,
     },
 }
 
@@ -434,6 +482,28 @@ async fn main() {
                 }
                 SyncJobCommands::Discard { job_id } => {
                     sync_jobs_cli::run_discard(cli.config, job_id).await
+                }
+            };
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Oid4vp { command }) => {
+            use vtc_service::oid4vp_cli;
+            let result = match command {
+                Oid4vpCommands::Request { identity, out } => {
+                    oid4vp_cli::run_request(cli.config, identity, out).await
+                }
+                Oid4vpCommands::Install {
+                    identity,
+                    bundle,
+                    digest,
+                    kid,
+                } => oid4vp_cli::run_install(cli.config, identity, bundle, digest, kid).await,
+                Oid4vpCommands::List => oid4vp_cli::run_list(cli.config).await,
+                Oid4vpCommands::Remove { identity } => {
+                    oid4vp_cli::run_remove(cli.config, identity).await
                 }
             };
             if let Err(e) = result {

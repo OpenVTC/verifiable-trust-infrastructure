@@ -333,6 +333,9 @@ impl TestVtcBuilder {
         let member_pushes_ks = store
             .keyspace(crate::store::keyspaces::MEMBER_PUSHES)
             .expect("member_pushes ks");
+        let oid4vp_keys_ks = store
+            .keyspace(crate::store::keyspaces::OID4VP_KEYS)
+            .expect("oid4vp_keys ks");
         let backup_bundles_ks = store
             .keyspace(crate::store::keyspaces::BACKUP_BUNDLES)
             .expect("backup_bundles ks");
@@ -509,6 +512,8 @@ impl TestVtcBuilder {
             admin_actions_ks,
             step_up_approvers_ks,
             member_pushes_ks,
+            oid4vp_keys_ks,
+            oid4vp_signers: Arc::new(crate::oid4vp::VerifierSigners::new()),
             tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
             geoip: Arc::new(crate::geoip::GeoIp::disabled()),
             backup_bundles_ks,

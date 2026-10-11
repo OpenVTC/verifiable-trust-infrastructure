@@ -151,6 +151,13 @@ pub struct AppState {
     pub admin_actions_ks: KeyspaceHandle,
     /// Member pushes in flight (`crate::member_push`). Encrypted at rest.
     pub member_pushes_ks: KeyspaceHandle,
+    /// OpenID4VP verifier identities and their keys (`crate::oid4vp`).
+    /// Encrypted at rest.
+    pub oid4vp_keys_ks: KeyspaceHandle,
+    /// The verifier identities this VTC can sign OpenID4VP requests as, loaded
+    /// from `oid4vp_keys_ks` at boot. Empty for a community that verifies no
+    /// wallet presentations.
+    pub oid4vp_signers: Arc<crate::oid4vp::VerifierSigners>,
     /// Which members were recently seen sending here over TSP, recorded from
     /// the proven sender of each inbound TSP frame. A member whose DID
     /// document advertises no transport (a `did:key` wallet) is pushed to over
@@ -504,6 +511,7 @@ pub async fn run(
     let admin_actions_ks = store.keyspace(keyspaces::ADMIN_ACTIONS)?;
     let step_up_approvers_ks = store.keyspace(keyspaces::STEP_UP_APPROVERS)?;
     let member_pushes_ks = store.keyspace(keyspaces::MEMBER_PUSHES)?;
+    let oid4vp_keys_ks = store.keyspace(keyspaces::OID4VP_KEYS)?;
     let backup_bundles_ks = store.keyspace(keyspaces::BACKUP_BUNDLES)?;
     let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
     // Seed the schema store with the built-in catalog Issues types (idempotent;
@@ -630,6 +638,22 @@ pub async fn run(
         Some(key) => member_pushes_ks.with_encryption(key),
         None => member_pushes_ks,
     };
+    // Verifier identities hold private keys; written only through
+    // `vtc oid4vp install`, which encrypts under the same key, so there is
+    // nothing plaintext to migrate. A record that does not load fails the
+    // boot: a verifier that cannot sign answers every wallet with a request
+    // the wallet cannot verify.
+    let oid4vp_keys_ks = match storage_key {
+        Some(key) => oid4vp_keys_ks.with_encryption(key),
+        None => oid4vp_keys_ks,
+    };
+    let oid4vp_signers = Arc::new(crate::oid4vp::load_signers(&oid4vp_keys_ks).await?);
+    if !oid4vp_signers.is_empty() {
+        info!(
+            identities = ?oid4vp_signers.keys().collect::<Vec<_>>(),
+            "OpenID4VP verifier identities loaded"
+        );
+    }
     let (install_ks, passkey_ks, audit_key_ks) = match storage_key {
         Some(key) => {
             let n_install = install_ks.migrate_to_encrypted(key).await?;
@@ -858,6 +882,8 @@ pub async fn run(
         admin_actions_ks,
         step_up_approvers_ks,
         member_pushes_ks,
+        oid4vp_keys_ks,
+        oid4vp_signers,
         tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
         geoip,
         backup_bundles_ks,
@@ -2287,6 +2313,28 @@ async fn init_auth(
 /// share the same IKM. Returns `None` only if HKDF expand fails (it cannot
 /// for a 32-byte output), in which case the caller leaves keyspaces
 /// unencrypted rather than refusing to boot.
+/// The at-rest storage key, derived exactly as the daemon derives it, for an
+/// offline command that writes an encrypted keyspace (`vtc oid4vp install`).
+///
+/// Reads the VTC's key bundle from its secret store; refuses when the VTC is
+/// not set up, because a row written unencrypted (or under another key) is one
+/// the daemon cannot read back.
+pub(crate) async fn offline_storage_key(config: &AppConfig) -> Result<[u8; 32], AppError> {
+    let vtc_did = config.vtc_did.as_deref().ok_or_else(|| {
+        AppError::Config("this VTC is not set up (no vtc_did); run `vtc setup` first".into())
+    })?;
+    let store = crate::keys::seed_store::create_secret_store(config)?;
+    let stored = store
+        .get()
+        .await
+        .map_err(|e| AppError::Config(format!("the secret store failed to load: {e}")))?
+        .ok_or_else(|| AppError::Config("the secret store holds no key bundle".into()))?;
+    let (ed25519, _) = crate::setup::bundle::decode_secret_store_value(vtc_did, &stored)
+        .map_err(AppError::Config)?;
+    derive_storage_key(&*ed25519)
+        .ok_or_else(|| AppError::Internal("storage-key derivation failed".into()))
+}
+
 fn derive_storage_key(ed25519_seed: &[u8]) -> Option<[u8; 32]> {
     let mut key = [0u8; 32];
     match Hkdf::<Sha256>::new(None, ed25519_seed).expand(b"vtc-storage-key/v1", &mut key) {
