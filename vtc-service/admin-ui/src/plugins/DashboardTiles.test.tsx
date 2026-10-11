@@ -1,5 +1,6 @@
 // The dashboard's Members and Join requests tiles: each a count linking to its
-// screen, shown only to a viewer holding what that screen needs.
+// screen, shown only to a viewer holding what that screen needs. Then the
+// redesigned layout: the greeting, "Waiting for you" and "Service health".
 
 import { screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,7 @@ const reads = vi.hoisted(() => ({
   pending: 2,
   failMembers: false,
   served: [] as string[],
+  actions: [] as unknown[],
 }));
 
 vi.mock("@/lib/api", async (original) => ({
@@ -36,8 +38,8 @@ vi.mock("@/lib/api", async (original) => ({
     if (type.includes("/vetting/show/")) return { requestId: "x", vetting: null };
     if (type.endsWith("/trust-task-discovery/0.3")) return { supportedTypes: reads.served };
     return {
-      actions: [],
-      counts: { waitingForMe: 0, requestedByMe: 0 },
+      actions: reads.actions,
+      counts: { waitingForMe: reads.actions.length, requestedByMe: 0 },
       ext: { "org.openvtc": {} },
       items: [],
     };
@@ -56,6 +58,12 @@ const viewer = (capabilities: string[]): WhoamiResponse =>
 
 const tile = (label: string) =>
   screen.queryByText(label, { selector: ".stat-tile-label" })?.closest(".stat-tile") ?? null;
+/** A row of the Service health card. */
+const healthRow = (label: string) =>
+  document.querySelector<HTMLElement>(`.health-row[data-health="${label}"]`);
+/** The tile's own count read (`limit: 1`), not the console-wide name book's
+ *  page of 200, which every screen shares and swallows a refusal of. */
+const tileReadOf = (task: string) => reads.calls.some(([t, p]) => t === task && p.limit === 1);
 
 beforeEach(() => {
   reads.calls.length = 0;
@@ -63,6 +71,7 @@ beforeEach(() => {
   reads.pending = 2;
   reads.failMembers = false;
   reads.served = [];
+  reads.actions = [];
 });
 
 describe("the dashboard's community tiles", () => {
@@ -91,7 +100,7 @@ describe("the dashboard's community tiles", () => {
     renderWithProviders(<Dashboard />, { whoami: viewer(["vtc.join.decide"]) });
     await waitFor(() => expect(tile("Join requests")).not.toBeNull());
     expect(tile("Members")).toBeNull();
-    expect(reads.calls.some(([t]) => t === MEMBERS)).toBe(false);
+    expect(tileReadOf(MEMBERS)).toBe(false);
   });
 
   it("hides both from a viewer holding neither", async () => {
@@ -99,9 +108,8 @@ describe("the dashboard's community tiles", () => {
     await screen.findByText("Daemon status");
     expect(tile("Members")).toBeNull();
     expect(tile("Join requests")).toBeNull();
-    expect(reads.calls.some(([t, p]) => t === MEMBERS || (t === JOINS && p.limit === 200))).toBe(
-      false,
-    );
+    expect(tileReadOf(MEMBERS)).toBe(false);
+    expect(reads.calls.some(([t, p]) => t === JOINS && p.limit === 200)).toBe(false);
   });
 
   it("says so when the count cannot be read", async () => {
@@ -111,14 +119,18 @@ describe("the dashboard's community tiles", () => {
   });
 });
 
-describe("the hidden-vetting tile", () => {
+describe("the hidden-vetting health row", () => {
   const PUBLISH = "https://trusttasks.org/spec/vtc/vetting/hidden/publish/0.1";
 
   it("says a build serving hidden/publish supports PCS, and links to the criteria", async () => {
     reads.served = [PUBLISH];
     renderWithProviders(<Dashboard />, { whoami: viewer([]) });
-    await waitFor(() => expect(tile("Hidden vetting (PCS)")?.textContent).toContain("Supported"));
-    expect(tile("Hidden vetting (PCS)")?.getAttribute("href")).toBe("/vetting/requirements");
+    await waitFor(() =>
+      expect(healthRow("Hidden vetting (PCS)")?.textContent).toContain("Supported"),
+    );
+    expect(
+      healthRow("Hidden vetting (PCS)")?.querySelector("a")?.getAttribute("href"),
+    ).toBe("/vetting/requirements");
     expect(reads.calls).toContainEqual([
       "https://trusttasks.org/spec/trust-task-discovery/0.3",
       { patterns: ["vtc/vetting/hidden/*"] },
@@ -128,7 +140,74 @@ describe("the hidden-vetting tile", () => {
   it("says a build without it is named-vetter only", async () => {
     renderWithProviders(<Dashboard />, { whoami: viewer([]) });
     await waitFor(() =>
-      expect(tile("Hidden vetting (PCS)")?.textContent).toContain("Not in this build"),
+      expect(healthRow("Hidden vetting (PCS)")?.textContent).toContain("Not in this build"),
     );
+    expect(healthRow("Hidden vetting (PCS)")?.querySelector("a")).toBeNull();
+  });
+});
+
+describe("the redesigned dashboard", () => {
+  it("greets the operator under an Overview breadcrumb", async () => {
+    renderWithProviders(<Dashboard />, { whoami: viewer([]) });
+    const title = await screen.findByRole("heading", { level: 2 });
+    expect(title.textContent).toMatch(/^Good (morning|afternoon|evening)/);
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" }).textContent).toBe("Overview");
+  });
+
+  it("offers Invite a member only to a viewer who can issue invitations", async () => {
+    renderWithProviders(<Dashboard />, { whoami: viewer(["vtc.invitations.manage"]) });
+    const invite = await screen.findByRole("link", { name: /Invite a member/ });
+    expect(invite.getAttribute("href")).toBe("/invitations");
+  });
+
+  it("has no Invite a member without the capability", async () => {
+    renderWithProviders(<Dashboard />, { whoami: viewer([]) });
+    await screen.findByText("Daemon status");
+    expect(screen.queryByRole("link", { name: /Invite a member/ })).toBeNull();
+  });
+
+  it("says when nothing is waiting, and counts the actions waiting in a tile", async () => {
+    renderWithProviders(<Dashboard />, { whoami: viewer([]) });
+    expect(await screen.findByText("Nothing is waiting for you")).toBeTruthy();
+    await waitFor(() => expect(tile("Waiting for you")?.textContent).toContain("0"));
+    expect(tile("Waiting for you")?.getAttribute("href")).toBe("/actions");
+    expect(screen.getByRole("link", { name: /All actions/ }).getAttribute("href")).toBe(
+      "/actions?tab=waitingForMe",
+    );
+  });
+
+  it("lists a waiting action, never showing a summary it could not verify", async () => {
+    reads.actions = [
+      {
+        actionId: "ack-1",
+        category: "acknowledge",
+        kind: "operatorWrite",
+        typeUri: "https://trusttasks.org/spec/vtc/operator/offline-write/0.1",
+        requester: "did:webvh:Qm1:vtc.example",
+        status: "open",
+        createdAt: new Date(Date.now() - 2 * 3600_000).toISOString(),
+        approvals: [],
+        callerRole: "acknowledger",
+        payload: {},
+        payloadDigest: "00",
+        summary: { title: "Made-up title the VTC sent", fields: [] },
+      },
+    ];
+    renderWithProviders(<Dashboard />, { whoami: viewer([]) });
+    const link = await screen.findByRole("link", { name: /Summary refused/ });
+    expect(link.getAttribute("href")).toBe("/actions?action=ack-1");
+    expect(link.textContent).toContain("2 h ago");
+    expect(screen.queryByText("Made-up title the VTC sent")).toBeNull();
+    const row = link.closest("li")!;
+    expect(row.textContent).toContain("Critical");
+  });
+
+  it("puts the daemon, agents and build in Service health, each with a word as well as a dot", async () => {
+    renderWithProviders(<Dashboard />, { whoami: viewer([]) });
+    await waitFor(() => expect(healthRow("Daemon status")?.textContent).toContain("ok"));
+    expect(healthRow("Daemon status")?.textContent).toContain("OK");
+    expect(healthRow("Build")?.textContent).toContain("0.0.0");
+    expect(healthRow("VTA")?.textContent).toContain("Not set");
+    expect(healthRow("VTA")?.textContent).toContain("Needs attention");
   });
 });

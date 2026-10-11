@@ -256,12 +256,12 @@ function ActionDetail({ actionId }: { actionId: string }) {
 
 // ── One card ────────────────────────────────────────────────────────
 
-type SummaryState =
+export type SummaryState =
   | { state: "checking" }
   | { state: "ok"; summary: VerifiedSummary }
   | { state: "refused"; refusal: SummaryRefusal };
 
-function useVerifiedSummary(action: Action): SummaryState {
+export function useVerifiedSummary(action: Action): SummaryState {
   const [state, setState] = useState<SummaryState>({ state: "checking" });
   useEffect(() => {
     let cancelled = false;

@@ -72,6 +72,8 @@ const SITES: Site[] = [
   // `listActions` passes its caller's limit through; each call is listed.
   { file: "lib/actions-api.ts", site: "payload.limit = query.limit", uri: ACTIONS, from: [] },
   { file: "lib/actions-api.ts", site: 'listActions({ view: "waitingForMe", limit: 1 })', uri: ACTIONS, from: ["1"] },
+  // The dashboard's "Waiting for you": the first few.
+  { file: "plugins/dashboard.tsx", site: 'listActions({ view: "waitingForMe", limit: WAITING_SHOWN })', uri: ACTIONS, uriFile: "lib/actions-api.ts", from: ["WAITING_SHOWN"] },
   // Trust Registry records, every page (Recognition).
   { file: "plugins/recognition/records.ts", site: "{ source, limit: REGISTRY_RECORDS_PAGE", uri: REGISTRY_RECORDS, from: ["REGISTRY_RECORDS_PAGE"] },
   // Join requests.

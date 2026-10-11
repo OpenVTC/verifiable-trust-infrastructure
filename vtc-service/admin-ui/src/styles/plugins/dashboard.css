@@ -1,1 +1,155 @@
 /* Layout particular to the dashboard screen. Shared look lives in components.css. */
+
+/* A tile that wants attention carries a warning rail on its leading edge, so
+ * the state does not rest on the colour of its small foot text alone. */
+.stat-tile--warn {
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+.dashboard .stat-tile-foot.warn {
+  color: var(--text-muted);
+}
+
+/* "Waiting for you" beside "Service health": two columns on a wide screen,
+ * the list taking the larger share; one column below 64rem. */
+.dashboard-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+@media (max-width: 64rem) {
+  .dashboard-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.card-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+.card-title-row h3 {
+  margin: 0;
+}
+.card-title-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+}
+
+/* ── Waiting for you ─────────────────────────────────────────── */
+
+.waiting-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.waiting-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+}
+.waiting-row:first-child {
+  border-top: none;
+}
+.waiting-link {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  margin: 0 calc(-1 * var(--space-2));
+  border-radius: var(--radius-md);
+  color: var(--text);
+  text-decoration: none;
+}
+.waiting-link:hover {
+  background: var(--bg-hover);
+  text-decoration: none;
+}
+.waiting-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 0;
+}
+.waiting-title {
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+.waiting-meta {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.waiting-chips {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  justify-content: flex-end;
+}
+.waiting-more {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+}
+
+/* ── Service health ──────────────────────────────────────────── */
+
+.health-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.health-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+}
+.health-row:first-child {
+  border-top: none;
+}
+.health-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  transform: translateY(-1px);
+}
+.health-dot.ok {
+  background: var(--success);
+}
+.health-dot.warn {
+  background: var(--warning);
+}
+.health-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.health-label {
+  font-weight: var(--weight-medium);
+}
+.health-detail {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.health-value {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  text-align: right;
+  white-space: nowrap;
+}
+.health-row--warn .health-value {
+  font-weight: var(--weight-semibold);
+}

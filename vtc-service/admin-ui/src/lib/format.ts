@@ -111,6 +111,28 @@ export function formatIso(iso: string): string {
 }
 
 /**
+ * How long ago an RFC3339 timestamp was, the way a person says it: "just
+ * now", "5 min ago", "2 h ago", "yesterday", "3 days ago"; past a week, the
+ * date. For lists scanned at a glance (the dashboard's "Waiting for you");
+ * the full timestamp belongs in a `title` beside it. A future time reads "just
+ * now" (clock skew), an unparseable one is returned as given.
+ */
+export function formatRelative(iso: string, now: number = Date.now()): string {
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return iso;
+  const seconds = Math.max(0, Math.floor((now - at) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+  return new Date(at).toLocaleDateString();
+}
+
+/**
  * Format an elapsed duration in seconds as a compact age (`45s`, `12m`,
  * `3h 20m`, `2d 4h`).
  *

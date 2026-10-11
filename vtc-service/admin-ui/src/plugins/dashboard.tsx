@@ -1,13 +1,40 @@
+// The dashboard: "what needs me", then health.
+//
+//   Overview
+//   Good afternoon, Aroha                                [Invite a member]
+//   [Members 248] [Join requests 5] [Awaiting vetting 2] [Waiting for you 3]
+//   ┌ Waiting for you ───────────────┐ ┌ Service health ─────────────┐
+//   │ Grant … to Tama R.   Critical  │ │ ● Daemon status   ok        │
+//   │ …                              │ │ ● VTA             Connected │
+//   └────────────────────────────────┘ └─────────────────────────────┘
+//   Transport advertisement · Identity (the detail, below the fold)
+//
+// The counts are tiles, each linking to where the work is done and shown only
+// to a viewer holding what that screen needs. "Waiting for you" is the first
+// few actions from the same signed read as the Actions screen, each summary
+// re-derived and checked before it is shown (`lib/action-summary.ts`). Service
+// health is the daemon, its agents and this browser's signing key, one row
+// each with a status dot and a word, so it reads without colour.
+
 import { useQuery } from "@tanstack/react-query";
-import { ExternalLink } from "lucide-react";
+import { ArrowRight, ExternalLink, Inbox, UserPlus } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { CopyButton } from "@/components/CopyButton";
 import { DataTable } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { NamedDid } from "@/components/NamedDid";
 import { PageHeader } from "@/components/PageHeader";
 import { fetchHealth, fetchBuildInfo, fetchDiagnostics } from "@/lib/api";
 import { WAITING_COUNT_KEY } from "@/lib/action-badge";
-import { fetchActionsAttention } from "@/lib/actions-api";
+import {
+  coolingOffOf,
+  fetchActionsAttention,
+  isAcknowledgeItem,
+  isQueueItem,
+  listActions,
+  type Action,
+} from "@/lib/actions-api";
 import {
   countPendingJoinRequests,
   formatTally,
@@ -17,14 +44,25 @@ import {
   PENDING_JOIN_REQUESTS_KEY,
   useMemberCount,
 } from "@/lib/community-counts";
-import { formatDuration } from "@/lib/format";
+import type { SigningStatus } from "@/lib/console-keys-api";
+import { formatDuration, formatIso, formatRelative } from "@/lib/format";
 import { fetchHiddenVettingSupport, hiddenVettingKeys } from "@/lib/hidden-vetting";
-import { useCapabilities } from "@/lib/viewer";
+import { useNameBook, type NameBook } from "@/lib/names";
+import { useCapabilities, useViewerDid } from "@/lib/viewer";
+import { SIGNING_STATUS_KEY } from "@/pages/SetupSigning";
+import { useVerifiedSummary } from "@/plugins/actions";
 import {
   fetchPendingWithVetting,
   fetchRevocations,
   vettingKeys,
 } from "@/plugins/vetting/api";
+
+/** The capability the Invitations screen needs (`plugins/index.ts`). */
+const INVITATIONS_CAP = "vtc.invitations.manage";
+/** How many waiting actions the dashboard lists before "All actions". */
+const WAITING_SHOWN = 5;
+
+type Tone = "ok" | "warn" | "neutral";
 
 export function Dashboard() {
   const health = useQuery({ queryKey: ["health"], queryFn: fetchHealth });
@@ -49,8 +87,9 @@ export function Dashboard() {
     queryKey: vettingKeys.revocations,
     queryFn: fetchRevocations,
   });
-  // Single-administrator mode (VTI-APV-022): the same signed action-list read
-  // the shell's badge and banner make, shared through its cache key.
+  // Single-administrator mode (VTI-APV-022) and the waiting count: the same
+  // signed action-list read the shell's badge and banner make, shared through
+  // its cache key.
   const attention = useQuery({
     queryKey: WAITING_COUNT_KEY,
     queryFn: fetchActionsAttention,
@@ -63,6 +102,7 @@ export function Dashboard() {
   const caps = useCapabilities();
   const showMembers = mayCount(caps, MEMBERS_MANAGE_CAP);
   const showJoins = mayCount(caps, JOIN_DECIDE_CAP);
+  const canInvite = mayCount(caps, INVITATIONS_CAP);
   const members = useMemberCount(showMembers);
   const pendingJoins = useQuery({
     queryKey: PENDING_JOIN_REQUESTS_KEY,
@@ -79,9 +119,20 @@ export function Dashboard() {
     retry: false,
     staleTime: Infinity,
   });
+  // This browser's signing key, as the shell last checked it (`App.tsx`); read
+  // from its cache, never fetched again here.
+  const me = useViewerDid();
+  const signing = useQuery<SigningStatus>({
+    queryKey: [SIGNING_STATUS_KEY, me],
+    queryFn: () => Promise.reject(new Error("not fetched here")),
+    enabled: false,
+  });
+  const book = useNameBook();
+
   const needsReview = withdrawals.data?.filter(
     (r) => r.reviewState === "needsReview",
   ).length;
+  const waiting = attention.data?.waiting;
 
   const status = health.data?.status;
   const mediatorDid = diagnostics.data?.mediatorDid;
@@ -147,17 +198,35 @@ export function Dashboard() {
   // An advertised transport this build cannot answer is the failure that
   // motivated the boot-time check: every conforming client picks it, and the
   // more correct the client, the more certainly it fails.
-  const mediatorTone = !mediatorDid
+  const mediatorTone: Tone = !mediatorDid
     ? "neutral"
     : hasBrokenAdvertisement || !live.length
       ? "warn"
       : "ok";
 
-  return (
-    <section className="page">
-      <PageHeader />
+  const signingKey =
+    signing.data?.state === "ready"
+      ? (signing.data as Extract<SigningStatus, { state: "ready" }>)
+      : null;
+  const keyDaysLeft = signingKey
+    ? Math.max(0, Math.floor((Date.parse(signingKey.key.expiresAt) - Date.now()) / 86_400_000))
+    : null;
 
-      <div className="stat-tiles">
+  return (
+    <section className="page dashboard">
+      <PageHeader
+        title={greeting(new Date(), firstName(me ? book.nameOf(me) : undefined))}
+        crumbs={[{ label: "Overview" }]}
+        actions={
+          canInvite ? (
+            <Link to="/invitations" className="button primary">
+              <UserPlus size={14} aria-hidden="true" /> Invite a member
+            </Link>
+          ) : undefined
+        }
+      />
+
+      <div className="stat-tiles dashboard-tiles">
         {singleAdminMode && (
           <StatTile
             label="Administration"
@@ -212,84 +281,6 @@ export function Dashboard() {
           />
         )}
         <StatTile
-          label="Daemon status"
-          value={status ?? "…"}
-          foot={
-            status === "ok"
-              ? "Health check passing"
-              : status === undefined
-                ? undefined
-                : "Investigate `/health` payload"
-          }
-          tone={
-            status === "ok" ? "ok" : status === undefined ? "neutral" : "warn"
-          }
-        />
-        <StatTile
-          label="Build"
-          value={build.data?.version ?? "…"}
-          foot={build.data ? `mode: ${build.data.mode}` : undefined}
-          mono
-        />
-        <StatTile
-          label="VTA"
-          value={vtaDid ? "Connected" : "Not set"}
-          foot={
-            vtaDid
-              ? "Key-management agent provisioned"
-              : "Run `vtc setup` to bind a VTA"
-          }
-          tone={vtaDid ? "ok" : "warn"}
-        />
-        <StatTile
-          label="Mediator"
-          value={
-            mediatorDid
-              ? live.length
-                ? live.map((t) => protocolName(t.protocol)).join(" · ")
-                : "Configured"
-              : "Not set"
-          }
-          foot={mediatorFoot}
-          tone={mediatorTone}
-        />
-        {registry && (
-          <StatTile
-            label="Trust registry"
-            value={
-              registry.active
-                ? protocolName(registry.active)
-                : registryStatus === "active"
-                  ? "Active"
-                  : "Unreachable"
-            }
-            // Queue trouble outranks the transport line. A registry we are
-            // happily connected to while jobs pile up unsent is the exact
-            // state the old green indicator hid, so when there is a backlog
-            // this tile says so instead of reporting the protocol.
-            foot={
-              registry.error
-                ? summarise(registry.error)
-                : queueTrouble
-                  ? queueTrouble
-                  : registry.active
-                    ? `${registryStatus ?? "unknown"} · advertises ${
-                        registry.advertised.length
-                          ? registry.advertised.map(protocolName).join(", ")
-                          : "nothing"
-                      }`
-                    : "no transport selected yet"
-            }
-            tone={
-              registry.error || queueTrouble
-                ? "warn"
-                : registryStatus === "active"
-                  ? "ok"
-                  : "warn"
-            }
-          />
-        )}
-        <StatTile
           label="Awaiting a vetting decision"
           value={
             pendingVetting.data
@@ -321,27 +312,19 @@ export function Dashboard() {
           to="/join-requests"
         />
         <StatTile
-          label="Hidden vetting (PCS)"
-          value={
-            hiddenVetting.data
-              ? hiddenVetting.data.publish
-                ? "Supported"
-                : "Not in this build"
-              : hiddenVetting.error
-                ? "—"
-                : "…"
-          }
+          label="Waiting for you"
+          value={waiting ?? (attention.error ? "—" : "…")}
           foot={
-            hiddenVetting.error
-              ? "Could not ask this VTC what it serves"
-              : hiddenVetting.data
-                ? hiddenVetting.data.publish
-                  ? "zero-knowledge vetter proofs can be turned on per criterion"
-                  : "built without the vetting-pcs feature; vetting is by named vetters only"
-                : undefined
+            attention.error
+              ? "Could not read the action list"
+              : waiting === undefined
+                ? undefined
+                : waiting
+                  ? `action${waiting === 1 ? "" : "s"} to decide or acknowledge`
+                  : "nothing to decide"
           }
-          tone={hiddenVetting.error ? "warn" : hiddenVetting.data?.publish ? "ok" : "neutral"}
-          to={hiddenVetting.data?.publish ? "/vetting/requirements" : undefined}
+          tone={attention.error || waiting ? "warn" : waiting === 0 ? "ok" : "neutral"}
+          to="/actions"
         />
         <StatTile
           label="Withdrawn statements"
@@ -366,16 +349,145 @@ export function Dashboard() {
         />
       </div>
 
+      <div className="dashboard-columns">
+        <WaitingForYou book={book} />
+
+        <section className="card dashboard-health" aria-labelledby="dashboard-health-title">
+          <h3 id="dashboard-health-title">Service health</h3>
+          <ul className="health-list">
+            <HealthRow
+              label="Daemon status"
+              value={status ?? "…"}
+              detail={
+                status === "ok"
+                  ? "Health check passing"
+                  : status === undefined
+                    ? undefined
+                    : "Investigate the /health payload"
+              }
+              tone={status === "ok" ? "ok" : status === undefined ? "neutral" : "warn"}
+            />
+            <HealthRow
+              label="VTA"
+              value={vtaDid ? "Connected" : diagnostics.data ? "Not set" : "…"}
+              detail={
+                vtaDid
+                  ? "Key-management agent provisioned"
+                  : diagnostics.data
+                    ? "Run `vtc setup` to bind a VTA"
+                    : undefined
+              }
+              tone={vtaDid ? "ok" : diagnostics.data ? "warn" : "neutral"}
+            />
+            <HealthRow
+              label="Mediator"
+              value={
+                mediatorDid
+                  ? live.length
+                    ? live.map((t) => protocolName(t.protocol)).join(" · ")
+                    : "Configured"
+                  : diagnostics.data
+                    ? "Not set"
+                    : "…"
+              }
+              detail={diagnostics.data ? mediatorFoot : undefined}
+              tone={diagnostics.data ? mediatorTone : "neutral"}
+            />
+            {registry && (
+              <HealthRow
+                label="Trust registry"
+                value={
+                  registry.active
+                    ? protocolName(registry.active)
+                    : registryStatus === "active"
+                      ? "Active"
+                      : "Unreachable"
+                }
+                // Queue trouble outranks the transport line. A registry we are
+                // happily connected to while jobs pile up unsent is the exact
+                // state the old green indicator hid, so when there is a backlog
+                // this row says so instead of reporting the protocol.
+                detail={
+                  registry.error
+                    ? summarise(registry.error)
+                    : queueTrouble
+                      ? queueTrouble
+                      : registry.active
+                        ? `${registryStatus ?? "unknown"} · advertises ${
+                            registry.advertised.length
+                              ? registry.advertised.map(protocolName).join(", ")
+                              : "nothing"
+                          }`
+                        : "no transport selected yet"
+                }
+                tone={
+                  registry.error || queueTrouble
+                    ? "warn"
+                    : registryStatus === "active"
+                      ? "ok"
+                      : "warn"
+                }
+              />
+            )}
+            {signingKey && keyDaysLeft !== null && (
+              <HealthRow
+                label="Signing key"
+                value={
+                  keyDaysLeft === 0
+                    ? "expires today"
+                    : `${keyDaysLeft} day${keyDaysLeft === 1 ? "" : "s"} left`
+                }
+                detail={`This browser's key · expires ${formatIso(signingKey.key.expiresAt)}`}
+                tone={signingKey.renewSoon ? "warn" : "ok"}
+                to="/console-keys"
+              />
+            )}
+            <HealthRow
+              label="Build"
+              value={build.data?.version ?? "…"}
+              detail={build.data ? `mode: ${build.data.mode}` : undefined}
+              tone="neutral"
+              mono
+            />
+            <HealthRow
+              label="Hidden vetting (PCS)"
+              value={
+                hiddenVetting.data
+                  ? hiddenVetting.data.publish
+                    ? "Supported"
+                    : "Not in this build"
+                  : hiddenVetting.error
+                    ? "—"
+                    : "…"
+              }
+              detail={
+                hiddenVetting.error
+                  ? "Could not ask this VTC what it serves"
+                  : hiddenVetting.data
+                    ? hiddenVetting.data.publish
+                      ? "zero-knowledge vetter proofs can be turned on per criterion"
+                      : "built without the vetting-pcs feature; vetting is by named vetters only"
+                    : undefined
+              }
+              tone={
+                hiddenVetting.error ? "warn" : hiddenVetting.data?.publish ? "ok" : "neutral"
+              }
+              to={hiddenVetting.data?.publish ? "/vetting/requirements" : undefined}
+            />
+          </ul>
+        </section>
+      </div>
+
       {/* The document-versus-binary comparison, always shown rather than only
           when something is wrong.
 
-          Two reasons it is a card and not a tile tone. It is about a *document*
-          — the fix is a DID-document change, not a restart — and it is about
-          *this* community's document, where every tile above it describes some
-          other party: the mediator this VTC dials, the registry it syncs with.
-          An operator reading "advertises TSP, DIDComm" on the registry tile and
-          "not advertised" here is looking at two different documents and,
-          before this said so, had no way to tell.
+          Two reasons it is a card and not a health row. It is about a
+          *document* — the fix is a DID-document change, not a restart — and it
+          is about *this* community's document, where every row above describes
+          some other party: the mediator this VTC dials, the registry it syncs
+          with. An operator reading "advertises TSP, DIDComm" on the registry
+          row and "not advertised" here is looking at two different documents
+          and, before this said so, had no way to tell.
 
           Always shown because its absence was ambiguous: a silent dashboard
           meant either "everything agrees" or "we never resolved the DID", and
@@ -386,7 +498,7 @@ export function Dashboard() {
           <p className="muted">
             What <strong>this community&rsquo;s own</strong> DID document
             advertises, against what this binary serves. The mediator and trust
-            registry tiles above describe other parties&rsquo; documents.
+            registry rows above describe other parties&rsquo; documents.
           </p>
 
           {transports.length === 0 ? (
@@ -398,7 +510,7 @@ export function Dashboard() {
               <span className="muted">
                 That is <em>unknown</em>, not <em>nothing advertised</em>.
                 Confirm the DID is published and resolvable before reading
-                anything into the transport tiles above.
+                anything into the service health above.
               </span>
             </p>
           ) : (
@@ -535,6 +647,132 @@ export function Dashboard() {
   );
 }
 
+// ── Waiting for you ──────────────────────────────────────────────────
+
+/**
+ * The first few actions waiting for this administrator, newest first, each a
+ * link to its own page on the Actions screen. Its own cache key under
+ * `actions`, so whatever refreshes the Actions screen refreshes this too.
+ */
+function WaitingForYou({ book }: { book: NameBook }) {
+  const query = useQuery({
+    queryKey: ["actions", "dashboard", "waitingForMe"],
+    queryFn: () => listActions({ view: "waitingForMe", limit: WAITING_SHOWN }),
+    retry: false,
+  });
+  const actions = query.data?.actions ?? [];
+  const total = query.data?.counts?.waitingForMe ?? actions.length;
+  return (
+    <section className="card dashboard-waiting" aria-labelledby="dashboard-waiting-title">
+      <div className="card-title-row">
+        <h3 id="dashboard-waiting-title">Waiting for you</h3>
+        <Link to="/actions?tab=waitingForMe" className="card-title-link">
+          All actions <ArrowRight size={12} aria-hidden="true" />
+        </Link>
+      </div>
+      {query.isPending && <p className="muted">Loading…</p>}
+      {query.error && (
+        <p className="muted">Could not read the action list. The Actions screen says why.</p>
+      )}
+      {query.isSuccess && actions.length === 0 && (
+        <EmptyState icon={Inbox} title="Nothing is waiting for you">
+          Changes other administrators ask for appear here.
+        </EmptyState>
+      )}
+      {actions.length > 0 && (
+        <ul className="waiting-list">
+          {actions.map((a) => (
+            <WaitingRow key={a.actionId} action={a} book={book} />
+          ))}
+        </ul>
+      )}
+      {total > actions.length && (
+        <p className="muted waiting-more">
+          and {total - actions.length} more on the{" "}
+          <Link to="/actions?tab=waitingForMe">Actions</Link> screen
+        </p>
+      )}
+    </section>
+  );
+}
+
+function WaitingRow({ action, book }: { action: Action; book: NameBook }) {
+  const summary = useVerifiedSummary(action);
+  const ack = isAcknowledgeItem(action);
+  const cooling = coolingOffOf(action);
+  return (
+    <li className="waiting-row">
+      <Link
+        to={`/actions?action=${encodeURIComponent(action.actionId)}`}
+        className="waiting-link"
+      >
+        <span className="waiting-title">
+          {summary.state === "ok"
+            ? summary.summary.title
+            : summary.state === "refused"
+              ? "Summary refused — open to see why"
+              : "Checking this action…"}
+        </span>
+        <span className="waiting-meta">
+          {ack ? (
+            "Written by the operator, offline"
+          ) : (
+            <>
+              Requested by <NamedDid book={book} did={action.requester} />
+            </>
+          )}
+          {" · "}
+          <time dateTime={action.createdAt} title={formatIso(action.createdAt)}>
+            {formatRelative(action.createdAt)}
+          </time>
+          {cooling && <> · lands {formatRelative(cooling.landsAt).replace(" ago", "")}</>}
+        </span>
+      </Link>
+      <span className="waiting-chips">
+        {ack && <span className="chip danger">Critical</span>}
+        {cooling && <span className="chip warning">Cooling off</span>}
+        {isQueueItem(action) && <span className="chip">Queue</span>}
+        {summary.state === "refused" && <span className="chip danger">Refused</span>}
+      </span>
+    </li>
+  );
+}
+
+// ── Health ───────────────────────────────────────────────────────────
+
+const TONE_WORD: Record<Tone, string> = { ok: "OK", warn: "Needs attention", neutral: "" };
+
+function HealthRow({
+  label,
+  value,
+  detail,
+  tone,
+  mono = false,
+  to,
+}: {
+  label: string;
+  value: React.ReactNode;
+  detail?: string;
+  tone: Tone;
+  mono?: boolean;
+  /** Where to act on it; makes the label a link. */
+  to?: string;
+}) {
+  return (
+    <li className={`health-row health-row--${tone}`} data-health={label}>
+      <span className={`health-dot ${tone}`} aria-hidden="true" />
+      <span className="health-text">
+        <span className="health-label">
+          {to ? <Link to={to}>{label}</Link> : label}
+          {TONE_WORD[tone] && <span className="visually-hidden">: {TONE_WORD[tone]}</span>}
+        </span>
+        {detail && <span className="health-detail">{detail}</span>}
+      </span>
+      <span className={`health-value${mono ? " mono" : ""}`}>{value}</span>
+    </li>
+  );
+}
+
 const TRANSPORT_COLUMNS = [
   { key: "transport", label: "Transport" },
   { key: "advertised", label: "In the DID document" },
@@ -542,13 +780,28 @@ const TRANSPORT_COLUMNS = [
   { key: "endpoint", label: "Advertised endpoint" },
 ] as const;
 
+/** "Good morning", "Good afternoon" or "Good evening", and the name if any. */
+export function greeting(now: Date, name?: string | null): string {
+  const h = now.getHours();
+  const part = h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+  return name ? `${part}, ${name}` : part;
+}
+
+/** The first word of a display name, without an `[unverified]` marker. */
+function firstName(name: string | undefined): string | null {
+  if (!name) return null;
+  const clean = name.replace(/\[unverified\]/i, "").trim();
+  if (!clean || clean.startsWith("did:")) return null;
+  return clean.split(/\s+/)[0] ?? null;
+}
+
 /**
- * Trim a transport error to a tile-sized line.
+ * Trim a transport error to a row-sized line.
  *
  * These errors quote both parties' advertised sets and a full `did:webvh`,
- * which runs to five wrapped lines in a stat tile and pushes the rest of the
- * dashboard down. The Recognition page shows the whole thing; here it only has
- * to be recognisable.
+ * which runs to five wrapped lines and pushes the rest of the dashboard down.
+ * The Recognition page shows the whole thing; here it only has to be
+ * recognisable.
  */
 function summarise(error: string, max = 90): string {
   const oneLine = error.replace(/\s+/g, " ").trim();
@@ -580,7 +833,7 @@ function StatTile({
   label: string;
   value: React.ReactNode;
   foot?: string;
-  tone?: "ok" | "warn" | "neutral";
+  tone?: Tone;
   mono?: boolean;
   /** Where acting on the tile happens; makes the whole tile a link. */
   to?: string;
@@ -598,11 +851,12 @@ function StatTile({
       )}
     </>
   );
+  const className = `stat-tile${tone === "warn" ? " stat-tile--warn" : ""}`;
   return to ? (
-    <Link to={to} className="stat-tile">
+    <Link to={to} className={className}>
       {body}
     </Link>
   ) : (
-    <div className="stat-tile">{body}</div>
+    <div className={className}>{body}</div>
   );
 }
