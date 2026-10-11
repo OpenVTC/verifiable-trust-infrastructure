@@ -11254,7 +11254,7 @@ dependencies = [
 
 [[package]]
 name = "vta-audit"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -11273,7 +11273,7 @@ dependencies = [
 
 [[package]]
 name = "vta-backup"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "argon2 0.6.0",
@@ -11333,7 +11333,7 @@ dependencies = [
 
 [[package]]
 name = "vta-config"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "ipnetwork",
  "serde",
@@ -11475,7 +11475,7 @@ dependencies = [
 
 [[package]]
 name = "vta-persona"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -11495,7 +11495,7 @@ dependencies = [
 
 [[package]]
 name = "vta-policy"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "hex",
  "regorus",
@@ -11696,7 +11696,7 @@ dependencies = [
 
 [[package]]
 name = "vta-support"
-version = "0.14.1"
+version = "0.15.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "base64 0.23.1",
@@ -11721,7 +11721,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sweepers"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "serde_json",
@@ -11737,7 +11737,7 @@ dependencies = [
 
 [[package]]
 name = "vta-tee"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
  "aes 0.9.3",
  "aes-gcm 0.11.1",
@@ -11807,7 +11807,7 @@ dependencies = [
 
 [[package]]
 name = "vta-webvh"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "chrono",
  "serde_json",
@@ -12098,7 +12098,7 @@ dependencies = [
 
 [[package]]
 name = "vti-secrets"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "aws-config",
  "aws-sdk-secretsmanager",
