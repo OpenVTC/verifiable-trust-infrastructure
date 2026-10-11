@@ -204,6 +204,21 @@ the service status. The operator console is linked, deliberately
 quietly. An operator site replacing the default should keep a link to
 `/members/`.
 
+### Colour theme
+
+The default landing page, the member portal and the operator console
+each have a **Match system / Light / Dark** switcher — in the landing
+page's top bar (`website-default/theme.js`), at the end of the portal's
+and the console sign-in page's top bar, and in the console's account
+menu. All three store the choice in `localStorage` under one key,
+`vtc-admin-theme`, so on one origin a choice made on any of them holds
+on the others, and open tabs follow it. *Match system* stores nothing
+and follows `prefers-color-scheme`. The landing page applies a stored
+choice from `<head>`, before first paint; without JavaScript its
+switcher stays hidden and the page follows the system. An operator site
+under `website.root_dir` can do the same by setting `data-theme="light"`
+or `"dark"` on `<html>` over the shared `tokens.css`.
+
 ### Community DID as a QR code
 
 The default landing page shows the community DID as a QR code beside
@@ -347,11 +362,20 @@ count bubble while something waits:
 
 Both are fetched at sign-in, whenever the tab regains focus or becomes
 visible, whenever the live channel says they moved (below), and on a poll —
-every 60 s while the console is offline, every 5 minutes while it is live. The
-dashboard opens with a **Members** tile (current
-members, for `vtc.members.manage`) and a **Join requests** tile (the badge's
-pending count, for `vtc.join.decide`), each linking to its screen and hidden
-from a viewer without the capability.
+every 60 s while the console is offline, every 5 minutes while it is live.
+
+The dashboard reads "what needs me", then health. Under a greeting, with
+**Invite a member** for a viewer holding `vtc.invitations.manage`, a row of
+tiles counts **Members** (current members, for `vtc.members.manage`), **Join
+requests** (the badge's pending count, for `vtc.join.decide`), **Awaiting a
+vetting decision**, actions **Waiting for you** and **Withdrawn statements**,
+each linking to its screen; a tile whose screen the viewer cannot use is hidden
+and its count never read. Below them, **Waiting for you** lists the first five
+actions from the same signed read as the Actions screen — each summary shown
+only once the console has re-derived and checked it, a refused one saying so —
+and **Service health** gives one row each to the daemon, the VTA, the mediator,
+the trust registry, this browser's signing key, the build and hidden-vetting
+support. The transport advertisement and the community's identifiers follow.
 
 Each count is **one read**. `vtc/members/list/0.1` and
 `vtc/join-requests/list/0.1` apply their filter (role, status) before paging,
@@ -370,6 +394,27 @@ schemas, the console's `list-limits.test.ts` census checks every call site,
 and the signer refuses an over-limit page before signing. A page size over
 the maximum is refused by the VTC as `malformedRequest`; that is how the
 admission-criteria page read nothing until #1921.
+
+### Jump to anything: the command palette
+
+**⌘K** (Ctrl+K off Apple platforms), or **Jump to…** in the top bar, opens
+a palette. Type to filter every screen the viewer can see — the built-in
+ones and any plugin registered with `registerPlugin`, whether or not it
+names a nav `group` — and a short list of actions: review the actions
+waiting for you, add or invite a member, decide join requests, add an
+access-control entry, invite an administrator, renew this browser's
+signing key, switch the theme, reload plugins and sign out. An action is
+offered only when the screen it needs is visible, as in the nav; the VTC
+still decides every operation. Whatever is typed is also offered as a
+member search, and a DID opens that member.
+
+Up and Down move, Enter opens, Escape (or a click outside) closes and
+returns focus to where it was. It is a modal dialog with focus held on
+its search field, announced as a combobox over a grouped list of
+results. Actions that navigate use query strings the screens accept on
+their existing routes — `/members?q=…`, `/members?add=1`,
+`/acl?add=1`, `/acl?invite=1`, `/actions?tab=waitingForMe` — each applied
+once and then dropped from the URL.
 
 ### Live updates, and polling as the fallback
 
@@ -738,6 +783,11 @@ by what the page chooses to show:
 | Passkey store | `passkey` | `member_passkeys` |
 | Cookies | `vtc_admin_session`, `vtc_admin_refresh` (`Path=/`), `csrf` | `vtc_member_session`, `vtc_member_refresh` (`Path=/v1/member`), `vtc_member_csrf` |
 | Bundle | console shell + plugins | its own; loads no console code |
+
+The portal's top bar carries the same colour-theme switcher as the
+console and the landing page, sharing their stored choice (*Colour
+theme*, above); it is a small dependency-free component, not console
+code.
 
 **Active member** means a live ACL entry — not expired, not suspended,
 not an `application` entry — and a member record that has not been

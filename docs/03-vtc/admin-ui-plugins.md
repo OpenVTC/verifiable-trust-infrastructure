@@ -113,6 +113,10 @@ Community, then **More**. Add an optional `group` to the
 `capabilities` behave the same in every group, and a plugin written
 before groups existed needs no change: it is listed under **More**.
 
+Every visible plugin is also listed in the console's command palette
+(⌘K / Ctrl+K), by its `label` and under its nav group's heading, with
+no field of its own: register it and it can be jumped to.
+
 The shell holds the custom-element tag, not the class. When your
 route activates, the shell does:
 
