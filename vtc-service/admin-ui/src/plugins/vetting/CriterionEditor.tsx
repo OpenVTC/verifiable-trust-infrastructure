@@ -23,6 +23,7 @@ import { type FormEvent, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
+import { Switch } from "@/components/Switch";
 import { useToast } from "@/lib/toast";
 import {
   admissionSentence,
@@ -174,37 +175,25 @@ export function CriterionEditor({
           </p>
         </fieldset>
 
-        <label className="switch-field" htmlFor="criterion-invitation">
-          <input
-            id="criterion-invitation"
-            type="checkbox"
-            role="switch"
-            checked={draft.invitationRequired}
-            onChange={(e) => set({ invitationRequired: e.target.checked })}
-          />
-          <span className="switch-text">
-            <strong>Applicants must hold an invitation this community issued</strong>
-            <span className="muted">
-              Off, an invitation plays no part in meeting this criterion.
-            </span>
-          </span>
-        </label>
+        <Switch
+          id="criterion-invitation"
+          checked={draft.invitationRequired}
+          onChange={(e) => set({ invitationRequired: e.target.checked })}
+          label="Applicants must hold an invitation this community issued"
+          description={
+            <>Off, an invitation plays no part in meeting this criterion.</>
+          }
+        />
 
-        <label className="switch-field" htmlFor="criterion-credentials">
-          <input
-            id="criterion-credentials"
-            type="checkbox"
-            role="switch"
-            checked={draft.asksCredentials}
-            onChange={(e) => set({ asksCredentials: e.target.checked })}
-          />
-          <span className="switch-text">
-            <strong>Applicants must present credentials</strong>
-            <span className="muted">
-              Off, the criterion asks for no credential.
-            </span>
-          </span>
-        </label>
+        <Switch
+          id="criterion-credentials"
+          checked={draft.asksCredentials}
+          onChange={(e) => set({ asksCredentials: e.target.checked })}
+          label="Applicants must present credentials"
+          description={
+            <>Off, the criterion asks for no credential.</>
+          }
+        />
 
         {draft.asksCredentials && (
           <>
@@ -248,21 +237,15 @@ export function CriterionEditor({
           </>
         )}
 
-        <label className="switch-field" htmlFor="criterion-vets">
-          <input
-            id="criterion-vets"
-            type="checkbox"
-            role="switch"
-            checked={draft.vets}
-            onChange={(e) => set({ vets: e.target.checked })}
-          />
-          <span className="switch-text">
-            <strong>Applicants taking this route must be vetted by members</strong>
-            <span className="muted">
-              Off, the criterion asks for no vetting.
-            </span>
-          </span>
-        </label>
+        <Switch
+          id="criterion-vets"
+          checked={draft.vets}
+          onChange={(e) => set({ vets: e.target.checked })}
+          label="Applicants taking this route must be vetted by members"
+          description={
+            <>Off, the criterion asks for no vetting.</>
+          }
+        />
 
         {draft.vets && (
           <VettingFields
@@ -495,23 +478,15 @@ function VettingFields({
 
       <fieldset className="vet-fieldset">
         <legend>Documentation</legend>
-        <label className="switch-field" htmlFor="req-document-floor">
-          <input
-            id="req-document-floor"
-            type="checkbox"
-            role="switch"
-            checked={draft.documentFloor}
-            onChange={(e) => onChange({ documentFloor: e.target.checked })}
-          />
-          <span className="switch-text">
-            <strong>Only these documents count</strong>
-            <span className="muted">
-              Off, each vetter decides what documentation they accept, including
-              none for prior acquaintance. On, a statement resting on anything
-              else does not count.
-            </span>
-          </span>
-        </label>
+        <Switch
+          id="req-document-floor"
+          checked={draft.documentFloor}
+          onChange={(e) => onChange({ documentFloor: e.target.checked })}
+          label="Only these documents count"
+          description={
+            <>Off, each vetter decides what documentation they accept, including none for prior acquaintance. On, a statement resting on anything else does not count.</>
+          }
+        />
         {draft.documentFloor && (
           <FormField
             id="req-documents"
@@ -533,24 +508,15 @@ function VettingFields({
 
       <fieldset className="vet-fieldset">
         <legend>Independence</legend>
-        <label className="switch-field" htmlFor="req-consistent">
-          <input
-            id="req-consistent"
-            type="checkbox"
-            role="switch"
-            checked={draft.requireConsistentIdentityCommitment}
-            onChange={(e) =>
-              onChange({ requireConsistentIdentityCommitment: e.target.checked })
-            }
-          />
-          <span className="switch-text">
-            <strong>Every vetter must have verified the same identity</strong>
-            <span className="muted">
-              Vetters who verified different identities send the application to
-              moderators rather than denying it.
-            </span>
-          </span>
-        </label>
+        <Switch
+          id="req-consistent"
+          checked={draft.requireConsistentIdentityCommitment}
+          onChange={(e) => onChange({ requireConsistentIdentityCommitment: e.target.checked })}
+          label="Every vetter must have verified the same identity"
+          description={
+            <>Vetters who verified different identities send the application to moderators rather than denying it.</>
+          }
+        />
         <div className="vet-counts">
           <span className="field-label">At most, from vetters declaring</span>
           {DECLARED_RELATIONSHIPS.map((rel) => (

@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { Switch } from "@/components/Switch";
 import { postSignedRead, postSignedTrustTask } from "@/lib/api";
 
 interface JoinDiscovery {
@@ -75,16 +76,12 @@ export function JoinDiscoveryCard() {
   return (
     <section className="card">
       <h3>Joining</h3>
-      <label className="field inline join-discovery-toggle">
-        <input
-          type="checkbox"
-          checked={draft}
-          onChange={(e) => setDraft(e.target.checked)}
-        />
-        <span className="field-label">
-          Answer “what do you require of people who join?” to anyone who asks
-        </span>
-      </label>
+      <Switch
+        className="join-discovery-toggle"
+        checked={draft}
+        onChange={(e) => setDraft(e.target.checked)}
+        label="Answer “what do you require of people who join?” to anyone who asks"
+      />
       <p className="field-hint">
         On, someone considering joining can read your admission criteria before
         they disclose anything — including on their first join, when they have

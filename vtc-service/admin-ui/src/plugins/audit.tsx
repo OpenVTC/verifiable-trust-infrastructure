@@ -21,6 +21,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Field } from "@/components/Field";
 import { NamedDid } from "@/components/NamedDid";
 import { PageHeader } from "@/components/PageHeader";
+import { Switch } from "@/components/Switch";
 import { useToast } from "@/lib/toast";
 
 // Human-readable label per event kind. Falls through to the
@@ -212,13 +213,12 @@ export function Audit() {
               onChange={(e) => setFilterText(e.target.value)}
             />
           </Field>
-          <Field label="Show system events" inline className="audit-system-toggle">
-            <input
-              type="checkbox"
-              checked={showSystem}
-              onChange={(e) => setShowSystem(e.target.checked)}
-            />
-          </Field>
+          <Switch
+            className="audit-system-toggle"
+            label="Show system events"
+            checked={showSystem}
+            onChange={(e) => setShowSystem(e.target.checked)}
+          />
           <span className="muted">
             {visibleItems.length} of {items.length}
             {hiddenCount > 0 ? ` (${hiddenCount} filtered)` : ""}

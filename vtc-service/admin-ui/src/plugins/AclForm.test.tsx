@@ -142,7 +142,7 @@ describe("Access control — roles and capabilities", () => {
 
   // The roles form layout: each capability's checkbox sits on the same line as
   // its text, left-aligned (no `.row-actions`, which right-aligns), and the
-  // approve toggle is a checkbox label, not a column `.field`.
+  // approve toggle is a switch label, not a column `.field`.
   it("lays each checkbox out beside its label", async () => {
     mockFetch([taskRoute(LIST, { entries: [], truncated: false })]);
     renderWithProviders(<Acl />, { route: "/acl", path: "/acl" });
@@ -155,8 +155,13 @@ describe("Access control — roles and capabilities", () => {
     expect(label.className).toBe("checkbox");
     expect(label.closest(".row-actions")).toBeNull();
     expect(label.querySelector(".checkbox-text .chip")?.textContent).toBe("confers authority");
-    const approve = screen.getByText("May approve others' actions within this role").closest("label")!;
-    expect(approve.className).toBe("checkbox");
+    // The approve setting is a switch (components/Switch.tsx), still a label
+    // around its control rather than a column `.field`.
+    const approve = screen.getByRole("switch", {
+      name: "May approve others' actions within this role",
+    });
+    expect(approve.closest("label")!.classList.contains("switch")).toBe(true);
+    expect(approve.closest(".field")).toBeNull();
   });
 });
 

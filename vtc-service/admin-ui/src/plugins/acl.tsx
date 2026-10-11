@@ -53,6 +53,7 @@ import { Field } from "@/components/Field";
 import { DataTable } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { PageHeader } from "@/components/PageHeader";
+import { Switch } from "@/components/Switch";
 import { formatIso, shorten, shortenDid } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 import { SessionTimeoutCard } from "@/plugins/SessionTimeoutCard";
@@ -1076,14 +1077,11 @@ function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
       </Field>
       <CapabilityPicker role={role} selected={selected} onChange={setSelected} />
       {info && !info.approveOnly && (
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={approve}
-            onChange={(e) => setApprove(e.target.checked)}
-          />
-          <span className="checkbox-text">May approve others' actions within this role</span>
-        </label>
+        <Switch
+          label="May approve others' actions within this role"
+          checked={approve}
+          onChange={(e) => setApprove(e.target.checked)}
+        />
       )}
       <Field label="Label (optional)">
         <input

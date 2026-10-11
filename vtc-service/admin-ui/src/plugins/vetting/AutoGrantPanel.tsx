@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
 import { EmptyState } from "@/components/EmptyState";
+import { Switch } from "@/components/Switch";
 import { formatIso } from "@/lib/format";
 import { fetchActivePolicy } from "@/lib/policies-api";
 import { useToast } from "@/lib/toast";
@@ -116,23 +117,15 @@ export function AutoGrantPanel() {
           policy stops allowing a member. It never revokes a grant an admin made.
         </p>
 
-        <label className="switch-field" htmlFor="auto-grant-enabled">
-          <input
-            id="auto-grant-enabled"
-            type="checkbox"
-            role="switch"
-            checked={draft.enabled}
-            onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
-          />
-          <span className="switch-text">
-            <strong>Name vetters automatically</strong>
-            <span className="muted">
-              {draft.enabled
-                ? "On: the sweep runs on the schedule below."
-                : "Off: only admins name vetters."}
-            </span>
-          </span>
-        </label>
+        <Switch
+          id="auto-grant-enabled"
+          checked={draft.enabled}
+          onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
+          label="Name vetters automatically"
+          description={
+            <>{draft.enabled ? "On: the sweep runs on the schedule below." : "Off: only admins name vetters."}</>
+          }
+        />
 
         <div className="filter-grid">
           <FormField
