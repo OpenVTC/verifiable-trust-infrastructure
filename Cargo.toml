@@ -104,7 +104,9 @@ uniffi = "0.32"
 # `trust-tasks-rs` 0.26.
 # 0.23 moves in lockstep with `trust-tasks-rs` 0.27 and `affinidi-messaging-sdk`
 # 0.33: one `trust-tasks-rs` in the graph again.
-affinidi-tdk = "0.23"
+# 0.24 moves in lockstep with `trust-tasks-rs` 0.28 and `affinidi-messaging-sdk`
+# 0.34 (affinidi-tdk-rs #933).
+affinidi-tdk = "0.24"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
@@ -232,7 +234,10 @@ affinidi-messaging-core = "0.1"
 # DIDComm frames it cannot unpack (never one sent to a key we have not
 # loaded). `vti_common::inbox` relies on that last one: it no longer deletes
 # such frames itself, so on 0.33.1 they would stay in the inbox again.
-affinidi-messaging-sdk = { version = "0.33.2", default-features = false }
+#
+# 0.34.0 is the `trust-tasks-rs` 0.28 release (affinidi-tdk-rs #933): it shares
+# the workspace's copy, so `MediatorAcl` stays one type. It carries 0.33.2.
+affinidi-messaging-sdk = { version = "0.34.0", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
@@ -573,12 +578,19 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # `rooms/info`, `rooms/usage`, `rooms/keys/file-key` and the VTC's
 # `vtc/rooms/*` / `vtc/storage/*` (#739) — and the VTA's `external/*`
 # accounts (#740).
-trust-tasks-rs = { version = "0.27.8", default-features = false, features = [
+#
+# 0.28.0 is a FLOOR and the breaking line: it is the first release whose
+# `DeclaredErrorCode` carries the specification's `detailsSchema`
+# (`check_details`, trust-tasks-tf #742), which the `rooms/keys/file-key`
+# handler tests check `unknownEpoch` against in place of a hand copy. It also
+# withdraws the rooms 0.1 `notAuthorized` codes in favour of the standard
+# `permissionDenied` (#743), which the room host already answers.
+trust-tasks-rs = { version = "0.28.0", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
-trust-tasks-capability-client = "0.27"
-trust-tasks-https = { version = "0.27", default-features = false, features = ["server", "client", "jwt"] }
+trust-tasks-capability-client = "0.28"
+trust-tasks-https = { version = "0.28", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
 # and the `pack_trust_task`/`unpack_trust_task` pair that enforce it.
@@ -589,7 +601,7 @@ trust-tasks-https = { version = "0.27", default-features = false, features = ["s
 # A conformant peer rejects that, silently, because "not an envelope" is
 # indistinguishable from "not addressed to me". One constant, from the crate
 # that defines it.
-trust-tasks-didcomm = { version = "0.27", default-features = false }
+trust-tasks-didcomm = { version = "0.28", default-features = false }
 # The TSP binding. Carries `ENVELOPE_TYPE` — the payload wrapper every
 # Trust-Task TSP frame must use: `{"type": …, "document": …}`.
 #
@@ -608,8 +620,8 @@ trust-tasks-didcomm = { version = "0.27", default-features = false }
 # keys in that shape; it signs through `operations::keys::sign_payload`, where
 # the context gates live. Using the crate's sealing API needs a signer seam
 # upstream, of the shape `affinidi_data_integrity::Signer` already provides.
-trust-tasks-tsp = { version = "0.27", default-features = false }
-trust-tasks-proof = { version = "0.27", default-features = false, features = ["affinidi"] }
+trust-tasks-tsp = { version = "0.28", default-features = false }
+trust-tasks-proof = { version = "0.28", default-features = false, features = ["affinidi"] }
 
 # Axum extras (typed headers for Bearer auth)
 axum-extra = { version = "0.12", features = ["typed-header"] }

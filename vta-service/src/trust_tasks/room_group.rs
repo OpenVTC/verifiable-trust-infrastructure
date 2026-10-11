@@ -1373,22 +1373,6 @@ mod file_key_refusal_tests {
     const ROOM: &str = "did:webvh:example.com:rooms:northwind";
     const FILE_ID: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 
-    /// `rooms/keys/file-key/0.1`'s declared `unknownEpoch` `detailsSchema`, copied from the
-    /// specification's front matter: the generated bindings carry codes, not their schemas.
-    /// Keep in step with `specs/rooms/keys/file-key/0.1/spec.md` in dtgwg-trust-tasks-tf.
-    fn unknown_epoch_details_schema() -> Value {
-        serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["reason"],
-            "properties": {
-                "reason": { "type": "string", "enum": ["notDelivered", "beyondChain"] },
-                "earliestEpoch": { "type": "integer", "minimum": 1 },
-                "heldEpoch": { "type": "integer", "minimum": 1 }
-            }
-        })
-    }
-
     fn request(payload: Value) -> TrustTask<Value> {
         let uri: TypeUri = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1
             .parse()
@@ -1428,11 +1412,13 @@ mod file_key_refusal_tests {
         );
         let details = &doc["payload"]["details"];
         assert_eq!(details["reason"], reason, "{doc}");
-        let schema = jsonschema::validator_for(&unknown_epoch_details_schema()).unwrap();
-        assert!(
-            schema.is_valid(details),
-            "details must match the declared detailsSchema: {details}"
-        );
+        // Checked against the schema the specification declares, carried by the
+        // generated code, rather than a copy of it kept here.
+        trust_tasks_rs::specs::rooms::keys::file_key::v0_1::error_codes::UNKNOWN_EPOCH
+            .check_details(details)
+            .unwrap_or_else(|e| {
+                panic!("details must match the declared detailsSchema: {e}: {details}")
+            });
     }
 
     #[tokio::test]
