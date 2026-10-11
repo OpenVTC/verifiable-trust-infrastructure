@@ -28,7 +28,11 @@ export function OperatorWriteBanner({ actionIds }: { actionIds: readonly string[
   if (actionIds.length === 0) return null;
   const target = actionIds.length === 1 ? actionPath(actionIds[0]!) : "/actions";
   return (
-    <div className="breakglass-banner critical-banner" role="alert" aria-live="assertive">
+    <div
+      className="breakglass-banner critical-banner attention-item attention-item--critical"
+      role="alert"
+      aria-live="assertive"
+    >
       <strong>
         <Siren aria-hidden="true" size={18} />
         Critical: an offline change waits for your acknowledgement
@@ -43,32 +47,36 @@ export function OperatorWriteBanner({ actionIds }: { actionIds: readonly string[
 }
 
 export function CoolingOffBanner({ items }: { items: readonly CoolingOffAgainstMe[] }) {
-  const book = useNameBook();
   if (items.length === 0) return null;
   return (
     <>
-      {items.map((c) => {
-        const who = book.nameOf(c.requester) ?? shortenDid(c.requester);
-        return (
-          <div
-            key={c.actionId}
-            className="breakglass-banner critical-banner"
-            role="alert"
-            aria-live="assertive"
-          >
-            <strong>
-              <ShieldAlert aria-hidden="true" size={18} />
-              Critical: a reduction of your authority is cooling off
-            </strong>
-            <span>
-              {who} has asked to reduce your authority. It takes effect at{" "}
-              {formatIso(c.landsAt)} ({landsIn(c.landsAt)}) unless they cancel it.
-            </span>
-            <Link to={actionPath(c.actionId)}>View the action</Link>
-          </div>
-        );
-      })}
+      {items.map((c) => (
+        <CoolingOffNotice key={c.actionId} item={c} />
+      ))}
     </>
+  );
+}
+
+/** One cooling-off against this administrator: one banner each. */
+export function CoolingOffNotice({ item: c }: { item: CoolingOffAgainstMe }) {
+  const book = useNameBook();
+  const who = book.nameOf(c.requester) ?? shortenDid(c.requester);
+  return (
+    <div
+      className="breakglass-banner critical-banner attention-item attention-item--critical"
+      role="alert"
+      aria-live="assertive"
+    >
+      <strong>
+        <ShieldAlert aria-hidden="true" size={18} />
+        Critical: a reduction of your authority is cooling off
+      </strong>
+      <span>
+        {who} has asked to reduce your authority. It takes effect at{" "}
+        {formatIso(c.landsAt)} ({landsIn(c.landsAt)}) unless they cancel it.
+      </span>
+      <Link to={actionPath(c.actionId)}>View the action</Link>
+    </div>
   );
 }
 
@@ -91,7 +99,7 @@ export function SingleAdminModeBanner({ on }: { on: boolean }) {
   if (!on) return null;
   return (
     <div
-      className="single-admin-banner"
+      className="single-admin-banner attention-item attention-item--standing"
       role="status"
       aria-live="polite"
       aria-label="Single administrator mode is in effect"

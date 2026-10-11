@@ -15,6 +15,11 @@
 // - `scopes` (optional) — admin / super-admin / etc. The shell
 //   hides the nav entry when the signed-in operator lacks the
 //   scope. Plugins should also enforce server-side; this is UX.
+// - `group` (optional) — which nav group the entry sits in
+//   (`overview`, `membership`, `governance`, `community`), or
+//   `account` for the account menu in the top bar. A plugin that
+//   sets none — every plugin written before groups existed — goes
+//   under a final "More" group.
 //
 // Plugin discovery has two sources:
 //
@@ -35,6 +40,27 @@
 // `registerPlugin`'s shape.
 
 import type { ComponentType } from "react";
+
+/**
+ * Where a plugin's entry sits in the shell's navigation. The four sidebar
+ * groups, in this order, then `account`: the account menu in the top bar,
+ * for things that are the operator's own rather than the community's (their
+ * passkeys, this browser's signing key).
+ */
+export type PluginGroup = "overview" | "membership" | "governance" | "community" | "account";
+
+/** The sidebar groups in display order, with their headings. A plugin with
+ *  no `group`, or one this shell does not know, is listed under "More",
+ *  after these. */
+export const NAV_GROUPS: ReadonlyArray<{ readonly id: Exclude<PluginGroup, "account">; readonly label: string }> = [
+  { id: "overview", label: "Overview" },
+  { id: "membership", label: "Membership" },
+  { id: "governance", label: "Governance" },
+  { id: "community", label: "Community" },
+];
+
+/** The heading of the group for plugins that name none. */
+export const MORE_GROUP_LABEL = "More";
 
 export interface PluginManifest {
   /** Stable, unique. Lowercase kebab-case. */
@@ -109,6 +135,14 @@ export interface PluginManifest {
    * `elementTag` OR `reactComponent`, never both.
    */
   readonly reactComponent?: ComponentType;
+  /**
+   * Optional: the nav group the entry is listed under (see
+   * {@link PluginGroup}). `account` puts it in the top bar's account menu
+   * instead of the sidebar. Absent, or a value this shell does not know: the
+   * entry goes under "More", after the named groups. Placement only — the
+   * route, visibility rules and rendering are the same in every group.
+   */
+  readonly group?: PluginGroup;
 }
 
 // In-memory registry. Plugins register at module load; the shell

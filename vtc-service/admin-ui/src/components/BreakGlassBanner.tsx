@@ -30,7 +30,25 @@ import { shortenDid } from "@/lib/format";
  *  devices; this reaches the tab. */
 export const BREAK_GLASS_POLL_MS = 60_000;
 
-export function BreakGlassBanner() {
+/** What the break-glass check found: nothing to report, the list could not be
+ *  read because this browser cannot sign, or grants awaiting ratification. */
+export type BreakGlassState =
+  | { readonly kind: "none" }
+  | { readonly kind: "cannotCheck" }
+  | {
+      readonly kind: "waiting";
+      readonly count: number;
+      readonly who: string;
+      readonly right: string;
+      readonly resource: string;
+    };
+
+/**
+ * The break-glass read behind the banner, for the shell's attention strip
+ * (`components/AttentionStrip.tsx`), which needs to know whether there is
+ * anything to show before it orders and counts its items.
+ */
+export function useBreakGlassState(): BreakGlassState {
   const book = useNameBook();
   const q = useQuery({
     queryKey: gitNsKeys.breakGlass,
@@ -40,9 +58,24 @@ export function BreakGlassBanner() {
       isNotAdministrator(query.state.error) ? false : BREAK_GLASS_POLL_MS,
     refetchOnWindowFocus: true,
   });
-  if (q.error instanceof SigningUnavailableError) {
+  if (q.error instanceof SigningUnavailableError) return { kind: "cannotCheck" };
+  const waiting = awaitingItems(q.data?.items ?? []);
+  if (waiting.length === 0) return { kind: "none" };
+  const first = waiting[0]!;
+  return {
+    kind: "waiting",
+    count: waiting.length,
+    who: book.nameOf(first.subject) ?? shortenDid(first.subject),
+    right: first.right,
+    resource: first.resource,
+  };
+}
+
+/** The banner for a state from {@link useBreakGlassState}. */
+export function BreakGlassNotice({ state }: { state: BreakGlassState }) {
+  if (state.kind === "cannotCheck") {
     return (
-      <div className="breakglass-banner" role="status">
+      <div className="breakglass-banner attention-item attention-item--critical" role="status">
         <strong>
           <Siren aria-hidden="true" size={18} />
           Break-glass grants cannot be checked from this browser
@@ -55,26 +88,31 @@ export function BreakGlassBanner() {
       </div>
     );
   }
-  const waiting = awaitingItems(q.data?.items ?? []);
-  if (waiting.length === 0) return null;
-
-  const first = waiting[0]!;
-  const who = book.nameOf(first.subject) ?? shortenDid(first.subject);
+  if (state.kind === "none") return null;
+  const { count, who, right, resource } = state;
   return (
-    <div className="breakglass-banner" role="alert" aria-live="assertive">
+    <div
+      className="breakglass-banner attention-item attention-item--critical"
+      role="alert"
+      aria-live="assertive"
+    >
       <strong>
         <Siren aria-hidden="true" size={18} />
-        {waiting.length === 1
+        {count === 1
           ? "1 break-glass grant awaits another administrator"
-          : `${waiting.length} break-glass grants await another administrator`}
+          : `${count} break-glass grants await another administrator`}
       </strong>
       <span>
-        {waiting.length === 1
-          ? `${who} gave themselves ${first.right} on ${first.resource}.`
-          : `Oldest: ${who} gave themselves ${first.right} on ${first.resource}.`}{" "}
+        {count === 1
+          ? `${who} gave themselves ${right} on ${resource}.`
+          : `Oldest: ${who} gave themselves ${right} on ${resource}.`}{" "}
         It is live now and does not expire. Ratify it or revoke it.
       </span>
       <Link to={BREAK_GLASS_PATH}>Review break-glass grants</Link>
     </div>
   );
+}
+
+export function BreakGlassBanner() {
+  return <BreakGlassNotice state={useBreakGlassState()} />;
 }

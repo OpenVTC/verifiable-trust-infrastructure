@@ -19,6 +19,19 @@ quieter link to the operator console at `/admin/`.
 The page is served under `default-src 'self'`: no inline scripts, no
 inline `style` attributes, and every image is same-origin or inline SVG.
 
+Its look comes from the community's shared design tokens and type:
+
+- `tokens.css` is a copy of `admin-ui/src/styles/tokens.css`, the token
+  file the member portal and the operator console also use. Edit the
+  source and copy it here; a test in `src/website/default_site.rs` fails
+  if the two differ.
+- `fonts.css` and `fonts/` self-host IBM Plex Sans and IBM Plex Mono
+  (SIL Open Font License 1.1, `fonts/OFL-*.txt`), copied from the
+  @fontsource packages the console bundles.
+
+A custom site in `website.root_dir` needs neither file; it keeps working
+with whatever it links itself.
+
 Baked at compile time by `include_dir!` (see
 `src/website/default_site.rs`). Served by the `/` catch-all
 sub-router **only** when:

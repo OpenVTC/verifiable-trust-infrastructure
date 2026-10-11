@@ -102,6 +102,50 @@ mod tests {
         );
     }
 
+    /// The home page, the member portal and the console share one token
+    /// file. The page is static, so it carries a copy; this keeps the copy
+    /// identical to the source of truth the two bundles import.
+    #[test]
+    fn site_tokens_are_the_shared_tokens() {
+        let site = lookup("/tokens.css").expect("website-default/tokens.css");
+        let shared = include_bytes!("../../admin-ui/src/styles/tokens.css");
+        assert!(
+            site == shared.as_slice(),
+            "website-default/tokens.css has drifted from admin-ui/src/styles/tokens.css — \
+             edit the latter and copy it over"
+        );
+    }
+
+    /// The page links its fonts and tokens before its own stylesheet, and
+    /// every face `fonts.css` names is embedded, so nothing is fetched from
+    /// a third party under `default-src 'self'`.
+    #[test]
+    fn site_links_self_hosted_fonts_and_tokens() {
+        let index = std::str::from_utf8(lookup("/index.html").unwrap()).unwrap();
+        let fonts = index.find("href=\"/fonts.css\"").expect("fonts.css linked");
+        let tokens = index
+            .find("href=\"/tokens.css\"")
+            .expect("tokens.css linked");
+        let site = index.find("href=\"/site.css\"").expect("site.css linked");
+        assert!(
+            fonts < site && tokens < site,
+            "fonts and tokens precede site.css"
+        );
+
+        let css = std::str::from_utf8(lookup("/fonts.css").unwrap()).unwrap();
+        let mut named = 0;
+        for part in css.split("url(\"").skip(1) {
+            let path = &part[..part.find('"').unwrap()];
+            assert!(
+                lookup(path).is_some(),
+                "fonts.css names {path}, which is not embedded"
+            );
+            named += 1;
+        }
+        assert!(named >= 12, "expected the Plex faces, found {named}");
+        assert!(!css.contains("http"), "fonts must be same-origin");
+    }
+
     #[test]
     fn lookup_misses_on_unknown_path() {
         assert!(lookup("/no-such-file").is_none());

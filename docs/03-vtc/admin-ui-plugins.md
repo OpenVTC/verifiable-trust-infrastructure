@@ -97,6 +97,22 @@ window.VtcPluginApi.registerPlugin({
 });
 ```
 
+### Choosing a nav group
+
+The console's sidebar is grouped: Overview, Membership, Governance and
+Community, then **More**. Add an optional `group` to the
+`registerPlugin` call to place your entry:
+
+| `group` | Where the entry appears |
+|---------|-------------------------|
+| `"overview"`, `"membership"`, `"governance"`, `"community"` | Under that sidebar heading, after the built-in entries. |
+| `"account"` | In the account menu in the top bar, beside *My passkeys* and *Signing keys*. Use it for something that is the operator's own rather than the community's. |
+| absent, or any other value | Under **More**, after the named groups. |
+
+`group` is placement only. Your route, element, icon and `scopes` /
+`capabilities` behave the same in every group, and a plugin written
+before groups existed needs no change: it is listed under **More**.
+
 The shell holds the custom-element tag, not the class. When your
 route activates, the shell does:
 
