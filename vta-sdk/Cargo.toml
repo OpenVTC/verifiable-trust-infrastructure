@@ -40,6 +40,9 @@ proof-verify = [
   # and holders use (#1988).
   "dep:affinidi-crypto",
   "dep:ed25519-dalek",
+  # `token_status_list` — the IETF Token Status List (`statuslist+jwt`) those
+  # credentials reference, verified against the credential's issuer.
+  "dep:affinidi-status-list",
 ]
 didcomm = [
   "dep:affinidi-tdk",

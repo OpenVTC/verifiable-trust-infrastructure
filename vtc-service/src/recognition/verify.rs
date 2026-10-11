@@ -130,6 +130,23 @@ pub trait StatusListFetcher: Send + Sync {
         index: usize,
         expected_issuer: Option<&str>,
     ) -> Result<bool, RecognitionError>;
+
+    /// Read the entry an IETF Token Status List (`statuslist+jwt`) holds for
+    /// `reference` — an SD-JWT-VC's `status.status_list` (#1988).
+    ///
+    /// The token MUST be verified as signed by `expected_issuer` before its
+    /// entry is read. The default refuses, so a fetcher that cannot read these
+    /// lists yields `Unknown`, never a guessed status.
+    async fn check_token_status(
+        &self,
+        reference: &affinidi_status_list::token::StatusListReference,
+        expected_issuer: Option<&str>,
+    ) -> Result<affinidi_status_list::token::TokenStatus, RecognitionError> {
+        let _ = (reference, expected_issuer);
+        Err(RecognitionError::StatusListFailed(
+            "this fetcher does not read IETF Token Status Lists".to_string(),
+        ))
+    }
 }
 
 /// Post-verification view of a (VAC, VMC) pair. Only
@@ -711,6 +728,37 @@ impl StatusListFetcher for HttpStatusListFetcher {
         decoded
             .get(index)
             .map_err(|e| RecognitionError::StatusListFailed(format!("get {index}: {e}")))
+    }
+
+    /// A Token Status List is trusted only as its credential issuer's
+    /// (`vta_sdk::token_status_list`), so this needs the fetcher's key resolver
+    /// and an expected issuer; without either, the status is not read.
+    async fn check_token_status(
+        &self,
+        reference: &affinidi_status_list::token::StatusListReference,
+        expected_issuer: Option<&str>,
+    ) -> Result<affinidi_status_list::token::TokenStatus, RecognitionError> {
+        let resolver = self.key_resolver.as_ref().ok_or_else(|| {
+            RecognitionError::StatusListFailed(
+                "a Token Status List is read only with issuer verification, which this fetcher \
+                 was built without"
+                    .to_string(),
+            )
+        })?;
+        let issuer = expected_issuer.ok_or_else(|| {
+            RecognitionError::StatusListFailed(
+                "a Token Status List needs the credential's issuer to bind it to".to_string(),
+            )
+        })?;
+        vta_sdk::token_status_list::resolve_token_status(
+            &self.client,
+            reference,
+            issuer,
+            resolver.as_ref(),
+            chrono::Utc::now().timestamp(),
+        )
+        .await
+        .map_err(|e| RecognitionError::StatusListFailed(e.to_string()))
     }
 }
 

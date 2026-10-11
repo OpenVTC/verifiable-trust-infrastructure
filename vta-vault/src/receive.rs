@@ -219,10 +219,11 @@ pub async fn receive_sd_jwt_vc(
     let valid_until = unix_claim_to_rfc3339(claims, "exp");
 
     // "Valid" means *passed signature + temporal* only; revocation state is
-    // resolved by the status task (1.6). The exception is an IETF Token Status
-    // List reference (`status.status_list`): nothing here reads a
-    // `statuslist+jwt` yet (#1988 follow-up), so a refresh can never settle it,
-    // and its state is Unknown rather than an assumed Valid (VTI-CRD-012).
+    // resolved by the status task (1.6). A credential referencing an IETF Token
+    // Status List (`status.status_list`) starts Unknown instead: its status
+    // has not been read, and the present gate takes only Valid, so it becomes
+    // presentable once `refresh_status` — which the gate runs first — has read
+    // its issuer-signed list (VTI-CRD-012).
     let status = if claims
         .get("status")
         .and_then(|s| s.get("status_list"))
@@ -1754,8 +1755,9 @@ mod tests {
         .expect("dispatch with a resolver");
     }
 
-    /// A Token Status List reference cannot be read yet, so the credential is
-    /// held as Unknown, never an assumed Valid (VTI-CRD-012).
+    /// A Token Status List reference has not been read at receive, so the
+    /// credential is held as Unknown until `refresh_status` reads it, never an
+    /// assumed Valid (VTI-CRD-012).
     #[tokio::test]
     async fn a_token_status_list_reference_is_stored_unknown() {
         let (_dir, _store, vault) = fresh_vault();

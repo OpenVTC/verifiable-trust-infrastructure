@@ -35,6 +35,14 @@ use vti_common::vault::{LifecycleError, VaultStatus, default_active};
 /// presented with holder binding, and nothing would have noticed at receive time.
 pub const MDOC_DEVICE_KEY_TAG: &str = "mdoc:deviceKeyId";
 
+/// Tag set while an IETF Token Status List reads a credential `SUSPENDED`.
+///
+/// The stored [`CredentialStatus`] has one "not presentable" state,
+/// `Revoked`, for both `INVALID` (terminal) and `SUSPENDED` (reversible). This
+/// tag is what lets a later `VALID` read restore a suspended credential while a
+/// revoked one stays revoked — see `status::refresh_status`.
+pub const TOKEN_STATUS_SUSPENDED_TAG: &str = "tokenStatus:suspended";
+
 /// Reserved [`StoredCredential::tags`] key holding the BBS pseudonym holder
 /// link secret (`prover_nym`), base64url-no-pad. See [`StoredCredential::tags`].
 pub const BBS_PROVER_NYM_TAG: &str = "bbs:prover_nym";

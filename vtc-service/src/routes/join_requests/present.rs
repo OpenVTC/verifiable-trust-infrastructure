@@ -492,6 +492,9 @@ fn credential_from_verified(
 /// - status bit set → [`CredentialStatus::Revoked`], or
 ///   [`CredentialStatus::Suspended`] when the entry's `statusPurpose` is
 ///   `suspension`.
+/// - an SD-JWT-VC IETF Token Status List entry (`status_list: { idx, uri }`),
+///   read from its issuer-signed `statuslist+jwt`: `VALID` → Valid, `INVALID` →
+///   Revoked, `SUSPENDED` → Suspended, any other value → Unknown (#1988).
 /// - entry present but unresolvable (malformed, or the list unreachable) →
 ///   [`CredentialStatus::Unknown`]: **surfaced, not guessed**, so the policy can
 ///   refuse rather than the verifier silently trusting an uncheckable credential.
@@ -505,9 +508,15 @@ pub(crate) async fn resolve_presented_status(
         return CredentialStatus::Valid;
     };
 
-    // Accept both the W3C `BitstringStatusListEntry`
-    // (`{ statusListCredential, statusListIndex, statusPurpose }`) and the
-    // SD-JWT-VC IETF `status` object (`{ status_list: { uri, idx } }`).
+    // The SD-JWT-VC IETF Token Status List (`{ status_list: { idx, uri } }`) is
+    // its own format — a `statuslist+jwt`, ZLIB, multi-bit entries — not a
+    // Bitstring list at another address.
+    if entry.get("status_list").is_some() {
+        return resolve_token_status(entry, expected_issuer, fetcher).await;
+    }
+
+    // The W3C `BitstringStatusListEntry`
+    // (`{ statusListCredential, statusListIndex, statusPurpose }`).
     let (url, index, suspension) = match parse_status_entry(entry) {
         Some(parts) => parts,
         // A malformed entry is suspicious — surface Unknown, don't trust it.
@@ -529,9 +538,49 @@ pub(crate) async fn resolve_presented_status(
     }
 }
 
-/// Parse a status entry into `(status_list_url, index, is_suspension)`. Handles
-/// the W3C `BitstringStatusListEntry` and the SD-JWT-VC IETF `status.status_list`
-/// shapes. Returns `None` if neither yields a usable URL + index.
+/// Resolve an SD-JWT-VC `status` object naming an IETF Token Status List. A
+/// malformed reference, an unreadable or unverifiable list, or a status value
+/// with no registered meaning is Unknown: surfaced, never guessed.
+async fn resolve_token_status(
+    status: &JsonValue,
+    expected_issuer: Option<&str>,
+    fetcher: &dyn StatusListFetcher,
+) -> CredentialStatus {
+    use affinidi_status_list::token::{StatusListReference, TokenStatus};
+
+    let reference = match StatusListReference::from_claims(&json!({ "status": status })) {
+        Ok(Some(reference)) => reference,
+        _ => return CredentialStatus::Unknown,
+    };
+    match fetcher
+        .check_token_status(&reference, expected_issuer)
+        .await
+    {
+        Ok(TokenStatus::Valid) => CredentialStatus::Valid,
+        Ok(TokenStatus::Invalid) => CredentialStatus::Revoked,
+        Ok(TokenStatus::Suspended) => CredentialStatus::Suspended,
+        Ok(other) => {
+            warn!(
+                uri = %reference.uri,
+                value = other.value(),
+                "presented credential's Token Status List entry has no registered meaning — surfacing Unknown"
+            );
+            CredentialStatus::Unknown
+        }
+        Err(e) => {
+            warn!(
+                uri = %reference.uri,
+                error = %e,
+                "presented credential's Token Status List did not resolve — surfacing Unknown for the join policy"
+            );
+            CredentialStatus::Unknown
+        }
+    }
+}
+
+/// Parse a W3C `BitstringStatusListEntry` into
+/// `(status_list_url, index, is_suspension)`, or `None` without a usable URL +
+/// index.
 fn parse_status_entry(entry: &JsonValue) -> Option<(String, usize, bool)> {
     // W3C: { statusListCredential, statusListIndex, statusPurpose }.
     if let Some(url) = entry
@@ -542,12 +591,6 @@ fn parse_status_entry(entry: &JsonValue) -> Option<(String, usize, bool)> {
         let suspension =
             entry.get("statusPurpose").and_then(JsonValue::as_str) == Some("suspension");
         return Some((url.to_string(), index, suspension));
-    }
-    // SD-JWT-VC IETF: { status_list: { uri, idx } } — no per-entry purpose.
-    if let Some(sl) = entry.get("status_list") {
-        let url = sl.get("uri").and_then(JsonValue::as_str)?;
-        let index = parse_status_index(sl.get("idx"))?;
-        return Some((url.to_string(), index, false));
     }
     None
 }
@@ -654,6 +697,34 @@ mod tests {
         }
     }
 
+    /// A Token Status List stub: answers one status for any reference, and
+    /// refuses Bitstring reads so a test sees which path ran.
+    struct TokenStub(Result<affinidi_status_list::token::TokenStatus, ()>);
+
+    #[async_trait::async_trait]
+    impl StatusListFetcher for TokenStub {
+        async fn check_status_bit(
+            &self,
+            _url: &str,
+            _index: usize,
+            _expected_issuer: Option<&str>,
+        ) -> Result<bool, RecognitionError> {
+            panic!("a Token Status List entry must not be read as a Bitstring bit")
+        }
+
+        async fn check_token_status(
+            &self,
+            reference: &affinidi_status_list::token::StatusListReference,
+            expected_issuer: Option<&str>,
+        ) -> Result<affinidi_status_list::token::TokenStatus, RecognitionError> {
+            assert_eq!(reference.idx, 7);
+            assert_eq!(reference.uri, "https://issuer.example/sl");
+            assert_eq!(expected_issuer, Some("did:web:issuer.example"));
+            self.0
+                .map_err(|()| RecognitionError::StatusListFailed("stub".into()))
+        }
+    }
+
     fn w3c_status(purpose: &str) -> JsonValue {
         json!({
             "type": "BitstringStatusListEntry",
@@ -722,11 +793,50 @@ mod tests {
         assert_eq!(status, CredentialStatus::Suspended);
     }
 
+    /// #1988: a Token Status List entry is read as one — its own resolver,
+    /// the credential's issuer passed for binding — and each registered value
+    /// maps onto the ceremony status; anything else is Unknown.
     #[tokio::test]
-    async fn sd_jwt_status_list_shape_resolves() {
+    async fn token_status_list_entries_resolve_by_status_value() {
+        use affinidi_status_list::token::TokenStatus;
         let entry = json!({ "status_list": { "idx": 7, "uri": "https://issuer.example/sl" } });
-        let status = resolve_presented_status(Some(&entry), None, &StubFetcher(Ok(true))).await;
-        assert_eq!(status, CredentialStatus::Revoked);
+        let issuer = Some("did:web:issuer.example");
+        for (answer, expected) in [
+            (Ok(TokenStatus::Valid), CredentialStatus::Valid),
+            (Ok(TokenStatus::Invalid), CredentialStatus::Revoked),
+            (Ok(TokenStatus::Suspended), CredentialStatus::Suspended),
+            (Ok(TokenStatus::from_value(0x03)), CredentialStatus::Unknown),
+            (Ok(TokenStatus::from_value(0x07)), CredentialStatus::Unknown),
+            (Err(()), CredentialStatus::Unknown),
+        ] {
+            let status = resolve_presented_status(Some(&entry), issuer, &TokenStub(answer)).await;
+            assert_eq!(status, expected, "{answer:?}");
+        }
+    }
+
+    /// A fetcher that predates Token Status Lists yields Unknown, never the
+    /// Bitstring bit at that address.
+    #[tokio::test]
+    async fn a_token_status_list_without_support_is_unknown() {
+        let entry = json!({ "status_list": { "idx": 7, "uri": "https://issuer.example/sl" } });
+        let status = resolve_presented_status(Some(&entry), None, &StubFetcher(Ok(false))).await;
+        assert_eq!(status, CredentialStatus::Unknown);
+    }
+
+    #[tokio::test]
+    async fn a_malformed_token_status_reference_is_unknown() {
+        for entry in [
+            json!({ "status_list": { "idx": "7", "uri": "https://issuer.example/sl" } }),
+            json!({ "status_list": { "idx": 7 } }),
+        ] {
+            let status = resolve_presented_status(
+                Some(&entry),
+                Some("did:web:issuer.example"),
+                &TokenStub(Ok(affinidi_status_list::token::TokenStatus::Valid)),
+            )
+            .await;
+            assert_eq!(status, CredentialStatus::Unknown, "{entry}");
+        }
     }
 
     #[tokio::test]

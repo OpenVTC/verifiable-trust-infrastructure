@@ -158,6 +158,26 @@ reserved as decoys (always flipped to 1 at initial mint) so a
 brand-new community doesn't reveal "this is index 0, you're the
 first member". The slot allocator skips them.
 
+### Reading another issuer's status
+
+The VTC issues W3C Bitstring lists. When it *verifies* a presented
+credential — at join, against join criteria, on an invitation — it reads
+whichever mechanism that credential references:
+
+| The credential carries | The VTC fetches | Outcomes |
+|---|---|---|
+| `credentialStatus` (`BitstringStatusListEntry`) | the `BitstringStatusListCredential`, its Data Integrity proof verified | bit clear → Valid; set → Revoked, or Suspended on a `suspension` list |
+| `status.status_list` (`{ idx, uri }`, SD-JWT VC — swiyu, EUDI) | the IETF Token Status List at `uri` (`application/statuslist+jwt`) | `VALID` → Valid, `INVALID` → Revoked, `SUSPENDED` → Suspended |
+
+A Token Status List is trusted only when the credential's own issuer signed
+it: its `kid` must name one of that issuer's `assertionMethod` keys, and an
+`iss`, if present, must be the issuer. Its `sub` must equal the referenced
+`uri`, and an expired list is refused. A list the VTC cannot fetch, cannot
+verify, or whose entry has no registered meaning yields **Unknown**, which a
+join policy can refuse. Unknown never defaults to valid (VTI-CRD-012).
+The VTA's credential vault reads both mechanisms the same way before it
+presents a held credential.
+
 ## Statements and the predicate accept list
 
 A DTG statement's meaning is its `credentialSubject.predicate`, an absolute
