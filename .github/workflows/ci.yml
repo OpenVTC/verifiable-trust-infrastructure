@@ -67,10 +67,13 @@ jobs:
   #           authorization-context types, `affects`: seconds to a minute
   #           each, little or no compile. Every tier-1 job `needs` all of them.
   #   tier 1  Clippy, Test (workspace), Test (VTC), Test (VTC, vetting-pcs),
-  #           Test (VTC admin UI).
-  #   tier 2  the Feature combos groups, Feature combos (all-features), Mobile
-  #           build, Enclave build, Enclave proxy, MSRV. Each `needs` Clippy
-  #           only, and runs unless it (or tier 0) FAILED.
+  #           Test (VTC admin UI), Mobile build (ios / android).
+  #   tier 2  the Feature combos groups, Feature combos (all-features), Enclave
+  #           build, Enclave proxy, MSRV. Each `needs` Clippy only, and runs
+  #           unless it (or tier 0) FAILED.
+  #
+  # Mobile build is tier 1 because it is the longest job: behind Clippy it
+  # finished last on every run that had it, so Clippy's minutes were the run's.
   #
   # Tier 2 used to wait for every tier-1 job, which put the longest test job
   # (~36 min) and the longest tier-2 job (Mobile, ~39-55 min) end to end on
@@ -1286,8 +1289,8 @@ jobs:
   affects:
     # Which package-scoped builds this change can possibly alter.
     #
-    # `Mobile build` cross-compiles vta-mobile-core for iOS and Android and takes
-    # ~22-40 minutes; it is gated on vta-mobile-core's own sources (`--own`). `Enclave build`
+    # `Mobile build` cross-compiles vta-mobile-core for iOS and Android, the
+    # longest job on the graph; it is gated on vta-mobile-core's own sources (`--own`). `Enclave build`
     # checks vta-enclave, whose closure contains no vtc-* and no room-host. Most
     # pull requests here touch neither, and wait for both.
     #
@@ -1574,8 +1577,7 @@ jobs:
     # dependency or deployment-target regression that breaks the phone build
     # (e.g. the aws-lc-sys `___chkstk_darwin` iOS link failure this job's
     # deployment-target pin guards against) — or an FFI type that no longer
-    # generates bindings — would land green. macOS runner because iOS needs
-    # Xcode; the macOS image also ships the Android NDK.
+    # generates bindings — would land green.
     #
     # On a pull request it runs only when vta-mobile-core itself or a global
     # file (lockfile, manifests, toolchain, workflows) changed; pushes to main
@@ -1583,25 +1585,51 @@ jobs:
     # the host jobs already build and test vta-mobile-core on every PR, and what
     # only this job sees arrives through a dependency, not through vta-sdk's code.
     #
-    # 60 minutes, not 45: a warm run on main takes ~40, and a PR run on a busy
-    # runner hit 45 and was cancelled (#1807), which reads as a failure.
-    name: Mobile build
-    needs: [clippy, affects]
+    # Two legs, one per platform. As one macOS job building all five targets in
+    # turn it took 36-49 minutes and finished last on every run that had it: on
+    # main, ~50 minutes of a ~53-minute run whose other jobs were done by minute
+    # 17. iOS needs Xcode, so it stays on macOS; Android needs only the NDK,
+    # which the Linux image ships too. Each leg generates the bindings from its
+    # own host build, so each stands alone.
+    #
+    # Tier 1, not tier 2: as the critical path, waiting for Clippy added
+    # Clippy's minutes to the whole run. It still waits for tier 0, so a
+    # formatting slip or a stale lockfile does not start it.
+    name: Mobile build (${{ matrix.platform }})
+    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.mobile != 'false' }}
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ios
+            os: macos-latest
+            targets: aarch64-apple-ios,aarch64-apple-ios-sim
+          - platform: android
+            os: ubuntu-latest
+            targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+    runs-on: ${{ matrix.os }}
+    # Each leg is about half the old single job, which a busy runner pushed
+    # past 45 minutes (#1807). Same limit, now with room.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: bash scripts/install-build-deps.sh
+
       - name: Install the Rust toolchain
+        env:
+          TARGETS: ${{ matrix.targets }}
         run: |
-          rustup toolchain install stable --profile minimal --no-self-update \
-            --target aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          rustup toolchain install stable --profile minimal --no-self-update --target "$TARGETS"
           rustup default stable
 
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+      - if: matrix.platform == 'android'
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-ndk
 
@@ -1628,7 +1656,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-mobile-
 
-      - name: Cross-compile (iOS + Android) and generate bindings
+      - name: Cross-compile and generate bindings
+        env:
+          PLATFORM: ${{ matrix.platform }}
         run: |
           # The workspace builds dependencies at opt-level 2 in dev (#1931), so
           # tests spend less time running them. This job only checks that the
@@ -1641,4 +1671,4 @@ jobs:
           mkdir -p ~/.cargo
           printf '[profile.dev.package."*"]\nopt-level = 0\n' >> ~/.cargo/config.toml
           export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
-          ./vta-mobile-core/scripts/build-mobile.sh all
+          ./vta-mobile-core/scripts/build-mobile.sh "$PLATFORM"
