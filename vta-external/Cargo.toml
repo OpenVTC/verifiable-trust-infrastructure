@@ -15,10 +15,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.13" }
-vta-keys = { path = "../vta-keys", version = "0.17" }
-vti-common = { path = "../vti-common", version = "0.40" }
-vta-sdk = { path = "../vta-sdk", version = "0.64", features = ["client"] }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.14" }
+vta-keys = { path = "../vta-keys", version = "0.18" }
+vti-common = { path = "../vti-common", version = "0.41" }
+vta-sdk = { path = "../vta-sdk", version = "0.65", features = ["client"] }
 async-trait = "0.1"
 base64 = { workspace = true }
 chrono = { workspace = true }

@@ -2,6 +2,76 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.16.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.15.0...vta-vault-v0.16.0) — 2026-10-11
+
+
+### Added
+
+- Read IETF Token Status Lists for SD-JWT VCs, signed by the credential's issuer ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2015](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2015))
+
+An SD-JWT VC from the swiyu stack or an EUDI issuer names its status as
+  `status.status_list = { idx, uri }`, a `statuslist+jwt`. The VTC fed that
+  reference to the W3C Bitstring fetcher, which could never read it (Unknown at
+  every join), and the vault held such credentials Unknown for good. Both now
+  read it, through affinidi-status-list 0.1.7's `token` module.
+
+  - `vta_sdk::token_status_list` (new): `verify_status_list_token` and
+    `resolve_token_status`. A list decides revocation, so it is trusted only as
+    the credential issuer's: the token's `kid` must name one of that issuer's
+    `assertionMethod` keys (`sd_jwt_issuer_method`), the signature is checked
+    with that key's algorithm (`JwsKey`) before the payload is read, and an
+    `iss` naming anyone else is refused. `typ`, `sub` = the referenced `uri`,
+    `iat` and `exp` are checked by the TDK, and the list is decompressed under
+    a cap. The fetch is SSRF-guarded, takes no redirects and caps the body. A
+    separate Status Issuer linked by certificate chain (draft §13.5) is not
+    supported; its lists are refused.
+  - `vta-vault`: `StatusListResolver::resolve_token_status` (a defaulted method,
+    so existing resolvers compile and refuse) is implemented by
+    `HttpStatusListResolver`. `refresh_status`, which the present gate runs
+    first, takes the Token path when a credential carries `status.status_list`
+    and no W3C `credentialStatus`: `INVALID` → `Revoked` (terminal),
+    `SUSPENDED` → `Revoked` tagged `tokenStatus:suspended` so a later `VALID`
+    restores it, an application-specific or unregistered value → `Unknown`
+    (VTI-CRD-012). Receive still stores such a credential `Unknown`: its status
+    has not been read until that refresh.
+  - `vtc-service`: `StatusListFetcher::check_token_status`, implemented by the
+    verifying `HttpStatusListFetcher`. `resolve_presented_status` (join, join
+    criteria, invitations) maps `VALID` / `INVALID` / `SUSPENDED` to Valid /
+    Revoked / Suspended, and anything unreadable to Unknown for the join policy.
+  - `affinidi-status-list` 0.1.3 → 0.1.7. `docs/03-vtc/credentials.md` gains
+    *Reading another issuer's status*.
+
+- Verify ES256 / ES256K SD-JWT-VCs from did:web and did:webvh issuers ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2010](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2010))
+
+Credentials issued on the swiyu stack and the EUDI profiles could not be
+  received or verified: the vault and the VTC verifier accepted only EdDSA,
+  the vault only a `did:key` issuer, the shared resolver only a
+  `publicKeyMultibase` key, and holder binding only an Ed25519 `cnf.jwk`.
+
+  - `vta_sdk::jws` (new): compact-JWS verification over a resolved key —
+    EdDSA, ES256 (P-256) and ES256K (secp256k1). The header's `alg` must be
+    the one the resolved key's curve signs with, checked before the
+    signature; `crit` is refused. `JwsKey::from_jwk` reads a `cnf.jwk`
+    (refusing one that carries `d`), `did_key()` names a P-256 holder
+    `did:key:zDn…` and a secp256k1 one `did:key:zQ3s…`.
+    `sd_jwt_issuer_method` binds the issuer JWS `kid` to `iss`: a `did:key`
+    issuer's own key whatever the fragment, any other DID must name its
+    method with a DID-URL `kid` (VTI-CRD-002: the issuer is resolved, not
+    guessed).
+  - `TrustTaskVmResolver` reads a `publicKeyJwk` method (Ed25519, X25519,
+    P-256, secp256k1) and a secp256k1 Multikey; PQC keys stay Multikey-only.
+  - `vta-vault`: `receive_sd_jwt_vc` and `stored_claims` take the issuer
+    resolver, so a `did:web` / `did:webvh` issuer resolves for
+    `assertionMethod`. `receive` with `IssuerKey::None` resolves locally
+    (`did:key` / `did:peer`); the VTA's issued-credential path passes its DID
+    cache. A credential carrying an IETF `status.status_list` reference is
+    stored `Unknown`, not `Valid`: no `statuslist+jwt` resolver exists yet, so
+    its status cannot be read (VTI-CRD-012).
+  - `vtc-service`: the SD-JWT-VC presentation verifier takes ES256 / ES256K
+    issuers and P-256 / secp256k1 `cnf.jwk` holders.
+
+
+
 ## [0.15.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.14.0...vta-vault-v0.15.0) — 2026-10-06
 
 

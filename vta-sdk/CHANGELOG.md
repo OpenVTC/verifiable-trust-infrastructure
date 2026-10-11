@@ -2,6 +2,195 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.65.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.64.2...vta-sdk-v0.65.0) — 2026-10-11
+
+
+### Added
+
+- **rooms**: Room files — file keys, STREAM sealing and rooms/keys/file-key ([#2017](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2017))
+
+* feat(rooms): file keys, STREAM sealing and blob manifests in vti-rooms
+
+  Adds vti_rooms::files, the construction rooms/_shared/0.1/blobs.schema.json FileManifest specifies (trust-tasks-tf #739): a per-file key, HKDF-SHA256 over the epoch storage key salted with the fileId and bound to the room and epoch; ChaCha20-Poly1305 STREAM segments whose nonce counts and whose associated data carries the final flag, so truncation, reordering and splicing fail to authenticate; one sealed segment per transfer chunk; the blob manifest and its BlobRef (sha2-256 over JCS); Padmé padding; and streaming sealer and opener that refuse a file whose plaintext digest is not the one its author signed. The manifest and digests build without the mls feature so a host can check them; the keyed half is behind mls with the rest of the member half. SealedRoom gains file_key_for_seal and file_key_for_open, walking the epoch chain as open_record does. Test vectors in vti-rooms/tests/fixtures/file-vectors.json.
+
+- P-256 and secp256k1 members — Trust Task proofs, rotation and OID4VCI key binding ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2021](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2021))
+
+#2010 accepted P-256 and secp256k1 for credentials others issue. A member
+  holding such a key — a secure-enclave or EUDI-wallet key, `did:key:zDn…` /
+  `did:key:zQ3s…` — still could not sign as one: the SDK signed Trust Tasks
+  Ed25519 only, and the VTC's hex holder signatures and OID4VCI key-binding
+  proof read every key as Ed25519. Every one of these now goes through
+  `vta_sdk::jws::JwsKey`, so the key decides the algorithm and nothing in the
+  request can choose one.
+
+  - Trust Task proofs: the shared verifier already accepted `ecdsa-jcs-2019`
+    (P-256) once phase 1 taught the VM resolver P-256 keys; a test now holds
+    it. `trust_task_sign` signs `ecdsa-jcs-2019` for a P-256 holder — a private
+    multibase with the `p256-priv` prefix, or a bare one beside a
+    `did:key:zDn…`. The Trust Tasks framework has every consumer SHOULD-verify
+    that suite, for hardware-backed signers. There is no secp256k1 Data
+    Integrity suite, so a secp256k1 key signs no Trust Task.
+  - `vtc/members/rotate`: the old and new signatures (hex, 64 bytes) may be
+    EdDSA, ES256 or ES256K by the key that made them; ECDSA is `r || s` over
+    the SHA-256 of the canonical bytes, as JWS encodes it. The `did:webvh` path
+    resolves `#key-0` through `TrustTaskVmResolver` (bound to authentication,
+    VTI-KEY-022, with the cached-document refresh, VTI-KEY-134) instead of
+    reading Ed25519 bytes off the document. Join's REST holder binding shares
+    the same verifier.
+  - OID4VCI key-binding proof: `EdDSA`, `ES256` or `ES256K`, whichever the
+    `kid`'s key signs; a header naming another is refused before the
+    signature. `DidVmResolver::resolve_verifying_key` (Ed25519) becomes
+    `resolve_jws_key`.
+  - `vta_sdk::jws`: `JwsKey::from_did_key`, and `verify_signature` is public
+    for signatures that are not a JWS.
+
+  What the workspace mints, and every key `sealed_transfer` seals to, stays
+  Ed25519 / X25519: the VTA's sealed credential delivery (`seal_issued_credential`)
+  still needs an Ed25519 `did:key` holder, and a sign-in `sessionKey` is still
+  Ed25519. Accepting more algorithms widens what VTI-KEY-013 (retirable
+  algorithms) would have to retire; that requirement is already an open
+  divergence in the specification's register.
+
+- **vta**: External accounts — short-lived provider credentials with no inbound surface ([#2016](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2016))
+
+* feat(vta): external-accounts capabilities and keyspaces
+
+  Adds the two capabilities the external/* family (trust-tasks-tf #740) gates on: external-accounts-manage, derived by admin alone, and external-auth-use, derived by every role that holds sign (the account's binding, not the role, bounds a consumer). Both are non-additive members of the non-exhaustive Capability enum.
+
+  Registers two keyspaces: external_accounts (settings, bindings, state) in BACKED_UP, and external_secrets (wrapped provider secrets) in EXCLUDED_FROM_BACKUP, so a portable password-protected backup is never a way to take a provider secret away. DID deletion: an account's binding names its consumer, so external_accounts blocks; external_secrets is unrelated.
+
+  The device-binding Capability registry (device/_shared 0.2) does not list the two yet, so device listings carry them under ext until it does.
+
+- Read IETF Token Status Lists for SD-JWT VCs, signed by the credential's issuer ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2015](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2015))
+
+An SD-JWT VC from the swiyu stack or an EUDI issuer names its status as
+  `status.status_list = { idx, uri }`, a `statuslist+jwt`. The VTC fed that
+  reference to the W3C Bitstring fetcher, which could never read it (Unknown at
+  every join), and the vault held such credentials Unknown for good. Both now
+  read it, through affinidi-status-list 0.1.7's `token` module.
+
+  - `vta_sdk::token_status_list` (new): `verify_status_list_token` and
+    `resolve_token_status`. A list decides revocation, so it is trusted only as
+    the credential issuer's: the token's `kid` must name one of that issuer's
+    `assertionMethod` keys (`sd_jwt_issuer_method`), the signature is checked
+    with that key's algorithm (`JwsKey`) before the payload is read, and an
+    `iss` naming anyone else is refused. `typ`, `sub` = the referenced `uri`,
+    `iat` and `exp` are checked by the TDK, and the list is decompressed under
+    a cap. The fetch is SSRF-guarded, takes no redirects and caps the body. A
+    separate Status Issuer linked by certificate chain (draft §13.5) is not
+    supported; its lists are refused.
+  - `vta-vault`: `StatusListResolver::resolve_token_status` (a defaulted method,
+    so existing resolvers compile and refuse) is implemented by
+    `HttpStatusListResolver`. `refresh_status`, which the present gate runs
+    first, takes the Token path when a credential carries `status.status_list`
+    and no W3C `credentialStatus`: `INVALID` → `Revoked` (terminal),
+    `SUSPENDED` → `Revoked` tagged `tokenStatus:suspended` so a later `VALID`
+    restores it, an application-specific or unregistered value → `Unknown`
+    (VTI-CRD-012). Receive still stores such a credential `Unknown`: its status
+    has not been read until that refresh.
+  - `vtc-service`: `StatusListFetcher::check_token_status`, implemented by the
+    verifying `HttpStatusListFetcher`. `resolve_presented_status` (join, join
+    criteria, invitations) maps `VALID` / `INVALID` / `SUSPENDED` to Valid /
+    Revoked / Suspended, and anything unreadable to Unknown for the join policy.
+  - `affinidi-status-list` 0.1.3 → 0.1.7. `docs/03-vtc/credentials.md` gains
+    *Reading another issuer's status*.
+
+- Verify ES256 / ES256K SD-JWT-VCs from did:web and did:webvh issuers ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2010](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2010))
+
+Credentials issued on the swiyu stack and the EUDI profiles could not be
+  received or verified: the vault and the VTC verifier accepted only EdDSA,
+  the vault only a `did:key` issuer, the shared resolver only a
+  `publicKeyMultibase` key, and holder binding only an Ed25519 `cnf.jwk`.
+
+  - `vta_sdk::jws` (new): compact-JWS verification over a resolved key —
+    EdDSA, ES256 (P-256) and ES256K (secp256k1). The header's `alg` must be
+    the one the resolved key's curve signs with, checked before the
+    signature; `crit` is refused. `JwsKey::from_jwk` reads a `cnf.jwk`
+    (refusing one that carries `d`), `did_key()` names a P-256 holder
+    `did:key:zDn…` and a secp256k1 one `did:key:zQ3s…`.
+    `sd_jwt_issuer_method` binds the issuer JWS `kid` to `iss`: a `did:key`
+    issuer's own key whatever the fragment, any other DID must name its
+    method with a DID-URL `kid` (VTI-CRD-002: the issuer is resolved, not
+    guessed).
+  - `TrustTaskVmResolver` reads a `publicKeyJwk` method (Ed25519, X25519,
+    P-256, secp256k1) and a secp256k1 Multikey; PQC keys stay Multikey-only.
+  - `vta-vault`: `receive_sd_jwt_vc` and `stored_claims` take the issuer
+    resolver, so a `did:web` / `did:webvh` issuer resolves for
+    `assertionMethod`. `receive` with `IssuerKey::None` resolves locally
+    (`did:key` / `did:peer`); the VTA's issued-credential path passes its DID
+    cache. A credential carrying an IETF `status.status_list` reference is
+    stored `Unknown`, not `Valid`: no `statuslist+jwt` resolver exists yet, so
+    its status cannot be read (VTI-CRD-012).
+  - `vtc-service`: the SD-JWT-VC presentation verifier takes ES256 / ES256K
+    issuers and P-256 / secp256k1 `cnf.jwk` holders.
+
+- **vtc**: Member portal, with wallet sign-in by trigger link ([#2007](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2007))
+
+* feat(vtc): a member portal at /members, and a home page that explains the community
+
+  Members could not sign in anywhere: VTC sign-in admitted administrators only,
+  and every session it minted read as an admin session. This adds a member
+  portal as a separate application from the console, with the separation
+  enforced by the daemon rather than by what each page shows.
+
+  Member portal (`crate::member_portal`, `routes::member_portal`):
+  - Only an active member signs in — a live ACL entry that is not expired,
+    suspended or an `application` entry, plus a member record that has not been
+    removed — checked at challenge (VTI-SES-006/007 via the shared handler), at
+    authentication, on every refresh and on every request (VTI-SES-020..022).
+  - Sign-in by the browser wallet (SIOPv2 at `<origin>/v1/member/wallet`) or a
+    portal passkey only. A passkey is added from the portal after a wallet
+    sign-in; adding or removing one requires a wallet-proven session (`amr`
+    contains `did`). Audited as the new `MemberPasskeyChanged` event.
+  - Tokens carry audience `VTC-member` (`JwtKeys::for_audience`), so console
+    extractors refuse them and the portal refuses console tokens.
+  - Sessions and passkeys live in their own keyspaces (`member_sessions`,
+    `member_passkeys`, excluded from backup), so a member who is also an
+    administrator cannot redeem a portal refresh token or passkey at the console.
+  - Cookies `vtc_member_session` / `vtc_member_refresh` are `Path=/v1/member`;
+    `vtc_member_csrf` is the portal's own double-submit value, and the CSRF gate
+    picks the cookie pair by path.
+  - The portal is its own Vite bundle (`vite.members.config.ts`), baked by
+    build.rs into `$OUT_DIR/member-ui-dist` and served at `/members/`; it loads
+    no console code. In subdomain mode it is served on the API host.
+  - The sign-in page carries manual install steps for the VTA Wallet extension
+    (OpenVTC/vta-browser-plugin).
+
+  Default landing page: rebuilt around a visitor who does not know what a VTC
+  is — "Get started" at openvtc.net, member sign-in, capability cards (git
+  across GitHub, Forgejo/Codeberg and Gitea, verifiable data rooms, access
+  management, credentials, recognition), a quieter operator-console link, and
+  the existing status panel. Fixes hidden status rows rendering empty.
+
+  The step-up passkey route test now compares an unrouted response with the
+  website fallback byte for byte; its old "no 'credentials' in the body" check
+  tripped on the new landing page copy.
+
+- **vta-sdk**: Wallet sign-in with a trigger link: sign auth/oob grants, enrol UV keys, advertise TrustTaskHTTPS and SignInPortal ([#1997](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1997))
+
+* feat(vta-sdk)!: sign auth/oob/grant for assertionMethod (VTI-KEY-106)
+
+  Adds `auth/oob/grant` to `ATTESTATION_SLUGS`, so `vault/sign-trust-task`
+  signs a wallet sign-in grant for `assertionMethod`: the grant ("let this
+  browser key act as me at this origin until notAfter") is the approving
+  DID's attestation, which the service relies on to open a session, and it
+  verifies the grant against `assertionMethod` (sign-in trigger-link
+  contract C5, base design §10).
+
+  `auth/oob/identify` stays operational and is signed for `authentication`,
+  as the service verifies it; the other `auth/oob` documents are not
+  attestations either. Both are pinned in the classifier tests.
+
+
+
+### Build & CI
+
+- Trust-tasks-rs 0.27.8, with auth/oob on its generated types ([#2011](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2011))
+
+* build: trust-tasks-rs 0.27.8 — auth/oob, room files and external accounts
+
+
+
 ## [0.64.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.64.1...vta-sdk-v0.64.2) — 2026-10-07
 
 

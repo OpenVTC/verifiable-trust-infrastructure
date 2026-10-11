@@ -2,6 +2,32 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.12.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.11.0...vti-rooms-v0.12.0) — 2026-10-11
+
+
+### Added
+
+- **rooms**: Room files on the host — blob store, uploads, downloads and limits ([#2018](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2018))
+
+* feat(common): a BlobStore for room files, with local-directory, S3 and GCS backends
+
+  Room files are a record plus a blob; the blob is the file's ciphertext, held outside the room's keyspaces. vti_common::blob_store is node-neutral, beside backup_transfer, so a standalone room host and a community share one store and one conformance suite (data-rooms-files.md §5.3).
+
+  - BlobStore: put (idempotent on the key), get_range, delete (Deleted | Lapses | Unsupported), health.
+  - LocalDirStore: plain files, written via a synced temp file and renamed, owner-only. Always compiled.
+  - ObjectStoreBlobs over object_store 0.14: S3-compatible (feature blob-s3) and GCS (feature blob-gcs), credentials from the environment for now. object_store passes cargo deny (advisories, bans, licences, sources).
+  - Keys are rooms/<first 32 hex of SHA-256(roomId)>/<blobRef>: the store never learns a room's identifier, and the per-room prefix is what a downscoped credential will name.
+  - blob_ref_of_manifest: the BlobRef is the sha2-256 DigestMultibase of the manifest's JCS form, computed by the host.
+  - conformance::run, which every backend's own test calls.
+
+- **rooms**: Room files — file keys, STREAM sealing and rooms/keys/file-key ([#2017](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2017))
+
+* feat(rooms): file keys, STREAM sealing and blob manifests in vti-rooms
+
+  Adds vti_rooms::files, the construction rooms/_shared/0.1/blobs.schema.json FileManifest specifies (trust-tasks-tf #739): a per-file key, HKDF-SHA256 over the epoch storage key salted with the fileId and bound to the room and epoch; ChaCha20-Poly1305 STREAM segments whose nonce counts and whose associated data carries the final flag, so truncation, reordering and splicing fail to authenticate; one sealed segment per transfer chunk; the blob manifest and its BlobRef (sha2-256 over JCS); Padmé padding; and streaming sealer and opener that refuse a file whose plaintext digest is not the one its author signed. The manifest and digests build without the mls feature so a host can check them; the keyed half is behind mls with the rest of the member half. SealedRoom gains file_key_for_seal and file_key_for_open, walking the epoch chain as open_record does. Test vectors in vti-rooms/tests/fixtures/file-vectors.json.
+
+
+
 ## [0.11.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.10.0...vti-rooms-v0.11.0) — 2026-10-06
 
 

@@ -2,6 +2,26 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.14.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-dtg-v0.13.0...vti-rooms-dtg-v0.14.0) — 2026-10-11
+
+
+### Added
+
+- **rooms**: Room files on the host — blob store, uploads, downloads and limits ([#2018](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2018))
+
+* feat(common): a BlobStore for room files, with local-directory, S3 and GCS backends
+
+  Room files are a record plus a blob; the blob is the file's ciphertext, held outside the room's keyspaces. vti_common::blob_store is node-neutral, beside backup_transfer, so a standalone room host and a community share one store and one conformance suite (data-rooms-files.md §5.3).
+
+  - BlobStore: put (idempotent on the key), get_range, delete (Deleted | Lapses | Unsupported), health.
+  - LocalDirStore: plain files, written via a synced temp file and renamed, owner-only. Always compiled.
+  - ObjectStoreBlobs over object_store 0.14: S3-compatible (feature blob-s3) and GCS (feature blob-gcs), credentials from the environment for now. object_store passes cargo deny (advisories, bans, licences, sources).
+  - Keys are rooms/<first 32 hex of SHA-256(roomId)>/<blobRef>: the store never learns a room's identifier, and the per-room prefix is what a downscoped credential will name.
+  - blob_ref_of_manifest: the BlobRef is the sha2-256 DigestMultibase of the manifest's JCS form, computed by the host.
+  - conformance::run, which every backend's own test calls.
+
+
+
 ## [0.13.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-dtg-v0.12.0...vti-rooms-dtg-v0.13.0) — 2026-10-06
 
 

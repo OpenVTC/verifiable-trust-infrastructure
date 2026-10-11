@@ -2,6 +2,57 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.37.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.36.0...pnm-cli-v0.37.0) — 2026-10-11
+
+
+### Added
+
+- **rooms**: Room files — file keys, STREAM sealing and rooms/keys/file-key ([#2017](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2017))
+
+* feat(rooms): file keys, STREAM sealing and blob manifests in vti-rooms
+
+  Adds vti_rooms::files, the construction rooms/_shared/0.1/blobs.schema.json FileManifest specifies (trust-tasks-tf #739): a per-file key, HKDF-SHA256 over the epoch storage key salted with the fileId and bound to the room and epoch; ChaCha20-Poly1305 STREAM segments whose nonce counts and whose associated data carries the final flag, so truncation, reordering and splicing fail to authenticate; one sealed segment per transfer chunk; the blob manifest and its BlobRef (sha2-256 over JCS); Padmé padding; and streaming sealer and opener that refuse a file whose plaintext digest is not the one its author signed. The manifest and digests build without the mls feature so a host can check them; the keyed half is behind mls with the rest of the member half. SealedRoom gains file_key_for_seal and file_key_for_open, walking the epoch chain as open_record does. Test vectors in vti-rooms/tests/fixtures/file-vectors.json.
+
+- **vta**: External accounts — short-lived provider credentials with no inbound surface ([#2016](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2016))
+
+* feat(vta): external-accounts capabilities and keyspaces
+
+  Adds the two capabilities the external/* family (trust-tasks-tf #740) gates on: external-accounts-manage, derived by admin alone, and external-auth-use, derived by every role that holds sign (the account's binding, not the role, bounds a consumer). Both are non-additive members of the non-exhaustive Capability enum.
+
+  Registers two keyspaces: external_accounts (settings, bindings, state) in BACKED_UP, and external_secrets (wrapped provider secrets) in EXCLUDED_FROM_BACKUP, so a portable password-protected backup is never a way to take a provider secret away. DID deletion: an account's binding names its consumer, so external_accounts blocks; external_secrets is unrelated.
+
+  The device-binding Capability registry (device/_shared 0.2) does not list the two yet, so device listings carry them under ext until it does.
+
+
+
+### Build & CI
+
+- Trust-tasks-rs 0.28, affinidi-messaging-sdk 0.34 and affinidi-tdk 0.24 ([#2028](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2028))
+
+Moves the workspace to trust-tasks-rs 0.28 (with capability-client, https,
+  didcomm, tsp and proof) in lockstep with the Affinidi messaging crates built
+  against it (affinidi-tdk-rs #933): affinidi-messaging-sdk 0.34, affinidi-tdk
+  0.24, mediator-admin / mediator-tui 0.9 (pnm messaging console) and
+  test-mediator 0.20. The lock holds one trust-tasks-rs, one trust-tasks-proof,
+  one SDK and one tdk: `MediatorAcl` crosses the SDK's API, so a graph holding
+  two trust-tasks-rs does not compile.
+
+  0.28's one break, the rooms 0.1 `NOT_AUTHORIZED` constants withdrawn for the
+  standard `permissionDenied` (trust-tasks-tf #743), touches nothing here: the
+  room host already answers `permissionDenied`.
+
+  It carries `DeclaredErrorCode::details_schema` / `check_details`
+  (trust-tasks-tf #742), so the rooms/keys/file-key handler tests check
+  `unknownEpoch` details against the schema the specification declares rather
+  than a hand copy, and vta-service's jsonschema dev-dependency, which existed
+  only for that copy, is dropped.
+
+  Publishing a vta-sdk on SDK 0.34 / tdk 0.24 is step 2 of the crossing
+  affinidi-tdk-rs's workspace-duplicates-allow.txt records; step 3 moves the
+  mediator's vta-sdk requirement to it there.
+
+
+
 ## [0.36.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.35.0...pnm-cli-v0.36.0) — 2026-10-06
 
 

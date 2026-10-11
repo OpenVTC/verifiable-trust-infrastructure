@@ -2,6 +2,40 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.31.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.30.0...cnm-cli-v0.31.0) — 2026-10-11
+
+
+### Changed
+
+- **vtc**: Drop vtc-client's unused bearer token and the uncalled persona REST route ([#2023](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2023))
+
+* refactor(vtc-client): keep no bearer token, and say what the VTC's REST surface now is
+
+  Every verb `vtc-client` sends is a signed Trust Task, and the last bearer
+  routes it called are gone, but the client still stored the access token
+  `connect` obtained and its docs still described verbs "on bearer REST until
+  they have a Trust Task".
+
+  - `VtcClient` no longer holds a token. `connect` still runs the
+    challenge-response login: it is the up-front access check, so a DID the VTC
+    does not know is refused where `cnm` can print the fix rather than on the
+    first verb. Its token was read by nothing but `Debug`, which now reports
+    whose signing key is held.
+  - Docs: the vetting-admin "stays on bearer REST" note,
+    `VtcError::NoRestTransport` (now: no REST base and no session to carry a
+    Trust Task), `with_key`, and the `self.token` mentions in `git_ns` and
+    `rooms`.
+  - vtc-service: the surface-task and join-discovery comments no longer say
+    those verbs keep a REST route; the persona route's exception rows say what
+    is true — `vtc/relationships/persona/0.1` has no upstream specification,
+    which is why the spine cannot dispatch it.
+  - cnm: the withdrawal hint pointed at `GET /v1/join-requests/<id>/vetting`,
+    which is not mounted; it now points at the join request in the console.
+  - admin-ui: a comment named `POST /v1/schemas/accepts` for what is
+    `vtc/schemas/accepts/register`.
+
+
+
 ## [0.30.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.29.0...cnm-cli-v0.30.0) — 2026-10-06
 
 
