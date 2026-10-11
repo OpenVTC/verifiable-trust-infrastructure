@@ -731,6 +731,22 @@ impl vti_webauthn::VmResolver for EnrolledPasskey {
 
 /// WebAuthn L2 §7.2 against the enrolled credential: challenge = the UTF-8
 /// bytes of `challenge`, the enrolled RP id and origin, UV required.
+/// The string an authenticator's `rpIdHash` covers for a passkey scoped to
+/// `rp_id` and used from `origin`.
+///
+/// For a web origin it is the RP ID. A Chrome extension is different: it must
+/// pass its bare runtime id as `rp.id` (`chrome-extension://<id>` is refused),
+/// but Chrome scopes the credential to, and hashes, the whole origin
+/// `chrome-extension://<id>`, so it cannot collide with a web RP ID. The
+/// enrolment records the bare id the extension passed, so the extension's
+/// origin is what the hash is checked against.
+fn rp_id_hashed(rp_id: &str, origin: &str) -> String {
+    match origin.strip_prefix("chrome-extension://") {
+        Some(id) if id == rp_id => origin.to_string(),
+        _ => rp_id.to_string(),
+    }
+}
+
 async fn verify_passkey(
     assertion: &decision_spec::AssertionResponse,
     challenge: &str,
@@ -758,7 +774,7 @@ async fn verify_passkey(
         public_key,
     };
     let config = vti_webauthn::VerifierConfig {
-        rp_id: rp_id.to_string(),
+        rp_id: rp_id_hashed(rp_id, origin),
         expected_origin: origin.to_string(),
         require_user_verification: true,
     };
@@ -1010,5 +1026,18 @@ mod tests {
         assert!(!is_web_origin("http://portal.example"));
         assert!(!is_web_origin("https://portal.example/members"));
         assert!(!is_web_origin("chrome-extension://abc"));
+    }
+
+    #[test]
+    fn an_extension_passkey_is_checked_against_its_origin() {
+        let ext = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+        assert_eq!(rp_id_hashed("abcdefghijklmnopabcdefghijklmnop", ext), ext);
+        // A web passkey, and an RP ID that is not this extension's, are
+        // checked as they are.
+        assert_eq!(
+            rp_id_hashed("example.com", "https://login.example.com"),
+            "example.com"
+        );
+        assert_eq!(rp_id_hashed("other", ext), "other");
     }
 }

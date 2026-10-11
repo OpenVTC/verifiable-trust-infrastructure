@@ -313,8 +313,10 @@ async fn passkey_decision_by(
     user_verified: bool,
 ) -> Value {
     let digest = grant_digest(grant).unwrap();
+    // Chrome signs an extension's assertion over SHA-256 of its origin
+    // (`chrome-extension://<id>`), not of the bare id it passed as `rpId`.
     let a = auth.assert(
-        RP_ID,
+        ORIGIN,
         ORIGIN,
         &URL_SAFE_NO_PAD.encode(digest.as_bytes()),
         user_verified,
