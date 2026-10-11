@@ -909,7 +909,19 @@ async fn handle_tsp_control(
                     )
                 }
                 Err(e) => {
-                    if !messaging.uncollected.observe_send(
+                    // A concurrent accept to the same peer may have completed
+                    // the relationship first (`accept_refusal_is_benign`): then
+                    // this invite was answered, and saying otherwise is wrong.
+                    let after = atm.tsp().relationship_state(&profile, sender_vid).await;
+                    if matches!(after, Ok(s) if vti_common::relationship_store::accept_refusal_is_benign(s))
+                    {
+                        tracing::debug!(
+                            sender = %sender_vid, ?request, error = %e,
+                            "a TSP relationship accept was refused because a concurrent accept \
+                             to the same peer completed the relationship first; the invite is \
+                             answered",
+                        );
+                    } else if !messaging.uncollected.observe_send(
                         sender_vid,
                         "TSP relationship accept",
                         vti_common::inbox::refused_recipient_not_collecting(&e),

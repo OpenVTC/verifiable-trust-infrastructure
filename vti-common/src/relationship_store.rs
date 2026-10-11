@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use affinidi_messaging_sdk::errors::ATMError;
+use affinidi_messaging_sdk::protocols::tsp::RelationshipState;
 use affinidi_messaging_sdk::{EvictionPolicy, PersistentRelationshipStore, RelationshipKv};
 use tracing::{info, warn};
 
@@ -126,4 +127,50 @@ fn unix_millis() -> Option<u64> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .map(|d| d.as_millis() as u64)
+}
+
+/// Whether a refused accept was already answered, read from the relationship
+/// state **after** the refusal — the answering half of the SDK's
+/// `invite_refusal_is_benign`, and decided the same way: by re-reading the
+/// store, never by matching the error's text (R3.7).
+///
+/// `accept_relationship` runs `SendAccept`, which is legal only out of
+/// `InviteReceived`. Two invites from one peer that arrive together — a client
+/// re-forming a relationship it lost, retried, or two of its sessions doing it
+/// at once — are both recorded first, each leaving the pair `InviteReceived`;
+/// the first accept moves it to `Bidirectional`, and the second is refused
+/// (`invalid transition: SendAccept in state Bidirectional`). That second invite
+/// has been answered: an accept went to the same peer for the same pair a
+/// moment earlier, and receiving any accept completes its side. Logging it as
+/// "the peer sees no answer" said the opposite of what happened (seen at gt-vta,
+/// 2026-10-11, against the browser wallet).
+///
+/// Anything but `Bidirectional` after the refusal means the accept failed for
+/// its own reasons — no route, no key, the mediator refused it — and nothing
+/// else completed the relationship, so that failure stands.
+#[must_use]
+pub fn accept_refusal_is_benign(after: RelationshipState) -> bool {
+    after == RelationshipState::Bidirectional
+}
+
+#[cfg(test)]
+mod accept_refusal_tests {
+    use super::*;
+
+    #[test]
+    fn an_accept_beaten_by_a_concurrent_one_was_answered() {
+        assert!(accept_refusal_is_benign(RelationshipState::Bidirectional));
+    }
+
+    #[test]
+    fn an_accept_that_left_the_invite_pending_still_failed() {
+        // The send itself failed; the invite is still waiting for an answer.
+        assert!(!accept_refusal_is_benign(RelationshipState::InviteReceived));
+    }
+
+    #[test]
+    fn an_accept_for_a_relationship_since_forgotten_still_failed() {
+        assert!(!accept_refusal_is_benign(RelationshipState::None));
+        assert!(!accept_refusal_is_benign(RelationshipState::Pending));
+    }
 }
