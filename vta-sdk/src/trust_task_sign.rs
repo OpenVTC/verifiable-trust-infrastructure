@@ -251,7 +251,45 @@ pub async fn sign_in_place_with(
     key: &HolderKey,
 ) -> Result<(), TrustTaskSignError> {
     let purpose = crate::trust_task_proof::purpose_for_document_type(&doc.type_uri);
+    let signing_doc =
+        serde_json::to_value(&*doc).map_err(|e| TrustTaskSignError::Sign(e.to_string()))?;
+    let proof_json = proof_over(signing_doc, key, purpose.as_str()).await?;
+    doc.proof = Some(
+        serde_json::from_value::<Proof>(proof_json)
+            .map_err(|e| TrustTaskSignError::Sign(e.to_string()))?,
+    );
+    Ok(())
+}
 
+/// Sign a JSON object that is not a Trust Task document, in place, for
+/// `assertionMethod`: the holder's Data Integrity proof over the object with
+/// any `proof` removed, attached as its `proof` member.
+///
+/// For objects one party signs and another reads without a host in between,
+/// such as a sealed room record's body (`SealedRecordBody` in
+/// `rooms/_shared/0.1/room.schema.json`). The suite follows the key, as in
+/// [`sign_in_place_with`].
+pub async fn sign_object_for_assertion(
+    object: &mut Value,
+    key: &HolderKey,
+) -> Result<(), TrustTaskSignError> {
+    if !object.is_object() {
+        return Err(TrustTaskSignError::Sign(
+            "only a JSON object can carry a proof".to_string(),
+        ));
+    }
+    let proof = proof_over(object.clone(), key, "assertionMethod").await?;
+    object["proof"] = proof;
+    Ok(())
+}
+
+/// The holder's Data Integrity proof over `signing_doc` (with any `proof`
+/// removed), as JSON.
+async fn proof_over(
+    mut signing_doc: Value,
+    key: &HolderKey,
+    purpose: &str,
+) -> Result<Value, TrustTaskSignError> {
     let vm_id = key.verification_method.clone();
     let seed = decode_private_key_multibase(&key.private_key_multibase)
         .map_err(|e| TrustTaskSignError::BadPrivateKey(e.to_string()))?;
@@ -266,8 +304,6 @@ pub async fn sign_in_place_with(
     };
     signer.id = vm_id;
 
-    let mut signing_doc =
-        serde_json::to_value(&*doc).map_err(|e| TrustTaskSignError::Sign(e.to_string()))?;
     if let Some(obj) = signing_doc.as_object_mut() {
         obj.remove("proof");
     }
@@ -275,18 +311,12 @@ pub async fn sign_in_place_with(
         &signing_doc,
         &signer,
         SignOptions::new()
-            .with_proof_purpose(purpose.as_str())
+            .with_proof_purpose(purpose)
             .with_created(Utc::now()),
     )
     .await
     .map_err(|e| TrustTaskSignError::Sign(e.to_string()))?;
-    let proof_json =
-        serde_json::to_value(&di_proof).map_err(|e| TrustTaskSignError::Sign(e.to_string()))?;
-    doc.proof = Some(
-        serde_json::from_value::<Proof>(proof_json)
-            .map_err(|e| TrustTaskSignError::Sign(e.to_string()))?,
-    );
-    Ok(())
+    serde_json::to_value(&di_proof).map_err(|e| TrustTaskSignError::Sign(e.to_string()))
 }
 
 /// Build a holder-signed Trust Task and return it as the JSON body to POST.

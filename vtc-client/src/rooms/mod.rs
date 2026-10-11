@@ -34,6 +34,9 @@
 #[cfg(feature = "mls")]
 pub use vti_rooms::{mls, sealed};
 
+pub mod body;
+pub mod files;
+
 use crate::{VtcClient, VtcError};
 
 // The wire types and their Type URIs, from the crate that also stores and serves them.

@@ -1491,4 +1491,192 @@ mod tests {
         writer.await.unwrap();
         assert!(reads > 0, "the reads ran beside the writes");
     }
+
+    /// A member's whole file path through the real client, against this host served on a
+    /// socket: seal a file, upload its ciphertext, write a record whose signed body names
+    /// it, then read the record, verify the body, download and check every chunk, and open
+    /// the file. Only the VTA is absent: the file key and the record's seal are local here,
+    /// which the host cannot tell apart, since it never holds either.
+    #[tokio::test]
+    async fn a_file_round_trips_through_the_client_with_a_signed_body() {
+        use vtc_client::VtcClient;
+        use vtc_client::rooms::RoomSession;
+        use vtc_client::rooms::SealedContent;
+        use vtc_client::rooms::body::{RecordLocation, SealedRecordBody, verify_record_body};
+        use vti_rooms::files::{self, BlobManifest, FileBinding, Padding};
+
+        let h = host(eager());
+        let f = RoomFixture::new(Visibility::Attributed).await;
+        let (status, body) = call(
+            &h.app,
+            vti_rooms::wire::ROOMS_CREATE_TYPE,
+            json!({ "roomId": f.room.room_id, "ownerDid": f.room.owner_did, "visibility": "attributed" }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let app = h.app.clone();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let client = VtcClient::anonymous(&url, "did:key:zHost");
+        let owner = f.as_owner();
+        let session =
+            RoomSession::new(&f.room.room_id, &owner.membership, owner.authority.clone()).unwrap();
+        let (did, secret) = (f.owner.did.as_str(), f.owner.secret_multibase.as_str());
+        let room_id = f.room.room_id.as_str();
+
+        // Seal: three segments' worth, so the chunks are checked in order.
+        let plaintext: Vec<u8> = (0..40_000u32).map(|i| (i % 251) as u8).collect();
+        let key = [7u8; 32];
+        let sealed = files::seal_file(
+            &key,
+            FileBinding {
+                room_id: room_id.to_string(),
+                file_id: files::new_file_id(),
+                epoch: 1,
+                segment_size: 16_384 - files::TAG_LEN,
+            },
+            "term sheet.pdf",
+            Some("application/pdf"),
+            &plaintext,
+            Padding::None,
+        )
+        .unwrap();
+
+        // Upload.
+        let begun = client
+            .begin_upload(&session, &sealed.blob, did, secret)
+            .await
+            .expect("begin");
+        assert_eq!(
+            begun.missing.len(),
+            sealed.chunks.len(),
+            "a new upload needs every chunk"
+        );
+        let upload_id = serde_json::to_value(&begun.upload_id).unwrap();
+        let upload_id = upload_id.as_str().unwrap();
+        for index in &begun.missing {
+            let i = index.0 as usize;
+            client
+                .upload_chunk(upload_id, i as u64, &sealed.chunks[i], did, secret)
+                .await
+                .expect("chunk");
+        }
+        let committed = client
+            .commit_upload(upload_id, did, secret)
+            .await
+            .expect("commit");
+        let blob_ref = serde_json::to_value(&committed.blob_ref)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(files::same_digest(&blob_ref, &sealed.file.blob_ref));
+
+        // Write the record: a signed body naming the file, sealed (here, only encoded: the
+        // host cannot tell), naming the blob in the clear.
+        let record_key = "giXFLTGBdnnQJRoIsktuIg";
+        let holder = vta_sdk::trust_task_sign::HolderKey::from_did_key(did, secret).unwrap();
+        let mut content = SealedRecordBody::new(
+            RecordLocation {
+                room_id,
+                key: record_key,
+                version: 1,
+            },
+            did,
+        );
+        content.title = Some("Term sheet v3".into());
+        content.file = Some(sealed.file.clone());
+        let signed = content.sign(&holder).await.unwrap();
+        let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+        let put = client
+            .put_sealed_record_with_blobs(
+                &session,
+                record_key,
+                SealedContent {
+                    ciphertext: b64(&signed),
+                    nonce: b64(&[0u8; 12]),
+                    epoch: 1,
+                },
+                std::slice::from_ref(&blob_ref),
+                Some(0),
+                did,
+                secret,
+            )
+            .await
+            .expect("put");
+        assert_eq!(
+            put.version.get(),
+            1,
+            "the first record in a room takes version 1"
+        );
+
+        // Read it back and verify the body against where it was read.
+        let record = client
+            .get_record_v2(&session, record_key, did, secret)
+            .await
+            .expect("get");
+        let names: Vec<String> = record
+            .blobs
+            .iter()
+            .flatten()
+            .map(|b| {
+                serde_json::to_value(b)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(names, vec![blob_ref.clone()], "the record names its blob");
+        let opened = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&record.sealed.as_ref().unwrap().ciphertext)
+            .unwrap();
+        let verified = verify_record_body(
+            &opened,
+            RecordLocation {
+                room_id,
+                key: record_key,
+                version: record.version.get(),
+            },
+            record.author.as_deref(),
+            &vta_sdk::trust_task_proof::TrustTaskVmResolver::did_key_only(),
+        )
+        .await
+        .expect("the body verifies where it was read, for the author the host recorded");
+        let file = verified.body().file.clone().unwrap();
+
+        // Download, check, open.
+        let started = client
+            .get_blob(&session, &file.blob_ref, did, secret)
+            .await
+            .expect("get blob");
+        let blob: BlobManifest =
+            serde_json::from_value(serde_json::to_value(&started.manifest).unwrap()).unwrap();
+        file.check_blob(&blob)
+            .expect("the host's manifest is the author's blob");
+        let download_id = serde_json::to_value(&started.download_id).unwrap();
+        let mut chunks = Vec::new();
+        for (i, expected) in blob.chunks.chunk_digests.iter().enumerate() {
+            let chunk = client
+                .download_chunk(download_id.as_str().unwrap(), i as u64, did, secret)
+                .await
+                .expect("chunk");
+            assert!(files::same_digest(
+                &files::digest_multibase(&chunk),
+                expected
+            ));
+            chunks.push(chunk);
+        }
+        let back = files::open_file(&key, room_id, &file, &blob, &chunks).expect("opens");
+        assert_eq!(back, plaintext);
+
+        // The room's info says what tier this is, which is how a client decides to seal.
+        let info = client.room_info(&session, did, secret).await.expect("info");
+        assert_eq!(serde_json::to_value(info.visibility).unwrap(), "attributed");
+    }
 }

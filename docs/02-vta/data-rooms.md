@@ -623,6 +623,10 @@ pnm rooms put   decision/pricing-2026 "Agreed not to reprice." --room <room-did>
                 --host https://rooms.example.org --title "Pricing holds" --expected-version 0
 pnm rooms curate decision/pricing-2026 --status deprecated --room <room-did> --host …
 pnm rooms renew 3 --room <room-did> --host …          # mint the next epoch (needs `admin`)
+
+# Files, on `attributed` and `private` rooms.
+pnm rooms file put ./term-sheet.pdf --room <room-did> --host … --title "Term sheet v3"
+pnm rooms file get <record-key> --room <room-did> --host … [--out ./term-sheet.pdf]
 ```
 
 The CLI **never holds a room credential or a group key**. Each command asks your
@@ -632,13 +636,36 @@ ciphertext back to the VTA to open. A member who holds less than the action
 needs is refused by their own VTA rather than by the host, which is the earlier
 and clearer of the two.
 
-Two things it cannot do. **Write to a sealed room** — sealing needs the room's
-group key, which lives in the VTA. That is now a gap in the CLI rather than in
-the model: `rooms/keys/seal/0.1` seals a body under the current epoch for a
-caller holding `roomOpen`, so a client that calls it can write to a sealed room.
-`pnm rooms put` does not yet, and its refusal still says no such task exists.
-**Issue credentials** — the owner's verbs (§5.3) are served by a VTA but reached
-from a wallet; the CLI has no `rooms owner …` surface.
+**On a sealed room, every record is signed by its writer.** `pnm rooms put`
+reads the room's tier (`rooms/info`) and, on `attributed` or `private`, writes a
+`SealedRecordBody` (`rooms/_shared/0.1/room.schema.json`): the title, body and
+any file manifest, plus the room, key and version it is for, signed by your DID.
+Your VTA seals it (`rooms/keys/seal`) and signs nothing; attribution is yours.
+`pnm rooms get` refuses a sealed record whose signature does not hold, which
+was signed for another key or version, or, on `attributed`, whose signer is not
+the author the host recorded. It never shows such a record with a warning.
+
+**The version is predicted, and corrected if it is wrong.** The seal binds the
+version, and the host assigns versions from a room-wide counter. The CLI seals
+for the room's head plus one. If another write took that version, the record
+landed at a version it was not sealed for, and does not open. The CLI then
+re-seals at the next version and rewrites over exactly what landed, a few
+times. If the room keeps moving it says so, and names the key and the
+`--expected-version` to retry with.
+
+**Files** (`pnm rooms file put/get`) are sealed and opened on your machine
+with one file's key from your VTA (`rooms/keys/file-key`). Their bytes never
+pass through the VTA, and the host holds only ciphertext. `get` writes nothing
+unless every check holds: the record's signed body, the blob being the one its
+author named, each chunk against the manifest, and the plaintext against the
+author's digest. A file's name comes from another member, so `get` writes it
+in the current directory under its last path component, never over an
+existing file. Files need `rooms/records/put` 0.2, which `room-host` serves.
+The VTC does not serve it yet.
+
+One thing it cannot do: **issue credentials**. The owner's verbs (§5.3) are
+served by a VTA but reached from a wallet; the CLI has no `rooms owner …`
+surface.
 
 ### From Rust
 

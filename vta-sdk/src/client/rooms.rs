@@ -1,4 +1,4 @@
-//! Room-oracle Trust Task client methods (`spec/rooms/keys/{present,open}/0.1`).
+//! Room-oracle Trust Task client methods (`spec/rooms/keys/{present,open,seal,file-key}`).
 //!
 //! The two calls a member's own VTA answers about a data room, and the reason a
 //! client never holds room credentials or room keys:
@@ -104,6 +104,47 @@ impl VtaClient {
             ROOM_TT_TIMEOUT,
         )
         .await
+    }
+
+    /// `rooms/keys/seal/0.1` — seal one record body under the room's current
+    /// epoch, ready for `rooms/records/put`.
+    ///
+    /// `plaintext` is the body to seal: on a sealed tier, a `SealedRecordBody`
+    /// the writer has already signed. The VTA seals what it is given and signs
+    /// nothing; attributing a record is the writer's act.
+    ///
+    /// `version` is the version the record is **meant** to take, bound into the
+    /// associated data. The host assigns versions from a room-wide counter, so
+    /// a put that lands at another version does not open; the writer re-seals
+    /// at the version the host reports and writes again.
+    pub async fn room_seal(
+        &self,
+        room_id: &str,
+        key: &str,
+        version: u64,
+        plaintext: &[u8],
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::seal::v0_1::Response, VtaError> {
+        let payload = json!({
+            "roomId": room_id,
+            "key": key,
+            "version": version,
+            "plaintext": base64::Engine::encode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                plaintext,
+            ),
+        });
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1,
+                payload,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| {
+            VtaError::Protocol(format!(
+                "rooms/keys/seal response does not match its schema: {e}"
+            ))
+        })
     }
 
     /// `rooms/keys/file-key/0.1` — one file's key, so the caller seals or opens

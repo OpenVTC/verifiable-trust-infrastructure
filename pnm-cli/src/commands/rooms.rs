@@ -33,21 +33,23 @@ pub(crate) async fn run(
     keyring_key: &str,
     command: RoomCommands,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Files need no host and no signing identity of their own: the VTA is the only
-    // party, and the client is already authenticated to it.
-    if let RoomCommands::File { command } = command {
-        return match command {
-            RoomFileCommands::Seal {
-                path,
-                room_id,
-                out,
-                pad,
-            } => rooms::cmd_rooms_file_seal(client, &room_id, &path, &out, pad).await,
-            RoomFileCommands::Open { dir, room_id, out } => {
-                rooms::cmd_rooms_file_open(client, &room_id, &dir, &out).await
-            }
-        };
-    }
+    // Sealing and opening locally need no host and no signing identity of their
+    // own: the VTA is the only party, and the client is already authenticated to it.
+    let command = match command {
+        RoomCommands::File {
+            command:
+                RoomFileCommands::Seal {
+                    path,
+                    room_id,
+                    out,
+                    pad,
+                },
+        } => return rooms::cmd_rooms_file_seal(client, &room_id, &path, &out, pad).await,
+        RoomCommands::File {
+            command: RoomFileCommands::Open { dir, room_id, out },
+        } => return rooms::cmd_rooms_file_open(client, &room_id, &dir, &out).await,
+        other => other,
+    };
 
     let session = signer(keyring_key)?;
     let signer = RoomSigner {
@@ -56,7 +58,57 @@ pub(crate) async fn run(
     };
 
     match command {
-        RoomCommands::File { .. } => unreachable!("files are dispatched before the signer is read"),
+        RoomCommands::File { command } => match command {
+            RoomFileCommands::Put {
+                path,
+                room_id,
+                host,
+                host_did,
+                title,
+                description,
+                tags,
+                pad,
+            } => {
+                rooms::cmd_rooms_file_put(
+                    client,
+                    RoomTarget {
+                        host_url: &host,
+                        host_did: host_did.as_deref(),
+                        room_id: &room_id,
+                    },
+                    signer,
+                    &path,
+                    title,
+                    description,
+                    tags,
+                    pad,
+                )
+                .await
+            }
+            RoomFileCommands::Get {
+                key,
+                room_id,
+                host,
+                host_did,
+                out,
+            } => {
+                rooms::cmd_rooms_file_get(
+                    client,
+                    RoomTarget {
+                        host_url: &host,
+                        host_did: host_did.as_deref(),
+                        room_id: &room_id,
+                    },
+                    signer,
+                    &key,
+                    out.as_deref(),
+                )
+                .await
+            }
+            RoomFileCommands::Seal { .. } | RoomFileCommands::Open { .. } => {
+                unreachable!("local file commands are dispatched before the signer is read")
+            }
+        },
         RoomCommands::List {
             room_id,
             host,

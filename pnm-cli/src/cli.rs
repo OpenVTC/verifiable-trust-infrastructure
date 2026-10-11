@@ -554,10 +554,11 @@ pub(crate) enum RoomCommands {
         reason: Option<String>,
     },
 
-    /// Seal or open a room file locally, with that one file's key from your VTA.
+    /// Put a file in a room or fetch one, or seal and open one locally.
     ///
-    /// The file's bytes never pass through the VTA; the key it releases opens
-    /// this file and nothing else.
+    /// Each file is sealed and opened here with that one file's key from your
+    /// VTA. The file's bytes never pass through the VTA, and the host only ever
+    /// holds ciphertext.
     File {
         #[command(subcommand)]
         command: RoomFileCommands,
@@ -733,6 +734,50 @@ pub(crate) enum ExternalCommands {
 /// `pnm rooms file …`.
 #[derive(Subcommand)]
 pub(crate) enum RoomFileCommands {
+    /// Put a file in a sealed room: seal it, upload the ciphertext, and write a
+    /// record whose signed, sealed body names it.
+    ///
+    /// The file's name, type, size and digest are inside the sealed body; the
+    /// host learns only that the record has a file, and its ciphertext size.
+    Put {
+        /// The file to put.
+        path: std::path::PathBuf,
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+        /// A title for the record, sealed with it.
+        #[arg(long)]
+        title: Option<String>,
+        /// A one-line description, sealed with it.
+        #[arg(long)]
+        description: Option<String>,
+        /// A tag, sealed with the record. Repeatable.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Pad to the next Padmé size, so the stored size does not fingerprint a
+        /// known document. At most 12 % larger.
+        #[arg(long)]
+        pad: bool,
+    },
+    /// Fetch a record's file, refusing one that is not exactly what its author
+    /// signed.
+    Get {
+        /// The record's key, as `file put` or `rooms list` printed it.
+        key: String,
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+        /// Where to write the file. Must not exist. Defaults to the file's own
+        /// name, in the current directory.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
     /// Seal a local file for a room: writes the sealed chunks, `blob.json` (what a
     /// host checks) and `file.json` (what goes inside the sealed record body).
     Seal {

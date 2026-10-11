@@ -31,7 +31,10 @@
 use serde_json::Value;
 use vta_sdk::prelude::*;
 use vtc_client::VtcClient;
-use vtc_client::rooms::{CleartextContent, RoomSession, Visibility};
+use vtc_client::rooms::body::{
+    RecordLocation, SealedRecordBody, VerifiedRecordBody, verify_record_body,
+};
+use vtc_client::rooms::{CleartextContent, RoomSession, SealedContent, Visibility};
 
 /// Everything a room command needs to reach both parties.
 ///
@@ -234,6 +237,10 @@ pub async fn cmd_rooms_list(
 }
 
 /// `rooms get` — one record, opened through the VTA when it is sealed.
+///
+/// A sealed record is shown only after its body checks out: the author's signature, the
+/// location it was signed for, and on `attributed` the author the host recorded
+/// ([`verify_record_body`]). One that fails is refused, never shown with a warning.
 pub async fn cmd_rooms_get(
     client: &VtaClient,
     target: RoomTarget<'_>,
@@ -254,56 +261,56 @@ pub async fn cmd_rooms_get(
             crate::render::print_json(cleartext)?;
         } else {
             if let Some(title) = cleartext.get("title").and_then(Value::as_str) {
-                println!("{title}\n");
+                println!("{}\n", inert(title));
             }
             println!(
                 "{}",
-                cleartext.get("body").and_then(Value::as_str).unwrap_or("")
+                inert(cleartext.get("body").and_then(Value::as_str).unwrap_or(""))
             );
         }
         return Ok(());
     }
 
-    let sealed = record.get("sealed").and_then(Value::as_str).ok_or(
-        "the record carried neither cleartext nor sealed content — is this a room this \
-         host serves?",
-    )?;
-    let nonce = record
-        .get("nonce")
-        .and_then(Value::as_str)
-        .ok_or("a sealed record with no nonce cannot be opened")?;
-    let epoch = record.get("epoch").and_then(Value::as_u64).unwrap_or(0) as u32;
-    let version = record.get("version").and_then(Value::as_u64).unwrap_or(0);
+    let sealed: SealedContent =
+        serde_json::from_value(record.get("sealed").cloned().ok_or(
+            "the record carried neither cleartext nor sealed content; it may be retracted",
+        )?)
+        .map_err(|e| format!("the host's sealed record is malformed: {e}"))?;
+    let version = record
+        .get("version")
+        .and_then(Value::as_u64)
+        .ok_or("the host's record carried no version")?;
+    let author = record.get("author").and_then(Value::as_str);
 
-    let opened = client
-        .room_open(target.room_id, key, version, sealed, nonce, epoch)
-        .await
-        .map_err(|e| {
-            // The failure operators will actually hit, named where they will
-            // read it. A record sealed under a later epoch is a missed commit,
-            // and it reads like corruption if nobody says otherwise.
-            format!(
-                "{e}\n\nIf this mentions an epoch, your VTA has not been given the room's \
-                 latest commit — ask the room's owner to deliver it, then retry."
-            )
-        })?;
-
-    let plaintext = opened
-        .get("plaintext")
-        .and_then(Value::as_str)
-        .ok_or("the VTA opened the record but returned no plaintext")?;
-    let bytes =
-        base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, plaintext)?;
-    println!("{}", String::from_utf8_lossy(&bytes));
+    let body = open_and_verify(client, &target, key, version, &sealed, author).await?;
+    let body = body.body();
+    if crate::render::is_json_output() {
+        crate::render::print_json(body)?;
+        return Ok(());
+    }
+    if let Some(title) = &body.title {
+        println!("{}\n", inert(title));
+    }
+    if let Some(text) = &body.body {
+        println!("{}", inert(text));
+    }
+    if let Some(file) = &body.file {
+        println!(
+            "\nFile: {} ({} bytes). Fetch it with `pnm rooms file get {key}`.",
+            inert(&file.name),
+            file.size
+        );
+    }
+    println!("\nWritten by {} at version {version}.", body.author);
     Ok(())
 }
 
-/// `rooms put` — write a record to an `open` room.
+/// `rooms put` — write a record.
 ///
-/// Sealed tiers are refused rather than half-served: sealing needs the room's
-/// MLS group, which lives in the VTA, and there is no task that seals on a
-/// caller's behalf. Writing cleartext into a room whose other records are
-/// encrypted would be worse than refusing.
+/// On an `open` room the record goes in the clear. On `attributed` and `private` it is a
+/// [`SealedRecordBody`] the operator signs, sealed by their VTA (`rooms/keys/seal`), so the
+/// host never sees it and every reader can check who wrote it.
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_rooms_put(
     client: &VtaClient,
     target: RoomTarget<'_>,
@@ -313,31 +320,56 @@ pub async fn cmd_rooms_put(
     body: String,
     expected_version: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let session = present(client, &target, "write").await?;
-    let put = target
-        .client()
-        .put_record(
-            &session,
-            key,
-            None,
-            Some(CleartextContent {
-                title,
-                body,
-                ..Default::default()
-            }),
-            expected_version,
-            signer.did,
-            signer.key_multibase,
-        )
-        .await
-        .map_err(|e| {
-            format!(
-                "{e}\n\nA sealed room (`attributed` / `private`) refuses cleartext: sealing \
-                 needs the room's group key, which lives in your VTA, and no task seals on a \
-                 caller's behalf yet."
+    let read = present(client, &target, "read").await?;
+    let sealed_tier = is_sealed_tier(&target, &signer, &read).await?;
+    let write = present(client, &target, "write").await?;
+
+    if !sealed_tier {
+        let put = target
+            .client()
+            .put_record(
+                &write,
+                key,
+                None,
+                Some(CleartextContent {
+                    title,
+                    body,
+                    ..Default::default()
+                }),
+                expected_version,
+                signer.did,
+                signer.key_multibase,
             )
-        })?;
-    println!("Wrote {} at version {}", put.key, put.version);
+            .await?;
+        println!("Wrote {} at version {}", put.key, put.version);
+        return Ok(());
+    }
+
+    let mut content = SealedRecordBody::new(
+        RecordLocation {
+            room_id: target.room_id,
+            key,
+            version: 1,
+        },
+        signer.did,
+    );
+    content.title = title;
+    content.body = Some(body);
+    let version = write_sealed(
+        client,
+        &target,
+        &signer,
+        &read,
+        &write,
+        content,
+        None,
+        expected_version,
+    )
+    .await?;
+    println!(
+        "Wrote {key} at version {version}, sealed and signed by {}",
+        signer.did
+    );
     Ok(())
 }
 
@@ -602,6 +634,448 @@ pub async fn cmd_rooms_file_open(
     Ok(())
 }
 
+// ─── Sealed records and files, end to end ────────────────────────────────
+
+/// How many times a sealed write re-seals for the version the host actually assigned before
+/// giving up. Versions come from a room-wide counter, so each retry loses only to a write
+/// that landed between this one's seal and its put.
+const SEALED_WRITE_ATTEMPTS: usize = 4;
+
+/// Strip what could drive a terminal from text another member wrote: control characters,
+/// escape sequences among them, except newline and tab.
+fn inert(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect()
+}
+
+/// A fresh opaque record key. On a sealed tier a key MUST say nothing about the record.
+fn opaque_key() -> String {
+    let bytes: [u8; 16] = rand::random();
+    base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, bytes)
+}
+
+/// The serialized string of a generated newtype (a digest, a transfer id).
+fn wire_str<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// Whether the room seals its records, from `rooms/info`.
+async fn is_sealed_tier(
+    target: &RoomTarget<'_>,
+    signer: &RoomSigner<'_>,
+    read: &RoomSession,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let info = target
+        .client()
+        .room_info(read, signer.did, signer.key_multibase)
+        .await
+        .map_err(|e| format!("could not read the room's tier (rooms/info): {e}"))?;
+    Ok(wire_str(&info.visibility) != "open")
+}
+
+/// Sign `content`, seal it through the VTA and put it, re-sealing at the version the host
+/// assigned whenever that is not the one sealed for. Returns the version written.
+///
+/// The record's associated data and its signed body both name the version, and the host
+/// assigns it from a room-wide counter, so the version is predicted from the room's head and
+/// a miss is corrected by a rewrite. Until that rewrite lands the record does not open,
+/// which is why a write that runs out of attempts says so and names the key.
+#[allow(clippy::too_many_arguments)]
+async fn write_sealed(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    signer: &RoomSigner<'_>,
+    read: &RoomSession,
+    write: &RoomSession,
+    content: SealedRecordBody,
+    blobs: Option<Vec<String>>,
+    expected_version: Option<u64>,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let holder =
+        vta_sdk::trust_task_sign::HolderKey::from_did_key(signer.did, signer.key_multibase)?;
+    let host = target.client();
+    let head = host
+        .list_records(read, None, None, None, signer.did, signer.key_multibase)
+        .await?
+        .head_version
+        .unwrap_or(0);
+
+    let key = content.key.clone();
+    let mut intended = head + 1;
+    let mut expected = expected_version;
+    let mut landed = 0;
+    for _ in 0..SEALED_WRITE_ATTEMPTS {
+        let signed = content.clone().at_version(intended).sign(&holder).await?;
+        let sealed = client
+            .room_seal(target.room_id, &key, intended, &signed)
+            .await?
+            .sealed;
+        let sealed = SealedContent {
+            ciphertext: sealed.ciphertext,
+            nonce: sealed.nonce,
+            epoch: u32::try_from(sealed.epoch.get())
+                .map_err(|_| "the VTA sealed under an epoch this client cannot represent")?,
+        };
+        landed = match &blobs {
+            Some(blobs) => host
+                .put_sealed_record_with_blobs(
+                    write,
+                    &key,
+                    sealed,
+                    blobs,
+                    expected,
+                    signer.did,
+                    signer.key_multibase,
+                )
+                .await?
+                .version
+                .get(),
+            None => {
+                host.put_record(
+                    write,
+                    &key,
+                    Some(sealed),
+                    None,
+                    expected,
+                    signer.did,
+                    signer.key_multibase,
+                )
+                .await?
+                .version
+            }
+        };
+        if landed == intended {
+            return Ok(landed);
+        }
+        // Another write took the predicted version. The record is stored but sealed for the
+        // wrong one, so it does not open; rewrite it, and only over what just landed.
+        expected = Some(landed);
+        intended = landed + 1;
+    }
+    Err(format!(
+        "{key} is stored at version {landed} but sealed for another version, so it does not \
+         open: the room kept moving under {SEALED_WRITE_ATTEMPTS} attempts. Write it again \
+         with --expected-version {landed}."
+    )
+    .into())
+}
+
+/// Open a sealed record through the VTA and check its body before anything in it is used.
+async fn open_and_verify(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    key: &str,
+    version: u64,
+    sealed: &SealedContent,
+    host_author: Option<&str>,
+) -> Result<VerifiedRecordBody, Box<dyn std::error::Error>> {
+    let opened = client
+        .room_open(
+            target.room_id,
+            key,
+            version,
+            &sealed.ciphertext,
+            &sealed.nonce,
+            sealed.epoch,
+        )
+        .await
+        .map_err(|e| {
+            // The failure operators will actually hit, named where they will
+            // read it. A record sealed under a later epoch is a missed commit,
+            // and it reads like corruption if nobody says otherwise.
+            format!(
+                "{e}\n\nIf this mentions an epoch, your VTA has not been given the room's \
+                 latest commit — ask the room's owner to deliver it, then retry."
+            )
+        })?;
+    let plaintext = opened
+        .get("plaintext")
+        .and_then(Value::as_str)
+        .ok_or("the VTA opened the record but returned no plaintext")?;
+    let bytes =
+        base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, plaintext)?;
+
+    let resolver = vta_sdk::trust_task_proof::TrustTaskVmResolver::from_optional(
+        vta_sdk::resolver::shared_did_resolver_from_env().await.ok(),
+    );
+    let location = RecordLocation {
+        room_id: target.room_id,
+        key,
+        version,
+    };
+    Ok(verify_record_body(&bytes, location, host_author, &resolver)
+        .await
+        .map_err(|e| format!("refusing record {key}: {e}"))?)
+}
+
+/// `rooms file put` — seal a local file, upload its ciphertext, and write the record that
+/// names it.
+///
+/// The file is sealed here under one file's key from the VTA (`rooms/keys/file-key`); its
+/// bytes never pass through the VTA, and the host receives only ciphertext. Its name, type,
+/// size and plaintext digest go inside the record's signed, sealed body.
+#[allow(clippy::too_many_arguments)]
+pub async fn cmd_rooms_file_put(
+    client: &VtaClient,
+    target: RoomTarget<'_>,
+    signer: RoomSigner<'_>,
+    path: &std::path::Path,
+    title: Option<String>,
+    description: Option<String>,
+    tags: Vec<String>,
+    padme: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use vti_rooms::files::{self, FileBinding, Padding};
+
+    let read = present(client, &target, "read").await?;
+    if !is_sealed_tier(&target, &signer, &read).await? {
+        return Err(
+            "this room is `open`: its records are cleartext, and a file's manifest \
+                    belongs inside a sealed body. Files go in `attributed` and `private` rooms."
+                .into(),
+        );
+    }
+    let write = present(client, &target, "write").await?;
+
+    let plaintext = std::fs::read(path)?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("the file has no usable name")?;
+    // A fresh id for every file: the segment nonces are counters, so two files
+    // under one key would reuse them.
+    let file_id = files::new_file_id();
+    let resp = client
+        .room_file_key(target.room_id, &files::encode_file_id(&file_id), None)
+        .await?;
+    let file_key = file_key_bytes(&resp)?;
+    let sealed = files::seal_file(
+        &file_key,
+        FileBinding {
+            room_id: target.room_id.to_string(),
+            file_id,
+            epoch: resp.epoch.get(),
+            segment_size: files::DEFAULT_SEGMENT_SIZE,
+        },
+        name,
+        None,
+        &plaintext,
+        if padme { Padding::Padme } else { Padding::None },
+    )?;
+
+    let host = target.client();
+    let begun = host
+        .begin_upload(&write, &sealed.blob, signer.did, signer.key_multibase)
+        .await?;
+    let blob_ref = if begun.already_committed == Some(true) {
+        sealed.file.blob_ref.clone()
+    } else {
+        let upload_id = wire_str(&begun.upload_id);
+        let sent: Result<(), Box<dyn std::error::Error>> = async {
+            for index in &begun.missing {
+                let i = usize::try_from(index.0)
+                    .ok()
+                    .filter(|i| *i < sealed.chunks.len())
+                    .ok_or_else(|| {
+                        format!("the host asked for chunk {}, which does not exist", index.0)
+                    })?;
+                host.upload_chunk(
+                    &upload_id,
+                    i as u64,
+                    &sealed.chunks[i],
+                    signer.did,
+                    signer.key_multibase,
+                )
+                .await?;
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(e) = sent {
+            // Release what `begin` reserved rather than leaving it to expire.
+            let _ = host
+                .abort_upload(&upload_id, signer.did, signer.key_multibase)
+                .await;
+            return Err(e);
+        }
+        let committed = host
+            .commit_upload(&upload_id, signer.did, signer.key_multibase)
+            .await?;
+        wire_str(&committed.blob_ref)
+    };
+    if !files::same_digest(&blob_ref, &sealed.file.blob_ref) {
+        return Err(format!(
+            "the host committed {blob_ref}, not the blob sealed here ({})",
+            sealed.file.blob_ref
+        )
+        .into());
+    }
+
+    let key = opaque_key();
+    let mut content = SealedRecordBody::new(
+        RecordLocation {
+            room_id: target.room_id,
+            key: &key,
+            version: 1,
+        },
+        signer.did,
+    );
+    content.title = title;
+    content.description = description;
+    content.tags = tags;
+    content.file = Some(sealed.file.clone());
+    let version = write_sealed(
+        client,
+        &target,
+        &signer,
+        &read,
+        &write,
+        content,
+        Some(vec![blob_ref.clone()]),
+        Some(0),
+    )
+    .await?;
+
+    if crate::render::is_json_output() {
+        crate::render::print_json(&serde_json::json!({
+            "key": key,
+            "version": version,
+            "blobRef": blob_ref,
+            "size": sealed.file.size,
+        }))?;
+        return Ok(());
+    }
+    println!(
+        "Put {name} ({} bytes) as record {key} at version {version}\n  blobRef  {blob_ref}\n  Members fetch it with `pnm rooms file get {key}`.",
+        sealed.file.size
+    );
+    Ok(())
+}
+
+/// A local file name from one another member chose: the last path component, without
+/// leading dots, never empty.
+fn local_name(untrusted: &str) -> String {
+    let base = untrusted
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches('.');
+    let clean = inert(base).replace(['\n', '\t'], " ");
+    if clean.trim().is_empty() {
+        "room-file".to_string()
+    } else {
+        clean
+    }
+}
+
+/// `rooms file get` — fetch a record's file, check it against what its author signed, and
+/// write the plaintext.
+///
+/// Nothing is written unless every check holds: the record body's signature and location,
+/// the blob being the one the author named, every chunk against the manifest, and the
+/// plaintext against the author's digest.
+pub async fn cmd_rooms_file_get(
+    client: &VtaClient,
+    target: RoomTarget<'_>,
+    signer: RoomSigner<'_>,
+    key: &str,
+    out: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use vti_rooms::files::{self, BlobManifest};
+
+    let read = present(client, &target, "read").await?;
+    let host = target.client();
+    let record = host
+        .get_record_v2(&read, key, signer.did, signer.key_multibase)
+        .await?;
+    let sealed = record.sealed.as_ref().ok_or(
+        "the record has no sealed body: it is on an `open` room, or it has been retracted",
+    )?;
+    let sealed = SealedContent {
+        ciphertext: sealed.ciphertext.clone(),
+        nonce: sealed.nonce.clone(),
+        epoch: u32::try_from(sealed.epoch.get())
+            .map_err(|_| "the record's epoch is beyond what this client can represent")?,
+    };
+    let verified = open_and_verify(
+        client,
+        &target,
+        key,
+        record.version.get(),
+        &sealed,
+        record.author.as_deref(),
+    )
+    .await?;
+    let file = verified
+        .body()
+        .file
+        .clone()
+        .ok_or("the record carries no file")?;
+    let named = record
+        .blobs
+        .iter()
+        .flatten()
+        .any(|b| files::same_digest(&wire_str(b), &file.blob_ref));
+    if !named {
+        return Err(
+            "the host does not name the file's blob on this record; it may have been \
+                    released"
+                .into(),
+        );
+    }
+
+    let started = host
+        .get_blob(&read, &file.blob_ref, signer.did, signer.key_multibase)
+        .await?;
+    let blob: BlobManifest = serde_json::from_value(serde_json::to_value(&started.manifest)?)?;
+    // The file manifest is the author's; the blob manifest is the host's. Before a byte is
+    // trusted: it is the blob the author named, and its shape is the one the author's
+    // segment size and length give.
+    file.check_blob(&blob)?;
+    let download_id = wire_str(&started.download_id);
+    let mut chunks = Vec::with_capacity(blob.chunks.chunk_digests.len());
+    for (i, expected) in blob.chunks.chunk_digests.iter().enumerate() {
+        let chunk = host
+            .download_chunk(&download_id, i as u64, signer.did, signer.key_multibase)
+            .await?;
+        if !files::same_digest(&files::digest_multibase(&chunk), expected) {
+            return Err(format!("chunk {i} does not match the manifest").into());
+        }
+        chunks.push(chunk);
+    }
+
+    let resp = client
+        .room_file_key(target.room_id, &file.file_id, Some(file.epoch))
+        .await?;
+    let file_key = file_key_bytes(&resp)?;
+    let plaintext = files::open_file(&file_key, target.room_id, &file, &blob, &chunks)?;
+
+    let out = match out {
+        Some(p) => p.to_path_buf(),
+        None => std::path::PathBuf::from(local_name(&file.name)),
+    };
+    if out.exists() {
+        return Err(format!("{} already exists; refusing to overwrite it", out.display()).into());
+    }
+    // Written beside the target and moved into place, so a failure leaves nothing that
+    // looks like the file.
+    let tmp = out.with_extension("partial");
+    std::fs::write(&tmp, &plaintext)?;
+    std::fs::rename(&tmp, &out)?;
+    println!(
+        "Fetched {} ({} bytes) into {}, written by {}; it matches the digest they signed.",
+        inert(&file.name).escape_debug(),
+        plaintext.len(),
+        out.display(),
+        verified.body().author
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -671,6 +1145,31 @@ mod tests {
             err.to_string().contains("non-string"),
             "the error must name the cause: {err}"
         );
+    }
+
+    /// Another member's text reaches a terminal: an escape sequence in it must not.
+    #[test]
+    fn untrusted_text_loses_its_control_characters_but_keeps_its_lines() {
+        assert_eq!(inert("a\x1b[2Jb\nc\td\x07"), "a[2Jb\nc\td");
+    }
+
+    /// A file name chosen by another member must not choose where it is written.
+    #[test]
+    fn a_file_name_cannot_leave_the_directory_or_hide() {
+        assert_eq!(local_name("../../etc/passwd"), "passwd");
+        assert_eq!(local_name("C:\\Users\\x\\evil.exe"), "evil.exe");
+        assert_eq!(local_name(".bashrc"), "bashrc");
+        assert_eq!(local_name("term sheet.pdf"), "term sheet.pdf");
+        assert_eq!(local_name("../"), "room-file");
+        assert_eq!(local_name("a\nb.txt"), "a b.txt");
+    }
+
+    /// Record keys on a sealed tier say nothing, and do not repeat.
+    #[test]
+    fn opaque_keys_are_fresh_and_uninformative() {
+        let (a, b) = (opaque_key(), opaque_key());
+        assert_ne!(a, b);
+        assert_eq!(a.len(), 22, "16 random bytes, base64url");
     }
 
     #[test]
