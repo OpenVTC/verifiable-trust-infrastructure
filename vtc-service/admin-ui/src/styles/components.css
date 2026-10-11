@@ -571,6 +571,56 @@ select {
   flex: 0 0 auto;
 }
 
+/* ── List screens: toolbar over a table card ─────────────────────
+ *
+ * The pattern Members and Access control share (the proposal's Members
+ * mockup): the page header, then a toolbar of filters on the page itself,
+ * then the table in a card that runs to its edges, the header row on the
+ * card's subtle ground. A note about the list sits between the two.
+ */
+
+.list-toolbar {
+  align-items: flex-end;
+}
+
+.list-note {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.card.table-card {
+  padding: 0;
+  gap: 0;
+}
+.card.table-card .data-table th {
+  background: var(--bg-subtle);
+}
+.card.table-card .data-table thead tr:first-child th:first-child {
+  border-top-left-radius: var(--radius-lg);
+}
+.card.table-card .data-table thead tr:first-child th:last-child {
+  border-top-right-radius: var(--radius-lg);
+}
+.card.table-card .data-table th:first-child,
+.card.table-card .data-table td:first-child {
+  padding-left: var(--space-5);
+}
+.card.table-card .data-table th:last-child,
+.card.table-card .data-table td:last-child {
+  padding-right: var(--space-5);
+}
+.card.table-card .data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.card.table-card .data-table tbody tr:hover td {
+  background: var(--bg-hover);
+}
+.card.table-card > .pagination,
+.card.table-card > .table-card-foot {
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border);
+}
+
 /* ── Tables ──────────────────────────────────────────────────── */
 
 .data-table {

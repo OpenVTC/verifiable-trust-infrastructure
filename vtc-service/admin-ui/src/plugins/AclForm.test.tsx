@@ -105,6 +105,34 @@ describe("Access control — roles and capabilities", () => {
     expect(screen.queryByText("Contexts")).toBeNull();
   });
 
+  it("counts the entries in the header and narrows them with the search", async () => {
+    mockFetch([
+      taskRoute(LIST, {
+        entries: [
+          { ...row("did:example:ca", "community-admin", { scope: "ceiling" }), label: "Ops lead" },
+          row("did:example:mem", "member", { scope: "none" }, "none"),
+          row("did:example:rm", "repo-manager", { scope: "ceiling" }),
+        ],
+        truncated: false,
+      }),
+    ]);
+    renderWithProviders(<Acl />, { route: "/acl", path: "/acl" });
+    await screen.findAllByTestId("administers");
+    expect(screen.getByLabelText("3 entries").textContent).toBe("3");
+    // The entry column: label over DID.
+    const ops = screen.getByText("Ops lead").closest("td")!;
+    expect(ops.textContent).toContain("did:example:ca");
+
+    const search = screen.getByRole("searchbox", { name: "Search" });
+    fireEvent.change(search, { target: { value: "repo" } });
+    expect(screen.getAllByTestId("administers")).toHaveLength(1);
+    fireEvent.change(search, { target: { value: "ops" } });
+    expect(screen.getAllByTestId("administers")).toHaveLength(1);
+    fireEvent.change(search, { target: { value: "nobody-here" } });
+    expect(screen.queryAllByTestId("administers")).toHaveLength(0);
+    expect(screen.getByText("No entries match this search")).toBeTruthy();
+  });
+
   it("grants an administrative role narrowed to a qualified capability", async () => {
     const requests = mockFetch([
       taskRoute(LIST, { entries: [], truncated: false }),
@@ -216,7 +244,7 @@ describe("Access control — your own entry (VTI-ACL-052)", () => {
   it("lets you relabel your own entry", async () => {
     const requests = render(false);
     fireEvent.click(await screen.findByTitle("Click to edit label"));
-    const input = await screen.findByDisplayValue("");
+    const input = await screen.findByRole("textbox", { name: `Label for ${ME}` });
     fireEvent.change(input, { target: { value: "laptop" } });
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(sentPayloads(requests, UPDATE)).toHaveLength(1));

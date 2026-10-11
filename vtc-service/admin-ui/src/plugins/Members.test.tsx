@@ -162,11 +162,12 @@ describe("Members — git rights (UI-13)", () => {
 });
 
 describe("Members — search and sort", () => {
+  // The Member column holds the name over the DID; read the name.
   const names = () =>
     screen
       .getAllByRole("row")
       .slice(1)
-      .map((r) => r.querySelector("td")?.textContent ?? "");
+      .map((r) => r.querySelector(".member-name")?.textContent ?? "");
 
   it("narrows the list to rows that loosely match every term", async () => {
     mockFetch(routes());
@@ -191,17 +192,45 @@ describe("Members — search and sort", () => {
     mount();
     await rowOf("Alice Wong");
 
-    const name = screen.getByRole("button", { name: /^Name/ });
+    const name = screen.getByRole("button", { name: /^Member/ });
     fireEvent.click(name);
-    expect(screen.getByRole("columnheader", { name: /^Name/ }).getAttribute("aria-sort")).toBe(
+    expect(screen.getByRole("columnheader", { name: /^Member/ }).getAttribute("aria-sort")).toBe(
       "ascending",
     );
     expect(names()).toEqual(["Alice Wong", "Bob Mensah", "Hana Sato", "No Rights", "Priya Nair"]);
     fireEvent.click(name);
-    expect(screen.getByRole("columnheader", { name: /^Name/ }).getAttribute("aria-sort")).toBe(
+    expect(screen.getByRole("columnheader", { name: /^Member/ }).getAttribute("aria-sort")).toBe(
       "descending",
     );
     expect(names()).toEqual(["Priya Nair", "No Rights", "Hana Sato", "Bob Mensah", "Alice Wong"]);
+  });
+
+  it("shows each member's name over their DID, and personhood as a word", async () => {
+    mockFetch(routes());
+    mount();
+    const alice = await rowOf("Alice Wong");
+    const cell = alice.querySelector("td.members-member")!;
+    expect(cell.querySelector(".member-name")?.textContent).toBe("Alice Wong");
+    expect(cell.querySelector(".member-did")?.textContent).toMatch(/^did:/);
+    expect(within(alice).getByText(/Verified|Not yet/)).toBeTruthy();
+    expect(screen.queryByRole("columnheader", { name: /^DID/ })).toBeNull();
+  });
+
+  it("filters by personhood", async () => {
+    mockFetch([
+      taskRoute(MEMBERS_LIST_TASK, {
+        items: [{ ...member(NOBODY, "Ada Person"), personhood: true }, member(BOB, "Bob Mensah")],
+        nextCursor: null,
+      }),
+      ...routes().slice(1),
+    ]);
+    mount();
+    const ada = await rowOf("Ada Person");
+    expect(within(ada).getByText("Verified")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Personhood"), { target: { value: "verified" } });
+    expect(names()).toEqual(["Ada Person"]);
+    fireEvent.change(screen.getByLabelText("Personhood"), { target: { value: "none" } });
+    expect(names()).toEqual(["Bob Mensah"]);
   });
 
   it("takes a search and the Add a member form from the URL (the command palette)", async () => {

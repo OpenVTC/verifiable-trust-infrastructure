@@ -1,5 +1,39 @@
 /* Layout particular to the acl screen. Shared look lives in components.css. */
 
+/* The search takes the width; the role filter stays compact. */
+.acl-toolbar .field.inline {
+  flex: 0 1 16rem;
+}
+.acl-toolbar .field.inline.acl-search {
+  flex: 3 1 20rem;
+}
+
+/* The Entry column: the label (edited in place) over the DID, like a
+ * member's name over theirs on the Members screen. */
+.acl-entry {
+  min-width: 14rem;
+}
+.acl-entry-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.acl-entry-label,
+.acl-entry-did {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+.acl-entry-label button.link.acl-label-edit:not(.empty) {
+  font-weight: var(--weight-semibold);
+}
+.acl-entry-did code {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
 /* The Admin invites card's heading row. */
 .acl-invites-title {
   margin: 0;

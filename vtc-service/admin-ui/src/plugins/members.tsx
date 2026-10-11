@@ -39,7 +39,6 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
-  Minus,
   Ticket,
   UserPlus,
   X,
@@ -373,6 +372,9 @@ async function fetchAllMembers(): Promise<{ items: MemberRow[]; truncated: boole
 
 type MemberSortKey = "name" | "did" | "role" | "joined" | "personhood" | "git";
 
+/** The Personhood filter: any, asserted, or not (yet) asserted. */
+type PersonhoodFilter = "" | "verified" | "none";
+
 /** Joined and personhood read best newest / asserted first. */
 const INITIAL_DIR: Record<MemberSortKey, SortDir> = {
   name: "asc",
@@ -385,7 +387,7 @@ const INITIAL_DIR: Record<MemberSortKey, SortDir> = {
 
 /** What each column means, on hover of its (i). */
 const MEMBER_COLUMN_TIPS: Partial<Record<MemberSortKey, string>> = {
-  name: "The member's label in this community: set by an administrator, or by the member for themselves. Not an identity claim.",
+  name: "The member's label in this community — set by an administrator, or by the member for themselves; not an identity claim — over their DID. The abbreviation drops the opaque hash and long host subdomains, never the path; hover for the whole DID, or copy it, or show it as a QR code for a phone. Sorts by name.",
   did: "The member's decentralized identifier. The abbreviation drops the opaque hash and long host subdomains, never the path; hover for the whole DID, or copy it, or show it as a QR code for a phone.",
   role: "The member's community role — what they may do here. Administrative authority is on the Access control page.",
   joined: "When the member was admitted.",
@@ -397,6 +399,7 @@ const MEMBER_COLUMN_TIPS: Partial<Record<MemberSortKey, string>> = {
 function MembersList() {
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
+  const [personhoodFilter, setPersonhoodFilter] = useState<PersonhoodFilter>("");
   // `null`: no column chosen — newest first, or best match while searching.
   const [sort, setSort] = useState<SortState<MemberSortKey> | null>(null);
   const [page, setPage] = useState(0);
@@ -432,7 +435,7 @@ function MembersList() {
   // (a scoped administrator cannot read them) drops the column and says why.
   const git = useMemberGit();
   const showGit = !git.error;
-  const columns = showGit ? 6 : 5;
+  const columns = showGit ? 5 : 4;
 
   const all = useMemo(() => query.data?.items ?? [], [query.data]);
   const roles = useMemo(() => [...new Set(all.map((m) => m.role))].sort(), [all]);
@@ -443,6 +446,8 @@ function MembersList() {
     const scored: { m: MemberRow; score: number }[] = [];
     for (const m of all) {
       if (roleFilter && m.role !== roleFilter) continue;
+      if (personhoodFilter === "verified" && !m.personhood) continue;
+      if (personhoodFilter === "none" && m.personhood) continue;
       const rights = git.index.rights.get(m.did) ?? [];
       const accounts = git.index.accounts.get(m.did) ?? [];
       const score = matchScore(terms, {
@@ -483,7 +488,7 @@ function MembersList() {
         : b.score - a.score || byJoined(a.m, b.m),
     );
     return scored.map((s) => s.m);
-  }, [all, roleFilter, search, sort, git.index, book]);
+  }, [all, roleFilter, personhoodFilter, search, sort, git.index, book]);
 
   const pages = Math.max(1, Math.ceil(rows.length / ROWS_PER_PAGE));
   const current = Math.min(page, pages - 1);
@@ -492,19 +497,23 @@ function MembersList() {
     setSort((s) => nextSort(s, key, INITIAL_DIR[key]));
     setPage(0);
   };
-  // Name leads: it is what an operator is looking for. The DID stays in its
-  // own column rather than being replaced by the name — a member you cannot
-  // check against an identifier is a member you cannot audit.
-  const column = (key: MemberSortKey, label: string): Column<MemberSortKey> => ({
+  // The member leads, after the proposal's mockup: their name over their DID
+  // in one column. The DID is never replaced by the name — a member you
+  // cannot check against an identifier is a member you cannot audit — it sits
+  // under it, abbreviated, with the whole DID on hover, copy and QR.
+  const column = (
+    key: MemberSortKey,
+    label: string,
+    className?: string,
+  ): Column<MemberSortKey> => ({
     key,
     label,
     sortKey: key,
     tip: MEMBER_COLUMN_TIPS[key],
-    className: key === "did" ? "members-did" : undefined,
+    className,
   });
   const tableColumns: Column<MemberSortKey>[] = [
-    column("name", "Name"),
-    column("did", "DID"),
+    column("name", "Member", "members-member"),
     column("role", "Role"),
     column("joined", "Joined"),
     column("personhood", "Personhood"),
@@ -541,37 +550,48 @@ function MembersList() {
 
       {adding && <AddMemberForm onClose={() => setAdding(false)} />}
 
-      <section className="card">
-        <div className="toolbar members-toolbar">
-          <Field label="Search" inline className="members-search">
-            <input
-              type="search"
-              placeholder="Name, DID, role or forge login"
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setPage(0);
-              }}
-            />
-          </Field>
-          <Field label="Role" inline>
-            <select
-              value={roleFilter}
-              onChange={(e) => {
-                setRoleFilter(e.target.value);
-                setPage(0);
-              }}
-            >
-              <option value="">All roles</option>
-              {roles.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
-          </Field>
-        </div>
-      </section>
+      <div className="toolbar list-toolbar members-toolbar" role="search" aria-label="Members">
+        <Field label="Search" inline className="members-search">
+          <input
+            type="search"
+            placeholder="Name, DID, role or forge login"
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(0);
+            }}
+          />
+        </Field>
+        <Field label="Role" inline>
+          <select
+            value={roleFilter}
+            onChange={(e) => {
+              setRoleFilter(e.target.value);
+              setPage(0);
+            }}
+          >
+            <option value="">All roles</option>
+            {roles.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Personhood" inline>
+          <select
+            value={personhoodFilter}
+            onChange={(e) => {
+              setPersonhoodFilter(e.target.value as PersonhoodFilter);
+              setPage(0);
+            }}
+          >
+            <option value="">Any</option>
+            <option value="verified">Verified</option>
+            <option value="none">Not yet</option>
+          </select>
+        </Field>
+      </div>
 
       {query.error && (
         <section className="card error">
@@ -580,18 +600,19 @@ function MembersList() {
         </section>
       )}
 
-      <section className="card">
-        {git.error && (
-          <p className="muted">
-            Git rights are not shown: {readErrorMessage(git.error)}.
-          </p>
-        )}
-        {query.data?.truncated && (
-          <p className="muted">
-            Only the first {MEMBERS_PAGE * MAX_MEMBER_PAGES} members were read; search and sort
-            cover those.
-          </p>
-        )}
+      {git.error && (
+        <p className="muted list-note">
+          Git rights are not shown: {readErrorMessage(git.error)}.
+        </p>
+      )}
+      {query.data?.truncated && (
+        <p className="muted list-note">
+          Only the first {MEMBERS_PAGE * MAX_MEMBER_PAGES} members were read; search and sort
+          cover those.
+        </p>
+      )}
+
+      <section className="card table-card">
         <div className="table-scroll">
           <DataTable columns={tableColumns} sort={sort} onSort={onSort}>
             {query.isPending && (
@@ -608,60 +629,63 @@ function MembersList() {
                     </EmptyState>
                   ) : (
                     <EmptyState icon={UsersIcon} title="No members match">
-                      Clear the search or choose another role to widen the result.
+                      Clear the search or choose another filter to widen the result.
                     </EmptyState>
                   )}
                 </td>
               </tr>
             )}
-            {visible.map((m) => (
-              <tr key={m.did}>
-                <td>
-                  {m.label ?? book.nameOf(m.did) ?? <span className="muted">—</span>}
-                  {m.joinedViaInvitation && (
-                    <Ticket
-                      size={14}
-                      strokeWidth={1.75}
-                      aria-label="Joined via invitation"
-                      className="status-icon ok members-invited"
-                    />
-                  )}
-                </td>
-                <td className="members-did">
-                  <DidText did={m.did} to={encodeURIComponent(m.did)} />
-                </td>
-                <td>
-                  <code>{m.role}</code>
-                </td>
-                <td>{formatDate(m.joinedAt)}</td>
-                <td>
-                  {m.personhood ? (
-                    <Check
-                      size={16}
-                      strokeWidth={1.75}
-                      aria-label="Asserted"
-                      className="status-icon ok"
-                    />
-                  ) : (
-                    <Minus
-                      size={16}
-                      strokeWidth={1.75}
-                      aria-label="Not asserted"
-                      className="status-icon muted"
-                    />
-                  )}
-                </td>
-                {showGit && (
+            {visible.map((m) => {
+              const name = m.label ?? book.nameOf(m.did) ?? null;
+              return (
+                <tr key={m.did}>
+                  <td className="members-member">
+                    <span className="member-cell">
+                      <span className="member-name-line">
+                        {name ? (
+                          <strong className="member-name">{name}</strong>
+                        ) : (
+                          <span className="member-name muted">No name</span>
+                        )}
+                        {m.joinedViaInvitation && (
+                          <Ticket
+                            size={14}
+                            strokeWidth={1.75}
+                            aria-label="Joined via invitation"
+                            className="status-icon ok members-invited"
+                          />
+                        )}
+                      </span>
+                      <span className="member-did">
+                        <DidText did={m.did} to={encodeURIComponent(m.did)} />
+                      </span>
+                    </span>
+                  </td>
                   <td>
-                    {git.isPending ? (
-                      <span className="muted">…</span>
+                    <code>{m.role}</code>
+                  </td>
+                  <td>{formatDate(m.joinedAt)}</td>
+                  <td>
+                    {m.personhood ? (
+                      <span className="chip success">
+                        <Check size={12} strokeWidth={2} aria-hidden="true" /> Verified
+                      </span>
                     ) : (
-                      <MemberGitCell did={m.did} index={git.index} />
+                      <span className="chip">Not yet</span>
                     )}
                   </td>
-                )}
-              </tr>
-            ))}
+                  {showGit && (
+                    <td>
+                      {git.isPending ? (
+                        <span className="muted">…</span>
+                      ) : (
+                        <MemberGitCell did={m.did} index={git.index} />
+                      )}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
           </DataTable>
         </div>
 

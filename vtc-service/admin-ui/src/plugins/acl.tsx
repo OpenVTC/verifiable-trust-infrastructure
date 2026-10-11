@@ -150,6 +150,9 @@ async function revokeInvite(jti: string): Promise<void> {
 
 export function Acl() {
   const [roleFilter, setRoleFilter] = useState("");
+  // Narrows the listed entries in the browser: the role filter is the VTC's,
+  // this is only over what it returned.
+  const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState<AclEntry | null>(null);
   const queryClient = useQueryClient();
@@ -202,33 +205,33 @@ export function Acl() {
     onError: (err) => toast.pushFromError(err, "Remove now failed"),
   });
 
+  const entries = query.data?.entries ?? [];
+  const terms = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const shown = terms.length
+    ? entries.filter((e) => {
+        const hay = [e.subject, e.label ?? "", e.role, communityRoleOf(e), describeAuthority(e)]
+          .join(" ")
+          .toLowerCase();
+        return terms.every((t) => hay.includes(t));
+      })
+    : entries;
+
   return (
     <section className="page">
-      <PageHeader title="Access control" />
-
-      <SessionTimeoutCard />
-
-      <section className="card">
-        <div className="toolbar">
-          <Field label="Filter by administrative role" inline>
-            <select
-              aria-label="Filter by administrative role"
-              value={roleFilter}
-              onChange={(e) => setRoleFilter(e.target.value)}
-            >
-              <option value="">all entries</option>
-              {ADMIN_ROLES.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.title}
-                </option>
-              ))}
-              <option value={NO_ADMIN_ROLE}>no administrative role</option>
-            </select>
-          </Field>
-          <div className="spacer" />
+      <PageHeader
+        title="Access control"
+        count={query.isSuccess ? entries.length : undefined}
+        countLabel={
+          query.isSuccess
+            ? `${entries.length} entr${entries.length === 1 ? "y" : "ies"}`
+            : undefined
+        }
+        lead="Who may administer this community, and what each entry may do."
+        actions={
           <button
             type="button"
             className={showCreate ? "secondary" : "primary"}
+            aria-expanded={showCreate}
             onClick={() => setShowCreate((v) => !v)}
           >
             {showCreate ? (
@@ -241,8 +244,8 @@ export function Acl() {
               </>
             )}
           </button>
-        </div>
-      </section>
+        }
+      />
 
       {showCreate && (
         <CreateAclForm
@@ -287,6 +290,32 @@ export function Acl() {
         />
       )}
 
+      <div className="toolbar list-toolbar acl-toolbar" role="search" aria-label="Access control">
+        <Field label="Search" inline className="acl-search">
+          <input
+            type="search"
+            placeholder="DID, label or role"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </Field>
+        <Field label="Filter by administrative role" inline>
+          <select
+            aria-label="Filter by administrative role"
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value)}
+          >
+            <option value="">all entries</option>
+            {ADMIN_ROLES.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.title}
+              </option>
+            ))}
+            <option value={NO_ADMIN_ROLE}>no administrative role</option>
+          </select>
+        </Field>
+      </div>
+
       {query.error && (
         <section className="card error">
           <h3>Failed to load ACL</h3>
@@ -294,179 +323,202 @@ export function Acl() {
         </section>
       )}
 
-      <section className="card">
-        <DataTable
-          columns={[
-            { key: "did", label: "DID" },
-            { key: "administrative-role", label: "Administrative role" },
-            { key: "administers", label: "Administers" },
-            { key: "community-role", label: "Community role" },
-            { key: "label", label: "Label" },
-            { key: "expires", label: "Expires" },
-            { key: "actions", label: "" },
-          ]}
-        >
-          {query.isPending && (
-            <tr>
-              <td colSpan={7}>Loading…</td>
-            </tr>
-          )}
-          {query.data?.entries.length === 0 && (
-            <tr>
-              <td colSpan={7}>
-                <EmptyState icon={ShieldCheck} title="No ACL entries match this filter">
-                  Use <strong>Add entry</strong> to grant access,
-                  or clear the role filter to see every entry.
-                </EmptyState>
-              </td>
-            </tr>
-          )}
-          {query.data?.entries.map((e) => {
-            const review = e.ext?.["org.openvtc"]?.delegationReview;
-            // Your own entry (VTI-ACL-052): the label always; anything else
-            // only where the VTC would allow it, explained otherwise.
-            const own = me !== null && e.subject === me ? ownEntryEdits(e, singleAdminMode) : null;
-            const suspended = suspensionOf(e);
-            // Another unrestricted administrator: in single-administrator
-            // mode, removing them may skip the cooling-off (§8.5).
-            const mayRemoveNow = singleAdminMode && own === null && isUnrestricted(e);
-            return (
-              <tr key={e.subject}>
-                <td>
-                  <code title={e.subject}>{shortenDid(e.subject)}</code>
-                  {own && (
-                    <span className="chip" title="This is the entry you are signed in as">
-                      you
-                    </span>
-                  )}
-                </td>
-                <td>
-                  {e.role === NO_ADMIN_ROLE ? (
-                    <span className="muted">none</span>
-                  ) : (
-                    <code>{e.role}</code>
-                  )}
-                  {review && (
-                    <span
-                      className="chip warning"
-                      title={`Granted by ${review.granter}, who has left or narrowed. Withdrawn at ${review.deadline} unless an administrator re-affirms it (Edit, then Save).`}
-                    >
-                      under review
-                    </span>
-                  )}
-                  {suspended && (
-                    <span
-                      className="chip danger"
-                      data-testid="suspended"
-                      title={`A reduction of this entry is cooling off (action ${suspended.actionId}, requested by ${suspended.requester}). Until it lands or is cancelled the entry authorizes nothing; cancelling restores it.`}
-                    >
-                      suspended — removal lands {formatIso(suspended.landsAt)}
-                    </span>
-                  )}
-                </td>
-                <td data-testid="administers">
-                  <AuthorityCell entry={e} />
-                </td>
-                <td>
-                  <code>{communityRoleOf(e)}</code>
-                  {membershipOf(e) === "none" && communityRoleOf(e) !== "application" && (
-                    <span
-                      className="chip"
-                      data-testid="no-membership"
-                      title="This entry has no member record, so it cannot sign in to the member portal. Make this a membership to issue one."
-                    >
-                      no membership
-                    </span>
-                  )}
-                </td>
-                <td>
-                  <EditableLabelCell entry={e} label={e.label ?? null} />
-                  {labelSelfSet(e) && (
-                    <span
-                      className="chip warning"
-                      title="Set by the entry's own subject, not by another administrator (VTI-ACL-052)"
-                    >
-                      self-set
-                    </span>
-                  )}
-                </td>
-                <td>
-                  {e.expiresAt ? (
-                    <span title={String(e.expiresAt)}>
-                      {formatIso(e.expiresAt)}
-                    </span>
-                  ) : (
-                    <span className="muted">never</span>
-                  )}
-                </td>
-                <td>
-                  <div className="row-actions">
-                    {e.role !== NO_ADMIN_ROLE && (
-                      <button
-                        type="button"
-                        className="secondary"
-                        disabled={own !== null && !own.other}
-                        title={
-                          own === null
-                            ? undefined
-                            : own.other
-                              ? "Single-administrator mode: your passkey gesture, bound to this change, is asked for (VTI-ACL-052)"
-                              : (own.why ?? undefined)
-                        }
-                        onClick={() => setEditing(e)}
-                      >
-                        Edit
-                      </button>
+      <section className="card table-card">
+        <div className="table-scroll">
+          <DataTable
+            columns={[
+              { key: "entry", label: "Entry" },
+              { key: "administrative-role", label: "Administrative role" },
+              { key: "administers", label: "Administers" },
+              { key: "community-role", label: "Community role" },
+              { key: "expires", label: "Expires" },
+              { key: "actions", label: "" },
+            ]}
+          >
+            {query.isPending && (
+              <tr>
+                <td colSpan={6}>Loading…</td>
+              </tr>
+            )}
+            {query.isSuccess && shown.length === 0 && (
+              <tr>
+                <td colSpan={6}>
+                  <EmptyState
+                    icon={ShieldCheck}
+                    title={
+                      entries.length === 0
+                        ? "No ACL entries match this filter"
+                        : "No entries match this search"
+                    }
+                  >
+                    {entries.length === 0 ? (
+                      <>
+                        Use <strong>Add entry</strong> to grant access,
+                        or clear the role filter to see every entry.
+                      </>
+                    ) : (
+                      <>Clear the search to see every entry for this filter.</>
                     )}
-                    <button
-                      type="button"
-                      className="secondary destructive"
-                      disabled={revoke.isPending || own !== null}
-                      title={
-                        own !== null
-                          ? "You cannot revoke your own entry (VTI-ACL-052) — another administrator can"
-                          : undefined
-                      }
-                      onClick={async () => {
-                        const ok = await confirm({
-                          title: "Revoke ACL entry?",
-                          message: isUnrestricted(e)
-                            ? `${e.subject} is an unrestricted administrator. With nobody else to consent, the removal waits out a cooling-off, during which they are suspended — their entry authorizes nothing — and you can cancel it. Otherwise another administrator approves it.`
-                            : `${e.subject} loses access immediately. This cannot be undone.`,
-                          confirmLabel: "Revoke",
-                          destructive: true,
-                        });
-                        if (ok) revoke.mutate(e.subject);
-                      }}
-                    >
-                      Revoke
-                    </button>
-                    {canMakeMembership(e) && <MakeMembershipButton entry={e} />}
-                    {mayRemoveNow && (
+                  </EmptyState>
+                </td>
+              </tr>
+            )}
+            {shown.map((e) => {
+              const review = e.ext?.["org.openvtc"]?.delegationReview;
+              // Your own entry (VTI-ACL-052): the label always; anything else
+              // only where the VTC would allow it, explained otherwise.
+              const own = me !== null && e.subject === me ? ownEntryEdits(e, singleAdminMode) : null;
+              const suspended = suspensionOf(e);
+              // Another unrestricted administrator: in single-administrator
+              // mode, removing them may skip the cooling-off (§8.5).
+              const mayRemoveNow = singleAdminMode && own === null && isUnrestricted(e);
+              return (
+                <tr key={e.subject}>
+                  <td className="acl-entry">
+                    {/* The entry: its label (edited in place) over its DID. */}
+                    <span className="acl-entry-cell">
+                      <span className="acl-entry-label">
+                        <EditableLabelCell entry={e} label={e.label ?? null} />
+                        {labelSelfSet(e) && (
+                          <span
+                            className="chip warning"
+                            title="Set by the entry's own subject, not by another administrator (VTI-ACL-052)"
+                          >
+                            self-set
+                          </span>
+                        )}
+                      </span>
+                      <span className="acl-entry-did">
+                        <code title={e.subject}>{shortenDid(e.subject)}</code>
+                        {own && (
+                          <span className="chip accent" title="This is the entry you are signed in as">
+                            you
+                          </span>
+                        )}
+                      </span>
+                    </span>
+                  </td>
+                  <td>
+                    {e.role === NO_ADMIN_ROLE ? (
+                      <span className="muted">none</span>
+                    ) : (
+                      <code>{e.role}</code>
+                    )}
+                    {review && (
+                      <span
+                        className="chip warning"
+                        title={`Granted by ${review.granter}, who has left or narrowed. Withdrawn at ${review.deadline} unless an administrator re-affirms it (Edit, then Save).`}
+                      >
+                        under review
+                      </span>
+                    )}
+                    {suspended && (
+                      <span
+                        className="chip danger"
+                        data-testid="suspended"
+                        title={`A reduction of this entry is cooling off (action ${suspended.actionId}, requested by ${suspended.requester}). Until it lands or is cancelled the entry authorizes nothing; cancelling restores it.`}
+                      >
+                        suspended — removal lands {formatIso(suspended.landsAt)}
+                      </span>
+                    )}
+                  </td>
+                  <td data-testid="administers">
+                    <AuthorityCell entry={e} />
+                  </td>
+                  <td>
+                    <code>{communityRoleOf(e)}</code>
+                    {membershipOf(e) === "none" && communityRoleOf(e) !== "application" && (
+                      <span
+                        className="chip"
+                        data-testid="no-membership"
+                        title="This entry has no member record, so it cannot sign in to the member portal. Make this a membership to issue one."
+                      >
+                        no membership
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    {e.expiresAt ? (
+                      <span title={String(e.expiresAt)}>
+                        {formatIso(e.expiresAt)}
+                      </span>
+                    ) : (
+                      <span className="muted">never</span>
+                    )}
+                  </td>
+                  <td>
+                    <div className="row-actions">
+                      {e.role !== NO_ADMIN_ROLE && (
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={own !== null && !own.other}
+                          title={
+                            own === null
+                              ? undefined
+                              : own.other
+                                ? "Single-administrator mode: your passkey gesture, bound to this change, is asked for (VTI-ACL-052)"
+                                : (own.why ?? undefined)
+                          }
+                          onClick={() => setEditing(e)}
+                        >
+                          Edit
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="secondary destructive"
-                        disabled={removeNow.isPending}
-                        title="Single-administrator mode: remove at once, without the cooling-off — after typing their DID and a passkey gesture bound to this removal"
-                        onClick={() => setRemovingNow(e)}
+                        disabled={revoke.isPending || own !== null}
+                        title={
+                          own !== null
+                            ? "You cannot revoke your own entry (VTI-ACL-052) — another administrator can"
+                            : undefined
+                        }
+                        onClick={async () => {
+                          const ok = await confirm({
+                            title: "Revoke ACL entry?",
+                            message: isUnrestricted(e)
+                              ? `${e.subject} is an unrestricted administrator. With nobody else to consent, the removal waits out a cooling-off, during which they are suspended — their entry authorizes nothing — and you can cancel it. Otherwise another administrator approves it.`
+                              : `${e.subject} loses access immediately. This cannot be undone.`,
+                            confirmLabel: "Revoke",
+                            destructive: true,
+                          });
+                          if (ok) revoke.mutate(e.subject);
+                        }}
                       >
-                        Remove now
+                        Revoke
                       </button>
+                      {canMakeMembership(e) && <MakeMembershipButton entry={e} />}
+                      {mayRemoveNow && (
+                        <button
+                          type="button"
+                          className="secondary destructive"
+                          disabled={removeNow.isPending}
+                          title="Single-administrator mode: remove at once, without the cooling-off — after typing their DID and a passkey gesture bound to this removal"
+                          onClick={() => setRemovingNow(e)}
+                        >
+                          Remove now
+                        </button>
+                      )}
+                    </div>
+                    {own && !own.other && e.role !== NO_ADMIN_ROLE && (
+                      <p className="muted own-entry-note">{own.why}</p>
                     )}
-                  </div>
-                  {own && !own.other && e.role !== NO_ADMIN_ROLE && (
-                    <p className="muted own-entry-note">{own.why}</p>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </DataTable>
+                  </td>
+                </tr>
+              );
+            })}
+          </DataTable>
+        </div>
       </section>
 
       <InvitesPanel openRequest={inviteRequested} />
+
+      {/* A community-wide setting, not part of the list: after it. */}
+      <SessionTimeoutCard />
     </section>
   );
+
 }
 
 /**
@@ -1268,6 +1320,7 @@ function EditableLabelCell({
     return (
       <input
         type="text"
+        aria-label={`Label for ${entry.subject}`}
         value={draft}
         autoFocus
         disabled={mutation.isPending}
