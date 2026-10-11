@@ -370,7 +370,12 @@ vtc status        # on the VTC host: "Transports" compares document and build
 
 The same three steps publish any other change to the community's
 document after mint, such as a `TrustRegistry` referral added or
-changed, or a key rotated.
+changed, or a key rotated. That includes the two entries wallet sign-in
+needs, `TrustTaskHTTPS` (`<public_url>/v1`) and `SignInPortal`
+(`<public_url>/members/`): a running VTC that finds either missing from its
+published document logs a warning with the exact entries to add, and its
+sign-in pages say wallet sign-in is unavailable until they are published
+([member portal](website-and-admin.md)).
 
 ## Quick reference
 

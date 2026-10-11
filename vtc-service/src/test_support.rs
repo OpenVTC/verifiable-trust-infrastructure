@@ -534,6 +534,7 @@ impl TestVtcBuilder {
             didcomm: didcomm_cell,
             git_ns,
             large_document_budget: Arc::new(crate::trust_tasks::size::LargeDocumentBudget::new()),
+            did_self_check: Arc::new(crate::did_self_check::DidSelfCheck::new()),
         };
 
         // Every response a test provokes is validated against its Trust

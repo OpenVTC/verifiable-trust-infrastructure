@@ -977,6 +977,9 @@ async fn sign_in_config_names_the_link_host_and_the_member_page_is_hardened() {
     assert_eq!(v["vtcDid"], VTC_DID);
     assert_eq!(v["linkHost"], "link.trustoverip.org");
     assert_eq!(v["flow"], "/vti/flow/sign-in/0.1");
+    // The DID self-check: no resolver here, so the published document is
+    // unknown — never reported as missing, and nothing beyond the status.
+    assert_eq!(v["didDocument"], json!({ "status": "unknown" }), "{v}");
 
     // Both pages that show a trigger link: the portal, and the console's
     // login page (VTI-LNK-082).

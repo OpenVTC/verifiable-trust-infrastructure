@@ -149,4 +149,40 @@ describe("wallet sign-in", () => {
     fireEvent.click(screen.getByRole("button", { name: /show sign-in code/i }));
     expect(await screen.findByText(/code expired/i)).toBeTruthy();
   });
+
+  describe("when the community's DID document can't support it", () => {
+    const stubConfig = (didDocument: unknown) =>
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => json(200, { ...CFG, didDocument })),
+      );
+
+    it("names the missing services instead of offering a code", async () => {
+      stubConfig({ status: "missing", missing: ["SignInPortal"] });
+      render(<WalletSignIn onSignedIn={() => {}} />);
+      expect(await screen.findByText(/isn't available here yet/i)).toBeTruthy();
+      expect(screen.getByText(/doesn't list SignInPortal/)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /show sign-in code/i })).toBeNull();
+    });
+
+    it("lists every missing service", async () => {
+      stubConfig({ status: "missing", missing: ["TrustTaskHTTPS", "SignInPortal"] });
+      render(<WalletSignIn onSignedIn={() => {}} />);
+      expect(
+        await screen.findByText(/doesn't list TrustTaskHTTPS or SignInPortal/),
+      ).toBeTruthy();
+    });
+
+    it("still offers wallet sign-in when the check is unknown or absent", async () => {
+      for (const didDocument of [{ status: "unknown" }, { status: "ok" }, undefined]) {
+        stubConfig(didDocument);
+        const { unmount } = render(<WalletSignIn onSignedIn={() => {}} />);
+        await waitFor(() => expect(fetch).toHaveBeenCalled());
+        expect(screen.getByRole("button", { name: /show sign-in code/i })).toBeTruthy();
+        expect(screen.queryByText(/isn't available here yet/i)).toBeNull();
+        unmount();
+        vi.unstubAllGlobals();
+      }
+    });
+  });
 });

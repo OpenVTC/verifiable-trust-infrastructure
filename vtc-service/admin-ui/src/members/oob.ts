@@ -38,11 +38,30 @@ export const SESSION_EXT = "org.openvtc.session";
 /** The decline reason for an identity that is not an administrator. */
 export const NOT_AN_ADMIN = "notAnAdmin";
 
+/** Whether the community's published DID document lists what a wallet needs
+ *  to sign in (`TrustTaskHTTPS`, `SignInPortal`). The VTC checks its own
+ *  document; `unknown` (or an older VTC that sends nothing) is not a finding. */
+export interface DidDocumentCheck {
+  status: "ok" | "missing" | "unknown";
+  /** The service types missing, when `status` is `missing`. */
+  missing?: string[];
+}
+
 /** What `GET /v1/member/sign-in/config` answers. */
 export interface SignInConfig {
   vtcDid: string;
   linkHost: string;
   flow: string;
+  didDocument?: DidDocumentCheck;
+}
+
+/** The services a wallet needs that the community's DID document lacks, or
+ *  `null` when wallet sign-in can be offered (including when it is unknown). */
+export function missingDidServices(cfg: SignInConfig): string[] | null {
+  const check = cfg.didDocument;
+  if (check?.status !== "missing") return null;
+  const missing = (check.missing ?? []).filter((s) => typeof s === "string");
+  return missing.length > 0 ? missing : ["the services wallets need"];
 }
 
 /** A successful `redeem` (contract C9). No tokens. */

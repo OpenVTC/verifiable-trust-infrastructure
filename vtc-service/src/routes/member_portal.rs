@@ -144,6 +144,12 @@ pub struct SignInConfigResponse {
     pub link_host: String,
     /// `_type`, path form.
     pub flow: String,
+    /// Whether this community's published DID document lists what a wallet
+    /// needs to sign in (`TrustTaskHTTPS`, `SignInPortal`): `ok`, `missing`
+    /// (with the service types) or `unknown`. Only facts of the public DID
+    /// document (`crate::did_self_check`). The page shows wallet sign-in
+    /// unless this is `missing`.
+    pub did_document: crate::did_self_check::PublicView,
 }
 
 /// `GET /v1/member/sign-in/config`. Refuses, naming the fix, when the
@@ -160,8 +166,9 @@ pub async fn sign_in_config(
         )
     })?;
     let link_host = cfg.admin_ui.sign_in_link_host().to_string();
-    let portal_host = cfg
-        .public_url
+    let public_url = cfg.public_url.clone();
+    drop(cfg);
+    let portal_host = public_url
         .as_deref()
         .and_then(|u| url::Url::parse(u).ok())
         .and_then(|u| u.host_str().map(str::to_string))
@@ -173,10 +180,12 @@ pub async fn sign_in_config(
         });
     crate::member_portal::oob::check_link_host(&link_host, portal_host.as_deref())
         .map_err(AppError::Config)?;
+    let did_document = state.did_self_check.current(&state).await.public_view();
     let mut response = Json(SignInConfigResponse {
         vtc_did,
         link_host,
         flow: crate::member_portal::oob::SIGN_IN_FLOW.into(),
+        did_document,
     })
     .into_response();
     response.headers_mut().insert(

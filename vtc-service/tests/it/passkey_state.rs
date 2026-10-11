@@ -149,6 +149,7 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         large_document_budget: std::sync::Arc::new(
             vtc_service::trust_tasks::size::LargeDocumentBudget::new(),
         ),
+        did_self_check: std::sync::Arc::new(vtc_service::did_self_check::DidSelfCheck::new()),
     };
     (state, dir)
 }

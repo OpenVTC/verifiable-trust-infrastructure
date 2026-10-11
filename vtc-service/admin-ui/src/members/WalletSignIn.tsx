@@ -16,6 +16,7 @@ import {
   fetchSignInConfig,
   forgetSessionKey,
   generateSessionKey,
+  missingDidServices,
   NOT_AN_ADMIN,
   OobError,
   openRequest,
@@ -100,6 +101,10 @@ export function WalletSignIn({
   // keeps running (contract C9) — on a phone, tapping the code hides the tab.
   const [codeHidden, setCodeHidden] = useState(false);
   const cfgRef = useRef<SignInConfig | null>(null);
+  // Services the community's DID document lacks, so no wallet would accept
+  // its codes: the option is replaced by a note and the page's other options
+  // carry on. `null` until known, and whenever wallet sign-in can be offered.
+  const [missing, setMissing] = useState<string[] | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const runRef = useRef(0);
 
@@ -110,6 +115,22 @@ export function WalletSignIn({
   }, []);
 
   useEffect(() => stopPolling, [stopPolling]);
+
+  // Learn up front whether wallet sign-in can work. A failure here changes
+  // nothing: the click fetches again and reports what went wrong.
+  useEffect(() => {
+    let live = true;
+    fetchSignInConfig()
+      .then((cfg) => {
+        if (!live) return;
+        cfgRef.current = cfg;
+        setMissing(missingDidServices(cfg));
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
 
   useEffect(() => {
     const onVisibility = () => {
@@ -250,7 +271,18 @@ export function WalletSignIn({
         <Smartphone size={18} aria-hidden="true" /> Sign in with your wallet
       </h2>
 
-      {(phase.kind === "idle" || phase.kind === "starting") && (
+      {missing && phase.kind === "idle" && (
+        <div className="alert" role="status">
+          <p className="alert-title">Wallet sign-in isn't available here yet.</p>
+          <p>
+            This community's DID document doesn't list {missing.join(" or ")}, so wallets
+            can't accept its sign-in codes. Use another option below; the operator's logs
+            say how to fix it.
+          </p>
+        </div>
+      )}
+
+      {!missing && (phase.kind === "idle" || phase.kind === "starting") && (
         <>
           <button
             type="button"

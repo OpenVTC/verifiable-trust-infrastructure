@@ -912,6 +912,22 @@ reports whether both services are there. Adding it is a VTA-side
 `dids edit`, then `cnm did-log install` for a VTC that serves its own
 `did.jsonl`.
 
+The running VTC checks this itself. A few seconds after start, and then
+lazily with a five-minute cache, it resolves its own DID and checks the
+**published** document for both entries. When one is missing or names
+another origin it logs one warning listing what is missing, the exact JSON
+entries to add, and the fix (`pnm did-mgmt dids edit --did <vtc-did>`,
+then `cnm did-log install` if the VTC serves its own log; see
+[community lifecycle](community-lifecycle.md#changing-the-communitys-transports-after-mint)).
+`GET /v1/member/sign-in/config` carries the result as `didDocument`
+(`{"status":"ok"}`, `{"status":"unknown"}`, or
+`{"status":"missing","missing":["SignInPortal"]}`): only the service types
+the public document lacks. When it is `missing`, the member portal's and
+the console's sign-in pages replace "Show sign-in code" with a short note
+naming them, and the other options are unchanged. The check never blocks
+start-up, and a DID that does not resolve is `unknown`, not `missing`, so
+the page keeps offering wallet sign-in.
+
 **Using an older wallet? (deprecated).** The SIOPv2 sign-in below is
 kept for wallets that cannot do the above, behind a link on the
 sign-in page. It will be removed; a date has not been set.

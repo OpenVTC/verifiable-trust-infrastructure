@@ -280,6 +280,10 @@ pub struct AppState {
     /// default 64 KiB) a claimed — not yet verified — known issuer is granted
     /// a raised size limit for. See [`crate::trust_tasks::size`].
     pub large_document_budget: Arc<crate::trust_tasks::size::LargeDocumentBudget>,
+    /// Whether the published DID document lets a wallet sign in
+    /// (`TrustTaskHTTPS` + `SignInPortal`), checked at boot and lazily with a
+    /// five-minute cache. Advisory and read-only.
+    pub did_self_check: Arc<crate::did_self_check::DidSelfCheck>,
 }
 
 /// Delivery deadline for a pushed credential-exchange step or other ordinary
@@ -902,6 +906,7 @@ pub async fn run(
         didcomm: didcomm_cell,
         git_ns,
         large_document_budget: Arc::new(crate::trust_tasks::size::LargeDocumentBudget::new()),
+        did_self_check: Arc::new(crate::did_self_check::DidSelfCheck::new()),
     };
 
     // Rewrite every ACL row from before role-based administration, before
@@ -1422,6 +1427,12 @@ pub async fn run(
     // every minute and does nothing until an admin turns it on
     // (`PUT /v1/vetting/auto-grant`), so enabling needs no restart.
     crate::vetting::auto_grant::AutoGrantSweeper::spawn(state.clone(), shutdown_rx.clone());
+
+    // Does the published DID document let a wallet sign in? Advisory: runs
+    // off the startup path, a few seconds in (a serverless VTC answers its
+    // own resolution only once it listens), logs one warning naming the fix,
+    // and never stops the boot. Re-checked lazily by the sign-in config.
+    crate::did_self_check::DidSelfCheck::spawn_at_boot(state.clone(), shutdown_rx.clone());
 
     // #708: spawn the signed-checkpoint emitter. Without it the audit chain
     // is unkeyed all the way down — a store-level adversary can restamp a

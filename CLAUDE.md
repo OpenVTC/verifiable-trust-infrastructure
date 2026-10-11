@@ -1142,6 +1142,12 @@ new flow, update both this section and the relevant `docs/*.md`.
   admin role read now) or the portal's, never the other. Never let a
   member-audience request reach the console minter, and never read an
   unreadable audience as `admin`.
+- **DID self-check**: `did_self_check` resolves the VTC's own DID (boot +
+  5-minute lazy cache) and warns when the published document lacks
+  `TrustTaskHTTPS` / `SignInPortal`; `GET /v1/member/sign-in/config` carries
+  `didDocument` (`ok` / `missing` + types / `unknown`) and the sign-in pages
+  hide the code when it is `missing`. Advisory only: never blocks boot, and a
+  resolution failure is `unknown`, never `missing`.
 - **Code**: `vtc-service/src/member_portal/`, `vtc-service/src/routes/member_portal.rs`,
   `vtc-service/src/routing/{csrf,host_dispatch}.rs`, `vtc-service/src/admin_ui.rs`
   (`MEMBER_UI_DIR`), `vtc-service/admin-ui/src/members/` +
