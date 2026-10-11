@@ -129,6 +129,8 @@ fn payload_kind(p: &SealedPayloadV1) -> &'static str {
         SealedPayloadV1::IssuedCredential(_) => "IssuedCredential",
         SealedPayloadV1::MessagingBridgeCredentials(_) => "MessagingBridgeCredentials",
         SealedPayloadV1::SeedMnemonic(_) => "SeedMnemonic",
+        SealedPayloadV1::ExternalSecret(_) => "ExternalSecret",
+        SealedPayloadV1::ExternalCredential(_) => "ExternalCredential",
     }
 }
 

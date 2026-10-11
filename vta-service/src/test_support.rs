@@ -1462,6 +1462,9 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
             .keyspace(crate::keyspaces::ISSUED_CREDENTIALS)
             .unwrap(),
         memory_ks: store.keyspace(crate::keyspaces::MEMORY).unwrap(),
+        external_accounts_ks: store.keyspace(crate::keyspaces::EXTERNAL_ACCOUNTS).unwrap(),
+        external_secrets_ks: store.keyspace(crate::keyspaces::EXTERNAL_SECRETS).unwrap(),
+        external_rate: std::sync::Arc::new(vta_external::rate::BindingRateLimiter::new()),
         room_groups_ks: store.keyspace(crate::keyspaces::ROOM_GROUPS).unwrap(),
         room_invitations_ks: store.keyspace(crate::keyspaces::ROOM_INVITATIONS).unwrap(),
         app_state_ks: store.keyspace(crate::keyspaces::APP_STATE).unwrap(),

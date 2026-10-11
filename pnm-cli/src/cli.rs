@@ -327,6 +327,20 @@ pub(crate) enum Commands {
         command: MemoryCommands,
     },
 
+    /// Manage the external accounts this VTA holds at clouds and third-party
+    /// services, and the integrations bound to them.
+    ///
+    /// Backed by the `external/*/0.1` Trust Tasks. Management needs
+    /// `external-accounts-manage` in `--context`; changes may be held for
+    /// other administrators' consent under `pnm approvals`. A secret is never
+    /// a command-line argument: `secret-set` reads it without echo and seals
+    /// it in this process.
+    #[command(name = "external")]
+    External {
+        #[command(subcommand)]
+        command: ExternalCommands,
+    },
+
     /// Act in a data room — a shared space governed by credentials the room
     /// itself issued, not by this VTA's ACL.
     ///
@@ -559,6 +573,151 @@ pub(crate) enum RoomCommands {
         /// How long the host holds the room after it lapses. Default 90 days.
         #[arg(long)]
         retention_days: Option<u32>,
+    },
+}
+
+/// External accounts (`external/*/0.1`).
+#[derive(Subcommand)]
+pub(crate) enum ExternalCommands {
+    /// List the accounts in a context (archived ones only with `--state archived`).
+    List {
+        #[arg(long = "context", value_name = "ID")]
+        context: String,
+        /// `active`, `suspended` or `archived`.
+        #[arg(long)]
+        state: Option<String>,
+        /// Only accounts of this auth model (e.g. `s3-static-presign`).
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// Show one account: settings, bindings, public material — never a secret.
+    Get {
+        id: String,
+        #[arg(long = "context", value_name = "ID")]
+        context: String,
+    },
+    /// Create an account. `--settings` is the model's settings as JSON, or
+    /// `@file`; it carries `model` and never a secret.
+    Create {
+        id: String,
+        #[arg(long = "context", value_name = "ID")]
+        context: String,
+        #[arg(long)]
+        label: String,
+        #[arg(long, value_name = "JSON|@FILE")]
+        settings: String,
+    },
+    /// Change an account's label or settings (settings are replaced whole).
+    Update {
+        id: String,
+        #[arg(long = "context", value_name = "ID")]
+        context: String,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long, value_name = "JSON|@FILE")]
+        settings: Option<String>,
+    },
+    /// Set a static model's secret. Read without echo (or from stdin when
+    /// piped), sealed here to a single-use wrapping key, never shown again.
+    SecretSet {
+        id: String,
+        #[arg(long = "context", value_name = "ID")]
+        context: String,
+    },
+    /// Bind a consumer DID to the account (replaces its existing binding).
+    Bind {
+        id: String,
+        #[arg(long = "context", value_name = "ID")]
+        context: String,
+        #[arg(long, value_name = "DID")]
+        consumer: String,
+        /// An object-key prefix the consumer may be issued for, e.g.
+        /// `rooms/`. Repeat for several.
+        #[arg(long = "prefix")]
+        prefixes: Vec<String>,
+        /// `put`, `get` or `delete`. Repeat for several.
+        #[arg(long = "action")]
+        actions: Vec<String>,
+        /// The longest credential lifetime it may request, in seconds.
+        #[arg(long, default_value_t = 900)]
+        max_ttl: u32,
+        /// Issuances per minute.
+        #[arg(long, default_value_t = 60)]
+        rate: u32,
+    },
+    /// Remove a consumer's binding.
+    Unbind {
+        id: String,
+        #[arg(long = "context", value_name = "ID")]
+        context: String,
+        #[arg(long, value_name = "DID")]
+        consumer: String,
+    },
+    /// What to set up at the provider for this account, generated.
+    Setup {
+        id: String,
+        #[arg(long = "context", value_name = "ID")]
+        context: String,
+    },
+    /// Exercise the account end to end and record the report.
+    Probe {
+        id: String,
+        #[arg(long = "context", value_name = "ID")]
+        context: String,
+    },
+    /// The kill switch: refuse every issuance at once.
+    Suspend {
+        id: String,
+        #[arg(long = "context", value_name = "ID")]
+        context: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Return a suspended account to service.
+    Resume {
+        id: String,
+        #[arg(long = "context", value_name = "ID")]
+        context: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Retire an account from service, keeping its record.
+    Archive {
+        id: String,
+        #[arg(long = "context", value_name = "ID")]
+        context: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Bring an archived account back, suspended.
+    Restore {
+        id: String,
+        #[arg(long = "context", value_name = "ID")]
+        context: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Delete an archived account for good; its id is never reused.
+    Delete {
+        id: String,
+        #[arg(long = "context", value_name = "ID")]
+        context: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Ask for a credential as a bound consumer. Printed still sealed.
+    Issue {
+        account: String,
+        #[arg(long = "context", value_name = "ID")]
+        context: String,
+        #[arg(long)]
+        prefix: Option<String>,
+        #[arg(long = "action")]
+        actions: Vec<String>,
+        #[arg(long)]
+        object_key: Option<String>,
+        #[arg(long, default_value_t = 900)]
+        ttl: u32,
     },
 }
 

@@ -1,0 +1,38 @@
+[package]
+name = "vta-external"
+description = "VTA external accounts — the VTA as the key authority for cloud and third-party accounts: account store, auth-model drivers, downscoped credential issuance"
+readme = "README.md"
+version = "0.1.0"
+edition.workspace = true
+# Published, because `vta-service` is — and a crate cannot go to crates.io
+# without its whole dependency closure there too. Not published for its own
+# sake: nothing outside this workspace is expected to depend on it directly.
+# See RELEASING.md ("What gets published").
+publish.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.13" }
+vta-keys = { path = "../vta-keys", version = "0.17" }
+vti-common = { path = "../vti-common", version = "0.40" }
+vta-sdk = { path = "../vta-sdk", version = "0.64", features = ["client"] }
+async-trait = "0.1"
+base64 = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+zeroize = "1"
+
+[dev-dependencies]
+tempfile = "3"

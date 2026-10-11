@@ -413,6 +413,9 @@ mod keys;
 // and the built node differ and cargo reports the unit Fresh — which is why the
 // census lives downstream rather than in this crate's own tests.
 mod app_state;
+mod external;
+#[cfg(feature = "sealed-transfer")]
+pub use external::{open_external_credential, seal_external_secret};
 #[cfg(feature = "test-loopback")]
 pub mod loopback;
 mod memory;

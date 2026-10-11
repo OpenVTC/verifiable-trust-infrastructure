@@ -101,6 +101,10 @@ pub mod tee_webvh;
 /// `handle_trust_task` handler dispatch through `dispatch_trust_task_core`
 /// here, so it lives at the crate root rather than under `routes::` (P2.4).
 pub mod trust_tasks;
+/// External accounts (`external/*`): the account store, auth-model drivers and
+/// scope checks, extracted to `vta-external`. New code should depend on that
+/// crate directly.
+pub use vta_external as external;
 /// The holder credential vault, extracted to the `vta-vault` crate. Re-exported
 /// as `crate::vault` so every `crate::vault::…` path (dispatch handlers, the
 /// sweeper, `credential_exchange`) keeps resolving unchanged. The `bbs` /

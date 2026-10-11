@@ -919,6 +919,8 @@ mod tests {
             "room-present",
             "room-open",
             "key-export",
+            "external-accounts-manage",
+            "external-auth-use",
         ] {
             assert!(
                 p.contains(&cap.to_string()),

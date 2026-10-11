@@ -54,6 +54,7 @@ Layer 2 (VTA subsystems):
   vta-support     → vta-config, vta-keyspaces, vta-sdk, vti-common
   vta-keys        → vta-config, vta-keyspaces, vta-sdk, vti-common, vti-secrets
   vta-vault       → vta-keyspaces, vta-sdk, vti-common
+  vta-external    → vta-keys, vta-keyspaces, vta-sdk, vti-common
   vta-webvh       → vta-keyspaces, vta-sdk, vti-common
   vta-policy      → vta-config, vta-keyspaces, vti-common
 
@@ -85,6 +86,7 @@ Layer 4 (the spine + consumers):
 | `vta-support` | Shared mid-layer services — trust-context storage (the BIP-32 key-hierarchy roots) and the other clean glue subsystems need |
 | `vta-keys` | **Key management**: master-seed storage, BIP-32 hierarchical derivation, key wrapping (AES-GCM), imported-key handling, `create_seed_store` backend selection, `derive_pre_rotation_keys` |
 | `vta-vault` | **Holder credential vault**: storage, query, receive/verify, present, status refresh, and the archival lifecycle (`VaultStatus {Active,Archived,Deleted}`) |
+| `vta-external` | **External accounts** (`external/*`): identities the VTA holds at clouds and third-party services — account store (`external_accounts`; secrets in `external_secrets`, excluded from backup), the `ExternalAuthDriver` trait and drivers (`s3-static-presign` first), scope and binding checks, the per-binding rate. Design: `docs/05-design-notes/vta-external-accounts.md` |
 | `vta-webvh` | WebVH hosting infrastructure for the `did:webvh` lifecycle and its other consumers |
 | `vta-policy` | Policy subsystem: the regorus (Rego) engine + default bundle, the DTTE consent model, decision evaluators, policy storage |
 | `vta-tee` | TEE bootstrap: attestation providers (Nitro / SEV-SNP / simulated), KMS attest/decrypt, storage-key derivation, CMS unwrap, the DynamoDB anti-rollback anchor MAC, Mode-B admin bootstrap + carve-out, the mnemonic-export guard. Behind the `tee` feature — keeps the AWS SDK stack out of the default build graph |
@@ -868,6 +870,29 @@ new flow, update both this section and the relevant `docs/*.md`.
   *VTC administrator action list* below. The VTC has no rule list yet; its
   approval rules are fixed in code.
 
+### External accounts (`external/*`)
+- **What**: The VTA holds identities at clouds and third-party services; a
+  bound integration (a VTC storing room files) gets only a short-lived,
+  downscoped credential, sealed to it. Served model: `s3-static-presign`
+  (presigned URLs; the secret never leaves the VTA).
+- **Invariants to preserve**: management needs `external-accounts-manage` in the
+  account's context (act scope); issuance checks, in the spec's order, the
+  binding first (the authenticated caller, never a payload DID — an unbound
+  caller and an unknown account get the same `notFound`) → `external-auth-use`
+  → account state → scope ⊆ ceiling → TTL → rate → a key-agreement key to seal
+  to, before the provider is contacted.
+  Scope values are validated identifiers, never interpolated caller strings.
+  A credential leaves only inside `SealedPayloadV1::ExternalCredential`, and is
+  never logged or audited. Secrets live wrapped in `external_secrets`
+  (excluded from backup) and are never returned; `providerSetupRequired` holds
+  issuance until a probe that is both `ok` and `complete`. The VTA needs no inbound surface for any
+  model.
+- **Code**: `vta-external/src/`, `vta-service/src/trust_tasks/external.rs`,
+  `vta_sdk::client::external`, `vta-cli-common/src/commands/external.rs`
+  (`pnm external …`).
+- **Docs**: `docs/02-vta/external-accounts.md`,
+  `docs/05-design-notes/vta-external-accounts.md`.
+
 ### Vault archival lifecycle (archive / soft-delete / restore / purge)
 - **What**: Full lifecycle for **both** VTA stores — the password
   vault (`vault:` keyspace, `vti_common::vault::VaultEntry`) and the
@@ -1431,7 +1456,7 @@ The other 20 are `vta-sdk`, `vti-common`, `vti-secrets`, `vta-cli-common`,
 `vtc-client`, `pnm-cli`, `cnm-cli` — plus `vta-service` and its closure
 (`vta-audit`, `vta-backup`, `vta-config`, `vta-keys`, `vta-keyspaces`,
 `vta-policy`, `vta-support`, `vta-sweepers`, `vta-tee`, `vta-vault`,
-`vta-webvh`, `vti-webauthn`).
+`vta-webvh`, `vti-webauthn`, `vta-external`).
 
 **`vta-service` is published for one reason and it is not its own API:**
 `openvtc-core` dev-depends on it for `test_support::MockVta`, the in-process

@@ -135,10 +135,16 @@ const NOT_SECRET: &[(&str, &str, &str, &str)] = &[
         "a wallet sign-in key named as an Ed25519 `did:key` — the public half the \
          service checks a proof against (`K_a` / `K_b`, base design §10), never key material",
     ),
+    (
+        "vta-external/src/scope.rs",
+        "RequestedScope",
+        "object_key",
+        "the name of a storage object an issuance is scoped to, not key material",
+    ),
 ];
 
 /// The size of [`NOT_SECRET`], asserted so the list cannot grow quietly.
-const NOT_SECRET_COUNT: usize = 14;
+const NOT_SECRET_COUNT: usize = 15;
 
 /// Field names that are exactly one of these are record or index keys, not
 /// key material.

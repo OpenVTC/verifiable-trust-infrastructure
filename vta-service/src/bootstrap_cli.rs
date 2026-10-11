@@ -403,6 +403,15 @@ fn print_opened(
                 "  Open with `pnm bootstrap open` on the offline machine that will hold the backup."
             );
         }
+        // Never print the secret or the credential, here or anywhere.
+        SealedPayloadV1::ExternalSecret(b) => {
+            println!("Payload: ExternalSecret");
+            println!("  Account:    {}/{}", b.context, b.account);
+        }
+        SealedPayloadV1::ExternalCredential(c) => {
+            println!("Payload: ExternalCredential");
+            println!("  Expires at: {}", c.expires_at());
+        }
     }
     Ok(())
 }

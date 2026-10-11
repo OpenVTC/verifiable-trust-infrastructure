@@ -316,6 +316,18 @@ pub async fn run_open(
             println!();
             println!("  {}", m.mnemonic);
         }
+        // The secret and the credential are never printed.
+        SealedPayloadV1::ExternalSecret(b) => {
+            println!("Payload: ExternalSecret");
+            println!("  Account: {}/{}", b.context, b.account);
+            println!(
+                "  Set it on the VTA with external/accounts/secret/set; it is not shown here."
+            );
+        }
+        SealedPayloadV1::ExternalCredential(c) => {
+            println!("Payload: ExternalCredential");
+            println!("  Expires at: {}", c.expires_at());
+        }
     }
 
     if let Some(path) = out {
@@ -915,6 +927,8 @@ fn variant_name(p: &SealedPayloadV1) -> &'static str {
         SealedPayloadV1::IssuedCredential(_) => "IssuedCredential",
         SealedPayloadV1::MessagingBridgeCredentials(_) => "MessagingBridgeCredentials",
         SealedPayloadV1::SeedMnemonic(_) => "SeedMnemonic",
+        SealedPayloadV1::ExternalSecret(_) => "ExternalSecret",
+        SealedPayloadV1::ExternalCredential(_) => "ExternalCredential",
     }
 }
 

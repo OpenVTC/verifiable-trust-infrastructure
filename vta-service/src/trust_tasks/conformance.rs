@@ -527,6 +527,66 @@ fn vault_entry() -> vti_common::vault::VaultEntry {
 
 // ─── The witness table ───────────────────────────────────────────────────
 
+// ─── external/* fixtures ─────────────────────────────────────────────────
+
+/// An armor block of the shape `SealedTransferBundle` requires. The witness
+/// checks the wire shape; sealing is exercised in the slice's own tests.
+const SEALED_ARMOR: &str = "-----BEGIN VTA SEALED BUNDLE-----\nBundle-Id: 00000000000000000000000000000000\n\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n=AAAA\n-----END VTA SEALED BUNDLE-----\n";
+
+fn external_settings() -> Value {
+    json!({
+        "model": "s3-static-presign",
+        "endpoint": "https://example.r2.cloudflarestorage.com",
+        "region": "auto",
+        "bucket": "rooms",
+        "pathStyle": true,
+        "accessKeyId": "AKIDEXAMPLE",
+    })
+}
+
+fn external_record() -> vta_external::model::AccountRecord {
+    use vta_external::model::{AccountRecord, AccountState, Binding, ScopeCeiling, SecretInfo};
+    AccountRecord {
+        id: "r2-main".into(),
+        label: "R2".into(),
+        context: "community".into(),
+        settings: external_settings(),
+        state: AccountState::Active,
+        public_material: None,
+        secret: Some(SecretInfo {
+            fingerprint: vta_external::fingerprint::of(&[7; 32], b"secret"),
+            set_at: dt(),
+            seed_id: 0,
+        }),
+        bindings: vec![Binding {
+            consumer: SUBJECT.into(),
+            scope_ceiling: Some(ScopeCeiling {
+                prefixes: vec!["rooms/".into()],
+                actions: vec!["get".into(), "put".into()],
+                scopes: vec![],
+            }),
+            max_ttl_seconds: 900,
+            rate_per_minute: 60,
+            source_cidrs: vec![],
+            granted_at: Some(dt()),
+        }],
+        provider_setup_required: false,
+        last_probe: None,
+        created_at: dt(),
+        updated_at: dt(),
+    }
+}
+
+/// The account as the slice renders it: `AccountRecord::to_wire`, with the
+/// egress hosts the driver derives.
+fn external_account() -> Value {
+    let rec = external_record();
+    let egress = vta_external::driver::driver_for("s3-static-presign")
+        .unwrap()
+        .egress_hosts(&rec.settings);
+    rec.to_wire(&egress)
+}
+
 /// One entry per URI in [`resolved_uris`] — the coverage assertion below
 /// holds the two in lockstep, in both directions.
 ///
@@ -1936,6 +1996,151 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     lifecycle: VaultStatus::Deleted,
                     grace_until: None,
                 })
+            ),
+        ),
+        // ─── external/* — responses rendered by the slice's own projection
+        (
+            uris::TASK_EXTERNAL_ACCOUNTS_LIST_0_1,
+            checked!(
+                specs::external::accounts::list::v0_1::Payload,
+                specs::external::accounts::list::v0_1::Response,
+                json!({ "context": "community", "limit": 10 }),
+                json!({ "accounts": [external_account()], "nextCursor": "r2-main" })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_ACCOUNTS_GET_0_1,
+            checked!(
+                specs::external::accounts::get::v0_1::Payload,
+                specs::external::accounts::get::v0_1::Response,
+                json!({ "context": "community", "id": "r2-main" }),
+                json!({ "account": external_account() })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_ACCOUNTS_CREATE_0_1,
+            checked!(
+                specs::external::accounts::create::v0_1::Payload,
+                specs::external::accounts::create::v0_1::Response,
+                json!({ "context": "community", "id": "r2-main", "label": "R2", "settings": external_settings() }),
+                json!({ "account": external_account() })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_ACCOUNTS_UPDATE_0_1,
+            checked!(
+                specs::external::accounts::update::v0_1::Payload,
+                specs::external::accounts::update::v0_1::Response,
+                json!({ "context": "community", "id": "r2-main", "label": "R2 (EU)" }),
+                json!({ "account": external_account() })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1,
+            checked!(
+                specs::external::accounts::secret::set::v0_1::Payload,
+                specs::external::accounts::secret::set::v0_1::Response,
+                json!({ "context": "community", "id": "r2-main", "wrappingKeyId": "6f1c2a0e-1b7d-4c8e-9a3f-2d5e7b9c0a11", "sealedSecret": SEALED_ARMOR }),
+                json!({ "fingerprint": vta_external::fingerprint::of(&[7; 32], b"secret"), "setAt": TS })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_1,
+            checked!(
+                specs::external::accounts::bindings::grant::v0_1::Payload,
+                specs::external::accounts::bindings::grant::v0_1::Response,
+                json!({ "context": "community", "id": "r2-main", "binding": { "consumer": SUBJECT, "scopeCeiling": { "prefixes": ["rooms/"], "actions": ["get"] }, "maxTtlSeconds": 900, "ratePerMinute": 60 } }),
+                json!({ "account": external_account() })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_1,
+            checked!(
+                specs::external::accounts::bindings::revoke::v0_1::Payload,
+                specs::external::accounts::bindings::revoke::v0_1::Response,
+                json!({ "context": "community", "id": "r2-main", "consumer": SUBJECT }),
+                json!({ "account": external_account() })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_ACCOUNTS_SETUP_0_1,
+            checked!(
+                specs::external::accounts::setup::v0_1::Payload,
+                specs::external::accounts::setup::v0_1::Response,
+                json!({ "context": "community", "id": "r2-main" }),
+                json!({ "setup": vta_external::driver::driver_for("s3-static-presign").unwrap().setup(&external_record()) })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_ACCOUNTS_PROBE_0_1,
+            checked!(
+                specs::external::accounts::probe::v0_1::Payload,
+                specs::external::accounts::probe::v0_1::Response,
+                json!({ "context": "community", "id": "r2-main" }),
+                json!({ "report": { "at": TS, "ok": false, "complete": false, "steps": [{ "step": "sign", "ok": true, "durationMs": 1 }, { "step": "put", "ok": false, "providerError": "HTTP 403: AccessDenied" }] } })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_1,
+            checked!(
+                specs::external::accounts::keys::rotate::v0_1::Payload,
+                specs::external::accounts::keys::rotate::v0_1::Response,
+                json!({ "context": "community", "id": "r2-main", "phase": "stage" }),
+                json!({ "account": external_account() })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_1,
+            checked!(
+                specs::external::accounts::suspend::v0_1::Payload,
+                specs::external::accounts::suspend::v0_1::Response,
+                json!({ "context": "community", "id": "r2-main" }),
+                json!({ "account": external_account() })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_ACCOUNTS_RESUME_0_1,
+            checked!(
+                specs::external::accounts::resume::v0_1::Payload,
+                specs::external::accounts::resume::v0_1::Response,
+                json!({ "context": "community", "id": "r2-main" }),
+                json!({ "account": external_account() })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_1,
+            checked!(
+                specs::external::accounts::archive::v0_1::Payload,
+                specs::external::accounts::archive::v0_1::Response,
+                json!({ "context": "community", "id": "r2-main" }),
+                json!({ "account": external_account() })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_ACCOUNTS_RESTORE_0_1,
+            checked!(
+                specs::external::accounts::restore::v0_1::Payload,
+                specs::external::accounts::restore::v0_1::Response,
+                json!({ "context": "community", "id": "r2-main" }),
+                json!({ "account": external_account() })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_ACCOUNTS_DELETE_0_1,
+            checked!(
+                specs::external::accounts::delete::v0_1::Payload,
+                specs::external::accounts::delete::v0_1::Response,
+                json!({ "context": "community", "id": "r2-main" }),
+                json!({ "id": "r2-main", "deletedAt": TS })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1,
+            checked!(
+                specs::external::credentials::issue::v0_1::Payload,
+                specs::external::credentials::issue::v0_1::Response,
+                json!({ "context": "community", "account": "r2-main", "scope": { "prefix": "rooms/3f9a/", "actions": ["get"], "objectKey": "blob" }, "ttlSeconds": 600 }),
+                json!({ "sealedCredential": SEALED_ARMOR, "expiresAt": TS, "scope": { "prefix": "rooms/3f9a/", "actions": ["get"], "objectKey": "blob" } })
             ),
         ),
         // ─── vta/memory ──────────────────────────────────────────

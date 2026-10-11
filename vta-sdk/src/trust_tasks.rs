@@ -2143,6 +2143,74 @@ pub const TASK_POLICY_DELETE_0_1: &str = "https://trusttasks.org/spec/policy/del
 /// <https://trusttasks.org/spec/messaging/ping/0.1>.
 pub const TASK_MESSAGING_PING_0_1: &str = "https://trusttasks.org/spec/messaging/ping/0.1";
 
+// ─── External accounts (`external/*`, trust-tasks-tf #740) ─────────────────
+// The VTA as the key authority for cloud and third-party accounts:
+// docs/05-design-notes/vta-external-accounts.md.
+
+/// `external/accounts/list/0.1` — list a context's external accounts — settings, bindings and public material, never a secret.
+pub const TASK_EXTERNAL_ACCOUNTS_LIST_0_1: &str =
+    <trust_tasks_rs::specs::external::accounts::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `external/accounts/get/0.1` — one external account.
+pub const TASK_EXTERNAL_ACCOUNTS_GET_0_1: &str =
+    <trust_tasks_rs::specs::external::accounts::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `external/accounts/create/0.1` — create an external account and derive or generate its key. Consent-gated by default.
+pub const TASK_EXTERNAL_ACCOUNTS_CREATE_0_1: &str =
+    <trust_tasks_rs::specs::external::accounts::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `external/accounts/update/0.1` — change an account's label or settings. Consent-gated by default.
+pub const TASK_EXTERNAL_ACCOUNTS_UPDATE_0_1: &str =
+    <trust_tasks_rs::specs::external::accounts::update::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `external/accounts/secret/set/0.1` — set a static model's secret from a sealed-transfer bundle; write-only, the answer is a keyed fingerprint. Consent-gated by default.
+pub const TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1: &str =
+    <trust_tasks_rs::specs::external::accounts::secret::set::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `external/accounts/bindings/grant/0.1` — bind a consumer DID to an account, with a scope ceiling, a TTL ceiling and a rate. Consent-gated by default.
+pub const TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_1: &str =
+    <trust_tasks_rs::specs::external::accounts::bindings::grant::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `external/accounts/bindings/revoke/0.1` — remove a consumer's binding. Never consent-gated: taking authority away must be fast.
+pub const TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_1: &str =
+    <trust_tasks_rs::specs::external::accounts::bindings::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `external/accounts/setup/0.1` — the provider-side setup for an account, generated.
+pub const TASK_EXTERNAL_ACCOUNTS_SETUP_0_1: &str =
+    <trust_tasks_rs::specs::external::accounts::setup::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `external/accounts/probe/0.1` — exercise an account end to end and report each step.
+pub const TASK_EXTERNAL_ACCOUNTS_PROBE_0_1: &str =
+    <trust_tasks_rs::specs::external::accounts::probe::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `external/accounts/keys/rotate/0.1` — stage, confirm or abandon a replacement key. Consent-gated by default.
+pub const TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_1: &str =
+    <trust_tasks_rs::specs::external::accounts::keys::rotate::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `external/accounts/suspend/0.1` — the kill switch: refuse every issuance at once. Never consent-gated.
+pub const TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_1: &str =
+    <trust_tasks_rs::specs::external::accounts::suspend::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `external/accounts/resume/0.1` — return a suspended account to service. Consent-gated by default.
+pub const TASK_EXTERNAL_ACCOUNTS_RESUME_0_1: &str =
+    <trust_tasks_rs::specs::external::accounts::resume::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `external/accounts/archive/0.1` — retire an account from service, keeping its record.
+pub const TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_1: &str =
+    <trust_tasks_rs::specs::external::accounts::archive::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `external/accounts/restore/0.1` — bring an archived account back, suspended.
+pub const TASK_EXTERNAL_ACCOUNTS_RESTORE_0_1: &str =
+    <trust_tasks_rs::specs::external::accounts::restore::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `external/accounts/delete/0.1` — delete an archived account for good; its id is never reused. Consent-gated by default.
+pub const TASK_EXTERNAL_ACCOUNTS_DELETE_0_1: &str =
+    <trust_tasks_rs::specs::external::accounts::delete::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `external/credentials/issue/0.1` — a short-lived, downscoped provider credential for a bound consumer, sealed to the caller.
+pub const TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1: &str =
+    <trust_tasks_rs::specs::external::credentials::issue::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// Every URI registered in this module — handy for the dispatcher's
 /// parity harness and for operator tooling that wants to enumerate
 /// the VTA's wire surface programmatically.
@@ -2390,6 +2458,23 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
     TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,
     TASK_VTA_MEMORY_DELETE_0_1,
+    // External accounts (`external/*`)
+    TASK_EXTERNAL_ACCOUNTS_LIST_0_1,
+    TASK_EXTERNAL_ACCOUNTS_GET_0_1,
+    TASK_EXTERNAL_ACCOUNTS_CREATE_0_1,
+    TASK_EXTERNAL_ACCOUNTS_UPDATE_0_1,
+    TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1,
+    TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_1,
+    TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_1,
+    TASK_EXTERNAL_ACCOUNTS_SETUP_0_1,
+    TASK_EXTERNAL_ACCOUNTS_PROBE_0_1,
+    TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_1,
+    TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_1,
+    TASK_EXTERNAL_ACCOUNTS_RESUME_0_1,
+    TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_1,
+    TASK_EXTERNAL_ACCOUNTS_RESTORE_0_1,
+    TASK_EXTERNAL_ACCOUNTS_DELETE_0_1,
+    TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1,
     // Application-state slice (spec/vta/app-state/*)
     TASK_VTA_APP_STATE_GET_1_0,
     TASK_VTA_APP_STATE_PUT_1_0,
@@ -2636,6 +2721,13 @@ mod tests {
             // answers the same questions — so the family sits beside `vault/`
             // and `keys/` rather than under a maintainer's namespace.
             "https://trusttasks.org/spec/persona/",
+            // External accounts — `external/*`, authored upstream in
+            // dtgwg-trust-tasks-tf#740. Top-level rather than VTA-private:
+            // the family describes a key custodian holding identities at
+            // clouds and third-party services for the integrations bound to
+            // them, which any custodian could serve, not a VTA-specific
+            // operation.
+            "https://trusttasks.org/spec/external/",
         ];
         for uri in ALL_URIS {
             assert!(
