@@ -64,7 +64,16 @@ pub enum EffectPlan {
         /// no consent, so [`plan`] always writes `false` and a caller that
         /// holds a join request sets it from the request.
         publish_consent: bool,
+        /// The new ACL entry's label. Only a direct admission
+        /// ([`Purpose::Admission`]) sets one — the administrator's; a join
+        /// leaves it to the member or a later edit.
+        label: Option<String>,
     },
+    /// Admission `allow` for an **existing** ACL entry with no member record
+    /// (`vtc/members/make-membership/0.1`): write the member record and issue
+    /// the VMC + role VAC at the entry's own role. The entry itself — role,
+    /// authority, grants, label — is left exactly as it is.
+    Enrol { subject: String },
     /// Leave `allow` — remove `subject` and wind down their
     /// credentials per `disposition`. The executor revokes the VMC +
     /// removes the ACL / Member rows.
@@ -119,6 +128,7 @@ pub fn plan(
             obligations: allow.obligations.clone(),
             // A verdict cannot consent on the applicant's behalf.
             publish_consent: false,
+            label: None,
         }),
         Purpose::Leave => Ok(EffectPlan::Depart {
             subject,
@@ -128,8 +138,33 @@ pub fn plan(
             subject,
             role: required_role(allow.role.as_deref(), "role-change")?,
         }),
+        // The role is the administrator's (`evidence.request.role`); the host
+        // invariant has already refused a verdict naming another.
+        Purpose::Admission => {
+            let request = facts.evidence.request.as_ref();
+            let field = |k: &str| request.and_then(|r| r.get(k)).and_then(JsonValue::as_str);
+            match field("action") {
+                Some(ADMISSION_MAKE_MEMBERSHIP) => Ok(EffectPlan::Enrol { subject }),
+                Some(ADMISSION_ADD) => Ok(EffectPlan::Admit {
+                    subject,
+                    role: required_role(field("role"), "admission")?,
+                    obligations: allow.obligations.clone(),
+                    publish_consent: false,
+                    label: None,
+                }),
+                other => Err(AppError::Internal(format!(
+                    "admission facts carry an unknown action: {other:?}"
+                ))),
+            }
+        }
     }
 }
+
+/// `evidence.request.action` of a direct admission that adds a new member.
+pub const ADMISSION_ADD: &str = "add";
+/// `evidence.request.action` of a direct admission that makes an existing ACL
+/// entry a membership.
+pub const ADMISSION_MAKE_MEMBERSHIP: &str = "make-membership";
 
 /// A grant whose purpose requires a role must carry one.
 fn required_role(role: Option<&str>, purpose: &str) -> Result<String, AppError> {
@@ -248,6 +283,7 @@ mod tests {
                 role: "member".into(),
                 obligations: vec!["reciprocate_vmc".into()],
                 publish_consent: false,
+                label: None,
             }
         );
     }

@@ -57,6 +57,7 @@ mod diagnostics;
 mod did_log;
 mod did_register;
 mod didcomm_envelope_binding;
+mod direct_admission;
 mod directory;
 mod emergency_bootstrap;
 mod endorsements;

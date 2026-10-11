@@ -204,6 +204,15 @@ pub enum Act {
     /// of `vtc.vetting.manage` to keep the member or start their removal. The
     /// subject is the member.
     VettingReview,
+    /// A **direct admission** the community's `admission` policy referred for
+    /// approval: adding a member without a join request
+    /// (`vtc/members/admit/0.1`), or making an existing ACL entry a
+    /// membership (`vtc/members/make-membership/0.1`). It bypasses the join
+    /// criteria, so the approvers are the other holders of
+    /// `vtc.members.manage` — never the requester, never the subject. The
+    /// subject is the DID being admitted; the consent is pinned to its ACL
+    /// entry and member record.
+    DirectAdmission,
 }
 
 impl Act {
@@ -222,6 +231,9 @@ impl Act {
             Self::BreakGlassReview => "git-ns/right/ratify",
             Self::JoinReview => "vtc/join-requests/decide",
             Self::VettingReview => "vtc/vetting/revocations",
+            // The community's own rule, not a fixed requirement: the
+            // `admission` policy referred it.
+            Self::DirectAdmission => "the admission policy",
         }
     }
 
@@ -232,6 +244,7 @@ impl Act {
             Self::BreakGlassReview => "namespace-administrators-except-subject",
             Self::JoinReview => "join-deciders",
             Self::VettingReview => "vetting-managers-except-subject",
+            Self::DirectAdmission => "member-managers-except-subject",
             _ => APPROVER_SET,
         }
     }
@@ -247,6 +260,7 @@ impl Act {
                 | Self::BreakGlassReview
                 | Self::JoinReview
                 | Self::VettingReview
+                | Self::DirectAdmission
         )
     }
 
@@ -287,6 +301,7 @@ impl Act {
             Self::BreakGlassReview => vec![CapRef::all(Capability::GitNsAdmin)],
             Self::JoinReview => vec![CapRef::all(Capability::JoinDecide)],
             Self::VettingReview => vec![CapRef::all(Capability::VettingManage)],
+            Self::DirectAdmission => vec![CapRef::all(Capability::MembersManage)],
         }
     }
 
@@ -323,6 +338,12 @@ impl Act {
             Self::BreakGlassReview => s::KIND_BREAK_GLASS_REVIEW,
             Self::JoinReview => s::KIND_JOIN_REVIEW,
             Self::VettingReview => s::KIND_VETTING_REVIEW,
+            Self::DirectAdmission
+                if type_uri == crate::trust_tasks::admission_tasks::MAKE_MEMBERSHIP_TYPE =>
+            {
+                s::KIND_MEMBER_MAKE_MEMBERSHIP
+            }
+            Self::DirectAdmission => s::KIND_MEMBER_ADMIT,
         }
     }
 }
@@ -1463,6 +1484,9 @@ pub(crate) fn requester_still_authorized(
         // Queue items are raised by the community about a record; their
         // requester is the party the record is about, and is never asked this.
         Act::BreakGlassReview | Act::JoinReview | Act::VettingReview => true,
+        // Admitting is `vtc.members.manage`'s; a role beyond `member` is
+        // re-bounded by the handler when the action executes.
+        Act::DirectAdmission => entry.admin.can(Capability::MembersManage, None),
     }
 }
 
@@ -1498,6 +1522,17 @@ pub(crate) async fn pin_for(
         // A queue item is settled against its record, never a pin
         // (`crate::admin_actions::queues::resolution`).
         Act::BreakGlassReview | Act::JoinReview | Act::VettingReview => json!(subject),
+        // What the approvers were shown is a DID with this ACL entry (none, for
+        // an add) and no live membership. Either moving — the entry granted,
+        // changed or revoked, a member record written — means the admission
+        // they agreed to is not the one that would run.
+        Act::DirectAdmission => {
+            let entry = get_acl_entry(&state.acl_ks, subject).await?;
+            let member = crate::members::get_member(&state.members_ks, subject)
+                .await?
+                .map(|m| if m.is_removed() { "removed" } else { "active" });
+            json!({ "entry": entry, "member": member })
+        }
     };
     Ok(StatePin {
         resource: subject.to_string(),

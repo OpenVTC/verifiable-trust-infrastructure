@@ -1107,6 +1107,30 @@ new flow, update both this section and the relevant `docs/*.md`.
   that links to it).
 - **Docs**: `docs/03-vtc/website-and-admin.md` (*Member portal*).
 
+### VTC direct admission (`vtc/members/admit`, `vtc/members/make-membership`)
+- **What**: An administrator admits a DID without a join request — *Add a
+  member* (new ACL entry + member record + VMC/role VAC, as a completed join),
+  or *Make this a membership* for an ACL entry with no member record (the
+  bootstrap administrator), which writes the record and credentials and leaves
+  the entry untouched.
+- **Invariants to preserve**: it is a ceremony (`PolicyPurpose::Admission`,
+  `vtc.admission`, authority-deciding): `refer` parks it as
+  `Act::DirectAdmission` for another holder of `vtc.members.manage` (never the
+  requester or subject), `deny` refuses. Host checks the policy cannot widen:
+  `vtc.members.manage`; a non-`member` role takes `vtc.roles.assign` and
+  `granting::check_write` (the invitation rule); `admin` and
+  authority-conferring roles are never seated; an administrative role takes the
+  bound gesture; `application` entries and removed records are refused for
+  make-membership. Wire types are local (`trust_tasks::admission_tasks`, marked
+  for replacement by generated ones), with a local `SpecPolicy` the spine
+  enforces until the specs are published.
+- **Code**: `vtc-service/src/ceremony/admission.rs`,
+  `vtc-service/src/trust_tasks/admission_tasks.rs`,
+  `vtc-service/policies/default/admission.rego`,
+  `admin-ui/src/plugins/members/Admission.tsx`.
+- **Docs**: `docs/03-vtc/community-lifecycle.md` (*Admitting a member
+  directly*).
+
 ### VTC step-up: passkeys and approver devices
 - **What**: Authority-changing VTC acts need a step-up bound to a digest of
   that one operation (`acl::bound_step_up`, one use within 300 s). It is

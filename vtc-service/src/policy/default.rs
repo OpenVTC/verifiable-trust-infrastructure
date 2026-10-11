@@ -104,13 +104,17 @@ const DEFAULT_SOURCES: &[(PolicyPurpose, &str)] = &[
         PolicyPurpose::GitNamespace,
         include_str!("../../policies/default/git_ns.rego"),
     ),
+    (
+        PolicyPurpose::Admission,
+        include_str!("../../policies/default/admission.rego"),
+    ),
 ];
 
 /// Number of purposes the workspace ships defaults for. Asserted
 /// against [`PolicyPurpose::ALL`] at test time so a missed entry in
 /// `DEFAULT_SOURCES` surfaces as a build-time-ish failure rather
 /// than a silent runtime gap.
-pub const DEFAULT_COUNT: usize = 13;
+pub const DEFAULT_COUNT: usize = 14;
 
 /// Return the embedded default source for `purpose`. Useful to the
 /// admin UX layer that wants to show "reset to default" diffs
@@ -715,6 +719,48 @@ mod tests {
             "consumed": false,
             "scopes": scopes,
         })
+    }
+
+    /// The default `admission` policy admits every direct admission at once
+    /// (an `allow` naming no role: the role is the administrator's), and the
+    /// referral its comments describe is a well-formed `refer`.
+    #[test]
+    fn admission_default_admits_and_the_documented_refer_parses() {
+        let c = compile_default(PolicyPurpose::Admission);
+        for request in [
+            json!({ "action": "add", "role": "member", "administrative": false, "returning": false }),
+            json!({ "action": "make-membership", "role": "admin", "administrative": true, "returning": false }),
+        ] {
+            let decision = evaluate(
+                &c,
+                "data.vtc.admission.decision",
+                json!({ "evidence": { "request": request } }),
+            )
+            .unwrap()
+            .pointer("/result/0/expressions/0/value")
+            .cloned()
+            .unwrap();
+            assert_eq!(decision, json!({ "effect": "allow", "with": {} }));
+            assert!(matches!(
+                crate::ceremony::Verdict::from_decision(decision).unwrap(),
+                crate::ceremony::Verdict::Allow(_)
+            ));
+        }
+        let refer = compile_policy(
+            "package vtc.admission\nimport rego.v1\n\
+             default decision := {\"effect\": \"refer\", \"with\": {\"queue\": \"second-admin\"}}\n",
+            Uuid::new_v4(),
+        )
+        .unwrap();
+        let decision = evaluate(&refer, "data.vtc.admission.decision", json!({}))
+            .unwrap()
+            .pointer("/result/0/expressions/0/value")
+            .cloned()
+            .unwrap();
+        assert!(matches!(
+            crate::ceremony::Verdict::from_decision(decision).unwrap(),
+            crate::ceremony::Verdict::Refer(_)
+        ));
     }
 
     #[test]

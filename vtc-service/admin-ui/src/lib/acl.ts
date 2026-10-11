@@ -67,6 +67,10 @@ export interface AclEntry {
       /** A cooling-off reduction of this entry is open: it authorizes
        *  nothing until it lands or is cancelled (vtc-action-list.md §8.2). */
       suspended?: AclSuspension;
+      /** Whether the subject is a member: `none` is an entry with no member
+       *  record, which *Make this a membership* can make one. Absent from a
+       *  VTC that predates it. */
+      membership?: "active" | "none" | "removed";
     };
   };
 }

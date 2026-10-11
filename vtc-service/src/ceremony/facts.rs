@@ -74,6 +74,12 @@ pub enum Purpose {
     /// A read-only directory query (synchronous, unthreaded; `allow`
     /// returns a field projection rather than a state mutation).
     Directory,
+    /// An administrator admitting a DID directly, without a join request —
+    /// adding a member, or making an existing ACL entry a membership
+    /// (constructive; actor ≠ subject unless an administrator makes their
+    /// own entry a membership; synchronous — `refer` parks the operation in
+    /// the action list for another administrator's approval).
+    Admission,
 }
 
 impl Purpose {
@@ -85,6 +91,7 @@ impl Purpose {
             Purpose::Leave => "leave",
             Purpose::RoleChange => "role-change",
             Purpose::Directory => "directory",
+            Purpose::Admission => "admission",
         }
     }
 
@@ -106,6 +113,7 @@ impl Purpose {
             Purpose::Leave => "vtc.removal",
             Purpose::RoleChange => "vtc.role_change",
             Purpose::Directory => "vtc.directory",
+            Purpose::Admission => "vtc.admission",
         }
     }
 
@@ -535,6 +543,7 @@ mod tests {
             (Purpose::Leave, "leave"),
             (Purpose::RoleChange, "role-change"),
             (Purpose::Directory, "directory"),
+            (Purpose::Admission, "admission"),
         ] {
             assert_eq!(serde_json::to_value(purpose).unwrap(), json!(wire));
             assert_eq!(purpose.as_str(), wire);

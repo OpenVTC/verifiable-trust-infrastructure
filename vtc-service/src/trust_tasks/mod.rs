@@ -134,6 +134,10 @@ pub(crate) mod step_up_approver_tasks;
 // (`vtc-admin-roles.md` §6.2). The records are `crate::acl::roles`'s; this is
 // their only door.
 pub(crate) mod role_tasks;
+// Direct admission: adding a member without a join request, and making an
+// existing ACL entry a membership — decided by the community's `admission`
+// policy, which may park either for approval (`crate::ceremony::admission`).
+pub(crate) mod admission_tasks;
 
 // Capability modules: `governance/capability/{list,enable,disable}/0.1`
 // (`design-docs/vtc-capability-modules.md`). The decisions and their registry
@@ -501,7 +505,7 @@ async fn dispatch_trust_task_validated(
     // (`unsupported_type_or_version`), so there is no silently-unchecked task
     // here — only tasks whose definitions this build cannot read, which is the
     // `rooms/*`-shaped case the arms guard for themselves.
-    if let Some(policy) = trust_tasks_rs::schema_index::spec_policy_for(&type_uri)
+    if let Some(policy) = spec_policy_for(&type_uri)
         && let Err(reason) = policy.enforce(&doc)
     {
         tracing::info!(
@@ -832,6 +836,16 @@ async fn dispatch_trust_task_validated(
     }
 
     outcome
+}
+
+/// The document requirements (SPEC §7.2 items 5b, 7a, 8; §7.3 item 17) of
+/// `type_uri`: its published specification's, read off the registry — or, for
+/// a task this service binds ahead of its specification, the policy its draft
+/// declares ([`admission_tasks::local_spec_policy`]), so a task with no
+/// published schema is never dispatched with none of them enforced.
+pub(crate) fn spec_policy_for(type_uri: &str) -> Option<trust_tasks_rs::SpecPolicy> {
+    trust_tasks_rs::schema_index::spec_policy_for(type_uri)
+        .or_else(|| admission_tasks::local_spec_policy(type_uri))
 }
 
 /// The acceptance window this VTC is willing to act inside — **VTI-OPS-024**,
@@ -1294,6 +1308,13 @@ fn dispatch_typed<'a>(
                 None => unreachable!(
                     "capability_module_tasks::URIS names {uri}, which it does not route"
                 ),
+            }
+        }),
+        uri if admission_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match admission_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("admission_tasks::URIS names {uri}, which it does not route"),
             }
         }),
         uri if member_tasks::URIS.contains(&uri) => Box::pin(async move {
@@ -2161,8 +2182,7 @@ mod spine_proof_tests {
         let mut unexplained = Vec::new();
         let mut stale = Vec::new();
         for &uri in &dispatched {
-            let required = trust_tasks_rs::schema_index::spec_policy_for(uri)
-                .is_some_and(|p| p.is_proof_required);
+            let required = spec_policy_for(uri).is_some_and(|p| p.is_proof_required);
             let allow_listed = DISPATCHED_WITHOUT_PROOF.iter().any(|&(u, _)| u == uri);
             match (required, allow_listed) {
                 (false, false) => unexplained.push(uri),
@@ -2745,6 +2765,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     MEMBER_UPDATE_TYPE,
     MEMBER_ADMIN_REMOVE_TYPE,
     MEMBER_PURGE_TYPE,
+    // Direct admission (`crate::ceremony::admission`): no published
+    // specification yet — local wire types, drafts in the pull request.
+    admission_tasks::ADMIT_TYPE,
+    admission_tasks::MAKE_MEMBERSHIP_TYPE,
     // Batch 2: the join decision and the community-profile edit, on the same
     // terms. Neither has a REST route.
     JOIN_DECIDE_TYPE,
@@ -5786,10 +5810,11 @@ mod tests {
     fn dispatcher_routes_every_dispatched_uri() {
         for uri in DISPATCHED_URIS {
             assert!(
-                trust_tasks_rs::schema_index::spec_policy_for(uri).is_some(),
+                spec_policy_for(uri).is_some(),
                 "`{uri}` is dispatched but the spec registry has no policy for it — either it \
                  is misspelled, or its specification is not published where \
-                 `trust_tasks_rs::schema_index` can answer `spec_policy_for` for it"
+                 `trust_tasks_rs::schema_index` can answer `spec_policy_for` for it (or, for a \
+                 task bound ahead of its specification, a local policy stands in for it)"
             );
         }
     }

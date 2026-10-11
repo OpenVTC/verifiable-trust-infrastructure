@@ -41,6 +41,8 @@ import {
   Check,
   Minus,
   Ticket,
+  UserPlus,
+  X,
   Trash2,
   Users as UsersIcon,
 } from "lucide-react";
@@ -114,6 +116,7 @@ import {
 } from "@/lib/table-sort";
 import { rightLabel, rightRank } from "@/plugins/repos/model";
 import { ApproverDevicesCard } from "@/plugins/members/StepUpApprovers";
+import { AddMemberForm, EntriesWithoutMembership } from "@/plugins/members/Admission";
 import { StepUpPasskeysCard } from "@/plugins/members/StepUpPasskeys";
 import { readErrorMessage } from "@/plugins/repos/ui";
 import {
@@ -397,6 +400,7 @@ function MembersList() {
   // `null`: no column chosen — newest first, or best match while searching.
   const [sort, setSort] = useState<SortState<MemberSortKey> | null>(null);
   const [page, setPage] = useState(0);
+  const [adding, setAdding] = useState(false);
   const book = useNameBook();
 
   const query = useQuery({
@@ -496,7 +500,27 @@ function MembersList() {
         countLabel={
           query.isSuccess ? `${all.length} member${all.length === 1 ? "" : "s"}` : undefined
         }
+        actions={
+          <button
+            type="button"
+            className={adding ? "secondary" : "primary"}
+            aria-expanded={adding}
+            onClick={() => setAdding((v) => !v)}
+          >
+            {adding ? (
+              <>
+                <X size={14} aria-hidden="true" /> Cancel
+              </>
+            ) : (
+              <>
+                <UserPlus size={14} aria-hidden="true" /> Add a member
+              </>
+            )}
+          </button>
+        }
       />
+
+      {adding && <AddMemberForm onClose={() => setAdding(false)} />}
 
       <section className="card">
         <div className="toolbar members-toolbar">
@@ -654,6 +678,8 @@ function MembersList() {
           </div>
         )}
       </section>
+
+      <EntriesWithoutMembership />
 
       <RemovedMembers />
     </section>

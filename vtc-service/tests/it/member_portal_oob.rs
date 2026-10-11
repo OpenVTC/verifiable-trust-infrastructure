@@ -1467,3 +1467,93 @@ async fn a_request_stored_before_the_audience_existed_loads_as_a_member_sign_in(
     assert_eq!(c.status, StatusCode::OK, "{}", c.body);
     assert!(c.body["payload"].get("ext").is_none());
 }
+
+/// [`fixture`], with what a direct admission writes: the audit trail, the
+/// revocation list and the default policies.
+async fn fixture_for_admission() -> Fixture {
+    oob::set_redeem_hold_for_tests(Duration::from_millis(300));
+    let signer = LocalSigner::from_ed25519_seed(VTC_DID.into(), &SEED);
+    let vtc = TestVtc::builder()
+        .vtc_did(VTC_DID)
+        .with_public_url(PORTAL)
+        .with_audit(true)
+        .with_credential_signer(std::sync::Arc::new(LocalSigner::from_ed25519_seed(
+            VTC_DID.into(),
+            &SEED,
+        )))
+        .build()
+        .await;
+    vtc_service::policy::default::install_defaults(
+        &vtc.state.policies_ks,
+        &vtc.state.active_policies_ks,
+    )
+    .await
+    .unwrap();
+    for purpose in [
+        affinidi_status_list::StatusPurpose::Revocation,
+        affinidi_status_list::StatusPurpose::Suspension,
+    ] {
+        vtc_service::status_list::ensure_initial(
+            &vtc.state.status_lists_ks,
+            purpose,
+            format!("{PORTAL}/v1/status-lists/{purpose}"),
+        )
+        .await
+        .unwrap();
+    }
+    Fixture { vtc, signer }
+}
+
+/// The bootstrap administrator — an Admin ACL entry, no member record — is no
+/// active member, so its wallet sign-in to the member portal is declined.
+/// Once its entry is made a membership (`vtc/members/make-membership/0.1`) the
+/// same wallet signs in, with no change to the entry.
+#[tokio::test]
+async fn a_bootstrap_admin_made_a_member_signs_in_to_the_member_portal() {
+    let f = fixture_for_admission().await;
+    let founder = Party::new();
+    enrol_admin(&f.vtc, &founder.did, Some("Founder")).await;
+
+    // Before: not an active member.
+    let b = browser("198.51.100.91");
+    let p = phone("198.51.100.92");
+    let id = start(&f, &b).await;
+    let (_, number) = claim_and_number(&f, &b, &p, &id).await;
+    let pr = prove(&f, &p, identify(&founder, &id, &p.key.did, &number).await).await;
+    assert_eq!(code(&pr), "auth/oob:notAuthorized", "{}", pr.body);
+    assert_eq!(record(&f, &id).await.state, OobState::Declined);
+
+    // Make this a membership — the founder asks for its own.
+    let doc = crate::common::signed::signed_to(
+        &founder,
+        VTC_DID,
+        "https://trusttasks.org/spec/vtc/members/make-membership/0.1",
+        json!({ "subject": founder.did }),
+    )
+    .await;
+    let (status, reply) = crate::common::signed::post(&f.vtc, &doc).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert!(
+        vtc_service::member_portal::active::active_member(&f.vtc.state, &founder.did)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // After: the same wallet signs in.
+    let b = browser("198.51.100.93");
+    let p = phone("198.51.100.94");
+    let id = start(&f, &b).await;
+    approve(&f, &b, &p, &founder, &id).await;
+    let done = redeem(&f, &b, &id).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    assert_eq!(done.body["payload"]["subject"], founder.did.as_str());
+    assert_eq!(done.body["payload"]["displayName"], "Founder");
+    assert!(
+        done.cookies
+            .iter()
+            .any(|c| c.starts_with("vtc_member_session=")),
+        "{:?}",
+        done.cookies
+    );
+}

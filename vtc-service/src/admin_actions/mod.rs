@@ -4101,6 +4101,12 @@ pub(crate) async fn sign_requests(
             "Approving keeps the member; declining starts their removal, which applies its own \
              rules.",
         ),
+        Act::DirectAdmission => (
+            "memberAdmission",
+            json!({ "subject": rec.subject }),
+            "The subject becomes a member with membership credentials, without a join request \
+             or the join criteria.",
+        ),
     };
     let effect = Effect::new(kind, rec.summary_text.clone())
         .detail(detail.as_object().cloned().unwrap_or_default());

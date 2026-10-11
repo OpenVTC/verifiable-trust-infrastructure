@@ -486,11 +486,12 @@ pub(crate) async fn list_entries_v0_2(
     let cursor = q.cursor.as_deref().map(String::as_str);
     let p = page(state, matching, page_size, cursor, &binding).await?;
     let reviews = delegation::list(state).await?;
-    let entries: Vec<Value> = p
-        .entries
-        .iter()
-        .map(|e| render_v0_2(e, reviews.iter().find(|r| r.subject == e.did)))
-        .collect();
+    let mut entries: Vec<Value> = Vec::with_capacity(p.entries.len());
+    for e in &p.entries {
+        let mut v = render_v0_2(e, reviews.iter().find(|r| r.subject == e.did));
+        with_membership(state, &mut v, &e.did).await?;
+        entries.push(v);
+    }
     let mut out = json!({ "entries": entries, "truncated": p.truncated });
     if let Some(c) = p.cursor {
         out["cursor"] = json!(c);
@@ -528,7 +529,46 @@ pub(crate) async fn show_entry_v0_2(
     reader_entry(state, actor_did).await?;
     let entry = get_acl_entry(&state.acl_ks, did).await?;
     let review = delegation::review_for(state, did).await?;
-    Ok(json!({ "entry": entry.map(|e| render_v0_2(&e, review.as_ref())) }))
+    let entry = match entry {
+        Some(e) => {
+            let mut v = render_v0_2(&e, review.as_ref());
+            with_membership(state, &mut v, &e.did).await?;
+            Some(v)
+        }
+        None => None,
+    };
+    Ok(json!({ "entry": entry }))
+}
+
+/// `ext["org.openvtc"].membership` on a rendered entry: whether its subject is
+/// a member — `active` (a live member record), `none` (no record: an
+/// administrator or integration with access but no membership, which
+/// `vtc/members/make-membership` can make one) or `removed` (a former member's
+/// record). Read here rather than by the console from the member list, which
+/// pages, so an entry is never shown without its answer.
+///
+/// An `ext` member, so a reader that does not know it ignores it, and the
+/// published `acl/*/0.2` responses are unchanged for everyone else.
+pub(crate) const MEMBERSHIP_EXT: &str = "membership";
+
+async fn with_membership(
+    state: &AppState,
+    rendered: &mut Value,
+    did: &str,
+) -> Result<(), AppError> {
+    let membership = match crate::members::get_member(&state.members_ks, did).await? {
+        Some(m) if m.is_removed() => "removed",
+        Some(_) => "active",
+        None => "none",
+    };
+    if let Some(ours) = rendered
+        .get_mut("ext")
+        .and_then(|e| e.get_mut(EXT_NS))
+        .and_then(Value::as_object_mut)
+    {
+        ours.insert(MEMBERSHIP_EXT.into(), json!(membership));
+    }
+    Ok(())
 }
 
 // ---------- writing ----------

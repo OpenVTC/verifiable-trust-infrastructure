@@ -56,6 +56,7 @@
 //! hosts the join-submit orchestration ([`crate::join::orchestrate`]), which
 //! drives this same pipeline.
 
+pub mod admission;
 pub mod assemble;
 pub mod authority_reduced_notice;
 pub mod authority_reduction_pending_notice;

@@ -348,6 +348,19 @@ async fn decline_telling(
     })
     .await;
     if let Ok((_, ended)) = res {
+        // The operator's half of the story: the wire answer stays the
+        // deliberately vague `notAuthorized` (T15), and until this line the
+        // reason reached only the audit log, so a refused sign-in could not be
+        // diagnosed from the service log at all. The request id and the stage
+        // are enough to find the audit row; no DID is logged here, as no other
+        // line in this module logs one.
+        tracing::info!(
+            request_id = %rec.request_id,
+            stage = from.as_str(),
+            audience = ?rec.audience,
+            reason,
+            "wallet sign-in declined"
+        );
         let actor = lock.as_deref().unwrap_or("unknown");
         audit(
             state,

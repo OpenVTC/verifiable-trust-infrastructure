@@ -153,6 +153,14 @@ pub enum PolicyPurpose {
     /// never widens. Also carries the community's `settings`
     /// (`cascade_on_departure`, …). Wire form `gitNamespace`.
     GitNamespace,
+    /// Whether an administrator may **admit a DID directly** — add a member
+    /// without a join request (`vtc/members/admit/0.1`), or make an existing
+    /// ACL entry with no member record a membership
+    /// (`vtc/members/make-membership/0.1`) — and whether it needs another
+    /// administrator's approval first (`vtc.admission`). `allow` admits now,
+    /// `refer` parks it in the action list for the other holders of
+    /// `vtc.members.manage`, `deny` refuses it. Wire form `admission`.
+    Admission,
 }
 
 impl PolicyPurpose {
@@ -160,7 +168,7 @@ impl PolicyPurpose {
     /// boot-time default-policy loader (M2.5) so missing rows can
     /// be filled from the bundled defaults without listing each
     /// purpose explicitly at the call site.
-    pub const ALL: [PolicyPurpose; 13] = [
+    pub const ALL: [PolicyPurpose; 14] = [
         PolicyPurpose::Join,
         PolicyPurpose::Removal,
         PolicyPurpose::Personhood,
@@ -174,6 +182,7 @@ impl PolicyPurpose {
         PolicyPurpose::Rooms,
         PolicyPurpose::VetterEligibility,
         PolicyPurpose::GitNamespace,
+        PolicyPurpose::Admission,
     ];
 
     /// Whether this purpose decides **authority** — who becomes, stays or stops
@@ -193,6 +202,8 @@ impl PolicyPurpose {
                 | PolicyPurpose::Join
                 | PolicyPurpose::CrossCommunityRoles
                 | PolicyPurpose::GitNamespace
+                // Who is admitted without vetting is who becomes a member.
+                | PolicyPurpose::Admission
         )
     }
 
@@ -214,6 +225,7 @@ impl PolicyPurpose {
             PolicyPurpose::Rooms => "rooms",
             PolicyPurpose::VetterEligibility => "vetterEligibility",
             PolicyPurpose::GitNamespace => "gitNamespace",
+            PolicyPurpose::Admission => "admission",
         }
     }
 
@@ -247,6 +259,10 @@ impl PolicyPurpose {
             // nothing, which refuses every git-namespace request — closed, and
             // mysterious without this check at upload.
             PolicyPurpose::GitNamespace => Some("vtc.git_namespace"),
+            // Probed by a fixed package, as the ceremony purposes are: a
+            // policy in any other package answers nothing, which refuses every
+            // direct admission.
+            PolicyPurpose::Admission => Some("vtc.admission"),
             _ => None,
         }
     }
@@ -308,6 +324,7 @@ mod tests {
             (PolicyPurpose::RoleChange, json!("roleChange")),
             (PolicyPurpose::VetterEligibility, json!("vetterEligibility")),
             (PolicyPurpose::GitNamespace, json!("gitNamespace")),
+            (PolicyPurpose::Admission, json!("admission")),
         ];
         for (purpose, wire) in cases {
             assert_eq!(serde_json::to_value(purpose).unwrap(), wire);
@@ -348,7 +365,7 @@ mod tests {
         // the bundled default would silently never load. Drive the
         // count + exhaustiveness assertion off the same constant
         // so a missed entry surfaces at test time.
-        assert_eq!(PolicyPurpose::ALL.len(), 13);
+        assert_eq!(PolicyPurpose::ALL.len(), 14);
         for purpose in PolicyPurpose::ALL {
             // Compiles iff the match is total — `as_str` exhaustively
             // matches every variant; this exists so the assertion

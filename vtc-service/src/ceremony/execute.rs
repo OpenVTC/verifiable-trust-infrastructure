@@ -153,9 +153,14 @@ pub async fn apply(
             // ceremony route.
             obligations: _,
             publish_consent,
+            label,
         } => {
             let role = parse_role(&role)?;
-            let outcome = admit(state, &subject, role, publish_consent, actor_did).await?;
+            let outcome = admit(state, &subject, role, publish_consent, label, actor_did).await?;
+            Ok(EffectOutcome::Admitted(Box::new(outcome)))
+        }
+        EffectPlan::Enrol { subject } => {
+            let outcome = enrol(state, &subject).await?;
             Ok(EffectOutcome::Admitted(Box::new(outcome)))
         }
         EffectPlan::Depart {
@@ -218,6 +223,7 @@ async fn admit(
     subject_did: &str,
     role: VtcRole,
     publish_consent: bool,
+    label: Option<String>,
     actor_did: &str,
 ) -> Result<AdmitOutcome, AppError> {
     let _guard = LAST_ADMIN_LOCK.lock().await;
@@ -239,7 +245,7 @@ async fn admit(
     let acl = VtcAclEntry {
         did: subject_did.to_string(),
         role: role.clone(),
-        label: None,
+        label,
         // The authority an invitation's role implies; an invitation naming a
         // role that implies any was bounded by its inviter's own when it was
         // issued (`routes::invitations`, vtc-admin-roles.md §6.3).
@@ -257,12 +263,67 @@ async fn admit(
     store_acl_entry(&state.acl_ks, &acl).await?;
     drop(_git);
 
+    create_membership(state, subject_did, role, publish_consent).await
+}
+
+/// Make an existing ACL entry a membership: write the member record and issue
+/// the VMC + role VAC at the entry's own role — the tail of [`admit`], with
+/// the ACL entry left exactly as it is (role, authority, resource grants,
+/// label, expiry).
+///
+/// Under [`LAST_ADMIN_LOCK`], as [`admit`] is, so two concurrent enrolments
+/// of one DID — or an enrolment racing a join — cannot both find no member
+/// record and both mint a VMC. Refused (`Conflict`) when the entry is gone, is
+/// an `application` entry (a non-member holding git rights, which joins
+/// through the join flow), or already has a member record, live or removed.
+async fn enrol(state: &AppState, subject_did: &str) -> Result<AdmitOutcome, AppError> {
+    let _guard = LAST_ADMIN_LOCK.lock().await;
+
+    let entry = get_acl_entry(&state.acl_ks, subject_did)
+        .await?
+        .ok_or_else(|| {
+            AppError::Conflict(format!(
+                "{subject_did} has no ACL entry to make a membership of"
+            ))
+        })?;
+    if entry.is_application() {
+        return Err(AppError::Conflict(format!(
+            "{subject_did}'s entry is an application entry (git rights for a non-member); it \
+             becomes a membership through the join flow"
+        )));
+    }
+    if let Some(existing) = get_member(&state.members_ks, subject_did).await? {
+        return Err(AppError::Conflict(if existing.is_removed() {
+            format!("{subject_did} has a removed member record; refusing to overwrite it")
+        } else {
+            format!("{subject_did} is already a member; refusing a duplicate membership")
+        }));
+    }
+
+    create_membership(state, subject_did, entry.role, false).await
+}
+
+/// Write a fresh member record for `subject_did` and issue its membership
+/// credentials (VMC + role VAC at `role`, one revocation-list slot) — what
+/// every admission ends with, whichever door it came through. The caller holds
+/// [`LAST_ADMIN_LOCK`] and has written (or checked) the ACL entry.
+async fn create_membership(
+    state: &AppState,
+    subject_did: &str,
+    role: VtcRole,
+    publish_consent: bool,
+) -> Result<AdmitOutcome, AppError> {
     let mut member = Member::fresh(subject_did);
     member.publish_consent = publish_consent;
-    {
+    // A returning member's tombstone is overwritten in place, so the row count
+    // the cached member count mirrors does not move (`depart` keeps tombstones
+    // in it too).
+    let new_row = {
         let _edit = crate::members::storage::edit_lock().await;
+        let new_row = get_member(&state.members_ks, subject_did).await?.is_none();
         store_member(&state.members_ks, &member).await?;
-    }
+        new_row
+    };
 
     let (vmc, role_vac, status_list_index) =
         issue_member_credentials(state, subject_did, role).await?;
@@ -283,7 +344,9 @@ async fn admit(
 
     // A new member row exists; keep the cached count in step (still under
     // LAST_ADMIN_LOCK, so it's serialised with the duplicate-admit guard).
-    state.member_count_inc();
+    if new_row {
+        state.member_count_inc();
+    }
 
     Ok(AdmitOutcome {
         vmc,

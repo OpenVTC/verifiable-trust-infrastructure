@@ -4815,7 +4815,8 @@
           "roleChange",
           "rooms",
           "vetterEligibility",
-          "gitNamespace"
+          "gitNamespace",
+          "admission"
         ]
       },
       "PolicyStatusFilter": {

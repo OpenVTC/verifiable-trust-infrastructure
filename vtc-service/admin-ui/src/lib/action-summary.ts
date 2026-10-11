@@ -66,6 +66,15 @@ export const JOIN_REVIEW_URI = "urn:openvtc:vtc:join:review";
 export const KIND_VETTING_REVIEW = "vetting.withdrawal.review";
 export const VETTING_REVIEW_URI = "urn:openvtc:vtc:vetting:withdrawal-review";
 
+/** A direct admission the community's `admission` policy referred for
+ *  approval: adding a member without a join request. */
+export const KIND_MEMBER_ADMIT = "member.admit";
+export const MEMBERS_ADMIT_URI = `${SPEC}/vtc/members/admit/0.1`;
+/** A direct admission the `admission` policy referred for approval: making an
+ *  existing access-control entry a membership. */
+export const KIND_MEMBER_MAKE_MEMBERSHIP = "member.makeMembership";
+export const MEMBERS_MAKE_MEMBERSHIP_URI = `${SPEC}/vtc/members/make-membership/0.1`;
+
 /**
  * The pinned template digest for each `(kind, typeUri)`.
  *
@@ -135,6 +144,11 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmaxhUVhRYpEsMxfAzJWuoHvzVKmcbKSmZ2JjG8kQaHzW1",
   [pinKey(KIND_VETTING_REVIEW, VETTING_REVIEW_URI)]:
     "zQmcUNShH782uKh8YFnXsQ322vCS2Hs6U9tJv8SLABeKmBV",
+  // Direct admission, when the `admission` policy refers it for approval.
+  [pinKey(KIND_MEMBER_ADMIT, MEMBERS_ADMIT_URI)]:
+    "zQmbYVQV8iyGc9pCgXB3mD1s7dYXRYEBmHNyHcQnEkeaH6C",
+  [pinKey(KIND_MEMBER_MAKE_MEMBERSHIP, MEMBERS_MAKE_MEMBERSHIP_URI)]:
+    "zQmYUPeQMYvpEnuBu9RCX4BSvQ5Nmpz4t2sRxKpyQpg6FVB",
 });
 
 function pinKey(kind: string, typeUri: string): string {

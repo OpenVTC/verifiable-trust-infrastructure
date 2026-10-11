@@ -58,6 +58,8 @@ import { useToast } from "@/lib/toast";
 import { SessionTimeoutCard } from "@/plugins/SessionTimeoutCard";
 import { useSingleAdminMode } from "@/lib/action-badge";
 import { useViewerDid } from "@/lib/viewer";
+import { canMakeMembership, membershipOf } from "@/lib/member-admission";
+import { MakeMembershipButton } from "@/plugins/members/Admission";
 
 // The ACL verbs are signed documents (`lib/acl.ts`); the invites are REST.
 const TRUST_TASK_INVITES_LIST =
@@ -349,6 +351,15 @@ export function Acl() {
                 </td>
                 <td>
                   <code>{communityRoleOf(e)}</code>
+                  {membershipOf(e) === "none" && communityRoleOf(e) !== "application" && (
+                    <span
+                      className="chip"
+                      data-testid="no-membership"
+                      title="This entry has no member record, so it cannot sign in to the member portal. Make this a membership to issue one."
+                    >
+                      no membership
+                    </span>
+                  )}
                 </td>
                 <td>
                   <EditableLabelCell entry={e} label={e.label ?? null} />
@@ -412,6 +423,7 @@ export function Acl() {
                     >
                       Revoke
                     </button>
+                    {canMakeMembership(e) && <MakeMembershipButton entry={e} />}
                     {mayRemoveNow && (
                       <button
                         type="button"

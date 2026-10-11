@@ -385,5 +385,68 @@
       "title": "Keep {member} or start their removal"
     },
     "typeUri": "urn:openvtc:vtc:vetting:withdrawal-review"
+  },
+  {
+    "kind": "member.admit",
+    "name": "add a member directly",
+    "payload": {
+      "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+      "role": "moderator",
+      "label": "<b>front desk</b>",
+      "reason": "met at the meetup"
+    },
+    "summary": {
+      "effect": "{subject} becomes a member at once, holding {role}, with membership credentials — without a join request, without meeting this community's join criteria and without being vetted.",
+      "fields": {
+        "subject": {
+          "format": "did",
+          "pointer": "/subject",
+          "value": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+        },
+        "role": {
+          "format": "text",
+          "pointer": "/role",
+          "value": "moderator"
+        },
+        "label": {
+          "format": "text",
+          "pointer": "/label",
+          "value": "<b>front desk</b>"
+        },
+        "reason": {
+          "format": "text",
+          "pointer": "/reason",
+          "value": "met at the meetup"
+        }
+      },
+      "templateDigest": "zQmbYVQV8iyGc9pCgXB3mD1s7dYXRYEBmHNyHcQnEkeaH6C",
+      "title": "Add {subject} as a member, holding {role}"
+    },
+    "typeUri": "https://trusttasks.org/spec/vtc/members/admit/0.1"
+  },
+  {
+    "kind": "member.makeMembership",
+    "name": "make the bootstrap administrator a member",
+    "payload": {
+      "subject": "did:webvh:QmScidExample:community.example:founder"
+    },
+    "summary": {
+      "effect": "{subject} keeps exactly the role and authority their access-control entry holds, and becomes a member: a member record and membership credentials are issued, without a join request.",
+      "fields": {
+        "subject": {
+          "format": "did",
+          "pointer": "/subject",
+          "value": "did:webvh:QmScidExample:community.example:founder"
+        },
+        "reason": {
+          "format": "text",
+          "pointer": "/reason",
+          "value": null
+        }
+      },
+      "templateDigest": "zQmYUPeQMYvpEnuBu9RCX4BSvQ5Nmpz4t2sRxKpyQpg6FVB",
+      "title": "Make {subject}'s access-control entry a membership"
+    },
+    "typeUri": "https://trusttasks.org/spec/vtc/members/make-membership/0.1"
   }
 ]

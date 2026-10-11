@@ -569,6 +569,7 @@ async fn apply_verdict_to_request(
                 // The applicant's opt-in, off the row this verdict decides —
                 // the submitted one, or the supplemented one it replaced.
                 publish_consent: request.registry_consent,
+                label: None,
             };
             if let EffectOutcome::Admitted(creds) =
                 execute::apply(state, plan, applicant_did).await?

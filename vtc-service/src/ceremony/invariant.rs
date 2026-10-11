@@ -93,6 +93,10 @@ pub enum Invariant {
     StepUpForAdmin,
     /// Role-change tried to grant `admin` to the caller themselves.
     SelfPromotion,
+    /// An admission policy named a role other than the one the administrator
+    /// asked for. It may admit, refer or refuse; the role is the
+    /// administrator's, bounded by their own authority before the policy ran.
+    AdmissionRole,
 }
 
 impl Invariant {
@@ -102,6 +106,7 @@ impl Invariant {
             Invariant::PrivilegeCeiling => "privilege-ceiling",
             Invariant::StepUpForAdmin => "step-up-required",
             Invariant::SelfPromotion => "self-promotion",
+            Invariant::AdmissionRole => "admission-role",
         }
     }
 }
@@ -162,8 +167,34 @@ pub fn enforce(facts: &Facts, verdict: Verdict) -> Result<Verdict, InvariantViol
                 detail: "admin promotion requires a verified step-up".into(),
             })
         }
+        // Admission seats exactly the role the administrator asked for, which
+        // was bounded by their own authority before the policy ran
+        // (`vtc-admin-roles.md` §6.3). A policy that names another — `admin`
+        // above all — would be choosing authority nobody checked.
+        Purpose::Admission
+            if allow
+                .role
+                .as_deref()
+                .is_some_and(|r| Some(r) != requested_admission_role(facts)) =>
+        {
+            Err(InvariantViolation {
+                invariant: Invariant::AdmissionRole,
+                detail: "an admission policy may admit, refer or refuse, but not choose the role"
+                    .into(),
+            })
+        }
         _ => Ok(verdict),
     }
+}
+
+/// The role a direct admission asks for (`evidence.request.role`).
+fn requested_admission_role(facts: &Facts) -> Option<&str> {
+    facts
+        .evidence
+        .request
+        .as_ref()
+        .and_then(|r| r.get("role"))
+        .and_then(serde_json::Value::as_str)
 }
 
 /// Hold a `join` verdict to the criterion the submission is decided under —
@@ -279,6 +310,34 @@ mod tests {
             role: Some(role.into()),
             ..Default::default()
         })
+    }
+
+    /// An admission policy may allow without a role, or with the one asked
+    /// for; naming another — `admin` above all — is vetoed.
+    #[test]
+    fn admission_policy_may_not_choose_the_role() {
+        let f = facts(
+            Purpose::Admission,
+            json!({ "action": "add", "role": "member" }),
+        );
+        let bare = Verdict::Allow(Allow::default());
+        assert_eq!(enforce(&f, bare.clone()).unwrap(), bare);
+        assert_eq!(
+            enforce(&f, allow_role("member")).unwrap(),
+            allow_role("member")
+        );
+        for other in ["admin", "moderator"] {
+            let violation = enforce(&f, allow_role(other)).expect_err("another role is vetoed");
+            assert_eq!(violation.invariant, Invariant::AdmissionRole);
+            assert_eq!(violation.into_deny().effect(), "deny");
+        }
+        // Making an administrator's entry a membership names its own role,
+        // which a policy may repeat.
+        let own = facts(
+            Purpose::Admission,
+            json!({ "action": "make-membership", "role": "admin" }),
+        );
+        assert!(enforce(&own, allow_role("admin")).is_ok());
     }
 
     /// A join policy granting a non-admin role passes.

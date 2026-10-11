@@ -37,6 +37,7 @@ The VTC tracks every state transition in the audit log
 | `relationships.rego` | `POST /v1/relationships` | allow if both parties are current members | `relationships` |
 | `registry.rego` | `MembershipSyncer` reconciliation | `publish_on_join: true; default_departure: tombstone` — publishes only members whose `publishConsent` is true; the rule can narrow that, never override it ([trust-registry.md](trust-registry.md#who-is-published-member-consent)) | `registry` |
 | `cross_community_roles.rego` | `POST /v1/auth/recognise` | deny-all (no peer recognition) | `crossCommunityRoles` |
+| `admission.rego` | `vtc/members/admit/0.1`, `vtc/members/make-membership/0.1` (an administrator admitting directly) | allow — admitted at once | `admission` |
 
 Policies are authored over the admin REST API: upload a revision with
 `POST /v1/policies`, dry-run it with `POST /v1/policies/{id}/test`, and put it
@@ -78,6 +79,77 @@ Both ends use VP/VC envelopes throughout — there is no
 bespoke-JSON authorisation format. The credential bundle the member
 receives is HPKE-sealed to their `did:key` (the same sealed-transfer
 envelope every VTI bootstrap uses).
+
+## Admitting a member directly
+
+An administrator can admit someone without a join request, from the
+**Members** page of the console:
+
+- **Add a member** (`vtc/members/admit/0.1`) — a DID, a role (default
+  `member`) and an optional label. The result is what a completed join
+  leaves: an ACL entry, a member record, the VMC and role VAC, a
+  revocation slot. A former member (a removed record and no ACL entry)
+  is re-admitted, as a rejoin would be, and recorded as returning.
+- **Make this a membership** (`vtc/members/make-membership/0.1`) — for
+  an ACL entry with no member record, typically the bootstrap
+  administrator, who otherwise cannot sign in to the member portal. It
+  writes the member record and issues the credentials at the role the
+  entry already holds, and changes nothing on the entry. The action is
+  on each such row of **Access control**, and under *Access without a
+  membership* on **Members** (the ACL listing marks these entries
+  `ext["org.openvtc"].membership: "none"`).
+
+Both skip the join criteria and vetting, so both are **governed**:
+
+- **Who may.** The requester holds `vtc.members.manage`. A role other
+  than `member` is assigning a role: it takes `vtc.roles.assign` too, and
+  the entry it seats is bounded by the requester's own authority
+  (`vtc-admin-roles.md` §6.3), the rule an invitation's role is held to.
+  `admin` is never seated this way — add the member, then promote them
+  with `acl/change-role`, which takes its own step-up and consent. A role
+  carrying administrative authority (`moderator`, `issuer`) asks for the
+  requester's passkey gesture bound to the one admission.
+- **Whether now.** The community's `admission` policy decides
+  (*Policies* → *Other policies* → `admission`; package
+  `vtc.admission`). `allow` admits at once; `deny` refuses with the
+  policy's code; `refer` parks the admission on the **Actions** page
+  after the requester's passkey gesture, for another holder of
+  `vtc.members.manage` (never the requester, never the subject) to
+  approve, and it then runs itself with every check repeated. The
+  shipped default admits at once. To require a second administrator for
+  every direct admission, activate
+
+  ```rego
+  package vtc.admission
+  import rego.v1
+  default decision := {"effect": "refer", "with": {"queue": "second-admin"}}
+  ```
+
+  The policy reads `input.evidence.request.action` (`add` /
+  `make-membership`), `.role`, `.administrative` and `.returning`, and
+  may admit, refer or refuse — not choose the role. Changing it is an
+  authority change, so it takes another administrator's approval
+  itself. In single-administrator mode a referral is waived on the
+  requester's gesture and recorded so.
+- **Refused before the policy:** an entry that already exists (*Add* —
+  the refusal names *Make this a membership*), a live membership, an
+  `application` entry (git rights for a non-member, which joins through
+  the join flow), an expired or suspended entry, and — for *Make this a
+  membership* — a removed member's record: re-admitting a former member
+  is a rejoin, through the join flow or *Add a member* once the entry is
+  gone.
+
+Each is audited as `MemberAdmittedDirectly` (the action, role, label,
+whether the subject was returning, how it was allowed —
+`policyAllowed`, `approved` or `waived` — and the action id when it was
+approved), beside the `MemberAdded` / `VmcIssued` / `VecIssued` rows
+every admission writes. The credentials are pushed to the member's
+wallet as on a join approval, best-effort, and returned in the
+response.
+
+Both tasks are bound ahead of their specifications in
+dtgwg-trust-tasks-tf: the payloads are this service's own until the
+generated types replace them.
 
 ## Removal dispositions
 

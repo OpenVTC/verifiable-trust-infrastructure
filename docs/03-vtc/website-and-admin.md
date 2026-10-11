@@ -746,8 +746,15 @@ challenge that looks like any other, VTI-SES-006/007), at
 authentication, at every refresh and on **every request**: a member
 removed or suspended mid-session is refused on their next call
 (VTI-SES-020–022). An administrator with no member record cannot sign
-in here; an administrator who is also a member can, and gets a
-member session that the console refuses.
+in here — the bootstrap administrator is the usual case; its wallet
+sign-in is declined `notAuthorized`, and the service log says
+`wallet sign-in declined … reason="not an active member"`. Make its
+entry a membership (**Make this a membership** on **Access control**,
+or under *Access without a membership* on **Members**;
+`vtc/members/make-membership/0.1`, see
+[community-lifecycle.md](community-lifecycle.md#admitting-a-member-directly)).
+An administrator who is also a member can sign in, and gets a member
+session that the console refuses.
 
 **Why the token classes cannot cross.** Every console route validates
 `aud = VTC`, so a portal token is refused there exactly as a VTA token

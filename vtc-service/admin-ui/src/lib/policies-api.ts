@@ -53,6 +53,7 @@ const PURPOSE_ORDER: Record<Purpose, true> = {
   rooms: true,
   vetterEligibility: true,
   gitNamespace: true,
+  admission: true,
 };
 
 export const ALL_PURPOSES = Object.keys(PURPOSE_ORDER) as Purpose[];
@@ -143,7 +144,7 @@ interface UpsertResponse {
 /**
  * Store a new revision. Changing a policy is for an unrestricted administrator
  * only, and a policy that decides authority (`roleChange`, `removal`, `join`,
- * `crossCommunityRoles`, `gitNamespace`) also takes a passkey gesture bound to
+ * `crossCommunityRoles`, `gitNamespace`, `admission`) also takes a passkey gesture bound to
  * this upload and another unrestricted administrator's approval (VTI-VTC-022).
  * The VTC asks for the gesture where it needs one, then parks the upload as an
  * administrator action, thrown as a `ParkedAction` (`lib/parked-action.ts`).

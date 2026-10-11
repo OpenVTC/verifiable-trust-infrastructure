@@ -322,6 +322,17 @@ pub enum AuditEvent {
     /// what "when did <did> join" matches. Spec §10.1.
     MemberAdded(MemberAddedData),
 
+    /// An administrator admitted a DID **directly**, without a join request
+    /// (VTC `vtc/members/admit/0.1`, `vtc/members/make-membership/0.1`): added
+    /// a member, or made an existing access-control entry a membership. It
+    /// bypasses the join criteria, so it is recorded on its own, beside the
+    /// `MemberAdded` / `VmcIssued` / `VecIssued` rows every admission writes,
+    /// with how it was allowed — by the community's `admission` policy
+    /// outright, by another administrator's approval of the parked action, or
+    /// by single-administrator mode's waiver. The actor is the requesting
+    /// administrator; the subject is the DID admitted.
+    MemberAdmittedDirectly(MemberAdmittedDirectlyData),
+
     /// Member row removed (or anonymised) per spec §10.2. Spec §5
     /// `Disposition` decides whether the row is purged outright,
     /// tombstoned with the DID retained, or kept historical.
@@ -949,6 +960,7 @@ impl AuditEvent {
             Self::JoinRequestWithdrawn(..) => "JoinRequestWithdrawn",
             Self::JoinRequestSupplemented(..) => "JoinRequestSupplemented",
             Self::MemberAdded(..) => "MemberAdded",
+            Self::MemberAdmittedDirectly(..) => "MemberAdmittedDirectly",
             Self::MemberRemoved(..) => "MemberRemoved",
             Self::MembershipReciprocated(..) => "MembershipReciprocated",
             Self::PolicyUploaded(..) => "PolicyUploaded",
@@ -1927,6 +1939,52 @@ pub struct MemberAddedData {
     /// that don't pass through a join request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via_join_request_id: Option<String>,
+}
+
+/// Payload for [`AuditEvent::MemberAdmittedDirectly`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct MemberAdmittedDirectlyData {
+    /// `add` (a new member) or `make-membership` (an existing entry made one).
+    pub action: String,
+    /// The community role the membership holds.
+    pub role: String,
+    /// The label an added member's entry was given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The subject had been a member before and was removed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub returning: bool,
+    /// How it was allowed: `policyAllowed`, `approved` or `waived`.
+    pub approval: String,
+    /// The administrator action it ran as, when another administrator
+    /// approved it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_id: Option<String>,
+    /// The requester's stated reason, when they gave one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl MemberAdmittedDirectlyData {
+    /// A record of one direct admission. `#[non_exhaustive]`, so a field can
+    /// be added later without breaking a caller.
+    pub fn new(
+        action: impl Into<String>,
+        role: impl Into<String>,
+        approval: impl Into<String>,
+    ) -> Self {
+        Self {
+            action: action.into(),
+            role: role.into(),
+            label: None,
+            returning: false,
+            approval: approval.into(),
+            action_id: None,
+            reason: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

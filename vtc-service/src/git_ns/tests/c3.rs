@@ -483,6 +483,7 @@ async fn joining_turns_an_application_entry_into_a_membership() {
         role: "member".into(),
         obligations: vec![],
         publish_consent: false,
+        label: None,
     };
     crate::ceremony::apply(&f.vtc.state, admit(&f.stranger.did), &f.admin.did)
         .await

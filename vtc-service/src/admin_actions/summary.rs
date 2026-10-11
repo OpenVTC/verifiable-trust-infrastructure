@@ -82,6 +82,13 @@ pub const KIND_JOIN_REVIEW: &str = "member.join.review";
 /// A withdrawn vetting statement a current membership rests on.
 pub const KIND_VETTING_REVIEW: &str = "vetting.withdrawal.review";
 
+/// A direct admission the `admission` policy referred for approval: adding a
+/// member without a join request (`vtc/members/admit/0.1`).
+pub const KIND_MEMBER_ADMIT: &str = "member.admit";
+/// A direct admission the `admission` policy referred for approval: making an
+/// existing ACL entry a membership (`vtc/members/make-membership/0.1`).
+pub const KIND_MEMBER_MAKE_MEMBERSHIP: &str = "member.makeMembership";
+
 /// The record type a break-glass review is raised under.
 pub const BREAK_GLASS_REVIEW_URI: &str = "urn:openvtc:vtc:git-ns:break-glass-review";
 /// The record type a join review is raised under.
@@ -111,6 +118,8 @@ const POLICY_ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 const ROLES_DEFINE: &str = "https://trusttasks.org/spec/vtc/roles/define/0.1";
 const ROLES_DELETE: &str = "https://trusttasks.org/spec/vtc/roles/delete/0.1";
 const BACKUP_FINALIZE_IMPORT: &str = "https://trusttasks.org/spec/backup/finalize-import/0.1";
+const MEMBERS_ADMIT: &str = crate::trust_tasks::admission_tasks::ADMIT_TYPE;
+const MEMBERS_MAKE_MEMBERSHIP: &str = crate::trust_tasks::admission_tasks::MAKE_MEMBERSHIP_TYPE;
 
 const fn f(name: &'static str, pointer: &'static str, format: &'static str) -> FieldDef {
     FieldDef {
@@ -161,6 +170,14 @@ const BREAK_GLASS_REVIEW_EFFECT: &str = "{subject} gave themselves {right} on {r
 const JOIN_REVIEW_EFFECT: &str = "{applicant} applied at {submittedAt} and was referred for a \
                                   decision. Approving admits them as a member and issues their \
                                   membership credentials; rejecting refuses the application.";
+const MEMBER_ADMIT_EFFECT: &str = "{subject} becomes a member at once, holding {role}, with \
+                                   membership credentials — without a join request, without \
+                                   meeting this community's join criteria and without being \
+                                   vetted.";
+const MEMBER_MAKE_MEMBERSHIP_EFFECT: &str = "{subject} keeps exactly the role and authority their \
+                                             access-control entry holds, and becomes a member: a \
+                                             member record and membership credentials are \
+                                             issued, without a join request.";
 const VETTING_REVIEW_EFFECT: &str = "{issuer} withdrew the vetting statement {statementId}, which \
                                      {member}'s admission counted. Keeping the member records that \
                                      the admission stands; starting removal sends it through \
@@ -469,6 +486,28 @@ pub const TEMPLATES: &[Template] = &[
             f("recordedAt", "/recordedAt", "datetime"),
         ],
     },
+    Template {
+        kind: KIND_MEMBER_ADMIT,
+        type_uri: MEMBERS_ADMIT,
+        title: "Add {subject} as a member, holding {role}",
+        effect: MEMBER_ADMIT_EFFECT,
+        fields: &[
+            f("subject", "/subject", "did"),
+            f("role", "/role", "text"),
+            f("label", "/label", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_MEMBER_MAKE_MEMBERSHIP,
+        type_uri: MEMBERS_MAKE_MEMBERSHIP,
+        title: "Make {subject}'s access-control entry a membership",
+        effect: MEMBER_MAKE_MEMBERSHIP_EFFECT,
+        fields: &[
+            f("subject", "/subject", "did"),
+            f("reason", "/reason", "text"),
+        ],
+    },
 ];
 
 /// The digest of every template, pinned. A change to a template's prose,
@@ -616,6 +655,16 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_VETTING_REVIEW,
         VETTING_REVIEW_URI,
         "zQmcUNShH782uKh8YFnXsQ322vCS2Hs6U9tJv8SLABeKmBV",
+    ),
+    (
+        KIND_MEMBER_ADMIT,
+        MEMBERS_ADMIT,
+        "zQmbYVQV8iyGc9pCgXB3mD1s7dYXRYEBmHNyHcQnEkeaH6C",
+    ),
+    (
+        KIND_MEMBER_MAKE_MEMBERSHIP,
+        MEMBERS_MAKE_MEMBERSHIP,
+        "zQmYUPeQMYvpEnuBu9RCX4BSvQ5Nmpz4t2sRxKpyQpg6FVB",
     ),
 ];
 

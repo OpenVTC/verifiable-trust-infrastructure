@@ -182,6 +182,7 @@ async fn approve_pending(
         // The applicant's opt-in to registry publication, as submitted. An
         // operator's approval admits the applicant; it does not consent for them.
         publish_consent: req.registry_consent,
+        label: None,
     };
     let EffectOutcome::Admitted(creds) = execute::apply(state, plan, actor_did).await? else {
         return Err(AppError::Internal(

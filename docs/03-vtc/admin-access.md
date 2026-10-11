@@ -57,7 +57,7 @@ second-party action (§3.2).
 |---|---|---|
 | `vtc.roles.assign` | granting, changing and removing roles and capabilities; admin invites | **yes** |
 | `vtc.approvals.admin` | defining and deleting custom roles (with `vtc.roles.assign`); the approvals rule list, which is not built yet (§5) | **yes** |
-| `vtc.policy.admin` | `policy/upsert`, `policy/activate`, qualified by purpose (`policy:join`) | **yes** unqualified, or for the purposes that decide authority: `roleChange`, `removal`, `join`, `crossCommunityRoles`, `gitNamespace` |
+| `vtc.policy.admin` | `policy/upsert`, `policy/activate`, qualified by purpose (`policy:join`) | **yes** unqualified, or for the purposes that decide authority: `roleChange`, `removal`, `join`, `crossCommunityRoles`, `gitNamespace`, `admission` |
 | `vtc.config.admin` | `config/patch`, `vtc/config/import`, `config/reload`, `config/restart` | **yes** |
 | `vtc.backup.export` | backup export | no |
 | `vtc.backup.restore` | backup import | **yes** (it replaces the ACL) |
@@ -517,6 +517,7 @@ These operations need the consent of **other** administrators:
 | `vtc/roles/define`, `vtc/roles/delete` | holders of `vtc.roles.assign` and `vtc.approvals.admin` | VTI-APV-018 |
 | committing a backup restore (`backup/finalize-import` with `confirm: true`) — it replaces the ACL | holders of `vtc.backup.restore` | VTI-APV-018 |
 | a departed granter's grants (raised by the community itself) | holders of `vtc.roles.assign`; one approval re-affirms | VTI-ACL-071 |
+| a **direct admission** the community's `admission` policy refers (`refer`): `vtc/members/admit` (*Add a member*), `vtc/members/make-membership` (*Make this a membership*) — kinds `member.admit`, `member.makeMembership` | holders of `vtc.members.manage`, the subject excluded | the community's own rule ([community-lifecycle.md](community-lifecycle.md#admitting-a-member-directly)) |
 
 An approver is anyone whose **approve scope** reaches every capability at
 stake, at a covering resource (VTI-ACL-040): a repo manager for `acme` approves
