@@ -52,6 +52,7 @@ fn cfg_with(routing: RoutingConfig, cors: CorsConfig) -> AppConfig {
         trust_tasks: Default::default(),
         acl: Default::default(),
         did_cache: Default::default(),
+        geoip: Default::default(),
         config_path: std::path::PathBuf::new(),
     }
 }

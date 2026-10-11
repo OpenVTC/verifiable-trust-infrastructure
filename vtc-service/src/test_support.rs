@@ -510,6 +510,7 @@ impl TestVtcBuilder {
             step_up_approvers_ks,
             member_pushes_ks,
             tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
+            geoip: Arc::new(crate::geoip::GeoIp::disabled()),
             backup_bundles_ks,
             registry_client: self.registry_client,
             registry_health: crate::registry::RegistryHealth::new(),

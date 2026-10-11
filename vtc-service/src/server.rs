@@ -156,6 +156,10 @@ pub struct AppState {
     /// document advertises no transport (a `did:key` wallet) is pushed to over
     /// TSP first while it is fresh (`crate::member_push`).
     pub tsp_reach: Arc<vti_common::tsp_reach::TspReachability>,
+    /// Local GeoIP database (`[geoip] database`) — the coarse city and country
+    /// of a wallet sign-in's requester. Disabled when unconfigured; reloaded
+    /// when its file changes. See [`crate::geoip`].
+    pub geoip: Arc<crate::geoip::GeoIp>,
     /// In-flight backup bundles for the chunked `backup/*` transfer — records
     /// and manifests; the bytes are staged under `<data_dir>/backups`. See
     /// [`vti_common::backup_transfer`].
@@ -807,6 +811,17 @@ pub async fn run(
         info!(seeded, "default join criteria registered");
     }
 
+    // The local GeoIP database, if configured (base design §12.6). Advisory:
+    // a file that cannot be read is a warning and every location "unknown",
+    // never a boot failure. Read off the runtime's workers — a city database
+    // is over a hundred megabytes.
+    let geoip_path = config.geoip.database.clone();
+    let geoip = Arc::new(
+        tokio::task::spawn_blocking(move || crate::geoip::GeoIp::open(geoip_path))
+            .await
+            .map_err(|e| AppError::Internal(format!("GeoIP database load task: {e}")))?,
+    );
+
     // Build AppState for the REST thread
     let state = AppState {
         sessions_ks,
@@ -844,6 +859,7 @@ pub async fn run(
         step_up_approvers_ks,
         member_pushes_ks,
         tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
+        geoip,
         backup_bundles_ks,
         schemas_ks,
         endorsements_ks,
@@ -1366,6 +1382,8 @@ pub async fn run(
     // is settled from the effect it recorded.
     // (Suspensions were reconciled above, before the git-ns projector.)
     crate::admin_actions::spawn_sweeper(state.clone(), shutdown_rx.clone());
+    // A refreshed GeoIP database is picked up without a restart.
+    state.geoip.spawn_reloader(shutdown_rx.clone());
     crate::join::retention::RetentionSweeper::spawn(
         state.join_requests_ks.clone(),
         state.sync_queue_ks.clone(),

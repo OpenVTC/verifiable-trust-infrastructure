@@ -646,6 +646,12 @@ tokio-util = "0.7"
 
 ipnetwork = { version = "0.21", features = ["serde"] }
 
+# Local GeoIP lookups for the VTC member portal's wallet sign-in
+# (`vtc-service` `geoip`): reads DB-IP / MaxMind `.mmdb` files from disk, never
+# a network call (base design §12.6). No default features — the file is read
+# into memory, so `mmap` (and its `unsafe`) stays off.
+maxminddb = { version = "0.32", default-features = false }
+
 # OpenAPI 3.1 generation. `utoipa` derives schemas (ToSchema) + per-handler
 # path metadata; `utoipa-axum` (`OpenApiRouter`) makes the router the single
 # source of truth so the served `/openapi.json` can't drift from the routes.

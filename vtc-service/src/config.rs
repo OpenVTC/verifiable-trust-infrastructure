@@ -96,8 +96,27 @@ pub struct AppConfig {
     /// [`vti_common::config::DidCacheConfig`].
     #[serde(default)]
     pub did_cache: vti_common::config::DidCacheConfig,
+    /// Local GeoIP database (`[geoip]`) for the city and country a wallet
+    /// shows its approver at sign-in. Absent ⇒ every location is `"unknown"`.
+    #[serde(default)]
+    pub geoip: GeoIpConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
+}
+
+/// Local GeoIP lookups (`[geoip]`) — base design §12.6: a local database only,
+/// never a third-party call. See `docs/03-vtc/geoip.md` and [`crate::geoip`].
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct GeoIpConfig {
+    /// Path of a MaxMind DB (`.mmdb`) file with the GeoIP2 City record shape:
+    /// DB-IP "IP to City Lite" (recommended, CC BY 4.0 — attribution
+    /// required) or MaxMind GeoLite2 City. Re-read when it changes on disk, so
+    /// a refresh needs no restart. `None` (default): no lookups, every
+    /// sign-in location is `"unknown"`. A file that cannot be read is a
+    /// warning at startup, not a boot failure. Env: `VTC_GEOIP_DATABASE`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<PathBuf>,
 }
 
 /// Authority settings for the community's ACL.
@@ -1428,6 +1447,10 @@ impl AppConfig {
         if let Ok(key) = std::env::var("VTC_AUTH_JWT_SIGNING_KEY") {
             config.auth.jwt_signing_key = Some(key);
         }
+        // Empty clears a `[geoip] database` set in the file.
+        if let Ok(path) = std::env::var("VTC_GEOIP_DATABASE") {
+            config.geoip.database = (!path.trim().is_empty()).then(|| PathBuf::from(path));
+        }
 
         config.validate_routing_and_cors()?;
         let did_cache_errors = config.did_cache.validation_errors();
@@ -1488,6 +1511,22 @@ fn unknown_key_message(config_path: &std::path::Path, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn geoip_database_is_optional() {
+        let empty: AppConfig = toml::from_str("").expect("empty config");
+        assert_eq!(empty.geoip.database, None);
+        // Unset is not written back, so a saved config stays as it was.
+        assert!(!toml::to_string(&empty).unwrap().contains("database"));
+
+        let set: AppConfig =
+            toml::from_str("[geoip]\ndatabase = \"/var/lib/vtc/dbip-city-lite.mmdb\"")
+                .expect("geoip config");
+        assert_eq!(
+            set.geoip.database.as_deref(),
+            Some(std::path::Path::new("/var/lib/vtc/dbip-city-lite.mmdb"))
+        );
+    }
 
     #[test]
     fn admin_ui_dir_goes_with_directory_mode_only() {

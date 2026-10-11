@@ -181,6 +181,9 @@ How to operate and integrate against a VTC.
 - **[Website + admin UX](03-vtc/website-and-admin.md)** — public
   community website (live + managed modes), embedded admin SPA,
   routing modes.
+- **[GeoIP: sign-in locations](03-vtc/geoip.md)** — the local
+  DB-IP / GeoLite2 database behind the city and country a wallet shows
+  at sign-in: download, `[geoip] database`, monthly refresh, attribution.
 - **[Admin UX plugins](03-vtc/admin-ui-plugins.md)** — third-party
   plugin contract: on-disk layout, manifest schema, scope filters,
   and the daemon's `admin_ui.plugin_dir` scan + serve.

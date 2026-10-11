@@ -113,6 +113,7 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         step_up_approvers_ks: store.keyspace("step_up_approvers").unwrap(),
         member_pushes_ks: store.keyspace("member_pushes").unwrap(),
         tsp_reach: std::sync::Arc::new(vti_common::tsp_reach::TspReachability::new()),
+        geoip: std::sync::Arc::new(vtc_service::geoip::GeoIp::disabled()),
         backup_bundles_ks: store.keyspace("backup_bundles").unwrap(),
         schemas_ks: store.keyspace("schemas").unwrap(),
         endorsements_ks: endorsements_ks.clone(),

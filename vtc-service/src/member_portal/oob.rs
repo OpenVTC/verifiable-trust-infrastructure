@@ -715,14 +715,6 @@ pub fn same_network(start: Option<&str>, approver: Option<IpAddr>) -> serde_json
     }
 }
 
-/// GeoIP hook. City and country from a **local** database only — never a
-/// third-party call (base design §12.6). This repository carries no GeoIP
-/// dependency or database, so every address is `"unknown"`, which the wallet
-/// shows as a warning, not as neutral. Wire a local database in here.
-pub fn locate(_ip: IpAddr) -> Option<String> {
-    None
-}
-
 /// Browser family and OS from a `User-Agent`, never the full string (T5).
 pub fn browser_and_os(user_agent: Option<&str>) -> (String, String) {
     let ua = user_agent.unwrap_or_default();

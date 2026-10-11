@@ -816,7 +816,10 @@ The page hides the code when the tab is hidden (the request keeps
 running). It is served with `Referrer-Policy: no-referrer`,
 `Cache-Control: no-store` and a CSP with `frame-ancestors 'none'`, and
 every `auth/oob` response is `no-store`. Each step is audited as
-`MemberWalletSignIn` (city and country, never the address).
+`MemberWalletSignIn` (city and country, never the address). The city and
+country come from a local GeoIP database the operator configures
+(`[geoip] database`, see [GeoIP: sign-in locations](geoip.md)); without
+one they are `unknown`.
 
 **Wallets find this portal in the community's DID document.** A wallet
 refuses a sign-in link unless the VTC's DID document lists a

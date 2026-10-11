@@ -556,7 +556,12 @@ async fn handle_request(
         match_number: None,
         match_number_delivered: false,
         requester: RequesterDetails {
-            location: oob::locate(http.client_ip).unwrap_or_else(|| "unknown".into()),
+            // From the local GeoIP database only (base design §12.6);
+            // `"unknown"` the wallet shows as a warning, not as neutral.
+            location: state
+                .geoip
+                .locate(http.client_ip)
+                .unwrap_or_else(|| "unknown".into()),
             browser,
             os,
             created_at: oob::rfc3339(now),
