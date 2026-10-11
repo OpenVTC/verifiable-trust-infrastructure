@@ -99,6 +99,48 @@ fn witnesses() -> Vec<Witness> {
     #[allow(unused_mut)]
     let mut table = vec![
         witness!(
+            s::join_requests::wallet_session::start::v0_1::error_codes::CRITERION_NOT_FOUND,
+            jr::WALLET_SESSION_START_ERR_CRITERION_NOT_FOUND,
+            "wallet_session.rs",
+            "the_start_task_answers_with_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::join_requests::wallet_session::start::v0_1::error_codes::NO_WALLET_PRESENTATION,
+            jr::WALLET_SESSION_START_ERR_NO_WALLET_PRESENTATION,
+            "wallet_session.rs",
+            "the_start_task_answers_with_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::join_requests::wallet_session::start::v0_1::error_codes::VERIFIER_NOT_CONFIGURED,
+            jr::WALLET_SESSION_START_ERR_VERIFIER_NOT_CONFIGURED,
+            "wallet_session.rs",
+            "the_start_task_answers_with_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::join_requests::wallet_session::start::v0_1::error_codes::REQUEST_NOT_FOUND,
+            jr::WALLET_SESSION_START_ERR_REQUEST_NOT_FOUND,
+            "wallet_session.rs",
+            "the_start_task_answers_with_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::join_requests::wallet_session::start::v0_1::error_codes::REQUEST_CLOSED,
+            jr::WALLET_SESSION_START_ERR_REQUEST_CLOSED,
+            "wallet_session.rs",
+            "the_start_task_answers_with_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::join_requests::wallet_session::start::v0_1::error_codes::TOO_MANY_SESSIONS,
+            jr::WALLET_SESSION_START_ERR_TOO_MANY_SESSIONS,
+            "wallet_session.rs",
+            "the_start_task_bounds_an_applicants_open_sessions"
+        ),
+        witness!(
+            s::join_requests::wallet_session::status::v0_1::error_codes::NOT_FOUND,
+            jr::WALLET_SESSION_STATUS_ERR_NOT_FOUND,
+            "wallet_session.rs",
+            "a_wallet_presentation_becomes_evidence_the_applicant_can_read"
+        ),
+        witness!(
             s::join_requests::withdraw::v0_1::error_codes::NOT_FOUND,
             jr::JOIN_REQUEST_WITHDRAW_ERR_NOT_FOUND,
             "join_requests.rs",

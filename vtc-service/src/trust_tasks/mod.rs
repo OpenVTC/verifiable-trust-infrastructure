@@ -115,6 +115,11 @@ mod recognise_tasks;
 // endorsement verbs. Each calls the operation its bearer route calls.
 mod member_tasks;
 
+// An applicant's OpenID4VP wallet sessions (#1988): opening one for a join
+// criterion, and reading its outcome. The wallet's own two calls are HTTPS
+// endpoints (`routes::oid4vp`).
+mod wallet_session_tasks;
+
 // The node-neutral `backup/*` family (#1641): a backup too large for one
 // document moves as a chunked bundle. `pub(crate)` for `blob_dir`, which the
 // retention sweeper needs.
@@ -1083,6 +1088,12 @@ fn dispatch_typed<'a>(
         }
         jr::JOIN_REQUEST_SUPPLEMENT_TYPE => {
             Box::pin(async move { handle_supplement(state, ctx, doc).await })
+        }
+        jr::JOIN_REQUEST_WALLET_SESSION_START_TYPE => {
+            Box::pin(async move { wallet_session_tasks::handle_start(state, ctx, doc).await })
+        }
+        jr::JOIN_REQUEST_WALLET_SESSION_STATUS_TYPE => {
+            Box::pin(async move { wallet_session_tasks::handle_status(state, ctx, doc).await })
         }
         jr::MEMBER_SELF_REMOVE_TYPE => {
             Box::pin(async move { handle_self_remove(state, ctx, doc).await })
@@ -2731,6 +2742,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // `status` is how they learn what is wanted, this is how they supply it,
     // and `withdraw` is how they decline to.
     jr::JOIN_REQUEST_SUPPLEMENT_TYPE,
+    // Evidence from a wallet that speaks OpenID4VP and no Trust Task: the
+    // applicant opens a session for a criterion and reads its outcome (#1988).
+    jr::JOIN_REQUEST_WALLET_SESSION_START_TYPE,
+    jr::JOIN_REQUEST_WALLET_SESSION_STATUS_TYPE,
     jr::MEMBER_SELF_REMOVE_TYPE,
     mem::MEMBER_VMC_TYPE,
     // The two credential-exchange steps a holder sends: `request` redeems an

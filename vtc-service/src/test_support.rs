@@ -42,6 +42,36 @@ use vti_common::auth::jwt::JwtKeys;
 /// pre-consolidation fixtures hard-coded.
 pub const TEST_VTC_DID: &str = "did:webvh:vtc.example.com:abc";
 
+/// The DID of the swiyu verifier identity [`oid4vp_test_identity`] makes.
+pub const TEST_VERIFIER_DID: &str = "did:webvh:QmVerifier:identifier-reg.example:api:v1:did:abc";
+
+/// A swiyu verifier identity over a P-256 key from `seed`, as
+/// `vtc oid4vp install` stores one. Install it with
+/// [`TestVtcBuilder::with_oid4vp_identity`].
+pub fn oid4vp_test_identity(id: &str, seed: u8) -> crate::oid4vp::VerifierIdentityRecord {
+    let kp = affinidi_crypto::p256::generate(Some(&[seed; 32])).expect("P-256 key");
+    let secret = affinidi_tdk::secrets_resolver::secrets::Secret::generate_p256(
+        None,
+        Some(&kp.private_bytes),
+    )
+    .expect("P-256 secret");
+    let mut jwk = serde_json::to_value(&kp.jwk).expect("JWK");
+    if let Some(map) = jwk.as_object_mut() {
+        map.remove("d");
+    }
+    crate::oid4vp::VerifierIdentityRecord {
+        id: id.into(),
+        kind: crate::oid4vp::VerifierKind::Swiyu,
+        did: TEST_VERIFIER_DID.into(),
+        kid: format!("{TEST_VERIFIER_DID}#verifier-key-1"),
+        public_jwk: jwk,
+        private_key_multibase: secret
+            .get_private_keymultibase()
+            .expect("private key multibase"),
+        installed_at: 0,
+    }
+}
+
 /// Deterministic 32-byte JWT signing seed. Stable across runs so tests
 /// can pre-mint tokens without round-tripping the auth ceremony.
 const JWT_SEED: [u8; 32] = [0x42u8; 32];
@@ -92,6 +122,9 @@ pub struct TestVtcBuilder {
     /// `[git_ns]` configuration.
     git_ns_config: Option<crate::git_ns::GitNsConfig>,
     registry_client: Option<Arc<dyn crate::registry::TrustRegistryClient>>,
+    /// OpenID4VP verifier identities installed before the router is built,
+    /// as `vtc oid4vp install` would leave them.
+    oid4vp_identities: Vec<crate::oid4vp::VerifierIdentityRecord>,
 }
 
 impl Default for TestVtcBuilder {
@@ -110,6 +143,7 @@ impl Default for TestVtcBuilder {
             git_ns_bridge: None,
             git_ns_config: None,
             registry_client: None,
+            oid4vp_identities: Vec::new(),
         }
     }
 }
@@ -159,6 +193,13 @@ impl TestVtcBuilder {
     /// (passkey/install routes need it).
     pub fn with_public_url(mut self, url: impl Into<String>) -> Self {
         self.public_url = Some(url.into());
+        self
+    }
+
+    /// Install an OpenID4VP verifier identity, as `vtc oid4vp install` would,
+    /// so wallet sessions can be opened against it.
+    pub fn with_oid4vp_identity(mut self, record: crate::oid4vp::VerifierIdentityRecord) -> Self {
+        self.oid4vp_identities.push(record);
         self
     }
 
@@ -349,6 +390,9 @@ impl TestVtcBuilder {
         let oid4vp_keys_ks = store
             .keyspace(crate::store::keyspaces::OID4VP_KEYS)
             .expect("oid4vp_keys ks");
+        let oid4vp_sessions_ks = store
+            .keyspace(crate::store::keyspaces::OID4VP_SESSIONS)
+            .expect("oid4vp_sessions ks");
         let backup_bundles_ks = store
             .keyspace(crate::store::keyspaces::BACKUP_BUNDLES)
             .expect("backup_bundles ks");
@@ -526,8 +570,20 @@ impl TestVtcBuilder {
             admin_actions_ks,
             step_up_approvers_ks,
             member_pushes_ks,
+            oid4vp_signers: {
+                for record in &self.oid4vp_identities {
+                    crate::oid4vp::put_identity(&oid4vp_keys_ks, record)
+                        .await
+                        .expect("install oid4vp identity");
+                }
+                Arc::new(
+                    crate::oid4vp::load_signers(&oid4vp_keys_ks)
+                        .await
+                        .expect("load oid4vp signers"),
+                )
+            },
             oid4vp_keys_ks,
-            oid4vp_signers: Arc::new(crate::oid4vp::VerifierSigners::new()),
+            oid4vp_sessions_ks,
             tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
             geoip: Arc::new(crate::geoip::GeoIp::disabled()),
             backup_bundles_ks,

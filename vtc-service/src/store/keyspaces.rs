@@ -58,6 +58,11 @@ pub use vti_rooms::ROOM_EPOCH_LINKS_KEYSPACE as ROOM_EPOCH_LINKS;
 /// signed with. Encrypted at rest under the storage key, like `install` and
 /// `passkey`.
 pub const OID4VP_KEYS: &str = "oid4vp_keys";
+/// OpenID4VP wallet sessions (`crate::oid4vp::session`): each holds a
+/// single-use nonce, the ephemeral private key the wallet's response is
+/// encrypted to, and — once a wallet answers — the presented claims held as
+/// evidence for the applicant's join. Encrypted at rest under the storage key.
+pub const OID4VP_SESSIONS: &str = "oid4vp_sessions";
 
 /// Room files' index at `room_blobs`: which blobs each room holds, on which storage config,
 /// which records name them, and the usage they add up to. **Backed up**, so a restored
@@ -257,6 +262,7 @@ pub const ALL: &[&str] = &[
     GIT_NS_JOBS,
     GIT_NS_PROJECTION,
     OID4VP_KEYS,
+    OID4VP_SESSIONS,
 ];
 
 /// Keyspaces captured by `POST /v1/backup/export` (P3.9). These hold
@@ -399,6 +405,10 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // outbox, whose entries are not carried either. Restored elsewhere, a push
     // would be re-sent by a node that never queued it.
     MEMBER_PUSHES,
+    // Wallet sessions last minutes and their evidence hours; a restored session
+    // would carry a response key and a nonce for an exchange no wallet can
+    // finish, and evidence its applicant was told would be discarded.
+    OID4VP_SESSIONS,
     // In-flight backup transfers. A bundle is a five-minute conversation with
     // one operator about one set of staged bytes, which a restore elsewhere
     // does not have — and a backup that contained its own transfer state would
@@ -421,12 +431,12 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        // 42 top-level `*_ks` fields (the member portal's two among them) plus
+        // 43 top-level `*_ks` fields (the member portal's two among them) plus
         // the three `AppState::git_ns` carries, plus the 2 hidden-vetting
         // keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`) from the
         // `zkp-pcs` development branch, plus the two room-file keyspaces
         // `AppState::room_files` holds (`ROOM_BLOBS`, `ROOM_BLOB_TRANSFERS`).
-        assert_eq!(ALL.len(), 49, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 50, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

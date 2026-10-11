@@ -29,6 +29,9 @@ use vti_common::error::AppError;
 
 use crate::store::KeyspaceHandle;
 
+pub mod session;
+pub mod wallet;
+
 /// How a verifier identity is known to wallets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

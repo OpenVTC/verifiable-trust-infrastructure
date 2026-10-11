@@ -214,7 +214,11 @@ dtg-credentials = { workspace = true }
 # JSON Schema validation of issued credentials against their credentialSchema.
 jsonschema = { workspace = true }
 # DCQL (via OpenID4VP) — the schema store's Accepts criterion is a DCQL query.
-affinidi-openid4vp = { workspace = true }
+# `direct-post-jwt`: the VTC verifies swiyu / EUDI wallets' encrypted
+# responses (`crate::oid4vp::wallet`, #1988).
+affinidi-openid4vp = { workspace = true, features = ["direct-post-jwt"] }
+# The response-decryption key and its `enc` allow-list, named directly.
+affinidi-oid4vc-core = { workspace = true, features = ["jwe"] }
 # OID4VCI — the issuer side of credential-exchange (offer/request/issue);
 # the body the `credential-exchange/*` Trust Tasks carry (Phase 3 §6).
 affinidi-openid4vci = { workspace = true }

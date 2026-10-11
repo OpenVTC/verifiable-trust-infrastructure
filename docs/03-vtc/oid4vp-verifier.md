@@ -7,7 +7,8 @@ recognises. That identity is not the community's own DID — swiyu wants a
 P-256 key; EUDI wants an X.509 access certificate. So a VTC that verifies
 wallet presentations holds a separate **verifier identity**, minted by its VTA.
 
-This page covers getting a swiyu verifier identity onto a VTC. The design is
+This page covers getting a swiyu verifier identity onto a VTC, and the wallet
+sessions it serves. The design is
 `docs/05-design-notes/oid4vp-wallet-verifier.md`.
 
 ## What lives where
@@ -80,16 +81,76 @@ becomes that context's primary DID, which is what `pnm keys bundle` exports.
 (`decentralized_identifier:<did>`); `vtc oid4vp remove --identity swiyu` removes
 one. Installing again under the same name replaces it.
 
+## Wallet sessions
+
+With an identity installed, an applicant can collect evidence for a join
+criterion from their wallet. The wallet speaks OpenID4VP 1.0 and signs no Trust
+Task, so the applicant's own agent opens the exchange for it:
+
+1. The applicant signs `vtc/join-requests/wallet-session/start/0.1`, naming the
+   criterion by the `requirementsDigest` the manifest publishes (and, if they
+   have one, the join request the evidence is for). The criterion must ask for
+   an SD-JWT VC (`dc+sd-jwt`).
+2. The VTC answers with a `walletUri` — `swiyu-verify://?client_id=…&request_uri=…`
+   for a swiyu identity — which the applicant shows as a QR code or opens as a
+   deep link.
+3. The wallet fetches the signed request object from
+   `GET /v1/oid4vp/request/{session}` (answered once), asks its holder, and
+   posts the encrypted answer to `POST /v1/oid4vp/response/{session}`
+   (accepted once).
+4. The applicant polls `vtc/join-requests/wallet-session/status/0.1` until the
+   session is `presented`, `refused` or `expired`.
+
+The request object asks for the criterion's published query and nothing else,
+names the community (`client_name`, from `vtc_name`) so the holder sees whom
+they are presenting to, and is signed ES256 by the identity's key under swiyu's
+profile (`profile_version`, `aud` `https://self-issued.me/v2`). The response is
+`direct_post.jwt`, encrypted to a P-256 key made for that session alone with
+`A256GCM`; the key is dropped when the session closes.
+
+A response is accepted only if, in order: it decrypts and echoes the session's
+`state`; each presentation's issuer signature, validity window and key-binding
+JWT verify, the KB-JWT naming the session nonce and the prefixed `client_id`;
+every credential's status is valid; every issuer is one the criterion's
+`credentialIssuers` admits; and the presentations satisfy the query. The status
+task then reports the evidence — the wallet's holder key, recorded beside the
+applicant and never as them, and each credential's query id, format, issuer and
+type. It never returns a claim value. A refusal reports which check failed.
+
+Both wallet endpoints are unauthenticated, as OpenID4VP requires, and sit
+behind the unauthenticated rate limit. The session id is unguessable and
+single-use, and a response decrypts only under its session's key.
+
+Settings (`[oid4vp]`, all optional):
+
+```toml
+[oid4vp]
+session_ttl_secs = 600          # how long a session waits for a wallet
+max_open_sessions = 3           # per applicant
+evidence_hold_secs = 21600      # unbound evidence kept for a submission
+max_response_bytes = 4194304    # the largest wallet response accepted
+# default_identity = "swiyu"    # when the applicant names no prefix
+# wallet_uri_scheme = "openid4vp"
+```
+
+The VTC needs an `https` `public_url` for wallets to reach; without one no
+session opens (`verifierNotConfigured`). Sessions live in the `oid4vp_sessions`
+keyspace, encrypted at rest and excluded from backup; a sweeper closes
+unanswered ones at `expiresAt` and drops records an hour after they close, or
+when their held evidence lapses.
+
 ## Backups
 
 `oid4vp_keys` is in the backup. Its rows are encrypted under the storage key,
 which restoring the same key bundle reproduces, so a restored VTC keeps its
-verifier identities.
+verifier identities. `oid4vp_sessions` is not: a session lasts minutes.
 
 ## Not yet
 
-- Answering wallets: the request and response endpoints, and the join
-  integration, come next (P3 of the design note).
+- Deciding a join on wallet evidence: it is recorded on the session, and
+  feeding it into the join request (with `requestId`) or the applicant's next
+  submission (without) comes next.
+- swiyu trust statements in `verifier_info`, and swiyu's trusted issuers.
 - EUDI: the X.509 access certificate — a certificate request built from a
   VTA-held key, and the issued chain and registration certificate.
 - Keeping the key in the VTA instead (`keys/sign-jws`), for a deployment that

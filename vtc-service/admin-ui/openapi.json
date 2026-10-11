@@ -484,6 +484,83 @@
         }
       }
     },
+    "/v1/oid4vp/request/{session}": {
+      "get": {
+        "tags": [
+          "oid4vp"
+        ],
+        "summary": "`GET /v1/oid4vp/request/{session}` — the session's signed request object,\nanswered once (`wallet-session/start/0.1` consumer rule 7).",
+        "operationId": "request_object",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "path",
+            "description": "The wallet session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The signed request object (a JAR)",
+            "content": {
+              "application/oauth-authz-req+jwt": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No open session by that id, or its request object was already fetched"
+          }
+        }
+      }
+    },
+    "/v1/oid4vp/response/{session}": {
+      "post": {
+        "tags": [
+          "oid4vp"
+        ],
+        "summary": "`POST /v1/oid4vp/response/{session}` — the wallet's `direct_post.jwt`\nanswer. Accepted once; the body cap is `[oid4vp] max_response_bytes`.",
+        "operationId": "response",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "path",
+            "description": "The wallet session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "`response=<JWE>`, or OpenID4VP error parameters",
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Received: the presentation verified, or the wallet's error was recorded"
+          },
+          "400": {
+            "description": "The session is unknown or closed, or the presentation was not accepted"
+          },
+          "413": {
+            "description": "The response is larger than this community accepts"
+          }
+        }
+      }
+    },
     "/v1/status-lists/{purpose}": {
       "get": {
         "tags": [

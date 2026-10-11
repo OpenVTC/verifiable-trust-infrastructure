@@ -360,6 +360,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         member_pushes_ks,
         oid4vp_keys_ks: store.keyspace("oid4vp_keys").unwrap(),
         oid4vp_signers: Arc::new(vtc_service::oid4vp::VerifierSigners::new()),
+        oid4vp_sessions_ks: store.keyspace("oid4vp_sessions").unwrap(),
         tsp_reach: std::sync::Arc::new(vti_common::tsp_reach::TspReachability::new()),
         geoip: std::sync::Arc::new(vtc_service::geoip::GeoIp::disabled()),
         backup_bundles_ks,

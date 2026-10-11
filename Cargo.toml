@@ -149,9 +149,12 @@ affinidi-status-list = "0.1.7"
 # unreleased change (e.g. DCQL), override the whole interdependent set together
 # to avoid a duplicate-version split.
 affinidi-sd-jwt-vc = "0.2"
-affinidi-sd-jwt = "0.1.2"
+affinidi-sd-jwt = "0.1.7"
 affinidi-bbs = "0.4"
-affinidi-openid4vp = "0.1.2"
+affinidi-openid4vp = "0.1.4"
+# The JOSE core under openid4vp: ECDH-ES response decryption (`jwe`) for the
+# VTC's OpenID4VP verifier (#1988).
+affinidi-oid4vc-core = { version = "0.1.10", default-features = false }
 affinidi-mdoc = { version = "0.3", default-features = false, features = ["es256"] }
 # Both already enter the graph through `affinidi-mdoc`; declared here because
 # the mdoc receive path names their types directly (`coset` for the COSE_Sign1

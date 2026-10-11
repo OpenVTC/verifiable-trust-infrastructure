@@ -158,6 +158,9 @@ pub struct AppState {
     /// from `oid4vp_keys_ks` at boot. Empty for a community that verifies no
     /// wallet presentations.
     pub oid4vp_signers: Arc<crate::oid4vp::VerifierSigners>,
+    /// Open and recently closed OpenID4VP wallet sessions
+    /// (`crate::oid4vp::session`). Encrypted at rest.
+    pub oid4vp_sessions_ks: KeyspaceHandle,
     /// Which members were recently seen sending here over TSP, recorded from
     /// the proven sender of each inbound TSP frame. A member whose DID
     /// document advertises no transport (a `did:key` wallet) is pushed to over
@@ -519,6 +522,7 @@ pub async fn run(
     let step_up_approvers_ks = store.keyspace(keyspaces::STEP_UP_APPROVERS)?;
     let member_pushes_ks = store.keyspace(keyspaces::MEMBER_PUSHES)?;
     let oid4vp_keys_ks = store.keyspace(keyspaces::OID4VP_KEYS)?;
+    let oid4vp_sessions_ks = store.keyspace(keyspaces::OID4VP_SESSIONS)?;
     let backup_bundles_ks = store.keyspace(keyspaces::BACKUP_BUNDLES)?;
     let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
     // Seed the schema store with the built-in catalog Issues types (idempotent;
@@ -660,6 +664,13 @@ pub async fn run(
         None => oid4vp_keys_ks,
     };
     let oid4vp_signers = Arc::new(crate::oid4vp::load_signers(&oid4vp_keys_ks).await?);
+    // A session holds the ephemeral key a wallet's response is encrypted to
+    // and, once answered, the presented claims. New, so nothing plaintext to
+    // migrate.
+    let oid4vp_sessions_ks = match storage_key {
+        Some(key) => oid4vp_sessions_ks.with_encryption(key),
+        None => oid4vp_sessions_ks,
+    };
     if !oid4vp_signers.is_empty() {
         info!(
             identities = ?oid4vp_signers.keys().collect::<Vec<_>>(),
@@ -896,6 +907,7 @@ pub async fn run(
         member_pushes_ks,
         oid4vp_keys_ks,
         oid4vp_signers,
+        oid4vp_sessions_ks,
         tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
         geoip,
         backup_bundles_ks,
@@ -1459,6 +1471,26 @@ pub async fn run(
                 tokio::select! {
                     _ = shutdown.changed() => return,
                     _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {}
+                }
+            }
+        });
+    }
+
+    // OpenID4VP wallet sessions: close each at `expiresAt` if no wallet
+    // answered — dropping its response key, which the specification requires
+    // of a closed session — and drop records nothing reads any more. Every
+    // minute, because a session lives minutes.
+    {
+        let ks = state.oid4vp_sessions_ks.clone();
+        let mut shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = crate::oid4vp::session::sweep(&ks, chrono::Utc::now()).await {
+                    warn!(error = %e, "wallet session sweep failed");
+                }
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
                 }
             }
         });

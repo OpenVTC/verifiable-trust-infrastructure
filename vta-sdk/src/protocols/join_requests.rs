@@ -193,6 +193,54 @@ pub const JOIN_REQUEST_SUPPLEMENT_TYPE: &str =
 pub const JOIN_REQUEST_SUPPLEMENT_RESPONSE_TYPE: &str =
     <supplement::v0_1::Response as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// The generated `vtc/join-requests/wallet-session` modules: an applicant
+/// opens an OpenID4VP presentation session so a swiyu or EUDI wallet — which
+/// signs no Trust Task — can present evidence for their join, and reads the
+/// session's outcome (#1988).
+pub use trust_tasks_rs::specs::vtc::join_requests::wallet_session;
+
+/// Trust Task `type` for opening a wallet presentation session.
+pub const JOIN_REQUEST_WALLET_SESSION_START_TYPE: &str =
+    <wallet_session::start::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// Trust Task `type` for reading a wallet presentation session.
+pub const JOIN_REQUEST_WALLET_SESSION_STATUS_TYPE: &str =
+    <wallet_session::status::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// Extended error code: no criterion the community publishes, or still
+/// honours, has the supplied `requirementsDigest`.
+pub const WALLET_SESSION_START_ERR_CRITERION_NOT_FOUND: &str =
+    wallet_session::start::v0_1::error_codes::CRITERION_NOT_FOUND.code;
+
+/// Extended error code: the criterion asks for no credential a wallet can
+/// present over OpenID4VP.
+pub const WALLET_SESSION_START_ERR_NO_WALLET_PRESENTATION: &str =
+    wallet_session::start::v0_1::error_codes::NO_WALLET_PRESENTATION.code;
+
+/// Extended error code: the community holds no verifier identity for the
+/// requested client identifier prefix (or for any, when none was requested).
+pub const WALLET_SESSION_START_ERR_VERIFIER_NOT_CONFIGURED: &str =
+    wallet_session::start::v0_1::error_codes::VERIFIER_NOT_CONFIGURED.code;
+
+/// Extended error code: no join request by that id, or not the signer's —
+/// the same code for both.
+pub const WALLET_SESSION_START_ERR_REQUEST_NOT_FOUND: &str =
+    wallet_session::start::v0_1::error_codes::REQUEST_NOT_FOUND.code;
+
+/// Extended error code: the signer's join request is decided or withdrawn.
+pub const WALLET_SESSION_START_ERR_REQUEST_CLOSED: &str =
+    wallet_session::start::v0_1::error_codes::REQUEST_CLOSED.code;
+
+/// Extended error code: the applicant holds as many open sessions as the
+/// community allows.
+pub const WALLET_SESSION_START_ERR_TOO_MANY_SESSIONS: &str =
+    wallet_session::start::v0_1::error_codes::TOO_MANY_SESSIONS.code;
+
+/// Extended error code: no session by that id, or not opened by the signer —
+/// the same code for both.
+pub const WALLET_SESSION_STATUS_ERR_NOT_FOUND: &str =
+    wallet_session::status::v0_1::error_codes::NOT_FOUND.code;
+
 /// Extended error code: the caller has no open request to supplement.
 ///
 /// Also the answer when a supplied `requestId` names somebody else's request —

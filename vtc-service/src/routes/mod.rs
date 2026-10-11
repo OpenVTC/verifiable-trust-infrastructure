@@ -18,6 +18,7 @@ pub(crate) mod invitations;
 pub mod join_requests;
 pub(crate) mod member_portal;
 pub(crate) mod members;
+pub(crate) mod oid4vp;
 pub(crate) mod policies;
 pub mod recognise;
 pub(crate) mod recognition_admin;
@@ -922,6 +923,15 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
             "/member/passkey-login/finish",
             post(member_portal::passkey_login_finish),
         )
+        // A wallet's two OpenID4VP calls for a wallet session (#1988): fetch
+        // the signed request object, post the encrypted response. A declared
+        // foreign-protocol exception (VTI-OPS-095) — the wallet speaks
+        // OpenID4VP and signs no Trust Task; the session is opened and read
+        // through `vtc/join-requests/wallet-session/*`. Unbound, and behind
+        // the governor. The response reads its own body against
+        // `[oid4vp] max_response_bytes`, not this chain's cap.
+        .routes(routes!(oid4vp::request_object))
+        .routes(routes!(oid4vp::response))
         .routes(tt(
             routes!(auth::admin_session),
             "https://trusttasks.org/spec/vtc/auth/admin-session/0.1",
@@ -1283,6 +1293,16 @@ mod openapi_tests {
             "/v1/trust-tasks",
             "the generic Trust Task document endpoint itself",
         ),
+        (
+            "GET",
+            "/v1/oid4vp/request/{session}",
+            "OpenID4VP request_uri: a swiyu / EUDI wallet fetches the signed request object; the              wallet signs no Trust Task (VTI-OPS-095). Its twin is              vtc/join-requests/wallet-session/start/0.1",
+        ),
+        (
+            "POST",
+            "/v1/oid4vp/response/{session}",
+            "OpenID4VP response_uri: the wallet posts its encrypted direct_post.jwt answer              (VTI-OPS-095). Its twin is vtc/join-requests/wallet-session/status/0.1",
+        ),
     ];
 
     /// A WebAuthn ceremony step: the browser's `navigator.credentials` API
@@ -1414,6 +1434,11 @@ mod openapi_tests {
         // the key-binding proof is the authority, and the governor + body cap
         // bound what an unauthenticated caller can make it verify.
         ("POST", "/v1/credential-exchange/request"),
+        // A wallet's OpenID4VP calls for a wallet session: unauthenticated by
+        // the protocol, so behind the governor. The session id is unguessable
+        // and single-use, and the response decrypts only under its key.
+        ("GET", "/v1/oid4vp/request/{session}"),
+        ("POST", "/v1/oid4vp/response/{session}"),
     ];
 
     /// Unauthenticated operations intentionally left OFF the governed chain

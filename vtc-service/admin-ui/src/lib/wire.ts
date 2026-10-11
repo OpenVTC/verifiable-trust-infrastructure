@@ -289,6 +289,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/oid4vp/request/{session}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /v1/oid4vp/request/{session}` — the session's signed request object,
+         *     answered once (`wallet-session/start/0.1` consumer rule 7).
+         */
+        get: operations["request_object"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/oid4vp/response/{session}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /v1/oid4vp/response/{session}` — the wallet's `direct_post.jwt`
+         *     answer. Accepted once; the body cap is `[oid4vp] max_response_bytes`.
+         */
+        post: operations["response"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/status-lists/{purpose}": {
         parameters: {
             query?: never;
@@ -4598,6 +4638,76 @@ export interface operations {
             };
             /** @description No live offer for this code */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    request_object: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The wallet session id */
+                session: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The signed request object (a JAR) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/oauth-authz-req+jwt": string;
+                };
+            };
+            /** @description No open session by that id, or its request object was already fetched */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    response: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The wallet session id */
+                session: string;
+            };
+            cookie?: never;
+        };
+        /** @description `response=<JWE>`, or OpenID4VP error parameters */
+        requestBody: {
+            content: {
+                "application/x-www-form-urlencoded": string;
+            };
+        };
+        responses: {
+            /** @description Received: the presentation verified, or the wallet's error was recorded */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The session is unknown or closed, or the presentation was not accepted */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The response is larger than this community accepts */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };

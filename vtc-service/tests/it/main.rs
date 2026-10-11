@@ -112,6 +112,7 @@ mod unrestricted_admin_consent;
 mod vetting_journey;
 mod vtc_client_live;
 mod wallet_login_siop;
+mod wallet_session;
 mod webauthn_harness;
 mod website_spine;
 mod website_task_gating;

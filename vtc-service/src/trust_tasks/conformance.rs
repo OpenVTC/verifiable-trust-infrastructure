@@ -1452,6 +1452,51 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
+            s::join_requests::wallet_session::start::v0_1::Payload,
+            s::join_requests::wallet_session::start::v0_1::Response,
+            json!({
+                "criterion": "zQmaf3wtkysZWg8vCzdetBwzjiHACZz8JAxTVr4W66chiXV",
+                "requestId": REQUEST_ID,
+                "clientIdPrefix": "decentralized_identifier"
+            }),
+            // The members `wallet_session_tasks::handle_start` sets through the
+            // generated builder.
+            json!({
+                "sessionId": "q7Xw2LmN9pRt4VbK8sYc3Hd6aBcDeFgH",
+                "walletUri": "swiyu-verify://?client_id=decentralized_identifier%3Adid%3Awebvh%3AQm%3Averifier.example&request_uri=https%3A%2F%2Fcommunity.example%2Fv1%2Foid4vp%2Frequest%2Fq7Xw2LmN9pRt4VbK8sYc3Hd6aBcDeFgH",
+                "clientId": "decentralized_identifier:did:webvh:Qm:verifier.example",
+                "dcqlQuery": { "credentials": [{
+                    "id": "residence",
+                    "format": "dc+sd-jwt",
+                    "meta": { "vct_values": ["https://example.org/credentials/residence-permit"] }
+                }]},
+                "expiresAt": TS
+            })
+        ),
+        checked!(
+            s::join_requests::wallet_session::status::v0_1::Payload,
+            s::join_requests::wallet_session::status::v0_1::Response,
+            json!({ "sessionId": "q7Xw2LmN9pRt4VbK8sYc3Hd6aBcDeFgH" }),
+            // A presented session, with every member the handler can set.
+            json!({
+                "sessionId": "q7Xw2LmN9pRt4VbK8sYc3Hd6aBcDeFgH",
+                "state": "presented",
+                "expiresAt": TS,
+                "requestId": REQUEST_ID,
+                "evidence": {
+                    "satisfied": true,
+                    "holder": "did:key:zDnaerDaTF5BXEavCrfRZEk316dpbLsfPDZ3WJ5hRTPFU2169",
+                    "credentials": [{
+                        "credentialQueryId": "residence",
+                        "format": "dc+sd-jwt",
+                        "issuer": OTHER_DID,
+                        "vct": "https://example.org/credentials/residence-permit"
+                    }],
+                    "heldUntil": TS
+                }
+            })
+        ),
+        checked!(
             s::join_requests::status::v0_1::Payload,
             s::join_requests::status::v0_1::Response,
             // The id-less poll: `requestId` is `Option` and omitted

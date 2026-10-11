@@ -103,6 +103,11 @@ pub struct AppConfig {
     /// Data rooms hosted here (`[rooms]`): for now, room files.
     #[serde(default)]
     pub rooms: RoomsConfig,
+    /// OpenID4VP wallet sessions (`[oid4vp]`): how long a session stays open,
+    /// how many an applicant may hold, how long unclaimed evidence is kept, and
+    /// the largest wallet response accepted. See [`crate::oid4vp::session`].
+    #[serde(default)]
+    pub oid4vp: Oid4vpConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
 }
@@ -216,6 +221,69 @@ impl RoomFilesConfig {
         );
         set(&mut limits.member.max_bytes, self.member.max_bytes);
         limits
+    }
+}
+
+/// OpenID4VP wallet-session settings (`[oid4vp]`), read when a session opens
+/// and when a wallet answers — `vtc/join-requests/wallet-session/start/0.1`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct Oid4vpConfig {
+    /// Seconds a session stays open for a wallet to answer. The specification
+    /// asks for minutes, not hours (consumer rule 8). Default 600.
+    #[serde(default = "default_oid4vp_session_ttl")]
+    pub session_ttl_secs: u64,
+    /// Open sessions one applicant may hold at once (consumer rule 12).
+    /// Default 3.
+    #[serde(default = "default_oid4vp_max_open_sessions")]
+    pub max_open_sessions: usize,
+    /// Seconds evidence not bound to a join request is held for the
+    /// applicant's next submission before it is discarded (consumer rule 11:
+    /// hours, not days). Default 21600 (6 hours).
+    #[serde(default = "default_oid4vp_evidence_hold")]
+    pub evidence_hold_secs: u64,
+    /// The largest wallet response body accepted at `response_uri`, in bytes.
+    /// swiyu advises verifiers to plan for responses far above the VTC's usual
+    /// cap; raise this if the communities' credentials are large. Default
+    /// 4 MiB.
+    #[serde(default = "default_oid4vp_max_response_bytes")]
+    pub max_response_bytes: usize,
+    /// The verifier identity (`vtc oid4vp install --identity <id>`) used when a
+    /// session names no client identifier prefix. Unset: the first installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_identity: Option<String>,
+    /// The URI scheme of the wallet invocation link, in place of the
+    /// ecosystem's own (`swiyu-verify` for a swiyu identity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet_uri_scheme: Option<String>,
+}
+
+fn default_oid4vp_session_ttl() -> u64 {
+    600
+}
+
+fn default_oid4vp_max_open_sessions() -> usize {
+    3
+}
+
+fn default_oid4vp_evidence_hold() -> u64 {
+    6 * 3600
+}
+
+fn default_oid4vp_max_response_bytes() -> usize {
+    4 * 1024 * 1024
+}
+
+impl Default for Oid4vpConfig {
+    fn default() -> Self {
+        Self {
+            session_ttl_secs: default_oid4vp_session_ttl(),
+            max_open_sessions: default_oid4vp_max_open_sessions(),
+            evidence_hold_secs: default_oid4vp_evidence_hold(),
+            max_response_bytes: default_oid4vp_max_response_bytes(),
+            default_identity: None,
+            wallet_uri_scheme: None,
+        }
     }
 }
 

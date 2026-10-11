@@ -219,6 +219,52 @@ pub async fn govern(
     Ok(first.expect("published is not empty"))
 }
 
+/// The criterion version a `requirementsDigest` names: a published criterion,
+/// or a superseded version still within its `requirementsGrace` at `now`.
+/// `None` when the digest names neither.
+pub async fn served_by_digest(
+    state: &AppState,
+    digest: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<ServedCriterion>, AppError> {
+    for stored in published_criteria(&state.schemas_ks).await? {
+        let served = manifest_criterion(stored)?;
+        if served.digest == digest {
+            return Ok(Some(served));
+        }
+    }
+    match superseded_version(&state.schemas_ks, digest).await? {
+        Some(version) if version.within_grace(now) => {
+            Ok(Some(manifest_criterion(version.criterion)?))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Whether a criterion admitting `issuers` admits a credential from `issuer`:
+/// any issuer, this community only, or this community and the communities it
+/// recognises (asked of the trust registry).
+pub async fn issuer_admitted(
+    state: &AppState,
+    own_did: Option<&str>,
+    issuers: CredentialIssuers,
+    issuer: &str,
+) -> bool {
+    let own = own_did == Some(issuer);
+    match issuers {
+        CredentialIssuers::Any => true,
+        CredentialIssuers::Community => own,
+        CredentialIssuers::Recognised => {
+            own || crate::routes::join_requests::present::issuer_trusted(
+                state.registry_client.as_deref(),
+                own_did,
+                issuer,
+            )
+            .await
+        }
+    }
+}
+
 /// Decide a credential-exchange presentation under the criterion the query it
 /// answers was built from (`id`), or — for a challenge that names none — as a
 /// submission naming no criterion is decided.
@@ -413,27 +459,15 @@ impl<'a> Evaluator<'a> {
     }
 
     async fn issuer_admitted(&mut self, issuers: CredentialIssuers, issuer: &str) -> bool {
-        let own = self.own_did.as_deref() == Some(issuer);
-        match issuers {
-            CredentialIssuers::Any => true,
-            CredentialIssuers::Community => own,
-            CredentialIssuers::Recognised => {
-                if own {
-                    return true;
-                }
-                if let Some(known) = self.recognised.get(issuer) {
-                    return *known;
-                }
-                let known = crate::routes::join_requests::present::issuer_trusted(
-                    self.state.registry_client.as_deref(),
-                    self.own_did.as_deref(),
-                    issuer,
-                )
-                .await;
-                self.recognised.insert(issuer.to_string(), known);
-                known
-            }
+        if issuers != CredentialIssuers::Recognised {
+            return issuer_admitted(self.state, self.own_did.as_deref(), issuers, issuer).await;
         }
+        if let Some(known) = self.recognised.get(issuer) {
+            return *known;
+        }
+        let known = issuer_admitted(self.state, self.own_did.as_deref(), issuers, issuer).await;
+        self.recognised.insert(issuer.to_string(), known);
+        known
     }
 }
 
