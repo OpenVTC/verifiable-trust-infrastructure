@@ -1,7 +1,7 @@
 /* ── Policy flow chart ───────────────────────────────────────── */
 /* Drawn from evaluations of the active policy (lib/policy-flow.ts). Every
    colour is a token, so the chart holds in both themes and matches the
-   verdict language the rest of the ceremony surface already speaks. */
+   verdict language the rest of the Policies screen already speaks. */
 
 .pf-provenance {
   display: flex;

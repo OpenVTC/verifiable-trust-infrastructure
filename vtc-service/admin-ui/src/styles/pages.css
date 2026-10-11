@@ -1,4 +1,7 @@
-/* ── Login + Install pages ───────────────────────────────────── */
+/* ── Standalone pages: session check, signing-key setup, install ──
+ *
+ * Outside the shell. The sign-in page itself (pages/Login.tsx) wears the
+ * community sign-in look, `../signin/signin.css`. */
 
 .login-page,
 .install-page {

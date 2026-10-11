@@ -12,8 +12,10 @@
  * this one, then copy it over.
  *
  * Theme: `light-dark()` follows the OS through `color-scheme: light dark`.
- * `[data-theme="light"|"dark"]` on <html> (the console's switcher,
- * `src/lib/theme.ts`) pins one, and the cascade follows.
+ * `[data-theme="light"|"dark"]` on <html> pins one, and the cascade follows.
+ * The one switcher that sets it is shared: `src/lib/theme.ts` in the console
+ * and the portal, `website-default/theme.js` on the home page, both storing
+ * the choice under the `vtc-admin-theme` key.
  *
  * Fonts: IBM Plex Sans and IBM Plex Mono, self-hosted on every surface.
  * The @font-face rules are not here: the console and the portal take them
@@ -161,8 +163,8 @@
   --danger-soft: light-dark(#fcecec, #2c1517);
   --danger-tint: color-mix(in srgb, var(--danger) 12%, transparent);
 
-  /* Verdict palette: the four policy effects, shared by the Policies
-   * (ceremonies) screens and anything else that renders a decision.
+  /* Verdict palette: the four policy effects, shared by the Policies screen
+   * (the ceremonies plugin) and anything else that renders a decision.
    * allow=emerald, deny=rose, refer=amber, request_more=violet. These keep
    * their values whatever the brand is. */
   --vd-allow: light-dark(#059669, #34d399);

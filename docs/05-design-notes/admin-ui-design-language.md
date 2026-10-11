@@ -1,208 +1,265 @@
-# Admin UX design language
+# Operator console design language
 
-Design system for the VTC admin SPA (`/admin/*`), locked at the
-end of phase 1 of the design review. This document is the source
-of truth for tokens + component-level decisions; phase 2 of the
-review refactors the existing CSS / JSX to honour it.
+How the community's three web surfaces look, and where each decision lives in
+code: the operator console (`/admin/*`), the member portal (`/members/*`) and
+the default home page (`vtc-service/website-default/`). The console is the
+densest of the three and most of this note is about it; the portal and the home
+page share its tokens, type and colour theme.
+
+This note describes what the code does. When the two disagree, the code is
+right and this note is out of date.
 
 ## 1. Reference frame
 
-Target: **world-class application UI**, not marketing-site gloss.
+An application UI, not a marketing site: a monochrome base, crisp 1px borders,
+tight type, one brand colour used with restraint, dense tables that stay
+readable. Both colour themes are first-class.
 
-- **Vercel Dashboard** — monochrome base, crisp 1px borders, tight
-  type, restrained color, dark-mode-first instincts.
-- **Stripe Dashboard** — deliberate single brand accent, soft
-  elevation on data surfaces, dense tables that stay readable,
-  refined empty states.
+Not used: gradients on chrome (the community mark is the one exception, §3),
+bouncy motion, glassmorphism, emoji as icons.
 
-Out of scope: bouncy springs, gradients on UI chrome, "AI app"
-tropes (glassmorphism, neon, orbs).
+## 2. Where it lives
 
-## 2. Type system
-
-```css
---font-sans:
-  "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system,
-  "Segoe UI", Roboto, sans-serif;
---font-mono:
-  "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono",
-  Menlo, Consolas, monospace;
-
-/* 14px base — Stripe Dashboard / Linear scale, not 16px web-default */
---text-xs:   11px / 16px;   /* metadata, chip text */
---text-sm:   12px / 18px;   /* table cells, secondary labels */
---text-base: 14px / 20px;   /* default UI text */
---text-md:   15px / 22px;   /* form inputs */
---text-lg:   17px / 24px;   /* page H2 */
---text-xl:   22px / 28px;   /* page H1, login card */
---text-2xl:  28px / 34px;   /* hero numbers on dashboard */
-
-/* Tracking */
---tracking-tight:   -0.011em;   /* default body */
---tracking-tighter: -0.022em;   /* headings */
---tracking-wide:     0.02em;    /* uppercase labels */
-```
-
-**Locked decisions:**
-
-- Self-host Inter Variable via `@fontsource-variable/inter`. No FOUT.
-- `font-variant-numeric: tabular-nums` on every numeric surface —
-  table columns, timestamps, counts.
-- Headings use `font-weight: 600`, not 700.
-
-## 3. Color tokens
-
-Single brand accent (locked: **indigo #5B5BD6**) + semantic ramp.
-No gradients on chrome.
-
-```css
-/* Neutral ramp — 12 stops, cool-gray hue */
---gray-50:  #fafafa;
---gray-100: #f4f4f5;
---gray-200: #e4e4e7;
---gray-300: #d4d4d8;
---gray-400: #a1a1aa;
---gray-500: #71717a;
---gray-600: #52525b;
---gray-700: #3f3f46;
---gray-800: #27272a;
---gray-900: #18181b;
---gray-950: #09090b;
-
-/* Brand: indigo (locked) */
---brand-500: #5b5bd6;
---brand-600: #4a4ac4;  /* hover */
---brand-400: #7c7ce8;  /* dark-mode primary */
---brand-50:  #efeffe;  /* subtle backgrounds */
-
-/* Semantic — used sparingly, only on state indicators */
---success-500: #16a34a;
---warning-500: #d97706;
---danger-500:  #dc2626;
-```
-
-**Theme strategy** (locked: both modes equally polished, follow OS):
-
-Map every visible surface through `light-dark(...)` against the
-gray ramp above. Author dark and light side-by-side; don't tune
-one and let the other rot.
-
-## 4. Spacing & radius
-
-```css
-/* 4px grid. Restrict yourself to these values. */
---space-1:  4px;
---space-2:  8px;
---space-3:  12px;
---space-4:  16px;
---space-5:  20px;
---space-6:  24px;
---space-8:  32px;
---space-10: 40px;
---space-12: 48px;
---space-16: 64px;
-
-/* Radius */
---radius-sm: 4px;   /* chips, tight controls */
---radius-md: 6px;   /* buttons, inputs, table cells */
---radius-lg: 8px;   /* cards */
---radius-xl: 12px;  /* modals, login card */
-```
-
-## 5. Elevation
-
-1px border as the primary affordance (Vercel), with a faint
-shadow layered for floating surfaces (Stripe).
-
-```css
---elev-0: none;
---elev-1:
-  0 0 0 1px var(--border),
-  0 1px 2px 0 rgb(0 0 0 / 0.04);              /* default cards */
---elev-2:
-  0 0 0 1px var(--border),
-  0 4px 12px 0 rgb(0 0 0 / 0.08);             /* dropdowns */
---elev-3:
-  0 0 0 1px var(--border),
-  0 12px 32px -4px rgb(0 0 0 / 0.20);         /* modals */
-```
-
-## 6. Motion
-
-```css
---motion-fast:    120ms cubic-bezier(0.16, 1, 0.3, 1);
---motion-medium:  180ms cubic-bezier(0.16, 1, 0.3, 1);
---motion-slow:    260ms cubic-bezier(0.16, 1, 0.3, 1);
-```
-
-Expo-out curve (Vercel / Linear idiom). No bouncy springs.
-
-- **Animates:** focus rings (fast), hover state colors (fast),
-  drawer open/close (medium), modal scrim (medium).
-- **Does not animate:** tables, page transitions, content.
-
-## 7. Iconography
-
-**Locked: lucide-react, 16px outlined.**
-
-- Install `lucide-react` (~5kb gzipped for the set we use).
-- Replace every emoji nav icon. Emojis read as MVP-ish and render
-  differently per OS, breaking the visual system.
-- Icon size = 16px in nav and inline; 20px in empty states; 14px
-  in chips. Stroke width 1.75 (lucide default 2 is slightly
-  heavier than the type wants).
-
-## 8. Component-level decisions
-
-| Surface | Decision |
+| What | File |
 |---|---|
-| **Button** | 32px (sm) / 36px (default) / 40px (primary CTA). Primary = solid brand-500. Secondary = transparent + 1px border. Destructive = transparent + red-tinted border, solid red on hover. No "filled secondary." |
-| **Input** | 36px height, 1px border, 2px focus ring with **1px inset offset** (inside the border, not outside — Vercel idiom). |
-| **Table** | 40px row height, hover row tint, sticky header on scroll, monospace for IDs/DIDs, tabular-nums for timestamps + counts, action buttons reveal on row hover (reduce always-visible noise). |
-| **Card** | 1px border, 8px radius, no shadow by default. Optional faint shadow (elev-1) only when floating on a colored backdrop (e.g. login card). |
-| **Chip** | Pill (full radius), 4px / 8px padding, 11px text, monochrome by default. State chips use semantic color on text + 1px border, not background fill. |
-| **Toast** | Keep current 4px left-border state indicator; retune to new tokens. |
-| **Empty states** | Centered 20px icon + 1-line heading + 1-paragraph explanation + single CTA. |
+| Design tokens (source of truth) | `vtc-service/admin-ui/src/styles/tokens.css` |
+| Home page's copy of the tokens | `vtc-service/website-default/tokens.css` — byte-identical; `src/website/default_site.rs` fails a test if the two drift |
+| Console stylesheets | `admin-ui/src/styles/index.css` imports, in cascade order, `tokens.css`, `base.css`, `shell.css`, `components.css`, `pages.css`, then one file per built-in screen under `styles/plugins/` |
+| Theme switcher styles | `admin-ui/src/styles/theme-switcher.css`, imported by `components/ThemeSwitcher.tsx` because the portal bundle draws it too |
+| Community sign-in look (portal and console sign-in page) | `admin-ui/src/signin/signin.css`, scoped under `.vtc-signin` |
+| Member portal's own styles | `admin-ui/src/members/members.css` |
+| Home page | `website-default/site.css`, `fonts.css`, `theme.js` |
 
-## 9. Page-level moves
+Rules read tokens, not raw values. A screen's stylesheet holds only layout
+particular to that screen; anything two screens share moves to
+`components.css`.
 
-Specific redesigns that carry most of the visible improvement:
+## 3. Tokens
 
-1. **Login** — single centered card on a subtly textured backdrop.
-   No big VTC logo lock-up; just `VTC Admin` in `--text-xl` and
-   the passkey button.
-2. **Dashboard** — replace the current key-value `<dl>` blocks
-   with **stat tiles**: large tabular number (`--text-2xl`),
-   label below in `--text-xs --tracking-wide` uppercase, optional
-   sparkline/trend. 4 tiles in a row, wrap on narrow viewports.
-3. **Tables (Members, ACL, Audit, Sessions, …)** — introduce a
-   `<Toolbar>` row: search input on the left, filter chips in the
-   middle, primary action on the right. Sticky header on scroll;
-   row actions reveal on hover.
-4. **Nav** — narrow to 220px. Drop emoji icons; use lucide
-   16px outlined. Active route uses indigo accent on the left
-   border + bolder weight on the label.
+### Type
+
+IBM Plex Sans and IBM Plex Mono on every surface, self-hosted. The console and
+the portal import them from `@fontsource/ibm-plex-sans` and
+`@fontsource/ibm-plex-mono` (`main.tsx`, `members/main.tsx`); the home page
+carries woff2 copies under `website-default/fonts/` (SIL OFL 1.1), declared in
+`fonts.css`. No third-party font request is made. There is no separate display
+face: `--font-display` is kept as a name and resolves to `--font-sans`.
+
+```css
+--font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, …, sans-serif;
+--font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, …, monospace;
+```
+
+A 14px base, because the console is dense. The portal and the home page set
+their own larger body size. Each step has a size and a leading token
+(`--text-sm` / `--text-sm-leading`):
+
+| Token | Size / leading | Typical use |
+|---|---|---|
+| `--text-xs` | 11 / 16px | Uppercase labels, chips, table headings |
+| `--text-sm` | 12 / 18px | Secondary text, breadcrumbs |
+| `--text-base` | 14 / 20px | Default UI text, table cells |
+| `--text-md` | 15 / 22px | Empty-state titles, page counts |
+| `--text-lg` | 17 / 24px | |
+| `--text-xl` | 21 / 28px | Page titles |
+| `--text-2xl` | 28 / 34px | Stat-tile figures |
+
+Weights `--weight-regular` (400) to `--weight-bold` (700); headings use 600.
+Tracking: `--tracking-tight` (-0.011em, body), `--tracking-tighter` (-0.02em,
+headings), `--tracking-wide` (0.02em, uppercase labels), `--tracking-caps`
+(0.08em). Every numeric surface (tables, stat tiles, timestamps) uses
+`font-variant-numeric: tabular-nums` (`base.css`).
+
+### Colour
+
+- **Brand: indigo.** `--brand-50` to `--brand-700`, with `--brand-500`
+  `#5b5bd6` as the light-theme brand and `--brand-400` `#7c7ce8` as the dark.
+  `--accent-violet` and `--accent-pink` are for the community mark, the home
+  page's hero wash and the relationships graph, not for chrome.
+- **Brand roles.** Rules use the roles, not the ramp: `--brand`,
+  `--brand-strong` (`--brand-hover`), `--brand-fg` (`--on-brand`),
+  `--brand-soft`, `--brand-tint`, `--brand-tint-strong` and `--focus-ring`.
+- **Community accent.** A community that sets an accent colour on the Branding
+  card gets it as the console's brand. Once the viewer can sign,
+  `lib/community-identity.ts` sets `--community-accent` and
+  `--community-accent-fg` (white or near-black, whichever meets 4.5:1) on
+  `<html>` with a `data-community-accent` attribute, and
+  `:root[data-community-accent]` in `tokens.css` re-points `--brand`,
+  `--brand-strong` and `--brand-fg`. In the dark theme the accent is mixed
+  towards white so a dark accent stays legible. Nothing else changes; without
+  an accent the indigo stands. The portal and the home page keep the indigo.
+- **Greys.** `--gray-50` to `--gray-950`, cool and faintly indigo.
+- **Surfaces.** `--bg`, `--bg-elev`, `--bg-subtle`, `--bg-hover`, `--border`,
+  `--border-strong`, `--text`, `--text-muted`, `--text-faint`.
+- **Semantic.** `--success`, `--warning`, `--danger`, each with a `-soft`
+  background, plus `--danger-tint`. Used on state indicators only.
+- **Verdicts.** `--vd-allow` (emerald), `--vd-deny` (rose), `--vd-refer`
+  (amber), `--vd-more` (violet) for the four policy effects, on the Policies
+  screen and anywhere else that renders a decision. They keep their values
+  whatever the brand is.
+- **Community mark.** `--mark-gradient` (brand to violet) is the mark shown
+  when the community has no logo.
+
+The home page's filled buttons stay on `--brand-500` with white text in both
+themes, since white on the lighter dark-theme brand falls short of 4.5:1
+(`site.css`).
+
+### Spacing, sizes and radius
+
+A 4px grid: `--space-1` (4px) to `--space-16` (64px). Controls are
+`--control-h` 36px (`--control-h-sm` 28px); table rows are `--row-h` 40px.
+
+| Token | Value | Use |
+|---|---|---|
+| `--radius-sm` | 4px | Focus outlines, tight controls |
+| `--radius-md` | 8px | Buttons, inputs, nav items, toasts |
+| `--radius-lg` | 12px | Cards, stat tiles |
+| `--radius-xl` | 20px | Cards on the sign-in pages, the portal and the home page |
+| `--radius-pill` | 999px | Chips, switches, the console pill |
+
+### Elevation and motion
+
+A 1px border is the primary affordance. `--elev-1` to `--elev-3` add a soft
+shadow for floating surfaces (dropdowns, toasts, dialogs); cards carry no
+shadow. `--shadow-card` and `--shadow-hover` are for the cards on the sign-in
+pages, the portal and the home page.
+
+Motion is expo-out, `cubic-bezier(0.16, 1, 0.3, 1)`: `--motion-fast` 120ms
+(hover, focus), `--motion-medium` 180ms (toasts, dialogs), `--motion-slow`
+260ms. Tables, page changes and content do not animate. The home page, the
+sign-in look and the console's switch turn their transitions off under
+`prefers-reduced-motion: reduce`.
+
+## 4. Colour theme
+
+`tokens.css` sets `color-scheme: light dark` and writes every surface colour as
+`light-dark(…)`, so a page follows the operating system with no script.
+`[data-theme="light"]` or `[data-theme="dark"]` on `<html>` pins one theme by
+setting `color-scheme`, and the cascade follows.
+
+One **Match system / Light / Dark** switcher, as an ARIA radio group, on every
+surface:
+
+- the console: in the account menu (`components/ThemeSwitcher.tsx`);
+- the console's sign-in page and the member portal: at the end of the top bar
+  (`signin/SignInLayout.tsx`);
+- the home page: in the top bar, from `website-default/theme.js`, loaded in
+  `<head>` without `defer` so a pinned theme applies before first paint, and
+  hidden without JavaScript.
+
+All three store the choice in `localStorage` under `vtc-admin-theme`
+(`lib/theme.ts`, `THEME_STORAGE_KEY`), so one choice holds on the whole origin
+and a `storage` event keeps open tabs in step. *Match system* stores nothing.
+
+## 5. Icons
+
+`lucide-react`, outlined, stroke width 1.75. 16px in the sidebar, buttons and
+compact empty states; 20px in full empty states. A third-party plugin's SVG icon
+is rendered as an `<img>` (`components/PluginIcon.tsx`), never as inline
+markup.
+
+## 6. The console shell
+
+`App.tsx`, styled in `shell.css`.
+
+- **Top bar** (52px): the community's mark (logo, or the gradient) and name
+  from its public profile, an "Operator console" pill, **Jump to… ⌘K**, the
+  live indicator (`components/LiveIndicator.tsx`) and the account menu.
+- **Sidebar** (220px): grouped under **Overview** (Dashboard, Actions, Audit
+  trail), **Membership** (Join requests, Members, Invitations, Vetting,
+  Relationships), **Governance** (Policies, Roles, Access control, Sessions)
+  and **Community** (Profile, Recognition, Data rooms, Repos), then **More**
+  for plugins that name no group (`plugin-api.ts`, `NAV_GROUPS`;
+  `lib/nav-groups.ts`). A group the viewer can see nothing in is hidden. The
+  active entry sits on `--brand-soft` in `--brand-strong`. It collapses to a
+  64px icon rail on a wide screen and becomes a slide-over at 720px and below.
+  *Policies* is the ceremonies plugin and keeps its route, `/ceremonies`;
+  *Profile* keeps `/profile`.
+- **Account menu** (`components/AccountMenu.tsx`): My passkeys, Signing keys
+  (plugins with `group: "account"`), the theme switcher and Sign out.
+- **Attention strip** (`components/AttentionStrip.tsx`): one strip above the
+  page instead of stacked banners, most severe item first. Critical items (an
+  operator's offline write, a cooling-off against you, break-glass) and
+  single-administrator mode are always shown and cannot be dismissed; the rest
+  fold behind "Show N more". The signing-key renewal reminder and the
+  actions-waiting notice live here too; the latter can be dismissed for the
+  session.
+- **Command palette** (`components/CommandPalette.tsx`, `lib/commands.ts`):
+  ⌘K / Ctrl+K lists every screen the viewer can see and a short list of
+  actions. Built without a dependency.
+
+The page area scrolls, not the window, so the top bar and sidebar stay put and
+a table's sticky header sticks under the bar. The console uses the full width;
+running prose keeps a readable measure through `.prose-measure`.
+
+## 7. Shared components
+
+Every built-in screen is built from these (`admin-ui/src/components/`):
+
+| Component | What it is |
+|---|---|
+| `PageHeader` | Breadcrumb (group / page, from the plugin being rendered), the title as the page's `<h2>` with an optional count beside it, a primary-action slot and an optional lead. Sub-pages pass a `trail`. |
+| `Tabs`, `TabLinks` | One tab component in two looks: `underline` (with counts) and `segmented` (view toggles). Buttons form an ARIA tablist with roving focus and arrow, Home and End keys; `TabLinks` are tabs that are routes. |
+| `DataTable`, `useSortedRows` | The `data-table` head with `SortableHeader` built in for any column with a `sortKey`, and a header that stays in view. Lists read whole sort on click and keep their given order until then; server-paged lists do not sort. |
+| `Field` | A labelled control in two shapes: wrapping, or pointing (`htmlFor`). A hint or error sits under the control, never inside the label. |
+| `EmptyState` | Icon, title, reason and action; or `compact`, one muted line inside a card. |
+| `Switch` | A native checkbox with `role="switch"` under a drawn track, for one setting that is on or off. Multi-select lists stay checkboxes. |
+| `ConfirmDialog`, `TypedConfirmDialog` | Modal confirmation, the second asking the operator to type a value. |
+| `ThemeSwitcher` | §4. |
+| `InfoTip`, `CopyButton`, `DidText`, `NamedDid`, `DidQrButton` | An explanation on hover or focus; copy; a DID abbreviated at its colons with the whole on hover; a DID shown by its name with the identifier beside it; a DID's QR code. |
+
+Element-level conventions (`components.css`):
+
+- **Buttons**: 36px, 32px (`.sm`), 40px (`.lg`). Primary is solid `--brand`;
+  secondary is transparent with a 1px border; destructive is transparent with
+  a red-tinted border, solid red on hover; `button.link` is a text link.
+- **Focus**: a 2px `--focus-ring` outline, outside the element by 2px; inputs
+  draw it 1px inside their border; a primary button gets a gap so the ring
+  stays visible on the brand fill (`base.css`).
+- **Cards**: `--bg-elev`, 1px border, `--radius-lg`, no shadow. Card headings
+  are small uppercase labels.
+- **Tables**: 40px rows, uppercase `--text-xs` headings, a hover tint,
+  monospace for DIDs and identifiers.
+- **Chips**: pills, monochrome by default; a state chip colours its text and
+  border, not its background.
+- **Toasts**: bottom right, a 4px left border in the state colour.
+- **Colour is never the only signal.** Every dot, chip and rail has a word or
+  an ARIA equivalent beside it, and single-administrator mode is drawn with a
+  dashed border and hatching as well as colour.
+
+## 8. Screen patterns
+
+- **List screens** (Members, Access control): the page header with the count
+  and the primary action, a toolbar of filters on the page (`.list-toolbar`),
+  then the table in a card that runs to its edges (`.table-card`).
+- **Dashboard**: "what needs me", then health. A greeting with **Invite a
+  member** for a viewer who may, a row of stat tiles (a tile needing attention
+  carries a warning rail), then **Waiting for you** beside **Service health**,
+  one column below 64rem.
+- **Actions**: an inbox. Each row has a chip row, the verified summary, one
+  meta line (who asked, when, the match code) and the facts; the decision
+  buttons sit in a column on the right, under the facts on a narrow screen.
+- **Policies**: a standard page like the others; verdicts use the `--vd-*`
+  colours.
+
+What each screen shows is described in
+[`website-and-admin.md`](../03-vtc/website-and-admin.md).
+
+## 9. Changing it
+
+- Edit `admin-ui/src/styles/tokens.css`, then copy it over
+  `website-default/tokens.css`; the drift test will fail otherwise.
+- A new screen's layout goes in its own `styles/plugins/<screen>.css`,
+  imported from `index.css` after the shared files.
+- An operator restyles the console without rebuilding by serving it from a
+  directory (`admin_ui.mode = "directory"`, `website-and-admin.md`). That copy
+  is a snapshot of the console it was exported from: it keeps its look until
+  the operator exports again.
 
 ## 10. Out of scope
 
-- Not a Tailwind migration. Existing CSS architecture stays; add
-  tokens and refactor against them.
-- Not a component library swap. Reach for Radix only on Dialog +
-  DropdownMenu where the a11y is hard. Everything else stays
-  hand-built.
-- Not a brand exercise. Accent color is the only "brand"
-  decision; everything else is structural.
-
-## Locked decisions summary
-
-| Decision | Value |
-|---|---|
-| Brand accent | `#5B5BD6` indigo |
-| Theme target | Both light + dark equally polished, follow OS |
-| Icon set | lucide-react, 16px outlined, stroke 1.75 |
-| Type family | Inter Variable, self-hosted |
-| Base size | 14px |
-| Grid | 4px |
-| Default card radius | 8px |
-| Default focus ring | 2px, 1px inset offset, brand-500 |
-| Motion curve | `cubic-bezier(0.16, 1, 0.3, 1)` |
+- Not a CSS framework. The stylesheets are hand-written against the tokens.
+- No component library: dialogs, menus, tabs, the palette and the switch are
+  built in-tree.
+- The brand colour is the only brand decision, and a community may replace it
+  with its own accent.

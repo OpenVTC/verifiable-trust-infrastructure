@@ -27,6 +27,8 @@ admin-ui/
     │   ├── tokens.css    Design tokens shared with the member portal
     │   │                 and the home page (website-default/ copies it)
     │   ├── base.css, shell.css, components.css, pages.css
+    │   ├── theme-switcher.css  Imported by ThemeSwitcher.tsx (the portal
+    │   │                 draws it too)
     │   └── plugins/      Layout particular to one built-in screen
     ├── components/
     │   ├── PageHeader.tsx, Tabs.tsx, DataTable.tsx, Field.tsx,
@@ -39,7 +41,7 @@ admin-ui/
     │   └── Install.tsx   Public install-claim ceremony (unauth route)
     └── plugins/
         ├── index.ts      Built-in plugin registry
-        └── dashboard.tsx Health + community profile readout
+        └── dashboard.tsx What needs the viewer, then service health
 ```
 
 ### Plugin boundary

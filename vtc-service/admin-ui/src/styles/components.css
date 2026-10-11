@@ -1334,7 +1334,7 @@ dd .copy-icon-btn {
   color: var(--text);
 }
 
-/* ── Vetting ─────────────────────────────────────────────────── */
+/* ── Utilities, link buttons, form hints and errors ───────────── */
 
 .visually-hidden {
   position: absolute;
@@ -1552,11 +1552,11 @@ select[aria-invalid="true"] {
   resize: vertical;
 }
 
-/* ── Repos (git namespaces) ──────────────────────────────────────
+/* ── Primary link buttons, success cards ─────────────────────────
  *
- * The Repos plugin (`plugins/repos*`). Everything reads tokens, so light
- * and dark follow the shell; colour is never the only signal — every dot,
- * chip and checklist mark has a text or aria equivalent beside it. */
+ * Everything reads tokens, so light and dark follow the shell; colour is
+ * never the only signal — every dot, chip and checklist mark has a text or
+ * aria equivalent beside it. */
 
 a.button.primary {
   background: var(--brand);

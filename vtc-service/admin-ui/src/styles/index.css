@@ -8,7 +8,8 @@
  * - `components.css`: the shared components every screen uses — page header,
  *   cards, buttons, form fields, tabs, tables, chips, empty states, dialogs,
  *   toasts.
- * - `pages.css`: the standalone pages outside the shell (sign-in, install).
+ * - `pages.css`: the standalone pages outside the shell (the session check,
+ *   signing-key setup, install). The sign-in page wears `../signin/signin.css`.
  * - `theme-switcher.css` is not listed here: `components/ThemeSwitcher.tsx`
  *   imports it, because the member portal's bundle draws the switcher too.
  * - `plugins/*.css`: layout particular to one built-in screen.

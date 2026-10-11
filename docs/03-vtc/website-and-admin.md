@@ -299,7 +299,7 @@ transport.
 ```mermaid
 graph LR
     src[vtc-service/admin-ui/<br/>React + TS + Vite source]
-    dist["$OUT_DIR/admin-ui-dist/<br/>index.html · hashed JS · hashed CSS · Inter & JetBrains Mono fonts"]
+    dist["$OUT_DIR/admin-ui-dist/<br/>index.html · hashed JS · hashed CSS · IBM Plex Sans & Mono fonts"]
     binary[vtc binary]
     routes["/admin/* handler"]
     info["/admin/build-info.json"]
@@ -346,12 +346,28 @@ placeholder":
 
 ### What the console shows at a glance
 
-Navigation follows the viewer's capabilities, and two nav entries carry a
-count bubble while something waits:
+The console is framed by a top bar and a grouped sidebar. The top bar carries
+the community's mark and name (from its public profile), an "Operator console"
+pill, **Jump to… ⌘K** (below), the live indicator and an account menu holding
+**My passkeys**, **Signing keys**, the colour theme and **Sign out**. The
+sidebar groups the screens under **Overview** (Dashboard, Actions, Audit
+trail), **Membership** (Join requests, Members, Invitations, Vetting,
+Relationships), **Governance** (Policies, Roles, Access control, Sessions) and
+**Community** (Profile, Recognition, Data rooms, Repos), with third-party
+plugins that name no group under **More**
+([`admin-ui-plugins.md`](admin-ui-plugins.md)). **Policies** is the screen
+once labelled Ceremonies, and **Profile** the one labelled Community profile;
+their routes, `/admin/ceremonies` and `/admin/profile`, are unchanged. The
+look itself — tokens, type, components — is described in
+[`admin-ui-design-language.md`](../05-design-notes/admin-ui-design-language.md).
+
+Navigation follows the viewer's capabilities: a screen the viewer cannot use is
+not listed, and nor is a group with nothing in it. Two entries carry a count
+bubble while something waits:
 
 - **Actions** — actions waiting for your decision (`vtc/admin/actions/list`
-  `counts.waitingForMe`), with a banner after sign-in and the count in the tab
-  title. This includes the **queues** (`admin-access.md` §3.2a): break-glass
+  `counts.waitingForMe`), with a notice in the attention strip after sign-in
+  (dismissible for the session) and the count in the tab title. This includes the **queues** (`admin-access.md` §3.2a): break-glass
   ratifications (Ratify / Revoke), join requests referred for review (Approve
   / Reject) and withdrawn vetting statements a membership rests on (Keep
   member / Start removal). A queue item has no threshold and no expiry, and
@@ -449,7 +465,7 @@ check its read makes — one table in the VTC (`admin_events::read_capability`)
 that the read handlers gate on too — so whoever the community would answer on
 the read gets its hints, and nobody else.
 
-**Live or offline.** The nav shows **Live** only while bytes are arriving —
+**Live or offline.** The top bar shows **Live** only while bytes are arriving —
 an event, or the heartbeat comment the VTC sends at least every
 `heartbeatSeconds` (25 by default). Silence for twice that, an ended stream or
 any failure shows **Polling** at once, re-reads every topic, and the badge and
@@ -525,6 +541,12 @@ Two ways to customise:
   `npm run build`, and point `admin_ui.dir` at the output. The build
   emits asset URLs under `/admin/`, so keep the default
   `routing.admin_ui.mount`.
+
+The directory is a snapshot of the console it was exported from. Upgrading
+the daemon does not touch it, so a console exported before an upgrade keeps
+its old look and screens (for example, the layout before the top bar, grouped
+sidebar and IBM Plex type) until you export again and re-apply your changes.
+The same holds for a member portal served from `admin_ui.members_dir`.
 
 The console's [security headers](#path-safety) still apply: the CSP
 allows scripts only from the console's own origin, so a customised
@@ -726,8 +748,8 @@ returns to that page when the key has stopped being accepted.
   generates a new key, stores it only once the daemon has accepted it, and
   then revokes the key it replaced.
 - **Lifetime.** A delegation lasts at most 30 days. Five days before it ends
-  the console shows a renewal banner; renewing is one passkey confirmation
-  on the Signing keys screen.
+  the console puts a renewal reminder in the attention strip; renewing is one
+  passkey confirmation on the Signing keys screen.
 - **Durability.** The key survives signing out and restarting the browser,
   the OS or the VTC. It ends when the browser deletes the origin's storage:
   clearing site data, a private window closing, eviction under disk pressure
@@ -746,12 +768,14 @@ returns to that page when the key has stopped being accepted.
 
 Design note: `docs/05-design-notes/vtc-console-signing.md`.
 
-### Banners that cannot be dismissed
+### The attention strip, and what it never hides
 
-Three conditions put a banner on every console page that has no dismiss
-button and goes away only when the condition does. All three are read from
-the same signed `vtc/admin/actions/list` the Actions badge makes
-(`ext["org.openvtc"]`), so they cost no request of their own:
+What the operator must know sits in one **attention strip** above every console
+page, most severe first, with the rest folded behind **Show N more**. Three
+conditions put an item there that is always shown, has no dismiss button and
+goes away only when the condition does. All three are read from the same signed
+`vtc/admin/actions/list` the Actions badge makes (`ext["org.openvtc"]`), so
+they cost no request of their own:
 
 - **An offline change waits for your acknowledgement** (`Critical`) — the
   operator wrote the ACL with the daemon stopped; it clears when you
@@ -764,7 +788,8 @@ the same signed `vtc/admin/actions/list` the Actions badge makes
   single-administrator mode; shown to every administrator for as long as it is
   on, with a dashboard tile (VTI-APV-022).
 
-What each means, and what to do, is in
+A self-granted break-glass right awaiting ratification is pinned in the same
+way. What each means, and what to do, is in
 [`admin-access.md`](admin-access.md) §2.1a, §3.4 and §3.5.
 
 ## Member portal
