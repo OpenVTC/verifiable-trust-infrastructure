@@ -182,6 +182,72 @@ one; #759 settled it against the live deployment and reverted the join. Add a
 field to a signed, permanent document only once something writes it *and*
 something reads it.
 
+## Wallet sign-in on a DID-hosting node (`SignInPortal`)
+
+Signing in to a DID-hosting console with a wallet uses a sign-in trigger link
+(`auth/oob`, sign-in trigger-link contract C4 and C9). The wallet resolves the
+node's DID and needs two entries in its document:
+
+- `TrustTaskHTTPS` — the base it POSTs `<base>/trust-tasks` to. The
+  `did-host-http*` templates publish `{URL}/api`.
+- `SignInPortal` — the page the sign-in link is activated from. The wallet
+  compares the **origin** of this endpoint with the page's origin and refuses
+  a mismatch, or a document without the entry. The user sees "This code can't
+  be used".
+
+The control plane (and a self-managed daemon) serves its console login page at
+`<origin>/login` and publishes exactly that when it builds its own document.
+`did-host-http`, `did-host-http-tsp` and `did-host-http-didcomm` now publish
+the same entry:
+
+```json
+{
+  "id": "<did>#sign-in-portal",
+  "type": "SignInPortal",
+  "serviceEndpoint": "<origin of URL>/login"
+}
+```
+
+The renderer derives it from `URL` (`vta_sdk::did_templates::sign_in_portal_service`)
+because the template format cannot compute an origin: the templates declare
+`SERVICE_SIGN_IN_PORTAL` with a `null` default and place it as a bare `service`
+member. It is emitted only for an `https` `URL`; a plain-`http` development
+node gets no entry. A caller can supply `SERVICE_SIGN_IN_PORTAL` itself (for a
+console on another origin), or supply `null` to leave the entry out.
+
+The templates for nodes that serve no login page — `did-host-didcomm`,
+`did-host-tsp` (witnesses, watchers) and `didcomm-mediator` — do not declare
+it. `vtc-host` publishes its own `SignInPortal`, at the member portal
+(`SIGN_IN_PORTAL_PATH`, default `/members/`).
+
+### Adding it to an existing DID
+
+Only DIDs minted from now on get the entry; an existing document is never
+changed for you. A node minted earlier from a `did-host-http*` template (the
+case that surfaced this was `webvh.storm.ws`) gets it with a document edit at
+the VTA that manages the DID:
+
+```sh
+pnm did-mgmt dids edit --did <did>
+```
+
+Add this to `service`, with the origin your console is served on, then save
+and confirm. The VTA publishes the new log entry to the host.
+
+```json
+{
+  "id": "<did>#sign-in-portal",
+  "type": "SignInPortal",
+  "serviceEndpoint": "https://<console-host>/login"
+}
+```
+
+If the document has no `TrustTaskHTTPS` entry either, add
+`{ "id": "<did>#trust-tasks", "type": "TrustTaskHTTPS", "serviceEndpoint": "https://<console-host>/api" }`
+in the same edit. For a scripted run pass the edited document with
+`--document <file> --no-confirm`
+(see [did:webvh update](did-webvh-update.md)).
+
 ## Scopes and resolution
 
 Templates live in one of three scopes. Resolution order when a caller names a
@@ -241,6 +307,9 @@ template without explicit scope is **context → global → builtin**:
     service (URL-based) **and** a `DIDCommMessaging` service routed through
     a mediator. Use for nodes that publish DID logs over HTTP and accept
     DIDComm (admin RPC, witness coordination, control-plane traffic).
+    Like every `did-host-http*` template it also advertises `TrustTaskHTTPS`
+    at `{URL}/api` and `SignInPortal` at `<origin of URL>/login` (see
+    [Wallet sign-in on a DID-hosting node](#wallet-sign-in-on-a-did-hosting-node-signinportal)).
   - `did-host-http` — node whose DID exposes a `WebVHHosting` service and
     **no** DIDComm. Use for nodes whose only role is hosting DID logs. If
     you also need DIDComm, use `did-host-http-didcomm`.

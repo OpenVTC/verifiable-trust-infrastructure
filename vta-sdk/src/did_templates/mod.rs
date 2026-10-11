@@ -40,6 +40,7 @@
 
 mod builtin;
 mod render;
+mod sign_in_portal;
 mod transports;
 mod trust_registry;
 mod validate;
@@ -55,6 +56,10 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub use builtin::{BUILTIN_NAMES, load_embedded};
+pub use sign_in_portal::{
+    SIGN_IN_PORTAL_SERVICE_TYPE, SIGN_IN_PORTAL_SERVICE_VAR, sign_in_portal_endpoint,
+    sign_in_portal_service,
+};
 pub use transports::{
     DIDCOMM_SERVICE_VAR, TSP_SERVICE_VAR, didcomm_service, tsp_service, tsp_transport_service,
 };

@@ -1382,14 +1382,14 @@ fn did_host_http_tsp_builtin_loads_and_validates() {
 }
 
 #[test]
-fn did_host_http_tsp_advertises_hosting_trust_tasks_then_tsp_only() {
+fn did_host_http_tsp_advertises_hosting_trust_tasks_sign_in_portal_then_tsp_only() {
     let tpl = load_embedded("did-host-http-tsp").unwrap();
     let doc = tpl.render(&did_host_http_tsp_fixture_vars()).unwrap();
     let services = doc["service"].as_array().expect("service is array");
     assert_eq!(
         services.len(),
-        3,
-        "expected hosting + trust-tasks + tsp, got {}: {services:?}",
+        4,
+        "expected hosting + trust-tasks + sign-in-portal + tsp, got {}: {services:?}",
         services.len()
     );
     // Where DID *documents* are served.
@@ -1412,10 +1412,16 @@ fn did_host_http_tsp_advertises_hosting_trust_tasks_then_tsp_only() {
          `<base>/trust-tasks`"
     );
 
-    assert_eq!(services[2]["id"], "did:webvh:QmTEST:example.com#tsp");
-    assert_eq!(services[2]["type"], "TSPTransport");
+    assert_eq!(services[2]["type"], "SignInPortal");
     assert_eq!(
         services[2]["serviceEndpoint"],
+        "https://host.example.com/login"
+    );
+
+    assert_eq!(services[3]["id"], "did:webvh:QmTEST:example.com#tsp");
+    assert_eq!(services[3]["type"], "TSPTransport");
+    assert_eq!(
+        services[3]["serviceEndpoint"],
         "did:webvh:QmMED:mediator.example.com:mediator"
     );
     assert!(
@@ -1449,6 +1455,132 @@ fn a_rendered_did_host_resolves_to_its_trust_task_base() {
             "`{name}` did not resolve to its Trust-Task base",
         );
     }
+}
+
+// ─── SignInPortal on the did-host-http* built-ins ────────────────────
+//
+// Wallet sign-in with a trigger link (contract C4 / C9) needs the node's
+// document to list `SignInPortal` on the origin of its console login page.
+// DID hosting publishes `<origin>/login` for itself; a node minted from one of
+// these templates lacked it, and wallets refused its sign-in links with
+// "This code can't be used" (webvh.storm.ws).
+
+const DID_HOST_HTTP_TEMPLATES: [&str; 3] = [
+    "did-host-http",
+    "did-host-http-tsp",
+    "did-host-http-didcomm",
+];
+
+fn sign_in_portal_entries(doc: &Value) -> Vec<&Value> {
+    doc["service"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["type"] == "SignInPortal")
+        .collect()
+}
+
+#[test]
+fn every_did_host_http_template_advertises_its_login_page_as_sign_in_portal() {
+    for name in DID_HOST_HTTP_TEMPLATES {
+        let tpl = load_embedded(name).unwrap();
+        let mut vars = did_host_http_tsp_fixture_vars();
+        vars.insert_string("URL", "https://webvh.storm.ws");
+        let doc = tpl.render(&vars).unwrap();
+        let portals = sign_in_portal_entries(&doc);
+        assert_eq!(portals.len(), 1, "`{name}`: {doc}");
+        assert_eq!(
+            *portals[0],
+            json!({
+                "id": "did:webvh:QmTEST:example.com#sign-in-portal",
+                "type": "SignInPortal",
+                "serviceEndpoint": "https://webvh.storm.ws/login",
+            }),
+            "`{name}` must publish exactly what DID hosting publishes for itself"
+        );
+    }
+}
+
+#[test]
+fn the_sign_in_portal_is_on_the_url_origin_not_its_path() {
+    let tpl = load_embedded("did-host-http").unwrap();
+    let mut vars = did_host_http_tsp_fixture_vars();
+    vars.insert_string("URL", "https://host.example.com:8443/hosting");
+    let doc = tpl.render(&vars).unwrap();
+    assert_eq!(
+        sign_in_portal_entries(&doc)[0]["serviceEndpoint"],
+        "https://host.example.com:8443/login"
+    );
+}
+
+#[test]
+fn the_sign_in_portal_keeps_the_did_sentinel_for_the_webvh_library() {
+    // The VTA renders with `DID = "{DID}"` and `didwebvh-rs` substitutes the
+    // final DID after SCID computation.
+    let tpl = load_embedded("did-host-http").unwrap();
+    let mut vars = did_host_http_tsp_fixture_vars();
+    vars.insert_string("DID", "{DID}");
+    let doc = tpl.render(&vars).unwrap();
+    assert_eq!(
+        sign_in_portal_entries(&doc)[0]["id"],
+        "{DID}#sign-in-portal"
+    );
+}
+
+#[test]
+fn a_plain_http_url_gets_no_sign_in_portal() {
+    for name in DID_HOST_HTTP_TEMPLATES {
+        let tpl = load_embedded(name).unwrap();
+        let mut vars = did_host_http_tsp_fixture_vars();
+        vars.insert_string("URL", "http://localhost:8530");
+        let doc = tpl.render(&vars).unwrap();
+        assert!(
+            sign_in_portal_entries(&doc).is_empty(),
+            "`{name}` advertised a plain-http sign-in portal: {doc}"
+        );
+        // Everything else still renders.
+        assert_eq!(doc["service"][0]["type"], "WebVHHosting");
+        assert_eq!(doc["service"][1]["type"], "TrustTaskHTTPS");
+    }
+}
+
+#[test]
+fn a_caller_may_omit_or_override_the_sign_in_portal() {
+    let tpl = load_embedded("did-host-http").unwrap();
+
+    let mut vars = did_host_http_tsp_fixture_vars();
+    vars.insert(SIGN_IN_PORTAL_SERVICE_VAR, Value::Null);
+    let doc = tpl.render(&vars).unwrap();
+    assert!(sign_in_portal_entries(&doc).is_empty(), "{doc}");
+
+    let mut vars = did_host_http_tsp_fixture_vars();
+    let custom = sign_in_portal_service("{DID}", "https://console.example.com").unwrap();
+    vars.insert(SIGN_IN_PORTAL_SERVICE_VAR, custom.clone());
+    let doc = tpl.render(&vars).unwrap();
+    assert_eq!(sign_in_portal_entries(&doc), vec![&custom]);
+}
+
+#[test]
+fn templates_without_a_login_page_get_no_sign_in_portal() {
+    // Witness / watcher / mediator nodes serve no `/login`; deriving the
+    // entry is opt-in by declaring the variable, which they do not.
+    for name in BUILTIN_NAMES {
+        if DID_HOST_HTTP_TEMPLATES.contains(name) || *name == "vtc-host" {
+            continue;
+        }
+        let tpl = load_embedded(name).unwrap();
+        assert!(
+            !tpl.optional_vars.contains_key(SIGN_IN_PORTAL_SERVICE_VAR),
+            "`{name}` declares {SIGN_IN_PORTAL_SERVICE_VAR}"
+        );
+    }
+    let mut vars = did_host_didcomm_fixture_vars();
+    vars.insert_string("URL", "https://host.example.com");
+    let doc = load_embedded("did-host-didcomm")
+        .unwrap()
+        .render(&vars)
+        .unwrap();
+    assert!(sign_in_portal_entries(&doc).is_empty(), "{doc}");
 }
 
 #[test]

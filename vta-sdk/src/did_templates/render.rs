@@ -67,6 +67,28 @@ pub(super) fn render(tpl: &DidTemplate, vars: &TemplateVars) -> Result<Value, Te
         }
     }
 
+    // Convention: a template that declares `SERVICE_SIGN_IN_PORTAL` (the
+    // `did-host-http*` built-ins) gets its `SignInPortal` entry derived from
+    // `URL` — `<origin>/login`, what a DID-hosting control plane serves and
+    // publishes for itself — so the callers that only ever set `URL`
+    // (`build_webvh_provision_ask`) mint a DID wallets can sign in to. Only for
+    // an https `URL`; otherwise the declared `null` default prunes the entry.
+    // A caller-supplied value, `null` included, always wins.
+    if tpl
+        .optional_vars
+        .contains_key(super::SIGN_IN_PORTAL_SERVICE_VAR)
+        && !vars.contains(super::SIGN_IN_PORTAL_SERVICE_VAR)
+        && let Some(url) = effective.get("URL").and_then(Value::as_str)
+    {
+        let did = effective
+            .get("DID")
+            .and_then(Value::as_str)
+            .unwrap_or("{DID}");
+        if let Ok(entry) = super::sign_in_portal_service(did, url) {
+            effective.insert(super::SIGN_IN_PORTAL_SERVICE_VAR.into(), entry);
+        }
+    }
+
     // Required vars must be resolvable (either from caller or — if the caller
     // chose to treat it as optional by supplying a default — from optionalVars
     // via the earlier insert, though the validator rejects overlap, so this
