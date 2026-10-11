@@ -2,6 +2,28 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.65.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.65.0...vta-sdk-v0.65.1) — 2026-10-11
+
+
+### Fixed
+
+- **vta-service**: Omit highWatermark for an unwritten app-state namespace ([#2033](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2033))
+
+`vta/app-state/list` reported the namespace counter as `highWatermark`
+  even when nothing had been written, emitting 0. The response schema types
+  it as a `Version` (minimum 1), so MockVta's conformance check answered
+  `responseSchemaViolation` and every consumer's first sync against an empty
+  namespace failed; a production VTA sent the non-conformant reply anyway.
+
+  With no writes there is no watermark, so the member is now absent. It is
+  not in `required`, and a consumer keeps the `sinceVersion` it sent, which
+  is the same answer.
+
+  Adds a client/server round-trip test covering both list modes on an empty
+  namespace and the watermark after the first write.
+
+
+
 ## [0.65.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.64.2...vta-sdk-v0.65.0) — 2026-10-11
 
 
