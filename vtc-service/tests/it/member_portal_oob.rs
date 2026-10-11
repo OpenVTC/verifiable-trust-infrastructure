@@ -249,6 +249,33 @@ async fn grant(
     context_digest: &str,
     purpose: &str,
 ) -> Value {
+    grant_until(
+        member,
+        id,
+        decision,
+        session_key,
+        approver,
+        origin,
+        context_digest,
+        purpose,
+        now_epoch() + 3600,
+    )
+    .await
+}
+
+/// [`grant`] with the `notAfter` the member approves the session until.
+#[allow(clippy::too_many_arguments)]
+async fn grant_until(
+    member: &Party,
+    id: &str,
+    decision: &str,
+    session_key: &str,
+    approver: &str,
+    origin: &str,
+    context_digest: &str,
+    purpose: &str,
+    not_after: u64,
+) -> Value {
     doc(
         member,
         &t("grant"),
@@ -259,7 +286,7 @@ async fn grant(
             "approverKey": approver,
             "origin": origin,
             "contextDigest": context_digest,
-            "notAfter": now_epoch() + 3600,
+            "notAfter": not_after,
         }),
         None,
         purpose,
@@ -1036,11 +1063,23 @@ async fn start_admin(f: &Fixture, b: &Browser) -> String {
 
 /// Claim, prove, and approve with a grant over the real step 2.
 async fn approve(f: &Fixture, b: &Browser, p: &Phone, who: &Party, id: &str) -> Value {
+    approve_until(f, b, p, who, id, now_epoch() + 3600).await
+}
+
+/// [`approve`] with a grant whose `notAfter` is `not_after`.
+async fn approve_until(
+    f: &Fixture,
+    b: &Browser,
+    p: &Phone,
+    who: &Party,
+    id: &str,
+    not_after: u64,
+) -> Value {
     let (_, number) = claim_and_number(f, b, p, id).await;
     let pr = prove(f, p, identify(who, id, &p.key.did, &number).await).await;
     assert_eq!(pr.status, StatusCode::OK, "{}", pr.body);
     let digest = oob::context_digest(&pr.body).unwrap();
-    let g = grant(
+    let g = grant_until(
         who,
         id,
         "approve",
@@ -1049,6 +1088,7 @@ async fn approve(f: &Fixture, b: &Browser, p: &Phone, who: &Party, id: &str) -> 
         PORTAL,
         &digest,
         "assertionMethod",
+        not_after,
     )
     .await;
     let rs = respond(f, p, g).await;
@@ -1555,5 +1595,335 @@ async fn a_bootstrap_admin_made_a_member_signs_in_to_the_member_portal() {
             .any(|c| c.starts_with("vtc_member_session=")),
         "{:?}",
         done.cookies
+    );
+}
+
+// ─── The grant's `notAfter` bounds the whole session ──────────────────
+//
+// A wallet sign-in's grant carries `notAfter`, the latest moment the member
+// approved the session for. Refresh rotation must stay inside it — not only
+// the first window — and be refused once it has passed, for both audiences.
+
+const REFRESH_TASK: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
+
+/// `Max-Age` of the named cookie among `cookies`.
+fn max_age(cookies: &[String], name: &str) -> u64 {
+    let c = cookies
+        .iter()
+        .find(|c| c.starts_with(&format!("{name}=")))
+        .unwrap_or_else(|| panic!("no {name} cookie in {cookies:?}"));
+    c.split(';')
+        .find_map(|kv| kv.trim().strip_prefix("Max-Age="))
+        .unwrap_or_else(|| panic!("no Max-Age on {c}"))
+        .parse()
+        .unwrap()
+}
+
+fn cookie_in<'a>(cookies: &'a [String], name: &str) -> Option<&'a str> {
+    cookies.iter().find_map(|c| {
+        c.split(';')
+            .next()
+            .and_then(|kv| kv.strip_prefix(&format!("{name}=")))
+    })
+}
+
+/// Sign a member in by wallet with a grant ending at `not_after`; the
+/// redeem reply.
+async fn member_signed_in_until(f: &Fixture, ip: &'static str, not_after: u64) -> (Party, Reply) {
+    let member = Party::new();
+    enrol_member(&f.vtc, &member.did, None).await;
+    let b = browser(ip);
+    let p = phone(ip);
+    let id = start(f, &b).await;
+    approve_until(f, &b, &p, &member, &id, not_after).await;
+    let done = redeem(f, &b, &id).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    (member, done)
+}
+
+/// Sign an administrator in to the console by wallet with a grant ending at
+/// `not_after`; the redeem reply.
+async fn admin_signed_in_until(f: &Fixture, ip: &'static str, not_after: u64) -> (Party, Reply) {
+    let admin = Party::new();
+    enrol_admin(&f.vtc, &admin.did, None).await;
+    let b = browser(ip);
+    let p = phone(ip);
+    let id = start_admin(f, &b).await;
+    approve_until(f, &b, &p, &admin, &id, not_after).await;
+    let done = redeem(f, &b, &id).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    (admin, done)
+}
+
+struct Renewed {
+    status: StatusCode,
+    body: Value,
+    cookies: Vec<String>,
+}
+
+async fn send_renewal(f: &Fixture, req: Request<Body>) -> Renewed {
+    let res = f.vtc.router.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let cookies = res
+        .headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(str::to_string))
+        .collect();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    Renewed {
+        status,
+        body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        cookies,
+    }
+}
+
+/// The portal's cookie renewal, `POST /v1/member/auth/refresh`.
+async fn member_refresh(f: &Fixture, refresh: &str) -> Renewed {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/member/auth/refresh")
+        .header(
+            "cookie",
+            format!("vtc_member_refresh={refresh}; vtc_member_csrf=tok"),
+        )
+        .header("x-csrf-token", "tok")
+        .body(Body::empty())
+        .unwrap();
+    send_renewal(f, req).await
+}
+
+/// The console's cookie renewal, `POST /v1/auth/refresh`.
+async fn admin_refresh(f: &Fixture, refresh: &str) -> Renewed {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/auth/refresh")
+        .header(
+            "cookie",
+            format!(
+                "{}={refresh}; csrf=tok",
+                vti_common::auth::extractor::ADMIN_REFRESH_COOKIE
+            ),
+        )
+        .header("x-csrf-token", "tok")
+        .header("trust-task", REFRESH_TASK)
+        .body(Body::empty())
+        .unwrap();
+    send_renewal(f, req).await
+}
+
+async fn session_row(
+    ks: &vtc_service::store::KeyspaceHandle,
+    did: &str,
+) -> vtc_service::auth::session::Session {
+    vtc_service::auth::session::list_sessions(ks)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|s| s.did == did)
+        .expect("session row")
+}
+
+/// Move a session's absolute end into the past, as the clock would — the
+/// suite has no clock to advance, so the record is aged instead (as `age`
+/// does for a request).
+async fn end_session(ks: &vtc_service::store::KeyspaceHandle, did: &str) {
+    let mut s = session_row(ks, did).await;
+    s.not_after = Some(now_epoch() - 1);
+    vtc_service::auth::session::update_session(ks, &s)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_member_session_is_bounded_by_the_grants_not_after_across_refreshes() {
+    let f = fixture().await;
+    let not_after = now_epoch() + 600;
+    let (member, done) = member_signed_in_until(&f, "198.51.100.110", not_after).await;
+
+    // Redeem reports the session's true end, and that is what is stored.
+    assert_eq!(done.body["payload"]["notAfter"].as_u64(), Some(not_after));
+    let row = session_row(&f.vtc.state.member_sessions_ks, &member.did).await;
+    assert_eq!(row.not_after, Some(not_after));
+    assert!(row.refresh_expires_at.unwrap() <= not_after);
+
+    // Refresh after refresh: every new expiry — the stored refresh deadline,
+    // the access token's, and each cookie — stays inside the grant.
+    let mut refresh = cookie_in(&done.cookies, "vtc_member_refresh")
+        .expect("refresh cookie")
+        .to_string();
+    for _ in 0..3 {
+        let r = member_refresh(&f, &refresh).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        let now = now_epoch();
+        assert!(r.body["expiresAt"].as_u64().unwrap() <= not_after);
+        for name in [
+            "vtc_member_session",
+            "vtc_member_refresh",
+            "vtc_member_csrf",
+        ] {
+            assert!(
+                now + max_age(&r.cookies, name) <= not_after,
+                "{name} outlives the grant: {:?}",
+                r.cookies
+            );
+        }
+        let row = session_row(&f.vtc.state.member_sessions_ks, &member.did).await;
+        assert_eq!(row.not_after, Some(not_after), "the end never moves");
+        assert!(
+            row.refresh_expires_at.unwrap() <= not_after,
+            "refresh extended the session past notAfter"
+        );
+        refresh = cookie_in(&r.cookies, "vtc_member_refresh")
+            .unwrap()
+            .to_string();
+    }
+}
+
+#[tokio::test]
+async fn a_member_refresh_near_the_end_is_clamped_to_it() {
+    let f = fixture().await;
+    // Nearer than both the access and the refresh TTL.
+    let not_after = now_epoch() + 30;
+    let (member, done) = member_signed_in_until(&f, "198.51.100.111", not_after).await;
+    assert_eq!(done.body["payload"]["notAfter"].as_u64(), Some(not_after));
+    assert!(now_epoch() + max_age(&done.cookies, "vtc_member_session") <= not_after);
+
+    let refresh = cookie_in(&done.cookies, "vtc_member_refresh").unwrap();
+    let r = member_refresh(&f, refresh).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let now = now_epoch();
+    assert!(r.body["expiresAt"].as_u64().unwrap() <= not_after);
+    assert!(max_age(&r.cookies, "vtc_member_session") <= 30);
+    assert!(now + max_age(&r.cookies, "vtc_member_refresh") <= not_after);
+
+    // The access token's own `exp` is clamped too, not just its cookie.
+    let token = cookie_in(&r.cookies, "vtc_member_session").unwrap();
+    let claims = vtc_service::member_portal::member_jwt_keys(&f.vtc.state)
+        .unwrap()
+        .decode(token)
+        .expect("the renewed token is valid");
+    assert!(claims.exp <= not_after, "exp {} > {not_after}", claims.exp);
+    let row = session_row(&f.vtc.state.member_sessions_ks, &member.did).await;
+    assert!(row.refresh_expires_at.unwrap() <= not_after);
+}
+
+#[tokio::test]
+async fn a_member_refresh_after_the_end_is_refused() {
+    let f = fixture().await;
+    let (member, done) = member_signed_in_until(&f, "198.51.100.112", now_epoch() + 600).await;
+    let refresh = cookie_in(&done.cookies, "vtc_member_refresh").unwrap();
+
+    end_session(&f.vtc.state.member_sessions_ks, &member.did).await;
+
+    let r = member_refresh(&f, refresh).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{}", r.body);
+    assert!(
+        cookie_in(&r.cookies, "vtc_member_session").is_none(),
+        "no new session: {:?}",
+        r.cookies
+    );
+}
+
+#[tokio::test]
+async fn a_console_session_is_bounded_by_the_grants_not_after() {
+    let f = fixture().await;
+    let not_after = now_epoch() + 600;
+    let (admin, done) = admin_signed_in_until(&f, "198.51.100.113", not_after).await;
+    let refresh_cookie = vti_common::auth::extractor::ADMIN_REFRESH_COOKIE;
+
+    // Redeem reports the true end; the console row and every cookie keep it.
+    assert_eq!(done.body["payload"]["notAfter"].as_u64(), Some(not_after));
+    let row = session_row(&f.vtc.state.sessions_ks, &admin.did).await;
+    assert_eq!(row.not_after, Some(not_after));
+    assert!(now_epoch() + max_age(&done.cookies, refresh_cookie) <= not_after);
+
+    let mut refresh = cookie_in(&done.cookies, refresh_cookie)
+        .unwrap()
+        .to_string();
+    for _ in 0..2 {
+        let r = admin_refresh(&f, &refresh).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        let now = now_epoch();
+        for name in ["vtc_admin_session", refresh_cookie, "csrf"] {
+            assert!(
+                now + max_age(&r.cookies, name) <= not_after,
+                "{name} outlives the grant: {:?}",
+                r.cookies
+            );
+        }
+        assert!(now + r.body["tokens"]["refreshExpiresIn"].as_u64().unwrap() <= not_after);
+        let row = session_row(&f.vtc.state.sessions_ks, &admin.did).await;
+        assert_eq!(row.not_after, Some(not_after));
+        assert!(row.refresh_expires_at.unwrap() <= not_after);
+        refresh = cookie_in(&r.cookies, refresh_cookie).unwrap().to_string();
+    }
+
+    // Past the end the console must sign in again.
+    end_session(&f.vtc.state.sessions_ks, &admin.did).await;
+    let r = admin_refresh(&f, &refresh).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{}", r.body);
+    assert!(cookie_in(&r.cookies, "vtc_admin_session").is_none());
+}
+
+#[tokio::test]
+async fn a_console_refresh_near_the_end_is_clamped_to_it() {
+    let f = fixture().await;
+    let not_after = now_epoch() + 30;
+    let (_, done) = admin_signed_in_until(&f, "198.51.100.114", not_after).await;
+    assert_eq!(done.body["payload"]["notAfter"].as_u64(), Some(not_after));
+
+    let refresh = cookie_in(
+        &done.cookies,
+        vti_common::auth::extractor::ADMIN_REFRESH_COOKIE,
+    )
+    .unwrap();
+    let r = admin_refresh(&f, refresh).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert!(r.body["tokens"]["expiresIn"].as_u64().unwrap() <= 30);
+    assert!(r.body["tokens"]["refreshExpiresIn"].as_u64().unwrap() <= 30);
+    assert!(max_age(&r.cookies, "vtc_admin_session") <= 30);
+}
+
+/// A member session stored before sessions had an absolute end has no
+/// `not_after` member. It still loads and refreshes, sliding as it always
+/// did.
+#[tokio::test]
+async fn a_session_stored_before_not_after_existed_still_refreshes() {
+    let f = fixture().await;
+    let member = Party::new();
+    enrol_member(&f.vtc, &member.did, None).await;
+    let ks = &f.vtc.state.member_sessions_ks;
+    let now = now_epoch();
+    let old = json!({
+        "session_id": "pre-not-after",
+        "did": member.did,
+        "challenge": "",
+        "state": "Authenticated",
+        "created_at": now,
+        "last_seen": now,
+        "refresh_token": "old-refresh",
+        "refresh_expires_at": now + 3600,
+        "tee_attested": false,
+        "amr": ["did", "oob", "uv"],
+        "acr": "aal2",
+        "token_id": "old-jti"
+    });
+    ks.insert("session:pre-not-after", &old).await.unwrap();
+    vtc_service::auth::session::store_refresh_index(ks, "old-refresh", "pre-not-after")
+        .await
+        .unwrap();
+
+    let row = session_row(ks, &member.did).await;
+    assert_eq!(row.not_after, None, "an old row loads as unbounded");
+
+    let r = member_refresh(&f, "old-refresh").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let row = session_row(ks, &member.did).await;
+    assert_eq!(row.not_after, None);
+    let ttl = f.vtc.state.config.read().await.auth.refresh_token_expiry;
+    assert!(
+        row.refresh_expires_at.unwrap() >= now + ttl,
+        "an unbounded session keeps sliding by the full TTL"
     );
 }

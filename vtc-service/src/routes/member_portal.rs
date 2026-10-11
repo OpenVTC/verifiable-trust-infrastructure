@@ -278,7 +278,13 @@ pub async fn cookie_refresh(
     )
     .await?;
 
-    let refresh_ttl = state.config.read().await.auth.refresh_token_expiry;
+    // The time the rotated token really has left, which is less than the
+    // configured TTL when the session has an absolute end (a wallet
+    // sign-in's grant `notAfter`) — the cookie must not outlive it.
+    let refresh_ttl = match resp.tokens.refresh_expires_in {
+        Some(left) => left.max(1),
+        None => state.config.read().await.auth.refresh_token_expiry,
+    };
     let mut set = vec![cookies::session_cookie(
         &resp.tokens.access_token,
         resp.tokens.expires_in.max(1),
@@ -689,6 +695,7 @@ pub async fn passkey_login_finish(
             acr_expires_at: None,
             token_id: Some(minted.token_id.clone()),
             session_pubkey_b58btc: None,
+            not_after: None,
         },
     )
     .await?;

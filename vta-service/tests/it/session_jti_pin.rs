@@ -38,6 +38,7 @@ async fn seed_session(ctx: &TestAppContext, session_id: &str, did: &str, token_i
         acr_expires_at: None,
         token_id: token_id.map(str::to_string),
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&ctx.sessions_ks, &session).await.unwrap();
 }

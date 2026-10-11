@@ -358,6 +358,7 @@ async fn enrolling_a_step_up_passkey_drops_an_existing_session_elevation() {
             acr_expires_at: Some(now + 900),
             token_id: None,
             session_pubkey_b58btc: None,
+            not_after: None,
         },
     )
     .await

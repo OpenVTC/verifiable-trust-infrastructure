@@ -860,7 +860,7 @@ pub async fn passkey_login_finish(
         session_id,
         minted,
         cookies,
-    } = mint_admin_cookie_session(&state, &user.did, &["passkey"], None).await?;
+    } = mint_admin_cookie_session(&state, &user.did, &["passkey"], None, None).await?;
     let amr = vec!["passkey".to_string()];
     let acr = "aal2".to_string();
 
@@ -923,11 +923,18 @@ pub(crate) struct AdminCookieSession {
 /// One function so the sign-in methods cannot drift apart in audience,
 /// cookie flags, lifetimes or CSRF — a console session is a console session
 /// whichever way the operator proved who they are.
+///
+/// `not_after` is an absolute end the session may not outlive — a wallet
+/// sign-in's grant `notAfter`. Both tokens and every cookie are minted to
+/// end by it, and it is stored on the session so that refresh rotation
+/// stays inside it and is refused once it has passed. `None` (passkey) is
+/// the usual sliding session.
 pub(crate) async fn mint_admin_cookie_session(
     state: &AppState,
     did: &str,
     amr: &[&str],
     session_pubkey_b58btc: Option<String>,
+    not_after: Option<u64>,
 ) -> Result<AdminCookieSession, AppError> {
     let (role, allowed_contexts) = resolve_auth_role(&state.acl_ks, did).await?;
 
@@ -938,7 +945,7 @@ pub(crate) async fn mint_admin_cookie_session(
     let session_id = Uuid::new_v4().to_string();
     let amr: Vec<String> = amr.iter().map(|s| s.to_string()).collect();
     let acr = "aal2".to_string();
-    let minted = vti_common::auth::handlers::mint_session_tokens(
+    let minted = vti_common::auth::handlers::mint_session_tokens_until(
         &backend,
         did,
         &session_id,
@@ -947,6 +954,7 @@ pub(crate) async fn mint_admin_cookie_session(
         &amr,
         &acr,
         false,
+        not_after,
     )
     .await?;
 
@@ -968,6 +976,7 @@ pub(crate) async fn mint_admin_cookie_session(
         acr_expires_at: None,
         token_id: Some(minted.token_id.clone()),
         session_pubkey_b58btc,
+        not_after,
     };
     store_session(&state.sessions_ks, &session).await?;
     store_refresh_index(&state.sessions_ks, &minted.refresh_token, &session_id).await?;
@@ -1405,9 +1414,12 @@ async fn reissue_session_cookies(
     resp: AuthenticateResponse,
     request_headers: &HeaderMap,
 ) -> Result<Response, AppError> {
-    let refresh_ttl = {
-        let cfg = state.config.read().await;
-        cfg.auth.refresh_token_expiry
+    // The time the rotated token really has left, which is less than the
+    // configured TTL when the session has an absolute end (a wallet
+    // sign-in's grant `notAfter`) — no cookie may outlive it.
+    let refresh_ttl = match resp.tokens.refresh_expires_in {
+        Some(left) => left.max(1),
+        None => state.config.read().await.auth.refresh_token_expiry,
     };
     let access_max_age = resp.tokens.expires_in.max(1);
     let session_cookie = build_session_cookie(&resp.tokens.access_token, access_max_age);

@@ -853,6 +853,7 @@ mod tests {
             acr_expires_at,
             token_id: None,
             session_pubkey_b58btc: None,
+            not_after: None,
         };
         store_session(&state.sessions, &session)
             .await
@@ -1209,6 +1210,7 @@ mod tests {
             acr_expires_at: None,
             token_id: None,
             session_pubkey_b58btc: None,
+            not_after: None,
         };
         store_session(&state.sessions, &session)
             .await

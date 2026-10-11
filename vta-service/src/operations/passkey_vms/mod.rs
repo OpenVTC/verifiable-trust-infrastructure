@@ -876,6 +876,7 @@ mod tests {
             acr_expires_at: Some(now_epoch() + 900),
             token_id: None,
             session_pubkey_b58btc: None,
+            not_after: None,
         };
 
         // This DID's did-signed elevation — must be cleared.

@@ -53,6 +53,7 @@ async fn whoami_reports_live_session_acr_not_stale_token() {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&ctx.sessions_ks, &session).await.unwrap();
 
@@ -172,6 +173,7 @@ async fn whoami_reports_effective_capabilities_including_an_additive_grant() {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&ctx.sessions_ks, &session).await.unwrap();
 
@@ -263,6 +265,7 @@ async fn whoami_does_not_invent_a_capability_nobody_granted() {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&ctx.sessions_ks, &session).await.unwrap();
 

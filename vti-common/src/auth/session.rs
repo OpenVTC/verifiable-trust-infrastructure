@@ -109,9 +109,40 @@ pub struct Session {
     /// the trust-task framework's IS_PROOF_REQUIRED gate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_pubkey_b58btc: Option<String>,
+    /// Absolute epoch-seconds end of this session, past which it cannot be
+    /// renewed however recently its refresh token was rotated.
+    ///
+    /// Set when the session was issued under a bound its subject approved —
+    /// a wallet sign-in's grant `notAfter` (`auth/oob/*`) — so that the
+    /// approval, not the refresh cadence, decides how long the session
+    /// lives. [`crate::auth::handlers::handle_refresh`] clamps every rotated
+    /// access and refresh expiry to it and refuses a refresh once it has
+    /// passed ([`crate::auth::AuthError::RefreshTokenExpired`]).
+    ///
+    /// `None` is the sliding behaviour every other session has: each refresh
+    /// extends it by the refresh TTL. `#[serde(default)]` so a row written
+    /// before this field existed loads as `None` — the behaviour it was
+    /// issued under — and `skip_serializing_if` keeps unbounded rows
+    /// byte-identical to what they were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_after: Option<u64>,
 }
 
 impl Session {
+    /// `at`, brought forward to this session's [`not_after`](Self::not_after)
+    /// if it would otherwise fall after it. Unchanged for an unbounded
+    /// session.
+    pub fn clamp_to_end(&self, at: u64) -> u64 {
+        self.not_after.map_or(at, |end| at.min(end))
+    }
+
+    /// Whether this session's absolute end has been reached at `now`. Always
+    /// `false` for an unbounded session. At the end itself the session is
+    /// over: a renewal then could only mint a token that is already expired.
+    pub fn past_end(&self, now: u64) -> bool {
+        self.not_after.is_some_and(|end| now >= end)
+    }
+
     /// Whether a step-up elevation is **currently live** on this session.
     ///
     /// True only when [`acr_expires_at`](Self::acr_expires_at) names a deadline
@@ -194,6 +225,7 @@ impl std::fmt::Debug for Session {
             .field("acr_expires_at", &self.acr_expires_at)
             .field("token_id", &self.token_id.as_ref().map(|_| "<redacted>"))
             .field("session_pubkey_b58btc", &self.session_pubkey_b58btc)
+            .field("not_after", &self.not_after)
             .finish()
     }
 }
@@ -387,6 +419,7 @@ pub async fn resolve_did_session(
             acr_expires_at: None,
             token_id: None,
             session_pubkey_b58btc: None,
+            not_after: None,
         };
         store_session(sessions, &session).await?;
         Ok(session)
@@ -882,6 +915,7 @@ mod tests {
             acr_expires_at: None,
             token_id: None,
             session_pubkey_b58btc: None,
+            not_after: None,
         }
     }
 
@@ -1754,5 +1788,44 @@ mod tests {
         // doing its job — rerun on a sane host.
         let t = now_epoch();
         assert!(t > 1_700_000_000, "epoch should be post-2023; got {t}");
+    }
+
+    /// A row written before `not_after` existed carries no such member. It
+    /// must still load — as an unbounded session, the behaviour it was
+    /// issued under — and an unbounded row must serialise without the
+    /// member, so existing rows stay byte-identical.
+    #[test]
+    fn a_row_written_before_not_after_existed_loads_as_unbounded() {
+        let old = serde_json::json!({
+            "session_id": "s-1",
+            "did": "did:key:zOld",
+            "challenge": "",
+            "state": "Authenticated",
+            "created_at": 1_700_000_000u64,
+            "last_seen": 1_700_000_000u64,
+            "refresh_token": "rt",
+            "refresh_expires_at": 1_700_086_400u64,
+            "tee_attested": false,
+            "amr": ["did"],
+            "acr": "aal1"
+        });
+        let s: Session = serde_json::from_value(old).expect("an old row loads");
+        assert_eq!(s.not_after, None);
+        assert!(!s.past_end(u64::MAX));
+        assert_eq!(s.clamp_to_end(u64::MAX), u64::MAX);
+        let back = serde_json::to_value(&s).unwrap();
+        assert!(back.get("not_after").is_none(), "{back}");
+    }
+
+    #[test]
+    fn a_bounded_session_clamps_and_ends_at_not_after() {
+        let mut s = sample_session("s-2", "did:key:zNew", SessionState::Authenticated);
+        s.not_after = Some(1_000);
+        assert_eq!(s.clamp_to_end(900), 900);
+        assert_eq!(s.clamp_to_end(5_000), 1_000);
+        assert!(!s.past_end(999));
+        assert!(s.past_end(1_000), "the end itself is past it");
+        let round: Session = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+        assert_eq!(round.not_after, Some(1_000));
     }
 }

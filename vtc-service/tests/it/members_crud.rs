@@ -145,6 +145,7 @@ async fn build_fixture() -> Fixture {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&vtc.state.sessions_ks, &session)
         .await
@@ -206,6 +207,7 @@ async fn stepped_up_admin_token(fix: &Fixture, remaining_secs: i64) -> String {
             acr_expires_at: Some(now.saturating_add_signed(remaining_secs)),
             token_id: None,
             session_pubkey_b58btc: None,
+            not_after: None,
         },
     )
     .await

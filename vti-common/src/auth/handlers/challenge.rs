@@ -114,6 +114,7 @@ pub async fn handle_challenge<B: AuthBackend>(
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: input.session_pubkey_b58btc,
+        not_after: None,
     };
 
     if enrolled {

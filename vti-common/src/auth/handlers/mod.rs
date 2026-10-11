@@ -18,7 +18,7 @@ pub mod store;
 
 pub use authenticate::{handle_authenticate, handle_authenticate_with_aal};
 pub use challenge::handle_challenge;
-pub use mint::{MintedTokens, mint_session_tokens};
+pub use mint::{MintedTokens, mint_session_tokens, mint_session_tokens_until};
 pub use refresh::handle_refresh;
 pub use store::KeyspaceSessionStore;
 

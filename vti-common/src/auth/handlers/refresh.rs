@@ -15,9 +15,10 @@
 //!    REST transports can skip this — the refresh token itself is
 //!    the credential.
 //! 4. Reject sessions in non-`Authenticated` state.
-//! 5. Refresh-token expiry check, then the idle timeout — measured
-//!    against `last_seen`, which only genuine activity advances, so a
-//!    client renewing on a timer cannot hold a session open
+//! 5. Refresh-token expiry check, the session's absolute end
+//!    ([`Session::not_after`], refused once reached), then the idle
+//!    timeout — measured against `last_seen`, which only genuine activity
+//!    advances, so a client renewing on a timer cannot hold a session open
 //!    indefinitely.
 //! 6. Preserve `(amr, acr)` from the pre-rotation session — a
 //!    step-upped `aal2` session stays at `aal2` across the rotation
@@ -30,7 +31,9 @@
 //!    token still find and revoke the live session. The row is
 //!    overwritten rather than deleted-and-recreated, so a concurrent
 //!    authed request never observes a momentarily-missing session.
-//!    The rewritten session inherits the preserved `(amr, acr)`.
+//!    The rewritten session inherits the preserved `(amr, acr)` and its
+//!    absolute end, and both new expiries are clamped to that end — a
+//!    rotation renews the tokens, never the session's life.
 //! 9. Tombstone the spent token.
 //! 10. Emit the `Refreshed` audit event and return the canonical
 //!     `AuthenticateResponse`.
@@ -199,6 +202,22 @@ pub async fn handle_refresh<B: AuthBackend>(
         return Err(AuthError::RefreshTokenExpired.into());
     }
 
+    // ---- 5b. Absolute end ----
+    //
+    // A session issued under a bound its subject approved (a wallet
+    // sign-in's grant `notAfter`) ends there, however recently it rotated.
+    // The rotation below clamps to it as well; this refuses the renewal that
+    // could only mint tokens already expired.
+    if old_session.past_end(now) {
+        tracing::warn!(
+            session_id = %old_session.session_id,
+            did = %old_session.did,
+            not_after = ?old_session.not_after,
+            "refresh rejected: session past its absolute end",
+        );
+        return Err(AuthError::RefreshTokenExpired.into());
+    }
+
     // ---- 5a. Idle timeout ----
     //
     // Measured against `last_seen`, which only genuine user activity
@@ -249,15 +268,14 @@ pub async fn handle_refresh<B: AuthBackend>(
     let new_session_id = old_session.session_id.clone();
     let new_refresh_token = Uuid::new_v4().to_string();
     let new_token_id = Uuid::new_v4().to_string();
-    let new_refresh_expires_at = now.saturating_add(backend.refresh_token_ttl());
+    // Both expiries are clamped to the session's absolute end, if it has
+    // one: a rotation renews the tokens, never the session's life.
+    let new_refresh_expires_at =
+        old_session.clamp_to_end(now.saturating_add(backend.refresh_token_ttl()));
     // M2: stepped-up sessions keep the shorter `aal2` TTL
     // across rotation (was previously dropping back to the
     // base TTL on every refresh).
-    let access_ttl = if acr == "aal2" {
-        backend.access_token_ttl_for_aal2()
-    } else {
-        backend.access_token_ttl()
-    };
+    let access_ttl = clamped_access_ttl(backend, &acr, &old_session, now);
     let access_expires_at = now.saturating_add(access_ttl);
 
     let access_token = backend
@@ -304,6 +322,9 @@ pub async fn handle_refresh<B: AuthBackend>(
         // Inherit the per-session ephemeral pubkey across rotation;
         // the holder's DI-proof key didn't change.
         session_pubkey_b58btc: old_session.session_pubkey_b58btc.clone(),
+        // Carried forward unchanged: the end is the one the session was
+        // issued under, and no rotation moves it.
+        not_after: old_session.not_after,
     };
 
     backend
@@ -378,7 +399,9 @@ pub async fn handle_refresh<B: AuthBackend>(
             refresh_token: Some(new_refresh_token),
             token_type: "Bearer".to_string(),
             expires_in: access_ttl,
-            refresh_expires_in: Some(backend.refresh_token_ttl()),
+            // What the rotated token actually has left — less than the TTL
+            // when the session's absolute end is nearer.
+            refresh_expires_in: Some(new_refresh_expires_at.saturating_sub(now)),
             scope: role_resolution
                 .contexts
                 .into_iter()
@@ -386,6 +409,20 @@ pub async fn handle_refresh<B: AuthBackend>(
                 .collect(),
         },
     })
+}
+
+/// The access-token TTL a refresh issues: acr-dependent (M2 — `aal2`
+/// keeps the shorter TTL), and no longer than what is left before the
+/// session's absolute end, so the JWT `exp` never passes it either.
+fn clamped_access_ttl<B: AuthBackend>(backend: &B, acr: &str, session: &Session, now: u64) -> u64 {
+    let ttl = if acr == "aal2" {
+        backend.access_token_ttl_for_aal2()
+    } else {
+        backend.access_token_ttl()
+    };
+    session
+        .not_after
+        .map_or(ttl, |end| ttl.min(end.saturating_sub(now)))
 }
 
 // ---------------------------------------------------------------------------
@@ -594,14 +631,15 @@ async fn replay_rotation<B: AuthBackend>(
     session: &Session,
     now: u64,
 ) -> Result<AuthenticateResponse, B::Error> {
+    // A retry cannot outlive the session's absolute end any more than the
+    // rotation it replays could.
+    if session.past_end(now) {
+        return Err(AuthError::RefreshTokenExpired.into());
+    }
     let (amr, acr) = super::refresh_amr_acr(session);
     let role_resolution = backend.check_acl(&session.did).await?;
 
-    let access_ttl = if acr == "aal2" {
-        backend.access_token_ttl_for_aal2()
-    } else {
-        backend.access_token_ttl()
-    };
+    let access_ttl = clamped_access_ttl(backend, &acr, session, now);
     let access_expires_at = now.saturating_add(access_ttl);
 
     // Both are `Some` on any session reachable here — `is_innocent_retry`
@@ -876,6 +914,7 @@ mod tests {
             acr_expires_at: None,
             token_id: Some("jti-0".to_string()),
             session_pubkey_b58btc: None,
+            not_after: None,
         };
         store.store_session(&session).await.unwrap();
         store.store_refresh_index(&token, DID).await.unwrap();
@@ -1388,5 +1427,79 @@ mod tests {
             .await
             .expect("the rotated token must work");
         assert!(alerts(&b).is_empty());
+    }
+
+    // ── Absolute end (`Session::not_after`) ─────────────────────────
+
+    /// Give the seeded session an absolute end `secs` from now.
+    fn bound(b: &MockBackend<MemStore>, secs_from_now: i64) -> u64 {
+        let end = (now_epoch() as i64 + secs_from_now) as u64;
+        let mut sessions = b.store.sessions.lock().unwrap();
+        let s = sessions.get_mut(DID).expect("seeded session");
+        s.not_after = Some(end);
+        end
+    }
+
+    #[tokio::test]
+    async fn a_rotation_never_extends_a_session_past_its_end() {
+        let (b, first) = logged_in(30).await;
+        let end = bound(&b, 120);
+
+        let resp = handle_refresh(&b, input(&first)).await.unwrap();
+
+        // Both the refresh and the access token stop at the end, not at a
+        // fresh TTL from now.
+        assert!(resp.tokens.refresh_expires_in.unwrap() <= 120);
+        assert!(resp.tokens.expires_in <= 120);
+        let row = b.store.sessions.lock().unwrap().get(DID).cloned().unwrap();
+        assert_eq!(row.not_after, Some(end), "the end is carried forward");
+        assert!(row.refresh_expires_at.unwrap() <= end);
+
+        // And again: the next rotation is still inside the same end.
+        let next = resp.tokens.refresh_token.unwrap();
+        let resp = handle_refresh(&b, input(&next)).await.unwrap();
+        assert!(resp.tokens.refresh_expires_in.unwrap() <= 120);
+        let row = b.store.sessions.lock().unwrap().get(DID).cloned().unwrap();
+        assert!(row.refresh_expires_at.unwrap() <= end);
+    }
+
+    #[tokio::test]
+    async fn a_refresh_at_or_past_the_end_is_refused_as_expired() {
+        let (b, first) = logged_in(30).await;
+        bound(&b, 0);
+
+        let err = handle_refresh(&b, input(&first)).await.unwrap_err();
+
+        assert!(matches!(err, AppError::Authentication(_)), "got {err:?}");
+        assert!(alerts(&b).is_empty(), "an ended session is not a theft");
+        let row = b.store.sessions.lock().unwrap().get(DID).cloned().unwrap();
+        assert_eq!(
+            row.refresh_token.as_deref(),
+            Some(first.as_str()),
+            "nothing rotated"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retry_cannot_outlive_the_end_either() {
+        let (b, first) = logged_in(3600).await;
+        bound(&b, 60);
+        handle_refresh(&b, input(&first)).await.unwrap();
+        // The session ends between the rotation and the retry.
+        bound(&b, -1);
+
+        let err = handle_refresh(&b, input(&first)).await.unwrap_err();
+
+        assert!(matches!(err, AppError::Authentication(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn an_unbounded_session_still_slides() {
+        let (b, first) = logged_in(30).await;
+
+        let resp = handle_refresh(&b, input(&first)).await.unwrap();
+
+        assert_eq!(resp.tokens.refresh_expires_in, Some(b.refresh_token_ttl()));
+        assert_eq!(resp.tokens.expires_in, b.access_token_ttl());
     }
 }

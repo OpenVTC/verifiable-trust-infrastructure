@@ -120,6 +120,7 @@ async fn seed_session(fix: &Fixture, idle_secs: u64) -> (String, String, String)
             acr_expires_at: None,
             token_id: Some(token_id),
             session_pubkey_b58btc: None,
+            not_after: None,
         },
     )
     .await
@@ -685,6 +686,7 @@ async fn seed_console_session(vtc: &TestVtc, did: &str) -> (String, String) {
             acr_expires_at: None,
             token_id: Some(token_id),
             session_pubkey_b58btc: None,
+            not_after: None,
         },
     )
     .await

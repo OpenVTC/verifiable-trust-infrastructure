@@ -1044,6 +1044,7 @@ mod p0_14_role_change_policy_tests {
                 acr_expires_at: elevated.then(|| now_epoch() + 900),
                 token_id: None,
                 session_pubkey_b58btc: None,
+                not_after: None,
             },
         )
         .await

@@ -1356,7 +1356,14 @@ async fn handle_redeem(
 ///   grant's `notAfter` and the member session limit.
 /// - **Operator console:** the console session every console sign-in issues
 ///   ([`crate::routes::auth::mint_admin_cookie_session`]), for a DID the ACL
-///   holds as an administrator now. Anyone else is `declined` with
+///   holds as an administrator now, ending no later than the grant's
+///   `notAfter`.
+///
+/// Either way the grant's `notAfter` is stored as the session's absolute end
+/// ([`vti_common::auth::session::Session::not_after`]): refresh rotates the
+/// tokens inside it and refuses once it has passed, so the member's approval
+/// bounds the whole session, not only its first window. The `notAfter`
+/// reported here is the session's true end. Anyone else is `declined` with
 ///   `details.reason: notAnAdmin`, and the request stays spent.
 ///
 /// Never the other audience's session (T19).
@@ -1427,7 +1434,9 @@ async fn redeem_approved(
         SessionAudience::Member => {
             redeem_member(state, doc, http, &consumed, subject, not_after).await
         }
-        SessionAudience::Admin => redeem_admin(state, doc, http, &consumed, subject).await,
+        SessionAudience::Admin => {
+            redeem_admin(state, doc, http, &consumed, subject, not_after).await
+        }
     }
 }
 
@@ -1488,6 +1497,7 @@ async fn redeem_admin(
     http: &HttpContext,
     consumed: &OobRequest,
     admin_did: String,
+    not_after: u64,
 ) -> TrustTaskOutcome {
     // Administrator again, now: an entry removed or narrowed since the
     // approval opens no console. The request is already spent.
@@ -1514,6 +1524,7 @@ async fn redeem_admin(
         &admin_did,
         &["did", "oob", "uv"],
         session_key,
+        Some(not_after),
     )
     .await
     {
@@ -1575,7 +1586,10 @@ async fn mint_session(
     let session_id = uuid::Uuid::new_v4().to_string();
     let amr = amr();
     let acr = "aal2".to_string();
-    let minted = vti_common::auth::handlers::mint_session_tokens(
+    // The grant's `notAfter` bounds the session: both tokens are minted to
+    // end by it, and it is stored as the session's absolute end, so refresh
+    // rotation (`handle_refresh`) cannot extend it either.
+    let minted = vti_common::auth::handlers::mint_session_tokens_until(
         &backend,
         did,
         &session_id,
@@ -1584,11 +1598,11 @@ async fn mint_session(
         &amr,
         &acr,
         false,
+        Some(not_after),
     )
     .await?;
-    // The grant's `notAfter` bounds the session: refreshing cannot extend it.
-    let refresh_expires_at = minted.refresh_expires_at.min(not_after);
-    let access_expires_at = minted.access_expires_at.min(not_after);
+    let refresh_expires_at = minted.refresh_expires_at;
+    let access_expires_at = minted.access_expires_at;
     store_session(
         &state.member_sessions_ks,
         &Session {
@@ -1606,6 +1620,7 @@ async fn mint_session(
             acr_expires_at: None,
             token_id: Some(minted.token_id.clone()),
             session_pubkey_b58btc: oob::did_key_multikey(session_key).map(str::to_string),
+            not_after: Some(not_after),
         },
     )
     .await?;

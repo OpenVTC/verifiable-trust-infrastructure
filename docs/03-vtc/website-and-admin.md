@@ -810,7 +810,11 @@ Trust Task document on `POST /v1/trust-tasks`:
 6. The browser's next poll redeems: the VTC creates a member session
    bound to `K_b` (`amr = ["did","oob","uv"]`, ending no later than the
    grant's `notAfter`), sets the usual portal cookies, and the page asks
-   **"Continue as Alice?"** before using it. *Not me* signs out.
+   **"Continue as Alice?"** before using it. *Not me* signs out. The
+   grant's `notAfter` is the session's absolute end, not just its first
+   window: each refresh renews the tokens inside it, and once it has passed
+   refresh is refused and the member signs in again. The console's wallet
+   sign-in is bounded the same way.
 
 The page hides the code when the tab is hidden (the request keeps
 running). It is served with `Referrer-Policy: no-referrer`,

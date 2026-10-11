@@ -92,6 +92,7 @@ async fn did_signed_approve_response_elevates_session_to_aal2() {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&ctx.sessions_ks, &session).await.unwrap();
 
@@ -255,6 +256,7 @@ async fn did_signed_approve_response_0_2_elevates_session_to_aal2() {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&ctx.sessions_ks, &session).await.unwrap();
 
@@ -382,6 +384,7 @@ async fn trust_task_acl_mutation_requires_step_up() {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&ctx.sessions_ks, &session).await.unwrap();
     let claims = ctx.jwt_keys.new_claims(
@@ -499,6 +502,7 @@ async fn v0_2_minted_request_completes_with_a_0_1_flavored_response() {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&ctx.sessions_ks, &session).await.unwrap();
     let claims = ctx.jwt_keys.new_claims(
@@ -657,6 +661,7 @@ async fn delegated_approve_response_elevates_the_subjects_session() {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&ctx.sessions_ks, &subject_session)
         .await
@@ -682,6 +687,7 @@ async fn delegated_approve_response_elevates_the_subjects_session() {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&ctx.sessions_ks, &approver_session)
         .await
@@ -799,6 +805,7 @@ async fn unauthorized_approver_cannot_elevate() {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&ctx.sessions_ks, &subject_session)
         .await
@@ -840,6 +847,7 @@ async fn unauthorized_approver_cannot_elevate() {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&ctx.sessions_ks, &rogue_session)
         .await

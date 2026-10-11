@@ -429,6 +429,7 @@ async fn emergency_bootstrap_clears_all_sessions_and_their_refresh_index() {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&sessions_ks, &session).await.unwrap();
     store_refresh_index(&sessions_ks, "refresh-token-1", "sess-old-admin")

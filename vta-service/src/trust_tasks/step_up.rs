@@ -1906,6 +1906,7 @@ mod tests {
             acr_expires_at: None,
             token_id: None,
             session_pubkey_b58btc: None,
+            not_after: None,
         }
     }
 

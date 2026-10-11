@@ -59,15 +59,59 @@ pub async fn mint_session_tokens<B: AuthBackend>(
     acr: &str,
     tee_attested: bool,
 ) -> Result<MintedTokens, B::Error> {
+    mint_session_tokens_until(
+        backend,
+        did,
+        session_id,
+        role,
+        contexts,
+        amr,
+        acr,
+        tee_attested,
+        None,
+    )
+    .await
+}
+
+/// [`mint_session_tokens`] for a session with an absolute end.
+///
+/// With `not_after: Some(end)`, both tokens expire no later than `end`: the
+/// access token's TTL (and so its JWT `exp`) is shortened to fit, and the
+/// refresh expiry is brought forward to it. The caller persists the same
+/// `end` as [`Session::not_after`](crate::auth::session::Session::not_after)
+/// so that [`super::handle_refresh`] keeps every rotation inside it too.
+/// `None` is exactly [`mint_session_tokens`].
+///
+/// An `end` at or before now still mints, with a zero TTL: the session is
+/// already over, and refusing belongs to the caller, which knows why the end
+/// was set.
+#[allow(clippy::too_many_arguments)]
+pub async fn mint_session_tokens_until<B: AuthBackend>(
+    backend: &B,
+    did: &str,
+    session_id: &str,
+    role: &B::Role,
+    contexts: &[String],
+    amr: &[String],
+    acr: &str,
+    tee_attested: bool,
+    not_after: Option<u64>,
+) -> Result<MintedTokens, B::Error> {
     let now = now_epoch();
-    let access_ttl = if acr == "aal2" {
+    let full_access_ttl = if acr == "aal2" {
         backend.access_token_ttl_for_aal2()
     } else {
         backend.access_token_ttl()
     };
+    let access_ttl = match not_after {
+        Some(end) => full_access_ttl.min(end.saturating_sub(now)),
+        None => full_access_ttl,
+    };
     let refresh_token = Uuid::new_v4().to_string();
     let token_id = Uuid::new_v4().to_string();
     let refresh_expires_at = now.saturating_add(backend.refresh_token_ttl());
+    let refresh_expires_at =
+        not_after.map_or(refresh_expires_at, |end| refresh_expires_at.min(end));
     let access_expires_at = now.saturating_add(access_ttl);
 
     let access_token = backend

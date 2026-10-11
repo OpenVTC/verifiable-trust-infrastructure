@@ -105,6 +105,7 @@ async fn authed(ctx: &TestAppContext, tag: &str, role: &str, allowed_contexts: &
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&ctx.sessions_ks, &session).await.unwrap();
 
@@ -145,6 +146,7 @@ async fn authed_other(ctx: &TestAppContext, tag: &str, allowed_contexts: &[&str]
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&ctx.sessions_ks, &session).await.unwrap();
     let contexts: Vec<String> = allowed_contexts.iter().map(|s| s.to_string()).collect();

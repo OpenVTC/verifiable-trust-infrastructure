@@ -172,6 +172,7 @@ async fn seed_member_with_session(fix: &Fixture, did: &str, role: VtcRole) -> St
             acr_expires_at: None,
             token_id: None,
             session_pubkey_b58btc: None,
+            not_after: None,
         },
     )
     .await

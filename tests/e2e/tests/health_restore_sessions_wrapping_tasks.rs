@@ -135,6 +135,7 @@ async fn seed_session(mock: &MockVta, session_id: &str, did: &str) {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&mock.ctx.sessions_ks, &session)
         .await

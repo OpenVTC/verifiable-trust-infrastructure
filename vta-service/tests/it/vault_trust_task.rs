@@ -105,6 +105,7 @@ async fn authed(ctx: &TestAppContext, role: &str, allowed_contexts: &[&str]) -> 
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&ctx.sessions_ks, &session).await.unwrap();
 

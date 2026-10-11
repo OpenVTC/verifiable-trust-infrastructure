@@ -646,6 +646,7 @@ impl TestVtc {
             acr_expires_at: None,
             token_id: None,
             session_pubkey_b58btc: None,
+            not_after: None,
         };
         store_session(&self.state.sessions_ks, &session)
             .await

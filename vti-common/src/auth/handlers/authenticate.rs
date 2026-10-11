@@ -229,6 +229,7 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
         session_pubkey_b58btc: input
             .session_pubkey_b58btc
             .or(session.session_pubkey_b58btc.clone()),
+        not_after: None,
     };
 
     backend
@@ -499,6 +500,7 @@ mod claim_tests {
             acr_expires_at: None,
             token_id: None,
             session_pubkey_b58btc: None,
+            not_after: None,
         }
     }
 

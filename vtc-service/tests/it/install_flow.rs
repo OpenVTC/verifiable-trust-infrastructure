@@ -228,6 +228,7 @@ async fn admin_jwt_for(fix: &Fixture, admin_did: &str) -> String {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&fix.state.sessions_ks, &session)
         .await

@@ -177,6 +177,7 @@ async fn admin_token(fix: &Fixture) -> String {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&fix.state.sessions_ks, &session)
         .await
@@ -209,6 +210,7 @@ async fn reader_token(fix: &Fixture) -> String {
         acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
+        not_after: None,
     };
     store_session(&fix.state.sessions_ks, &session)
         .await
@@ -343,6 +345,7 @@ async fn list_is_empty_for_an_admin_with_no_passkeys() {
             acr_expires_at: None,
             token_id: None,
             session_pubkey_b58btc: None,
+            not_after: None,
         },
     )
     .await
