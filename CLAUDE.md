@@ -153,8 +153,14 @@ own `did:key` (`zDn…` / `zQ3s…`):
   the hex holder signatures (member rotation, join's REST binding) and the
   OID4VCI key-binding proof may be any of the three.
 
-What the workspace mints, and every key `sealed_transfer` seals to, stays
-Ed25519 / X25519.
+What the workspace mints stays Ed25519 / X25519, with one exception: a
+**foreign-protocol identity** — an identity whose wire another protocol fixes,
+such as a swiyu or EUDI OpenID4VP verifier (`swiyu-verifier` template), whose
+request objects those wallets accept only as ES256 — may hold P-256 (or
+secp256k1) keys. The VTA still mints and custodies them, from the seed like any
+other key; such a key is published only in that identity's own DID, never on a
+community's or the VTA's own. Every key `sealed_transfer` seals **to** stays
+X25519 (from an Ed25519 `did:key`).
 
 ## Prefer TSP, then DIDComm, then REST
 
@@ -1056,7 +1062,7 @@ new flow, update both this section and the relevant `docs/*.md`.
   the SDK, always available): `ai-agent`, `ai-agent-peer`,
   `did-host-didcomm`, `did-host-http`, `did-host-http-didcomm`,
   `did-host-http-tsp`, `did-host-tsp`, `didcomm-mediator`,
-  `push-gateway`, `vta-admin`, `vtc-host`. The `did-host-*` names encode
+  `push-gateway`, `swiyu-verifier`, `vta-admin`, `vtc-host`. The `did-host-*` names encode
   the DID-document **shape** (`http` = WebVHHosting, `didcomm` =
   DIDCommMessaging, `tsp` = TSPTransport), so a deployment role maps onto
   a shape: control = `did-host-http-didcomm`, hosting daemon =

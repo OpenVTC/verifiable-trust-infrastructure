@@ -495,13 +495,22 @@ pub(crate) fn minted_vm_ids(
         .map(Vec::as_slice)
         .unwrap_or_default();
 
+    // A method carries a key by `publicKeyMultibase`, or by `publicKeyJwk` —
+    // the form a profile like the Swiss Profile Anchor requires. A JWK is
+    // compared on the members that name the key (`kty`, `crv`, `x`, `y`), so a
+    // template adding `alg` or `kid` to its JWK still matches.
     let id_carrying = |public_key: &str| -> Option<String> {
+        let jwk = public_jwk(public_key).ok();
         methods
             .iter()
             .find(|vm| {
                 vm.get("publicKeyMultibase")
                     .and_then(serde_json::Value::as_str)
                     == Some(public_key)
+                    || jwk.as_ref().is_some_and(|jwk| {
+                        vm.get("publicKeyJwk")
+                            .is_some_and(|published| same_jwk_key(published, jwk))
+                    })
             })
             .and_then(|vm| vm.get("id"))
             .and_then(serde_json::Value::as_str)
@@ -523,6 +532,44 @@ pub(crate) fn minted_vm_ids(
             .filter_map(|(slot, public_key)| id_carrying(public_key).map(|id| (slot.clone(), id)))
             .collect(),
     }
+}
+
+/// A public key, given as the multibase string this stack stores, as a JWK:
+/// `kty`, `crv`, `x` (and `y` for an EC key), plus `alg` where the key has one
+/// JWS algorithm (`EdDSA`, `ES256`) — the form a `publicKeyJwk` verification
+/// method carries and a `{SLOT}_KEY_JWK` template placeholder renders.
+pub(crate) fn public_jwk(public_multibase: &str) -> Result<serde_json::Value, AppError> {
+    let jwk = affinidi_crypto::JWK::from_multikey(public_multibase)
+        .map_err(|e| AppError::Internal(format!("key {public_multibase} has no JWK form: {e}")))?;
+    let mut value = serde_json::to_value(&jwk)
+        .map_err(|e| AppError::Internal(format!("JWK serialisation: {e}")))?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.remove("kid");
+        // A public JWK never carries a private member, and the serialiser
+        // writes absent ones as `null` — which a DID document would then
+        // publish verbatim.
+        obj.remove("d");
+        obj.retain(|_, v| !v.is_null());
+        let alg = match obj.get("crv").and_then(serde_json::Value::as_str) {
+            Some("P-256") => Some("ES256"),
+            Some("Ed25519") => Some("EdDSA"),
+            Some("secp256k1") => Some("ES256K"),
+            _ => None,
+        };
+        if let Some(alg) = alg {
+            obj.insert("alg".into(), serde_json::Value::from(alg));
+        }
+    }
+    Ok(value)
+}
+
+/// Whether two JWKs name the same public key: equal `kty`, `crv`, `x` and `y`
+/// (absent on both counts as equal), whatever else either carries.
+fn same_jwk_key(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    ["kty", "crv", "x", "y"]
+        .iter()
+        .all(|m| a.get(m) == b.get(m))
+        && a.get("x").is_some()
 }
 
 #[cfg(test)]

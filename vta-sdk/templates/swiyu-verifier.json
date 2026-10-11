@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 2,
+  "name": "swiyu-verifier",
+  "kind": "oid4vp-verifier",
+  "description": "A swiyu OpenID4VP verifier identity, shaped by the Swiss Profile Anchor 1.0: a did:webvh hosted in the swiyu Base Registry, separate from the community's own DID. The document carries one P-256 key, published as a JsonWebKey2020 publicKeyJwk (the profile forbids publicKeyMultibase) under both authentication and assertionMethod: it signs the OpenID4VP request objects (ES256, kid = {DID}#verifier-key-1, the profile's absolute-kid rule) and the trust-onboarding proof of possession. No service, keyAgreement or alsoKnownAs entry, which the profile forbids, and no @context (JSON representation only). The did:webvh update key (the `signing` slot, Ed25519, as didwebvh 1.0 requires for log proofs) is named in the log's updateKeys and kept out of the document. The profile also requires portable=false, an empty witness and watchers, and the profile_version member below in every entry. Mint it serverless with the identifier-registry slot URL the swiyu API returned, then upload the log to that slot with the operator's swiyu API token. Response-encryption keys do not belong here: each request carries a fresh one in its client_metadata.",
+  "methods": [
+    "webvh"
+  ],
+  "requiredVars": [],
+  "optionalVars": {
+    "PROFILE_VERSION": "swiss-profile-anchor:1.0.0"
+  },
+  "defaults": {
+    "portable": false
+  },
+  "keys": {
+    "signing": {
+      "purpose": "signing",
+      "algorithms": [
+        "ed25519"
+      ],
+      "publish": false
+    },
+    "verifier": {
+      "purpose": "signing",
+      "algorithms": [
+        "p256"
+      ]
+    }
+  },
+  "document": {
+    "id": "{DID}",
+    "profile_version": "{PROFILE_VERSION}",
+    "verificationMethod": [
+      {
+        "id": "{DID}#verifier-key-1",
+        "type": "JsonWebKey2020",
+        "controller": "{DID}",
+        "publicKeyJwk": "{VERIFIER_KEY_JWK}"
+      }
+    ],
+    "authentication": [
+      "{DID}#verifier-key-1"
+    ],
+    "assertionMethod": [
+      "{DID}#verifier-key-1"
+    ]
+  }
+}

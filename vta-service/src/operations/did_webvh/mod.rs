@@ -1082,6 +1082,17 @@ pub async fn create_did_webvh(
         None => None,
     };
 
+    // A template that says `defaults.portable: false` is binding, not a hint:
+    // a profile that requires a non-portable DID (the Swiss Profile Anchor
+    // does) must not depend on every caller remembering `--portable false`,
+    // and `pnm` defaults to `true`. Only the safe direction is enforced — a
+    // template cannot make a DID portable that its caller asked not to be.
+    if template_record.as_ref().is_some_and(|r| {
+        r.template.defaults.get("portable") == Some(&serde_json::Value::Bool(false))
+    }) {
+        params.portable = false;
+    }
+
     // What the template asks each slot to be minted as. A v1 template answers
     // with the historical Ed25519/X25519 pair (`key_slots`), so this is the same
     // question for both schema versions and there is no branch on version here.
@@ -1336,7 +1347,18 @@ pub async fn create_did_webvh(
         (uri_response.did_url, Some(uri_response.mnemonic))
     };
 
-    let has_ka = params.ka_key_id.is_some() || !user_specified_keys;
+    // A template that declares slots but no key-agreement slot publishes no
+    // key-agreement key — the Swiss Profile Anchor forbids one — so none is
+    // recorded either. (`derive_entity_keys` still allocates its path; a record
+    // under an id the document never publishes would be the worse outcome.)
+    let template_declares_ka =
+        key_slots.is_empty() || key_slots.contains_key(vta_sdk::did_templates::SLOT_KA);
+    let has_ka = params.ka_key_id.is_some() || (!user_specified_keys && template_declares_ka);
+    // Whether the document publishes the update key (`signing`). A profile may
+    // keep it to the log's `updateKeys` alone; see `KeySlot::publish`.
+    let signing_published = key_slots
+        .get(vta_sdk::did_templates::SLOT_SIGNING)
+        .is_none_or(|slot| slot.publish);
 
     // ── Template resolution + render ────────────────────────────────
     //
@@ -1351,8 +1373,17 @@ pub async fn create_did_webvh(
         let mut vars = vta_sdk::did_templates::TemplateVars::new();
         vars.insert_string("DID", "{DID}");
         vars.insert_string("SIGNING_KEY_MB", derived.signing_pub.clone());
+        // A JWK form is offered where the key has one; ML-DSA keys have none,
+        // and a template asking for one anyway fails at render on the
+        // unresolved placeholder, rather than here for every template.
+        if let Ok(jwk) = document::public_jwk(&derived.signing_pub) {
+            vars.insert("SIGNING_KEY_JWK", jwk);
+        }
         if has_ka {
             vars.insert_string("KA_KEY_MB", derived.ka_pub.clone());
+            if let Ok(jwk) = document::public_jwk(&derived.ka_pub) {
+                vars.insert("KA_KEY_JWK", jwk);
+            }
         }
         // One placeholder per additional slot, under `slot_var`'s mechanical
         // `{SLOT}_KEY_MB` name — the same rule the two above already follow.
@@ -1364,6 +1395,14 @@ pub async fn create_did_webvh(
                 vta_sdk::did_templates::DidTemplate::slot_var(&key.slot),
                 key.public_multibase.clone(),
             );
+            // The same key as a JWK, for a document that publishes
+            // `publicKeyJwk` (`DidTemplate::slot_var_jwk`).
+            if let Ok(jwk) = document::public_jwk(&key.public_multibase) {
+                vars.insert(
+                    vta_sdk::did_templates::DidTemplate::slot_var_jwk(&key.slot),
+                    jwk,
+                );
+            }
         }
         if let Some(ref vta_did) = config.vta_did {
             vars.insert_string("VTA_DID", vta_did.clone());
@@ -1517,7 +1556,7 @@ pub async fn create_did_webvh(
         .iter()
         .map(|k| (k.slot.clone(), k.public_multibase.clone()))
         .collect();
-    let vm_ids = document::minted_vm_ids(
+    let mut vm_ids = document::minted_vm_ids(
         &did_document,
         &final_did,
         &derived.signing_pub,
@@ -1528,6 +1567,12 @@ pub async fn create_did_webvh(
         },
         &additional_pubs,
     );
+    // An update key the document does not publish has no method id of its own;
+    // it is named the way the log names it — its `did:key` — rather than given
+    // a `#key-0` the document never carries.
+    if !signing_published {
+        vm_ids.signing = format!("did:key:{pub_mb}#{pub_mb}", pub_mb = derived.signing_pub);
+    }
     let ka_vm_id = vm_ids
         .key_agreement
         .clone()
@@ -1535,17 +1580,33 @@ pub async fn create_did_webvh(
 
     // Save key records
     if !user_specified_keys {
-        // VTA-derived: save both signing and KA key records
-        keys::save_entity_key_records_with_ids(
-            &vm_ids.signing,
-            &ka_vm_id,
-            &derived,
-            keys_ks,
-            Some(&params.context_id),
-            active_seed_id,
-        )
-        .await
-        .map_err(|e| AppError::Internal(format!("{e}")))?;
+        // VTA-derived: save both signing and KA key records — or the signing
+        // record alone, for a template that publishes no key-agreement key.
+        if has_ka {
+            keys::save_entity_key_records_with_ids(
+                &vm_ids.signing,
+                &ka_vm_id,
+                &derived,
+                keys_ks,
+                Some(&params.context_id),
+                active_seed_id,
+            )
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+        } else {
+            keys::save_key_record(
+                keys_ks,
+                &vm_ids.signing,
+                &derived.signing_path,
+                derived.signing_key_type.clone(),
+                &derived.signing_pub,
+                &vm_ids.signing,
+                Some(&params.context_id),
+                active_seed_id,
+            )
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+        }
 
         // Records for the extra signing slots, under the ids the published
         // document gives them. A slot the document does not carry is a template
@@ -2850,6 +2911,7 @@ mod key_slot_plan_tests {
         KeySlot {
             purpose,
             algorithms: algorithms.iter().map(|a| (*a).to_string()).collect(),
+            publish: true,
         }
     }
 

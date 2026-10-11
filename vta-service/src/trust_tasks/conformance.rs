@@ -2914,6 +2914,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                             // PQC-first with a classical fallback — the shape a
                             // fleet mid-migration needs from one template.
                             algorithms: vec!["mldsa44".into(), "ed25519".into()],
+                            publish: true,
                         },
                     ),
                     (
@@ -2921,6 +2922,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         KeySlot {
                             purpose: KeyPurpose::KeyAgreement,
                             algorithms: vec!["x25519".into()],
+                            publish: true,
                         },
                     ),
                 ])),

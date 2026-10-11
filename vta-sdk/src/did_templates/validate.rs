@@ -105,10 +105,32 @@ fn check_key_slots(tpl: &DidTemplate) -> Result<(), TemplateError> {
         // Minting a key nothing publishes is also a silent cost: it consumes a
         // derivation path forever.
         let var = DidTemplate::slot_var(slot);
-        if !used.contains(&var) {
+        let jwk_var = DidTemplate::slot_var_jwk(slot);
+        let published = used.contains(&var) || used.contains(&jwk_var);
+        if !spec.publish {
+            // Only the `did:webvh` update key may stay out of the document: it
+            // is named in the log's `updateKeys`, which is where a resolver
+            // finds it. Any other unpublished key is minted for nothing.
+            if slot != super::SLOT_SIGNING {
+                return Err(TemplateError::Invalid(format!(
+                    "key slot '{slot}' sets `publish: false`, which only the \
+                     '{}' slot (the did:webvh update key) may do; an unpublished key in any \
+                     other slot would be minted and never usable",
+                    super::SLOT_SIGNING
+                )));
+            }
+            if published {
+                return Err(TemplateError::Invalid(format!(
+                    "key slot '{slot}' sets `publish: false` but the document uses \
+                     `{{{var}}}` or `{{{jwk_var}}}`; remove the placeholder or the flag"
+                )));
+            }
+            continue;
+        }
+        if !published {
             return Err(TemplateError::Invalid(format!(
-                "key slot '{slot}' is declared but `{{{var}}}` never appears in the document, \
-                 so the key would be minted and never published"
+                "key slot '{slot}' is declared but neither `{{{var}}}` nor `{{{jwk_var}}}` \
+                 appears in the document, so the key would be minted and never published"
             )));
         }
     }
@@ -116,7 +138,10 @@ fn check_key_slots(tpl: &DidTemplate) -> Result<(), TemplateError> {
     // And the converse: a slot placeholder in the document that no slot
     // declares would render as an unsubstituted literal.
     for var in &used {
-        let Some(slot) = var.strip_suffix("_KEY_MB") else {
+        let Some(slot) = var
+            .strip_suffix("_KEY_MB")
+            .or_else(|| var.strip_suffix("_KEY_JWK"))
+        else {
             continue;
         };
         let slot = slot.to_ascii_lowercase().replace('_', "-");
@@ -200,8 +225,15 @@ fn check_reserved_vars(tpl: &DidTemplate) -> Result<(), TemplateError> {
 /// them with `ReservedVar` and that error is unchanged.
 fn check_slot_vars_not_declared(tpl: &DidTemplate) -> Result<(), TemplateError> {
     let slots = tpl.key_slots();
-    for slot in slots.keys() {
-        let var = DidTemplate::slot_var(slot);
+    for var in slots
+        .keys()
+        .flat_map(|slot| [DidTemplate::slot_var(slot), DidTemplate::slot_var_jwk(slot)])
+    {
+        let slot = var
+            .trim_end_matches("_KEY_MB")
+            .trim_end_matches("_KEY_JWK")
+            .to_ascii_lowercase()
+            .replace('_', "-");
         let declared_required = tpl.required_vars.contains(&var);
         let declared_optional = tpl.optional_vars.contains_key(&var);
         if !declared_required && !declared_optional {
@@ -280,9 +312,13 @@ fn check_placeholders_declared(tpl: &DidTemplate) -> Result<(), TemplateError> {
     // `check_key_slots` says this properly, but only for a template that has a
     // `keys` block at all and only after this check has already run, so the
     // author would read the wrong advice first.
-    if let Some(var) = undeclared.iter().find(|v| v.ends_with("_KEY_MB")) {
+    if let Some(var) = undeclared
+        .iter()
+        .find(|v| v.ends_with("_KEY_MB") || v.ends_with("_KEY_JWK"))
+    {
         let slot = var
             .trim_end_matches("_KEY_MB")
+            .trim_end_matches("_KEY_JWK")
             .to_ascii_lowercase()
             .replace('_', "-");
         return Err(TemplateError::Invalid(format!(

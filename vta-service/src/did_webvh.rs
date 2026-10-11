@@ -1002,7 +1002,7 @@ mod tests {
         config: &crate::config::AppConfig,
         store: &Store,
         template_name: &str,
-    ) -> Result<(String, serde_json::Value), vti_common::error::AppError> {
+    ) -> Result<(String, serde_json::Value, String), vti_common::error::AppError> {
         let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
         let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
         let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
@@ -1067,7 +1067,11 @@ mod tests {
             .did_document
             .clone()
             .expect("create returns the published document");
-        Ok((result.did.clone(), document))
+        let log = result
+            .log_entry
+            .clone()
+            .expect("create returns the log entry");
+        Ok((result.did.clone(), document, log))
     }
 
     /// Store a template, mint a DID from it, and hand back the created DID,
@@ -1075,7 +1079,12 @@ mod tests {
     async fn create_from_template(
         dir: &tempfile::TempDir,
         template: vta_sdk::did_templates::DidTemplate,
-    ) -> (String, serde_json::Value, vti_common::store::KeyspaceHandle) {
+    ) -> (
+        String,
+        serde_json::Value,
+        vti_common::store::KeyspaceHandle,
+        String,
+    ) {
         let (config, _config_path) = setup_seeded_store(dir, None).await;
         let store = Store::open(&config.store).expect("open store");
         let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES).unwrap();
@@ -1095,10 +1104,10 @@ mod tests {
         .await
         .expect("store template");
 
-        let (did, document) = run_create_from_stored_template(&config, &store, &name)
+        let (did, document, log) = run_create_from_stored_template(&config, &store, &name)
             .await
             .expect("create_did_webvh");
-        (did, document, keys_ks)
+        (did, document, keys_ks, log)
     }
 
     /// A template whose slots are the historical pair plus one post-quantum
@@ -1113,6 +1122,7 @@ mod tests {
                 KeySlot {
                     purpose: KeyPurpose::Signing,
                     algorithms: signing.iter().map(|s| (*s).to_string()).collect(),
+                    publish: true,
                 },
             ),
             (
@@ -1120,6 +1130,7 @@ mod tests {
                 KeySlot {
                     purpose: KeyPurpose::KeyAgreement,
                     algorithms: vec!["x25519".into()],
+                    publish: true,
                 },
             ),
         ]);
@@ -1141,6 +1152,7 @@ mod tests {
                 KeySlot {
                     purpose: KeyPurpose::Signing,
                     algorithms: vec!["mldsa44".into()],
+                    publish: true,
                 },
             );
             methods.push(serde_json::json!({
@@ -1179,6 +1191,94 @@ mod tests {
             .key_type
     }
 
+    /// **A swiyu verifier identity mints to the Swiss Profile Anchor.**
+    ///
+    /// One P-256 key, published as a `JsonWebKey2020` `publicKeyJwk` under
+    /// `authentication` and `assertionMethod`; no `publicKeyMultibase`, no
+    /// `keyAgreement`, no `service`; the Ed25519 update key kept out of the
+    /// document and recorded under its `did:key`; the P-256 key recorded under
+    /// the id the document gives it. Each of these is a rule the swiyu Base
+    /// Registry or wallet enforces, so a drift here is a DID swiyu refuses.
+    #[tokio::test]
+    async fn the_swiyu_verifier_template_mints_to_the_swiss_profile_anchor() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut template =
+            vta_sdk::did_templates::load_embedded("swiyu-verifier").expect("builtin loads");
+        // Stored under its own name so `create` resolves it as a global
+        // template — the same render path a built-in takes.
+        template.name = "swiyu-verifier-test".into();
+        let (did, document, keys_ks, log) = create_from_template(&dir, template).await;
+
+        let methods = document["verificationMethod"]
+            .as_array()
+            .expect("verificationMethod");
+        assert_eq!(methods.len(), 1, "exactly the verifier key: {document}");
+        let vm = &methods[0];
+        let vm_id = format!("{did}#verifier-key-1");
+        assert_eq!(vm["id"], vm_id);
+        assert_eq!(vm["type"], "JsonWebKey2020");
+        assert_eq!(vm["controller"], did);
+        assert!(vm.get("publicKeyMultibase").is_none(), "{vm}");
+        let jwk = &vm["publicKeyJwk"];
+        assert_eq!(jwk["kty"], "EC", "{jwk}");
+        assert_eq!(jwk["crv"], "P-256", "{jwk}");
+        assert_eq!(jwk["alg"], "ES256", "{jwk}");
+        assert!(jwk["x"].is_string() && jwk["y"].is_string(), "{jwk}");
+        assert!(jwk.get("d").is_none(), "a public JWK never carries d");
+
+        assert_eq!(document["authentication"], serde_json::json!([vm_id]));
+        assert_eq!(document["assertionMethod"], serde_json::json!([vm_id]));
+        // What the Base Registry validates is the log entry's `state` — the
+        // document as signed. (A did:webvh resolver adds the implicit `#files`
+        // and `#whois` services to its *view*; they are not in the log.)
+        let entry: serde_json::Value = serde_json::from_str(&log).expect("log entry JSON");
+        let state = &entry["state"];
+        assert_eq!(state["verificationMethod"], document["verificationMethod"]);
+        for forbidden in ["keyAgreement", "service", "alsoKnownAs", "@context"] {
+            assert!(
+                state.get(forbidden).is_none(),
+                "the profile forbids {forbidden} in the signed document: {state}"
+            );
+        }
+        // `portable: false` is an Anchor rule too. The helper asks for a
+        // portable DID, as `pnm` does by default; the template's
+        // `defaults.portable: false` is binding and wins.
+        assert_eq!(entry["parameters"]["portable"], serde_json::json!(false));
+        assert_eq!(document["profile_version"], "swiss-profile-anchor:1.0.0");
+
+        assert_eq!(
+            stored_key_type(&keys_ks, &vm_id).await,
+            vta_sdk::keys::KeyType::P256
+        );
+        // The update key: recorded, under the name the log gives it.
+        let records = operations::keys::list_keys(
+            &keys_ks,
+            &cli_super_admin(),
+            operations::keys::ListKeysParams {
+                offset: None,
+                limit: Some(100),
+                status: None,
+                context_id: None,
+            },
+            "test",
+        )
+        .await
+        .expect("list keys");
+        let update = records
+            .keys
+            .iter()
+            .find(|k| k.key_id.starts_with("did:key:z6Mk"))
+            .expect("the update key is recorded under its did:key");
+        assert_eq!(update.key_type, vta_sdk::keys::KeyType::Ed25519);
+        assert!(
+            !records
+                .keys
+                .iter()
+                .any(|k| k.key_type == vta_sdk::keys::KeyType::X25519),
+            "no key-agreement key is recorded for a document that publishes none"
+        );
+    }
+
     /// **A `did:webvh` primary signing key cannot be post-quantum, and the
     /// preference list is how a template survives that.**
     ///
@@ -1194,7 +1294,7 @@ mod tests {
     #[tokio::test]
     async fn a_webvh_primary_signing_key_falls_back_past_ml_dsa_to_ed25519() {
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let (did, document, keys_ks) =
+        let (did, document, keys_ks, _log) =
             create_from_template(&dir, pqc_template("pq-primary", vec!["mldsa44", "ed25519"]))
                 .await;
 
@@ -1263,7 +1363,7 @@ mod tests {
     #[tokio::test]
     async fn a_classical_only_preference_still_mints_ed25519() {
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let (did, _document, keys_ks) =
+        let (did, _document, keys_ks, _log) =
             create_from_template(&dir, pqc_template("classical", vec!["ed25519"])).await;
 
         assert_eq!(
@@ -1281,7 +1381,7 @@ mod tests {
     #[tokio::test]
     async fn a_third_slot_mints_a_second_signing_key_and_publishes_it() {
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let (did, document, keys_ks) =
+        let (did, document, keys_ks, _log) =
             create_from_template(&dir, pqc_template("hybrid", vec!["ed25519"])).await;
 
         // The classical key is untouched — it must be, since the VTC derives

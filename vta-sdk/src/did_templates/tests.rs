@@ -1594,6 +1594,27 @@ fn every_builtin_still_declares_the_historical_key_pair() {
         let tpl = builtin::load_embedded(name).expect("builtin loads");
         let slots = tpl.key_slots();
 
+        // A foreign-protocol identity, shaped by someone else's profile rather
+        // than by this stack's historical pair: the Swiss Profile Anchor
+        // forbids keyAgreement and publicKeyMultibase, so the swiyu verifier
+        // keeps its Ed25519 update key out of the document and publishes one
+        // P-256 key as a JWK. Pinned here so it cannot drift back toward the
+        // pair, and so the pair's check below stays exact for everything else.
+        if *name == "swiyu-verifier" {
+            assert_eq!(tpl.schema_version, 2);
+            assert_eq!(slots[SLOT_SIGNING].algorithms, vec!["ed25519".to_string()]);
+            assert!(
+                !slots[SLOT_SIGNING].publish,
+                "the update key stays out of the document"
+            );
+            assert!(
+                !slots.contains_key(SLOT_KA),
+                "the profile forbids keyAgreement"
+            );
+            assert_eq!(slots["verifier"].algorithms, vec!["p256".to_string()]);
+            continue;
+        }
+
         if V2_BUILTINS.contains(name) {
             assert_eq!(
                 tpl.schema_version, 2,
@@ -1719,7 +1740,7 @@ fn a_declared_slot_the_document_never_publishes_is_refused() {
     }))
     .expect_err("a slot that is minted and never published is refused");
     assert!(
-        err.to_string().contains("never appears"),
+        err.to_string().contains("never published"),
         "the error must say the key would be minted and not published: {err}"
     );
 }
@@ -2018,4 +2039,132 @@ fn a_slot_shaped_placeholder_with_no_slot_is_told_to_declare_a_slot() {
         msg.contains("not in requiredVars or optionalVars"),
         "must steer away from declaring it as a variable: {msg}"
     );
+}
+
+/// A v2 template whose `verifier` slot is published as a JWK, with the
+/// update key (`signing`) given as `signing_slot`.
+fn jwk_template(signing_slot: Value, document: Value) -> Result<DidTemplate, TemplateError> {
+    DidTemplate::from_json(json!({
+        "schemaVersion": 2,
+        "name": "jwk-test",
+        "kind": "oid4vp-verifier",
+        "keys": {
+            "signing": signing_slot,
+            "verifier": { "purpose": "signing", "algorithms": ["p256"] },
+        },
+        "document": document,
+    }))
+}
+
+fn jwk_document() -> Value {
+    json!({
+        "id": "{DID}",
+        "verificationMethod": [{
+            "id": "{DID}#verifier-key-1",
+            "type": "JsonWebKey2020",
+            "controller": "{DID}",
+            "publicKeyJwk": "{VERIFIER_KEY_JWK}",
+        }],
+        "authentication": ["{DID}#verifier-key-1"],
+    })
+}
+
+/// `{SLOT}_KEY_JWK` publishes a slot as well as `{SLOT}_KEY_MB` does, and it
+/// renders as the JWK object itself — a whole-string placeholder replaced by a
+/// JSON value, not a string.
+#[test]
+fn a_slot_published_as_a_jwk_renders_the_object() {
+    let tpl = jwk_template(
+        json!({ "purpose": "signing", "algorithms": ["ed25519"], "publish": false }),
+        jwk_document(),
+    )
+    .expect("a JWK-published slot and an unpublished update key validate");
+    let jwk = json!({ "kty": "EC", "crv": "P-256", "x": "AA", "y": "BB" });
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "did:webvh:Qm:example.com");
+    vars.insert("VERIFIER_KEY_JWK", jwk.clone());
+    let doc = tpl.render(&vars).expect("render");
+    assert_eq!(doc["verificationMethod"][0]["publicKeyJwk"], jwk);
+}
+
+/// Only the `did:webvh` update key may stay out of the document; and an
+/// unpublished slot that the document uses anyway is refused rather than
+/// silently published.
+#[test]
+fn publish_false_is_for_the_update_key_alone_and_means_it() {
+    // The signing slot published after all.
+    let mut doc = jwk_document();
+    doc["verificationMethod"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "id": "{DID}#update",
+            "publicKeyJwk": "{SIGNING_KEY_JWK}",
+        }));
+    let err = jwk_template(
+        json!({ "purpose": "signing", "algorithms": ["ed25519"], "publish": false }),
+        doc,
+    )
+    .expect_err("an unpublished slot the document publishes");
+    assert!(err.to_string().contains("publish: false"), "{err}");
+
+    // Any other slot unpublished.
+    let err = DidTemplate::from_json(json!({
+        "schemaVersion": 2,
+        "name": "jwk-test",
+        "kind": "custom",
+        "keys": {
+            "signing": { "purpose": "signing", "algorithms": ["ed25519"] },
+            "verifier": { "purpose": "signing", "algorithms": ["p256"], "publish": false },
+        },
+        "document": {
+            "id": "{DID}",
+            "verificationMethod": [{ "id": "{DID}#k", "publicKeyMultibase": "{SIGNING_KEY_MB}" }],
+        },
+    }))
+    .expect_err("only the update key may go unpublished");
+    assert!(err.to_string().contains("only the"), "{err}");
+
+    // And the default stays: the update key is published unless told otherwise.
+    let err = jwk_template(
+        json!({ "purpose": "signing", "algorithms": ["ed25519"] }),
+        jwk_document(),
+    )
+    .expect_err("a published-by-default update key the document never carries");
+    assert!(err.to_string().contains("never published"), "{err}");
+}
+
+/// A `_KEY_JWK` placeholder for a slot nobody declared is refused, as its
+/// `_KEY_MB` twin is, and declaring it as a variable is refused too.
+#[test]
+fn an_undeclared_or_shadowed_jwk_placeholder_is_refused() {
+    let err = DidTemplate::from_json(json!({
+        "schemaVersion": 2,
+        "name": "jwk-test",
+        "kind": "custom",
+        "keys": { "signing": { "purpose": "signing", "algorithms": ["ed25519"] } },
+        "document": {
+            "id": "{DID}",
+            "verificationMethod": [
+                { "id": "{DID}#k", "publicKeyMultibase": "{SIGNING_KEY_MB}" },
+                { "id": "{DID}#v", "publicKeyJwk": "{VERIFIER_KEY_JWK}" },
+            ],
+        },
+    }))
+    .expect_err("no `verifier` slot is declared");
+    assert!(err.to_string().contains("verifier"), "{err}");
+
+    let err = DidTemplate::from_json(json!({
+        "schemaVersion": 2,
+        "name": "jwk-test",
+        "kind": "custom",
+        "optionalVars": { "VERIFIER_KEY_JWK": { "kty": "EC" } },
+        "keys": {
+            "signing": { "purpose": "signing", "algorithms": ["ed25519"], "publish": false },
+            "verifier": { "purpose": "signing", "algorithms": ["p256"] },
+        },
+        "document": jwk_document(),
+    }))
+    .expect_err("a slot's JWK placeholder declared as a variable");
+    assert!(err.to_string().contains("optionalVars"), "{err}");
 }

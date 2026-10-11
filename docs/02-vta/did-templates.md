@@ -115,11 +115,35 @@ These are filled by the server during a DID-create flow. **Never put them in
 | `DID` | always during create | passthrough sentinel; `didwebvh-rs` substitutes the final DID string after SCID computation |
 | `SIGNING_KEY_MB` | always during create | multibase-encoded public signing key the VTA just minted |
 | `KA_KEY_MB` | when a KA key is in play | multibase-encoded public key-agreement key |
+| `{SLOT}_KEY_MB` / `{SLOT}_KEY_JWK` | for each slot a `schemaVersion` 2 `keys` block declares | the slot's public key, as a multibase string or as a JWK object (`kty`, `crv`, `x`, `y`, `alg`). `SIGNING_KEY_JWK` and `KA_KEY_JWK` are the same for the historical pair. Write the JWK form as a whole string — `"publicKeyJwk": "{VERIFIER_KEY_JWK}"` — and it renders as the object |
 | `VTA_DID` | always | from VTA config |
 | `VTA_URL` | always | from VTA config |
 | `CONTEXT_ID` | always | the context the DID is being provisioned in |
 | `CONTEXT_DID` | when the context has a DID set | useful for cross-reference service endpoints |
 | `NOW` | always | RFC 3339 UTC timestamp |
+
+### Keys a document does not publish, and profiles that need JWKs
+
+A slot is published when the document uses its `{SLOT}_KEY_MB` or
+`{SLOT}_KEY_JWK` placeholder, and validation refuses a declared slot the
+document never publishes. One slot may opt out: `"publish": false` on the
+`signing` slot, which is the `did:webvh` **update key**. It signs the log and is
+named in the log's `updateKeys`, which is where a resolver finds it; some
+profiles keep it out of the document. Any other slot with `publish: false` is
+refused, as is a `publish: false` slot the document uses anyway.
+
+A template's `defaults.portable: false` is binding: the VTA mints that DID
+non-portable whatever the caller asked (`pnm`'s `--portable` defaults to
+`true`). Every other `defaults` entry is a hint.
+
+The built-in **`swiyu-verifier`** uses all three. It is the identity a VTC
+presents to swiyu wallets as an OpenID4VP verifier, shaped by the Swiss Profile
+Anchor: one P-256 key as a `JsonWebKey2020` `publicKeyJwk` under
+`authentication` and `assertionMethod`, no `keyAgreement`, services or
+`@context`, the Ed25519 update key unpublished, `profile_version` set, and
+non-portable. Mint it serverless at the identifier-registry slot URL swiyu's
+API assigned, then upload the log to that slot; swiyu wallets do not accept a
+self-hosted log. See `docs/05-design-notes/oid4vp-wallet-verifier.md`.
 
 ### Caller-supplied
 

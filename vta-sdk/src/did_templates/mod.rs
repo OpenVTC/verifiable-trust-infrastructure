@@ -129,6 +129,27 @@ pub struct KeySlot {
     /// `vta_sdk::keys::KeyType`'s serde spelling (`ed25519`, `x25519`, `p256`,
     /// `mldsa44`, `mldsa65`).
     pub algorithms: Vec<String>,
+    /// Whether the document publishes this key. True unless the template says
+    /// otherwise, and only the `signing` slot may say otherwise.
+    ///
+    /// The `signing` slot's key is the `did:webvh` **update key**: it signs log
+    /// entries and is named in the log's `updateKeys` parameter, which is where
+    /// a resolver looks for it. Publishing it as a verification method as well
+    /// is this stack's default, not the method's requirement — and some
+    /// profiles forbid it. The Swiss Profile Anchor, for one, allows only JWK
+    /// verification methods and keeps the update key out of the document. Any
+    /// other slot unpublished would be a key minted for nothing, which
+    /// validation refuses.
+    #[serde(default = "publish_default", skip_serializing_if = "is_true")]
+    pub publish: bool,
+}
+
+fn publish_default() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 /// The slot name a v1 template's `{SIGNING_KEY_MB}` refers to.
@@ -184,6 +205,11 @@ pub struct DidTemplate {
 
     /// Hints for the CLI / setup wizards (e.g. `preRotationCount`, `portable`).
     /// Not consumed by the renderer itself.
+    ///
+    /// One is binding rather than a hint: `"portable": false` makes the VTA
+    /// mint the DID non-portable whatever the caller asked, because a profile
+    /// that requires it (the Swiss Profile Anchor) cannot rely on every caller
+    /// remembering. A template cannot force the other direction.
     #[serde(default)]
     pub defaults: serde_json::Map<String, Value>,
 
@@ -219,6 +245,7 @@ impl DidTemplate {
                 KeySlot {
                     purpose: KeyPurpose::Signing,
                     algorithms: vec!["ed25519".to_string()],
+                    publish: true,
                 },
             ),
             (
@@ -226,6 +253,7 @@ impl DidTemplate {
                 KeySlot {
                     purpose: KeyPurpose::KeyAgreement,
                     algorithms: vec!["x25519".to_string()],
+                    publish: true,
                 },
             ),
         ])
@@ -246,8 +274,16 @@ impl DidTemplate {
     /// one direction — a third slot's placeholder was rejected as undeclared,
     /// and declaring it was worse than being rejected (see
     /// `validate::check_slot_vars_not_declared`).
+    ///
+    /// Each slot occupies two: `{SLOT}_KEY_MB`, its public key as a multibase
+    /// string, and `{SLOT}_KEY_JWK`, the same key as a JWK object — for a
+    /// document whose verification methods carry `publicKeyJwk`, which some
+    /// profiles require (see [`Self::slot_var_jwk`]).
     pub fn slot_vars(&self) -> std::collections::BTreeSet<String> {
-        self.key_slots().keys().map(|s| Self::slot_var(s)).collect()
+        self.key_slots()
+            .keys()
+            .flat_map(|s| [Self::slot_var(s), Self::slot_var_jwk(s)])
+            .collect()
     }
 
     /// The placeholder a slot's public key is rendered into.
@@ -259,6 +295,18 @@ impl DidTemplate {
     /// placeholders a v1 template does.
     pub fn slot_var(slot: &str) -> String {
         format!("{}_KEY_MB", slot.to_ascii_uppercase().replace('-', "_"))
+    }
+
+    /// The placeholder a slot's public key is rendered into **as a JWK**:
+    /// `{SLOT_UPPERCASE}_KEY_JWK`, beside [`Self::slot_var`]'s multibase form.
+    ///
+    /// Written as a whole string — `"publicKeyJwk": "{JAR_KEY_JWK}"` — it
+    /// renders as the JWK object itself (`kty`, `crv`, `x`, and `y` for an EC
+    /// key). A document that must publish `publicKeyJwk` rather than
+    /// `publicKeyMultibase` (the Swiss Profile Anchor allows only JWK
+    /// verification methods) uses this; either form publishes the slot.
+    pub fn slot_var_jwk(slot: &str) -> String {
+        format!("{}_KEY_JWK", slot.to_ascii_uppercase().replace('-', "_"))
     }
 
     /// Parse a template from its JSON representation.

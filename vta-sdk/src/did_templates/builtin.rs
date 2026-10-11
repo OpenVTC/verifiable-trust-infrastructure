@@ -20,6 +20,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "push-gateway",
     "room",
     "room-host",
+    "swiyu-verifier",
     "vta-admin",
     "vtc-host",
 ];
@@ -30,6 +31,7 @@ const DIDCOMM_MEDIATOR: &str = include_str!("../../templates/didcomm-mediator.js
 const PUSH_GATEWAY: &str = include_str!("../../templates/push-gateway.json");
 const ROOM: &str = include_str!("../../templates/room.json");
 const ROOM_HOST: &str = include_str!("../../templates/room-host.json");
+const SWIYU_VERIFIER: &str = include_str!("../../templates/swiyu-verifier.json");
 const VTA_ADMIN: &str = include_str!("../../templates/vta-admin.json");
 const VTC_HOST: &str = include_str!("../../templates/vtc-host.json");
 const DID_HOST_HTTP_DIDCOMM: &str = include_str!("../../templates/did-host-http-didcomm.json");
@@ -50,6 +52,7 @@ pub fn load_embedded(name: &str) -> Result<DidTemplate, TemplateError> {
         "push-gateway" => PUSH_GATEWAY,
         "room" => ROOM,
         "room-host" => ROOM_HOST,
+        "swiyu-verifier" => SWIYU_VERIFIER,
         "vta-admin" => VTA_ADMIN,
         "vtc-host" => VTC_HOST,
         "did-host-http-didcomm" => DID_HOST_HTTP_DIDCOMM,
@@ -90,6 +93,7 @@ mod tests {
             PUSH_GATEWAY,
             ROOM,
             ROOM_HOST,
+            SWIYU_VERIFIER,
             VTA_ADMIN,
             VTC_HOST,
             DID_HOST_HTTP_DIDCOMM,

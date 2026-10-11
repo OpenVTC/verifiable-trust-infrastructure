@@ -476,6 +476,15 @@ pub async fn derive_additional_signing_key(
             KeyType::Ed25519 => root.derive_ed25519(&path),
             KeyType::MlDsa44 => root.derive_ml_dsa_44(&path),
             KeyType::MlDsa65 => root.derive_ml_dsa_65(&path),
+            // A foreign-protocol identity's key — an OpenID4VP verifier's JAR
+            // key, which swiyu and EUDI wallets require to be ES256. Derived
+            // with `derive_p256`'s domain separation, so it is independent of
+            // the Ed25519 key a path would otherwise yield.
+            KeyType::P256 => root.derive_p256(&path).and_then(|k| {
+                Secret::generate_p256(None, Some(&k.secret_key.to_bytes())).map_err(|e| {
+                    vti_common::error::AppError::Internal(format!("P-256 secret: {e}"))
+                })
+            }),
             // Not a signing algorithm, or one this build cannot mint. Skipped
             // rather than refused — the next entry is what a fallback is for.
             _ => continue,
