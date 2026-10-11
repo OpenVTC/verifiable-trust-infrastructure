@@ -4,7 +4,7 @@
 // daemon seeds the registry's core predicates once, at first boot.
 //
 // It sits on the Requirements page because it is a prerequisite of the thing
-// that page exists for: `POST /v1/schemas/accepts` refuses a criterion whose
+// that page exists for: `vtc/schemas/accepts/register` refuses a criterion whose
 // `statementType` is not registered, so an admin who starts with the criterion
 // meets that refusal before they have any way to act on it. Registering the
 // type is one button here, and the criterion editor links back to it.

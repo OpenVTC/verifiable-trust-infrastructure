@@ -6,7 +6,7 @@
 //! **Changes are signed Trust Tasks.** A grant, a revoke, a bind or an
 //! adoption is authorized by the *signer's* git rights, which the VTC reads
 //! from its own records when the document arrives — not by a bearer token. So
-//! these methods take a [`HolderKey`] and never read `self.token`. A community
+//! these methods take a [`HolderKey`] rather than the client's own key. A community
 //! administrator's session does not stand in for a git right: an administrator
 //! who holds none grants nothing.
 //!

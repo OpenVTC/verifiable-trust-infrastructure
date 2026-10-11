@@ -34,10 +34,6 @@
 //! - The `git-ns/*` family ([`git_ns`]) is signed with the [`HolderKey`] the
 //!   caller passes, and goes over the session when there is one — whose
 //!   identity that key must be — otherwise posted to `POST {base}/trust-tasks`.
-//! - A few vetting admin reads and writes (the grant listing, automatic
-//!   grants, branding, requested attributes, statement withdrawals) have no
-//!   Trust Task served yet and stay on bearer REST until they do; a
-//!   session-only client answers them with [`VtcError::NoRestTransport`].
 //!
 //! The session transports are **delegated to `vta_sdk::client::VtaClient`**,
 //! which already owns session setup, `thid` demultiplexing, retry under one
@@ -331,13 +327,11 @@ pub enum VtcError {
     /// the reader to the wrong half of the system.
     #[error("session transport error: {0}")]
     Session(String),
-    /// A verb that only exists on the HTTPS surface was called on a client
-    /// built with no REST base.
+    /// A Trust Task this client would post over HTTPS was called on a client
+    /// built with no REST base and no session to carry it instead.
     ///
-    /// The few admin verbs with no Trust Task served yet are bearer REST, a
-    /// URL-shaped surface — they cannot ride a session. Rather than fail at the
-    /// transport with something obscure, say so: pass `rest_url` to the
-    /// `connect_*` constructor.
+    /// Rather than fail at the transport with something obscure, say so: pass
+    /// `rest_url` to the `connect_*` constructor.
     #[error("this client has no REST base — {0} needs one; pass rest_url when connecting")]
     NoRestTransport(&'static str),
     /// The VTC answered 404 with an error `code` the called task's
@@ -749,9 +743,6 @@ pub struct VtcClient {
     base_url: String,
     /// The VTC's own DID (the authentication audience / DIDComm recipient).
     vtc_did: String,
-    /// Bearer access token, set after [`connect`](Self::connect). Read only by
-    /// the vetting admin verbs that have no Trust Task served yet.
-    token: Option<String>,
     /// The operator's own key, held by a client built with
     /// [`connect`](Self::connect) or [`with_key`](Self::with_key).
     ///
@@ -789,17 +780,17 @@ pub struct VtcClient {
 /// The first is required: [`vta_sdk::client::VtaClient`] is not `Debug`, so a
 /// derive stops compiling the moment a session is held.
 ///
-/// The second is the one worth keeping. The derive printed `token` — the bearer
-/// token, in full, into anything that formatted this struct: a `tracing` field,
-/// a test failure, an `unwrap` on an enclosing type. A credential that reaches a
-/// log is a credential that has left, and nothing about the derive said so. The
-/// presence of a token is worth reporting; its value never is.
+/// The second is the one worth keeping. The derive printed the bearer token it
+/// then held, in full, into anything that formatted this struct: a `tracing`
+/// field, a test failure, an `unwrap` on an enclosing type. A credential that
+/// reaches a log is a credential that has left, and nothing about a derive says
+/// so. Whether a signing key is held is worth reporting; the key never is.
 impl std::fmt::Debug for VtcClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut out = f.debug_struct("VtcClient");
         out.field("base_url", &self.base_url)
             .field("vtc_did", &self.vtc_did)
-            .field("authenticated", &self.token.is_some());
+            .field("signer", &self.signer.as_ref().map(HolderKey::holder_did));
         #[cfg(feature = "didcomm")]
         out.field("session", &self.documents.is_some());
         out.finish()
@@ -808,7 +799,14 @@ impl std::fmt::Debug for VtcClient {
 
 impl VtcClient {
     /// Authenticate to the VTC as `client_did` (challenge-response, reusing the
-    /// VTA SDK's audience-agnostic flow) and return a ready client.
+    /// VTA SDK's audience-agnostic flow) and return a client that signs every
+    /// Trust Task with that key.
+    ///
+    /// The login is the up-front access check: a DID the VTC does not know is
+    /// refused here, where a caller can say what to do about it, rather than on
+    /// the first verb. Its session token is not kept — every verb is a signed
+    /// document, authorized against the signer's own ACL entry, and nothing
+    /// this client sends is a bearer request.
     ///
     /// `base_url` is the full API base including the mount (e.g.
     /// `https://vtc.example.com/v1`); `vtc_did` is the community's DID.
@@ -826,7 +824,7 @@ impl VtcClient {
         // cannot sign fails here rather than on the first admin call.
         let signer = HolderKey::from_did_key(client_did, private_key_multibase)
             .map_err(|e| VtcError::Signing(e.to_string()))?;
-        let auth = vta_sdk::auth_light::challenge_response_light(
+        vta_sdk::auth_light::challenge_response_light(
             &http,
             &base_url,
             client_did,
@@ -838,7 +836,6 @@ impl VtcClient {
             http,
             base_url,
             vtc_did: vtc_did.to_string(),
-            token: Some(auth.access_token),
             signer: Some(signer),
             #[cfg(feature = "didcomm")]
             documents: None,
@@ -847,19 +844,18 @@ impl VtcClient {
         })
     }
 
-    /// Construct an HTTPS client that signs every Trust Task with `key` and
-    /// holds no bearer token. `base_url` includes the mount.
+    /// Construct an HTTPS client that signs every Trust Task with `key`.
+    /// `base_url` includes the mount.
     ///
     /// No round trip: nothing is authenticated until a document arrives, and
-    /// the VTC authorizes each one against the signer's own ACL entry. The
-    /// vetting admin verbs with no Trust Task served yet need
-    /// [`connect`](Self::connect) instead.
+    /// the VTC authorizes each one against the signer's own ACL entry — the
+    /// same as a client from [`connect`](Self::connect), minus its up-front
+    /// access check.
     pub fn with_key(base_url: &str, vtc_did: &str, key: HolderKey) -> Self {
         Self {
             http: vta_sdk::http::rest_client(),
             base_url: base_url.trim_end_matches('/').to_string(),
             vtc_did: vtc_did.to_string(),
-            token: None,
             signer: Some(key),
             #[cfg(feature = "didcomm")]
             documents: None,
@@ -884,7 +880,6 @@ impl VtcClient {
             http: vta_sdk::http::rest_client(),
             base_url: base_url.trim_end_matches('/').to_string(),
             vtc_did: vtc_did.to_string(),
-            token: None,
             signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,
@@ -971,7 +966,6 @@ impl VtcClient {
                 .trim_end_matches('/')
                 .to_string(),
             vtc_did: vtc_did.to_string(),
-            token: None,
             signer: None,
             documents: Some(documents),
             session_did: Some(client_did.to_string()),
@@ -2355,7 +2349,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vetting_admin_methods_without_token_are_not_authenticated() {
+    async fn vetting_admin_methods_without_a_key_are_not_authenticated() {
         let client = VtcClient::anonymous("https://vtc.example.com/v1", "did:web:vtc");
         assert!(matches!(
             client.list_vetter_grants().await,
@@ -2510,25 +2504,23 @@ mod tests {
         );
     }
 
-    /// `Debug` never prints the bearer token.
+    /// `Debug` never prints the signing key, only whose it is.
     ///
-    /// The derive did. A credential that reaches a log has left, and the only
-    /// thing worth reporting is whether one is held.
+    /// A credential that reaches a log has left.
     #[test]
-    fn debug_does_not_leak_the_token() {
-        let client = VtcClient {
-            token: Some("super-secret-bearer-token".to_string()),
-            ..VtcClient::anonymous(
-                "https://vtc.example.com/v1",
-                "did:webvh:QmScid:example.com:acme",
-            )
-        };
+    fn debug_does_not_leak_the_key() {
+        let secret = "z3u2en7t5LR2WtQH5PfsqMWcBnEdwYc5CUs8JGPmAkxdRKBQ";
+        let client = VtcClient::with_key(
+            "https://vtc.example.com/v1",
+            "did:webvh:QmScid:example.com:acme",
+            HolderKey::from_did_key("did:key:z6MkOperator", secret).unwrap(),
+        );
         let rendered = format!("{client:?}");
         assert!(
-            !rendered.contains("super-secret-bearer-token"),
-            "the token is in Debug output: {rendered}"
+            !rendered.contains(secret),
+            "the key is in Debug output: {rendered}"
         );
-        assert!(rendered.contains("authenticated: true"), "{rendered}");
+        assert!(rendered.contains("did:key:z6MkOperator"), "{rendered}");
     }
 
     #[test]
@@ -2568,7 +2560,6 @@ mod tests {
             http: reqwest::Client::new(),
             base_url: "https://vtc.example.com/v1".into(),
             vtc_did: "did:web:vtc.example.com".into(),
-            token: None,
             signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,
@@ -2623,7 +2614,6 @@ mod tests {
             http: reqwest::Client::new(),
             base_url: "https://vtc.example.com/v1".into(),
             vtc_did: "did:web:vtc.example.com".into(),
-            token: None,
             signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,
@@ -2665,7 +2655,6 @@ mod tests {
             http: reqwest::Client::new(),
             base_url: "https://vtc.example.com/v1".into(),
             vtc_did: "did:web:vtc.example.com".into(),
-            token: None,
             signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,

@@ -26,9 +26,9 @@
 //! issued under a pairwise relationship DID is suspended by a document that DID
 //! signs.
 //!
-//! The bearer routes of the branding, the requested attributes, the vetter
-//! grants, the automatic grant and the withdrawal notices stay while
-//! `vtc-client` calls them; the others have none.
+//! None of them has a bearer route. The branding, requested-attributes,
+//! vetter-grant, automatic-grant and withdrawal-notice routes were the last to
+//! go, once `vtc-client` and the admin console signed the documents instead.
 //!
 //! The listings page in memory: every one of these collections is an
 //! administrator's view of one community, bounded by what the community holds,

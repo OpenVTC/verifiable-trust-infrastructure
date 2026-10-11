@@ -10,8 +10,8 @@
 //! That is not a convenience. It is what makes a room portable: a host that consulted its
 //! own records to authorize a room operation would become part of that room's membership,
 //! and the room could no longer move to a different host without reissuing credentials.
-//! So [`RoomSession`] deliberately holds no session, and none of these methods reads
-//! `self.token`.
+//! So [`RoomSession`] deliberately holds no session, and none of these methods sends a
+//! bearer credential.
 //!
 //! # Holding the chain
 //!
@@ -527,9 +527,9 @@ impl VtcClient {
 
     /// Send one `rooms/*` document and return its response payload.
     ///
-    /// The one place a room call is made, so the no-token property is visible in a single
+    /// The one place a room call is made, so the no-bearer property is visible in a single
     /// function rather than repeated across five: this builds a signed document and posts
-    /// it, and never touches `self.token`.
+    /// it, and sends no other credential.
     async fn room_task(
         &self,
         type_uri: &str,

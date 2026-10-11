@@ -889,7 +889,8 @@ async fn cmd_revocations(vtc: &VtcClient) -> CliResult {
         println!(
             "  {BOLD}{pending}{RESET} {DIM}withdrawal(s) touch a current membership. \
              `{} --full-display vetting revocations` names the members and join requests; the \
-             vetting facts a request was decided on are at `GET /v1/join-requests/<id>/vetting`.{RESET}",
+             vetting facts a request was decided on are on that join request in the admin \
+             console.{RESET}",
             bin_name()
         );
     }

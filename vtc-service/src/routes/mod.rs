@@ -533,9 +533,9 @@ fn build_api_chain(
         // REST mounts had no caller left once `vtc-client` and the admin
         // console signed them instead.
         // Whether the join manifest answers a caller this community cannot
-        // identify. Admin REST with no Trust Task of its own — and not a
+        // identify (`vtc/community/join-discovery/{show,update}/0.1`) — not a
         // member of the profile, whose `show` response is a published schema
-        // that permits no new ones.
+        // that permits no new ones. A signed document only, with no route.
         // The runtime configuration (`config/{show,patch,reload,restart}/0.1`)
         // has no route: each is a signed document served by the spine
         // (`trust_tasks::admin_tasks`) on every transport.
@@ -1284,12 +1284,12 @@ mod openapi_tests {
         (
             "DELETE",
             "/v1/relationships/{id}/persona",
-            "`vtc/relationships/persona/0.1` is published but REST-only — the spine does not dispatch it",
+            "`vtc/relationships/persona/0.1` has no upstream specification, so the spine cannot dispatch it",
         ),
         (
             "POST",
             "/v1/relationships/{id}/persona",
-            "`vtc/relationships/persona/0.1` is published but REST-only — the spine does not dispatch it",
+            "`vtc/relationships/persona/0.1` has no upstream specification, so the spine cannot dispatch it",
         ),
         (
             "POST",
