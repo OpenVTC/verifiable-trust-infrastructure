@@ -237,7 +237,13 @@ affinidi-messaging-core = "0.1"
 #
 # 0.34.0 is the `trust-tasks-rs` 0.28 release (affinidi-tdk-rs #933): it shares
 # the workspace's copy, so `MediatorAcl` stays one type. It carries 0.33.2.
-affinidi-messaging-sdk = { version = "0.34.0", default-features = false }
+#
+# 0.34.1 is a correctness floor (affinidi-tdk-rs #936). Below it, the websocket
+# watchdog replayed heartbeat ticks missed while disconnected, so after any
+# disconnection longer than ~40 s each new socket was closed as `Missed Pong`
+# within milliseconds, and the VTA/VTC never received again until restarted
+# (VTI-70; seen 2026-10-11 after a DNS outage and after a mediator restart).
+affinidi-messaging-sdk = { version = "0.34.1", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
