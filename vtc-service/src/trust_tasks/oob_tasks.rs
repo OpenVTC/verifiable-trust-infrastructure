@@ -22,6 +22,20 @@
 //! the documents a member's DID signs inside `prove` and `respond`, and only
 //! the holder of `K_b` can turn the result into a session.
 //!
+//! # Which session: member portal or operator console
+//!
+//! A request is a member-portal sign-in unless the starter asks otherwise in
+//! `ext["org.openvtc.session"].audience` (`"admin"`: the operator console's
+//! login page). `purpose` stays `login`, the only value `auth/oob/0.1`
+//! defines. The audience is fixed at `request`, stored on the record, and
+//! repeated by the VTC under the same `ext` member in the signed step 1 and
+//! step 2 responses, so the grant's `contextDigest` covers it: an approval
+//! given for one audience cannot be redeemed as the other. A member request's
+//! responses carry no extension, exactly as before. Each audience has its own
+//! gate — an active member for the portal, an administrator in the ACL for the
+//! console — and `redeem` issues that audience's session and never the other
+//! (T19).
+//!
 //! # Transports
 //!
 //! `request` needs the browser's `Origin` (T19), address and `User-Agent`, and
@@ -48,8 +62,9 @@ use crate::member_portal::oob::types::{
     RequestResponse, RespondPayload, RespondResponse, Step1, Step2,
 };
 use crate::member_portal::oob::{
-    self, CLAIM_WINDOW_SECS, DECISION_WINDOW_SECS, HttpContext, MAX_PENDING_PER_ADDRESS, NOTIFIER,
-    OobRequest, OobState, PollGuard, PollRefused, RequesterDetails, TransitionError,
+    self, CLAIM_WINDOW_SECS, DECISION_WINDOW_SECS, HttpContext, MAX_PENDING_PER_ADDRESS,
+    NOT_AN_ADMIN, NOTIFIER, OobRequest, OobState, PollGuard, PollRefused, RequesterDetails,
+    SessionAudience, TransitionError,
 };
 use crate::member_portal::{MemberAuthBackend, active_member, cookies};
 use crate::server::AppState;
@@ -156,14 +171,20 @@ async fn audit(
         );
         return;
     };
-    let event = AuditEvent::MemberWalletSignIn(MemberWalletSignInData {
+    let data = MemberWalletSignInData {
         stage: stage.into(),
         request_id: rec.request_id.clone(),
         member: member.map(str::to_string),
         reason: reason.map(str::to_string),
         location: Some(rec.requester.location.clone()),
         grant,
-    });
+    };
+    // An operator-console sign-in is its own event, so an audit reader
+    // filtering for console access sees it beside the other console logins.
+    let event = match rec.audience {
+        SessionAudience::Member => AuditEvent::MemberWalletSignIn(data),
+        SessionAudience::Admin => AuditEvent::AdminWalletSignIn(data),
+    };
     if let Err(e) = writer.write(actor, member, event).await {
         tracing::warn!(stage, error = %e, "could not audit a wallet sign-in step");
     }
@@ -262,6 +283,34 @@ fn not_authorized(doc: &TrustTask<Value>, task: &str) -> TrustTaskOutcome {
     )
 }
 
+/// The message an identity that is not an administrator gets, on the
+/// wallet's side (`prove`, `respond`) and the console's (`redeem`).
+const NOT_AN_ADMIN_MESSAGE: &str = "This identity isn't an administrator of this community.";
+
+/// The refusal for an operator-console sign-in by an identity that has
+/// proved it holds its DID but is not an administrator. The family's
+/// generic `notAuthorized` code, with `details.reason` saying why.
+fn not_an_admin(doc: &TrustTask<Value>, task: &str) -> TrustTaskOutcome {
+    reject_with_code(
+        doc,
+        code(task, "notAuthorized"),
+        NOT_AN_ADMIN_MESSAGE,
+        Some(json!({ "reason": NOT_AN_ADMIN })),
+    )
+}
+
+/// Whether `did` may open an operator-console session: the check every
+/// console sign-in makes ([`crate::acl::resolve_auth_role`] — a live,
+/// unexpired ACL entry with an administrative role). Read now, never from a
+/// session.
+async fn is_administrator(state: &AppState, did: &str) -> Result<bool, crate::error::AppError> {
+    match crate::acl::resolve_auth_role(&state.acl_ks, did).await {
+        Ok(_) => Ok(true),
+        Err(crate::error::AppError::Forbidden(_)) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// End a request as declined after a failed step from the lock holder — one
 /// attempt per request (base design §7.2). Only from `from`; a request some
 /// other caller already moved on is left alone.
@@ -272,12 +321,28 @@ async fn decline(
     member: Option<&str>,
     reason: &str,
 ) {
+    decline_telling(state, rec, from, member, reason, None).await;
+}
+
+/// [`decline`], recording a reason `redeem` passes on to the starter
+/// (`details.reason`). Only for a reason the identity that signed has
+/// already proved it holds — today [`NOT_AN_ADMIN`] — never one that would
+/// tell a bystander anything about someone else's DID (T15).
+async fn decline_telling(
+    state: &AppState,
+    rec: &OobRequest,
+    from: OobState,
+    member: Option<&str>,
+    reason: &str,
+    starter_reason: Option<&str>,
+) {
     let now = now_epoch();
     let lock = rec.approver_key.clone();
     let res = oob::transition(&state.member_sessions_ks, &rec.request_id, |r| {
         if r.state != from || r.approver_key != lock {
             return Err(());
         }
+        r.decline_reason = starter_reason.map(str::to_string);
         r.end(OobState::Declined, now);
         Ok(())
     })
@@ -406,6 +471,19 @@ async fn handle_request(
         Ok(p) => p,
         Err(e) => return e,
     };
+    // Which session the page asks for (`ext["org.openvtc.session"]`); none
+    // is the member portal's, as before the extension existed.
+    let audience = match SessionAudience::from_ext(doc.payload.get("ext")) {
+        Ok(a) => a,
+        Err(message) => {
+            return reject_with_code(
+                &doc,
+                TrustTaskCode::Standard(StandardCode::MalformedRequest),
+                message,
+                None,
+            );
+        }
+    };
     let (public_url, vtc_did) = {
         let cfg = state.config.read().await;
         (cfg.public_url.clone(), cfg.vtc_did.clone())
@@ -419,7 +497,9 @@ async fn handle_request(
         );
     }
     // T19: only the portal's own page may open a request, so another website
-    // cannot start one through the member's browser.
+    // cannot start one through the member's browser. The operator console is
+    // served from the same origin (`/admin/` beside `/members/`), and the
+    // origin is what the wallet checks against the `SignInPortal` service.
     let origin = match (
         oob::portal_origin(public_url.as_deref(), &http),
         http.origin.as_deref(),
@@ -429,7 +509,8 @@ async fn handle_request(
             return reject_with_code(
                 &doc,
                 TrustTaskCode::Standard(StandardCode::PermissionDenied),
-                "auth/oob/request is accepted only from the member portal's origin",
+                "auth/oob/request is accepted only from this community's own origin \
+                 (the member portal and operator console)",
                 None,
             );
         }
@@ -475,16 +556,24 @@ async fn handle_request(
         decision_deadline: None,
         grant: None,
         ended_at: None,
+        audience,
+        decline_reason: None,
     };
     if let Err(e) = oob::create(&state.member_sessions_ks, &rec).await {
         return super::helpers::app_error_to_reject(&doc, &e);
     }
     audit(state, &start_key, "requested", &rec, None, None, None).await;
-    let response: RequestResponse = match wire(
-        &doc,
-        "the request response",
-        serde_json::json!({ "requestId": rec.request_id, "claimDeadline": rec.claim_deadline }),
-    ) {
+    let response: RequestResponse = match wire(&doc, "the request response", {
+        let mut r =
+            serde_json::json!({ "requestId": rec.request_id, "claimDeadline": rec.claim_deadline });
+        // Echoed for an operator-console request, so the page knows this
+        // VTC read the extension: a VTC that predates it carries `ext`
+        // through unread and would open a member sign-in instead.
+        if let Some(ext) = audience.to_ext() {
+            r["ext"] = ext;
+        }
+        r
+    }) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -563,6 +652,13 @@ async fn handle_claim(
         "purpose": rec.purpose,
         "decisionDeadline": decision_deadline,
     });
+    // The audience, signed: the wallet can say "operator console", and step 2
+    // repeats it so the grant's `contextDigest` binds it. None for a member
+    // sign-in, whose step 1 is unchanged.
+    let mut step1_json = step1_json;
+    if let Some(ext) = rec.audience.to_ext() {
+        step1_json["ext"] = ext;
+    }
     let step1: Step1 = match wire(&doc, "step 1", step1_json.clone()) {
         Ok(s) => s,
         Err(e) => return e,
@@ -674,11 +770,24 @@ async fn handle_prove(
         return not_authorized(&doc, "prove");
     }
 
-    // 3. The issuer string is an active member — read from the ACL and member
-    //    records, before any DID is resolved (T15).
-    match active_member(state, &member).await {
-        Ok(Some(_)) => {}
-        Ok(None) => {
+    // 3. The issuer string is someone this community knows — read from the
+    //    ACL and member records, before any DID is resolved (T15). For the
+    //    portal, an active member. For the console, an active member or an
+    //    administrator: a member who is not an administrator is let through
+    //    to the signature check only so that, once they have proved the DID
+    //    is theirs, they can be told why they cannot sign in (step 5a). A DID
+    //    the community does not know at all is refused here, unresolved.
+    let known = match rec.audience {
+        SessionAudience::Member => active_member(state, &member).await.map(|m| m.is_some()),
+        SessionAudience::Admin => match is_administrator(state, &member).await {
+            Ok(true) => Ok(true),
+            Ok(false) => active_member(state, &member).await.map(|m| m.is_some()),
+            Err(e) => Err(e),
+        },
+    };
+    match known {
+        Ok(true) => {}
+        Ok(false) => {
             fail(Some(member), "not an active member").await;
             return not_authorized(&doc, "prove");
         }
@@ -712,6 +821,29 @@ async fn handle_prove(
         );
     }
 
+    // 5a. The console's gate: an administrator in the ACL, by the same check
+    //     every console sign-in makes. The DID has proved it is theirs, so
+    //     saying why is no oracle about anyone else (T15), and the browser
+    //     that started it is told too (`redeem`'s `details.reason`).
+    if rec.audience == SessionAudience::Admin {
+        match is_administrator(state, &member).await {
+            Ok(true) => {}
+            Ok(false) => {
+                decline_telling(
+                    state,
+                    &rec,
+                    OobState::Claimed,
+                    Some(&member),
+                    "not an administrator",
+                    Some(NOT_AN_ADMIN),
+                )
+                .await;
+                return not_an_admin(&doc, "prove");
+            }
+            Err(e) => return super::helpers::app_error_to_reject(&doc, &e),
+        }
+    }
+
     // 6. Step 2: step 1 repeated, plus the starter.
     let Some(step1) = rec.step1.clone() else {
         return reject_with(
@@ -722,6 +854,8 @@ async fn handle_prove(
         );
     };
     let approver_ip = HttpContext::current().map(|h| h.client_ip);
+    // Step 1 as stored, `ext` included: the audience is inside what the
+    // grant's `contextDigest` covers.
     let Value::Object(mut step2_json) = step1 else {
         return reject_with(
             &doc,
@@ -908,14 +1042,32 @@ async fn handle_respond(
             fail("grant notAfter has passed").await;
             return not_authorized(&doc, "respond");
         }
-        // 5. Still a member.
-        match active_member(state, &member).await {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                fail("no longer an active member").await;
-                return not_authorized(&doc, "respond");
-            }
-            Err(e) => return super::helpers::app_error_to_reject(&doc, &e),
+        // 5. Still a member — or, for the console, still an administrator.
+        match rec.audience {
+            SessionAudience::Member => match active_member(state, &member).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    fail("no longer an active member").await;
+                    return not_authorized(&doc, "respond");
+                }
+                Err(e) => return super::helpers::app_error_to_reject(&doc, &e),
+            },
+            SessionAudience::Admin => match is_administrator(state, &member).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    decline_telling(
+                        state,
+                        &rec,
+                        OobState::Identified,
+                        Some(&member),
+                        "no longer an administrator",
+                        Some(NOT_AN_ADMIN),
+                    )
+                    .await;
+                    return not_an_admin(&doc, "respond");
+                }
+                Err(e) => return super::helpers::app_error_to_reject(&doc, &e),
+            },
         }
     }
 
@@ -1055,6 +1207,24 @@ fn pending(doc: &TrustTask<Value>, rec: &OobRequest, now: u64) -> TrustTaskOutco
     )
 }
 
+/// `redeem`'s `declined`, with `details.reason` when the starter is told why
+/// (only [`NOT_AN_ADMIN`] today).
+fn declined(doc: &TrustTask<Value>, reason: Option<&str>) -> TrustTaskOutcome {
+    let mut details = json!({ "state": "declined" });
+    let message = match reason {
+        Some(r) => {
+            details["reason"] = Value::String(r.to_string());
+            if r == NOT_AN_ADMIN {
+                NOT_AN_ADMIN_MESSAGE
+            } else {
+                "the sign-in was declined"
+            }
+        }
+        None => "the sign-in was declined",
+    };
+    reject_with_code(doc, code("redeem", "declined"), message, Some(details))
+}
+
 async fn handle_redeem(
     state: &AppState,
     doc: TrustTask<Value>,
@@ -1125,14 +1295,7 @@ async fn handle_redeem(
                     None,
                 );
             }
-            OobState::Declined => {
-                return reject_with_code(
-                    &doc,
-                    code("redeem", "declined"),
-                    "the sign-in was declined",
-                    Some(json!({ "state": "declined" })),
-                );
-            }
+            OobState::Declined => return declined(&doc, current.decline_reason.as_deref()),
             // Contract C9: `declined`, with the state saying why.
             OobState::Cancelled => {
                 return reject_with_code(
@@ -1172,9 +1335,18 @@ async fn handle_redeem(
     }
 }
 
-/// `approved → consumed` once, then the session: subject the DID that signed
-/// the grant, session key `K_b`, `amr = ["did", "oob", "uv"]`, ending at the
-/// earlier of the grant's `notAfter` and the member session limit.
+/// `approved → consumed` once, then the session the request asked for:
+/// subject the DID that signed the grant, session key `K_b`,
+/// `amr = ["did", "oob", "uv"]`.
+///
+/// - **Member portal:** a member session, ending at the earlier of the
+///   grant's `notAfter` and the member session limit.
+/// - **Operator console:** the console session every console sign-in issues
+///   ([`crate::routes::auth::mint_admin_cookie_session`]), for a DID the ACL
+///   holds as an administrator now. Anyone else is `declined` with
+///   `details.reason: notAnAdmin`, and the request stays spent.
+///
+/// Never the other audience's session (T19).
 async fn redeem_approved(
     state: &AppState,
     doc: &TrustTask<Value>,
@@ -1203,15 +1375,31 @@ async fn redeem_approved(
             );
         }
     };
-    let Some(member_did) = consumed.identified_did.clone() else {
+    let Some(subject) = consumed.identified_did.clone() else {
         return not_authorized(doc, "redeem");
     };
-    // Membership again, now (T18).
-    let member = match active_member(state, &member_did).await {
-        Ok(Some(m)) => m,
-        Ok(None) => return not_authorized(doc, "redeem"),
-        Err(e) => return super::helpers::app_error_to_reject(doc, &e),
-    };
+    // The session issued is the one the member approved: the audience on the
+    // record must be the one signed into step 1, which step 2 repeats and the
+    // grant's `contextDigest` covers. They are written once and never apart,
+    // so a difference means the record was altered; issue nothing.
+    if consumed.signed_audience() != Some(consumed.audience) {
+        tracing::error!(
+            request_id = %consumed.request_id,
+            security_alert = true,
+            "auth/oob/redeem: the stored audience differs from the one the member approved"
+        );
+        audit(
+            state,
+            &subject,
+            "proofFailed",
+            &consumed,
+            Some(&subject),
+            Some("audience differs from the approved one"),
+            None,
+        )
+        .await;
+        return not_authorized(doc, "redeem");
+    }
     let not_after = consumed
         .grant
         .as_ref()
@@ -1222,7 +1410,28 @@ async fn redeem_approved(
     if not_after <= now {
         return not_authorized(doc, "redeem");
     }
+    match consumed.audience {
+        SessionAudience::Member => {
+            redeem_member(state, doc, http, &consumed, subject, not_after).await
+        }
+        SessionAudience::Admin => redeem_admin(state, doc, http, &consumed, subject).await,
+    }
+}
 
+async fn redeem_member(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    http: &HttpContext,
+    consumed: &OobRequest,
+    member_did: String,
+    not_after: u64,
+) -> TrustTaskOutcome {
+    // Membership again, now (T18).
+    let member = match active_member(state, &member_did).await {
+        Ok(Some(m)) => m,
+        Ok(None) => return not_authorized(doc, "redeem"),
+        Err(e) => return super::helpers::app_error_to_reject(doc, &e),
+    };
     match mint_session(state, &member_did, &consumed.start_key, not_after).await {
         Ok((_session_id, session_end, set)) => {
             http.set_cookies(set);
@@ -1230,7 +1439,7 @@ async fn redeem_approved(
                 state,
                 &member_did,
                 "redeemed",
-                &consumed,
+                consumed,
                 Some(&member_did),
                 None,
                 None,
@@ -1257,6 +1466,82 @@ async fn redeem_approved(
             }
         }
         Err(e) => super::helpers::app_error_to_reject(doc, &e),
+    }
+}
+
+async fn redeem_admin(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    http: &HttpContext,
+    consumed: &OobRequest,
+    admin_did: String,
+) -> TrustTaskOutcome {
+    // Administrator again, now: an entry removed or narrowed since the
+    // approval opens no console. The request is already spent.
+    match is_administrator(state, &admin_did).await {
+        Ok(true) => {}
+        Ok(false) => {
+            audit(
+                state,
+                &admin_did,
+                "declined",
+                consumed,
+                Some(&admin_did),
+                Some(NOT_AN_ADMIN),
+                None,
+            )
+            .await;
+            return declined(doc, Some(NOT_AN_ADMIN));
+        }
+        Err(e) => return super::helpers::app_error_to_reject(doc, &e),
+    }
+    let session_key = oob::did_key_multikey(&consumed.start_key).map(str::to_string);
+    let minted = match crate::routes::auth::mint_admin_cookie_session(
+        state,
+        &admin_did,
+        &["did", "oob", "uv"],
+        session_key,
+    )
+    .await
+    {
+        Ok(m) => m,
+        // Removed between the check above and the mint.
+        Err(crate::error::AppError::Forbidden(_)) => return declined(doc, Some(NOT_AN_ADMIN)),
+        Err(e) => return super::helpers::app_error_to_reject(doc, &e),
+    };
+    http.set_cookies(minted.cookies);
+    audit(
+        state,
+        &admin_did,
+        "redeemed",
+        consumed,
+        Some(&admin_did),
+        None,
+        None,
+    )
+    .await;
+    let label = crate::acl::get_acl_entry(&state.acl_ks, &admin_did)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|e| e.label)
+        .filter(|l| !l.is_empty());
+    let display_name = label.unwrap_or_else(|| admin_did.chars().take(128).collect());
+    match wire::<RedeemResponse>(
+        doc,
+        "the redeem response",
+        serde_json::json!({
+            // Says which session this is, so the console's page can refuse
+            // to carry on if it ever got anything else.
+            "ext": SessionAudience::Admin.to_ext(),
+            "subject": admin_did,
+            "displayName": display_name,
+            "notAfter": minted.minted.refresh_expires_at,
+            "amr": amr(),
+        }),
+    ) {
+        Ok(r) => success_response(doc, r),
+        Err(e) => e,
     }
 }
 

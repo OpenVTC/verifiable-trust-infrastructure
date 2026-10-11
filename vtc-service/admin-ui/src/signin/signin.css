@@ -1,0 +1,500 @@
+/* The community's sign-in look, shared by the member portal and the operator
+ * console's login page.
+ *
+ * It takes every colour, font, radius and shadow from the shared tokens
+ * (`src/styles/tokens.css`), which both bundles load first: someone arriving
+ * from the community's home page should feel they are still on the same
+ * site, whichever door they take. Every rule is scoped under `.vtc-signin`,
+ * so the console bundle can load this sheet beside its own global styles
+ * without either leaking into the other. The member portal puts the class on
+ * `<body>`; the console's login page wraps itself in it.
+ */
+
+.vtc-signin {
+  /* Layout measures only: colours, type, radii and shadows are the shared
+   * tokens (`src/styles/tokens.css`, on :root), so these pages wear the same
+   * theme and IBM Plex as the home page and the console. */
+  --page-max: 64rem;
+  --gutter: clamp(1rem, 4vw, 2rem);
+
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.55;
+  letter-spacing: normal;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+.vtc-signin,
+.vtc-signin * {
+  box-sizing: border-box;
+}
+
+.vtc-signin a {
+  color: var(--brand);
+}
+
+.vtc-signin code,
+.vtc-signin pre {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+}
+
+.vtc-signin :focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.vtc-signin .muted {
+  color: var(--text-muted);
+}
+
+.vtc-signin .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.vtc-signin .skip {
+  position: absolute;
+  left: -999px;
+}
+.vtc-signin .skip:focus {
+  left: var(--gutter);
+  top: 0.5rem;
+  z-index: 10;
+  background: var(--bg-elev);
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-md);
+}
+
+/* ── Top bar ─────────────────────────────────────────────── */
+
+.vtc-signin .topbar {
+  /* Reset what the console's own `.topbar` (its shell) sets. */
+  display: block;
+  padding: 0;
+  grid-area: auto;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-elev) 85%, transparent);
+  backdrop-filter: blur(8px);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.vtc-signin .topbar-inner {
+  max-width: var(--page-max);
+  margin: 0 auto;
+  padding: 0.75rem var(--gutter);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.vtc-signin .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+  min-width: 0;
+}
+
+.vtc-signin .brand-mark {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 0.4rem;
+  background: var(--mark-gradient);
+  flex: none;
+}
+
+.vtc-signin .brand-logo {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 0.4rem;
+  object-fit: cover;
+}
+
+.vtc-signin .topbar-tag {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--brand);
+  background: var(--brand-soft);
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+}
+
+.vtc-signin .topbar-user {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.vtc-signin .topbar-user code {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 34rem) {
+  .vtc-signin .topbar-user code {
+    display: none;
+  }
+}
+
+/* ── Buttons ─────────────────────────────────────────────── */
+
+.vtc-signin .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: auto;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  font: inherit;
+  font-weight: 600;
+  line-height: inherit;
+  padding: 0.55rem 1rem;
+  cursor: pointer;
+  text-decoration: none;
+}
+.vtc-signin .btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.vtc-signin .btn-lg {
+  padding: 0.8rem 1.25rem;
+  width: 100%;
+}
+.vtc-signin .btn-sm {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.875rem;
+}
+.vtc-signin .btn-primary {
+  background: var(--brand);
+  color: var(--brand-fg);
+}
+.vtc-signin .btn-primary:not(:disabled):hover {
+  background: var(--brand-strong);
+}
+.vtc-signin .btn-secondary {
+  background: var(--bg-elev);
+  border-color: var(--border);
+  color: var(--text);
+}
+.vtc-signin .btn-secondary:not(:disabled):hover {
+  border-color: var(--brand);
+}
+.vtc-signin .btn-ghost {
+  background: transparent;
+  color: var(--text-muted);
+}
+.vtc-signin .btn-ghost:not(:disabled):hover {
+  color: var(--text);
+  background: var(--bg-subtle);
+}
+
+.vtc-signin .btn-link {
+  justify-self: start;
+  height: auto;
+  padding: 0.25rem 0;
+  background: none;
+  border: 0;
+  color: var(--brand);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.vtc-signin .btn-link:not(:disabled):hover {
+  text-decoration: underline;
+}
+.vtc-signin .btn-link:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ── Sign-in ─────────────────────────────────────────────── */
+
+.vtc-signin .signin {
+  max-width: 42rem;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 6vw, 3.5rem) var(--gutter) 3rem;
+  display: grid;
+  gap: 1.25rem;
+}
+
+.vtc-signin .signin-card,
+.vtc-signin .install {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-card);
+}
+
+.vtc-signin .signin-card {
+  padding: clamp(1.25rem, 5vw, 2rem);
+}
+
+.vtc-signin .eyebrow {
+  margin: 0 0 0.25rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--brand);
+}
+
+.vtc-signin h1 {
+  margin: 0;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: clamp(1.5rem, 4vw, 2rem);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.vtc-signin .lead {
+  color: var(--text-muted);
+  margin: 0.5rem 0 1.25rem;
+}
+
+.vtc-signin .signin-options {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.vtc-signin .option-note {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.vtc-signin .signin-foot {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  text-align: center;
+  margin: 0;
+}
+
+.vtc-signin .signin-foot + .signin-foot {
+  margin-top: -0.5rem;
+}
+
+.vtc-signin .home-link {
+  font-weight: 500;
+}
+
+.vtc-signin .alert {
+  margin-top: 1rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev));
+  border-radius: var(--radius-md);
+  padding: 0.75rem 1rem;
+}
+.vtc-signin .alert p {
+  margin: 0.25rem 0;
+}
+.vtc-signin .alert-title {
+  font-weight: 600;
+}
+.vtc-signin .alert .btn {
+  margin-top: 0.5rem;
+}
+
+.vtc-signin .did-inline {
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+/* The wallet's identities for this community: label, then the DID
+   abbreviated (whole on hover). Two identities can share a label, so the DID
+   is always shown. */
+.vtc-signin .identity-picker {
+  margin-top: 0.5rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.vtc-signin .identity-picker h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+.vtc-signin .identity-choices {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+.vtc-signin .identity-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.vtc-signin .identity-choice:not(:disabled):hover {
+  border-color: var(--brand);
+}
+.vtc-signin .identity-choice:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.vtc-signin .identity-choice-label {
+  font-weight: 600;
+}
+.vtc-signin .identity-choice-did {
+  max-width: 100%;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* ── Install guide ───────────────────────────────────────── */
+
+.vtc-signin .install summary {
+  cursor: pointer;
+  padding: 1rem 1.25rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+  font-weight: 600;
+}
+.vtc-signin .install-hint {
+  font-weight: 400;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+.vtc-signin .install-body {
+  padding: 0 1.25rem 1.25rem;
+}
+.vtc-signin .install-body > p {
+  margin-top: 0;
+}
+
+.vtc-signin .steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+  display: grid;
+  gap: 1rem;
+}
+.vtc-signin .steps li {
+  counter-increment: step;
+  position: relative;
+  padding-left: 2.5rem;
+}
+.vtc-signin .steps li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+.vtc-signin .steps h4 {
+  margin: 0.1rem 0 0.25rem;
+  font-size: 1rem;
+}
+.vtc-signin .steps p {
+  margin: 0.25rem 0;
+}
+.vtc-signin pre {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+}
+
+/* ── Wallet sign-in (trigger link) ─────────────────────────────────────── */
+
+.vtc-signin .wallet-signin {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.vtc-signin .option-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+  margin: 0;
+}
+
+.vtc-signin .qr-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Dark on light in every theme, never inverted, never smoothed (C1). */
+.vtc-signin .qr-link {
+  display: inline-block;
+  background: #ffffff;
+  line-height: 0;
+  border-radius: 4px;
+}
+
+.vtc-signin .qr {
+  image-rendering: pixelated;
+}
+
+.vtc-signin .match-number {
+  font-size: 2.5rem;
+  letter-spacing: 0.15em;
+  font-variant-numeric: tabular-nums;
+}
+
+.vtc-signin .confirm-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* "Using an older wallet?": the deprecated SIOPv2 sign-ins (contract C7). */
+.vtc-signin .legacy-signin > summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vtc-signin * {
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1092,7 +1092,14 @@ new flow, update both this section and the relevant `docs/*.md`.
   `Path=/v1/member` (`vtc_member_csrf` is `Path=/`), and the CSRF gate pairs
   them by path. Adding or removing a portal passkey requires a wallet-proven
   session (`amr` contains `did`). The bundle imports no console shell, plugins
-  or API client.
+  or API client. The console's login page uses the same `auth/oob/*` flow
+  with `ext["org.openvtc.session"].audience = "admin"`: the audience is fixed
+  at `request`, signed into step 1 and step 2 (so the grant's
+  `contextDigest` covers it), and `redeem` issues exactly that audience's
+  session — the console's (`routes::auth::mint_admin_cookie_session`, ACL
+  admin role read now) or the portal's, never the other. Never let a
+  member-audience request reach the console minter, and never read an
+  unreadable audience as `admin`.
 - **Code**: `vtc-service/src/member_portal/`, `vtc-service/src/routes/member_portal.rs`,
   `vtc-service/src/routing/{csrf,host_dispatch}.rs`, `vtc-service/src/admin_ui.rs`
   (`MEMBER_UI_DIR`), `vtc-service/admin-ui/src/members/` +

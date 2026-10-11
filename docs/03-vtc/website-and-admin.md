@@ -556,7 +556,61 @@ when both are present.
 
 ### Admin login
 
-Admin login is two calls, both on canonical Trust Tasks:
+The console's login page (`/admin/`) wears the community's sign-in look —
+the member portal's top bar, card and footer, with "Not an operator? Go to
+the member portal" and a "Back to <community>" link home — and offers, in
+order:
+
+1. **Sign in with your wallet** — the trigger-link key grant described under
+   *Member portal* below, asking for the console's session (see *Wallet
+   sign-in to the console*).
+2. **Passkey.**
+3. **Using an older wallet?** (deprecated) — the two SIOPv2 buttons, "Sign in
+   with this browser's wallet" and "Sign in as a VTA identity", unchanged.
+
+Every one of them ends in the same console session: audience `VTC`, the
+`sessions` keyspace, the `vtc_admin_session` + `csrf` + refresh cookies, and
+the same lifetimes and CSRF, for a DID whose ACL entry holds an
+administrative role.
+
+#### Wallet sign-in to the console
+
+The page sends the same `auth/oob/request` the portal does, with one
+VTC-namespaced extension:
+
+```json
+{ "purpose": "login", "mode": "scan",
+  "ext": { "org.openvtc.session": { "audience": "admin" } } }
+```
+
+`purpose` stays `login` — `auth/oob/0.1`'s purpose is a closed enum and both
+are logins. The VTC fixes the audience on the request when it is opened,
+echoes it in the request's response (the page refuses to show a code if a VTC
+ignored it), and repeats it under the same `ext` member in the signed step 1
+and step 2 responses, so a wallet can say "operator console" and the grant's
+`contextDigest` — the digest of the signed step 2 — covers it. An approval
+given for the portal cannot be redeemed as a console session, or the other
+way round: the grant names one request, its digest covers that request's
+audience, and `redeem` issues only the session the record says, after
+checking it is the one signed into step 1.
+
+The console's gate is the ACL role, read now, by the same check passkey login
+makes. A DID that is a member but not an administrator can still prove it
+holds its DID, and is then told **"This identity isn't an administrator of
+this community."**: `prove` (or `respond`, or `redeem` if the entry changed
+in between) declines the request, and `redeem` answers `declined` with
+`details.reason: "notAnAdmin"`. No session of either kind is issued, and the
+request is spent. A DID the community does not know at all is refused before
+anything is resolved, as on the portal. Each step is audited as
+`AdminWalletSignIn`.
+
+A request without the extension, or with `"audience": "member"`, is a portal
+sign-in exactly as before, and its responses carry no extension. The console
+is served from the portal's origin (`/admin/` beside `/members/`), which is
+what the wallet compares with the `SignInPortal` service; its HTML is served
+with the same `no-referrer`, `no-store` and CSP as the portal's.
+
+The SIOPv2 path is two calls, both on canonical Trust Tasks:
 
 1. `POST /v1/auth/` (`spec/auth/authenticate/0.1`) — the DIDComm-packed or
    SIOP challenge response, returning `{ session, tokens }` with a bearer

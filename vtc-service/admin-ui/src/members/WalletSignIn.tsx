@@ -1,5 +1,7 @@
 // "Sign in with your wallet": the trigger-link sign-in (contract C1, C2, C9;
-// base design §13). The first option on the sign-in page.
+// base design §13). The first option on the sign-in page — the member
+// portal's, and the operator console's (`audience="admin"`), which asks the
+// VTC for a console session through `ext["org.openvtc.session"]`.
 //
 // States: idle → waiting (the code) → claimed (the number) → confirm
 // ("Continue as …?") → signed in; or declined, cancelled, expired.
@@ -14,11 +16,13 @@ import {
   fetchSignInConfig,
   forgetSessionKey,
   generateSessionKey,
+  NOT_AN_ADMIN,
   OobError,
   openRequest,
   redeemOnce,
   triggerLink,
   type RedeemResult,
+  type SessionAudience,
   type SignInConfig,
 } from "./oob";
 
@@ -28,7 +32,7 @@ type Phase =
   | { kind: "waiting"; link: string; requestId: string; claimDeadline: number }
   | { kind: "claimed"; requestId: string; matchNumber: string }
   | { kind: "confirm"; result: RedeemResult }
-  | { kind: "ended"; reason: "declined" | "cancelled" | "expired" }
+  | { kind: "ended"; reason: "declined" | "cancelled" | "expired" | "notAnAdmin" }
   | { kind: "error"; message: string };
 
 /** The code as SVG rects: level M, no logo, a 4-module quiet zone, at least
@@ -61,12 +65,34 @@ export function QrSvg({ text, label }: { text: string; label: string }) {
   );
 }
 
+/** What an ended sign-in says. */
+function endedMessage(reason: Extract<Phase, { kind: "ended" }>["reason"]): string {
+  switch (reason) {
+    case "notAnAdmin":
+      return "This identity isn't an administrator of this community.";
+    case "declined":
+      return "The sign-in was declined.";
+    case "cancelled":
+      return "The sign-in was cancelled.";
+    case "expired":
+      return "The code expired.";
+  }
+}
+
 export function WalletSignIn({
   onSignedIn,
   communityName,
+  audience = "member",
+  onNotMe,
 }: {
   onSignedIn: () => Promise<void> | void;
   communityName?: string | null;
+  /** Which session to ask for: the member portal's (default) or the
+   *  operator console's. */
+  audience?: SessionAudience;
+  /** End the session just issued, for "Not me". Defaults to the member
+   *  portal's sign-out. */
+  onNotMe?: () => Promise<unknown>;
 }) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   // The code is hidden when the tab is hidden, and stays hidden until the
@@ -114,6 +140,15 @@ export function WalletSignIn({
         try {
           const result = await redeemOnce(cfg, requestId, ctl.signal);
           if (runRef.current !== run) return;
+          if (result.audience !== audience) {
+            // Never carry on with a session this page did not ask for.
+            forgetSessionKey();
+            setPhase({
+              kind: "error",
+              message: "The community answered with a different kind of session; sign in again.",
+            });
+            return;
+          }
           setPhase({ kind: "confirm", result });
           return;
         } catch (e) {
@@ -138,7 +173,12 @@ export function WalletSignIn({
               forgetSessionKey();
               setPhase({
                 kind: "ended",
-                reason: e.details.state === "cancelled" ? "cancelled" : "declined",
+                reason:
+                  e.details.reason === NOT_AN_ADMIN
+                    ? "notAnAdmin"
+                    : e.details.state === "cancelled"
+                      ? "cancelled"
+                      : "declined",
               });
               return;
             case "requestExpired":
@@ -154,7 +194,7 @@ export function WalletSignIn({
         }
       }
     },
-    [],
+    [audience],
   );
 
   const showCode = async () => {
@@ -165,7 +205,7 @@ export function WalletSignIn({
     try {
       cfgRef.current ??= await fetchSignInConfig();
       await generateSessionKey();
-      const { requestId, claimDeadline } = await openRequest(cfgRef.current);
+      const { requestId, claimDeadline } = await openRequest(cfgRef.current, audience);
       if (runRef.current !== run) return;
       setPhase({
         kind: "waiting",
@@ -197,7 +237,7 @@ export function WalletSignIn({
 
   const notMe = async () => {
     try {
-      await postMember("/v1/member/sign-out");
+      await (onNotMe ? onNotMe() : postMember("/v1/member/sign-out"));
     } finally {
       forgetSessionKey();
       setPhase({ kind: "idle" });
@@ -224,6 +264,8 @@ export function WalletSignIn({
           <p className="option-note">
             Scan it with your wallet app (Keyring is the first), or click it if your wallet
             is on this device. Your keys stay with your wallet.
+            {audience === "admin" &&
+              " Approve as the identity that administers this community."}
           </p>
         </>
       )}
@@ -243,7 +285,9 @@ export function WalletSignIn({
             <a href={phase.link} className="qr-link" rel="noreferrer">
               <QrSvg
                 text={phase.link}
-                label={`Sign-in code for ${communityName || "this community"}. Scan it with your wallet, or click it to open your wallet.`}
+                label={`Sign-in code for ${communityName || "this community"}${
+                  audience === "admin" ? " operator console" : ""
+                }. Scan it with your wallet, or click it to open your wallet.`}
               />
             </a>
             <p className="option-note">Waiting for your wallet…</p>
@@ -298,13 +342,13 @@ export function WalletSignIn({
 
       {phase.kind === "ended" && (
         <div className="alert" role="alert">
-          <p className="alert-title">
-            {phase.reason === "declined"
-              ? "The sign-in was declined."
-              : phase.reason === "cancelled"
-                ? "The sign-in was cancelled."
-                : "The code expired."}
-          </p>
+          <p className="alert-title">{endedMessage(phase.reason)}</p>
+          {phase.reason === "notAnAdmin" && (
+            <p>
+              The console admits identities this community's ACL holds as administrators. If
+              you hold more than one identity, approve with the one that administers it.
+            </p>
+          )}
           <button type="button" className="btn btn-secondary btn-sm" onClick={showCode}>
             Get a new code
           </button>

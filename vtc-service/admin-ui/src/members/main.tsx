@@ -10,7 +10,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { Portal } from "./Portal";
 // The same self-hosted IBM Plex faces and shared tokens as the console and the
-// home page, then the portal's own rules.
+// home page, then the community sign-in sheet, then the portal's own rules.
 import "@fontsource/ibm-plex-sans/400.css";
 import "@fontsource/ibm-plex-sans/500.css";
 import "@fontsource/ibm-plex-sans/600.css";
@@ -18,6 +18,7 @@ import "@fontsource/ibm-plex-sans/700.css";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@/styles/tokens.css";
+import "../signin/signin.css";
 import "./members.css";
 
 const queryClient = new QueryClient({
