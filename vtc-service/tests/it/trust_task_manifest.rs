@@ -844,6 +844,10 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/roles/define/0.1",
     "https://trusttasks.org/spec/vtc/roles/delete/0.1",
     "https://trusttasks.org/spec/task-consent/decision/0.2",
+    // Direct admission (`trust_tasks::admission_tasks`): signed documents only,
+    // with no REST door.
+    "https://trusttasks.org/spec/vtc/members/admit/0.1",
+    "https://trusttasks.org/spec/vtc/members/make-membership/0.1",
     // Their bearer routes stayed for `vtc-client`; the console already signed
     // them, and now nothing else binds them either.
     "https://trusttasks.org/spec/vtc/join-requests/decide/0.1",
