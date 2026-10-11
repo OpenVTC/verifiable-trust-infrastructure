@@ -744,3 +744,56 @@ async fn acl_change_role_compare_and_swaps() {
         "update must leave the role untouched"
     );
 }
+
+// ── App state ───────────────────────────────────────────────────────
+
+/// A first pull of a namespace nothing has written to yet must be a valid
+/// reply, in both modes.
+///
+/// The namespace counter starts at 0, but `highWatermark` is a `Version`, which
+/// the schema bounds at 1 or more. Emitting the 0 made MockVta's response
+/// conformance check answer `responseSchemaViolation`, so every consumer's
+/// first sync against an empty namespace failed (#2029). With nothing written
+/// there is no watermark to report, so the member is absent, and a consumer
+/// keeps the `sinceVersion` it sent.
+#[tokio::test]
+async fn app_state_list_of_an_unwritten_namespace_is_a_valid_reply() {
+    let mock = MockVta::start_provisionable().await;
+    let client = admin_client(&mock).await;
+    client
+        .create_context(vta_sdk::client::CreateContextRequest {
+            id: "ctx-empty".into(),
+            name: "Empty".into(),
+            description: None,
+            parent: None,
+        })
+        .await
+        .expect("create context");
+
+    let feed = client
+        .app_state_changes_since("ctx-empty", "fresh", 0, None, true, Some(100), None)
+        .await
+        .expect("a first change-feed pull of an empty namespace succeeds");
+    assert_eq!(feed["records"], serde_json::json!([]));
+    assert!(
+        feed.get("highWatermark").is_none(),
+        "no write yet, so no watermark: {feed}"
+    );
+
+    let snapshot = client
+        .app_state_list("ctx-empty", Some("fresh"), None, true, Some(100), None)
+        .await
+        .expect("a snapshot of an empty namespace succeeds");
+    assert!(snapshot.get("highWatermark").is_none(), "{snapshot}");
+
+    // The first write gives the namespace a watermark, and it is reported.
+    client
+        .app_state_put("ctx-empty", "fresh", "k", serde_json::json!(1), None)
+        .await
+        .expect("put");
+    let feed = client
+        .app_state_changes_since("ctx-empty", "fresh", 0, None, true, Some(100), None)
+        .await
+        .expect("pull after a write");
+    assert_eq!(feed["highWatermark"], serde_json::json!(1));
+}

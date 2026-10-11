@@ -176,7 +176,8 @@ impl VtaClient {
     /// maximum version among the returned records, which is wrong whenever a
     /// `prefix` filtered a later change out of the page and undefined when the
     /// page is empty. Do not advance the stored watermark until the final page
-    /// has been drained.
+    /// has been drained. A namespace nothing has written to yet has no
+    /// watermark and the member is absent; keep the `since_version` you sent.
     ///
     /// `vta/app-state/list:watermarkTooOld` means the watermark predates the
     /// oldest retained tombstone, so resuming would silently omit deletions:

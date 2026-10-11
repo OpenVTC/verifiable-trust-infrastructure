@@ -1488,8 +1488,12 @@ pub async fn list(
     //   it. Silent loss, and nothing downstream can detect it.
     //
     // Duplicate delivery is the acceptable failure here; a missed change is not.
+    //
+    // A namespace never written to has counter 0, and `highWatermark` is a
+    // `Version` (minimum 1), so it is reported absent rather than as 0 (#2029).
+    // A consumer keeps the `sinceVersion` it sent, which is the same answer.
     let high_watermark = match namespace {
-        Some(ns) => Some(read_counter(ks, context_id, ns).await?),
+        Some(ns) => Some(read_counter(ks, context_id, ns).await?).filter(|&c| c > 0),
         None => None,
     };
 

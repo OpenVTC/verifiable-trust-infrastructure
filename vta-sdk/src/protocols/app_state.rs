@@ -304,7 +304,8 @@ pub struct AppStateListResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
     /// The namespace's current counter value, present whenever `namespace` was
-    /// supplied.
+    /// supplied and has been written to. Absent for a namespace with no writes
+    /// yet; keep the `since_version` you sent.
     ///
     /// This — **not** the maximum version among `records` — is what an
     /// incremental consumer stores as its next `since_version`. The maximum is
