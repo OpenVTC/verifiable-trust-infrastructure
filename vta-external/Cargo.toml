@@ -2,7 +2,7 @@
 name = "vta-external"
 description = "VTA external accounts — the VTA as the key authority for cloud and third-party accounts: account store, auth-model drivers, downscoped credential issuance"
 readme = "README.md"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -16,9 +16,9 @@ repository.workspace = true
 
 [dependencies]
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.14" }
-vta-keys = { path = "../vta-keys", version = "0.18" }
+vta-keys = { path = "../vta-keys", version = "0.19" }
 vti-common = { path = "../vti-common", version = "0.41" }
-vta-sdk = { path = "../vta-sdk", version = "0.65", features = ["client"] }
+vta-sdk = { path = "../vta-sdk", version = "0.66", features = ["client"] }
 async-trait = "0.1"
 base64 = { workspace = true }
 chrono = { workspace = true }

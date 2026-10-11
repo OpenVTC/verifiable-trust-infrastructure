@@ -2,6 +2,64 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.12.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.12.0...vti-rooms-v0.12.1) — 2026-10-11
+
+
+### Added
+
+- **vtc**: Serve room files — blobs, records 0.2 and rooms/info, off until enabled ([#2040](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2040))
+
+A community VTC now hosts room files the way room-host does
+  (data-rooms-files.md P5), so `pnm rooms file put/get` works against a VTC.
+
+  One implementation for both hosts: vti_rooms::blob_tasks. room-host's file
+  handlers mapped each task onto BlobHost, with the spec's declared codes and
+  generated response types. That mapping moves into vti-rooms. Each function
+  takes the room, the authenticated presenter and the chain's authorization,
+  and returns a body checked against the generated response type, or a Refusal
+  the host renders. room-host keeps only its transport, parsing and chain
+  verification, and its 47 tests pass unchanged. The VTC renders the same
+  results through its own reply helpers, so the two hosts cannot answer one task
+  two ways.
+
+  The VTC:
+  - registers, by generated payload type: rooms/blobs/upload/{begin,chunk,
+    commit,abort}, rooms/blobs/{get,chunk}, rooms/info and
+    rooms/records/{put,get,list} 0.2, and adds them to the shared
+    ROOMS_DISPATCHED_URIS, pinned against the registry;
+  - uses the same record path as room-host. put (0.1 too, since a rewrite that
+    names no blobs releases them) holds prepare_record across the write and
+    applies it after. A curate that retracts releases the record's blobs.
+    get/list 0.2 read under a snapshot;
+  - holds a BlobHost in AppState and runs a GC sweeper;
+  - adds the keyspaces room_blobs (backed up: the index and usage) and
+    room_blob_transfers (excluded: transfers in flight);
+  - has a new `[rooms.files]` section mirroring room-host's flags.
+
+  **Uploads are off by default** on a VTC (`enabled = false`). Until storage
+  configs exist, a file goes to a local directory under limits that apply to
+  every room alike, and an operator should choose that. When off, `begin`
+  answers filesDisabled, while stored files and records without files are still
+  served. room-host, a standalone host, keeps its default.
+
+  Size gate. Upload chunks (360 KiB) and begin (320 KiB) declare sizes above the
+  64 KiB default, which the VTC granted only to issuers with an ACL entry, and
+  room members hold none. Room tasks now count as served for sizes. A large
+  upload/chunk is admitted only from a claimed issuer holding an open, unexpired
+  upload here (BlobHost::holds_open_upload). A large begin is admitted only when
+  uploads are on and its payload names a room hosted here. Both are charged to
+  the same per-address LargeDocumentBudget, and a claim that fails verification
+  doubles the address's cost, like any other.
+
+  rooms/info's specification said RECOMMENDED for its proof, though the chain
+  must bind to the signer. trustoverip/dtgwg-trust-tasks-tf#750 makes it
+  REQUIRED. Until that reaches trust-tasks-rs, an interim
+  DISPATCHED_WITHOUT_PROOF entry records why the rooms arm refuses an unsigned
+  caller anyway. The census fails once the specification agrees, which forces
+  the entry out with that bump.
+
+
+
 ## [0.12.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.11.0...vti-rooms-v0.12.0) — 2026-10-11
 
 

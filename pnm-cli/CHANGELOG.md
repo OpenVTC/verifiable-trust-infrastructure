@@ -2,6 +2,69 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.37.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.37.1...pnm-cli-v0.37.2) — 2026-10-11
+
+
+### Added
+
+- **rooms**: Pnm rooms file put/get, and signed sealed bodies for rooms put/get ([#2037](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2037))
+
+A member can now put a file in a sealed room and fetch it from the CLI, end to
+  end (data-rooms-files.md P6), and `pnm rooms put`/`get` work on sealed rooms.
+
+  Sealed record body (vtc_client::rooms::body). This implements
+  `SealedRecordBody` (rooms/_shared/0.1/room.schema.json,
+  trustoverip/dtgwg-trust-tasks-tf#747): the JSON inside a sealed record. It is
+  signed by its author with a Data Integrity proof (eddsa-jcs-2022, or
+  ecdsa-jcs-2019 for P-256) and names the room, key and version it was written
+  for. `verify_record_body` is the only way to a `VerifiedRecordBody`. It
+  refuses, rather than warns about, a body that:
+  - names an unknown member or breaks a bound;
+  - carries a proof that does not verify for `author` for assertionMethod, or
+    uses another suite;
+  - was signed for another location;
+  - on attributed, was signed by someone other than the author the host recorded.
+  There is no generated type for the body, because no host task carries it (the
+  same as FileManifest).
+
+  pnm rooms put on a sealed room:
+  - reads the tier from `rooms/info`, signs the body as the operator, and seals
+    it through the VTA's `rooms/keys/seal`, which seals what it is given and
+    signs nothing;
+  - predicts the version from the room head. The host assigns versions from a
+    room-wide counter, so a write that lands at another version is re-sealed at
+    the next one and rewritten over exactly what landed, up to 4 times, then
+    named with the --expected-version to retry with.
+  Without a file, `put` and `get` stay on records 0.1, which the VTC host serves.
+
+  pnm rooms get:
+  - verifies the sealed body before showing it;
+  - reads `sealed` as the object the host returns. It had read it as a bare
+    string, so it could open no sealed record.
+
+  pnm rooms file put/get. A file is sealed and opened locally with one file's
+  key from the VTA. `put` seals the file, uploads its ciphertext (begin, the
+  missing chunks, commit; abort on failure), checks the committed blobRef, then
+  writes a create-only record (records/put 0.2) whose signed body carries the
+  FileManifest. `get` writes nothing unless every check holds:
+  - the body is verified;
+  - the blob is named on the record and is the one the author named;
+  - each chunk matches the manifest;
+  - the plaintext matches the author's digest.
+  Another member's text has control characters stripped, and a file name keeps
+  only its last path component, never written over an existing file. Files need
+  records/put 0.2, which room-host serves and the VTC does not yet.
+
+  Client calls:
+  - vtc-client: begin/upload/commit/abort, get_blob/download_chunk, room_info,
+    get_record_v2 and put_sealed_record_with_blobs, on the generated
+    trust_tasks_rs types;
+  - vta-sdk: VtaClient::room_seal, and
+    trust_task_sign::sign_object_for_assertion for signing an object that is
+    not a Trust Task.
+
+
+
 ## [0.37.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.37.0...pnm-cli-v0.37.1) — 2026-10-11
 
 

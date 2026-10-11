@@ -2,6 +2,33 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.41.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.41.1...vti-common-v0.41.2) — 2026-10-11
+
+
+### Fixed
+
+- **tsp**: A relationship accept beaten by a concurrent one was answered, not lost ([#2041](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2041))
+
+Two invites from one peer that arrive together are both recorded first, each
+  leaving the pair InviteReceived. The first accept moves it to Bidirectional
+  and the second is refused (invalid transition: SendAccept in state
+  Bidirectional), which both the VTA and the VTC logged as "could not send a
+  TSP relationship accept ... the peer sees no answer". The peer did get an
+  answer: an accept for the same pair went out a moment earlier, and receiving
+  any accept completes its side.
+
+  Seen at gt-vta on 2026-10-11 against the browser wallet, whose mediator
+  socket was being replaced in a loop (fixed in vta-browser-plugin #319), so
+  its invites arrived in pairs.
+
+  accept_refusal_is_benign (vti_common::relationship_store) decides it the way
+  the SDK's invite_refusal_is_benign does: re-read the relationship state after
+  the refusal rather than match the error text (R3.7). Bidirectional means the
+  invite was answered and is logged at debug; anything else is a real failure
+  and keeps the warning. Both services use the one helper.
+
+
+
 ## [0.41.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.41.0...vti-common-v0.41.1) — 2026-10-11
 
 

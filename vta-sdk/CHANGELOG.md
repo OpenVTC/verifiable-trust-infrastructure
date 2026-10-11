@@ -2,6 +2,166 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.66.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.65.1...vta-sdk-v0.66.0) — 2026-10-11
+
+
+### Added
+
+- **vtc**: OpenID4VP wallet sessions — swiyu wallets present evidence for a join ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2044](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2044))
+
+A swiyu wallet speaks OpenID4VP 1.0 over HTTPS and signs no Trust Task, so the
+  applicant's own agent opens the exchange for it. The VTC now serves the whole
+  round trip against an installed verifier identity ([#2039](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2039)).
+
+  - `vtc/join-requests/wallet-session/start/0.1`: the proof signer opens a
+    session for a criterion named by its `requirementsDigest` (and optionally
+    their own join request). The VTC signs an ES256 request object as a JAR in
+    swiyu's profile (`profile_version`, `aud` https://self-issued.me/v2,
+    `client_id` `decentralized_identifier:<did>`), asking for the criterion's
+    published DCQL query unchanged, with a fresh nonce, `state` and P-256
+    response key, and returns the `swiyu-verify://` wallet URI. Every declared
+    code is served: criterionNotFound, noWalletPresentation,
+    verifierNotConfigured, requestNotFound (unknown and somebody else's alike),
+    requestClosed, tooManySessions.
+  - `GET /v1/oid4vp/request/{session}` answers the request object once;
+    `POST /v1/oid4vp/response/{session}` accepts one `direct_post.jwt` answer.
+    It is checked in order: decrypts (A256GCM) under the session key and echoes
+    `state`; each presentation's issuer signature, validity and KB-JWT over the
+    session nonce with the prefixed `client_id` as audience (VTI-CRD-020…022),
+    one holder; status valid, never assumed (VTI-CRD-014); every issuer admitted
+    by the criterion's `credentialIssuers`; the query satisfied
+    (`DcqlQuery::evaluate_presentation`). Both are a declared foreign-protocol
+    exception (VTI-OPS-095): REST_EXCEPTIONS and GOVERNED_UNAUTH rows, behind the
+    unauthenticated governor; the response reads its body against
+    `[oid4vp] max_response_bytes`.
+  - `vtc/join-requests/wallet-session/status/0.1`: only the signer who opened a
+    session reads it; the evidence names the wallet's holder key beside the
+    applicant and each credential's query id, format, issuer and vct, never a
+    claim value; a refusal names its reason.
+  - New keyspace `oid4vp_sessions`, encrypted at rest, excluded from backup. A
+    minute sweeper closes unanswered sessions at `expiresAt` (dropping the
+    response key) and drops records an hour after closing, or when held evidence
+    lapses. State changes run under one lock, so one response wins.
+  - `[oid4vp]` config: session TTL, open sessions per applicant, evidence hold,
+    response cap, default identity, wallet URI scheme.
+  - Workspace floors: affinidi-openid4vp 0.1.4 (`direct-post-jwt`),
+    affinidi-oid4vc-core 0.1.10 (`jwe`), affinidi-sd-jwt 0.1.7;
+    trust-tasks-rs 0.28.1 for the wallet-session specs.
+
+  Evidence is recorded on the session. Deciding a join on it — on the named
+  request, or on the applicant's next submission — follows. P3 of
+  docs/05-design-notes/oid4vp-wallet-verifier.md; docs/03-vtc/oid4vp-verifier.md
+  covers operating it.
+
+- SignInPortal in did-host-http* templates and a VTC DID self-check for wallet sign-in ([#2042](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2042))
+
+* feat(vta-sdk): advertise SignInPortal from the did-host-http* templates
+
+  Wallet sign-in with a trigger link (auth/oob, contract C4/C9) needs the
+  service's DID document to list SignInPortal on the origin of its login
+  page. DID hosting publishes <origin>/login for itself, but a node minted
+  from a did-host-http* template lacked the entry, so wallets refused its
+  sign-in links with "This code can't be used" (webvh.storm.ws).
+
+  did-host-http, did-host-http-tsp and did-host-http-didcomm now declare
+  SERVICE_SIGN_IN_PORTAL (null default, bare service member). When a
+  template declares it and the caller does not supply it, the renderer
+  derives { id: <did>#sign-in-portal, type: SignInPortal,
+  serviceEndpoint: <origin of URL>/login } from URL, https only. A caller
+  may supply its own entry or null to omit it. Templates for nodes with no
+  login page (did-host-didcomm, did-host-tsp, didcomm-mediator) are
+  unchanged. Existing DIDs are untouched; the doc explains adding the
+  entry with pnm did-mgmt dids edit.
+
+  New public helpers: sign_in_portal_endpoint, sign_in_portal_service,
+  SIGN_IN_PORTAL_SERVICE_TYPE, SIGN_IN_PORTAL_SERVICE_VAR.
+
+- **rooms**: Pnm rooms file put/get, and signed sealed bodies for rooms put/get ([#2037](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2037))
+
+A member can now put a file in a sealed room and fetch it from the CLI, end to
+  end (data-rooms-files.md P6), and `pnm rooms put`/`get` work on sealed rooms.
+
+  Sealed record body (vtc_client::rooms::body). This implements
+  `SealedRecordBody` (rooms/_shared/0.1/room.schema.json,
+  trustoverip/dtgwg-trust-tasks-tf#747): the JSON inside a sealed record. It is
+  signed by its author with a Data Integrity proof (eddsa-jcs-2022, or
+  ecdsa-jcs-2019 for P-256) and names the room, key and version it was written
+  for. `verify_record_body` is the only way to a `VerifiedRecordBody`. It
+  refuses, rather than warns about, a body that:
+  - names an unknown member or breaks a bound;
+  - carries a proof that does not verify for `author` for assertionMethod, or
+    uses another suite;
+  - was signed for another location;
+  - on attributed, was signed by someone other than the author the host recorded.
+  There is no generated type for the body, because no host task carries it (the
+  same as FileManifest).
+
+  pnm rooms put on a sealed room:
+  - reads the tier from `rooms/info`, signs the body as the operator, and seals
+    it through the VTA's `rooms/keys/seal`, which seals what it is given and
+    signs nothing;
+  - predicts the version from the room head. The host assigns versions from a
+    room-wide counter, so a write that lands at another version is re-sealed at
+    the next one and rewritten over exactly what landed, up to 4 times, then
+    named with the --expected-version to retry with.
+  Without a file, `put` and `get` stay on records 0.1, which the VTC host serves.
+
+  pnm rooms get:
+  - verifies the sealed body before showing it;
+  - reads `sealed` as the object the host returns. It had read it as a bare
+    string, so it could open no sealed record.
+
+  pnm rooms file put/get. A file is sealed and opened locally with one file's
+  key from the VTA. `put` seals the file, uploads its ciphertext (begin, the
+  missing chunks, commit; abort on failure), checks the committed blobRef, then
+  writes a create-only record (records/put 0.2) whose signed body carries the
+  FileManifest. `get` writes nothing unless every check holds:
+  - the body is verified;
+  - the blob is named on the record and is the one the author named;
+  - each chunk matches the manifest;
+  - the plaintext matches the author's digest.
+  Another member's text has control characters stripped, and a file name keeps
+  only its last path component, never written over an existing file. Files need
+  records/put 0.2, which room-host serves and the VTC does not yet.
+
+  Client calls:
+  - vtc-client: begin/upload/commit/abort, get_blob/download_chunk, room_info,
+    get_record_v2 and put_sealed_record_with_blobs, on the generated
+    trust_tasks_rs types;
+  - vta-sdk: VtaClient::room_seal, and
+    trust_task_sign::sign_object_for_assertion for signing an object that is
+    not a Trust Task.
+
+- **vta-sdk**: Foreign-protocol DID identities — JWK key slots, an unpublished update key, P-256 slots, and a swiyu-verifier template ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2036](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2036))
+
+A VTC that verifies swiyu wallet presentations (OpenID4VP) needs an identity of
+  its own, shaped by the Swiss Profile Anchor: a did:webvh with one P-256 key
+  published as a publicKeyJwk (publicKeyMultibase is forbidden), no keyAgreement,
+  service or @context, the Ed25519 update key kept to the log's updateKeys, and
+  portable=false. DID templates could express none of that. This adds what they
+  were missing, and the template.
+
+  - `{SLOT}_KEY_JWK`: every key slot now also renders as a JWK object (kty, crv,
+    x, y, alg), beside `{SLOT}_KEY_MB`. Either publishes the slot; a JWK
+    placeholder for an undeclared slot, or declared as a variable, is refused
+    like its multibase twin.
+  - `KeySlot::publish` (default true; **breaking** — a new public field). Only the
+    `signing` slot, the did:webvh update key, may be `publish: false`, and then
+    the document must not use it. Its key record is named by its did:key, as the
+    log names it, instead of a guessed `#key-0`.
+  - Templates that declare slots but no `ka` slot get no key-agreement key
+    published or recorded.
+  - Additional signing slots may be P-256 (`derive_p256`'s domain-separated
+    derivation).
+  - `defaults.portable: false` is binding: the VTA mints the DID non-portable
+    whatever the caller asked (pnm defaults to true). Only that direction.
+  - Minted key records are matched to the document by publicKeyJwk as well as
+    publicKeyMultibase.
+  - Built-in `swiyu-verifier` template. Mint it serverless at the swiyu
+    identifier-registry slot URL, then upload the log to that slot.
+
+
+
 ## [0.65.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.65.0...vta-sdk-v0.65.1) — 2026-10-11
 
 

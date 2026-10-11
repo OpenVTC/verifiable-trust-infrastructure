@@ -2,6 +2,41 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.18.0...vta-keys-v0.19.0) — 2026-10-11
+
+
+### Added
+
+- **vta-sdk**: Foreign-protocol DID identities — JWK key slots, an unpublished update key, P-256 slots, and a swiyu-verifier template ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2036](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2036))
+
+A VTC that verifies swiyu wallet presentations (OpenID4VP) needs an identity of
+  its own, shaped by the Swiss Profile Anchor: a did:webvh with one P-256 key
+  published as a publicKeyJwk (publicKeyMultibase is forbidden), no keyAgreement,
+  service or @context, the Ed25519 update key kept to the log's updateKeys, and
+  portable=false. DID templates could express none of that. This adds what they
+  were missing, and the template.
+
+  - `{SLOT}_KEY_JWK`: every key slot now also renders as a JWK object (kty, crv,
+    x, y, alg), beside `{SLOT}_KEY_MB`. Either publishes the slot; a JWK
+    placeholder for an undeclared slot, or declared as a variable, is refused
+    like its multibase twin.
+  - `KeySlot::publish` (default true; **breaking** — a new public field). Only the
+    `signing` slot, the did:webvh update key, may be `publish: false`, and then
+    the document must not use it. Its key record is named by its did:key, as the
+    log names it, instead of a guessed `#key-0`.
+  - Templates that declare slots but no `ka` slot get no key-agreement key
+    published or recorded.
+  - Additional signing slots may be P-256 (`derive_p256`'s domain-separated
+    derivation).
+  - `defaults.portable: false` is binding: the VTA mints the DID non-portable
+    whatever the caller asked (pnm defaults to true). Only that direction.
+  - Minted key records are matched to the document by publicKeyJwk as well as
+    publicKeyMultibase.
+  - Built-in `swiyu-verifier` template. Mint it serverless at the swiyu
+    identifier-registry slot URL, then upload the log to that slot.
+
+
+
 ## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.17.0...vta-keys-v0.18.0) — 2026-10-11
 
 
