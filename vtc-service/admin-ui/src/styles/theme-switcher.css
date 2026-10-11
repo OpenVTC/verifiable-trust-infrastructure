@@ -1,0 +1,63 @@
+/* ── Theme switcher (components/ThemeSwitcher.tsx) ─────────────
+ *
+ * Match system / Light / Dark as a segmented radio group. Its own file
+ * because three bundles draw it: the console (account menu), the sign-in
+ * page and the member portal (their top bar). Tokens only, so it follows
+ * whichever surface it sits on. The home page's static twin is styled in
+ * `website-default/site.css` to the same measurements.
+ */
+
+.theme-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.theme-switcher button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  padding: 0;
+  transition:
+    background var(--motion-fast),
+    color var(--motion-fast);
+}
+
+.theme-switcher button:hover:not([aria-checked="true"]) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.theme-switcher button[aria-checked="true"] {
+  background: var(--bg-elev);
+  color: var(--text);
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+
+.theme-switcher button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.theme-switcher svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.75;
+}
+
+@media (forced-colors: active) {
+  .theme-switcher button[aria-checked="true"] {
+    outline: 2px solid Highlight;
+  }
+}

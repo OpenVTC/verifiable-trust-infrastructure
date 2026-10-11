@@ -8,6 +8,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import { applyStoredTheme } from "@/lib/theme";
 import { Portal } from "./Portal";
 // The same self-hosted IBM Plex faces and shared tokens as the console and the
 // home page, then the community sign-in sheet, then the portal's own rules.
@@ -20,6 +21,10 @@ import "@fontsource/ibm-plex-mono/500.css";
 import "@/styles/tokens.css";
 import "../signin/signin.css";
 import "./members.css";
+
+// The colour theme chosen here, on the home page or in the console (one shared
+// key, `lib/theme.ts`), before first paint.
+applyStoredTheme();
 
 const queryClient = new QueryClient({
   defaultOptions: {

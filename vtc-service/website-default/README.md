@@ -32,6 +32,13 @@ Its look comes from the community's shared design tokens and type:
 A custom site in `website.root_dir` needs neither file; it keeps working
 with whatever it links itself.
 
+`theme.js` is the colour-theme switcher in the top bar (Match system /
+Light / Dark). It is loaded in `<head>` without `defer`, so a pinned theme
+lands before first paint, and it stores the choice under the same
+localStorage key as the member portal and the operator console
+(`vtc-admin-theme`), so one choice holds on all three. Without JavaScript
+the switcher stays hidden and the page follows the system setting.
+
 Baked at compile time by `include_dir!` (see
 `src/website/default_site.rs`). Served by the `/` catch-all
 sub-router **only** when:

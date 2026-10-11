@@ -149,6 +149,17 @@
   white-space: nowrap;
 }
 
+/* The theme switcher, pushed to the far end; after the signed-in identity
+ * when there is one (which takes the auto margin itself). */
+.vtc-signin .topbar-theme {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+.vtc-signin .topbar-user + .topbar-theme {
+  margin-left: 0;
+}
+
 @media (max-width: 34rem) {
   .vtc-signin .topbar-user code {
     display: none;

@@ -11,6 +11,8 @@
     <link rel="stylesheet" href="/fonts.css" />
     <link rel="stylesheet" href="/tokens.css" />
     <link rel="stylesheet" href="/site.css" />
+    <!-- Applies a pinned colour theme before first paint; not deferred. -->
+    <script src="/theme.js"></script>
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
@@ -40,6 +42,18 @@
             >Get started<span class="sr-only"> (opens openvtc.net in a new tab)</span></a
           >
           <a href="/members/" class="btn btn-primary btn-sm">Member sign-in</a>
+          <!-- Colour theme, wired up (and un-hidden) by theme.js. -->
+          <div class="theme-switcher" id="theme-switcher" role="radiogroup" aria-label="Colour theme" hidden>
+            <button type="button" role="radio" aria-checked="true" data-theme-choice="auto" aria-label="Match system" title="Match system">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" /><line x1="8" y1="21" x2="16" y2="21" /><line x1="12" y1="17" x2="12" y2="21" /></svg>
+            </button>
+            <button type="button" role="radio" aria-checked="false" data-theme-choice="light" aria-label="Light" title="Light" tabindex="-1">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" /></svg>
+            </button>
+            <button type="button" role="radio" aria-checked="false" data-theme-choice="dark" aria-label="Dark" title="Dark" tabindex="-1">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></svg>
+            </button>
+          </div>
         </nav>
       </div>
     </header>

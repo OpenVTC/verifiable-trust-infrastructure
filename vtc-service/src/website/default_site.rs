@@ -146,6 +146,30 @@ mod tests {
         assert!(!css.contains("http"), "fonts must be same-origin");
     }
 
+    /// The colour-theme script is embedded and runs in `<head>`, undeferred,
+    /// so a pinned theme lands before first paint, and it shares the console's
+    /// and member portal's storage key (`admin-ui/src/lib/theme.ts`).
+    #[test]
+    fn site_applies_the_shared_theme_before_paint() {
+        let index = std::str::from_utf8(lookup("/index.html").unwrap()).unwrap();
+        let script = index
+            .find("<script src=\"/theme.js\"></script>")
+            .expect("theme.js loaded without defer");
+        let head_end = index.find("</head>").expect("</head>");
+        assert!(script < head_end, "theme.js is loaded in <head>");
+        assert!(
+            index.contains("id=\"theme-switcher\""),
+            "the switcher markup"
+        );
+
+        let js = std::str::from_utf8(lookup("/theme.js").expect("theme.js embedded")).unwrap();
+        let shared = include_str!("../../admin-ui/src/lib/theme.ts");
+        assert!(
+            js.contains("\"vtc-admin-theme\"") && shared.contains("\"vtc-admin-theme\""),
+            "the home page and the console store the theme under one key"
+        );
+    }
+
     #[test]
     fn lookup_misses_on_unknown_path() {
         assert!(lookup("/no-such-file").is_none());

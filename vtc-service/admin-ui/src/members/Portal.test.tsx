@@ -59,6 +59,21 @@ describe("member portal", () => {
     document.cookie = "csrf=; Max-Age=0; Path=/";
   });
 
+  it("offers the colour-theme switcher in its top bar, shared with the console", async () => {
+    stubFetch((url) =>
+      url.endsWith("/public-profile")
+        ? json(200, { name: "Acme Guild" })
+        : json(401, { message: "not signed in" }),
+    );
+    renderPortal();
+    const group = await screen.findByRole("radiogroup", { name: "Colour theme" });
+    expect(group.closest("header")).toBeTruthy();
+    fireEvent.click(screen.getByRole("radio", { name: "Dark" }));
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+    fireEvent.click(screen.getByRole("radio", { name: "Match system" }));
+    expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
+  });
+
   it("offers wallet sign-in first and keeps the legacy extension behind 'Using an older wallet?'", async () => {
     stubFetch((url) =>
       url.endsWith("/public-profile")

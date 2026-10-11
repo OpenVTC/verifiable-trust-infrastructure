@@ -203,7 +203,7 @@ describe("the account menu", () => {
     // The expiring key is flagged on its entry too.
     expect(within(panel).getByText("Renew soon")).toBeTruthy();
 
-    fireEvent.click(within(panel).getByRole("button", { name: "Dark" }));
+    fireEvent.click(within(panel).getByRole("radio", { name: "Dark" }));
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
 
     fireEvent.click(within(panel).getByRole("button", { name: "Sign out" }));

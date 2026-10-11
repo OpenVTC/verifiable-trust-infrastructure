@@ -257,6 +257,60 @@ a:hover {
   background: var(--bg-subtle);
 }
 
+/* The colour-theme switcher (theme.js): Match system / Light / Dark, the
+ * same measurements as the console's and portal's
+ * (`admin-ui/src/styles/theme-switcher.css`). */
+.theme-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 0.35rem;
+  padding: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.theme-switcher[hidden] {
+  display: none;
+}
+
+.theme-switcher button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.theme-switcher button:hover:not([aria-checked="true"]) {
+  color: var(--text);
+  background: var(--bg-subtle);
+}
+
+.theme-switcher button[aria-checked="true"] {
+  background: var(--bg-elev);
+  color: var(--text);
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+
+.theme-switcher button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+@media (forced-colors: active) {
+  .theme-switcher button[aria-checked="true"] {
+    outline: 2px solid Highlight;
+  }
+}
+
 /* On a phone the brand name and the two text links give way: the
  * member button is the one action that must stay reachable. */
 @media (max-width: 640px) {

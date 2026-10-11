@@ -5,10 +5,15 @@
 //
 // Styles are `./signin.css`, scoped under `.vtc-signin`. Nothing here imports
 // the console's shell, API client or plugins, so the member bundle can use it.
+// The theme switcher it carries is the console's component, which depends on
+// nothing but `lib/theme.ts`.
 
 import type { ReactNode } from "react";
 
-/** The community's top bar. The brand links to the community's home page. */
+import { ThemeSwitcher } from "@/components/ThemeSwitcher";
+
+/** The community's top bar. The brand links to the community's home page;
+ *  the colour-theme switcher sits at the far end, after `children`. */
 export function CommunityTopbar({
   communityName,
   logoUrl,
@@ -35,6 +40,9 @@ export function CommunityTopbar({
         </a>
         <span className="topbar-tag">{tag}</span>
         {children}
+        <div className="topbar-theme">
+          <ThemeSwitcher />
+        </div>
       </div>
     </header>
   );
