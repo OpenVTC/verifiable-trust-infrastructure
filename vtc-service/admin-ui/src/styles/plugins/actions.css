@@ -4,9 +4,63 @@
   gap: var(--space-4);
   margin-bottom: var(--space-4);
 }
+/* One action, as an inbox row: what it is, who asked and its facts on the
+ * left; the decision on the right. One column on a narrow screen, with the
+ * decision after the facts it rests on. */
 .action-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(12rem, 18rem);
+  gap: var(--space-3) var(--space-6);
+  align-items: start;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+@media (max-width: 52rem) {
+  .action-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.action-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.action-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.action-side .form-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin: 0;
+}
+@media (max-width: 52rem) {
+  .action-side .form-actions {
+    justify-content: flex-start;
+  }
+}
+.action-side .action-link {
+  text-align: right;
+  font-size: var(--text-sm);
+}
+.action-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+.action-chips:empty {
+  display: none;
+}
+.action-meta {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+.action-code-label {
+  color: var(--text-muted);
 }
 /* An operator's offline write (VTI-VTC-023): Critical, like the banner. */
 .action-card.action-critical {

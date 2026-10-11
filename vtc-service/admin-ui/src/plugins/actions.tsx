@@ -86,7 +86,7 @@ import {
   type ClosedReason,
   type WebauthnEvidence,
 } from "@/lib/actions-api";
-import { formatIso } from "@/lib/format";
+import { formatIso, formatRelative } from "@/lib/format";
 import { useNameBook, type NameBook } from "@/lib/names";
 import { useToast } from "@/lib/toast";
 import { useConfirm } from "@/components/ConfirmDialog";
@@ -299,207 +299,233 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
   const suspended = suspendedSubjectOf(action);
   const landedNow = landedNowOf(action);
 
+  // The inbox row, after the proposal's mockup: what it is and who asked on
+  // the left, verified first; what you can do about it on the right. The
+  // facts that decide it follow under the summary, in full on every card —
+  // an approval is never given on a title alone.
   return (
     <article
-      className={`card action-card${ack ? " action-critical" : ""}`}
+      className={`card action-card${ack ? " action-critical" : ""}${detail ? " action-card--detail" : ""}`}
       aria-label={`Action ${action.actionId}`}
     >
-      {ack && (
-        <p className="action-severity">
-          <span className="chip danger">Critical</span>{" "}
-          <strong>The operator changed access control offline</strong>
-        </p>
-      )}
-      {landedNow && (
-        <p className="action-severity">
-          <span className="chip warning">Landed now</span>{" "}
-          <strong>Single-administrator mode</strong> — <NamedDid book={book} did={landedNow.by} />{" "}
-          landed this at {formatIso(landedNow.at)} without waiting out the cooling-off, on a typed
-          confirmation and a passkey gesture bound to the immediate removal.
-        </p>
-      )}
-      {waived && (
-        <p className="action-severity">
-          <span className="chip warning">Consent waived</span>{" "}
-          <strong>Single-administrator mode</strong> — every administrator is one person, so the
-          requester&rsquo;s passkey gesture bound to this operation authorized it in place of
-          another&rsquo;s consent ({waived.requirement}, VTI-APV-022).
-        </p>
-      )}
-      {summary.state === "checking" && <p className="lead">Checking this action…</p>}
-      {summary.state === "refused" && (
-        <section className="card error" role="alert">
-          <h3>Summary refused</h3>
-          <p>{SUMMARY_REFUSED_MESSAGE}</p>
-        </section>
-      )}
-      {summary.state === "ok" && <SummaryView summary={summary.summary} />}
+      <div className="action-main">
+        <div className="action-chips">
+          {ack && <span className="chip danger">Critical</span>}
+          {landedNow && <span className="chip warning">Landed now</span>}
+          {waived && <span className="chip warning">Consent waived</span>}
+          {open && cooling && <span className="chip warning">Cooling off</span>}
+          {isQueueItem(action) && <span className="chip">Queue</span>}
+          {summary.state === "ok" && (
+            <span className="chip success" title="Re-derived from the action's payload and checked">
+              Summary verified
+            </span>
+          )}
+        </div>
 
-      <dl className="action-facts">
-        <dt>Code</dt>
-        <dd>
-          <code className="action-code">Code: {code ?? "unavailable"}</code>
-        </dd>
-        {ack ? (
-          <>
-            {/* The operator acts as the community: the requester is the
-                VTC's own DID (VTI-VTC-023). */}
-            <dt>Written by</dt>
-            <dd>
-              The operator, acting as the community (<NamedDid book={book} did={action.requester} />)
-            </dd>
-            {operatorCommandOf(action) && (
-              <>
-                <dt>Command</dt>
-                <dd>
-                  <code>{operatorCommandOf(action)}</code>
-                </dd>
-              </>
-            )}
-            <dt>Recorded</dt>
-            <dd>{formatIso(action.createdAt)}</dd>
-            <dt>Acknowledged by</dt>
-            <dd>
-              {action.approvals.length === 0 ? "Nobody yet" : <ApprovalList action={action} book={book} />}
-            </dd>
-            {open && action.approversRemaining !== undefined && (
-              <>
-                <dt>Still to acknowledge</dt>
-                <dd>
-                  {action.approversRemaining} administrator
-                  {action.approversRemaining === 1 ? "" : "s"}
-                </dd>
-              </>
-            )}
-          </>
-        ) : (
-          <>
-            <dt>Requested by</dt>
-            <dd>
-              <NamedDid book={book} did={action.requester} />
-            </dd>
-            <dt>Created</dt>
-            <dd>{formatIso(action.createdAt)}</dd>
-            {waived ? (
-              <>
-                <dt>Approvals</dt>
-                <dd>None — consent waived by single-administrator mode.</dd>
-              </>
-            ) : isQueueItem(action) ? (
-              <>
-                <dt>Decision</dt>
-                <dd>
-                  One administrator holding what it is about decides it, either way. It does not
-                  expire: it waits here until someone does.
-                  {action.approvals.length > 0 && <ApprovalList action={action} book={book} />}
-                </dd>
-              </>
-            ) : cooling ? (
-              <>
-                <dt>Approvals</dt>
-                <dd>
-                  None needed — nobody but the requester and the administrator it reduces can
-                  consent to it, or single-administrator mode does not ask for consent. It waits
-                  out its cooling-off instead.
-                </dd>
-              </>
-            ) : (
-              <>
-                <dt>Approvals</dt>
-                <dd>
-                  {action.threshold !== undefined
-                    ? `${action.approvals.length} of ${action.threshold}`
-                    : action.approvals.length}
-                  {action.approvals.length > 0 && <ApprovalList action={action} book={book} />}
-                </dd>
-                {open && (
-                  <>
-                    <dt>Who can approve</dt>
-                    <dd>
-                      <EligibleApprovers action={action} book={book} />
-                    </dd>
-                  </>
-                )}
-              </>
-            )}
-            {open && cooling && (
-              <>
-                <dt>Cooling-off</dt>
-                <dd>
-                  Lands by itself at <strong>{formatIso(cooling.landsAt)}</strong> unless{" "}
-                  <NamedDid book={book} did={action.requester} /> cancels it.
-                </dd>
-                <dt>Lands</dt>
-                <dd className="action-countdown">{landsIn(cooling.landsAt)}</dd>
-                <dt>Subject</dt>
-                <dd data-testid="suspended-subject">
-                  {suspended ? <NamedDid book={book} did={suspended} /> : "The administrator it reduces"}{" "}
-                  is <strong>suspended</strong> until it lands: their entry authorizes nothing and
-                  their git rights are withdrawn from the forge and the Trust Registry, though
-                  everything is kept, and cancelling restores it.
-                </dd>
-              </>
-            )}
-            {open && !cooling && action.expiresAt && (
-              <>
-                <dt>Time left</dt>
-                <dd>{timeLeft(action.expiresAt)}</dd>
-              </>
-            )}
-            {open && action.requesterOpenActions !== undefined && (
-              <>
-                <dt>Requester's open actions</dt>
-                <dd>{action.requesterOpenActions}</dd>
-              </>
-            )}
-          </>
+        {ack && (
+          <p className="action-severity">
+            <strong>The operator changed access control offline</strong>
+          </p>
         )}
-        {!open && <ClosedFacts action={action} book={book} />}
-      </dl>
+        {landedNow && (
+          <p className="action-severity">
+            <strong>Single-administrator mode</strong> — <NamedDid book={book} did={landedNow.by} />{" "}
+            landed this at {formatIso(landedNow.at)} without waiting out the cooling-off, on a typed
+            confirmation and a passkey gesture bound to the immediate removal.
+          </p>
+        )}
+        {waived && (
+          <p className="action-severity">
+            <strong>Single-administrator mode</strong> — every administrator is one person, so the
+            requester&rsquo;s passkey gesture bound to this operation authorized it in place of
+            another&rsquo;s consent ({waived.requirement}, VTI-APV-022).
+          </p>
+        )}
+        {summary.state === "checking" && <p className="lead">Checking this action…</p>}
+        {summary.state === "refused" && (
+          <section className="card error" role="alert">
+            <h3>Summary refused</h3>
+            <p>{SUMMARY_REFUSED_MESSAGE}</p>
+          </section>
+        )}
+        {summary.state === "ok" && <SummaryView summary={summary.summary} />}
 
-      {open && cooling?.againstYou && (
-        <p className="action-burst" role="note">
-          <span className="button-icon" aria-hidden="true">
-            <AlertTriangle />
-          </span>
-          This is against you: it reduces your own authority, and you cannot approve or block
-          it. Only <NamedDid book={book} did={action.requester} /> can stop it, by cancelling
-          it before {formatIso(cooling.landsAt)}.
+        <p className="action-meta">
+          {ack ? (
+            <>
+              {/* The operator acts as the community: the requester is the
+                  VTC's own DID (VTI-VTC-023). */}
+              The operator, acting as the community (
+              <NamedDid book={book} did={action.requester} />), wrote this offline
+            </>
+          ) : (
+            <>
+              Requested by <NamedDid book={book} did={action.requester} />
+            </>
+          )}
+          <span aria-hidden="true"> · </span>
+          <time dateTime={action.createdAt} title={formatIso(action.createdAt)}>
+            {formatRelative(action.createdAt)}
+          </time>
+          <span aria-hidden="true"> · </span>
+          <span className="action-code-label">match code</span>{" "}
+          <code className="action-code">Code: {code ?? "unavailable"}</code>
         </p>
-      )}
 
-      {ext.burst && (
-        <p className="action-burst" role="status">
-          <span className="button-icon" aria-hidden="true">
-            <AlertTriangle />
-          </span>
-          The requester raised {ext.requesterRecentActions ?? "several"} actions in the last 10
-          minutes. Check each one carefully.
-        </p>
-      )}
+        <dl className="action-facts">
+          {ack ? (
+            <>
+              {operatorCommandOf(action) && (
+                <>
+                  <dt>Command</dt>
+                  <dd>
+                    <code>{operatorCommandOf(action)}</code>
+                  </dd>
+                </>
+              )}
+              <dt>Recorded</dt>
+              <dd>{formatIso(action.createdAt)}</dd>
+              <dt>Acknowledged by</dt>
+              <dd>
+                {action.approvals.length === 0 ? "Nobody yet" : <ApprovalList action={action} book={book} />}
+              </dd>
+              {open && action.approversRemaining !== undefined && (
+                <>
+                  <dt>Still to acknowledge</dt>
+                  <dd>
+                    {action.approversRemaining} administrator
+                    {action.approversRemaining === 1 ? "" : "s"}
+                  </dd>
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              {waived ? (
+                <>
+                  <dt>Approvals</dt>
+                  <dd>None — consent waived by single-administrator mode.</dd>
+                </>
+              ) : isQueueItem(action) ? (
+                <>
+                  <dt>Decision</dt>
+                  <dd>
+                    One administrator holding what it is about decides it, either way. It does not
+                    expire: it waits here until someone does.
+                    {action.approvals.length > 0 && <ApprovalList action={action} book={book} />}
+                  </dd>
+                </>
+              ) : cooling ? (
+                <>
+                  <dt>Approvals</dt>
+                  <dd>
+                    None needed — nobody but the requester and the administrator it reduces can
+                    consent to it, or single-administrator mode does not ask for consent. It waits
+                    out its cooling-off instead.
+                  </dd>
+                </>
+              ) : (
+                <>
+                  <dt>Approvals</dt>
+                  <dd>
+                    {action.threshold !== undefined
+                      ? `${action.approvals.length} of ${action.threshold}`
+                      : action.approvals.length}
+                    {action.approvals.length > 0 && <ApprovalList action={action} book={book} />}
+                  </dd>
+                  {open && (
+                    <>
+                      <dt>Who can approve</dt>
+                      <dd>
+                        <EligibleApprovers action={action} book={book} />
+                      </dd>
+                    </>
+                  )}
+                </>
+              )}
+              {open && cooling && (
+                <>
+                  <dt>Cooling-off</dt>
+                  <dd>
+                    Lands by itself at <strong>{formatIso(cooling.landsAt)}</strong> unless{" "}
+                    <NamedDid book={book} did={action.requester} /> cancels it.
+                  </dd>
+                  <dt>Lands</dt>
+                  <dd className="action-countdown">{landsIn(cooling.landsAt)}</dd>
+                  <dt>Subject</dt>
+                  <dd data-testid="suspended-subject">
+                    {suspended ? <NamedDid book={book} did={suspended} /> : "The administrator it reduces"}{" "}
+                    is <strong>suspended</strong> until it lands: their entry authorizes nothing and
+                    their git rights are withdrawn from the forge and the Trust Registry, though
+                    everything is kept, and cancelling restores it.
+                  </dd>
+                </>
+              )}
+              {open && !cooling && action.expiresAt && (
+                <>
+                  <dt>Time left</dt>
+                  <dd>{timeLeft(action.expiresAt)}</dd>
+                </>
+              )}
+              {open && action.requesterOpenActions !== undefined && (
+                <>
+                  <dt>Requester's open actions</dt>
+                  <dd>{action.requesterOpenActions}</dd>
+                </>
+              )}
+            </>
+          )}
+          {!open && <ClosedFacts action={action} book={book} />}
+        </dl>
 
-      {action.status === "completed" && action.callerRole === "requester" && ext.result && (
-        <ActionResult result={ext.result} />
-      )}
+        {open && cooling?.againstYou && (
+          <p className="action-burst" role="note">
+            <span className="button-icon" aria-hidden="true">
+              <AlertTriangle />
+            </span>
+            This is against you: it reduces your own authority, and you cannot approve or block
+            it. Only <NamedDid book={book} did={action.requester} /> can stop it, by cancelling
+            it before {formatIso(cooling.landsAt)}.
+          </p>
+        )}
 
-      {action.status === "completed" &&
-        action.callerRole === "requester" &&
-        ext.approverInvite && <ApproverInviteView invite={ext.approverInvite} />}
+        {ext.burst && (
+          <p className="action-burst" role="status">
+            <span className="button-icon" aria-hidden="true">
+              <AlertTriangle />
+            </span>
+            The requester raised {ext.requesterRecentActions ?? "several"} actions in the last 10
+            minutes. Check each one carefully.
+          </p>
+        )}
 
-      {ack ? (
-        <AcknowledgeButton action={action} summaryOk={summary.state === "ok"} />
-      ) : (
-        <ActionButtons action={action} summaryOk={summary.state === "ok"} />
-      )}
-      {open && cooling && !cooling.againstYou && (
-        <LandNowButton action={action} subject={suspended} summaryOk={summary.state === "ok"} />
-      )}
+        {action.status === "completed" && action.callerRole === "requester" && ext.result && (
+          <ActionResult result={ext.result} />
+        )}
 
-      {!detail && (
-        <p className="action-link">
-          <Link to={`/actions?action=${encodeURIComponent(action.actionId)}`}>Open</Link>
-        </p>
-      )}
+        {action.status === "completed" &&
+          action.callerRole === "requester" &&
+          ext.approverInvite && <ApproverInviteView invite={ext.approverInvite} />}
+      </div>
+
+      <div className="action-side">
+        {ack ? (
+          <AcknowledgeButton action={action} summaryOk={summary.state === "ok"} />
+        ) : (
+          <ActionButtons action={action} summaryOk={summary.state === "ok"} />
+        )}
+        {open && cooling && !cooling.againstYou && (
+          <LandNowButton action={action} subject={suspended} summaryOk={summary.state === "ok"} />
+        )}
+
+        {!detail && (
+          <p className="action-link">
+            <Link to={`/actions?action=${encodeURIComponent(action.actionId)}`}>
+              Open<span className="visually-hidden"> action {action.actionId}</span>
+            </Link>
+          </p>
+        )}
+      </div>
     </article>
   );
 }

@@ -168,6 +168,23 @@ describe("the Actions page", () => {
     expect(within(card).getByText("3")).toBeTruthy();
   });
 
+  it("lays a card out as an inbox row: verified chip and requester first, decision on the right", async () => {
+    installWallet();
+    routes([waiting]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action act-1" });
+    const chips = card.querySelector(".action-chips")!;
+    expect(await within(chips as HTMLElement).findByText("Summary verified")).toBeTruthy();
+    const meta = card.querySelector(".action-meta")!;
+    expect(meta.textContent).toMatch(/^Requested by .+ · .+ · match code Code: /);
+    expect(meta.querySelector("time")?.getAttribute("dateTime")).toBe(waiting.createdAt);
+    // The decision sits in the side column, apart from the facts.
+    const side = card.querySelector(".action-side") as HTMLElement;
+    expect(within(side).getByRole("button", { name: "Approve" })).toBeTruthy();
+    expect(within(side).getByRole("button", { name: "Decline" })).toBeTruthy();
+    expect(card.querySelector(".action-main")!.contains(within(side).getByRole("button", { name: "Approve" }))).toBe(false);
+  });
+
   it("shows who can approve an open action, not only a count", async () => {
     const parked: Action = {
       ...mine,
