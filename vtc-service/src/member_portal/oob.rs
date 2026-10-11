@@ -44,198 +44,33 @@ use vti_common::store::KeyspaceHandle;
 use crate::error::AppError;
 
 // ── Wire types ──────────────────────────────────────────────────────────────
-//
-// TODO: replace with generated trust-tasks types. `dtgwg-trust-tasks-tf` has
-// not yet published `auth/oob/*`; these match base design §10 plus contract
-// C5, and every one is `deny_unknown_fields` (R3.3) so the swap is a rename.
 
-/// `https://trusttasks.org/spec/auth/oob/<task>/0.1` (contract C5).
+/// The `auth/oob/*` 0.1 wire types, generated from the specification
+/// (trust-tasks-tf #738) and re-exported under the names this module's callers
+/// use. Behaviour stays hand-written over them; a type URI comes from the
+/// generated payload's `TYPE_URI`.
 pub mod types {
-    use serde::{Deserialize, Serialize};
-    use serde_json::Value;
+    use trust_tasks_rs::specs::auth::oob as spec;
 
-    // TODO: replace with generated trust-tasks types
-    pub const REQUEST_TYPE: &str = "https://trusttasks.org/spec/auth/oob/request/0.1";
-    pub const CLAIM_TYPE: &str = "https://trusttasks.org/spec/auth/oob/claim/0.1";
-    pub const PROVE_TYPE: &str = "https://trusttasks.org/spec/auth/oob/prove/0.1";
-    pub const IDENTIFY_TYPE: &str = "https://trusttasks.org/spec/auth/oob/identify/0.1";
-    pub const RESPOND_TYPE: &str = "https://trusttasks.org/spec/auth/oob/respond/0.1";
-    pub const GRANT_TYPE: &str = "https://trusttasks.org/spec/auth/oob/grant/0.1";
-    pub const REDEEM_TYPE: &str = "https://trusttasks.org/spec/auth/oob/redeem/0.1";
-    pub const CANCEL_TYPE: &str = "https://trusttasks.org/spec/auth/oob/cancel/0.1";
+    pub use spec::cancel::v0_1::{Payload as CancelPayload, Response as CancelResponse};
+    pub use spec::claim::v0_1::{
+        Payload as ClaimPayload, Response as Step1, Service as ServiceRef,
+    };
+    pub use spec::grant::v0_1::{Payload as GrantPayload, PayloadDecision as GrantDecision};
+    pub use spec::identify::v0_1::Payload as IdentifyPayload;
+    pub use spec::prove::v0_1::{Payload as ProvePayload, Requester, Response as Step2};
+    pub use spec::redeem::v0_1::{Payload as RedeemPayload, Response as RedeemResponse};
+    pub use spec::request::v0_1::{Payload as RequestPayload, Response as RequestResponse};
+    pub use spec::respond::v0_1::{Payload as RespondPayload, Response as RespondResponse};
 
-    /// `auth/oob/request/0.1` payload. In v1 `purpose` is `login` and `mode`
-    /// is `scan`.
-    // TODO: replace with generated trust-tasks types
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct RequestPayload {
-        pub purpose: String,
-        pub mode: String,
-        /// Framework extension member, carried through unread.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub ext: Option<Value>,
-    }
-
-    /// `auth/oob/request/0.1#response`.
-    // TODO: replace with generated trust-tasks types
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct RequestResponse {
-        pub request_id: String,
-        /// Epoch seconds — the trigger link's `_exp` (contract C9).
-        pub claim_deadline: u64,
-        /// Framework extension member, carried through unread.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub ext: Option<Value>,
-    }
-
-    /// The payload of `claim`, `redeem` and `cancel`.
-    // TODO: replace with generated trust-tasks types
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct RequestIdPayload {
-        pub request_id: String,
-        /// Framework extension member, carried through unread.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub ext: Option<Value>,
-    }
-
-    /// The service as step 1 names it.
-    // TODO: replace with generated trust-tasks types
-    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct ServiceRef {
-        pub did: String,
-        pub name: String,
-    }
-
-    /// `auth/oob/claim/0.1#response` — step 1. Nothing about the starter.
-    // TODO: replace with generated trust-tasks types
-    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct Step1 {
-        pub request_id: String,
-        pub service: ServiceRef,
-        pub origin: String,
-        pub purpose: String,
-        /// Epoch seconds (contract C9).
-        pub decision_deadline: u64,
-        /// Framework extension member, carried through unread.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub ext: Option<Value>,
-    }
-
-    /// `auth/oob/prove/0.1` payload: the signed `identify` document.
-    // TODO: replace with generated trust-tasks types
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct ProvePayload {
-        pub identify: Value,
-        /// Framework extension member, carried through unread.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub ext: Option<Value>,
-    }
-
-    /// `auth/oob/identify/0.1` payload (`additionalProperties: false`).
-    // TODO: replace with generated trust-tasks types
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct IdentifyPayload {
-        pub request_id: String,
-        pub approver_key: String,
-        /// The two digits the member typed, as a string so `07` survives.
-        pub entered_number: String,
-    }
-
-    /// What the VTC reports about the browser that started the request.
-    // TODO: replace with generated trust-tasks types
-    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct Requester {
-        /// `"City, Country"` or `"unknown"`. Never an address.
-        pub location: String,
-        pub browser: String,
-        pub os: String,
-        pub created_at: String,
-        /// `true`, `false` or `"unknown"`.
-        pub same_network: Value,
-    }
-
-    /// `auth/oob/prove/0.1#response` — step 2: step 1's fields, unchanged,
-    /// plus the starter's key and details and the identity that proved.
-    // TODO: replace with generated trust-tasks types
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct Step2 {
-        pub request_id: String,
-        pub service: ServiceRef,
-        pub origin: String,
-        pub purpose: String,
-        pub decision_deadline: u64,
-        pub session_key: String,
-        pub requester: Requester,
-        pub identified_as: String,
-        /// Framework extension member, carried through unread.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub ext: Option<Value>,
-    }
-
-    /// `auth/oob/respond/0.1` payload: the signed `grant` document.
-    // TODO: replace with generated trust-tasks types
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct RespondPayload {
-        pub grant: Value,
-        /// Framework extension member, carried through unread.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub ext: Option<Value>,
-    }
-
-    /// `auth/oob/grant/0.1` payload.
-    // TODO: replace with generated trust-tasks types
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct GrantPayload {
-        pub request_id: String,
-        /// `approve` or `decline`.
-        pub decision: String,
-        pub session_key: String,
-        pub approver_key: String,
-        pub origin: String,
-        /// [`super::context_digest`] of the signed step 2 response.
-        pub context_digest: String,
-        /// Integer epoch seconds (contract C9).
-        pub not_after: u64,
-    }
-
-    /// `#response` of `respond` and `cancel`.
-    // TODO: replace with generated trust-tasks types
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct StatusResponse {
-        pub status: String,
-        /// Framework extension member, carried through unread.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub ext: Option<Value>,
-    }
-
-    /// `auth/oob/redeem/0.1#response`. No tokens: the session travels as
-    /// HttpOnly cookies.
-    // TODO: replace with generated trust-tasks types
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct RedeemResponse {
-        pub subject: String,
-        /// Required by the specification: the ACL label, else the DID.
-        pub display_name: String,
-        /// Epoch seconds: when the session ends (contract C9).
-        pub not_after: u64,
-        pub amr: Vec<String>,
-        /// Framework extension member, carried through unread.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub ext: Option<Value>,
-    }
+    pub const REQUEST_TYPE: &str = <RequestPayload as trust_tasks_rs::Payload>::TYPE_URI;
+    pub const CLAIM_TYPE: &str = <ClaimPayload as trust_tasks_rs::Payload>::TYPE_URI;
+    pub const PROVE_TYPE: &str = <ProvePayload as trust_tasks_rs::Payload>::TYPE_URI;
+    pub const IDENTIFY_TYPE: &str = <IdentifyPayload as trust_tasks_rs::Payload>::TYPE_URI;
+    pub const RESPOND_TYPE: &str = <RespondPayload as trust_tasks_rs::Payload>::TYPE_URI;
+    pub const GRANT_TYPE: &str = <GrantPayload as trust_tasks_rs::Payload>::TYPE_URI;
+    pub const REDEEM_TYPE: &str = <RedeemPayload as trust_tasks_rs::Payload>::TYPE_URI;
+    pub const CANCEL_TYPE: &str = <CancelPayload as trust_tasks_rs::Payload>::TYPE_URI;
 }
 
 // ── Clocks and limits ───────────────────────────────────────────────────────
@@ -357,9 +192,11 @@ pub struct OobRequest {
     /// [`context_digest`] of the signed step 2 response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step2_digest: Option<String>,
-    /// The step 1 fields, so step 2 repeats them byte for byte.
+    /// The step 1 fields (`auth/oob/claim/0.1#response`) as signed, so step 2
+    /// repeats them byte for byte. Kept as JSON: step 2 is a different
+    /// generated type with the same members.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub step1: Option<types::Step1>,
+    pub step1: Option<serde_json::Value>,
     pub created_at: u64,
     pub claim_deadline: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

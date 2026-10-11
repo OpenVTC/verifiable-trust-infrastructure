@@ -410,20 +410,6 @@ fn no_new_bindings_on_the_retired_authority() {
 /// (#821) is what produced this list. **None of it was previously checked by
 /// anything.**
 const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
-    // `auth/oob/*` — wallet sign-in started by a trigger link
-    // (`trust_tasks::oob_tasks`). Bound ahead of its specification, which is
-    // being authored in dtgwg-trust-tasks-tf at the same time against one
-    // implementation contract (design-docs/sign-in-trigger-link-contract.md).
-    // The eight are request, claim, prove, identify, respond, grant, redeem
-    // and cancel. Goes back to zero when trust-tasks-rs generates them and
-    // the local types marked `TODO: replace with generated trust-tasks types`
-    // are swapped.
-    (
-        "https://trusttasks.org/spec/auth/oob/",
-        8,
-        "wallet sign-in (auth/oob/*) — bound ahead of its spec, authored in \
-         parallel against the sign-in trigger-link contract",
-    ),
     // `vtc/relationships/persona/0.1` — the VPC annotation endpoints (#1067).
     // Bound ahead of its spec, which is the mechanism this list exists for,
     // not an exception to it: `vta/webvh/servers/reconcile/0.1` went up and

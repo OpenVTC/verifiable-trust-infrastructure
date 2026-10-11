@@ -42,10 +42,10 @@ use super::helpers::{
     TrustTaskOutcome, extended_code, parse_payload, reject_with, reject_with_code, success_response,
 };
 use crate::member_portal::oob::types::{
-    CANCEL_TYPE, CLAIM_TYPE, GRANT_TYPE, GrantPayload, IDENTIFY_TYPE, IdentifyPayload, PROVE_TYPE,
-    ProvePayload, REDEEM_TYPE, REQUEST_TYPE, RESPOND_TYPE, RedeemResponse, RequestIdPayload,
-    RequestPayload, RequestResponse, Requester, RespondPayload, ServiceRef, StatusResponse, Step1,
-    Step2,
+    CANCEL_TYPE, CLAIM_TYPE, CancelPayload, CancelResponse, ClaimPayload, GRANT_TYPE,
+    GrantDecision, GrantPayload, IDENTIFY_TYPE, IdentifyPayload, PROVE_TYPE, ProvePayload,
+    REDEEM_TYPE, REQUEST_TYPE, RESPOND_TYPE, RedeemPayload, RedeemResponse, RequestPayload,
+    RequestResponse, RespondPayload, RespondResponse, Step1, Step2,
 };
 use crate::member_portal::oob::{
     self, CLAIM_WINDOW_SECS, DECISION_WINDOW_SECS, HttpContext, MAX_PENDING_PER_ADDRESS, NOTIFIER,
@@ -100,10 +100,9 @@ fn task_of(type_uri: &str) -> &'static str {
 
 /// Run before the spine verifies the proof of an `auth/oob` document: the
 /// signer must be an Ed25519 `did:key` (T21, decided from the identifier
-/// alone), and `proof` and `recipient` are required. `None` lets the document
-/// through. Until `trust-tasks-rs` publishes these specifications the spine's
-/// `spec_policy_for` has no policy for them, so this is where their
-/// `proofRequirement` and `recipient` rules are held.
+/// alone; `auth/oob:keyUnsupported`). `None` lets the document through. The
+/// proof and recipient requirements are the specifications' own, enforced by
+/// the spine from `spec_policy_for` like any other published task.
 pub(super) fn precheck(doc: &TrustTask<Value>, type_uri: &str) -> Option<TrustTaskOutcome> {
     if !URIS.contains(&type_uri) {
         return None;
@@ -114,17 +113,6 @@ pub(super) fn precheck(doc: &TrustTask<Value>, type_uri: &str) -> Option<TrustTa
             doc,
             code(task, "keyUnsupported"),
             "the issuer must be an Ed25519 did:key generated for this exchange",
-            None,
-        ));
-    }
-    if doc.proof.is_none() {
-        return Some(reject_with(doc, RejectReason::ProofRequired));
-    }
-    if doc.recipient.is_none() {
-        return Some(reject_with_code(
-            doc,
-            TrustTaskCode::Standard(StandardCode::WrongRecipient),
-            "recipient is required: address the document to this community's DID",
             None,
         ));
     }
@@ -191,6 +179,26 @@ fn request_id_hint(doc: &TrustTask<Value>, carried: &Value) -> Option<String> {
             .and_then(|p| p.get("requestId"))
             .and_then(Value::as_str)
             .map(str::to_string)
+    })
+}
+
+/// Build a generated `auth/oob` type from the JSON this module assembles. The
+/// generated types are `#[non_exhaustive]` and validate their members' patterns,
+/// so going through JSON is how a value is constructed and checked against the
+/// specification at once. A failure is this service's own bug, never the
+/// caller's, so it is an internal error.
+fn wire<T: serde::de::DeserializeOwned>(
+    doc: &TrustTask<Value>,
+    what: &str,
+    value: Value,
+) -> Result<T, TrustTaskOutcome> {
+    serde_json::from_value(value).map_err(|e| {
+        reject_with(
+            doc,
+            RejectReason::InternalError {
+                reason: format!("{what} does not match its specification: {e}"),
+            },
+        )
     })
 }
 
@@ -369,29 +377,35 @@ async fn handle_request(
             None,
         );
     };
+    // A purpose or mode this service does not serve has its own code (auth/oob/
+    // request 0.1), so it is read before the generated payload, whose enums
+    // would refuse it as malformed.
+    let raw = |k: &str| {
+        doc.payload
+            .get(k)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    if let Some(purpose) = raw("purpose").filter(|p| p != "login") {
+        return reject_with_code(
+            &doc,
+            code("request", "purposeUnsupported"),
+            format!("purpose `{purpose}` is not served; v1 serves `login`"),
+            None,
+        );
+    }
+    if let Some(mode) = raw("mode").filter(|m| m != "scan") {
+        return reject_with_code(
+            &doc,
+            code("request", "modeUnsupported"),
+            format!("mode `{mode}` is not served; v1 serves `scan`"),
+            None,
+        );
+    }
     let payload: RequestPayload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(e) => return e,
     };
-    if payload.purpose != "login" {
-        return reject_with_code(
-            &doc,
-            code("request", "purposeUnsupported"),
-            format!(
-                "purpose `{}` is not served; v1 serves `login`",
-                payload.purpose
-            ),
-            None,
-        );
-    }
-    if payload.mode != "scan" {
-        return reject_with_code(
-            &doc,
-            code("request", "modeUnsupported"),
-            format!("mode `{}` is not served; v1 serves `scan`", payload.mode),
-            None,
-        );
-    }
     let (public_url, vtc_did) = {
         let cfg = state.config.read().await;
         (cfg.public_url.clone(), cfg.vtc_did.clone())
@@ -442,8 +456,8 @@ async fn handle_request(
         start_key: start_key.clone(),
         start_network: Some(address),
         approver_key: None,
-        purpose: payload.purpose,
-        mode: payload.mode,
+        purpose: payload.purpose.to_string(),
+        mode: payload.mode.to_string(),
         origin,
         match_number: None,
         match_number_delivered: false,
@@ -466,14 +480,15 @@ async fn handle_request(
         return super::helpers::app_error_to_reject(&doc, &e);
     }
     audit(state, &start_key, "requested", &rec, None, None, None).await;
-    success_response(
+    let response: RequestResponse = match wire(
         &doc,
-        RequestResponse {
-            ext: None,
-            request_id: rec.request_id.clone(),
-            claim_deadline: rec.claim_deadline,
-        },
-    )
+        "the request response",
+        serde_json::json!({ "requestId": rec.request_id, "claimDeadline": rec.claim_deadline }),
+    ) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    success_response(&doc, response)
 }
 
 // ── claim ───────────────────────────────────────────────────────────────────
@@ -483,7 +498,7 @@ async fn handle_claim(
     doc: TrustTask<Value>,
     approver: String,
 ) -> TrustTaskOutcome {
-    let payload: RequestIdPayload = match parse_payload(&doc) {
+    let payload: ClaimPayload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -534,22 +549,23 @@ async fn handle_claim(
         (did, name, profile)
     };
     let decision_deadline = now + DECISION_WINDOW_SECS;
-    let step1 = Step1 {
-        ext: None,
-        request_id: rec.request_id.clone(),
-        service: ServiceRef {
-            // The schema requires a name: the profile's, the configured one,
-            // else the DID itself.
-            name: profile
-                .map(|p| p.name)
-                .filter(|n| !n.is_empty())
-                .or(vtc_name.filter(|n| !n.is_empty()))
-                .unwrap_or_else(|| vtc_did.chars().take(128).collect()),
-            did: vtc_did,
-        },
-        origin: rec.origin.clone(),
-        purpose: rec.purpose.clone(),
-        decision_deadline,
+    // The schema requires a name: the profile's, the configured one, else
+    // the DID itself.
+    let service_name: String = profile
+        .map(|p| p.name)
+        .filter(|n| !n.is_empty())
+        .or(vtc_name.filter(|n| !n.is_empty()))
+        .unwrap_or_else(|| vtc_did.chars().take(128).collect());
+    let step1_json = serde_json::json!({
+        "requestId": rec.request_id,
+        "service": { "did": vtc_did, "name": service_name },
+        "origin": rec.origin,
+        "purpose": rec.purpose,
+        "decisionDeadline": decision_deadline,
+    });
+    let step1: Step1 = match wire(&doc, "step 1", step1_json.clone()) {
+        Ok(s) => s,
+        Err(e) => return e,
     };
     // Signed before the lock is taken, so a request is never claimed with no
     // response to show for it.
@@ -566,7 +582,7 @@ async fn handle_claim(
         r.approver_key = Some(approver.clone());
         r.match_number = Some(number.clone());
         r.decision_deadline = Some(decision_deadline);
-        r.step1 = Some(step1.clone());
+        r.step1 = Some(step1_json.clone());
         Ok(())
     })
     .await;
@@ -597,7 +613,8 @@ async fn handle_prove(
         Ok(p) => p,
         Err(e) => return e,
     };
-    let Some(request_id) = request_id_hint(&doc, &payload.identify) else {
+    let identify = Value::Object(payload.identify);
+    let Some(request_id) = request_id_hint(&doc, &identify) else {
         return not_found(&doc, "prove");
     };
     let ks = &state.member_sessions_ks;
@@ -638,13 +655,11 @@ async fn handle_prove(
     };
 
     // 2. The carried identify names this request and this lock.
-    let identify_issuer = payload
-        .identify
+    let identify_issuer = identify
         .get("issuer")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let identify_payload: Option<IdentifyPayload> = payload
-        .identify
+    let identify_payload: Option<IdentifyPayload> = identify
         .get("payload")
         .cloned()
         .and_then(|p| serde_json::from_value(p).ok());
@@ -652,7 +667,9 @@ async fn handle_prove(
         fail(None, "identify is malformed").await;
         return not_authorized(&doc, "prove");
     };
-    if identify_payload.request_id != rec.request_id || identify_payload.approver_key != approver {
+    if identify_payload.request_id.as_str() != rec.request_id
+        || identify_payload.approver_key.as_str() != approver
+    {
         fail(Some(member), "identify names another request or lock").await;
         return not_authorized(&doc, "prove");
     }
@@ -672,7 +689,7 @@ async fn handle_prove(
     //    (contract C5); recipient, freshness and replay as for any document.
     if let Err(reason) = verify_carried(
         state,
-        &payload.identify,
+        &identify,
         IDENTIFY_TYPE,
         &member,
         vti_common::auth::ProofPurpose::Authentication,
@@ -705,22 +722,29 @@ async fn handle_prove(
         );
     };
     let approver_ip = HttpContext::current().map(|h| h.client_ip);
-    let step2 = Step2 {
-        ext: None,
-        request_id: step1.request_id,
-        service: step1.service,
-        origin: step1.origin,
-        purpose: step1.purpose,
-        decision_deadline: step1.decision_deadline,
-        session_key: rec.start_key.clone(),
-        requester: Requester {
-            location: rec.requester.location.clone(),
-            browser: rec.requester.browser.clone(),
-            os: rec.requester.os.clone(),
-            created_at: rec.requester.created_at.clone(),
-            same_network: oob::same_network(rec.start_network.as_deref(), approver_ip),
-        },
-        identified_as: member.clone(),
+    let Value::Object(mut step2_json) = step1 else {
+        return reject_with(
+            &doc,
+            RejectReason::InternalError {
+                reason: "stored step 1 is not an object".into(),
+            },
+        );
+    };
+    step2_json.insert("sessionKey".into(), Value::String(rec.start_key.clone()));
+    step2_json.insert(
+        "requester".into(),
+        serde_json::json!({
+            "location": rec.requester.location,
+            "browser": rec.requester.browser,
+            "os": rec.requester.os,
+            "createdAt": rec.requester.created_at,
+            "sameNetwork": oob::same_network(rec.start_network.as_deref(), approver_ip),
+        }),
+    );
+    step2_json.insert("identifiedAs".into(), Value::String(member.clone()));
+    let step2: Step2 = match wire(&doc, "step 2", Value::Object(step2_json)) {
+        Ok(s) => s,
+        Err(e) => return e,
     };
     let (signed, outcome) = match attested(state, &doc, &step2).await {
         Ok(s) => s,
@@ -772,7 +796,8 @@ async fn handle_respond(
         Ok(p) => p,
         Err(e) => return e,
     };
-    let Some(request_id) = request_id_hint(&doc, &payload.grant) else {
+    let grant_doc = Value::Object(payload.grant);
+    let Some(request_id) = request_id_hint(&doc, &grant_doc) else {
         return not_found(&doc, "respond");
     };
     let ks = &state.member_sessions_ks;
@@ -822,13 +847,13 @@ async fn handle_respond(
 
     // 2. The grant is the identified DID's, signed for `assertionMethod`,
     //    fresh, and new.
-    if payload.grant.get("issuer").and_then(Value::as_str) != Some(member.as_str()) {
+    if grant_doc.get("issuer").and_then(Value::as_str) != Some(member.as_str()) {
         fail("grant from another identity").await;
         return not_authorized(&doc, "respond");
     }
     if let Err(reason) = verify_carried(
         state,
-        &payload.grant,
+        &grant_doc,
         GRANT_TYPE,
         &member,
         vti_common::auth::ProofPurpose::AssertionMethod,
@@ -839,8 +864,7 @@ async fn handle_respond(
         fail(reason).await;
         return not_authorized(&doc, "respond");
     }
-    let grant: GrantPayload = match payload
-        .grant
+    let grant: GrantPayload = match grant_doc
         .get("payload")
         .cloned()
         .map(serde_json::from_value)
@@ -853,10 +877,10 @@ async fn handle_respond(
     };
 
     // 3–4. The lock, the browser key, the origin and the context it was shown.
-    let context_ok = grant.request_id == rec.request_id
-        && grant.approver_key == approver
-        && grant.session_key == rec.start_key
-        && grant.origin == rec.origin
+    let context_ok = grant.request_id.as_str() == rec.request_id
+        && grant.approver_key.as_str() == approver
+        && grant.session_key.as_str() == rec.start_key
+        && grant.origin.as_str() == rec.origin
         && rec
             .step2_digest
             .as_deref()
@@ -870,9 +894,9 @@ async fn handle_respond(
             None,
         );
     }
-    let decision = match grant.decision.as_str() {
-        "approve" => OobState::Approved,
-        "decline" => OobState::Declined,
+    let decision = match grant.decision {
+        GrantDecision::Approve => OobState::Approved,
+        GrantDecision::Decline => OobState::Declined,
         _ => {
             fail("unknown decision").await;
             return not_authorized(&doc, "respond");
@@ -896,7 +920,7 @@ async fn handle_respond(
     }
 
     // 6. Decide, once.
-    let signed_grant = payload.grant.clone();
+    let signed_grant = grant_doc.clone();
     let now = now_epoch();
     let res = oob::transition(ks, &rec.request_id, |r| {
         if r.effective_state(now) != OobState::Identified
@@ -930,13 +954,14 @@ async fn handle_respond(
                 Some(signed_grant),
             )
             .await;
-            success_response(
+            match wire::<RespondResponse>(
                 &doc,
-                StatusResponse {
-                    ext: None,
-                    status: stage.into(),
-                },
-            )
+                "the respond response",
+                serde_json::json!({ "status": stage }),
+            ) {
+                Ok(r) => success_response(&doc, r),
+                Err(e) => e,
+            }
         }
         Err(TransitionError::Store(e)) => super::helpers::app_error_to_reject(&doc, &e),
         Err(_) => reject_with_code(
@@ -955,7 +980,7 @@ async fn handle_cancel(
     doc: TrustTask<Value>,
     signer: String,
 ) -> TrustTaskOutcome {
-    let payload: RequestIdPayload = match parse_payload(&doc) {
+    let payload: CancelPayload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -988,13 +1013,14 @@ async fn handle_cancel(
                 None,
             )
             .await;
-            success_response(
+            match wire::<CancelResponse>(
                 &doc,
-                StatusResponse {
-                    ext: None,
-                    status: "cancelled".into(),
-                },
-            )
+                "the cancel response",
+                serde_json::json!({ "status": "cancelled" }),
+            ) {
+                Ok(r) => success_response(&doc, r),
+                Err(e) => e,
+            }
         }
         Ok((_, rec)) => {
             audit(state, &signer, "expired", &rec, None, None, None).await;
@@ -1042,7 +1068,7 @@ async fn handle_redeem(
             None,
         );
     };
-    let payload: RequestIdPayload = match parse_payload(&doc) {
+    let payload: RedeemPayload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -1210,21 +1236,25 @@ async fn redeem_approved(
                 None,
             )
             .await;
-            success_response(
+            let display_name: String = member
+                .entry
+                .label
+                .clone()
+                .filter(|l| !l.is_empty())
+                .unwrap_or_else(|| member_did.chars().take(128).collect());
+            match wire::<RedeemResponse>(
                 doc,
-                RedeemResponse {
-                    ext: None,
-                    subject: member_did.clone(),
-                    display_name: member
-                        .entry
-                        .label
-                        .clone()
-                        .filter(|l| !l.is_empty())
-                        .unwrap_or_else(|| member_did.chars().take(128).collect()),
-                    not_after: session_end,
-                    amr: amr(),
-                },
-            )
+                "the redeem response",
+                serde_json::json!({
+                    "subject": member_did,
+                    "displayName": display_name,
+                    "notAfter": session_end,
+                    "amr": amr(),
+                }),
+            ) {
+                Ok(r) => success_response(doc, r),
+                Err(e) => e,
+            }
         }
         Err(e) => super::helpers::app_error_to_reject(doc, &e),
     }
