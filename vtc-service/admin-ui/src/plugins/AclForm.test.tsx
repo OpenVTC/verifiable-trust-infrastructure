@@ -327,3 +327,23 @@ describe("Access control — suspension and remove now", () => {
     });
   });
 });
+
+// The command palette's "Add an access-control entry" and "Invite an
+// administrator" land here with a query string that opens the form.
+describe("Access control — forms opened from the URL", () => {
+  it("opens New ACL entry for ?add=1", async () => {
+    mockFetch([taskRoute(LIST, { entries: [], truncated: false })]);
+    renderWithProviders(<Acl />, { route: "/acl?add=1", path: "/acl" });
+    expect(await screen.findByPlaceholderText("did:key:z6Mk…")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "New ACL entry" })).toBeTruthy();
+  });
+
+  it("opens Invite a new admin for ?invite=1", async () => {
+    mockFetch([
+      taskRoute(LIST, { entries: [], truncated: false }),
+      taskRoute("https://trusttasks.org/spec/vtc/admin/invites/list/0.1", { invites: [] }),
+    ]);
+    renderWithProviders(<Acl />, { route: "/acl?invite=1", path: "/acl" });
+    expect(await screen.findByRole("heading", { name: "Invite a new admin" })).toBeTruthy();
+  });
+});

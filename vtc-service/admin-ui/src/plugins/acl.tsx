@@ -8,7 +8,8 @@
 // a resource for the ones that take one. Edit narrows or widens an existing
 // entry's capabilities. Revoke removes the entry.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   useMutation,
   useQuery,
@@ -156,6 +157,22 @@ export function Acl() {
   const confirm = useConfirm();
   const me = useViewerDid();
   const singleAdminMode = useSingleAdminMode();
+  // `?add=1` and `?invite=1` (the command palette's "Add an access-control
+  // entry" and "Invite an administrator"): applied once, then dropped from
+  // the URL.
+  const [params, setParams] = useSearchParams();
+  const [inviteRequested, setInviteRequested] = useState(0);
+  useEffect(() => {
+    const add = params.get("add");
+    const invite = params.get("invite");
+    if (add === null && invite === null) return;
+    if (add === "1") setShowCreate(true);
+    if (invite === "1") setInviteRequested((n) => n + 1);
+    const next = new URLSearchParams(params);
+    next.delete("add");
+    next.delete("invite");
+    setParams(next, { replace: true });
+  }, [params, setParams]);
 
   const query = useQuery({
     queryKey: ["acl", roleFilter],
@@ -447,7 +464,7 @@ export function Acl() {
         </DataTable>
       </section>
 
-      <InvitesPanel />
+      <InvitesPanel openRequest={inviteRequested} />
     </section>
   );
 }
@@ -479,12 +496,19 @@ function AuthorityCell({ entry }: { entry: AclEntry }) {
 // Admin invites
 // ─────────────────────────────────────────────────────────────
 
-function InvitesPanel() {
+function InvitesPanel({ openRequest = 0 }: { openRequest?: number }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const confirm = useConfirm();
   const confirmGesture = gestureFromConfirm(confirm);
   const [showCreate, setShowCreate] = useState(false);
+  const panelRef = useRef<HTMLElement>(null);
+  // Asked for from outside (`?invite=1`): open the form and bring it into view.
+  useEffect(() => {
+    if (openRequest === 0) return;
+    setShowCreate(true);
+    panelRef.current?.scrollIntoView?.({ block: "start" });
+  }, [openRequest]);
   const [regenerated, setRegenerated] = useState<CreateInviteResponse | null>(
     null,
   );
@@ -538,7 +562,7 @@ function InvitesPanel() {
 
   return (
     <>
-      <section className="card">
+      <section className="card" ref={panelRef}>
         <div className="toolbar">
           <h3 className="acl-invites-title">Admin invites</h3>
           <p className="lead acl-invites-lead">

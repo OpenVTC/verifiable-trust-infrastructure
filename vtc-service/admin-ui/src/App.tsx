@@ -1,16 +1,24 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { NavLink, Route, Routes, useLocation } from "react-router-dom";
-import { ChevronsLeft, ChevronsRight, Menu, RefreshCw, X } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Menu, RefreshCw, Search, X } from "lucide-react";
 
 import { getPlugins, subscribePlugins } from "@/plugin-api";
 import { AccountMenu } from "@/components/AccountMenu";
+import { CommandPalette, usePaletteShortcut } from "@/components/CommandPalette";
 import { AttentionStrip, type AttentionItem } from "@/components/AttentionStrip";
 import { BreakGlassNotice, useBreakGlassState } from "@/components/BreakGlassBanner";
 import { LiveIndicator } from "@/components/LiveIndicator";
 import { PluginHost } from "@/components/PluginHost";
 import { PluginIcon } from "@/components/PluginIcon";
-import { probeSession, watchSession, SIGNING_KEY_REFUSED_EVENT } from "@/lib/api";
+import { probeSession, signOut, watchSession, SIGNING_KEY_REFUSED_EVENT } from "@/lib/api";
+import {
+  NAVIGATION_ACTIONS,
+  paletteShortcutLabel,
+  type ActionSpec,
+  type ScreenSource,
+} from "@/lib/commands";
+import { setTheme } from "@/lib/theme";
 import { signingStatus, type SigningStatus } from "@/lib/console-keys-api";
 import {
   ACTIONS_PLUGIN_ID,
@@ -36,7 +44,7 @@ import { useCommunityIdentity } from "@/lib/community-identity";
 import { arrangeNav } from "@/lib/nav-groups";
 import { useLiveEvents } from "@/lib/use-live-events";
 import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
-import { useToast } from "@/lib/toast";
+import { useToast, type ToastApi } from "@/lib/toast";
 import { Install } from "@/pages/Install";
 import { EnrolApproverPage } from "@/pages/EnrolApprover";
 import { EnrolStepUpPage } from "@/pages/EnrolStepUp";
@@ -209,6 +217,58 @@ export default function App() {
   );
   const [bannerHidden, setBannerHidden] = useState(bannerDismissed);
 
+  // The command palette (components/CommandPalette.tsx): ⌘K / Ctrl+K, or the
+  // top bar's "Jump to…", once the console itself is showing.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const togglePalette = useCallback(() => setPaletteOpen((v) => !v), []);
+  const closePalette = useCallback(() => setPaletteOpen(false), []);
+  usePaletteShortcut(togglePalette, !!probe.data && !pathname.startsWith("/install"));
+  // The actions that run something rather than only navigate.
+  const paletteActions = useMemo<ActionSpec[]>(
+    () => [
+      ...NAVIGATION_ACTIONS,
+      {
+        id: "theme-light",
+        label: "Use the light theme",
+        hint: "Theme",
+        keywords: ["appearance", "colour", "color", "mode"],
+        run: () => setTheme("light"),
+      },
+      {
+        id: "theme-dark",
+        label: "Use the dark theme",
+        hint: "Theme",
+        keywords: ["appearance", "colour", "color", "mode", "night"],
+        run: () => setTheme("dark"),
+      },
+      {
+        id: "theme-system",
+        label: "Match the system theme",
+        hint: "Theme",
+        keywords: ["appearance", "colour", "color", "mode", "auto"],
+        run: () => setTheme("auto"),
+      },
+      {
+        id: "reload-plugins",
+        label: "Reload plugins",
+        hint: "Fetch /admin/plugins.json and load any new plugin",
+        keywords: ["plugins", "refresh"],
+        run: () => void reloadPluginsWithToast(toast),
+      },
+      {
+        id: "sign-out",
+        label: "Sign out",
+        hint: "End this console session",
+        keywords: ["log out", "logout", "exit"],
+        run: () =>
+          void signOut()
+            .catch((err) => toast.pushFromError(err, "Sign-out failed"))
+            .finally(() => void qc.invalidateQueries({ queryKey: ["whoami"] })),
+      },
+    ],
+    [qc, toast],
+  );
+
   // Re-arm the session-expiry guard whenever a fresh session lands.
   // Without this, a second expiry inside the same browser tab would
   // be silently ignored.
@@ -315,6 +375,11 @@ export default function App() {
   // menu (`lib/nav-groups.ts`). A group the viewer can see nothing in is left
   // out; plugins naming no group are listed under "More".
   const nav = arrangeNav(plugins);
+  // Every screen in the palette, in nav order, the account menu's last.
+  const paletteScreens: ScreenSource[] = [
+    ...nav.sections.flatMap((s) => s.plugins.map((plugin) => ({ plugin, group: s.label }))),
+    ...nav.account.map((plugin) => ({ plugin, group: "Account" })),
+  ];
 
   return (
     <div
@@ -341,6 +406,20 @@ export default function App() {
         }
         end={
           <>
+            <button
+              type="button"
+              className="palette-trigger"
+              aria-haspopup="dialog"
+              aria-expanded={paletteOpen}
+              aria-keyshortcuts="Meta+K Control+K"
+              onClick={() => setPaletteOpen(true)}
+            >
+              <span className="button-icon" aria-hidden="true">
+                <Search />
+              </span>
+              <span className="palette-trigger-label">Jump to…</span>
+              <kbd aria-hidden="true">{paletteShortcutLabel()}</kbd>
+            </button>
             {needsSigning && <LiveIndicator />}
             <AccountMenu
               whoami={probe.data}
@@ -436,8 +515,31 @@ export default function App() {
           <Route path="*" element={<NotFound />} />
         </Routes>
       </main>
+      <CommandPalette
+        open={paletteOpen}
+        onClose={closePalette}
+        screens={paletteScreens}
+        actions={paletteActions}
+      />
     </div>
   );
+}
+
+/** Refetch `/admin/plugins.json`, import what is new, and say what happened. */
+async function reloadPluginsWithToast(toast: ToastApi): Promise<void> {
+  try {
+    const added = await reloadThirdPartyPlugins();
+    if (added.length === 0) {
+      toast.push("info", "No new plugins.");
+    } else {
+      toast.push(
+        "success",
+        `Loaded ${added.length} new plugin${added.length === 1 ? "" : "s"}: ${added.join(", ")}`,
+      );
+    }
+  } catch (err) {
+    toast.pushFromError(err, "Plugin reload failed");
+  }
 }
 
 // Re-exported: `App.test.tsx` and any out-of-tree code that imported it from
@@ -596,17 +698,7 @@ function ReloadPluginsButton() {
       onClick={async () => {
         setPending(true);
         try {
-          const added = await reloadThirdPartyPlugins();
-          if (added.length === 0) {
-            toast.push("info", "No new plugins.");
-          } else {
-            toast.push(
-              "success",
-              `Loaded ${added.length} new plugin${added.length === 1 ? "" : "s"}: ${added.join(", ")}`,
-            );
-          }
-        } catch (err) {
-          toast.pushFromError(err, "Plugin reload failed");
+          await reloadPluginsWithToast(toast);
         } finally {
           setPending(false);
         }

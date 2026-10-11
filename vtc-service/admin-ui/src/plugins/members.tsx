@@ -28,13 +28,13 @@
 // forge accounts (design §7.1, `members/MemberGit.tsx`), read from the Repos
 // plugin's console projections under its query keys.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight,
@@ -402,6 +402,25 @@ function MembersList() {
   const [page, setPage] = useState(0);
   const [adding, setAdding] = useState(false);
   const book = useNameBook();
+
+  // `?q=` and `?add=1` (the command palette's "Search members for…" and "Add
+  // a member"): applied once, then dropped from the URL, so a reload or the
+  // back button does not re-open the form or re-type the search.
+  const [params, setParams] = useSearchParams();
+  useEffect(() => {
+    const q = params.get("q");
+    const add = params.get("add");
+    if (q === null && add === null) return;
+    if (q !== null) {
+      setSearch(q);
+      setPage(0);
+    }
+    if (add === "1") setAdding(true);
+    const next = new URLSearchParams(params);
+    next.delete("q");
+    next.delete("add");
+    setParams(next, { replace: true });
+  }, [params, setParams]);
 
   const query = useQuery({
     queryKey: ["members", "all"],

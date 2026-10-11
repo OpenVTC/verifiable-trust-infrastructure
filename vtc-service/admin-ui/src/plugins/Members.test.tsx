@@ -204,6 +204,17 @@ describe("Members — search and sort", () => {
     expect(names()).toEqual(["Priya Nair", "No Rights", "Hana Sato", "Bob Mensah", "Alice Wong"]);
   });
 
+  it("takes a search and the Add a member form from the URL (the command palette)", async () => {
+    mockFetch(routes());
+    mount("/members?q=hsato&add=1");
+    await rowOf("Hana Sato");
+    expect(names()).toEqual(["Hana Sato"]);
+    expect((screen.getByRole("searchbox", { name: "Search" }) as HTMLInputElement).value).toBe(
+      "hsato",
+    );
+    expect(screen.getByRole("region", { name: "Add a member" })).toBeTruthy();
+  });
+
   it("reads every page of the listing", async () => {
     mockFetch([
       taskRoute(MEMBERS_LIST_TASK, (payload) =>
