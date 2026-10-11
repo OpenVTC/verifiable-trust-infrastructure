@@ -10,69 +10,24 @@
 
 use std::sync::Arc;
 
-use base64::Engine as _;
-use serde_json::{Value, json};
-use trust_tasks_rs::specs::rooms::blobs::chunk::v0_1 as download_chunk;
-use trust_tasks_rs::specs::rooms::blobs::get::v0_1 as blob_get;
-use trust_tasks_rs::specs::rooms::blobs::upload::abort::v0_1 as upload_abort;
-use trust_tasks_rs::specs::rooms::blobs::upload::begin::v0_1 as upload_begin;
-use trust_tasks_rs::specs::rooms::blobs::upload::chunk::v0_1 as upload_chunk;
-use trust_tasks_rs::specs::rooms::blobs::upload::commit::v0_1 as upload_commit;
-use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
+use serde_json::Value;
 use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2_spec;
 use trust_tasks_rs::specs::rooms::records::list::v0_2 as list_v2_spec;
-use trust_tasks_rs::specs::rooms::records::put::v0_2 as put_v2;
 use trust_tasks_rs::{DeclaredErrorCode, ErrorPayload, RejectReason, TrustTask, TrustTaskCode};
 use uuid::Uuid;
-use vti_common::error::AppError;
+use vti_rooms::Room;
 use vti_rooms::authz::{self, Action, AuthorizedAction};
-use vti_rooms::blobs::{BlobError, Manifest};
+use vti_rooms::blob_tasks::{self, Refusal, TaskResult};
+use vti_rooms::blobs::BlobError;
 use vti_rooms::storage;
 use vti_rooms::wire::AuthorityPresentation;
-use vti_rooms::{Room, Visibility};
 
 use super::{Answer, HostState, from_app_error, now, reject, respond};
 
-/// `rooms/blobs/upload/begin/0.1`.
-pub(crate) const UPLOAD_BEGIN_TYPE: &str =
-    <upload_begin::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/blobs/upload/chunk/0.1`.
-pub(crate) const UPLOAD_CHUNK_TYPE: &str =
-    <upload_chunk::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/blobs/upload/commit/0.1`.
-pub(crate) const UPLOAD_COMMIT_TYPE: &str =
-    <upload_commit::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/blobs/upload/abort/0.1`.
-pub(crate) const UPLOAD_ABORT_TYPE: &str =
-    <upload_abort::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/blobs/get/0.1`.
-pub(crate) const BLOB_GET_TYPE: &str = <blob_get::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/blobs/chunk/0.1`.
-pub(crate) const DOWNLOAD_CHUNK_TYPE: &str =
-    <download_chunk::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/info/0.1`.
-pub(crate) const INFO_TYPE: &str = <rooms_info::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/records/put/0.2`.
-pub(crate) const PUT_V2_TYPE: &str = <put_v2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/records/get/0.2`.
-pub(crate) const GET_V2_TYPE: &str = <get_v2_spec::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/records/list/0.2`.
-pub(crate) const LIST_V2_TYPE: &str = <list_v2_spec::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// Parse `payload` as the generated type `P`, or refuse it as malformed.
-fn parse<P: serde::de::DeserializeOwned>(
-    doc: &TrustTask<Value>,
-    payload: &Value,
-) -> Result<P, Answer> {
-    serde_json::from_value(payload.clone()).map_err(|e| {
-        reject(
-            doc,
-            RejectReason::MalformedRequest {
-                reason: e.to_string(),
-            },
-        )
-    })
-}
+pub(crate) use vti_rooms::blob_tasks::{
+    BLOB_GET_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, INFO_TYPE, LIST_V2_TYPE, PUT_V2_TYPE,
+    UPLOAD_ABORT_TYPE, UPLOAD_BEGIN_TYPE, UPLOAD_CHUNK_TYPE, UPLOAD_COMMIT_TYPE,
+};
 
 /// Refuse with a code the task's specification declares.
 fn coded(
@@ -101,29 +56,16 @@ fn coded(
     }
 }
 
-/// Answer with the generated response type `R`, built from `body`.
-///
-/// Going through `R` is the check that what this host sends is the
-/// specification's response, not a near miss.
-fn answer<R: serde::de::DeserializeOwned + serde::Serialize>(
-    doc: &TrustTask<Value>,
-    body: Value,
-) -> Answer {
-    match serde_json::from_value::<R>(body) {
-        Ok(r) => respond(doc, r),
-        Err(e) => reject(
-            doc,
-            RejectReason::InternalError {
-                reason: format!("this host built a response its specification refuses: {e}"),
-            },
-        ),
-    }
-}
-
-/// Map what every blob operation can refuse with and no task declares.
-fn general(doc: &TrustTask<Value>, e: BlobError) -> Answer {
-    match e {
-        BlobError::RateLimited { retry_after_secs } => reject(
+/// Render a shared refusal as this host's reply.
+fn refused(doc: &TrustTask<Value>, refusal: Refusal) -> Answer {
+    match refusal {
+        Refusal::Declared {
+            code,
+            message,
+            details,
+        } => coded(doc, code, message, details),
+        Refusal::Malformed(reason) => reject(doc, RejectReason::MalformedRequest { reason }),
+        Refusal::Unavailable { retry_after_secs } => reject(
             doc,
             RejectReason::Unavailable {
                 retry_after: Some(
@@ -131,20 +73,23 @@ fn general(doc: &TrustTask<Value>, e: BlobError) -> Answer {
                 ),
             },
         ),
-        BlobError::App(AppError::ResourceExhausted(reason)) => reject(
+        Refusal::TaskFailed(reason) => reject(
             doc,
             RejectReason::TaskFailed {
                 reason,
                 details: None,
             },
         ),
-        BlobError::App(e) => from_app_error(doc, &e),
-        other => reject(
-            doc,
-            RejectReason::InternalError {
-                reason: other.to_string(),
-            },
-        ),
+        Refusal::App(e) => from_app_error(doc, &e),
+        Refusal::Internal(reason) => reject(doc, RejectReason::InternalError { reason }),
+    }
+}
+
+/// Render a shared task's answer as this host's reply.
+fn render(doc: &TrustTask<Value>, result: TaskResult) -> Answer {
+    match result {
+        Ok(body) => respond(doc, body),
+        Err(r) => refused(doc, r),
     }
 }
 
@@ -183,56 +128,31 @@ async fn authorize(
     Ok((room, presenter, authorized))
 }
 
+/// The authenticated presenter of a transfer task, which carries no presentation.
+async fn presenter(state: &HostState, doc: &TrustTask<Value>) -> Result<String, Answer> {
+    state
+        .presenter(doc)
+        .await
+        .map_err(|e| from_app_error(doc, &e))
+}
+
 pub(crate) async fn begin(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    use upload_begin::error_codes as codes;
-    if let Err(a) = parse::<upload_begin::Payload>(doc, &payload) {
-        return a;
+    // The payload is checked before the chain, so a malformed request costs no
+    // verification.
+    if let Err(r) = blob_tasks::parse::<
+        trust_tasks_rs::specs::rooms::blobs::upload::begin::v0_1::Payload,
+    >(&payload)
+    {
+        return refused(doc, r);
     }
     let (room, presenter, authorized) = match authorize(state, doc, &payload, Action::Write).await {
         Ok(r) => r,
         Err(a) => return a,
     };
-    let manifest = match Manifest::parse(&payload["manifest"]) {
-        Ok(m) => m,
-        Err(e) => return coded(doc, codes::INVALID_MANIFEST, e.to_string(), None),
-    };
-    match state
-        .files
-        .begin(&room, &presenter, authorized.member(), manifest)
-        .await
-    {
-        Ok(b) => {
-            let mut body = json!({
-                "uploadId": b.upload_id.to_string(),
-                "missing": b.missing,
-                "expiresAt": b.expires_at,
-            });
-            if b.already_committed {
-                body["alreadyCommitted"] = json!(true);
-            }
-            answer::<upload_begin::Response>(doc, body)
-        }
-        Err(e @ BlobError::TooManyUploads { max_open }) => coded(
-            doc,
-            codes::TOO_MANY_UPLOADS,
-            e.to_string(),
-            Some(json!({ "maxOpen": max_open })),
-        ),
-        Err(BlobError::FilesDisabled) => coded(
-            doc,
-            codes::FILES_DISABLED,
-            BlobError::FilesDisabled.to_string(),
-            None,
-        ),
-        Err(BlobError::InvalidManifest(why)) => coded(doc, codes::INVALID_MANIFEST, why, None),
-        Err(BlobError::LimitExceeded(l)) => coded(
-            doc,
-            codes::LIMIT_EXCEEDED,
-            BlobError::LimitExceeded(l.clone()).to_string(),
-            Some(l.details()),
-        ),
-        Err(e) => general(doc, e),
-    }
+    render(
+        doc,
+        blob_tasks::begin(&state.files, &room, &presenter, &authorized, &payload).await,
+    )
 }
 
 pub(crate) async fn upload_chunk(
@@ -240,138 +160,43 @@ pub(crate) async fn upload_chunk(
     doc: &TrustTask<Value>,
     payload: Value,
 ) -> Answer {
-    use upload_chunk::error_codes as codes;
-    let req: upload_chunk::Payload = match parse(doc, &payload) {
-        Ok(p) => p,
-        Err(a) => return a,
-    };
-    let presenter = match state.presenter(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let data = match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(req.data.as_str()) {
-        Ok(d) => d,
-        Err(e) => {
-            return reject(
-                doc,
-                RejectReason::MalformedRequest {
-                    reason: format!("`data` is not base64url: {e}"),
-                },
-            );
-        }
-    };
-    let index = (*req.index).max(0) as u64;
-    match state
-        .files
-        .put_chunk(
-            &presenter,
-            req.upload_id.as_str(),
-            index,
-            req.digest_multibase.as_str(),
-            &data,
-        )
-        .await
-    {
-        Ok(o) => answer::<upload_chunk::Response>(
+    match presenter(state, doc).await {
+        Ok(p) => render(
             doc,
-            json!({
-                "uploadId": req.upload_id.as_str(),
-                "index": index,
-                "stored": o.stored,
-                "remainingCount": o.remaining_count,
-                "expiresAt": o.expires_at,
-            }),
+            blob_tasks::upload_chunk(&state.files, &p, &payload).await,
         ),
-        Err(BlobError::NotFound) => {
-            coded(doc, codes::NOT_FOUND, "no open upload with that id", None)
-        }
-        Err(e @ BlobError::ChunkOutOfRange { .. }) => {
-            coded(doc, codes::CHUNK_OUT_OF_RANGE, e.to_string(), None)
-        }
-        Err(BlobError::ChunkMismatch(why)) => coded(doc, codes::CHUNK_MISMATCH, why, None),
-        Err(e) => general(doc, e),
+        Err(a) => a,
     }
 }
 
 pub(crate) async fn commit(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    use upload_commit::error_codes as codes;
-    let req: upload_commit::Payload = match parse(doc, &payload) {
-        Ok(p) => p,
-        Err(a) => return a,
-    };
-    let presenter = match state.presenter(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    match state.files.commit(&presenter, req.upload_id.as_str()).await {
-        Ok(c) => {
-            answer::<upload_commit::Response>(doc, json!({ "blobRef": c.blob_ref, "size": c.size }))
-        }
-        Err(BlobError::NotFound) => coded(doc, codes::NOT_FOUND, "no upload with that id", None),
-        Err(BlobError::Incomplete { remaining_count }) => coded(
-            doc,
-            codes::INCOMPLETE,
-            format!("{remaining_count} chunk(s) have not been sent"),
-            Some(json!({ "remainingCount": remaining_count })),
-        ),
-        Err(e @ BlobError::DigestMismatch) => {
-            coded(doc, codes::DIGEST_MISMATCH, e.to_string(), None)
-        }
-        Err(e) => general(doc, e),
+    match presenter(state, doc).await {
+        Ok(p) => render(doc, blob_tasks::commit(&state.files, &p, &payload).await),
+        Err(a) => a,
     }
 }
 
 pub(crate) async fn abort(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    use upload_abort::error_codes as codes;
-    let req: upload_abort::Payload = match parse(doc, &payload) {
-        Ok(p) => p,
-        Err(a) => return a,
-    };
-    let presenter = match state.presenter(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    match state.files.abort(&presenter, req.upload_id.as_str()).await {
-        Ok(aborted) => answer::<upload_abort::Response>(
-            doc,
-            json!({ "uploadId": req.upload_id.as_str(), "aborted": aborted }),
-        ),
-        Err(BlobError::NotFound) => coded(doc, codes::NOT_FOUND, "no upload with that id", None),
-        Err(e) => general(doc, e),
+    match presenter(state, doc).await {
+        Ok(p) => render(doc, blob_tasks::abort(&state.files, &p, &payload).await),
+        Err(a) => a,
     }
 }
 
 pub(crate) async fn get(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    use blob_get::error_codes as codes;
-    let req: blob_get::Payload = match parse(doc, &payload) {
-        Ok(p) => p,
-        Err(a) => return a,
-    };
+    if let Err(r) =
+        blob_tasks::parse::<trust_tasks_rs::specs::rooms::blobs::get::v0_1::Payload>(&payload)
+    {
+        return refused(doc, r);
+    }
     let (room, presenter, _authorized) = match authorize(state, doc, &payload, Action::Read).await {
         Ok(r) => r,
         Err(a) => return a,
     };
-    match state
-        .files
-        .open_download(&room.room_id, &presenter, req.blob_ref.as_str())
-        .await
-    {
-        Ok(d) => answer::<blob_get::Response>(
-            doc,
-            json!({
-                "manifest": d.manifest,
-                "downloadId": d.download_id.to_string(),
-                "expiresAt": d.expires_at,
-            }),
-        ),
-        Err(BlobError::NotFound) => coded(
-            doc,
-            codes::NOT_FOUND,
-            "no blob with that BlobRef is committed in this room",
-            None,
-        ),
-        Err(e) => general(doc, e),
-    }
+    render(
+        doc,
+        blob_tasks::get(&state.files, &room, &presenter, &payload).await,
+    )
 }
 
 pub(crate) async fn download_chunk(
@@ -379,77 +204,27 @@ pub(crate) async fn download_chunk(
     doc: &TrustTask<Value>,
     payload: Value,
 ) -> Answer {
-    use download_chunk::error_codes as codes;
-    let req: download_chunk::Payload = match parse(doc, &payload) {
-        Ok(p) => p,
-        Err(a) => return a,
-    };
-    let presenter = match state.presenter(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let index = (*req.index).max(0) as u64;
-    match state
-        .files
-        .read_chunk(&presenter, req.download_id.as_str(), index)
-        .await
-    {
-        Ok(c) => answer::<download_chunk::Response>(
+    match presenter(state, doc).await {
+        Ok(p) => render(
             doc,
-            json!({
-                "index": index,
-                "data": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&c.data),
-                "digestMultibase": c.digest_multibase,
-            }),
+            blob_tasks::download_chunk(&state.files, &p, &payload).await,
         ),
-        Err(BlobError::NotFound) => {
-            coded(doc, codes::NOT_FOUND, "no open download with that id", None)
-        }
-        Err(e @ BlobError::ChunkOutOfRange { .. }) => {
-            coded(doc, codes::CHUNK_OUT_OF_RANGE, e.to_string(), None)
-        }
-        Err(e) => general(doc, e),
+        Err(a) => a,
     }
 }
 
 pub(crate) async fn info(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(a) = parse::<rooms_info::Payload>(doc, &payload) {
-        return a;
+    if let Err(r) = blob_tasks::parse::<trust_tasks_rs::specs::rooms::info::v0_1::Payload>(&payload)
+    {
+        return refused(doc, r);
     }
     let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
         Ok(r) => r,
         Err(a) => return a,
     };
-    let limits = state.files.effective_limits(&room);
-    let room_usage = match state.files.room_usage(&room.room_id).await {
-        Ok(u) => u,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let mut usage = json!({ "room": room_usage });
-    // The presenter's own figures, charged to the member the chain descends
-    // from. Never on a `private` room, where the host does not know who asks.
-    if room.visibility != Visibility::Private
-        && let Some(member) = authorized.member()
-    {
-        match state.files.member_usage(&room.room_id, member).await {
-            Ok(u) => usage["member"] = json!({ "usage": u, "limits": limits.member }),
-            Err(e) => return from_app_error(doc, &e),
-        }
-    }
-    answer::<rooms_info::Response>(
+    render(
         doc,
-        json!({
-            "roomId": room.room_id,
-            "visibility": room.visibility,
-            "retentionPolicy": room.retention_policy,
-            "epoch": room.epoch,
-            "limits": {
-                "filesEnabled": limits.files_enabled,
-                "room": limits.room,
-                "member": limits.member,
-            },
-            "usage": usage,
-        }),
+        blob_tasks::info(&state.files, &room, &authorized, &payload).await,
     )
 }
 
@@ -462,54 +237,31 @@ pub(crate) async fn put_v2(
     doc: &TrustTask<Value>,
     payload: Value,
 ) -> Answer {
-    let req: put_v2::Payload = match parse(doc, &payload) {
-        Ok(p) => p,
-        Err(a) => return a,
+    let blobs = match blob_tasks::put_v2_blobs(&payload) {
+        Ok(b) => b,
+        Err(r) => return refused(doc, r),
     };
-    let blobs: Vec<String> = req
-        .blobs
-        .unwrap_or_default()
-        .iter()
-        .map(|b| b.as_str().to_string())
-        .collect();
-    let mut body = payload;
-    if let Some(obj) = body.as_object_mut() {
-        obj.remove("blobs");
-        obj.remove("ext");
-    }
-    super::put_with_blobs(state, doc, body, Some(blobs)).await
-}
-
-/// The request members a 0.1 read shares with its 0.2 successor: everything
-/// but `ext`, which the 0.1 body does not take.
-fn without_ext(mut payload: Value) -> Value {
-    if let Some(obj) = payload.as_object_mut() {
-        obj.remove("ext");
-    }
-    payload
+    super::put_with_blobs(state, doc, blob_tasks::as_v0_1(payload), Some(blobs)).await
 }
 
 /// `rooms/records/get/0.2`: the 0.1 read, whose answer also names the
 /// record's blobs.
 pub(crate) async fn get_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(a) = parse::<get_v2_spec::Payload>(doc, &payload) {
-        return a;
+    if let Err(r) = blob_tasks::parse::<get_v2_spec::Payload>(&payload) {
+        return refused(doc, r);
     }
-    super::get_versioned(state, doc, without_ext(payload), true).await
+    super::get_versioned(state, doc, blob_tasks::as_v0_1(payload), true).await
 }
 
 /// `rooms/records/list/0.2`: the 0.1 listing, each row naming its blobs.
 pub(crate) async fn list_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(a) = parse::<list_v2_spec::Payload>(doc, &payload) {
-        return a;
+    if let Err(r) = blob_tasks::parse::<list_v2_spec::Payload>(&payload) {
+        return refused(doc, r);
     }
-    super::list_versioned(state, doc, without_ext(payload), true).await
+    super::list_versioned(state, doc, blob_tasks::as_v0_1(payload), true).await
 }
 
 /// A 0.1 get response with `blobs` added, answered as 0.2.
-///
-/// `blobs` is exactly what the stored version names: absent when it names
-/// none, which includes a retraction (which released them) and a 0.1 write.
 pub(crate) async fn get_v2_response(
     snapshot: &vti_rooms::blobs::ReadSnapshot<'_>,
     doc: &TrustTask<Value>,
@@ -517,16 +269,10 @@ pub(crate) async fn get_v2_response(
     key: &str,
     response: impl serde::Serialize,
 ) -> Answer {
-    let mut body = match serde_json::to_value(response) {
-        Ok(v) => v,
-        Err(e) => return from_app_error(doc, &AppError::Serialization(e)),
-    };
-    match snapshot.record_blobs(room_id, key).await {
-        Ok(blobs) if !blobs.is_empty() => body["blobs"] = json!(blobs),
-        Ok(_) => {}
-        Err(e) => return from_app_error(doc, &e),
-    }
-    answer::<get_v2_spec::Response>(doc, body)
+    render(
+        doc,
+        blob_tasks::get_v2_response(snapshot, room_id, key, response).await,
+    )
 }
 
 /// A 0.1 listing with each row's `blobs` added, answered as 0.2.
@@ -536,47 +282,21 @@ pub(crate) async fn list_v2_response(
     room_id: &str,
     response: impl serde::Serialize,
 ) -> Answer {
-    let mut body = match serde_json::to_value(response) {
-        Ok(v) => v,
-        Err(e) => return from_app_error(doc, &AppError::Serialization(e)),
-    };
-    if let Some(rows) = body["records"].as_array_mut() {
-        for row in rows {
-            let Some(key) = row["key"].as_str().map(str::to_string) else {
-                continue;
-            };
-            match snapshot.record_blobs(room_id, &key).await {
-                Ok(blobs) if !blobs.is_empty() => row["blobs"] = json!(blobs),
-                Ok(_) => {}
-                Err(e) => return from_app_error(doc, &e),
-            }
-        }
-    }
-    answer::<list_v2_spec::Response>(doc, body)
+    render(
+        doc,
+        blob_tasks::list_v2_response(snapshot, room_id, response).await,
+    )
 }
 
 /// Why `rooms/records/put` 0.2 refused a record's `blobs`, as that task's
 /// declared codes.
 pub(crate) fn record_blobs_refused(doc: &TrustTask<Value>, e: BlobError) -> Answer {
-    match e {
-        BlobError::NotFound => coded(
-            doc,
-            put_v2::error_codes::BLOB_NOT_FOUND,
-            "a `blobs` entry names no blob committed in this room",
-            None,
-        ),
-        BlobError::LimitExceeded(l) => coded(
-            doc,
-            put_v2::error_codes::LIMIT_EXCEEDED,
-            BlobError::LimitExceeded(l.clone()).to_string(),
-            Some(l.details()),
-        ),
-        other => general(doc, other),
-    }
+    refused(doc, blob_tasks::record_blobs_refused(e))
 }
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine as _;
     use std::sync::Arc;
 
     use axum::Router;

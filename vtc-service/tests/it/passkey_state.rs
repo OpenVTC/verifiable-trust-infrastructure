@@ -122,6 +122,10 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         rooms_ks: rooms_ks.clone(),
         room_records_ks: room_records_ks.clone(),
         room_epoch_links_ks: room_epoch_links_ks.clone(),
+        room_files: std::sync::Arc::new(
+            vtc_service::rooms::files::open_blob_host(&store, dir.path(), &Default::default())
+                .unwrap(),
+        ),
         invitations_ks,
         consumed_invitations_ks,
         registry_client: None,

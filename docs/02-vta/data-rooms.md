@@ -513,8 +513,38 @@ because on every verb but `create` (§8.4) the caller is authenticated by the
 document's own proof and authorized by the room's chain, never by the
 community's ACL or a session.
 
-- **Keyspaces**: `rooms` (one row per room) and `room_records`. Both are in
-  `BACKED_UP`, so a community backup captures them.
+- **Keyspaces**: `rooms` (one row per room), `room_records`, `room_epoch_links`
+  and `room_blobs` (the index of room files and their usage) are in
+  `BACKED_UP`, so a community backup captures them. `room_blob_transfers`
+  (uploads and downloads in flight) is not; a client resumes from `begin`.
+- **Room files are off until you turn them on.** Until storage configs exist, a
+  file's ciphertext goes to a directory on this host, under limits that apply
+  to every room alike, so a VTC accepts no uploads unless its config says so:
+
+  ```toml
+  [rooms.files]
+  enabled = true
+  # blob_dir = "/var/lib/vtc/room-blobs"   # default <store.data_dir>/room-blobs
+  # max_file_bytes = 104857600             # at most 1 GiB
+  # storage_capacity_bytes = 107374182400
+  # orphan_grace_hours = 168               # a released file is deleted after this
+  # sweep_interval_secs = 600
+  [rooms.files.room]                       # per room; defaults: 10 000 files,
+  # max_files = 10000                      #   100 MiB a file, 5 GiB in all
+  # max_bytes = 5368709120
+  [rooms.files.member]                     # per member, not on `private` rooms;
+  # max_bytes = 1073741824                 #   defaults: 2 000 files, 1 GiB
+  ```
+
+  With it off, a stored file is still served and records without files are
+  unaffected; `begin` answers `filesDisabled`. **A VTC backup carries the index
+  and never the bytes**: back up `blob_dir` beside the data directory. The VTC
+  holds ciphertext only. A file's key is derived in the member's VTA, and no
+  host ever holds one. Upload chunks are larger than the 64 KiB a document from
+  a party with no ACL entry may be, so a chunk is admitted at its declared size
+  only from the party holding the open upload it belongs to, and a `begin` only
+  when it names a room this VTC hosts, both under the same per-address budget as
+  any other large document.
 - **Audit**: room operations land in the VTC's hash-chained audit keyspace, with
   the same tier rule as above.
 - **Governance**: the `rooms` policy purpose (`vtc.rooms` package) decides who
@@ -660,8 +690,8 @@ unless every check holds: the record's signed body, the blob being the one its
 author named, each chunk against the manifest, and the plaintext against the
 author's digest. A file's name comes from another member, so `get` writes it
 in the current directory under its last path component, never over an
-existing file. Files need `rooms/records/put` 0.2, which `room-host` serves.
-The VTC does not serve it yet.
+existing file. Files need a host that serves `rooms/records/put` 0.2:
+`room-host` does, and so does a VTC with `[rooms.files] enabled = true` (§8.2).
 
 One thing it cannot do: **issue credentials**. The owner's verbs (§5.3) are
 served by a VTA but reached from a wallet; the CLI has no `rooms owner …`

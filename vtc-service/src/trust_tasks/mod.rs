@@ -1905,6 +1905,12 @@ mod spine_proof_tests {
     #[test]
     fn every_rooms_task_declares_the_proof_its_arm_requires() {
         for uri in vti_rooms::wire::ROOMS_DISPATCHED_URIS {
+            // Reasoned about there, and removed when its specification agrees
+            // (`the_dispatched_set_declares_the_proofs_the_design_note_records`
+            // fails on a stale entry).
+            if DISPATCHED_WITHOUT_PROOF.iter().any(|(u, _)| u == uri) {
+                continue;
+            }
             let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} has no published spec policy"));
             assert!(
@@ -1926,6 +1932,13 @@ mod spine_proof_tests {
     /// fails the build the moment a listed URI starts declaring a proof (a
     /// stale entry) or an unlisted one stops (an unreasoned one).
     const DISPATCHED_WITHOUT_PROOF: &[(&str, &str)] = &[
+        (
+            vti_rooms::wire::ROOMS_INFO_TYPE,
+            "the rooms arm refuses a request with no verified signer, since the room's chain \
+             is bound to it; the specification says RECOMMENDED until \
+             trustoverip/dtgwg-trust-tasks-tf#750 reaches trust-tasks-rs, and this entry \
+             goes with that bump",
+        ),
         (
             jr::JOIN_REQUEST_MANIFEST_TYPE,
             "a public read of the community's join criteria; names no identity to authorize",

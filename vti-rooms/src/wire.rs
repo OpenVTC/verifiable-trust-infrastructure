@@ -61,6 +61,37 @@ pub const ROOMS_EPOCH_PRUNE_TYPE: &str = "https://trusttasks.org/spec/rooms/epoc
 /// `rooms/epoch/commits/0.1`.
 pub const ROOMS_EPOCH_COMMITS_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/commits/0.1";
 
+/// `rooms/records/put/0.2`: a record that may name blobs.
+pub const ROOMS_RECORDS_PUT_V2_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::records::put::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/get/0.2`: a read that names the record's blobs.
+pub const ROOMS_RECORDS_GET_V2_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::records::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/list/0.2`: a listing whose rows name their blobs.
+pub const ROOMS_RECORDS_LIST_V2_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::records::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/blobs/upload/begin/0.1`.
+pub const ROOMS_BLOBS_UPLOAD_BEGIN_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::blobs::upload::begin::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/blobs/upload/chunk/0.1`.
+pub const ROOMS_BLOBS_UPLOAD_CHUNK_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::blobs::upload::chunk::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/blobs/upload/commit/0.1`.
+pub const ROOMS_BLOBS_UPLOAD_COMMIT_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::blobs::upload::commit::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/blobs/upload/abort/0.1`.
+pub const ROOMS_BLOBS_UPLOAD_ABORT_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::blobs::upload::abort::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/blobs/get/0.1`.
+pub const ROOMS_BLOBS_GET_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::blobs::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/blobs/chunk/0.1`.
+pub const ROOMS_BLOBS_CHUNK_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::blobs::chunk::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/info/0.1`.
+pub const ROOMS_INFO_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::info::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// Every `rooms/*` URI this service dispatches.
 pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_CREATE_TYPE,
@@ -74,6 +105,17 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_OWNER_CLAIM_TYPE,
     ROOMS_EPOCH_PRUNE_TYPE,
     ROOMS_EPOCH_COMMITS_TYPE,
+    // Room files (data-rooms-files.md §5).
+    ROOMS_RECORDS_PUT_V2_TYPE,
+    ROOMS_RECORDS_GET_V2_TYPE,
+    ROOMS_RECORDS_LIST_V2_TYPE,
+    ROOMS_BLOBS_UPLOAD_BEGIN_TYPE,
+    ROOMS_BLOBS_UPLOAD_CHUNK_TYPE,
+    ROOMS_BLOBS_UPLOAD_COMMIT_TYPE,
+    ROOMS_BLOBS_UPLOAD_ABORT_TYPE,
+    ROOMS_BLOBS_GET_TYPE,
+    ROOMS_BLOBS_CHUNK_TYPE,
+    ROOMS_INFO_TYPE,
 ];
 
 /// What a party presents to act on a room.

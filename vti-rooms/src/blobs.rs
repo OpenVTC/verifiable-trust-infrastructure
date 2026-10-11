@@ -623,6 +623,38 @@ impl BlobHost {
         }
     }
 
+    /// The blob index ([`ROOM_BLOBS_KEYSPACE`]), for a host that backs it up. Its rows are
+    /// written only through this type; a backup reads them and a restore puts them back
+    /// before anything is served.
+    pub fn index_keyspace(&self) -> &KeyspaceHandle {
+        &self.blobs
+    }
+
+    /// Whether this host accepts uploads at all.
+    pub fn files_enabled(&self) -> bool {
+        self.limits.files_enabled
+    }
+
+    /// Whether `opener` holds an upload here that is open and unexpired.
+    ///
+    /// What a host can check about a document's claimed issuer before verifying anything,
+    /// for a chunk document larger than its default size: the raised size is for the party
+    /// uploading, and an upload is opened only after a verified chain. A scan of this
+    /// host's transfers, which hold at most a few open slots per party, each for minutes.
+    /// A failed read counts as no.
+    pub async fn holds_open_upload(&self, opener: &str) -> bool {
+        let now = chrono::Utc::now();
+        match bundle_store::list_bundles(&self.transfers).await {
+            Ok(all) => all.iter().any(|b| {
+                b.created_by == opener
+                    && b.kind == bundle_store::BundleKind::Import
+                    && !b.state.is_terminal()
+                    && b.expires_at > now
+            }),
+            Err(_) => false,
+        }
+    }
+
     /// The limits this host applies to `room`, as it reports them.
     pub fn effective_limits(&self, _room: &Room) -> EffectiveLimits {
         EffectiveLimits {

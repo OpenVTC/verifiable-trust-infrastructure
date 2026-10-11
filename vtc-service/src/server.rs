@@ -188,6 +188,9 @@ pub struct AppState {
     pub room_records_ks: KeyspaceHandle,
     /// The rooms' epoch key chains. Wrapped key material this service cannot read.
     pub room_epoch_links_ks: KeyspaceHandle,
+    /// Room files: the blob index, transfers in flight, limits and the blob store
+    /// (`[rooms.files]`). Ciphertext only: this service never holds a file key.
+    pub room_files: Arc<vti_rooms::blobs::BlobHost>,
     pub audit_ks: KeyspaceHandle,
     pub audit_key_ks: KeyspaceHandle,
     /// Signed audit checkpoints (#708). Read by `GET /v1/audit/verify`,
@@ -526,6 +529,11 @@ pub async fn run(
     let rooms_ks = store.keyspace(keyspaces::ROOMS)?;
     let room_records_ks = store.keyspace(keyspaces::ROOM_RECORDS)?;
     let room_epoch_links_ks = store.keyspace(keyspaces::ROOM_EPOCH_LINKS)?;
+    let room_files = Arc::new(crate::rooms::files::open_blob_host(
+        &store,
+        &config.store.data_dir,
+        &config.rooms.files,
+    )?);
     let audit_ks = store.keyspace(keyspaces::AUDIT)?;
     let audit_key_ks = store.keyspace(keyspaces::AUDIT_KEY)?;
     let audit_checkpoint_ks = store.keyspace(keyspaces::AUDIT_CHECKPOINT)?;
@@ -892,6 +900,7 @@ pub async fn run(
         rooms_ks,
         room_records_ks,
         room_epoch_links_ks,
+        room_files,
         audit_ks,
         audit_key_ks,
         audit_checkpoint_ks: audit_checkpoint_ks.clone(),
@@ -1410,6 +1419,12 @@ pub async fn run(
     crate::admin_actions::spawn_sweeper(state.clone(), shutdown_rx.clone());
     // A refreshed GeoIP database is picked up without a restart.
     state.geoip.spawn_reloader(shutdown_rx.clone());
+    // Room files deleted, orphaned past their grace, or abandoned mid-transfer.
+    crate::rooms::files::spawn_sweeper(
+        state.room_files.clone(),
+        boot_cfg.rooms.files.sweep_interval_secs,
+        shutdown_rx.clone(),
+    );
     crate::join::retention::RetentionSweeper::spawn(
         state.join_requests_ks.clone(),
         state.sync_queue_ks.clone(),

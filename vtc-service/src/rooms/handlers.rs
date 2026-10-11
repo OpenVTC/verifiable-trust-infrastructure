@@ -135,9 +135,22 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
         .on_async(handle_epoch_commits)
         .on_async(handle_transfer_owner)
         .on_async(handle_claim_owner)
+        .on_async(super::files::handle_put_record_v2)
+        .on_async(super::files::handle_get_record_v2)
+        .on_async(super::files::handle_list_records_v2)
+        .on_async(super::files::handle_upload_begin)
+        .on_async(super::files::handle_upload_chunk)
+        .on_async(super::files::handle_upload_commit)
+        .on_async(super::files::handle_upload_abort)
+        .on_async(super::files::handle_blob_get)
+        .on_async(super::files::handle_download_chunk)
+        .on_async(super::files::handle_info)
 }
 
-fn presenter_and_verifier(state: &AppState, presenter: &str) -> (String, DtgChainVerifier) {
+pub(super) fn presenter_and_verifier(
+    state: &AppState,
+    presenter: &str,
+) -> (String, DtgChainVerifier) {
     // `without_zk`: this service has no zero-knowledge profile for a private room's subject
     // binding, and the verifier refuses those rather than serving a pooling defence nobody
     // checked. Swap for `with_zk` when the working group settles the profile.
@@ -159,7 +172,7 @@ fn presenter_and_verifier(state: &AppState, presenter: &str) -> (String, DtgChai
 /// their write failed when it did not. The audit chain's own integrity is protected by its
 /// hash chain, which makes a gap visible to a verifier — that is the right place for this
 /// to be noticed, not in a handler's return value.
-async fn audit_room(
+pub(super) async fn audit_room(
     state: &AppState,
     room: &Room,
     authorized: &authz::AuthorizedAction,
@@ -190,7 +203,7 @@ async fn audit_room(
 }
 
 /// Seconds since the Unix epoch.
-fn now() -> u64 {
+pub(super) fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -364,15 +377,27 @@ pub(crate) async fn handle_put_record(
     doc: TrustTask<PutRecordBody>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
+    let req = doc.payload.clone();
+    put_record(&doc, &ctx, req, Vec::new()).await
+}
+
+/// Write a record: `rooms/records/put` 0.1 (no `blobs`) or 0.2.
+///
+/// A 0.1 write names no blobs, so rewriting a record that carried a file under 0.1
+/// releases it: the new version does not name it, which is what 0.2 says a release is.
+pub(super) async fn put_record<P>(
+    doc: &TrustTask<P>,
+    ctx: &RoomCtx,
+    req: PutRecordBody,
+    blobs: Vec<String>,
+) -> TrustTaskOutcome {
     let state = &ctx.state;
-    let presenter = ctx.presenter.as_str();
-    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
-    let (presenter, verifier) = presenter_and_verifier(state, presenter);
+    let (presenter, verifier) = presenter_and_verifier(state, &ctx.presenter);
     let authorized = match authz::authorize(
         &room,
         &req.presentation,
@@ -384,7 +409,20 @@ pub(crate) async fn handle_put_record(
     .await
     {
         Ok(a) => a,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
+    };
+
+    // Held across the write: the blobs it names cannot be collected, and their limits
+    // cannot change, between this check and the references it records.
+    let references = match state
+        .room_files
+        .prepare_record(&room, authorized.member(), &req.key, &blobs)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return super::files::refused(doc, vti_rooms::blob_tasks::record_blobs_refused(e));
+        }
     };
 
     // The author is recorded only where the tier discloses one. On a private room
@@ -425,6 +463,12 @@ pub(crate) async fn handle_put_record(
     .await
     {
         Ok(stored) => {
+            if let Err(e) = references.apply().await {
+                // The record is written; only its blob references are not. Said loudly,
+                // because usage now disagrees with the room by one file.
+                tracing::error!(error = %e, room = %req.room_id, record = %stored.key,
+                    "record stored but its blob references were not updated");
+            }
             audit_room(
                 state,
                 &room,
@@ -434,7 +478,7 @@ pub(crate) async fn handle_put_record(
             )
             .await;
             success_response(
-                &doc,
+                doc,
                 PutRecordResponse {
                     key: stored.key,
                     version: stored.version,
@@ -442,7 +486,7 @@ pub(crate) async fn handle_put_record(
                 },
             )
         }
-        Err(e) => app_error_to_reject(&doc, &e),
+        Err(e) => app_error_to_reject(doc, &e),
     }
 }
 
@@ -455,15 +499,24 @@ pub(crate) async fn handle_get_record(
     doc: TrustTask<GetRecordBody>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
+    let req = doc.payload.clone();
+    get_record(&doc, &ctx, req, false).await
+}
+
+/// Read a record: `rooms/records/get` 0.1, or 0.2 (`v2`), which also names its blobs.
+pub(super) async fn get_record<P>(
+    doc: &TrustTask<P>,
+    ctx: &RoomCtx,
+    req: GetRecordBody,
+    v2: bool,
+) -> TrustTaskOutcome {
     let state = &ctx.state;
-    let presenter = ctx.presenter.as_str();
-    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
-    let (presenter, verifier) = presenter_and_verifier(state, presenter);
+    let (presenter, verifier) = presenter_and_verifier(state, &ctx.presenter);
     let authorized = match authz::authorize(
         &room,
         &req.presentation,
@@ -475,9 +528,15 @@ pub(crate) async fn handle_get_record(
     .await
     {
         Ok(a) => a,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
 
+    // A 0.2 read names the blobs of the version it returns: the record and its
+    // references are read under the lock every record write holds.
+    let snapshot = match v2 {
+        true => Some(state.room_files.read_snapshot().await),
+        false => None,
+    };
     match storage::get_record(&state.room_records_ks, &req.room_id, &req.key).await {
         Ok(record) => {
             audit_room(
@@ -492,12 +551,17 @@ pub(crate) async fn handle_get_record(
             // on. Serialising `Record` was what put a bare `sealed` string and
             // six undeclared members on the wire — see `GetRecordResponse`.
             let (commitment, trace) = record_verification(state, &req.room_id, &req.key).await;
-            success_response(
-                &doc,
-                GetRecordResponse::of(&record, commitment.as_ref(), trace),
+            let response = GetRecordResponse::of(&record, commitment.as_ref(), trace);
+            let Some(snapshot) = snapshot else {
+                return success_response(doc, response);
+            };
+            super::files::render(
+                doc,
+                vti_rooms::blob_tasks::get_v2_response(&snapshot, &req.room_id, &req.key, response)
+                    .await,
             )
         }
-        Err(e) => app_error_to_reject(&doc, &e),
+        Err(e) => app_error_to_reject(doc, &e),
     }
 }
 
@@ -509,15 +573,24 @@ pub(crate) async fn handle_list_records(
     doc: TrustTask<ListRecordsBody>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
+    let req = doc.payload.clone();
+    list_records(&doc, &ctx, req, false).await
+}
+
+/// List records: `rooms/records/list` 0.1, or 0.2 (`v2`), whose rows also name their blobs.
+pub(super) async fn list_records<P>(
+    doc: &TrustTask<P>,
+    ctx: &RoomCtx,
+    req: ListRecordsBody,
+    v2: bool,
+) -> TrustTaskOutcome {
     let state = &ctx.state;
-    let presenter = ctx.presenter.as_str();
-    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
-    let (presenter, verifier) = presenter_and_verifier(state, presenter);
+    let (presenter, verifier) = presenter_and_verifier(state, &ctx.presenter);
     let authorized = match authz::authorize(
         &room,
         &req.presentation,
@@ -529,9 +602,13 @@ pub(crate) async fn handle_list_records(
     .await
     {
         Ok(a) => a,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
 
+    let snapshot = match v2 {
+        true => Some(state.room_files.read_snapshot().await),
+        false => None,
+    };
     // Paginated honestly: the page the caller asked for, and a cursor when more
     // remain. This used to `take(limit)` and drop the rest without a word, so a
     // short page and a complete room were indistinguishable.
@@ -546,26 +623,30 @@ pub(crate) async fn handle_list_records(
     .await
     {
         Ok(p) => p,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
 
     // A listing names no single record, so the entry records the room and the fact of a
     // listing — which is the event: who has seen what this room holds.
     audit_room(state, &room, &authorized, RoomOperation::ListRecords, None).await;
     let head = room_head(state, &req.room_id).await;
-    success_response(
-        &doc,
-        ListRecordsResponse {
-            records: page.records.iter().map(|r| r.metadata()).collect(),
-            cursor: page.cursor,
-            // One head, so the three values a reader compares cannot come
-            // from three moments.
-            data_commitment: head
-                .as_ref()
-                .map(|h| vti_rooms::merkle::to_multibase(&h.root)),
-            record_count: head.as_ref().map(|h| h.record_count),
-            head_version: head.as_ref().map(|h| h.head_version),
-        },
+    let response = ListRecordsResponse {
+        records: page.records.iter().map(|r| r.metadata()).collect(),
+        cursor: page.cursor,
+        // One head, so the three values a reader compares cannot come
+        // from three moments.
+        data_commitment: head
+            .as_ref()
+            .map(|h| vti_rooms::merkle::to_multibase(&h.root)),
+        record_count: head.as_ref().map(|h| h.record_count),
+        head_version: head.as_ref().map(|h| h.head_version),
+    };
+    let Some(snapshot) = snapshot else {
+        return success_response(doc, response);
+    };
+    super::files::render(
+        doc,
+        vti_rooms::blob_tasks::list_v2_response(&snapshot, &req.room_id, response).await,
     )
 }
 
@@ -1123,6 +1204,16 @@ pub(crate) async fn handle_curate_record(
         Err(e) => return app_error_to_reject(&doc, &e),
     };
 
+    // Held across the curation, so a 0.2 read never sees a retracted record still
+    // naming the blobs the retraction released.
+    let release = match state
+        .room_files
+        .prepare_release(&req.room_id, &req.key)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
     match storage::curate_record(
         &state.rooms_ks,
         &state.room_records_ks,
@@ -1138,6 +1229,14 @@ pub(crate) async fn handle_curate_record(
     .await
     {
         Ok(curated) => {
+            // A retraction keeps no body, so it keeps no file: every blob the record
+            // named is released, and orphaned if nothing else names it.
+            if curated.status == RecordStatus::Retracted
+                && let Err(e) = release.apply().await
+            {
+                tracing::error!(error = %e, room = %req.room_id, record = %curated.key,
+                    "record retracted but its blobs were not released");
+            }
             audit_room(
                 state,
                 &room,
@@ -2437,6 +2536,284 @@ mod tests {
         assert!(
             !body.contains("dormant"),
             "the nomination was never valid; saying `still live` hides that: {body}"
+        );
+    }
+
+    // ── Room files (data-rooms-files.md §5–§6) ────────────────────────────────
+
+    /// Dispatch any room document the way the spine does: verified signer, then the
+    /// registered dispatcher.
+    async fn send(
+        state: &AppState,
+        uri: &str,
+        payload: Value,
+        f: &RoomFixture,
+    ) -> TrustTaskOutcome {
+        let d = doc(state, uri, payload, &f.owner.did, &f.owner.secret_multibase).await;
+        let presenter = spine_presenter(state, &d).await;
+        super::dispatch(state, d, &presenter).await
+    }
+
+    /// A blob's ciphertext as an uploader holds it: its chunks and its manifest.
+    fn blob(len: usize, seed: u8) -> (Vec<Vec<u8>>, vti_rooms::files::BlobManifest) {
+        const CHUNK: usize = 16_384;
+        let bytes: Vec<u8> = (0..len)
+            .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed))
+            .collect();
+        let mut builder = vti_rooms::files::ManifestBuilder::new(CHUNK as u64);
+        let chunks: Vec<Vec<u8>> = bytes.chunks(CHUNK).map(<[u8]>::to_vec).collect();
+        for c in &chunks {
+            builder.push(c);
+        }
+        (chunks, builder.finish().expect("a manifest"))
+    }
+
+    /// Upload and commit a blob into the fixture's room; its BlobRef.
+    async fn upload(state: &AppState, f: &RoomFixture, seed: u8) -> String {
+        use base64::Engine as _;
+        let (chunks, manifest) = blob(40_000, seed);
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_BLOBS_UPLOAD_BEGIN_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner(), "manifest": manifest }),
+            f,
+        )
+        .await;
+        assert!(out.status.is_success(), "begin: {}", payload_of(&out));
+        let begun = payload_of(&out);
+        let upload_id = begun["uploadId"].as_str().unwrap().to_string();
+        assert_eq!(begun["missing"].as_array().unwrap().len(), chunks.len());
+        for (i, c) in chunks.iter().enumerate() {
+            let out = send(
+                state,
+                vti_rooms::wire::ROOMS_BLOBS_UPLOAD_CHUNK_TYPE,
+                json!({
+                    "uploadId": upload_id, "index": i,
+                    "digestMultibase": vti_rooms::files::digest_multibase(c),
+                    "data": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(c),
+                }),
+                f,
+            )
+            .await;
+            assert!(out.status.is_success(), "chunk {i}: {}", payload_of(&out));
+        }
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_BLOBS_UPLOAD_COMMIT_TYPE,
+            json!({ "uploadId": upload_id }),
+            f,
+        )
+        .await;
+        assert!(out.status.is_success(), "commit: {}", payload_of(&out));
+        let blob_ref = payload_of(&out)["blobRef"].as_str().unwrap().to_string();
+        assert_eq!(blob_ref, manifest.blob_ref().unwrap());
+        blob_ref
+    }
+
+    async fn room_files(state: &AppState, f: &RoomFixture) -> u64 {
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_INFO_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            f,
+        )
+        .await;
+        assert!(out.status.is_success(), "info: {}", payload_of(&out));
+        payload_of(&out)["usage"]["room"]["files"].as_u64().unwrap()
+    }
+
+    async fn put_v2(
+        state: &AppState,
+        f: &RoomFixture,
+        key: &str,
+        blobs: &[&str],
+    ) -> TrustTaskOutcome {
+        send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V2_TYPE,
+            json!({
+                "roomId": f.room.room_id, "key": key, "presentation": f.as_owner(),
+                "cleartext": { "body": "a file" }, "blobs": blobs,
+            }),
+            f,
+        )
+        .await
+    }
+
+    /// The whole path a member's client takes against the VTC: upload, a record naming the
+    /// blob, a 0.2 read naming it back, the download, and the usage it is charged.
+    #[tokio::test]
+    async fn a_file_is_uploaded_named_read_back_and_counted() {
+        use base64::Engine as _;
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+
+        let blob_ref = upload(state, &f, 1).await;
+        let out = put_v2(state, &f, "doc", &[&blob_ref]).await;
+        assert!(out.status.is_success(), "put 0.2: {}", payload_of(&out));
+
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "doc", "presentation": f.as_owner() }),
+            &f,
+        )
+        .await;
+        assert!(out.status.is_success(), "get 0.2: {}", payload_of(&out));
+        assert_eq!(payload_of(&out)["blobs"], json!([blob_ref]));
+
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f,
+        )
+        .await;
+        assert!(out.status.is_success(), "list 0.2: {}", payload_of(&out));
+        assert_eq!(payload_of(&out)["records"][0]["blobs"], json!([blob_ref]));
+
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_BLOBS_GET_TYPE,
+            json!({ "roomId": f.room.room_id, "blobRef": blob_ref, "presentation": f.as_owner() }),
+            &f,
+        )
+        .await;
+        assert!(out.status.is_success(), "blob get: {}", payload_of(&out));
+        let download_id = payload_of(&out)["downloadId"].as_str().unwrap().to_string();
+        let (chunks, _) = blob(40_000, 1);
+        for (i, expected) in chunks.iter().enumerate() {
+            let out = send(
+                state,
+                vti_rooms::wire::ROOMS_BLOBS_CHUNK_TYPE,
+                json!({ "downloadId": download_id, "index": i }),
+                &f,
+            )
+            .await;
+            assert!(
+                out.status.is_success(),
+                "download {i}: {}",
+                payload_of(&out)
+            );
+            let data = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload_of(&out)["data"].as_str().unwrap())
+                .unwrap();
+            assert_eq!(&data, expected);
+        }
+
+        assert_eq!(room_files(state, &f).await, 1);
+    }
+
+    /// A record can only name a blob committed in its own room.
+    #[tokio::test]
+    async fn a_record_naming_an_uncommitted_blob_is_refused_with_the_declared_code() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+
+        let (_, never_uploaded) = blob(20_000, 9);
+        let out = put_v2(state, &f, "doc", &[&never_uploaded.blob_ref().unwrap()]).await;
+        assert!(!out.status.is_success());
+        assert_eq!(
+            payload_of(&out)["code"],
+            "rooms/records/put:blobNotFound",
+            "{}",
+            payload_of(&out)
+        );
+    }
+
+    /// A retraction keeps no body, so it keeps no file; a 0.1 rewrite names no blobs, so
+    /// it releases them too. Either way the room stops being charged at once.
+    #[tokio::test]
+    async fn retracting_or_rewriting_a_record_releases_its_file() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+
+        let first = upload(state, &f, 1).await;
+        assert!(put_v2(state, &f, "a", &[&first]).await.status.is_success());
+        let second = upload(state, &f, 2).await;
+        assert!(put_v2(state, &f, "b", &[&second]).await.status.is_success());
+        assert_eq!(room_files(state, &f).await, 2);
+
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_CURATE_TYPE,
+            json!({
+                "roomId": f.room.room_id, "key": "a", "presentation": f.as_owner(),
+                "status": "retracted",
+            }),
+            &f,
+        )
+        .await;
+        assert!(out.status.is_success(), "retract: {}", payload_of(&out));
+        assert_eq!(
+            room_files(state, &f).await,
+            1,
+            "the retraction released its file"
+        );
+
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+            json!({
+                "roomId": f.room.room_id, "key": "b", "presentation": f.as_owner(),
+                "cleartext": { "body": "no file any more" },
+            }),
+            &f,
+        )
+        .await;
+        assert!(out.status.is_success(), "0.1 rewrite: {}", payload_of(&out));
+        assert_eq!(
+            room_files(state, &f).await,
+            0,
+            "a 0.1 rewrite released its file"
+        );
+    }
+
+    /// An upload belongs to the party that opened it. Anyone else sending to it is told
+    /// there is no such upload, which says nothing about whether one exists.
+    #[tokio::test]
+    async fn only_the_uploader_can_send_chunks_to_an_upload() {
+        use base64::Engine as _;
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+
+        let (chunks, manifest) = blob(20_000, 3);
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_BLOBS_UPLOAD_BEGIN_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner(), "manifest": manifest }),
+            &f,
+        )
+        .await;
+        let upload_id = payload_of(&out)["uploadId"].as_str().unwrap().to_string();
+
+        let d = doc(
+            state,
+            vti_rooms::wire::ROOMS_BLOBS_UPLOAD_CHUNK_TYPE,
+            json!({
+                "uploadId": upload_id, "index": 0,
+                "digestMultibase": vti_rooms::files::digest_multibase(&chunks[0]),
+                "data": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&chunks[0]),
+            }),
+            &f.agent.did,
+            &f.agent.secret_multibase,
+        )
+        .await;
+        let presenter = spine_presenter(state, &d).await;
+        let out = super::dispatch(state, d, &presenter).await;
+        assert_eq!(
+            payload_of(&out)["code"],
+            "rooms/blobs/upload/chunk:notFound",
+            "{}",
+            payload_of(&out)
         );
     }
 }

@@ -302,6 +302,19 @@ impl TestVtcBuilder {
         let room_epoch_links_ks = store
             .keyspace("room_epoch_links")
             .expect("room_epoch_links ks");
+        // Uploads on, unlike a deployment's default: tests exercise room files
+        // without writing a `[rooms.files]` section.
+        let room_files = Arc::new(
+            crate::rooms::files::open_blob_host(
+                &store,
+                dir.path(),
+                &crate::config::RoomFilesConfig {
+                    enabled: true,
+                    ..Default::default()
+                },
+            )
+            .expect("room files"),
+        );
         let audit_ks = store.keyspace("audit").expect("audit ks");
         let audit_key_ks = store.keyspace("audit_key").expect("audit_key ks");
         let audit_checkpoint_ks = store
@@ -497,6 +510,7 @@ impl TestVtcBuilder {
             rooms_ks,
             room_records_ks,
             room_epoch_links_ks,
+            room_files,
             audit_ks,
             audit_key_ks,
             audit_checkpoint_ks,

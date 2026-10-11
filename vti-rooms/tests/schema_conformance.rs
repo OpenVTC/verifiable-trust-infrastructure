@@ -938,6 +938,46 @@ fn every_dispatched_uri_is_the_published_one() {
             ROOMS_EPOCH_COMMITS_TYPE,
             <rooms::epoch::commits::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
+        (
+            ROOMS_RECORDS_PUT_V2_TYPE,
+            <rooms::records::put::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_GET_V2_TYPE,
+            <rooms::records::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_LIST_V2_TYPE,
+            <rooms::records::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_BLOBS_UPLOAD_BEGIN_TYPE,
+            <rooms::blobs::upload::begin::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_BLOBS_UPLOAD_CHUNK_TYPE,
+            <rooms::blobs::upload::chunk::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_BLOBS_UPLOAD_COMMIT_TYPE,
+            <rooms::blobs::upload::commit::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_BLOBS_UPLOAD_ABORT_TYPE,
+            <rooms::blobs::upload::abort::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_BLOBS_GET_TYPE,
+            <rooms::blobs::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_BLOBS_CHUNK_TYPE,
+            <rooms::blobs::chunk::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_INFO_TYPE,
+            <rooms::info::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
     ];
 
     for (ours, registry) in &published {

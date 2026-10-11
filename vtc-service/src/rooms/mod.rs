@@ -9,6 +9,7 @@
 //! The re-exports keep `crate::rooms::Room` and friends resolving, so nothing outside this
 //! module had to move when the subsystem did.
 
+pub mod files;
 pub mod handlers;
 pub mod policy;
 

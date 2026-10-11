@@ -100,8 +100,123 @@ pub struct AppConfig {
     /// shows its approver at sign-in. Absent ⇒ every location is `"unknown"`.
     #[serde(default)]
     pub geoip: GeoIpConfig,
+    /// Data rooms hosted here (`[rooms]`): for now, room files.
+    #[serde(default)]
+    pub rooms: RoomsConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
+}
+
+/// Data rooms hosted by this community (`[rooms]`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RoomsConfig {
+    /// Room files (`[rooms.files]`): the `rooms/blobs/*` tasks and `rooms/records/put/0.2`.
+    #[serde(default)]
+    pub files: RoomFilesConfig,
+}
+
+/// Room files (`[rooms.files]`), `docs/05-design-notes/data-rooms-files.md` §5–§6.
+///
+/// **Off by default.** Until storage configs exist (§7), a file goes to a directory on
+/// this host, under limits that apply to every room alike. An operator turns uploads on
+/// knowing that. Reads of stored files and records without files are served either way.
+/// The limits are the same measures `room-host` takes on its command line. An absent one
+/// keeps the shipped default of §6.2.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RoomFilesConfig {
+    /// Accept uploads. Default `false`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Where committed files are stored. Default `<store.data_dir>/room-blobs`. Not in a
+    /// VTC backup, which carries the index of files (`room_blobs`) and never their bytes:
+    /// back this directory up beside the data directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_dir: Option<PathBuf>,
+    /// The largest single file, at most 1 GiB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_file_bytes: Option<u64>,
+    /// Limits on each room as a whole.
+    #[serde(default)]
+    pub room: RoomFileLimits,
+    /// Limits on each member's own uploads in a room. Not applied on a `private` room.
+    #[serde(default)]
+    pub member: RoomFileLimits,
+    /// Total stored across every room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_capacity_bytes: Option<u64>,
+    /// How long a file nothing names any more is kept before it is deleted. Default 168.
+    #[serde(default = "default_orphan_grace_hours")]
+    pub orphan_grace_hours: u64,
+    /// How often deleted and abandoned files are collected. Default 600.
+    #[serde(default = "default_blob_sweep_interval_secs")]
+    pub sweep_interval_secs: u64,
+}
+
+/// Limits at one scope; an absent measure keeps its default.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RoomFileLimits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_files: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_file_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
+}
+
+fn default_orphan_grace_hours() -> u64 {
+    vti_rooms::blobs::DEFAULT_ORPHAN_GRACE_SECS / 3600
+}
+
+fn default_blob_sweep_interval_secs() -> u64 {
+    600
+}
+
+impl Default for RoomFilesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            blob_dir: None,
+            max_file_bytes: None,
+            room: RoomFileLimits::default(),
+            member: RoomFileLimits::default(),
+            storage_capacity_bytes: None,
+            orphan_grace_hours: default_orphan_grace_hours(),
+            sweep_interval_secs: default_blob_sweep_interval_secs(),
+        }
+    }
+}
+
+impl RoomFilesConfig {
+    /// The limits this configuration sets, over the shipped defaults.
+    pub fn limits(&self) -> vti_rooms::blobs::HostLimits {
+        let mut limits = vti_rooms::blobs::HostLimits {
+            files_enabled: self.enabled,
+            orphan_grace_secs: self.orphan_grace_hours.saturating_mul(3600),
+            storage_capacity_bytes: self.storage_capacity_bytes,
+            ..Default::default()
+        };
+        if let Some(v) = self.max_file_bytes {
+            limits.max_file_bytes = v;
+        }
+        let set = |slot: &mut Option<u64>, v: Option<u64>| {
+            if v.is_some() {
+                *slot = v;
+            }
+        };
+        set(&mut limits.room.max_files, self.room.max_files);
+        set(&mut limits.room.max_file_bytes, self.room.max_file_bytes);
+        set(&mut limits.room.max_bytes, self.room.max_bytes);
+        set(&mut limits.member.max_files, self.member.max_files);
+        set(
+            &mut limits.member.max_file_bytes,
+            self.member.max_file_bytes,
+        );
+        set(&mut limits.member.max_bytes, self.member.max_bytes);
+        limits
+    }
 }
 
 /// Local GeoIP lookups (`[geoip]`) — base design §12.6: a local database only,
@@ -1511,6 +1626,37 @@ fn unknown_key_message(config_path: &std::path::Path, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Room files are off unless a config turns them on, and the documented
+    /// section parses into the limits it says.
+    #[test]
+    fn room_files_are_off_by_default_and_configurable() {
+        let empty: AppConfig = toml::from_str("").expect("empty config");
+        assert!(!empty.rooms.files.enabled);
+        assert!(!empty.rooms.files.limits().files_enabled);
+
+        let cfg: AppConfig = toml::from_str(
+            "[rooms.files]\nenabled = true\nmax_file_bytes = 1048576\norphan_grace_hours = 24\n\
+             [rooms.files.room]\nmax_files = 50\n[rooms.files.member]\nmax_bytes = 2048\n",
+        )
+        .expect("a [rooms.files] section");
+        let limits = cfg.rooms.files.limits();
+        assert!(limits.files_enabled);
+        assert_eq!(limits.max_file_bytes, 1_048_576);
+        assert_eq!(limits.orphan_grace_secs, 24 * 3600);
+        assert_eq!(limits.room.max_files, Some(50));
+        assert_eq!(limits.member.max_bytes, Some(2048));
+        // Unset measures keep the shipped defaults.
+        assert_eq!(
+            limits.room.max_bytes,
+            vti_rooms::blobs::HostLimits::default().room.max_bytes
+        );
+
+        assert!(
+            toml::from_str::<AppConfig>("[rooms.files]\nenable = true\n").is_err(),
+            "a misspelt key is refused, not ignored"
+        );
+    }
 
     #[test]
     fn geoip_database_is_optional() {

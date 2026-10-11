@@ -22,7 +22,8 @@
 //! # Three rules on top of the number
 //!
 //! - **Served types only.** A limit is in force only while this node serves the
-//!   type ([`super::DISPATCHED_URIS`]). The spine verifies a document's proof —
+//!   type ([`super::DISPATCHED_URIS`], and the `rooms/*` family's own
+//!   dispatcher). The spine verifies a document's proof —
 //!   canonicalising the whole document and resolving its signer's DID — before
 //!   it refuses a type it does not route, so a raised limit on a type nobody
 //!   serves would buy an unauthenticated caller that much more work for
@@ -33,7 +34,10 @@
 //!   ([`check`]). The lookup is one keyspace read, made before any signature is
 //!   verified; a claimed issuer that then fails verification is refused as
 //!   usual. Nobody without standing could be authorised for a raised task, so a
-//!   stranger's large document is held to the default.
+//!   stranger's large document is held to the default. Room members hold no ACL
+//!   entry, so the two room-file tasks that raise their size take a standing of
+//!   their own: an open upload for a chunk, a room hosted here for a `begin`
+//!   ([`has_standing`]).
 //! - **No echo.** A refusal names the caller's `type` only when it is short
 //!   enough to be a Type URI.
 //!
@@ -127,10 +131,17 @@ fn declared(type_uri: &str) -> Option<usize> {
     })
 }
 
+/// Every type this node serves: the spine's own, and the `rooms/*` family's.
+fn served_uris() -> Vec<&'static str> {
+    let mut all: Vec<&'static str> = super::DISPATCHED_URIS.to_vec();
+    all.extend(crate::rooms::handlers::served_uris());
+    all
+}
+
 /// The largest document any **served** type accepts: the HTTPS door's body
 /// cap.
 pub(crate) fn largest_max_document_bytes() -> usize {
-    largest_in(super::DISPATCHED_URIS, declared)
+    largest_in(&served_uris(), declared)
 }
 
 fn largest_in(served: &[&str], declared: impl Fn(&str) -> Option<usize>) -> usize {
@@ -145,7 +156,7 @@ pub(crate) const DETAILS_MAX_BYTES: &str = "maxBytes";
 
 /// The largest document `type_uri` accepts, in bytes, from a known issuer.
 pub(crate) fn max_document_bytes(type_uri: &str) -> usize {
-    max_in(type_uri, super::DISPATCHED_URIS, declared)
+    max_in(type_uri, &served_uris(), declared)
 }
 
 fn max_in(type_uri: &str, served: &[&str], declared: impl Fn(&str) -> Option<usize>) -> usize {
@@ -337,7 +348,7 @@ pub(crate) async fn check_for_known_issuer(
         return Ok(None);
     }
     let claimed_issuer = match peek_issuer(body) {
-        Some(issuer) if is_known_issuer(state, &issuer).await => Some(issuer),
+        Some(issuer) if has_standing(state, body, &issuer).await => Some(issuer),
         _ => None,
     };
     let Some(claimed_issuer) = claimed_issuer else {
@@ -380,6 +391,61 @@ pub(crate) fn settle_large_document_charge(
     if verified_issuer != Some(charge.claimed_issuer.as_str()) {
         budget.penalize(&charge.address);
     }
+}
+
+/// Whether the claimed `issuer` of this large document has standing for its
+/// raised limit: it is known here ([`is_known_issuer`]), or the document is a
+/// room file's and the claim holds for that task.
+///
+/// Room members hold no ACL entry here, by design: a room is authorized by the
+/// credentials the room issued. So for the two room-file tasks whose
+/// specifications raise their size, the standing is what this host can check
+/// in one read, before any verification:
+///
+/// - `rooms/blobs/upload/chunk`: the issuer holds an open upload, which only a
+///   verified chain conferring `write` could have opened;
+/// - `rooms/blobs/upload/begin`: uploads are enabled and the document names a
+///   room this host serves.
+///
+/// Both are claims, as an issuer is: the caller's address budget is charged
+/// before the raised limit is granted, and a claim that does not verify
+/// doubles that address's next cost ([`settle_large_document_charge`]).
+async fn has_standing(state: &AppState, body: &[u8], issuer: &str) -> bool {
+    if is_known_issuer(state, issuer).await {
+        return true;
+    }
+    let files = &state.room_files;
+    match peek_type(body).as_deref() {
+        Some(vti_rooms::blob_tasks::UPLOAD_CHUNK_TYPE) => {
+            let did = issuer.split('#').next().unwrap_or(issuer);
+            files.holds_open_upload(did).await
+        }
+        Some(vti_rooms::blob_tasks::UPLOAD_BEGIN_TYPE) if files.files_enabled() => {
+            match peek_room_id(body) {
+                Some(room_id) => vti_rooms::storage::get_room(&state.rooms_ks, &room_id)
+                    .await
+                    .is_ok(),
+                None => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// The `payload.roomId` of a room task, read as [`peek_type`] reads `type`.
+fn peek_room_id(body: &[u8]) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct RoomOnly {
+        #[serde(rename = "roomId")]
+        room_id: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct PayloadOnly {
+        payload: RoomOnly,
+    }
+    serde_json::from_slice::<PayloadOnly>(body)
+        .ok()
+        .map(|p| p.payload.room_id)
 }
 
 /// Whether `issuer` holds standing here: a live ACL entry of its own, or an
@@ -721,6 +787,105 @@ mod tests {
         .await
         .unwrap();
         (vtc, admin, key)
+    }
+
+    /// A room-file document padded to `len`, naming `room_id` in its payload.
+    fn room_document(issuer: &str, type_uri: &str, room_id: &str, len: usize) -> Vec<u8> {
+        let head = format!(
+            r#"{{"type":"{type_uri}","issuer":"{issuer}","payload":{{"roomId":"{room_id}","pad":""#
+        );
+        let tail = r#""}}"#;
+        let body = format!("{head}{}{tail}", "x".repeat(len - head.len() - tail.len()));
+        body.into_bytes()
+    }
+
+    /// Room members hold no ACL entry, so the two room-file tasks that raise
+    /// their size take their own standing: a chunk from the party holding an
+    /// open upload, a `begin` naming a room hosted here. Anyone else's large
+    /// document is held to the default, and charges nothing.
+    #[tokio::test]
+    async fn a_room_file_document_takes_its_raised_limit_from_room_standing() {
+        use vti_rooms::wire::{ROOMS_BLOBS_UPLOAD_BEGIN_TYPE, ROOMS_BLOBS_UPLOAD_CHUNK_TYPE};
+        let vtc = crate::test_support::build_test_vtc().await;
+        let state = &vtc.state;
+        let f = vti_rooms_dtg::test_support::RoomFixture::new(vti_rooms::Visibility::Open).await;
+        vti_rooms::storage::create_room(&state.rooms_ks, &f.room)
+            .await
+            .unwrap();
+        let len = DEFAULT_MAX_DOCUMENT_BYTES + 1;
+        assert!(max_document_bytes(ROOMS_BLOBS_UPLOAD_CHUNK_TYPE) >= len);
+        assert!(max_document_bytes(ROOMS_BLOBS_UPLOAD_BEGIN_TYPE) >= len);
+
+        // Nobody holds an upload yet: the would-be uploader is a stranger.
+        let uploader = f.owner.did.as_str();
+        let chunk = |issuer: &str| room_document(issuer, ROOMS_BLOBS_UPLOAD_CHUNK_TYPE, "-", len);
+        let early = refusal(
+            check_for_known_issuer(state, &chunk(uploader), "ip:early", 0)
+                .await
+                .unwrap_err(),
+        );
+        assert_eq!(
+            early["details"][DETAILS_MAX_BYTES],
+            DEFAULT_MAX_DOCUMENT_BYTES
+        );
+
+        // Once they hold one, their chunks are admitted at the chunk's limit…
+        let mut builder = vti_rooms::files::ManifestBuilder::new(16_384);
+        builder.push(&[7u8; 16_384]);
+        let manifest = serde_json::to_value(builder.finish().unwrap()).unwrap();
+        state
+            .room_files
+            .begin(
+                &f.room,
+                uploader,
+                None,
+                vti_rooms::blobs::Manifest::parse(&manifest).unwrap(),
+            )
+            .await
+            .expect("open an upload");
+        assert!(
+            check_for_known_issuer(state, &chunk(uploader), "ip:uploader", 0)
+                .await
+                .unwrap()
+                .is_some(),
+            "the uploader's chunk is charged and admitted"
+        );
+        // …and nobody else's.
+        let other = refusal(
+            check_for_known_issuer(state, &chunk("did:key:z6MkSizeStranger"), "ip:other", 0)
+                .await
+                .unwrap_err(),
+        );
+        assert_eq!(
+            other["details"][DETAILS_MAX_BYTES],
+            DEFAULT_MAX_DOCUMENT_BYTES
+        );
+        assert_eq!(state.large_document_budget.cost("ip:other"), 1);
+
+        // A `begin` is admitted when the room it names is hosted here.
+        let begin = |room: &str| {
+            room_document(
+                "did:key:z6MkSizeMember",
+                ROOMS_BLOBS_UPLOAD_BEGIN_TYPE,
+                room,
+                len,
+            )
+        };
+        assert!(
+            check_for_known_issuer(state, &begin(&f.room.room_id), "ip:member", 0)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let unhosted = refusal(
+            check_for_known_issuer(state, &begin("did:key:z6MkNoSuchRoom"), "ip:nobody", 0)
+                .await
+                .unwrap_err(),
+        );
+        assert_eq!(
+            unhosted["details"][DETAILS_MAX_BYTES],
+            DEFAULT_MAX_DOCUMENT_BYTES
+        );
     }
 
     /// A raised limit is for a known issuer: a stranger's large document, and

@@ -58,6 +58,16 @@ pub use vti_rooms::ROOM_EPOCH_LINKS_KEYSPACE as ROOM_EPOCH_LINKS;
 /// signed with. Encrypted at rest under the storage key, like `install` and
 /// `passkey`.
 pub const OID4VP_KEYS: &str = "oid4vp_keys";
+
+/// Room files' index at `room_blobs`: which blobs each room holds, on which storage config,
+/// which records name them, and the usage they add up to. **Backed up**, so a restored
+/// community still knows its files and their charges. The bytes are not in it, and are
+/// not in a VTC backup: they live in the blob store.
+pub use vti_rooms::blobs::ROOM_BLOBS_KEYSPACE as ROOM_BLOBS;
+
+/// Uploads and downloads in flight. Hours long at most, so **not backed up**: a restored
+/// host starts with none, and a client resumes from `begin`.
+pub use vti_rooms::blobs::ROOM_BLOB_TRANSFERS_KEYSPACE as ROOM_BLOB_TRANSFERS;
 pub const AUDIT: &str = "audit";
 pub const AUDIT_KEY: &str = "audit_key";
 /// Signed audit checkpoints (#708) — periodic Ed25519-signed commitments to
@@ -221,6 +231,8 @@ pub const ALL: &[&str] = &[
     ROOMS,
     ROOM_RECORDS,
     ROOM_EPOCH_LINKS,
+    ROOM_BLOBS,
+    ROOM_BLOB_TRANSFERS,
     AUDIT,
     AUDIT_KEY,
     AUDIT_CHECKPOINT,
@@ -272,6 +284,7 @@ pub const BACKED_UP: &[&str] = &[
     ROOMS,
     ROOM_RECORDS,
     ROOM_EPOCH_LINKS,
+    ROOM_BLOBS,
     AUDIT,
     AUDIT_KEY,
     // Required, not optional: restoring the audit log without its
@@ -345,6 +358,10 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // durable state, which this is not: it is execution bookkeeping, local to
     // the deployment that did the executing.
     ACCEPTED_IDS,
+    // Room-file uploads and downloads in flight: hours long, tied to staging
+    // files on this host that a backup does not carry. A client resumes from
+    // `begin` against the restored host.
+    ROOM_BLOB_TRANSFERS,
     // Console signing-key delegations. Excluded deliberately, and it is the
     // one exclusion here that is a security decision rather than a
     // housekeeping one: a delegation names a browser profile on a particular
@@ -404,11 +421,12 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        // 41 top-level `*_ks` fields (the member portal's two among them) plus
+        // 42 top-level `*_ks` fields (the member portal's two among them) plus
         // the three `AppState::git_ns` carries, plus the 2 hidden-vetting
         // keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`) from the
-        // `zkp-pcs` development branch.
-        assert_eq!(ALL.len(), 47, "ALL must list every AppState keyspace");
+        // `zkp-pcs` development branch, plus the two room-file keyspaces
+        // `AppState::room_files` holds (`ROOM_BLOBS`, `ROOM_BLOB_TRANSFERS`).
+        assert_eq!(ALL.len(), 49, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or
