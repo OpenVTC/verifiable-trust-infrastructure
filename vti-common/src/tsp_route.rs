@@ -162,6 +162,14 @@ pub async fn send_routed_to(
 /// right one for a peer that shares it — with a warning, because for a peer
 /// on another mediator that reply will be refused.
 ///
+/// A reply that went out is logged at INFO with its route and how long it took
+/// — one line per reply. It used to be silent on success, which left "did the
+/// agent answer at all?" unanswerable from its own log: a wallet whose every
+/// request timed out was matched by an INFO line saying the task dispatched and
+/// nothing after it, which fits a reply sent and lost as well as one never
+/// sent. "Sent" here means the mediator accepted it, not that the peer has it;
+/// the line names the mediator so the next place to look is in it.
+///
 /// [`TspOps::peer_mediator`]: affinidi_messaging_sdk::protocols::tsp::TspOps::peer_mediator
 pub async fn send_reply(
     atm: &ATM,
@@ -170,6 +178,7 @@ pub async fn send_reply(
     peer: &str,
     body: &[u8],
 ) -> Result<(), ATMError> {
+    let started = std::time::Instant::now();
     let peer_mediator = match tokio::time::timeout(
         PEER_MEDIATOR_LOOKUP_TIMEOUT,
         atm.tsp().peer_mediator(profile, peer),
@@ -191,7 +200,7 @@ pub async fn send_reply(
         }
     };
     let peer_mediator = peer_mediator.as_deref();
-    retry_rate_limited(
+    let sent = retry_rate_limited(
         peer,
         RetryWindow {
             budget: REPLY_RATE_LIMIT_RETRY,
@@ -200,7 +209,29 @@ pub async fn send_reply(
         },
         || send_routed_to(atm, profile, own_mediator, peer, peer_mediator, body),
     )
-    .await
+    .await;
+    if sent.is_ok() {
+        // Failure is the caller's to report: it knows whether the peer is one
+        // already marked as not collecting, and says so once rather than here.
+        match cross_mediator(own_mediator, peer_mediator) {
+            Some(peer_mediator) => info!(
+                peer,
+                via = own_mediator,
+                to_mediator = peer_mediator,
+                bytes = body.len(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "sent TSP reply (nested, to the peer's own mediator)"
+            ),
+            None => info!(
+                peer,
+                via = own_mediator,
+                bytes = body.len(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "sent TSP reply (routed through our mediator)"
+            ),
+        }
+    }
+    sent
 }
 
 /// The bounds of [`retry_rate_limited`]: give up once `budget` is spent, and
