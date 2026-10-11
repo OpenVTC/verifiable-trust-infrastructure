@@ -1119,12 +1119,18 @@ async fn handle_respond(
                 Some(signed_grant),
             )
             .await;
-            match wire::<RespondResponse>(
+            // Signed like steps 1 and 2: every reply to the wallet is this
+            // community's attestation, and the wallet refuses one that is not.
+            let r: RespondResponse = match wire(
                 &doc,
                 "the respond response",
                 serde_json::json!({ "status": stage }),
             ) {
-                Ok(r) => success_response(&doc, r),
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            match attested(state, &doc, &r).await {
+                Ok((_, outcome)) => outcome,
                 Err(e) => e,
             }
         }
@@ -1178,12 +1184,18 @@ async fn handle_cancel(
                 None,
             )
             .await;
-            match wire::<CancelResponse>(
+            // Signed like steps 1 and 2: every reply to the wallet is this
+            // community's attestation, and the wallet refuses one that is not.
+            let r: CancelResponse = match wire(
                 &doc,
                 "the cancel response",
                 serde_json::json!({ "status": "cancelled" }),
             ) {
-                Ok(r) => success_response(&doc, r),
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            match attested(state, &doc, &r).await {
+                Ok((_, outcome)) => outcome,
                 Err(e) => e,
             }
         }

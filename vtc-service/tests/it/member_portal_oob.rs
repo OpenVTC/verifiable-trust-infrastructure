@@ -284,8 +284,9 @@ async fn record(f: &Fixture, id: &str) -> OobRequest {
         .expect("request row")
 }
 
-/// The VTC's step 1 / step 2 response is signed for `assertionMethod` by its
-/// own key (contract C5).
+/// The VTC's step 1, step 2, respond and cancel responses are signed for
+/// `assertionMethod` by its own key (contract C5): the wallet refuses an
+/// unsigned reply.
 fn assert_vtc_attested(f: &Fixture, doc: &Value) {
     let proof: DataIntegrityProof = serde_json::from_value(doc["proof"].clone()).unwrap();
     assert_eq!(proof.proof_purpose, "assertionMethod");
@@ -383,6 +384,7 @@ async fn wallet_sign_in_end_to_end_sets_a_member_session_bound_to_k_b() {
     let rs = respond(&f, &p, g).await;
     assert_eq!(rs.status, StatusCode::OK, "{}", rs.body);
     assert_eq!(rs.body["payload"]["status"], "approved");
+    assert_vtc_attested(&f, &rs.body);
     assert!(!rs.body.to_string().contains("vtc_member_session"));
 
     let done = redeem(&f, &b, &id).await;
@@ -914,6 +916,7 @@ async fn a_cancelled_request_redeems_as_declined_with_state_cancelled() {
     )
     .await;
     assert_eq!(r.body["payload"]["status"], "cancelled", "{}", r.body);
+    assert_vtc_attested(&f, &r.body);
     let r = redeem(&f, &b, &id).await;
     assert_eq!(code(&r), "auth/oob/redeem:declined");
     assert_eq!(r.body["payload"]["details"]["state"], "cancelled");

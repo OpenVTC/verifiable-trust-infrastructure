@@ -707,10 +707,19 @@ fn network_of(ip: &IpAddr) -> Vec<u8> {
 }
 
 /// `sameNetwork` from the starter's and the approver's egress addresses:
-/// `true`, `false`, or `"unknown"` when either is missing.
+/// `true`, `false`, or `"unknown"` when either is missing or they are of
+/// different families. One machine on a dual-stack network can reach the
+/// VTC over IPv6 from the page and over IPv4 from the wallet (or the other
+/// way round), so an IPv4 address against an IPv6 prefix says nothing.
 pub fn same_network(start: Option<&str>, approver: Option<IpAddr>) -> serde_json::Value {
     match (start.and_then(|s| s.parse::<IpAddr>().ok()), approver) {
-        (Some(a), Some(b)) => serde_json::Value::Bool(network_of(&a) == network_of(&b)),
+        (Some(a), Some(b)) => {
+            let (a, b) = (network_of(&a), network_of(&b));
+            if a.len() != b.len() {
+                return serde_json::Value::String("unknown".into());
+            }
+            serde_json::Value::Bool(a == b)
+        }
         _ => serde_json::Value::String("unknown".into()),
     }
 }
@@ -1056,6 +1065,10 @@ mod tests {
         assert_eq!(same_network(Some("2001:db8:1:2::99"), Some(a)), true);
         assert_eq!(same_network(Some("2001:db8:1:3::99"), Some(a)), false);
         assert_eq!(same_network(None, Some(a)), "unknown");
+        // A page on IPv4 and a wallet on IPv6 (or the reverse) can be one
+        // machine on a dual-stack network.
+        assert_eq!(same_network(Some("203.0.113.5"), Some(a)), "unknown");
+        assert_eq!(same_network(Some("2001:db8:1:2::99"), Some(v4)), "unknown");
     }
 
     #[test]
