@@ -642,4 +642,44 @@ mod tests {
         // the resolver failure above.
         assert_eq!(err.to_string(), "proof verification failed");
     }
+
+    /// A P-256 `did:key` holder (`did:key:zDn…`) signs a Trust Task with
+    /// `ecdsa-jcs-2019`, and the shared verifier accepts it with no network:
+    /// the suite follows the key, and nothing on this path names Ed25519
+    /// (#1988).
+    #[tokio::test]
+    async fn a_p256_did_key_holder_signs_a_trust_task() {
+        use affinidi_data_integrity::{SignOptions, crypto_suites::CryptoSuite};
+        use affinidi_secrets_resolver::secrets::Secret;
+
+        let mut secret = Secret::generate_p256(None, None).expect("generate P-256");
+        let mb = secret.get_public_keymultibase().expect("multibase");
+        let did = format!("did:key:{mb}");
+        secret.id = format!("{did}#{mb}");
+
+        let mut doc = serde_json::json!({
+            "id": "urn:uuid:33333333-3333-4333-8333-333333333333",
+            "type": "https://trusttasks.org/spec/vta/contexts/create/1.0",
+            "issuer": did,
+            "recipient": "did:key:z6MkVta",
+            "issuedAt": "2026-10-11T00:00:00Z",
+            "payload": {},
+        });
+        let proof = DataIntegrityProof::sign(&doc, &secret, SignOptions::new())
+            .await
+            .expect("sign");
+        assert_eq!(proof.cryptosuite, CryptoSuite::EcdsaJcs2019);
+        doc["proof"] = serde_json::to_value(&proof).expect("proof serialises");
+
+        let signer = verify_trust_task_proof_value(&doc, &TrustTaskVmResolver::did_key_only())
+            .await
+            .expect("a P-256 did:key proof verifies");
+        assert_eq!(signer, did);
+
+        doc["payload"] = serde_json::json!({ "tampered": true });
+        let err = verify_trust_task_proof_value(&doc, &TrustTaskVmResolver::did_key_only())
+            .await
+            .expect_err("a changed document must not verify");
+        assert!(matches!(err, DiProofError::VerifyFailed(_)), "{err:?}");
+    }
 }

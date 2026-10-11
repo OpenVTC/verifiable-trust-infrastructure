@@ -1,6 +1,7 @@
 //! Build and holder-sign a Trust Task document — the one client-side
-//! implementation of "an `eddsa-jcs-2022` proof by a `did:key` holder, over the
-//! proof-less document".
+//! implementation of "a Data-Integrity proof by a holder, over the proof-less
+//! document" — `eddsa-jcs-2022` for an Ed25519 key, `ecdsa-jcs-2019` for a
+//! P-256 one (#1988).
 //!
 //! Both VTI services authenticate holder-submitted Trust Tasks the same way:
 //! verify the document's Data-Integrity proof with a **`did:key`-only** resolver
@@ -19,7 +20,7 @@
 //! Two invariants that are easy to get wrong and expensive to debug, because a
 //! mistake in either yields a signature that verifies nowhere:
 //!
-//! - **Sign the proof-less document.** `eddsa-jcs-2022` canonicalises via JCS,
+//! - **Sign the proof-less document.** Both suites canonicalise via JCS,
 //!   which is presence-sensitive, and the verifier strips `proof` before
 //!   checking. Signing a document that already carries a `proof` key — even an
 //!   empty one — produces a signature over different bytes.
@@ -189,6 +190,19 @@ impl HolderKey {
         &self.verification_method
     }
 
+    /// Whether this is a P-256 key: its multibase carries the `p256-priv`
+    /// multicodec prefix, or it is unprefixed and the method is a P-256
+    /// `did:key` (`did:key:zDn…`). Anything else is Ed25519, as before.
+    fn is_p256(&self) -> bool {
+        const P256_PRIV: [u8; 2] = [0x86, 0x26];
+        if let Ok((_, raw)) = multibase::decode(&self.private_key_multibase)
+            && raw.len() == 34
+        {
+            return raw[..2] == P256_PRIV;
+        }
+        self.holder_did().starts_with("did:key:zDn")
+    }
+
     /// The holder DID — the verification method without its fragment. This is
     /// the DID a verifier recovers as the proven signer.
     #[must_use]
@@ -200,8 +214,8 @@ impl HolderKey {
     }
 }
 
-/// Attach the holder's `eddsa-jcs-2022` Data-Integrity proof to `doc` in place,
-/// naming `holder_did`'s `did:key` verification method.
+/// Attach the holder's Data-Integrity proof to `doc` in place, naming
+/// `holder_did`'s `did:key` verification method.
 ///
 /// The `did:key` convenience form of [`sign_in_place_with`]; see [`HolderKey`]
 /// for why any other method has to name its key.
@@ -214,7 +228,10 @@ pub async fn sign_in_place(
     sign_in_place_with(doc, &key).await
 }
 
-/// Attach the holder's `eddsa-jcs-2022` Data-Integrity proof to `doc` in place.
+/// Attach the holder's Data-Integrity proof to `doc` in place:
+/// `eddsa-jcs-2022` for an Ed25519 key, `ecdsa-jcs-2019` for a P-256 key —
+/// one whose private multibase carries the `p256-priv` prefix, or whose
+/// method is a `did:key:zDn…`.
 ///
 /// The proof is computed over the document with `proof` removed — see the
 /// module docs for why that matters.
@@ -238,7 +255,15 @@ pub async fn sign_in_place_with(
     let vm_id = key.verification_method.clone();
     let seed = decode_private_key_multibase(&key.private_key_multibase)
         .map_err(|e| TrustTaskSignError::BadPrivateKey(e.to_string()))?;
-    let mut signer = Secret::generate_ed25519(Some(&vm_id), Some(&seed));
+    // The suite follows the key: Ed25519 signs `eddsa-jcs-2022`, P-256
+    // `ecdsa-jcs-2019` (#1988; the Trust Tasks framework has every consumer
+    // SHOULD-verify it, for hardware-backed signers).
+    let mut signer = if key.is_p256() {
+        Secret::generate_p256(Some(&vm_id), Some(&seed))
+            .map_err(|e| TrustTaskSignError::BadPrivateKey(e.to_string()))?
+    } else {
+        Secret::generate_ed25519(Some(&vm_id), Some(&seed))
+    };
     signer.id = vm_id;
 
     let mut signing_doc =
@@ -526,6 +551,44 @@ mod tests {
                 matches!(err, TrustTaskSignError::TypeUri(_)),
                 "{bad}: {err:?}"
             );
+        }
+    }
+
+    /// A P-256 holder signs `ecdsa-jcs-2019` (#1988) — whether its private key
+    /// carries the `p256-priv` prefix or is bare beside a `did:key:zDn…` — and
+    /// the shared verifier recovers it as the signer.
+    #[cfg(feature = "proof-verify")]
+    #[tokio::test]
+    async fn a_p256_holder_signs_ecdsa_jcs_2019() {
+        let kp = affinidi_crypto::p256::generate(Some(&[0x5a; 32])).unwrap();
+        let mut jwk = serde_json::to_value(&kp.jwk).unwrap();
+        jwk.as_object_mut().unwrap().remove("d");
+        let did = crate::jws::JwsKey::from_jwk(&jwk).unwrap().did_key();
+        let mut prefixed = vec![0x86, 0x26];
+        prefixed.extend_from_slice(&kp.private_bytes);
+
+        for pk in [
+            multibase::encode(multibase::Base::Base58Btc, &prefixed),
+            multibase::encode(multibase::Base::Base58Btc, &kp.private_bytes),
+        ] {
+            let signed = build_signed(
+                "https://trusttasks.org/spec/vta/contexts/create/1.0",
+                json!({}),
+                &did,
+                &pk,
+                "did:key:z6MkVtc",
+            )
+            .await
+            .expect("sign");
+            let doc: Value = serde_json::from_str(&signed).unwrap();
+            assert_eq!(doc["proof"]["cryptosuite"], "ecdsa-jcs-2019");
+            let signer = crate::trust_task_proof::verify_trust_task_proof_value(
+                &doc,
+                &crate::trust_task_proof::TrustTaskVmResolver::did_key_only(),
+            )
+            .await
+            .expect("verifies");
+            assert_eq!(signer, did);
         }
     }
 }

@@ -333,8 +333,7 @@ webauthn-rs-proto = "0.5"
 # `emergency::VtaRecoveryProver` trait so production code +
 # integration tests can swap in their own provers.
 async-trait = "0.1"
-# did:key → Ed25519 public-key conversion for the join-request
-# holder-binding signature verifier (M1.8.1).
+# did:key ↔ public-key conversions (X25519 derivation, did:key minting).
 affinidi-crypto = { workspace = true }
 # Optional — only compiled under the `test-support` feature, which the
 # `test_support` module (and downstream harnesses) need for tempdir-
@@ -348,6 +347,9 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [dev-dependencies]
 trust-tasks-rs = { workspace = true }
+# Signs ES256K holder signatures in tests; the service only verifies them,
+# through `vta_sdk::jws`.
+k256 = { version = "0.14", features = ["ecdsa"] }
 # Signed room fixtures. Cargo unifies this feature with the normal dependency
 # above, so the fixtures reach tests without shipping in the service binary.
 vti-rooms-dtg = { path = "../vti-rooms-dtg", features = ["test-support"] }

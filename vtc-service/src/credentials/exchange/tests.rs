@@ -1433,3 +1433,56 @@ fn a_did_web_issuer_without_a_kid_is_refused_at_parse() {
         "{err:?}"
     );
 }
+
+/// An OID4VCI key-binding proof JWT signed ES256 by the P-256 key `seed`
+/// derives, whose header claims `alg`.
+fn p256_proof_jwt(seed: u8, aud: &str, iat: i64, alg: &str) -> (String, String) {
+    let (private, _, did) = p256(seed);
+    let header = json!({
+        "typ": OID4VCI_PROOF_TYP,
+        "alg": alg,
+        "kid": format!("{did}#{}", did.trim_start_matches("did:key:")),
+    });
+    let payload = json!({ "iss": did, "aud": aud, "iat": iat });
+    let enc = |v: &Value| URL_SAFE_NO_PAD.encode(serde_json::to_vec(v).unwrap());
+    let input = format!("{}.{}", enc(&header), enc(&payload));
+    let sig = affinidi_crypto::p256::sign(&private, input.as_bytes()).unwrap();
+    (format!("{input}.{}", URL_SAFE_NO_PAD.encode(sig)), did)
+}
+
+/// #1988: a P-256 holder proves possession with an ES256 key-binding proof,
+/// and the VTC issues to it — through the `did:key` verifier and the resolving
+/// one alike.
+#[tokio::test]
+async fn issues_to_a_p256_holder() {
+    let now = Utc::now();
+    let (jwt, did) = p256_proof_jwt(0x91, ISSUER, now.timestamp(), "ES256");
+    assert!(did.starts_with("did:key:zDn"), "{did}");
+    let proven = verify_oid4vci_proof(&jwt, ISSUER, now).expect("ES256 proof");
+    assert_eq!(proven.holder_did, did);
+
+    let resp = issue_on_request(
+        &request_with(jwt),
+        a_credential(),
+        &did,
+        ISSUER,
+        now,
+        &NO_RESOLVER,
+    )
+    .await
+    .expect("issue to the P-256 holder");
+    assert_eq!(resp.credential, Some(a_credential()));
+}
+
+/// The key decides the algorithm: a P-256 holder's proof whose header claims
+/// `EdDSA` is refused before any signature work.
+#[test]
+fn refuses_a_proof_whose_alg_is_not_its_keys() {
+    let now = Utc::now();
+    let (jwt, _) = p256_proof_jwt(0x92, ISSUER, now.timestamp(), "EdDSA");
+    let err = verify_oid4vci_proof(&jwt, ISSUER, now).unwrap_err();
+    assert!(
+        matches!(&err, AppError::Validation(m) if m.contains("alg")),
+        "{err:?}"
+    );
+}

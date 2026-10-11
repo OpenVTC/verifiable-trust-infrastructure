@@ -168,6 +168,35 @@ impl JwsKey {
         }
     }
 
+    /// The key a `did:key` names: Ed25519 (`z6Mk…`), P-256 (`zDn…`) or
+    /// secp256k1 (`zQ3s…`). Any fragment is ignored — a `did:key` has one key.
+    pub fn from_did_key(did: &str) -> Result<Self, JwsError> {
+        let id = did.split('#').next().unwrap_or(did);
+        let mb = id
+            .strip_prefix("did:key:")
+            .ok_or_else(|| JwsError::Key(format!("{id} is not a did:key")))?;
+        let (base, bytes) = multibase::decode(mb)
+            .map_err(|e| JwsError::Key(format!("{id} is not valid multibase: {e}")))?;
+        if base != multibase::Base::Base58Btc {
+            return Err(JwsError::Key(format!("{id} is not base58btc")));
+        }
+        match bytes.split_at_checked(2) {
+            Some((p, key)) if p == ED25519_PUB => {
+                let arr: [u8; 32] = key.try_into().map_err(|_| {
+                    JwsError::Key(format!("{id}: Ed25519 key is {} bytes, not 32", key.len()))
+                })?;
+                Ok(Self::Ed25519(arr))
+            }
+            Some((p, key)) if p == P256_PUB => Ok(Self::P256(compress_sec1(key, "P-256")?)),
+            Some((p, key)) if p == SECP256K1_PUB => {
+                Ok(Self::Secp256k1(compress_sec1(key, "secp256k1")?))
+            }
+            _ => Err(JwsError::Key(format!(
+                "{id} is not an Ed25519, P-256 or secp256k1 did:key"
+            ))),
+        }
+    }
+
     /// The curve's name, for messages.
     #[must_use]
     pub fn curve(&self) -> &'static str {
@@ -253,8 +282,14 @@ impl JwsKey {
     }
 
     /// Verify a raw signature over `data`: 64 bytes for every curve here
-    /// (Ed25519, or ECDSA `r || s` as JWS encodes it, RFC 7518 §3.4).
-    fn verify_signature(&self, data: &[u8], sig: &[u8]) -> Result<(), JwsError> {
+    /// (Ed25519, or ECDSA `r || s` as JWS encodes it, RFC 7518 §3.4). ECDSA
+    /// hashes `data` with SHA-256 first, as ES256 / ES256K do; Ed25519 signs
+    /// it directly and verifies strictly.
+    ///
+    /// For a signature that is not a JWS — a domain-tagged holder signature —
+    /// the caller supplies the algorithm-free bytes; the key alone decides how
+    /// they are checked.
+    pub fn verify_signature(&self, data: &[u8], sig: &[u8]) -> Result<(), JwsError> {
         let sig: [u8; 64] = sig.try_into().map_err(|_| {
             JwsError::Malformed(format!(
                 "a {} signature is 64 bytes, this one is {}",
@@ -510,6 +545,37 @@ mod tests {
             ))
             .unwrap_err();
         assert!(matches!(err, JwsError::AlgMismatch { .. }), "{err}");
+    }
+
+    /// A `did:key` names the same key `did_key()` wrote, for each curve, and a
+    /// fragment does not change it.
+    #[test]
+    fn from_did_key_reads_back_each_curve() {
+        let p256 = affinidi_crypto::p256::generate(Some(&[0x31; 32])).unwrap();
+        let k1 = affinidi_crypto::secp256k1::generate(Some(&[0x41; 32])).unwrap();
+        for key in [
+            JwsKey::Ed25519(
+                ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            ),
+            JwsKey::from_resolved(&ResolvedKey::new(KeyType::P256, p256.public_bytes)).unwrap(),
+            JwsKey::from_resolved(&ResolvedKey::new(KeyType::Secp256k1, k1.public_bytes)).unwrap(),
+        ] {
+            let did = key.did_key();
+            assert_eq!(JwsKey::from_did_key(&did).unwrap(), key, "{did}");
+            assert_eq!(
+                JwsKey::from_did_key(&format!("{did}#key-0")).unwrap(),
+                key,
+                "{did}"
+            );
+        }
+        assert!(JwsKey::from_did_key("did:web:example.com").is_err());
+        // An X25519 did:key names a key-agreement key, which signs nothing.
+        assert!(
+            JwsKey::from_did_key("did:key:z6LSbysY2xFMRpGMhb7tFTLMpeuPRaqaWM1yECx2AtzE3KCc")
+                .is_err()
+        );
     }
 
     #[test]

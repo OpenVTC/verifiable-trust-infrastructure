@@ -295,6 +295,93 @@ async fn rotation_happy_path_swaps_acl_and_member() {
     fix.signer.verify(&role_vac).expect("VAC verifies");
 }
 
+/// #1988: a member rotates onto a P-256 `did:key` (`zDn…`) — a secure-enclave
+/// or EUDI-wallet key — with the new key's signature in ES256 over the same
+/// canonical bytes, and the membership moves with it.
+#[tokio::test]
+async fn rotation_onto_a_p256_did_key() {
+    let fix = build_fixture().await;
+
+    let kp = affinidi_crypto::p256::generate(Some(&[0xCC; 32])).unwrap();
+    let mut jwk = serde_json::to_value(&kp.jwk).unwrap();
+    jwk.as_object_mut().unwrap().remove("d");
+    let new_did = vta_sdk::jws::JwsKey::from_jwk(&jwk).unwrap().did_key();
+    assert!(new_did.starts_with("did:key:zDn"), "{new_did}");
+
+    let (rotation_id, expires_at) = mint_challenge(&fix).await;
+    let payload = signing_bytes(&rotation_id, &fix.member_did, &new_did, expires_at);
+    let old_sig = hex::encode(fix.member_signing.sign(&payload).to_bytes());
+
+    // An ES256 signature by some other P-256 key is refused.
+    let other = affinidi_crypto::p256::generate(Some(&[0xCD; 32])).unwrap();
+    let wrong_sig =
+        hex::encode(affinidi_crypto::p256::sign(&other.private_bytes, &payload).unwrap());
+    let (status, body) = finish_rotate(
+        &fix,
+        json!({
+            "rotationId": rotation_id,
+            "oldDid": fix.member_did,
+            "newDid": new_did,
+            "oldSignature": old_sig,
+            "newSignature": wrong_sig,
+        }),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+
+    // A refused attempt spends its challenge; start again.
+    let (rotation_id, expires_at) = mint_challenge(&fix).await;
+    let payload = signing_bytes(&rotation_id, &fix.member_did, &new_did, expires_at);
+    let old_sig = hex::encode(fix.member_signing.sign(&payload).to_bytes());
+    let new_sig = hex::encode(affinidi_crypto::p256::sign(&kp.private_bytes, &payload).unwrap());
+    let (status, body) = finish_rotate(
+        &fix,
+        json!({
+            "rotationId": rotation_id,
+            "oldDid": fix.member_did,
+            "newDid": new_did,
+            "oldSignature": old_sig,
+            "newSignature": new_sig,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["newDid"], new_did);
+    assert!(
+        get_acl_entry(&fix.acl_ks, &new_did)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        get_member(&fix.members_ks, &new_did)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // Now a member under the P-256 identity, it signs its Trust Tasks with
+    // `ecdsa-jcs-2019`, and the VTC's spine accepts them as from `new_did`.
+    let mut prefixed = vec![0x86, 0x26]; // p256-priv
+    prefixed.extend_from_slice(&kp.private_bytes);
+    let p256_member = vti_rooms_dtg::test_support::Party {
+        secret: affinidi_tdk::secrets_resolver::secrets::Secret::generate_p256(
+            None,
+            Some(&kp.private_bytes),
+        )
+        .unwrap(),
+        secret_multibase: multibase::encode(multibase::Base::Base58Btc, prefixed),
+        did: new_did.clone(),
+    };
+    let doc =
+        crate::common::signed::signed_to(&p256_member, VTC_DID, CHALLENGE_TASK, json!({})).await;
+    assert_eq!(doc["proof"]["cryptosuite"], "ecdsa-jcs-2019", "{doc}");
+    let (status, reply) =
+        crate::common::signed::call(&fix._vtc, &p256_member, CHALLENGE_TASK, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert!(reply["payload"]["rotationId"].is_string(), "{reply}");
+}
+
 /// M2.15.2: did:webvh rotation works, but only when the
 /// daemon was booted with a DID resolver wired into
 /// `AppState`. The rotation-test fixture leaves

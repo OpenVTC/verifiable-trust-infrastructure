@@ -1,16 +1,21 @@
-//! Shared `did:key` Ed25519 holder-signature verification (P1.4).
+//! Shared `did:key` holder-signature verification (P1.4).
 //!
-//! The VTC's REST holder-binding signatures — join submit / accept /
-//! status and member-rotation's old/new `did:key` signatures — are all
-//! an Ed25519 signature over `domain_tag || canonical_json`, verified
-//! against the signer's intrinsic `did:key` public key. They differ
-//! only by domain tag + canonical struct, so they all delegate to the
-//! one verifier here (replacing four byte-identical copies of the
-//! pubkey-resolve → sig-decode → verify crypto).
+//! The VTC's holder-binding signatures — join submit's REST binding and
+//! member rotation's old/new `did:key` signatures — are all a signature over
+//! `domain_tag || canonical_json`, verified against the signer's intrinsic
+//! `did:key` public key. They differ only by domain tag + canonical struct, so
+//! they all delegate to the one verifier here (replacing four byte-identical
+//! copies of the pubkey-resolve → sig-decode → verify crypto).
+//!
+//! The key decides the algorithm (#1988): an Ed25519 `did:key` (`z6Mk…`) signs
+//! EdDSA, a P-256 one (`zDn…`) ES256 and a secp256k1 one (`zQ3s…`) ES256K —
+//! ECDSA as JWS encodes it, `r || s` over the SHA-256 of the bytes. The
+//! signature is 64 bytes, hex, whichever it is. Nothing in the request names
+//! the algorithm, so nothing in it can choose one.
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use vta_sdk::jws::JwsKey;
 
-/// Verify `signature_hex` (hex Ed25519) over `domain_tag || payload`
+/// Verify `signature_hex` (hex, 64 bytes) over `domain_tag || payload`
 /// against the intrinsic public key of `did` (a `did:key`).
 ///
 /// `payload` is the canonical (key-ordered) JSON the signer produced;
@@ -27,20 +32,27 @@ pub fn verify_domain_signed(
     payload: &[u8],
     signature_hex: &str,
 ) -> Result<(), String> {
-    let pub_bytes = affinidi_crypto::did_key::did_key_to_ed25519_pub(did)
-        .map_err(|e| format!("{did} is not a parseable did:key: {e}"))?;
-    let vk = VerifyingKey::from_bytes(&pub_bytes)
-        .map_err(|e| format!("{did} decodes to an invalid Ed25519 pubkey: {e}"))?;
-    let raw = hex::decode(signature_hex).map_err(|e| format!("signature is not hex: {e}"))?;
-    let sig = Signature::from_slice(&raw)
-        .map_err(|e| format!("signature is not a 64-byte Ed25519 value: {e}"))?;
+    let key =
+        JwsKey::from_did_key(did).map_err(|e| format!("{did} is not a usable did:key: {e}"))?;
+    verify_hex_signature(&key, domain_tag, payload, signature_hex)
+}
 
+/// Verify `signature_hex` over `domain_tag || payload` under `key`, by that
+/// key's algorithm — for a key resolved from a DID document rather than read
+/// out of a `did:key`.
+pub fn verify_hex_signature(
+    key: &JwsKey,
+    domain_tag: &[u8],
+    payload: &[u8],
+    signature_hex: &str,
+) -> Result<(), String> {
+    let raw = hex::decode(signature_hex).map_err(|e| format!("signature is not hex: {e}"))?;
     let mut signing_bytes = Vec::with_capacity(domain_tag.len() + payload.len());
     signing_bytes.extend_from_slice(domain_tag);
     signing_bytes.extend_from_slice(payload);
 
-    vk.verify(&signing_bytes, &sig)
-        .map_err(|e| format!("holder-binding signature failed: {e}"))
+    key.verify_signature(&signing_bytes, &raw)
+        .map_err(|e| format!("holder-binding signature failed ({}): {e}", key.alg()))
 }
 
 #[cfg(test)]
@@ -111,5 +123,48 @@ mod tests {
         // Not hex / not 64 bytes.
         assert!(verify_domain_signed(&did, TAG, b"x", "not-hex").is_err());
         assert!(verify_domain_signed(&did, TAG, b"x", "0011").is_err());
+    }
+
+    /// A P-256 holder (`did:key:zDn…`) signs ES256 over the tagged bytes; the
+    /// same signature does not verify under another tag (#1988).
+    #[test]
+    fn a_p256_did_key_holder_signs() {
+        let kp = affinidi_crypto::p256::generate(Some(&[0x31; 32])).unwrap();
+        let did = JwsKey::from_resolved(&affinidi_data_integrity::ResolvedKey::new(
+            affinidi_secrets_resolver::secrets::KeyType::P256,
+            kp.public_bytes.clone(),
+        ))
+        .unwrap()
+        .did_key();
+        assert!(did.starts_with("did:key:zDn"), "{did}");
+
+        let mut buf = TAG.to_vec();
+        buf.extend_from_slice(b"body");
+        let sig = hex::encode(affinidi_crypto::p256::sign(&kp.private_bytes, &buf).unwrap());
+        verify_domain_signed(&did, TAG, b"body", &sig).expect("ES256 verifies");
+        assert!(verify_domain_signed(&did, b"vtc-other/v1\0", b"body", &sig).is_err());
+    }
+
+    /// A secp256k1 holder (`did:key:zQ3s…`) signs ES256K (#1988).
+    #[test]
+    fn a_secp256k1_did_key_holder_signs() {
+        use k256::ecdsa::signature::Signer as _;
+        let seed = [0x41; 32];
+        let kp = affinidi_crypto::secp256k1::generate(Some(&seed)).unwrap();
+        let did = JwsKey::from_resolved(&affinidi_data_integrity::ResolvedKey::new(
+            affinidi_secrets_resolver::secrets::KeyType::Secp256k1,
+            kp.public_bytes.clone(),
+        ))
+        .unwrap()
+        .did_key();
+        assert!(did.starts_with("did:key:zQ3s"), "{did}");
+
+        let sk = k256::ecdsa::SigningKey::from_slice(&seed).unwrap();
+        let mut buf = TAG.to_vec();
+        buf.extend_from_slice(b"body");
+        let sig: k256::ecdsa::Signature = sk.sign(&buf);
+        let sig = hex::encode(sig.to_bytes());
+        verify_domain_signed(&did, TAG, b"body", &sig).expect("ES256K verifies");
+        assert!(verify_domain_signed(&did, TAG, b"other", &sig).is_err());
     }
 }

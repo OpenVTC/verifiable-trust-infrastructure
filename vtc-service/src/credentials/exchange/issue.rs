@@ -6,11 +6,9 @@ use affinidi_openid4vci::issuer::{
     create_credential_offer, create_credential_response, validate_credential_request,
 };
 use affinidi_openid4vci::{CredentialOffer, CredentialRequest, CredentialResponse};
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
-use ed25519_dalek::{Signature, VerifyingKey};
 use serde_json::Value;
+use vta_sdk::jws::JwsKey;
 use vti_common::error::AppError;
 
 /// OID4VCI proof-JWT `typ` header (OID4VCI §7.2.1).
@@ -38,19 +36,20 @@ pub struct ProvenHolderProof {
 
 /// A key-binding proof's parts, structurally checked but not yet verified.
 struct ProofParts<'a> {
-    h_b64: &'a str,
-    p_b64: &'a str,
-    s_b64: &'a str,
+    jwt: &'a str,
     kid: String,
     holder_did: String,
 }
 
 /// Split a key-binding proof JWT and check its header: compact JWS, `typ`
-/// `openid4vci-proof+jwt`, `alg` `EdDSA`, a `kid`. Nothing is trusted yet.
+/// `openid4vci-proof+jwt`, a `kid`. Nothing is trusted yet, and the `alg` is
+/// not read here: the key the `kid` names decides it (EdDSA for Ed25519, ES256
+/// for P-256, ES256K for secp256k1 — #1988), and [`verify_with_key`] refuses a
+/// header naming any other.
 fn proof_parts(proof_jwt: &str) -> Result<ProofParts<'_>, AppError> {
     let mut parts = proof_jwt.split('.');
-    let (h_b64, p_b64, s_b64) = match (parts.next(), parts.next(), parts.next(), parts.next()) {
-        (Some(h), Some(p), Some(s), None) => (h, p, s),
+    let h_b64 = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(h), Some(_), Some(_), None) => h,
         _ => {
             return Err(AppError::Validation(
                 "key-binding proof is not a compact JWS (header.payload.signature)".into(),
@@ -64,12 +63,6 @@ fn proof_parts(proof_jwt: &str) -> Result<ProofParts<'_>, AppError> {
             "key-binding proof `typ` must be `{OID4VCI_PROOF_TYP}`"
         )));
     }
-    if header.get("alg").and_then(Value::as_str) != Some("EdDSA") {
-        return Err(AppError::Validation(
-            "key-binding proof `alg` must be `EdDSA` (Ed25519)".into(),
-        ));
-    }
-
     let kid = header
         .get("kid")
         .and_then(Value::as_str)
@@ -78,34 +71,29 @@ fn proof_parts(proof_jwt: &str) -> Result<ProofParts<'_>, AppError> {
     // The holder DID is the `kid` with any VM fragment stripped.
     let holder_did = kid.split('#').next().unwrap_or(&kid).to_string();
     Ok(ProofParts {
-        h_b64,
-        p_b64,
-        s_b64,
+        jwt: proof_jwt,
         kid,
         holder_did,
     })
 }
 
-/// Verify the signature under `verifying_key`, then the bound claims: `aud`
-/// names this issuer and `iat` is fresh.
+/// Verify the signature under `key` — the header's `alg` must be that key's,
+/// and a `crit` header is refused — then the bound claims: `aud` names this
+/// issuer and `iat` is fresh.
 fn verify_with_key(
     parts: ProofParts<'_>,
-    verifying_key: &VerifyingKey,
+    key: &JwsKey,
     expected_aud: &str,
     now: DateTime<Utc>,
 ) -> Result<ProvenHolderProof, AppError> {
-    let sig_bytes = URL_SAFE_NO_PAD
-        .decode(parts.s_b64)
-        .map_err(|e| AppError::Validation(format!("proof signature is not base64url: {e}")))?;
-    let signature = Signature::from_slice(&sig_bytes)
-        .map_err(|e| AppError::Validation(format!("proof signature is malformed: {e}")))?;
-    let signing_input = format!("{}.{}", parts.h_b64, parts.p_b64);
-    verifying_key
-        .verify_strict(signing_input.as_bytes(), &signature)
-        .map_err(|_| AppError::Validation("key-binding proof signature did not verify".into()))?;
+    let payload = key.verify_compact(parts.jwt).map_err(|e| match e {
+        vta_sdk::jws::JwsError::BadSignature => {
+            AppError::Validation("key-binding proof signature did not verify".into())
+        }
+        other => AppError::Validation(format!("key-binding proof refused: {other}")),
+    })?;
 
     // Signature is good — now the bound claims.
-    let payload = decode_segment(parts.p_b64, "proof payload")?;
     if !aud_matches(payload.get("aud"), expected_aud) {
         return Err(AppError::Validation(format!(
             "key-binding proof `aud` does not name this issuer ({expected_aud})"
@@ -141,8 +129,8 @@ fn verify_with_key(
 /// resolver: the key is in the DID itself.
 ///
 /// Checks, in order: the compact JWT is well-formed; `typ` is
-/// `openid4vci-proof+jwt` and `alg` is `EdDSA`; the `kid` names a `did:key`;
-/// the Ed25519 signature verifies under that key; the `aud` names this issuer;
+/// `openid4vci-proof+jwt`; the `kid` names a `did:key`; the signature verifies
+/// under that key, in its curve's algorithm; the `aud` names this issuer;
 /// and the `iat` is fresh. For a holder of any other method use
 /// [`verify_oid4vci_proof_resolved`].
 pub fn verify_oid4vci_proof(
@@ -157,16 +145,13 @@ pub fn verify_oid4vci_proof(
             parts.holder_did
         )));
     }
-    let pub_bytes =
-        affinidi_crypto::did_key::did_key_to_ed25519_pub(&parts.holder_did).map_err(|e| {
-            AppError::Validation(format!(
-                "holder `{}` is not a did:key: {e}",
-                parts.holder_did
-            ))
-        })?;
-    let verifying_key = VerifyingKey::from_bytes(&pub_bytes)
-        .map_err(|e| AppError::Validation(format!("holder key is not a valid Ed25519 key: {e}")))?;
-    verify_with_key(parts, &verifying_key, expected_aud, now)
+    let key = JwsKey::from_did_key(&parts.holder_did).map_err(|e| {
+        AppError::Validation(format!(
+            "holder `{}` is not a usable did:key: {e}",
+            parts.holder_did
+        ))
+    })?;
+    verify_with_key(parts, &key, expected_aud, now)
 }
 
 /// [`verify_oid4vci_proof`] for a holder of any DID method: the `kid` is
@@ -181,16 +166,16 @@ pub async fn verify_oid4vci_proof_resolved(
     resolver: &crate::credentials::vm_resolver::DidVmResolver,
 ) -> Result<ProvenHolderProof, AppError> {
     let parts = proof_parts(proof_jwt)?;
-    let verifying_key = resolver
+    let key = resolver
         // A key-binding proof demonstrates control of the holder DID.
-        .resolve_verifying_key(&parts.kid, vti_common::auth::ProofPurpose::Authentication)
+        .resolve_jws_key(&parts.kid, vti_common::auth::ProofPurpose::Authentication)
         .await
         .map_err(|e| {
             AppError::Validation(format!(
                 "key-binding proof `kid` did not resolve to an authentication key: {e}"
             ))
         })?;
-    verify_with_key(parts, &verifying_key, expected_aud, now)
+    verify_with_key(parts, &key, expected_aud, now)
 }
 
 /// Issue a credential in response to an OID4VCI credential request.

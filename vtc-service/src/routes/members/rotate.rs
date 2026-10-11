@@ -25,9 +25,12 @@
 //! - `rotationId` (from step 1)
 //! - `oldDid` (must match the caller's session)
 //! - `newDid` (the member's new identity)
-//! - `oldSignature` — Ed25519 over the canonical payload
-//! - `newSignature` — Ed25519 over the canonical payload,
-//!   signed by the new DID's key
+//! - `oldSignature` — over the canonical payload, by the old DID's key
+//! - `newSignature` — over the canonical payload, by the new DID's key
+//!
+//! Each is 64 bytes, hex, in the algorithm of the key that made it: EdDSA for
+//! Ed25519, ES256 for P-256, ES256K for secp256k1 (`r || s` over the SHA-256
+//! of the payload) — see [`crate::holder_signature`] (#1988).
 //!
 //! Canonical payload (the bytes the signers sign):
 //!
@@ -66,15 +69,12 @@
 //!
 //! ## Method-dispatch on the new DID
 //!
-//! `did:key` new-DID values verify via the in-process
-//! `did_key_to_ed25519_pub` helper. `did:webvh` values walk
-//! the `DIDCacheClient`, locate `{did}#key-0` in the resolved
-//! document's `verificationMethod` array, and extract the
-//! Ed25519 pubkey via the upstream's `get_public_key_bytes()`
-//! (handles Multikey + Ed25519VerificationKey2020 uniformly).
-//! Both paths terminate in the same `vk.verify(payload, sig)`
-//! step, so the canonical signing payload is identical across
-//! methods. The verifier refuses to fall back to non-`#key-0`
+//! `did:key` new-DID values verify against the key in the
+//! identifier. `did:webvh` values resolve `{did}#key-0` through
+//! the `DIDCacheClient`, bound to `authentication`. Both paths
+//! terminate in the same `vta_sdk::jws::JwsKey` check, so the
+//! canonical signing payload is identical across methods and
+//! curves. The verifier refuses to fall back to non-`#key-0`
 //! verification methods — the workspace's webvh templates pin
 //! `#key-0` as the assertion-method canonical id (spec §10.5).
 
@@ -82,7 +82,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use affinidi_status_list::StatusPurpose;
 use chrono::{DateTime, Utc};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::{info, warn};
@@ -578,7 +577,7 @@ pub(crate) fn canonical_signing_bytes(
     Ok(buf)
 }
 
-/// Verify an Ed25519 signature from a `did:key` over the rotation's
+/// Verify a signature from a `did:key` over the rotation's
 /// canonical signing bytes. Those bytes already include
 /// [`ROTATION_DOMAIN_TAG`] (the same buffer feeds the `did:webvh` path
 /// below), so the shared verifier is called with an empty domain tag.
@@ -586,13 +585,10 @@ fn verify_did_key_signature(did: &str, signing_bytes: &[u8], hex_sig: &str) -> R
     crate::holder_signature::verify_domain_signed(did, &[], signing_bytes, hex_sig)
 }
 
-/// Verify an Ed25519 signature against the `#key-0`
-/// verification method of a `did:webvh` document. Walks the
-/// shared [`DIDCacheClient`] resolver (Phase 0 wiring), pulls
-/// the verificationMethod whose id matches `{did}#key-0`, and
-/// extracts the public bytes via the upstream
-/// `VerificationMethod::get_public_key_bytes()` helper (handles
-/// Multikey + Ed25519VerificationKey2020 shapes uniformly).
+/// Verify a signature against the `#key-0` verification method
+/// of a `did:webvh` document, resolved through the shared
+/// [`DIDCacheClient`] — Ed25519, P-256 or secp256k1, whichever
+/// the method publishes, as a Multikey or a `publicKeyJwk`.
 ///
 /// Refuses to fall back to other verification-method
 /// fragments — Phase 2 §10.5 + the workspace's webvh templates
@@ -604,37 +600,23 @@ async fn verify_did_webvh_signature(
     hex_sig: &str,
     resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
 ) -> Result<(), String> {
-    let resolved = resolver
-        .resolve(did)
-        .await
-        .map_err(|e| format!("did:webvh resolve: {e}"))?;
     let target_vm_id = format!("{did}#key-0");
     // A rotation signature proves control of the DID, so `#key-0` must be a
     // key the DID authorised for authentication, controlled by the DID itself
     // (VTI-KEY-022) — not merely a key its document lists.
-    let vm = vta_sdk::trust_task_proof::purpose::authorised_method(
-        &resolved.doc,
-        did,
-        &target_vm_id,
-        vti_common::auth::ProofPurpose::Authentication,
-    )
-    .map_err(|e| format!("rotation key refused: {e}"))?;
-    let pub_bytes = vm
-        .get_public_key_bytes()
-        .map_err(|e| format!("extract pubkey: {e}"))?;
-    if pub_bytes.len() != 32 {
-        return Err(format!(
-            "the rotation key is {} bytes, expected 32 (Ed25519)",
-            pub_bytes.len()
-        ));
-    }
-    let mut buf = [0u8; 32];
-    buf.copy_from_slice(&pub_bytes);
-    let vk = VerifyingKey::from_bytes(&buf).map_err(|e| format!("invalid Ed25519 pubkey: {e}"))?;
-    let raw = hex::decode(hex_sig).map_err(|e| format!("signature is not hex: {e}"))?;
-    let sig = Signature::from_slice(&raw).map_err(|e| format!("signature is not 64 bytes: {e}"))?;
-    vk.verify(payload, &sig)
-        .map_err(|e| format!("signature verification: {e}"))
+    use vti_common::auth::PurposeVmResolver as _;
+    let resolved = vti_common::auth::TrustTaskVmResolver::new(resolver.clone())
+        .resolve_vm_for_purpose(
+            &target_vm_id,
+            vti_common::auth::ProofPurpose::Authentication,
+        )
+        .await
+        .map_err(|e| format!("rotation key refused: {e}"))?;
+    // The key's own curve decides the algorithm: Ed25519, P-256 or secp256k1
+    // (#1988).
+    let key = vta_sdk::jws::JwsKey::from_resolved(&resolved)
+        .map_err(|e| format!("rotation key refused: {e}"))?;
+    crate::holder_signature::verify_hex_signature(&key, &[], payload, hex_sig)
 }
 
 /// Re-mint VMC + role VAC against the new DID. Reuses the

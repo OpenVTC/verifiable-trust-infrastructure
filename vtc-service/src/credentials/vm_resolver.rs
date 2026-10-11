@@ -26,7 +26,6 @@
 use affinidi_data_integrity::{DataIntegrityError, ResolvedKey};
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_secrets_resolver::secrets::KeyType;
-use ed25519_dalek::VerifyingKey;
 use vti_common::auth::{ProofPurpose, PurposeVmResolver, TrustTaskVmResolver};
 use vti_common::error::AppError;
 
@@ -71,27 +70,22 @@ impl DidVmResolver {
         Ok(key.public_key_bytes)
     }
 
-    /// As [`Self::resolve_ed25519`] but returns a [`VerifyingKey`] — for the
-    /// OID4VCI proof-of-possession JWT, which is EdDSA only. A presented
-    /// SD-JWT-VC's issuer may use any curve `vta_sdk::jws::JwsKey` covers and
-    /// resolves through [`PurposeVmResolver`] instead.
-    pub(crate) async fn resolve_verifying_key(
+    /// Resolve a verification-method URI to a key a compact JWS verifies
+    /// under — Ed25519, P-256 or secp256k1 (#1988) — provided its DID
+    /// authorised it for `purpose`. For the OID4VCI proof-of-possession JWT,
+    /// whose `alg` the returned key then decides.
+    pub(crate) async fn resolve_jws_key(
         &self,
         vm: &str,
         purpose: ProofPurpose,
-    ) -> Result<VerifyingKey, AppError> {
-        let bytes = self.resolve_ed25519(vm, purpose).await?;
-        let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
-            AppError::Validation(format!(
-                "the verification method's Ed25519 key is {} bytes, not 32",
-                bytes.len()
-            ))
-        })?;
-        VerifyingKey::from_bytes(&arr).map_err(|e| {
-            AppError::Validation(format!(
-                "the verification method is not a valid Ed25519 key: {e}"
-            ))
-        })
+    ) -> Result<vta_sdk::jws::JwsKey, AppError> {
+        let key = self
+            .keys
+            .resolve_vm_for_purpose(vm, purpose)
+            .await
+            .map_err(|e| AppError::Validation(format!("verification method refused: {e}")))?;
+        vta_sdk::jws::JwsKey::from_resolved(&key)
+            .map_err(|e| AppError::Validation(format!("verification method refused: {e}")))
     }
 
     /// Resolve a verification-method URI to its 96-byte compressed BLS12-381

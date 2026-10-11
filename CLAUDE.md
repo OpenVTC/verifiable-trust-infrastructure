@@ -137,11 +137,22 @@ This applies to both sides of `sealed_transfer` (`client_did`, `producer_did`),
 to CLI recipient flags (`--recipient-did`), and to any new protocol we add.
 Tests and docs refer to DIDs, not pubkeys.
 
-The one place other curves are accepted is **verifying credentials others
-issue**: an SD-JWT-VC issuer or `cnf.jwk` holder may sign EdDSA, ES256 (P-256)
-or ES256K (secp256k1), so swiyu / EUDI credentials verify (#1988). That goes
-through `vta_sdk::jws` — the algorithm fixed by the resolved key, never by the
-token — and a P-256 / secp256k1 holder is named by that key's `did:key`.
+Other curves are accepted where **a party outside this workspace holds the
+key** (#1988), and only through `vta_sdk::jws` — the algorithm fixed by the
+resolved key, never by the token — with a P-256 / secp256k1 key named by its
+own `did:key` (`zDn…` / `zQ3s…`):
+
+- **Credentials others issue**: an SD-JWT-VC issuer or `cnf.jwk` holder may
+  sign EdDSA, ES256 (P-256) or ES256K (secp256k1), so swiyu / EUDI credentials
+  verify.
+- **Members' own signatures**: a member's Trust Task proof may be
+  `ecdsa-jcs-2019` (P-256; the framework's SHOULD-verify suite for
+  hardware-backed signers — there is no secp256k1 Data Integrity suite), and
+  the hex holder signatures (member rotation, join's REST binding) and the
+  OID4VCI key-binding proof may be any of the three.
+
+What the workspace mints, and every key `sealed_transfer` seals to, stays
+Ed25519 / X25519.
 
 ## Prefer TSP, then DIDComm, then REST
 
