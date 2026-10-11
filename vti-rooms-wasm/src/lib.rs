@@ -54,6 +54,7 @@
 //! whose leaf nobody added, which fails at the first read looking like a bad Welcome rather
 //! than a wrong identity.
 
+pub mod files;
 pub mod identity;
 pub mod invitation;
 

@@ -154,6 +154,9 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // belongs beside `vault/release` rather than with the ordinary mutations,
     // because what comes back is content the room encrypted.
     ("rooms/keys/open", Risk::Sensitive),
+    // Key material, emitted: one file's key, which opens that file's ciphertext
+    // for as long as the ciphertext exists. More than `open` returns, not less.
+    ("rooms/keys/file-key", Risk::Sensitive),
     // Key material, accepted. A Welcome carries a group's secrets and joining
     // is a membership change made on the principal's behalf — not something a
     // blanket `vta_call` approval should cover silently.

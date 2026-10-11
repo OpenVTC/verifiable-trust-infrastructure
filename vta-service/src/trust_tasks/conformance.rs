@@ -2570,6 +2570,23 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({ "plaintext": "YSBkZWNpc2lvbg" })
             ),
         ),
+        (
+            uris::TASK_ROOMS_KEYS_FILE_KEY_0_1,
+            checked!(
+                specs::rooms::keys::file_key::v0_1::Payload,
+                specs::rooms::keys::file_key::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "fileId": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+                    "purpose": "open",
+                    "epoch": 5
+                }),
+                json!({
+                    "key": "qPm3rH0xU1d5wR6x0yTq8ZbV7k2nC4aE9fG1hJ3kL5M",
+                    "epoch": 5
+                })
+            ),
+        ),
         //
         // The only `rooms/*` task this agent serves: the oracle side, where a
         // member's own VTA mints a scoped presentation for their agent. The

@@ -540,6 +540,15 @@ pub(crate) enum RoomCommands {
         reason: Option<String>,
     },
 
+    /// Seal or open a room file locally, with that one file's key from your VTA.
+    ///
+    /// The file's bytes never pass through the VTA; the key it releases opens
+    /// this file and nothing else.
+    File {
+        #[command(subcommand)]
+        command: RoomFileCommands,
+    },
+
     /// Register a room with a host.
     ///
     /// The only verb needing no presentation — the room has issued nothing yet,
@@ -559,6 +568,37 @@ pub(crate) enum RoomCommands {
         /// How long the host holds the room after it lapses. Default 90 days.
         #[arg(long)]
         retention_days: Option<u32>,
+    },
+}
+
+/// `pnm rooms file …`.
+#[derive(Subcommand)]
+pub(crate) enum RoomFileCommands {
+    /// Seal a local file for a room: writes the sealed chunks, `blob.json` (what a
+    /// host checks) and `file.json` (what goes inside the sealed record body).
+    Seal {
+        /// The file to seal.
+        path: std::path::PathBuf,
+        #[arg(long = "room")]
+        room_id: String,
+        /// A new directory to write into.
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// Pad to the next Padmé size, so the stored size does not fingerprint a
+        /// known document. At most 12 % larger.
+        #[arg(long)]
+        pad: bool,
+    },
+    /// Open a sealed file directory, refusing a file that is not the one its
+    /// author signed.
+    Open {
+        /// A directory `seal` wrote, or one assembled from a download.
+        dir: std::path::PathBuf,
+        #[arg(long = "room")]
+        room_id: String,
+        /// Where to write the file. Must not exist.
+        #[arg(long)]
+        out: std::path::PathBuf,
     },
 }
 

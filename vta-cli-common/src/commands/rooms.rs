@@ -452,6 +452,156 @@ pub async fn cmd_rooms_create(
     Ok(())
 }
 
+// ─── Files ───────────────────────────────────────────────────────────────
+//
+// Sealing and opening a room file locally, with one file's key from the VTA
+// (`rooms/keys/file-key/0.1`). The bytes never pass through the VTA; what the
+// VTA releases opens this one file and nothing else.
+//
+// What is written is the upload's whole input and nothing more: the sealed
+// chunks, the blob manifest a host checks, and the file manifest that belongs
+// inside the sealed record body. Uploading them is `rooms/blobs/upload/*` and
+// a record put naming the blob.
+
+/// The blob manifest beside the chunks.
+const BLOB_MANIFEST: &str = "blob.json";
+/// The file manifest — the sealed record body's `file` member.
+const FILE_MANIFEST: &str = "file.json";
+/// The sealed chunks, in index order.
+const CHUNKS_DIR: &str = "chunks";
+
+fn chunk_path(dir: &std::path::Path, index: usize) -> std::path::PathBuf {
+    dir.join(CHUNKS_DIR).join(format!("{index:06}.bin"))
+}
+
+fn file_key_bytes(
+    resp: &trust_tasks_rs::specs::rooms::keys::file_key::v0_1::Response,
+) -> Result<vti_rooms::files::FileKey, Box<dyn std::error::Error>> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(resp.key.as_str())?;
+    bytes
+        .try_into()
+        .map_err(|_| "the VTA returned a file key that is not 32 bytes".into())
+}
+
+/// `rooms file seal` — seal a local file for a room, ready to upload.
+pub async fn cmd_rooms_file_seal(
+    client: &VtaClient,
+    room_id: &str,
+    path: &std::path::Path,
+    out: &std::path::Path,
+    padme: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use vti_rooms::files::{self, FileBinding, Padding};
+
+    if out.exists() {
+        return Err(format!("{} already exists; choose a new directory", out.display()).into());
+    }
+    let plaintext = std::fs::read(path)?;
+    // The name is the uploader's and is sealed: only members see it.
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("the file has no usable name")?;
+
+    // A fresh id for every file: the segment nonces are counters, so two files
+    // under one key would reuse them.
+    let file_id = files::new_file_id();
+    let resp = client
+        .room_file_key(room_id, &files::encode_file_id(&file_id), None)
+        .await?;
+    let key = file_key_bytes(&resp)?;
+    let sealed = files::seal_file(
+        &key,
+        FileBinding {
+            room_id: room_id.to_string(),
+            file_id,
+            epoch: resp.epoch.get(),
+            segment_size: files::DEFAULT_SEGMENT_SIZE,
+        },
+        name,
+        None,
+        &plaintext,
+        if padme { Padding::Padme } else { Padding::None },
+    )?;
+    std::fs::create_dir_all(out.join(CHUNKS_DIR))?;
+    for (i, chunk) in sealed.chunks.iter().enumerate() {
+        std::fs::write(chunk_path(out, i), chunk)?;
+    }
+    std::fs::write(
+        out.join(BLOB_MANIFEST),
+        serde_json::to_vec_pretty(&sealed.blob)?,
+    )?;
+    std::fs::write(
+        out.join(FILE_MANIFEST),
+        serde_json::to_vec_pretty(&sealed.file)?,
+    )?;
+    println!(
+        "Sealed {} ({} bytes) under epoch {} into {}\n  blobRef  {}\n  chunks   {} of {} bytes",
+        name,
+        sealed.file.size,
+        sealed.file.epoch,
+        out.display(),
+        sealed.file.blob_ref,
+        sealed.blob.chunks.chunk_count,
+        sealed.blob.chunks.chunk_size,
+    );
+    println!(
+        "  {FILE_MANIFEST} goes inside the sealed record body; it names the file and is never \
+         sent to the host in the clear."
+    );
+    Ok(())
+}
+
+/// `rooms file open` — open a sealed file directory, refusing one that is not
+/// the file its author signed.
+pub async fn cmd_rooms_file_open(
+    client: &VtaClient,
+    room_id: &str,
+    dir: &std::path::Path,
+    out: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use vti_rooms::files::{self, BlobManifest, FileManifest};
+
+    if out.exists() {
+        return Err(format!("{} already exists; refusing to overwrite it", out.display()).into());
+    }
+    let file: FileManifest = serde_json::from_slice(&std::fs::read(dir.join(FILE_MANIFEST))?)?;
+    let blob: BlobManifest = serde_json::from_slice(&std::fs::read(dir.join(BLOB_MANIFEST))?)?;
+    // The file manifest is the author's; the blob manifest is whoever served it.
+    // Before a byte is trusted: it is the blob the author named, and its chunk size
+    // and count are the ones the author's segment size and length give.
+    file.check_blob(&blob)?;
+    let mut chunks = Vec::with_capacity(blob.chunks.chunk_count as usize);
+    for (i, expected) in blob.chunks.chunk_digests.iter().enumerate() {
+        let chunk = std::fs::read(chunk_path(dir, i))?;
+        if !files::same_digest(&files::digest_multibase(&chunk), expected) {
+            return Err(format!("chunk {i} does not match the manifest").into());
+        }
+        chunks.push(chunk);
+    }
+
+    let resp = client
+        .room_file_key(room_id, &file.file_id, Some(file.epoch))
+        .await?;
+    let key = file_key_bytes(&resp)?;
+    let plaintext = files::open_file(&key, room_id, &file, &blob, &chunks)?;
+
+    // Written beside the target and moved into place, so a failure leaves nothing that
+    // looks like the file.
+    let tmp = out.with_extension("partial");
+    std::fs::write(&tmp, &plaintext)?;
+    std::fs::rename(&tmp, out)?;
+    println!(
+        "Opened {} ({} bytes) into {} — the digest its author signed matches.",
+        // Untrusted text from another member: escaped, so it cannot drive the terminal.
+        file.name.escape_debug(),
+        plaintext.len(),
+        out.display()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

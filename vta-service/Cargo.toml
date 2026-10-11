@@ -394,6 +394,9 @@ aws-lc-rs = { version = "1", optional = true }
 # what should not ship, which is why the crate gates it.
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.13", features = ["test-support"] }
 tempfile = "3"
+# Checks a refusal's `details` against the `detailsSchema` its specification
+# declares (rooms/keys/file-key), which the generated bindings do not carry.
+jsonschema = { workspace = true }
 # The exact parser the DID-hosting server uses to read `alsoKnownAs` off a
 # published log. Dev-only: it lets the agent-name contract test assert that
 # what we *write* is what the host can *read*, rather than asserting our own

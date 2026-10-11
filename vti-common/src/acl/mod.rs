@@ -216,6 +216,9 @@ pub enum Capability {
     /// purpose: producing a presentation and decrypting a record are different
     /// powers. An agent that indexes a room — walking the listing and building
     /// a searchable view — should not thereby be able to read it.
+    ///
+    /// Also gates `rooms/keys/{seal,file-key}/0.1`: a sealing key is a file key
+    /// like any other, and opens the file it seals.
     RoomOpen,
     /// Acting for the **holder** over their own identity: the ten holder-scoped
     /// `persona/*` tasks — the attribute pool, the profiles built over it,
