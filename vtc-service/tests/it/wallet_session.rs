@@ -43,11 +43,21 @@ struct Fixture {
 }
 
 async fn fixture_with(identity: bool) -> Fixture {
-    let mut builder = TestVtc::builder().with_public_url(PUBLIC_URL);
+    let mut builder = TestVtc::builder()
+        .with_audit(true)
+        .with_public_url(PUBLIC_URL);
     if identity {
         builder = builder.with_oid4vp_identity(oid4vp_test_identity("swiyu", 0x31));
     }
     let vtc = builder.build().await;
+    // The join decision runs the active `join` policy, as `server::run`
+    // installs it.
+    vtc_service::policy::default::install_defaults(
+        &vtc.state.policies_ks,
+        &vtc.state.active_policies_ks,
+    )
+    .await
+    .expect("install default policies");
     vtc_service::schemas::store_schema(
         &vtc.state.schemas_ks,
         &vtc_service::schemas::SchemaEntry {
@@ -583,4 +593,158 @@ async fn seed_request(f: &Fixture, applicant: &str, status: JoinStatus) -> Uuid 
         .await
         .unwrap();
     request.id
+}
+
+// ── wallet evidence on the join ──
+
+const SUBMIT: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/0.3";
+
+/// Open a session (with `extra` start members), and have a wallet answer it
+/// with a residence permit. Returns the session id.
+async fn present_into(f: &Fixture, seed: &[u8; 32], extra: Value) -> String {
+    let mut payload = json!({ "criterion": f.digest });
+    if let (Some(p), Some(e)) = (payload.as_object_mut(), extra.as_object()) {
+        p.extend(e.clone());
+    }
+    let (code, body) = start_session(f, seed, payload).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    let session_id = body["payload"]["sessionId"].as_str().unwrap().to_string();
+    let (_, _, bytes) = get_request_object(f, &session_id).await;
+    let request = decode_segment(&String::from_utf8(bytes).unwrap(), 1);
+    let client_id = format!("decentralized_identifier:{TEST_VERIFIER_DID}");
+    let (_, vp) = presentation(VCT, &client_id, request["nonce"].as_str().unwrap());
+    let form = encrypted_response(
+        &request,
+        &json!({ "vp_token": { "residence": [vp] }, "state": request["state"] }),
+    );
+    let (code, body) = post_response(f, &session_id, form).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    session_id
+}
+
+async fn submit(f: &Fixture, seed: &[u8; 32], criterion: &str) -> (StatusCode, Value) {
+    let doc = signed(
+        seed,
+        SUBMIT,
+        json!({
+            "vp": { "type": "VerifiablePresentation" },
+            "registryConsent": false,
+            "criterion": criterion,
+        }),
+    )
+    .await;
+    post_tt(f, doc).await
+}
+
+/// Evidence collected without a request is held for the applicant's next
+/// submission under that criterion, which it then meets; the session is bound
+/// to the request that took it.
+#[tokio::test]
+async fn held_wallet_evidence_meets_the_criterion_at_the_next_submission() {
+    let f = fixture().await;
+    let session_id = present_into(&f, &APPLICANT_SEED, json!({})).await;
+
+    let (code, body) = submit(&f, &APPLICANT_SEED, &f.digest).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    // A `review` criterion that is met is referred to the community.
+    assert_eq!(body["payload"]["verdict"]["effect"], "refer", "{body}");
+    let request_id = body["payload"]["requestId"].as_str().unwrap().to_string();
+
+    let (_, body) = session_status(&f, &APPLICANT_SEED, &session_id).await;
+    assert_eq!(body["payload"]["requestId"], request_id);
+    assert!(
+        body["payload"]["evidence"].get("heldUntil").is_none(),
+        "{body}"
+    );
+    let recorded = vtc_service::join::storage::get_wallet_evidence(
+        &f.vtc.state.join_requests_ks,
+        request_id.parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(recorded.items.len(), 1);
+    assert_eq!(recorded.items[0].session_id, session_id);
+
+    // Without the wallet, the same submission does not meet it.
+    let (code, body) = submit(&f, &[0x44; 32], &f.digest).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_ne!(body["payload"]["verdict"]["effect"], "refer", "{body}");
+}
+
+/// Seed a request of the applicant's, recorded as decided under the
+/// `residence` criterion and still lacking its credential.
+async fn seed_lacking(f: &Fixture, status: JoinStatus) -> Uuid {
+    let mut request = vtc_service::join::JoinRequest::new(
+        applicant_did(&APPLICANT_SEED),
+        json!({ "type": "VerifiablePresentation" }),
+    );
+    request.status = status;
+    vtc_service::join::storage::store_join_request(&f.vtc.state.join_requests_ks, &request)
+        .await
+        .unwrap();
+    vtc_service::join::storage::store_criterion(
+        &f.vtc.state.join_requests_ks,
+        request.id,
+        &vtc_service::join::criteria::CriterionFact {
+            id: "residence".into(),
+            requirements_digest: f.digest.clone(),
+            admission: Admission::Review,
+            met: false,
+            needs: vec!["credentials".into()],
+            cited: true,
+            superseded: false,
+        },
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    request.id
+}
+
+async fn request_status(f: &Fixture, id: Uuid) -> JoinStatus {
+    vtc_service::join::storage::get_join_request(&f.vtc.state.join_requests_ks, id)
+        .await
+        .unwrap()
+        .unwrap()
+        .status
+}
+
+async fn recorded_criterion(f: &Fixture, id: Uuid) -> vtc_service::join::criteria::CriterionFact {
+    vtc_service::join::storage::get_criterion(&f.vtc.state.join_requests_ks, id)
+        .await
+        .unwrap()
+        .unwrap()
+        .criterion
+}
+
+async fn recorded_wallet_items(f: &Fixture, id: Uuid) -> usize {
+    vtc_service::join::storage::get_wallet_evidence(&f.vtc.state.join_requests_ks, id)
+        .await
+        .unwrap()
+        .items
+        .len()
+}
+
+/// A deferred request is decided again when the wallet answers a session bound
+/// to it: the credential it lacked now meets the criterion, so it is referred.
+#[tokio::test]
+async fn a_deferred_request_is_decided_again_on_wallet_evidence() {
+    let f = fixture().await;
+    let id = seed_lacking(&f, JoinStatus::Deferred).await;
+    present_into(&f, &APPLICANT_SEED, json!({ "requestId": id.to_string() })).await;
+    assert_eq!(request_status(&f, id).await, JoinStatus::Pending);
+    assert_eq!(recorded_wallet_items(&f, id).await, 1);
+    assert!(recorded_criterion(&f, id).await.met);
+}
+
+/// A pending request is under review: the evidence is recorded for the
+/// reviewer, and nothing is decided underneath them.
+#[tokio::test]
+async fn wallet_evidence_on_a_pending_request_is_recorded_not_decided() {
+    let f = fixture().await;
+    let id = seed_lacking(&f, JoinStatus::Pending).await;
+    present_into(&f, &APPLICANT_SEED, json!({ "requestId": id.to_string() })).await;
+    assert_eq!(request_status(&f, id).await, JoinStatus::Pending);
+    assert_eq!(recorded_wallet_items(&f, id).await, 1);
+    assert!(!recorded_criterion(&f, id).await.met, "not re-decided");
 }

@@ -82,6 +82,7 @@ pub async fn delete_join_request(ks: &KeyspaceHandle, id: Uuid) -> Result<(), Ap
     ks.remove(vetting_facts_key(id)).await?;
     ks.remove(credential_resends_key(id)).await?;
     ks.remove(criterion_key(id)).await?;
+    ks.remove(wallet_evidence_key(id)).await?;
     ks.remove(key(id)).await?;
     crate::admin_events::notify(crate::admin_events::Topic::JoinRequests);
     Ok(())
@@ -146,6 +147,87 @@ pub async fn get_criterion(
             .map_err(|e| AppError::Internal(format!("join criterion record decode: {e}"))),
         None => Ok(None),
     }
+}
+
+/// Key prefix of the wallet evidence recorded on a join request. Distinct from
+/// [`PREFIX`], so a request listing never reads one.
+const WALLET_EVIDENCE_PREFIX: &[u8] = b"join_wallet:";
+
+fn wallet_evidence_key(id: Uuid) -> Vec<u8> {
+    let mut k = WALLET_EVIDENCE_PREFIX.to_vec();
+    k.extend_from_slice(id.as_hyphenated().to_string().as_bytes());
+    k
+}
+
+/// One wallet session's verified presentation, recorded on the join request
+/// it is evidence for.
+///
+/// A storage record, never on the wire: the wallet-session start
+/// specification's consumer rule 11 says the evidence lives on the request.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletEvidenceItem {
+    /// The session that collected it.
+    pub session_id: String,
+    /// The criterion version it was collected for, and the only one it counts
+    /// toward.
+    pub requirements_digest: String,
+    /// The wallet's holder key — beside the applicant, never as them.
+    pub holder: String,
+    /// What was presented, claims included.
+    pub credentials: Vec<crate::oid4vp::session::EvidenceCredential>,
+    pub presented_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The wallet evidence a join request carries. Kept beside the request rather
+/// than on it, as [`StoredVettingFacts`] is; deleted with it.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredWalletEvidence {
+    pub items: Vec<WalletEvidenceItem>,
+}
+
+impl StoredWalletEvidence {
+    /// Every recorded credential, each scoped to its own criterion.
+    pub fn presented(&self) -> Vec<crate::join::criteria::PresentedCredential> {
+        self.items
+            .iter()
+            .flat_map(|i| {
+                crate::join::criteria::presented_from_wallet(&i.requirements_digest, &i.credentials)
+            })
+            .collect()
+    }
+}
+
+/// The wallet evidence recorded on a join request (empty when none).
+pub async fn get_wallet_evidence(
+    ks: &KeyspaceHandle,
+    request_id: Uuid,
+) -> Result<StoredWalletEvidence, AppError> {
+    match ks.get_raw(wallet_evidence_key(request_id)).await? {
+        Some(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| AppError::Internal(format!("join wallet evidence decode: {e}"))),
+        None => Ok(StoredWalletEvidence::default()),
+    }
+}
+
+/// Record a wallet session's evidence on a join request. A session already
+/// recorded there is not recorded twice.
+pub async fn add_wallet_evidence(
+    ks: &KeyspaceHandle,
+    request_id: Uuid,
+    item: WalletEvidenceItem,
+) -> Result<(), AppError> {
+    let mut stored = get_wallet_evidence(ks, request_id).await?;
+    if stored.items.iter().any(|i| i.session_id == item.session_id) {
+        return Ok(());
+    }
+    stored.items.push(item);
+    ks.insert(
+        String::from_utf8(wallet_evidence_key(request_id)).expect("key is ASCII"),
+        &stored,
+    )
+    .await
 }
 
 /// Key prefix of the credential re-delivery record for a join request

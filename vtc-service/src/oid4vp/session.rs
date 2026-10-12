@@ -202,6 +202,19 @@ impl std::fmt::Debug for WalletSession {
 }
 
 impl WalletSession {
+    /// The evidence this session yielded, as recorded on a join request.
+    /// `None` unless it ended `presented`.
+    pub fn evidence_item(&self) -> Option<crate::join::storage::WalletEvidenceItem> {
+        let evidence = self.evidence.as_ref()?;
+        Some(crate::join::storage::WalletEvidenceItem {
+            session_id: self.id.clone(),
+            requirements_digest: self.requirements_digest.clone(),
+            holder: evidence.holder.clone(),
+            credentials: evidence.credentials.clone(),
+            presented_at: self.closed_at.unwrap_or(self.created_at),
+        })
+    }
+
     /// Whether the session is still open at `now`.
     pub fn open_at(&self, now: DateTime<Utc>) -> bool {
         self.phase.is_open() && now < self.expires_at
@@ -348,6 +361,54 @@ pub async fn finish(
     }
     ks.insert(storage_key(id), &session).await?;
     Ok(session)
+}
+
+/// Evidence `applicant_did` holds for their next submission at `now`: their
+/// `presented` sessions bound to no join request whose hold has not lapsed
+/// (`wallet-session/start/0.1` consumer rule 11).
+pub async fn held_for(
+    ks: &KeyspaceHandle,
+    applicant_did: &str,
+    now: DateTime<Utc>,
+) -> Result<Vec<WalletSession>, AppError> {
+    Ok(list(ks)
+        .await?
+        .into_iter()
+        .filter(|s| {
+            s.applicant_did == applicant_did
+                && s.phase == SessionPhase::Presented
+                && s.request_id.is_none()
+                && s.evidence.is_some()
+                && s.held_until.is_some_and(|t| now < t)
+        })
+        .collect())
+}
+
+/// Bind held sessions to the join request their evidence was decided on: the
+/// evidence now lives as long as that request's record, and the status task
+/// reports the request. Only sessions still held at `now` are bound; returns
+/// those.
+pub async fn bind_to_request(
+    ks: &KeyspaceHandle,
+    ids: &[String],
+    request_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<Vec<WalletSession>, AppError> {
+    let _guard = SESSION_LOCK.lock().await;
+    let mut bound = Vec::new();
+    for id in ids {
+        let Some(mut session) = get(ks, id).await? else {
+            continue;
+        };
+        if session.request_id.is_some() || !session.held_until.is_some_and(|t| now < t) {
+            continue;
+        }
+        session.request_id = Some(request_id);
+        session.held_until = None;
+        ks.insert(storage_key(id), &session).await?;
+        bound.push(session);
+    }
+    Ok(bound)
 }
 
 /// Close sessions past `expiresAt` that no wallet answered, and drop records

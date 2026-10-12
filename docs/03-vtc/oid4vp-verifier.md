@@ -117,6 +117,27 @@ task then reports the evidence — the wallet's holder key, recorded beside the
 applicant and never as them, and each credential's query id, format, issuer and
 type. It never returns a claim value. A refusal reports which check failed.
 
+### What the evidence does for the join
+
+Wallet evidence counts toward the criterion its session was opened for, and no
+other. It is bound to the applicant by the session, not by a key: the wallet's
+holder key is recorded beside the applicant DID, never as it.
+
+- **With `requestId`**, the evidence is recorded on that request. A `deferred`
+  request — typically one waiting for exactly this credential — is decided
+  again at once, on its own presentation plus the wallet evidence, under the
+  criterion it was decided under, as a supplement would be. A `pending`
+  request is under review: the evidence is recorded for the reviewer and
+  nothing is decided underneath them.
+- **Without `requestId`**, it is held for the applicant's next submission
+  (`evidence_hold_secs`, six hours by default) and counts there if the
+  submission is decided under that criterion. The session is then bound to
+  the new request, which the status task reports, and the evidence is recorded
+  on it. Unclaimed evidence is discarded when the hold lapses.
+
+A later supplement replaces the request's presentation but keeps its wallet
+evidence: that was recorded on the request, not presented in the VP.
+
 Both wallet endpoints are unauthenticated, as OpenID4VP requires, and sit
 behind the unauthenticated rate limit. The session id is unguessable and
 single-use, and a response decrypts only under its session's key.
@@ -147,9 +168,6 @@ verifier identities. `oid4vp_sessions` is not: a session lasts minutes.
 
 ## Not yet
 
-- Deciding a join on wallet evidence: it is recorded on the session, and
-  feeding it into the join request (with `requestId`) or the applicant's next
-  submission (without) comes next.
 - swiyu trust statements in `verifier_info`, and swiyu's trusted issuers.
 - EUDI: the X.509 access certificate — a certificate request built from a
   VTA-held key, and the issued chain and registration certificate.

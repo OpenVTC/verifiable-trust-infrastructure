@@ -54,6 +54,12 @@ use crate::server::AppState;
 /// The swiyu Verification Profile a request object declares in its header.
 pub const SWIYU_PROFILE_VERSION: &str = "swiss-profile-verification:1.0.0";
 
+/// One wallet answer at a time is handed to the join: two sessions bound to the
+/// same deferred request must not decide it twice from the same starting
+/// state.
+static JOIN_HANDOFF: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 /// The `kid` of a session's response-encryption key in `client_metadata.jwks`.
 const RESPONSE_KEY_ID: &str = "response-encryption";
 
@@ -382,6 +388,25 @@ pub async fn receive(
         Err(reason) => WalletAnswer::Refused(*reason),
     };
     let finished = session::finish(&state.oid4vp_sessions_ks, id, outcome, hold, now).await?;
+    if finished.phase == SessionPhase::Presented && finished.request_id.is_some() {
+        // The wallet's answer is accepted whatever the join does next; a
+        // failure here is the community's to see, not the wallet's.
+        let _serial = JOIN_HANDOFF.lock().await;
+        match crate::join::orchestrate::wallet_evidence_arrived(state, &finished).await {
+            Ok(Some(outcome)) => info!(
+                session = %finished.id,
+                request = %outcome.request.id,
+                status = %outcome.request.status,
+                "join request decided again on wallet evidence"
+            ),
+            Ok(None) => {}
+            Err(e) => warn!(
+                session = %finished.id,
+                error = %e,
+                "wallet evidence could not be applied to its join request"
+            ),
+        }
+    }
     match &finished.evidence {
         Some(evidence) => info!(
             session = %finished.id,

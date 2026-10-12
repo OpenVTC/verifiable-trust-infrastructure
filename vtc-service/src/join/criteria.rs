@@ -157,6 +157,10 @@ pub struct PresentedCredential {
     pub claims: JsonValue,
     /// Its issuer's DID.
     pub issuer: String,
+    /// The `requirementsDigest` of the only criterion it counts toward, when
+    /// it came from a wallet session collected for one
+    /// (`wallet-session/start/0.1` consumer rule 11). `None`: any criterion.
+    pub only_for: Option<String>,
 }
 
 /// Everything a submission presented that a criterion can ask for, verified
@@ -364,7 +368,7 @@ impl<'a> Evaluator<'a> {
         let mut needs = Vec::new();
 
         if let Some(query) = stored.dcql()?
-            && !self.credentials_meet(stored, &query).await
+            && !self.credentials_meet(stored, &served.digest, &query).await
         {
             needs.push(NEED_CREDENTIALS.to_string());
         }
@@ -442,6 +446,7 @@ impl<'a> Evaluator<'a> {
     async fn credentials_meet(
         &mut self,
         stored: &AcceptsCriterion,
+        digest: &str,
         query: &affinidi_openid4vp::DcqlQuery,
     ) -> bool {
         let issuers = stored
@@ -451,6 +456,11 @@ impl<'a> Evaluator<'a> {
             .unwrap_or(CredentialIssuers::Community);
         let mut admitted = Vec::new();
         for c in &self.presented.credentials {
+            // Wallet evidence counts only toward the criterion it was
+            // collected for.
+            if c.only_for.as_deref().is_some_and(|d| d != digest) {
+                continue;
+            }
             if self.issuer_admitted(issuers, &c.issuer).await {
                 admitted.push(c);
             }
@@ -652,6 +662,7 @@ pub async fn verify_embedded_credentials(
                     types,
                     claims: vc.clone(),
                     issuer,
+                    only_for: None,
                 });
             }
             Err(reason) => warn!(
@@ -744,6 +755,38 @@ pub fn presented_from_verified(presentation: &Presentation) -> Vec<PresentedCred
                 }
             },
             issuer: c.issuer.clone(),
+            only_for: None,
+        })
+        .collect()
+}
+
+/// The credentials a wallet session's verified presentation carried, as a
+/// criterion's query reads them, each counting only toward the criterion the
+/// session was opened for (`requirements_digest`).
+///
+/// They are not bound to the applicant by a key — the wallet's holder key is
+/// not theirs (`wallet-session/start/0.1` consumer rule 10) — but by the
+/// session: the applicant opened it with a signed document, and nothing a
+/// wallet sends can re-bind it.
+pub fn presented_from_wallet(
+    requirements_digest: &str,
+    credentials: &[crate::oid4vp::session::EvidenceCredential],
+) -> Vec<PresentedCredential> {
+    credentials
+        .iter()
+        .filter_map(|c| {
+            let format = match c.format.as_str() {
+                SD_JWT_VC_FORMAT => SD_JWT_VC_FORMAT,
+                LDP_VC_FORMAT => LDP_VC_FORMAT,
+                _ => return None,
+            };
+            Some(PresentedCredential {
+                formats: vec![format],
+                types: c.vct.iter().cloned().collect(),
+                claims: c.claims.clone(),
+                issuer: c.issuer.clone(),
+                only_for: Some(requirements_digest.to_string()),
+            })
         })
         .collect()
 }
@@ -810,6 +853,7 @@ mod tests {
             types: types.iter().map(|t| t.to_string()).collect(),
             claims: json!({ "type": types, "credentialSubject": subject }),
             issuer: "did:web:issuer.example".into(),
+            only_for: None,
         }
     }
 
