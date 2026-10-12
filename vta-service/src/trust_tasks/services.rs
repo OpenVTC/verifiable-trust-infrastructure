@@ -612,7 +612,6 @@ pub(super) async fn handle_enable(
             Ok(r) => {
                 let response = success_response(&doc, r);
                 if restarting {
-                    state_.restart_gate.request();
                     response.with_restart()
                 } else {
                     response

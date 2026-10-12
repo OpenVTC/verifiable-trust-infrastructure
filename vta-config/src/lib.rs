@@ -963,61 +963,48 @@ impl AppConfig {
         Ok(())
     }
 
-    /// Re-read [`config_path`] for a soft restart, carrying forward the
-    /// effective values boot injects and deliberately never persists.
+    /// The configuration a soft restart's next generation runs with.
     ///
+    /// **Attested** (an [`effective_config_digest`] was captured): the running
+    /// configuration, unchanged — the file is not an input. The boot
+    /// attestation covers what this process runs, and the runtime operations
+    /// that persist configuration (`services {kind} {enable,update,disable}`,
+    /// `config/patch`) apply every change to the running copy as well as to
+    /// the file, so the file holds nothing a restart needs. Reading it would
+    /// let an edit no attestation covered take effect; comparing it would fail
+    /// every restart on drift that is not an edit at all (a fleet enclave's
+    /// file is the baked base, without the tenant overlay applied in memory).
+    /// The digest and view are cleared; the restart orchestrator captures them
+    /// again after it applies the runtime service flags.
+    ///
+    /// **Otherwise**: re-read [`config_path`], so an operator's edit takes
+    /// effect, carrying forward the values boot injects and never persists.
     /// **The carry-forward list below is the contract.** A new boot-time
-    /// mutation of `AppConfig` — the hardened / KMS `auth.jwt_signing_key`, a
-    /// TEE-generated `vta_did`, anything a future bootstrap derives — must be
+    /// mutation of `AppConfig` — the hardened `auth.jwt_signing_key`, a
+    /// generated `vta_did`, anything a future bootstrap derives — must be
     /// added here, or a soft restart silently drops it and the next generation
     /// comes up without an identity it had a moment earlier.
-    ///
-    /// An **attested** boot reloads the persisted effective configuration and
-    /// preserves only the boot-only values here. The restart orchestrator
-    /// captures the final digest after it applies runtime-state flags.
     ///
     /// [`config_path`]: Self::config_path
     /// [`effective_config_digest`]: Self::effective_config_digest
     pub fn reload_for_restart(&self) -> Result<Self, AppError> {
+        if self.effective_config_digest.is_some() {
+            let mut next = self.clone();
+            next.effective_config_digest = None;
+            next.effective_config_view = None;
+            return Ok(next);
+        }
+
         let mut reloaded = Self::load(Some(self.config_path.clone()))?;
 
-        // Hardened and TEE boot paths inject the signing key outside TOML; a
-        // persisted value must not replace that boot-only key. For ordinary
-        // deployments, preserve the prior fallback when TOML omits it.
-        if self.effective_config_digest.is_some()
-            || self.hardened.enabled
-            || reloaded.auth.jwt_signing_key.is_none()
-        {
+        // Hardened boot injects the signing key outside TOML; a persisted
+        // value must not replace that boot-only key. Otherwise preserve the
+        // prior fallback when TOML omits it.
+        if self.hardened.enabled || reloaded.auth.jwt_signing_key.is_none() {
             reloaded.auth.jwt_signing_key = self.auth.jwt_signing_key.clone();
         }
-        // An attested/generated identity is also boot-only. Ordinary VTA
-        // deployments retain the existing fallback when TOML omits it.
-        if self.effective_config_digest.is_some() || reloaded.vta_did.is_none() {
+        if reloaded.vta_did.is_none() {
             reloaded.vta_did = self.vta_did.clone();
-        }
-
-        if self.effective_config_digest.is_some() {
-            let current_view = self.compute_config_attestation_view()?;
-            let reloaded_view = reloaded.compute_config_attestation_view()?;
-            let mut current_value: serde_json::Value = serde_json::from_slice(&current_view)
-                .map_err(|e| AppError::Internal(format!("current config view failed: {e}")))?;
-            let mut reloaded_value: serde_json::Value = serde_json::from_slice(&reloaded_view)
-                .map_err(|e| AppError::Internal(format!("reloaded config view failed: {e}")))?;
-            for value in [&mut current_value, &mut reloaded_value] {
-                if let Some(object) = value.as_object_mut() {
-                    // Runtime service operations persist only these config fields.
-                    object.insert("messaging".into(), serde_json::Value::Null);
-                    object.insert("services".into(), serde_json::Value::Null);
-                }
-            }
-            if current_value != reloaded_value {
-                return Err(AppError::Config(
-                    "attested soft restart found non-runtime changes in config.toml; \
-                     only persisted service configuration may change without a new boot \
-                     attestation"
-                        .into(),
-                ));
-            }
         }
 
         Ok(reloaded)
@@ -1655,21 +1642,23 @@ mod validate_tests {
         );
     }
 
-    /// Runtime service operations persist authorized changes before requesting
-    /// a restart, so an attested generation must re-read them.
+    /// An attested generation restarts with what it runs: the runtime change
+    /// (applied in memory by the service operation) and the boot-only values
+    /// survive, and the digest is left for the orchestrator to recapture.
     #[test]
-    fn reload_for_restart_reloads_persisted_changes_without_attesting() {
-        let (mut config, dir) = load("vta_did = \"did:key:z6MkTest\"\n");
+    fn attested_reload_keeps_the_running_configuration() {
+        let (mut config, _dir) = load("vta_did = \"did:key:z6MkTest\"\n");
         config.auth.jwt_signing_key = Some("boot-injected-jwt".into());
         config
             .capture_effective_config_attestation()
             .expect("capture");
-        std::fs::write(
-            dir.path().join("config.toml"),
-            "vta_did = \"did:key:z6MkTest\"\n\
-             [messaging]\nmediator_did = \"did:web:new.example\"\nmediator_url = \"https://new.example\"\n",
-        )
-        .expect("rewrite config");
+        config.messaging = Some(MessagingConfig {
+            mediator_did: "did:web:new.example".into(),
+            mediator_url: "https://new.example".into(),
+            mediator_host: None,
+            setup_acl: false,
+            drain_inbox_on_start: false,
+        });
 
         let reloaded = config.reload_for_restart().expect("reload");
         assert_eq!(reloaded.vta_did.as_deref(), Some("did:key:z6MkTest"));
@@ -1685,8 +1674,11 @@ mod validate_tests {
         assert_eq!(reloaded.effective_config_view, None);
     }
 
+    /// The file is not an input to an attested restart, so an edit to it —
+    /// or a file that is merely the baked base without the overlay — neither
+    /// takes effect nor fails the restart.
     #[test]
-    fn reload_for_restart_rejects_unrelated_attested_changes() {
+    fn attested_reload_ignores_the_file() {
         let (mut config, dir) = load("vta_did = \"did:key:z6MkTest\"\n");
         config
             .capture_effective_config_attestation()
@@ -1697,7 +1689,8 @@ mod validate_tests {
         )
         .expect("rewrite config");
 
-        assert!(config.reload_for_restart().is_err());
+        let reloaded = config.reload_for_restart().expect("reload");
+        assert_eq!(reloaded.public_url, None);
     }
 
     /// A broken edit must surface as an error so the caller keeps the running

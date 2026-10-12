@@ -39,7 +39,7 @@ pub(super) async fn handle_reload_services(
     // audit-coverage census could not see it either, because the task was
     // unspecced and therefore undriven, until #347.
     //
-    // Recorded BEFORE requesting the restart gate, which is the whole reason the ordering
+    // Recorded BEFORE the restart is requested, which is the whole reason the ordering
     // is worth a comment: the restart tears down the runtime this write is
     // running in. Recording after it is a write racing its own process going
     // away, and the failure mode is exactly the one this row exists to prevent
@@ -64,8 +64,6 @@ pub(super) async fn handle_reload_services(
     {
         tracing::warn!(error = %e, "audit record failed for vta.reload-services");
     }
-
-    state.restart_gate.request();
 
     success_response(
         &doc,

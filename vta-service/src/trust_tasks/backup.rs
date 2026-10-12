@@ -380,7 +380,7 @@ pub(super) async fn handle_finalize_import(
             // A commit staged the restore and committed its seed; it takes
             // effect only when the VTA boots again. The reply goes out first.
             if committed {
-                crate::restore::request_reboot(&state.restart_gate);
+                crate::restore::request_reboot();
             }
             let response = success_response(&doc, body);
             if committed {

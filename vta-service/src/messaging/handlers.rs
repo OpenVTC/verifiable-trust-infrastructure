@@ -137,10 +137,6 @@ pub async fn handle_trust_task(
         }
     };
 
-    if response.restart {
-        app_state.restart_gate.request();
-    }
-
     // The dispatch core returns a typed `TrustTaskOutcome`; its `body` is
     // already the serialised framework trust-task document, so we parse it
     // straight into the DIDComm reply — no round-trip through an

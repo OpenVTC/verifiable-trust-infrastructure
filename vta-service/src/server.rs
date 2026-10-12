@@ -70,10 +70,14 @@ const RESTART_BACKSTOP: Duration = Duration::from_secs(30);
 
 /// Coordinates a restart request with the reply that caused it.
 ///
-/// The transport calls [`Self::fire`] after its send has completed. The
-/// backstop covers handlers that request a restart but never reach a transport
-/// send path, so a successful mutation cannot leave the service enabled but
-/// inactive forever.
+/// One owner per step. A handler only marks its outcome
+/// (`TrustTaskOutcome::with_restart`); the dispatch spine
+/// (`dispatch_trust_task_core`) arms the gate for every transport alike; and
+/// the transport holds a [`RestartOnDrop`] across its send, so the restart
+/// fires once the reply is out — on every path out of the send, failed or not.
+/// The backstop covers an outcome no transport ever sends (a consent replay, a
+/// send that hangs), so a successful mutation cannot leave the service enabled
+/// but inactive forever.
 pub struct RestartGate {
     tx: watch::Sender<bool>,
     pending: AtomicBool,
@@ -91,9 +95,18 @@ impl RestartGate {
         }
     }
 
-    /// Request a restart and arm the delayed safety backstop.
-    pub fn request(self: &Arc<Self>) {
+    /// Request a restart and arm the delayed safety backstop. Called by the
+    /// dispatch spine only; a transport releases the request with
+    /// [`Self::fire_on_drop`].
+    pub(crate) fn request(self: &Arc<Self>) {
         self.request_with_delay(RESTART_BACKSTOP);
+    }
+
+    /// A guard that fires the restart when dropped. A transport takes one
+    /// before sending a restart-carrying reply and keeps it until the send is
+    /// finished, so no early return can strand the restart on the backstop.
+    pub(crate) fn fire_on_drop(self: &Arc<Self>) -> RestartOnDrop {
+        RestartOnDrop(Arc::clone(self))
     }
 
     fn request_with_delay(self: &Arc<Self>, delay: Duration) {
@@ -111,15 +124,25 @@ impl RestartGate {
     }
 
     /// Fire the restart exactly once.
-    pub fn fire(&self) {
+    fn fire(&self) {
         if !self.fired.swap(true, Ordering::AcqRel) {
             self.backstop_cancel.cancel();
             let _ = self.tx.send(true);
         }
     }
 
-    pub fn is_pending(&self) -> bool {
+    #[cfg(test)]
+    fn is_pending(&self) -> bool {
         self.pending.load(Ordering::Acquire) && !self.fired.load(Ordering::Acquire)
+    }
+}
+
+/// Fires its [`RestartGate`] when dropped — see [`RestartGate::fire_on_drop`].
+pub(crate) struct RestartOnDrop(Arc<RestartGate>);
+
+impl Drop for RestartOnDrop {
+    fn drop(&mut self) {
+        self.0.fire();
     }
 }
 
@@ -1691,7 +1714,12 @@ async fn reload_config_for_restart(
         reloaded.services.didcomm = runtime_state::is_didcomm_enabled(service_state_ks).await?;
     }
 
-    if reloaded.effective_config_digest.is_some() {
+    // Ask the generation being replaced, not the reload: the digest is
+    // `#[serde(skip)]` and `reload_for_restart` clears it, so the reload never
+    // has one. Asking it left every restarted generation unattested — and the
+    // generation after that, seeing no digest, reloading without the attested
+    // path at all.
+    if current.effective_config_digest.is_some() {
         reloaded.capture_effective_config_attestation()?;
     }
 
@@ -3110,6 +3138,21 @@ mod tests {
         assert!(gate.backstop_cancel.is_cancelled());
     }
 
+    /// The transport's guard releases the restart on whatever path leaves the
+    /// send — the early returns included — not on the 30s backstop.
+    #[tokio::test]
+    async fn restart_on_drop_fires_when_the_send_scope_ends() {
+        let (tx, rx) = watch::channel(false);
+        let gate = Arc::new(RestartGate::new(tx));
+        gate.request();
+        {
+            let _restart = gate.fire_on_drop();
+            assert!(!*rx.borrow(), "nothing fires while the reply is in flight");
+        }
+        assert!(*rx.borrow());
+        assert!(gate.backstop_cancel.is_cancelled());
+    }
+
     #[tokio::test]
     async fn restart_gate_backstop_fires_without_transport_release() {
         let (tx, mut rx) = watch::channel(false);
@@ -3122,6 +3165,42 @@ mod tests {
             .expect("restart backstop did not fire")
             .expect("restart signal channel closed");
         assert!(*rx.borrow());
+    }
+
+    /// An attested generation's successor is attested too: the reload carries
+    /// no digest, so the orchestrator must ask the generation being replaced
+    /// whether to capture one. Otherwise `vta/attestation/config-report` goes
+    /// blank after the first restart, and the restart after that takes the
+    /// un-attested reload path.
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn soft_restart_recaptures_the_attestation_digest() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("store open");
+        let service_state_ks = store
+            .keyspace(crate::keyspaces::SERVICE_STATE)
+            .expect("service state keyspace");
+        crate::operations::protocol::runtime_state::set_didcomm_enabled(&service_state_ks, false)
+            .await
+            .expect("didcomm off");
+
+        let mut current: AppConfig = toml::from_str("").expect("default config");
+        current
+            .capture_effective_config_attestation()
+            .expect("capture");
+
+        let next = reload_config_for_restart(&current, &service_state_ks)
+            .await
+            .expect("reload");
+        assert!(next.effective_config_digest.is_some());
+        assert!(next.effective_config_view.is_some());
+        let again = reload_config_for_restart(&next, &service_state_ks)
+            .await
+            .expect("second reload");
+        assert!(again.effective_config_digest.is_some());
     }
 
     #[cfg(feature = "webvh")]

@@ -68,6 +68,35 @@ impl TrustTaskOutcome {
     }
 }
 
+impl TrustTaskOutcome {
+    /// The response, holding `restart` until the body has been handed to the
+    /// connection — dropped with the body, it fires then, and on a client that
+    /// hangs up too. `Content-Length` is set so the reply stays unchunked.
+    pub(crate) fn into_response_firing(self, restart: crate::server::RestartOnDrop) -> Response {
+        use futures_util::StreamExt;
+        let len = self.body.len();
+        let chunk = axum::body::Bytes::from(self.body);
+        let stream = futures_util::stream::iter([Ok::<_, std::convert::Infallible>(chunk)]).map(
+            move |chunk| {
+                let _held = &restart;
+                chunk
+            },
+        );
+        (
+            self.status,
+            [
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    "application/json".to_string(),
+                ),
+                (axum::http::header::CONTENT_LENGTH, len.to_string()),
+            ],
+            axum::body::Body::from_stream(stream),
+        )
+            .into_response()
+    }
+}
+
 impl IntoResponse for TrustTaskOutcome {
     fn into_response(self) -> Response {
         (

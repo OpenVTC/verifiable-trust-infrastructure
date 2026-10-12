@@ -74,6 +74,15 @@ pub struct TenantKmsOverlay {
 }
 
 /// The tenant-scoped subset of `[messaging]` an operator may deliver at runtime.
+///
+/// `setup_acl` is here deliberately, and it is the only `[messaging]` flag
+/// that is (`mediator_host` and `drain_inbox_on_start` stay baked). It asks the
+/// enclave to set its *own* account on the chosen mediator to allow-all, which
+/// a mediator in explicit-allow mode needs before the VTA can receive at all.
+/// It confers nothing on the parent that `mediator_did` does not already: the
+/// parent picks the mediator, so it can point the VTA at one that applies no
+/// ACL in the first place, and every inbound message is still authenticated by
+/// the VTA itself. Allowlist rationale: `tenant-config-allowlist.md` §3.3.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TenantMessagingOverlay {
@@ -366,6 +375,10 @@ mod tests {
             r#"{"tee":{"mode":"optional"}}"#,
             r#"{"resolver_url":"http://evil"}"#,
             r#"{"storage_key_salt":"x"}"#,
+            // `setup_acl` is the one overlayable `[messaging]` flag (see
+            // `TenantMessagingOverlay`); its neighbours stay baked.
+            r#"{"messaging":{"mediator_did":"did:x","drain_inbox_on_start":true}}"#,
+            r#"{"messaging":{"mediator_did":"did:x","mediator_host":"evil"}}"#,
             // A bare, keyless DID string is NOT identity provisioning (ADR-0109):
             // the enclave provisions from `vta_did_template`, so `vta_did` is not
             // an overlay field and must be rejected structurally.

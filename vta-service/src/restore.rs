@@ -148,9 +148,12 @@ static REBOOT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// only way a committed restore takes effect. A soft restart is not enough: it
 /// keeps the storage key the process started with, and a restore may have
 /// changed it.
-pub fn request_reboot(restart_gate: &std::sync::Arc<crate::server::RestartGate>) {
+///
+/// The caller marks its outcome `with_restart()`, which stops the current
+/// generation once the reply has been sent; this flag turns that stop into an
+/// exit.
+pub fn request_reboot() {
     REBOOT_REQUESTED.store(true, Ordering::SeqCst);
-    restart_gate.request();
 }
 
 /// Whether [`request_reboot`] was called. The server's run loop returns instead

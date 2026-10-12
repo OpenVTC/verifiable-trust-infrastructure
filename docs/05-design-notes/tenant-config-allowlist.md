@@ -267,7 +267,7 @@ version of each is fail-*open*:
 | `tee.attestation_cache_ttl`, `tee.allowed_did_methods` | `vta_name` (optional) |
 | `tee.kms.admin_context_id` | `tee.kms.anchor.table_name` |
 | `resolver_url`, `server.*`, `store.*`, `log.*`, `services.*` | `tee.kms.anchor.writer_credential_ciphertext` (self-protecting — KMS-sealed) |
-| `policy.*`, `trusted_presentation_verifiers` | — |
+| `policy.*`, `trusted_presentation_verifiers` | `messaging.setup_acl` — opens the VTA's *own* account on the chosen mediator; no power beyond choosing `mediator_did` |
 | **`tee.kms.allowed_accounts`** (new, baked-only — see §3.5) | — |
 | `admin_did` — **never** in the overlay; established at runtime via Mode-B TOFU | — |
 

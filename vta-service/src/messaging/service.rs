@@ -736,7 +736,9 @@ async fn handle_didcomm(
     let Some(reply) = reply else {
         return;
     };
-    let restart = reply.restart;
+    // Held to the end of this function: the restart fires once the reply is
+    // sent, or on whichever path gives up on sending it.
+    let _restart = reply.restart.then(|| app_state.restart_gate.fire_on_drop());
     let Some(to) = reply_to else {
         warn!(
             reply_type = %reply.type_,
@@ -763,12 +765,7 @@ async fn handle_didcomm(
                 .send(&to, packed.into_bytes(), Delivery::BestEffort)
                 .await
             {
-                Ok(_) => {
-                    messaging.uncollected.observe_delivered(&to);
-                    if restart {
-                        app_state.restart_gate.fire();
-                    }
-                }
+                Ok(_) => messaging.uncollected.observe_delivered(&to),
                 Err(e) => {
                     if !messaging.uncollected.observe_send(
                         &to,
@@ -776,9 +773,6 @@ async fn handle_didcomm(
                         vti_common::inbox::messaging_refused_recipient_not_collecting(&e),
                     ) {
                         warn!(recipient = %to, error = %e, "failed to send DIDComm reply");
-                    }
-                    if restart {
-                        app_state.restart_gate.fire();
                     }
                 }
             }
@@ -836,23 +830,17 @@ async fn handle_tsp(inbound: Inbound, messaging: &Arc<VtaMessaging>, app_state: 
         &sender_vid,
     )
     .await;
+    // Taken before the empty-body return, so an outcome with nothing to send
+    // releases its restart here rather than on the 30s backstop.
+    let _restart = reply.restart.then(|| app_state.restart_gate.fire_on_drop());
     if reply.body.is_empty() {
         return;
-    }
-    let restart = reply.restart;
-    if restart {
-        app_state.restart_gate.request();
     }
     // Routed through the sender's mediator when it is not ours — see
     // `vti_common::tsp_route::send_reply`. `send_to` routes `[ours, sender]`,
     // which a sender on another mediator never receives.
     match messaging.tsp.send_reply(&sender_vid, &reply.body).await {
-        Ok(()) => {
-            messaging.uncollected.observe_delivered(&sender_vid);
-            if restart {
-                app_state.restart_gate.fire();
-            }
-        }
+        Ok(()) => messaging.uncollected.observe_delivered(&sender_vid),
         Err(e) => {
             // A per-peer refusal is the client not collecting its own inbox —
             // its replies queue at the mediator until the cap refuses more.
@@ -864,9 +852,6 @@ async fn handle_tsp(inbound: Inbound, messaging: &Arc<VtaMessaging>, app_state: 
                 vti_common::inbox::refused_recipient_not_collecting(&e),
             ) {
                 warn!(recipient = %sender_vid, error = %e, "failed to send TSP reply");
-            }
-            if restart {
-                app_state.restart_gate.fire();
             }
         }
     }

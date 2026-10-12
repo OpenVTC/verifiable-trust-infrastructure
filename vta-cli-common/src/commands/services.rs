@@ -303,16 +303,29 @@ async fn wait_for_didcomm_restart(
     // One session for the whole wait, as `pnm health` does. It opens this
     // client's own mediator account once — `--setup-acl` opens the VTA's, and
     // the pong comes back forwarded — and keeps the ~4s TDK/ATM/websocket setup
-    // out of every probe window.
-    let (session, vta_did) = client.open_vta_ping_session(mediator_did, "pnm").await?;
-    let probe_session = &session;
-    let probe_target = vta_did.as_str();
+    // out of every probe window. Opened inside a probe rather than before the
+    // poll: the enable has already succeeded, so a session that will not open
+    // (the mediator busy while the VTA reconnects) is one more thing to wait
+    // out, not a reason to report the enable as failed.
+    let session = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+    let probe_session = std::sync::Arc::clone(&session);
 
     let result = wait_for_didcomm_restart_with_probe(
-        move |probe_window| async move {
-            tokio::time::timeout(probe_window, probe_session.ping(Some(probe_target)))
-                .await
-                .unwrap_or_else(|_| Err("trust-ping timed out".into()))
+        move |probe_window| {
+            let session = std::sync::Arc::clone(&probe_session);
+            async move {
+                let probe = async {
+                    let mut session = session.lock().await;
+                    if session.is_none() {
+                        *session = Some(client.open_vta_ping_session(mediator_did, "pnm").await?);
+                    }
+                    let (session, vta_did) = session.as_ref().expect("opened above");
+                    session.ping(Some(vta_did)).await
+                };
+                tokio::time::timeout(probe_window, probe)
+                    .await
+                    .unwrap_or_else(|_| Err("trust-ping timed out".into()))
+            }
         },
         Duration::from_secs(wait_secs),
         Duration::from_secs(10),
@@ -320,7 +333,9 @@ async fn wait_for_didcomm_restart(
     )
     .await;
 
-    session.shutdown().await;
+    if let Some((session, _)) = session.lock().await.take() {
+        session.shutdown().await;
+    }
     result
 }
 
@@ -360,7 +375,7 @@ where
     }
 
     Err(format!(
-        "timed out waiting for DIDComm readiness after {}s; the VTA's mediator self-DID readiness gate may still be waiting for the VTA DID to resolve, or the mediator may be dropping the pong because this client's own account refuses forwarded delivery",
+        "DIDComm is enabled, but its listener did not answer within {}s; the VTA's mediator self-DID readiness gate may still be waiting for the VTA DID to resolve, or the mediator may be dropping the pong because this client's own account refuses forwarded delivery",
         timeout.as_secs()
     )
     .into())

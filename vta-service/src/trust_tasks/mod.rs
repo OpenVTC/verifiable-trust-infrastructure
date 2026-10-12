@@ -513,8 +513,10 @@ pub async fn dispatch_trust_task(
     )
     .await;
     if outcome.restart {
-        state.restart_gate.request();
-        state.restart_gate.fire();
+        // Released when hyper drops the body — the reply is written by then,
+        // and graceful shutdown lets the connection flush it. Firing here,
+        // before axum has the response at all, raced the teardown it starts.
+        return Ok(outcome.into_response_firing(state.restart_gate.fire_on_drop()));
     }
     Ok(outcome.into_response())
 }
@@ -1214,6 +1216,12 @@ pub(crate) async fn dispatch_trust_task_core(
             },
             None => outcome,
         };
+    // The one place a restart is armed, for every transport and for in-process
+    // callers that never send the outcome anywhere (the backstop covers those).
+    // Each transport releases it once its reply is out (`fire_on_drop`).
+    if outcome.restart {
+        state.restart_gate.request();
+    }
     outcome
 }
 
@@ -1238,6 +1246,12 @@ pub(crate) async fn dispatch_auth_family(state: &AppState, body: &[u8]) -> Trust
             },
             None => outcome,
         };
+    // The one place a restart is armed, for every transport and for in-process
+    // callers that never send the outcome anywhere (the backstop covers those).
+    // Each transport releases it once its reply is out (`fire_on_drop`).
+    if outcome.restart {
+        state.restart_gate.request();
+    }
     outcome
 }
 
