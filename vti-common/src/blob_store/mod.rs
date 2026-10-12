@@ -73,11 +73,23 @@ impl BlobKey {
         Ok(Self(format!("{}{blob_ref}", room_prefix(room_id))))
     }
 
+    /// A fresh canary key under [`PROBE_PREFIX`], for checking a store works:
+    /// never under a room's prefix, and never built from a caller's string.
+    pub fn probe() -> Self {
+        let mut nonce = [0u8; 16];
+        rand::fill(&mut nonce);
+        let hex: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+        Self(format!("{PROBE_PREFIX}{hex}"))
+    }
+
     /// The key as a relative path.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
+
+/// Where [`BlobKey::probe`] writes its canaries: used for nothing else.
+pub const PROBE_PREFIX: &str = "probe/";
 
 /// The per-room prefix every blob of `room_id` is stored under, ending in `/`.
 ///

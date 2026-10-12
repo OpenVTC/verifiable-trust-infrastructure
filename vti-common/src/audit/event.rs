@@ -836,6 +836,36 @@ pub enum AuditEvent {
     /// administrator's entry, which [`Self::AclGranted`] and its neighbours
     /// record.
     CapabilityModuleChanged(CapabilityModuleChangedData),
+
+    /// A change to where a community keeps its rooms' files: a storage config
+    /// created, changed or retired (`vtc/storage/configs/*`), or a room pointed
+    /// at another config (`vtc/rooms/storage/assign`). Never carries a
+    /// credential.
+    RoomStorageChanged(RoomStorageChangedData),
+}
+
+/// Payload for [`AuditEvent::RoomStorageChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomStorageChangedData {
+    /// `configCreated`, `configUpdated`, `configRetired` or `roomAssigned`.
+    pub event: String,
+    /// The config the change is to, or the room was assigned to.
+    pub config_id: String,
+    /// The room, on `roomAssigned`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_id: Option<String>,
+    /// What it was: the config before the change, or the room's previous
+    /// config. Absent on a create.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<serde_json::Value>,
+    /// What it is now.
+    pub current: serde_json::Value,
+    /// The administrators whose approvals executed it, when it was parked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approvers: Vec<String>,
+    /// The requester's stated reason.
+    pub reason: String,
 }
 
 /// Payload for [`AuditEvent::CapabilityModuleChanged`].
@@ -1043,6 +1073,7 @@ impl AuditEvent {
             Self::AdminRoleDeleted(..) => "AdminRoleDeleted",
             Self::AclKeyRotated(..) => "AclKeyRotated",
             Self::CapabilityModuleChanged(..) => "CapabilityModuleChanged",
+            Self::RoomStorageChanged(..) => "RoomStorageChanged",
         }
     }
 

@@ -194,6 +194,10 @@ pub struct AppState {
     /// Room files: the blob index, transfers in flight, limits and the blob store
     /// (`[rooms.files]`). Ciphertext only: this service never holds a file key.
     pub room_files: Arc<vti_rooms::blobs::BlobHost>,
+    /// Where room files are stored: storage configs and room assignments
+    /// (`docs/05-design-notes/data-rooms-files.md` §7). The resolver `room_files` writes,
+    /// reads and collects through.
+    pub room_storage: Arc<crate::rooms::storage_configs::RoomStorage>,
     pub audit_ks: KeyspaceHandle,
     pub audit_key_ks: KeyspaceHandle,
     /// Signed audit checkpoints (#708). Read by `GET /v1/audit/verify`,
@@ -537,10 +541,18 @@ pub async fn run(
     let rooms_ks = store.keyspace(keyspaces::ROOMS)?;
     let room_records_ks = store.keyspace(keyspaces::ROOM_RECORDS)?;
     let room_epoch_links_ks = store.keyspace(keyspaces::ROOM_EPOCH_LINKS)?;
+    let room_storage = crate::rooms::files::open_room_storage(
+        &store,
+        &config.store.data_dir,
+        &config.rooms.files,
+        config.vtc_did.as_deref(),
+    )
+    .await?;
     let room_files = Arc::new(crate::rooms::files::open_blob_host(
         &store,
         &config.store.data_dir,
         &config.rooms.files,
+        room_storage.clone(),
     )?);
     let audit_ks = store.keyspace(keyspaces::AUDIT)?;
     let audit_key_ks = store.keyspace(keyspaces::AUDIT_KEY)?;
@@ -917,6 +929,7 @@ pub async fn run(
         room_records_ks,
         room_epoch_links_ks,
         room_files,
+        room_storage,
         audit_ks,
         audit_key_ks,
         audit_checkpoint_ks: audit_checkpoint_ks.clone(),
@@ -1439,6 +1452,7 @@ pub async fn run(
     // Room files deleted, orphaned past their grace, or abandoned mid-transfer.
     crate::rooms::files::spawn_sweeper(
         state.room_files.clone(),
+        state.room_storage.clone(),
         boot_cfg.rooms.files.sweep_interval_secs,
         shutdown_rx.clone(),
     );

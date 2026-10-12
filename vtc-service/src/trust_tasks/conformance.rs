@@ -414,6 +414,34 @@ fn sample_cooling_off(open: bool, caller_role: &str) -> serde_json::Value {
     action
 }
 
+/// A stored storage config as `crate::rooms::storage_configs` keeps it.
+fn sample_storage_config() -> serde_json::Value {
+    json!({
+        "id": "local",
+        "label": "This host's disk",
+        "settings": { "kind": "local", "root": "/var/lib/vtc/room-blobs" },
+        "state": "active",
+        "isDefault": true,
+        "capacityBytes": 1_000_000,
+        "createdBy": "did:key:z6MkCommunity",
+        "createdAt": "2026-10-12T09:00:00Z",
+        "updatedBy": "did:key:z6MkAdmin",
+        "updatedAt": "2026-10-12T10:00:00Z",
+    })
+}
+
+/// Its facts, as `RoomStorage::facts` renders them.
+fn sample_storage_facts() -> serde_json::Value {
+    json!({
+        "rooms": 1,
+        "files": 3,
+        "bytes": 1024,
+        "pendingDeleteBytes": 0,
+        "credential": crate::rooms::storage_configs::credential_state(&sample_storage_config()),
+        "health": { "lastProbeAt": "2026-10-12T10:00:00Z", "lastProbeOk": true },
+    })
+}
+
 /// An operator's offline write as an acknowledge item names it: the record
 /// type `vtc/operator/offline-write/0.1`, with the record as its payload.
 /// A replaced custom role, as `crate::acl::roles` stores it.
@@ -966,6 +994,78 @@ fn table() -> Vec<Conformance> {
             s::roles::delete::v0_1::Response,
             json!({ "name": "events-team", "reason": "events moved elsewhere" }),
             json!({ "deleted": "events-team" })
+        ),
+        // ─── storage configs (`storage_tasks`) ───────────────────────
+        checked!(
+            s::storage::configs::list::v0_1::Payload,
+            s::storage::configs::list::v0_1::Response,
+            json!({ "state": "active", "limit": 10 }),
+            json!({
+                "items": [{ "config": sample_storage_config(), "facts": sample_storage_facts() }],
+                "nextCursor": "storage-configs:local",
+            })
+        ),
+        checked!(
+            s::storage::configs::get::v0_1::Payload,
+            s::storage::configs::get::v0_1::Response,
+            json!({ "configId": "local" }),
+            json!({
+                "config": sample_storage_config(),
+                "facts": sample_storage_facts(),
+                "assignedRooms": ["did:key:z6MkRoom"],
+                "assignedRoomsTruncated": false,
+            })
+        ),
+        checked!(
+            s::storage::configs::create::v0_1::Payload,
+            s::storage::configs::create::v0_1::Response,
+            json!({
+                "id": "local",
+                "label": "This host's disk",
+                "settings": { "kind": "local", "root": "/var/lib/vtc/room-storage/local" },
+                "capacityBytes": 1_000_000,
+                "isDefault": true,
+                "reason": "the community's first storage",
+            }),
+            json!({ "config": sample_storage_config() })
+        ),
+        checked!(
+            s::storage::configs::update::v0_1::Payload,
+            s::storage::configs::update::v0_1::Response,
+            json!({ "configId": "local", "label": "Main disk", "reason": "renamed" }),
+            json!({ "config": sample_storage_config() })
+        ),
+        checked!(
+            s::storage::configs::retire::v0_1::Payload,
+            s::storage::configs::retire::v0_1::Response,
+            json!({ "configId": "local", "reason": "moving to object storage" }),
+            json!({ "configId": "local", "state": "draining", "blobsRemaining": 3 })
+        ),
+        checked!(
+            s::storage::configs::probe::v0_1::Payload,
+            s::storage::configs::probe::v0_1::Response,
+            json!({ "configId": "local" }),
+            json!({
+                "configId": "local",
+                "ok": false,
+                "probedAt": "2026-10-12T10:00:00Z",
+                "prefix": vti_common::blob_store::PROBE_PREFIX,
+                "steps": [
+                    { "step": "authenticate", "ok": true, "durationMs": 0 },
+                    { "step": "put", "ok": false, "durationMs": 3, "error": "permission denied" },
+                ],
+            })
+        ),
+        checked!(
+            s::rooms::storage::assign::v0_1::Payload,
+            s::rooms::storage::assign::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "configId": "eu", "reason": "EU residency" }),
+            json!({
+                "roomId": "did:key:z6MkRoom",
+                "configId": "eu",
+                "previousConfigId": "local",
+                "blobsOnEarlierConfigs": 2,
+            })
         ),
         // ─── admin ───────────────────────────────────────────────────
         checked!(

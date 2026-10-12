@@ -134,11 +134,19 @@ pub struct RoomFilesConfig {
     /// Accept uploads. Default `false`.
     #[serde(default)]
     pub enabled: bool,
-    /// Where committed files are stored. Default `<store.data_dir>/room-blobs`. Not in a
-    /// VTC backup, which carries the index of files (`room_blobs`) and never their bytes:
-    /// back this directory up beside the data directory.
+    /// The root of the `local` storage config seeded on first start. Default
+    /// `<store.data_dir>/room-blobs`. Once seeded the stored config wins, and is changed
+    /// with `vtc/storage/configs/update`. Not in a VTC backup, which carries the index
+    /// of files (`room_blobs`) and never their bytes: back it up beside the data
+    /// directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob_dir: Option<PathBuf>,
+    /// The directories a `local` storage config's root may be placed beneath. Default
+    /// `[<store.data_dir>/room-storage]`. An administrator's config names a directory
+    /// strictly inside one of these, after symbolic links are resolved, so the console
+    /// can never point this service at the rest of the machine.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_storage_bases: Vec<PathBuf>,
     /// The largest single file, at most 1 GiB.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_file_bytes: Option<u64>,
@@ -184,6 +192,7 @@ impl Default for RoomFilesConfig {
         Self {
             enabled: false,
             blob_dir: None,
+            local_storage_bases: Vec::new(),
             max_file_bytes: None,
             room: RoomFileLimits::default(),
             member: RoomFileLimits::default(),

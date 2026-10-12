@@ -159,6 +159,7 @@ export const CAPABILITIES: CapabilityInfo[] = [
   { id: "vtc.surface.admin", gates: "profile, branding, website, schemas, join criteria", conferring: false, qualifiers: [] },
   { id: "vtc.registry.admin", gates: "registry sync and recognition", conferring: false, qualifiers: [] },
   { id: "vtc.sessions.revoke", gates: "revoking others' sessions and console keys", conferring: false, qualifiers: [] },
+  { id: "vtc.rooms.admin", gates: "hosting data rooms: storage configs, room storage, limits and usage", conferring: false, qualifiers: [] },
   { id: "git.ns.admin", gates: "administering a git namespace", conferring: true, qualifiers: ["git-ns"] },
   { id: "git.repo.manage", gates: "creating, adopting, archiving and transferring repositories", conferring: false, qualifiers: ["git-ns", "git-repo"] },
 ];

@@ -447,6 +447,12 @@ struct UploadRecord {
     /// reservation, and a commit that answers with the existing blob.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     already_committed: bool,
+    /// The storage config chosen at begin, which the commit writes to and whose
+    /// capacity the reservation counts against. Absent on an upload begun before
+    /// configs existed: it reserved nothing on any config, and commits to the
+    /// room's config then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    config_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -527,13 +533,93 @@ pub struct EffectiveLimits {
     pub member: ScopeLimits,
 }
 
+/// Where a room's new uploads go: a storage config, and its capacity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadTarget {
+    /// The config the blob is written to, and recorded under.
+    pub config_id: String,
+    /// The config's capacity across every room on it; `None` sets none.
+    pub capacity_bytes: Option<u64>,
+}
+
+/// The stores a host keeps committed blobs in, one per storage config
+/// (`docs/05-design-notes/data-rooms-files.md` §7).
+///
+/// Every blob remembers the config it was written to ([`BlobEntry::config_id`]),
+/// so a room reassigned to another config keeps reading its existing files from
+/// the old one. Both questions name the room: a store may be scoped to one
+/// room's prefix, with credentials that reach nothing else.
+#[async_trait::async_trait]
+pub trait BlobStores: Send + Sync {
+    /// The config an upload begun now in `room_id` is written to. An error when
+    /// the room's config cannot take uploads.
+    async fn upload_target(&self, room_id: &str) -> Result<UploadTarget, AppError>;
+
+    /// The store holding the blobs of `room_id` recorded under `config_id`, to
+    /// write, read or delete them.
+    async fn store_for(
+        &self,
+        config_id: &str,
+        room_id: &str,
+    ) -> Result<Arc<dyn BlobStore>, AppError>;
+}
+
+/// One store under one config for every room: a standalone host, set from its
+/// command line.
+pub struct FixedStore {
+    config_id: String,
+    store: Arc<dyn BlobStore>,
+}
+
+impl FixedStore {
+    pub fn new(config_id: impl Into<String>, store: Arc<dyn BlobStore>) -> Self {
+        Self {
+            config_id: config_id.into(),
+            store,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl BlobStores for FixedStore {
+    async fn upload_target(&self, _room_id: &str) -> Result<UploadTarget, AppError> {
+        Ok(UploadTarget {
+            config_id: self.config_id.clone(),
+            capacity_bytes: None,
+        })
+    }
+
+    async fn store_for(
+        &self,
+        config_id: &str,
+        _room_id: &str,
+    ) -> Result<Arc<dyn BlobStore>, AppError> {
+        if config_id != self.config_id {
+            return Err(AppError::Internal(format!(
+                "a blob is recorded under storage config `{config_id}`, which this host does not have"
+            )));
+        }
+        Ok(self.store.clone())
+    }
+}
+
+/// What one storage config holds, from the blob index at the time of the read.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConfigHoldings {
+    /// Blobs not yet deleted, whichever room they are in now.
+    pub files: u64,
+    /// Their total ciphertext bytes.
+    pub bytes: u64,
+    /// Bytes of orphaned blobs waiting for collection.
+    pub pending_delete_bytes: u64,
+}
+
 /// Everything a host needs to store room files.
 pub struct BlobHost {
     blobs: KeyspaceHandle,
     transfers: KeyspaceHandle,
     staging_dir: PathBuf,
-    store: Arc<dyn BlobStore>,
-    config_id: String,
+    stores: Arc<dyn BlobStores>,
     limits: HostLimits,
     lock: tokio::sync::Mutex<()>,
 }
@@ -581,11 +667,23 @@ fn member_usage_key(room_id: &str, member: &str) -> String {
     )
 }
 const STORAGE_USAGE_KEY: &str = "usage:storage";
+fn config_usage_key(config_id: &str) -> String {
+    format!("usage:config:{config_id}")
+}
 
 /// When an `alreadyCommitted` upload stops being committable.
 fn already_expiry(rec: &UploadRecord) -> DateTime<Utc> {
     DateTime::from_timestamp((rec.created_at + ALREADY_COMMITTED_TTL_SECS) as i64, 0)
         .unwrap_or_else(Utc::now)
+}
+
+/// The storage-wide counter, and the config's when the upload names one.
+fn storage_keys(config_id: Option<&str>) -> Vec<String> {
+    let mut keys = vec![STORAGE_USAGE_KEY.to_string()];
+    if let Some(c) = config_id {
+        keys.push(config_usage_key(c));
+    }
+    keys
 }
 
 fn now_secs() -> u64 {
@@ -602,13 +700,12 @@ fn checked_sub(a: u64, b: u64, what: &str) -> u64 {
 impl BlobHost {
     /// A host over `blobs` and `transfers` (opened as [`ROOM_BLOBS_KEYSPACE`] and
     /// [`ROOM_BLOB_TRANSFERS_KEYSPACE`]), staging uploads under `staging_dir` and
-    /// storing committed blobs in `store`, recorded as config `config_id`.
+    /// storing committed blobs in the configs `stores` resolves.
     pub fn new(
         blobs: KeyspaceHandle,
         transfers: KeyspaceHandle,
         staging_dir: PathBuf,
-        store: Arc<dyn BlobStore>,
-        config_id: impl Into<String>,
+        stores: Arc<dyn BlobStores>,
         mut limits: HostLimits,
     ) -> Self {
         limits.max_file_bytes = limits.max_file_bytes.min(MAX_BLOB_BYTES);
@@ -616,11 +713,49 @@ impl BlobHost {
             blobs,
             transfers,
             staging_dir,
-            store,
-            config_id: config_id.into(),
+            stores,
             limits,
             lock: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// What each storage config holds now, from the blob index. A scan of every
+    /// blob, for an administrator's read; never on an upload's path.
+    pub async fn config_holdings(
+        &self,
+    ) -> Result<std::collections::HashMap<String, ConfigHoldings>, AppError> {
+        let mut out = std::collections::HashMap::<String, ConfigHoldings>::new();
+        for (_, raw) in self.blobs.prefix_iter_raw(b"blob:".to_vec()).await? {
+            let Ok(entry) = serde_json::from_slice::<BlobEntry>(&raw) else {
+                continue;
+            };
+            let h = out.entry(entry.config_id).or_default();
+            h.files += 1;
+            h.bytes += entry.size;
+            if entry.state == BlobState::Orphaned {
+                h.pending_delete_bytes += entry.size;
+            }
+        }
+        Ok(out)
+    }
+
+    /// How many of `room_id`'s blobs are recorded under a config other than
+    /// `config_id`.
+    pub async fn room_blobs_elsewhere(
+        &self,
+        room_id: &str,
+        config_id: &str,
+    ) -> Result<u64, AppError> {
+        let prefix = format!("blob:{}:", room_hash(room_id));
+        let mut n = 0;
+        for (_, raw) in self.blobs.prefix_iter_raw(prefix.into_bytes()).await? {
+            if let Ok(entry) = serde_json::from_slice::<BlobEntry>(&raw)
+                && entry.config_id != config_id
+            {
+                n += 1;
+            }
+        }
+        Ok(n)
     }
 
     /// The blob index ([`ROOM_BLOBS_KEYSPACE`]), for a host that backs it up. Its rows are
@@ -779,6 +914,7 @@ impl BlobHost {
                 created_at: now_secs(),
                 finished_at: None,
                 already_committed: true,
+                config_id: None,
             };
             self.blobs.insert(upload_key(&rec.upload_id), &rec).await?;
             self.blobs.insert(index, &rec.upload_id).await?;
@@ -790,7 +926,8 @@ impl BlobHost {
             });
         }
 
-        self.check_limits(&room.room_id, member, manifest.size)
+        let target = self.stores.upload_target(&room.room_id).await?;
+        self.check_limits(&room.room_id, member, manifest.size, &target)
             .await?;
 
         let slot = match chunked::initiate_import_with(
@@ -829,6 +966,7 @@ impl BlobHost {
             created_at: now_secs(),
             finished_at: None,
             already_committed: false,
+            config_id: Some(target.config_id),
         };
         self.reserve(&rec).await?;
         self.blobs.insert(upload_key(&rec.upload_id), &rec).await?;
@@ -947,15 +1085,20 @@ impl BlobHost {
             .ok_or(BlobError::NotFound)?;
         let staged = slot.blob_path.clone().ok_or(BlobError::NotFound)?;
         let key = BlobKey::for_room(&rec.room_id, &rec.blob_ref)?;
+        let config_id = match &rec.config_id {
+            Some(c) => c.clone(),
+            None => self.stores.upload_target(&rec.room_id).await?.config_id,
+        };
+        let store = self.stores.store_for(&config_id, &rec.room_id).await?;
         // Durable in the store before anything says it is committed.
-        let backend_ref = self.store.put(&key, &staged, rec.size).await?;
+        let backend_ref = store.put(&key, &staged, rec.size).await?;
 
         let entry = BlobEntry {
             room_id: rec.room_id.clone(),
             blob_ref: rec.blob_ref.clone(),
             size: rec.size,
             manifest: rec.manifest.clone(),
-            config_id: self.config_id.clone(),
+            config_id: config_id.clone(),
             backend_ref,
             state: BlobState::Committed,
             refs: 0,
@@ -966,7 +1109,7 @@ impl BlobHost {
         self.blobs
             .insert(blob_key(&entry.room_id, &entry.blob_ref), &entry)
             .await?;
-        self.convert_reservation(&rec).await?;
+        self.convert_reservation(&rec, &config_id).await?;
         rec.phase = UploadPhase::Committed;
         rec.finished_at = Some(now_secs());
         self.blobs.insert(upload_key(&id), &rec).await?;
@@ -1084,7 +1227,11 @@ impl BlobHost {
         }
         let start = index * manifest.chunk_size;
         let end = (start + manifest.chunk_size).min(manifest.size);
-        let data = self.store.get_range(&entry.backend_ref, start, end).await?;
+        let store = self
+            .stores
+            .store_for(&entry.config_id, &entry.room_id)
+            .await?;
+        let data = store.get_range(&entry.backend_ref, start, end).await?;
         let digest = &manifest.chunk_digests[index as usize];
         // Storage corruption is the host's fault, never the reader's, and
         // serving it would hand them a chunk their own check refuses.
@@ -1304,7 +1451,15 @@ impl BlobHost {
             if entry.refs > 0 {
                 continue;
             }
-            match self.store.delete(&entry.backend_ref).await {
+            let deleted = match self
+                .stores
+                .store_for(&entry.config_id, &entry.room_id)
+                .await
+            {
+                Ok(store) => store.delete(&entry.backend_ref).await,
+                Err(e) => Err(e),
+            };
+            match deleted {
                 Ok(Deletion::Deleted) | Ok(Deletion::Lapses { .. }) => {}
                 Ok(Deletion::Unsupported) => {
                     tracing::warn!(blob = %entry.blob_ref, "store cannot delete; forgetting the blob");
@@ -1317,10 +1472,15 @@ impl BlobHost {
             if entry.state == BlobState::Committed {
                 self.charge(&entry, false).await?;
             }
-            let mut storage = self.storage_usage().await?;
-            storage.files = checked_sub(storage.files, 1, "storage files");
-            storage.bytes = checked_sub(storage.bytes, entry.size, "storage bytes");
-            self.blobs.insert(STORAGE_USAGE_KEY, &storage).await?;
+            for usage_key in [
+                STORAGE_USAGE_KEY.to_string(),
+                config_usage_key(&entry.config_id),
+            ] {
+                let mut storage = self.counter(&usage_key).await?;
+                storage.files = checked_sub(storage.files, 1, "storage files");
+                storage.bytes = checked_sub(storage.bytes, entry.size, "storage bytes");
+                self.blobs.insert(usage_key, &storage).await?;
+            }
             self.blobs.remove(key).await?;
             stats.collected += 1;
         }
@@ -1411,7 +1571,11 @@ impl BlobHost {
     }
 
     async fn storage_usage(&self) -> Result<StorageUsage, AppError> {
-        Ok(self.blobs.get(STORAGE_USAGE_KEY).await?.unwrap_or_default())
+        self.counter(STORAGE_USAGE_KEY).await
+    }
+
+    async fn counter(&self, key: &str) -> Result<StorageUsage, AppError> {
+        Ok(self.blobs.get(key.to_string()).await?.unwrap_or_default())
     }
 
     /// Every limit an upload of `size` must fit. Called under the lock,
@@ -1425,6 +1589,7 @@ impl BlobHost {
         room_id: &str,
         member: Option<&str>,
         size: u64,
+        target: &UploadTarget,
     ) -> Result<(), BlobError> {
         let mut smallest: Option<(LimitScope, u64)> = None;
         let candidates = [
@@ -1455,7 +1620,22 @@ impl BlobHost {
                 requested: size,
             }));
         }
-        self.check_totals(room_id, member, 1, size, true).await
+        self.check_totals(room_id, member, 1, size, true).await?;
+        // The config's own capacity, across every room assigned to it.
+        if let Some(capacity) = target.capacity_bytes {
+            let s = self.counter(&config_usage_key(&target.config_id)).await?;
+            let used = s.bytes + s.reserved_bytes;
+            if used + size > capacity {
+                return Err(BlobError::LimitExceeded(LimitExceeded {
+                    scope: LimitScope::Storage,
+                    measure: "maxBytes",
+                    limit: capacity,
+                    used,
+                    requested: size,
+                }));
+            }
+        }
+        Ok(())
     }
 
     /// Whether adding `files` blobs of `bytes` in total fits the member's and
@@ -1535,9 +1715,12 @@ impl BlobHost {
             self.update_usage(member_usage_key(&rec.room_id, m), add)
                 .await?;
         }
-        let mut storage = self.storage_usage().await?;
-        storage.reserved_bytes += size;
-        self.blobs.insert(STORAGE_USAGE_KEY, &storage).await
+        for key in storage_keys(rec.config_id.as_deref()) {
+            let mut storage = self.counter(&key).await?;
+            storage.reserved_bytes += size;
+            self.blobs.insert(key, &storage).await?;
+        }
+        Ok(())
     }
 
     async fn release_reservation(&self, rec: &UploadRecord) -> Result<(), AppError> {
@@ -1551,12 +1734,22 @@ impl BlobHost {
             self.update_usage(member_usage_key(&rec.room_id, m), sub)
                 .await?;
         }
-        let mut storage = self.storage_usage().await?;
-        storage.reserved_bytes = checked_sub(storage.reserved_bytes, size, "storage reserved");
-        self.blobs.insert(STORAGE_USAGE_KEY, &storage).await
+        for key in storage_keys(rec.config_id.as_deref()) {
+            let mut storage = self.counter(&key).await?;
+            storage.reserved_bytes = checked_sub(storage.reserved_bytes, size, "storage reserved");
+            self.blobs.insert(key, &storage).await?;
+        }
+        Ok(())
     }
 
-    async fn convert_reservation(&self, rec: &UploadRecord) -> Result<(), AppError> {
+    /// The upload is stored on `config_id`: its reservation becomes usage. An
+    /// upload begun before configs existed reserved nothing on one, so its
+    /// config is charged the bytes alone.
+    async fn convert_reservation(
+        &self,
+        rec: &UploadRecord,
+        config_id: &str,
+    ) -> Result<(), AppError> {
         let size = rec.size;
         let convert = move |u: &mut Usage| {
             u.reserved_bytes = checked_sub(u.reserved_bytes, size, "reserved bytes");
@@ -1570,11 +1763,18 @@ impl BlobHost {
             self.update_usage(member_usage_key(&rec.room_id, m), convert)
                 .await?;
         }
-        let mut storage = self.storage_usage().await?;
-        storage.reserved_bytes = checked_sub(storage.reserved_bytes, size, "storage reserved");
-        storage.bytes += size;
-        storage.files += 1;
-        self.blobs.insert(STORAGE_USAGE_KEY, &storage).await
+        for key in [STORAGE_USAGE_KEY.to_string(), config_usage_key(config_id)] {
+            let reserved = key == STORAGE_USAGE_KEY || rec.config_id.is_some();
+            let mut storage = self.counter(&key).await?;
+            if reserved {
+                storage.reserved_bytes =
+                    checked_sub(storage.reserved_bytes, size, "storage reserved");
+            }
+            storage.bytes += size;
+            storage.files += 1;
+            self.blobs.insert(key, &storage).await?;
+        }
+        Ok(())
     }
 
     /// Charge (`true`) or credit (`false`) a committed blob to its room and

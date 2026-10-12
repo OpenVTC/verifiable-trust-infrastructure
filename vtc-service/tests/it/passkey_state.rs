@@ -24,7 +24,7 @@ use vti_common::store::Store;
 use vtc_service::config::AppConfig;
 use vtc_service::server::AppState;
 
-fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
+async fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Store::open(&StoreConfig {
         data_dir: dir.path().to_path_buf(),
@@ -74,6 +74,14 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
 
     let webauthn = public_url.map(|u| Arc::new(build_webauthn(u).expect("build webauthn")));
 
+    let room_storage = vtc_service::rooms::files::open_room_storage(
+        &store,
+        dir.path(),
+        &Default::default(),
+        Some("did:key:zCommunity"),
+    )
+    .await
+    .unwrap();
     let state = AppState {
         publish_rate_limiter: vtc_service::relationships::rate_limit::PublishRateLimiter::new(
             [0x5a; 32],
@@ -124,9 +132,15 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         room_records_ks: room_records_ks.clone(),
         room_epoch_links_ks: room_epoch_links_ks.clone(),
         room_files: std::sync::Arc::new(
-            vtc_service::rooms::files::open_blob_host(&store, dir.path(), &Default::default())
-                .unwrap(),
+            vtc_service::rooms::files::open_blob_host(
+                &store,
+                dir.path(),
+                &Default::default(),
+                room_storage.clone(),
+            )
+            .unwrap(),
         ),
+        room_storage,
         invitations_ks,
         consumed_invitations_ks,
         registry_client: None,
@@ -163,21 +177,21 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
 
 #[tokio::test]
 async fn webauthn_returns_none_when_public_url_unset() {
-    let (state, _dir) = build_state(None);
+    let (state, _dir) = build_state(None).await;
     assert!(state.webauthn().is_none());
     assert!(state.public_url().is_none());
 }
 
 #[tokio::test]
 async fn webauthn_returns_some_when_public_url_set() {
-    let (state, _dir) = build_state(Some("https://vtc.example.com"));
+    let (state, _dir) = build_state(Some("https://vtc.example.com")).await;
     assert!(state.webauthn().is_some());
     assert_eq!(state.public_url(), Some("https://vtc.example.com"));
 }
 
 #[tokio::test]
 async fn passkey_state_acl_ks_matches_app_state_field() {
-    let (state, _dir) = build_state(None);
+    let (state, _dir) = build_state(None).await;
     // The trait returns `&KeyspaceHandle`; we just need a couple of
     // round-trip writes to confirm both paths reach the same store.
     let key = b"passkey-state-test".to_vec();
@@ -191,7 +205,7 @@ async fn passkey_state_acl_ks_matches_app_state_field() {
 
 #[tokio::test]
 async fn token_expiries_track_auth_config_defaults() {
-    let (state, _dir) = build_state(None);
+    let (state, _dir) = build_state(None).await;
     let defaults = AuthConfig::default();
     assert_eq!(state.access_token_expiry(), defaults.access_token_expiry);
     assert_eq!(state.refresh_token_expiry(), defaults.refresh_token_expiry);
@@ -199,7 +213,7 @@ async fn token_expiries_track_auth_config_defaults() {
 
 #[tokio::test]
 async fn enrollment_ttl_uses_workspace_default() {
-    let (state, _dir) = build_state(None);
+    let (state, _dir) = build_state(None).await;
     // The exact value is documented in `server::DEFAULT_ENROLLMENT_TTL_SECS`
     // (one hour); assert the contract rather than the constant to avoid
     // brittle coupling to the literal — but verify it's a sensible

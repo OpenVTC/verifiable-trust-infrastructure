@@ -213,6 +213,14 @@ pub enum Act {
     /// subject is the DID being admitted; the consent is pinned to its ACL
     /// entry and member record.
     DirectAdmission,
+    /// A change to where the community keeps its rooms' files
+    /// (`vtc/storage/configs/{create,update,retire}`,
+    /// `vtc/rooms/storage/assign`): parked for the other holders of
+    /// `vtc.rooms.admin` by those tasks' own definitions. Not conferring — it
+    /// grants nobody anything — but it decides where members' files go and
+    /// what reaches them. The subject is the config or the room; the consent is
+    /// pinned to its stored config and assignment.
+    ChangeStorage,
 }
 
 impl Act {
@@ -234,6 +242,7 @@ impl Act {
             // The community's own rule, not a fixed requirement: the
             // `admission` policy referred it.
             Self::DirectAdmission => "the admission policy",
+            Self::ChangeStorage => "the storage tasks' consent",
         }
     }
 
@@ -302,6 +311,7 @@ impl Act {
             Self::JoinReview => vec![CapRef::all(Capability::JoinDecide)],
             Self::VettingReview => vec![CapRef::all(Capability::VettingManage)],
             Self::DirectAdmission => vec![CapRef::all(Capability::MembersManage)],
+            Self::ChangeStorage => vec![CapRef::all(Capability::RoomsAdmin)],
         }
     }
 
@@ -344,6 +354,12 @@ impl Act {
                 s::KIND_MEMBER_MAKE_MEMBERSHIP
             }
             Self::DirectAdmission => s::KIND_MEMBER_ADMIT,
+            Self::ChangeStorage => match type_uri {
+                crate::trust_tasks::storage_tasks::CREATE_TYPE => s::KIND_STORAGE_CONFIG_CREATE,
+                crate::trust_tasks::storage_tasks::RETIRE_TYPE => s::KIND_STORAGE_CONFIG_RETIRE,
+                crate::trust_tasks::storage_tasks::ASSIGN_TYPE => s::KIND_ROOM_STORAGE_ASSIGN,
+                _ => s::KIND_STORAGE_CONFIG_UPDATE,
+            },
         }
     }
 }
@@ -1487,6 +1503,7 @@ pub(crate) fn requester_still_authorized(
         // Admitting is `vtc.members.manage`'s; a role beyond `member` is
         // re-bounded by the handler when the action executes.
         Act::DirectAdmission => entry.admin.can(Capability::MembersManage, None),
+        Act::ChangeStorage => entry.admin.can(Capability::RoomsAdmin, None),
     }
 }
 
@@ -1533,6 +1550,13 @@ pub(crate) async fn pin_for(
                 .map(|m| if m.is_removed() { "removed" } else { "active" });
             json!({ "entry": entry, "member": member })
         }
+        // What the approvers were shown is this config (none, for a create) or
+        // this room's assignment. Either moving means the change they agreed to
+        // is not the one that would run.
+        Act::ChangeStorage => json!({
+            "config": state.room_storage.config(subject).await?,
+            "assignment": state.room_storage.assignment(subject).await?,
+        }),
     };
     Ok(StatePin {
         resource: subject.to_string(),

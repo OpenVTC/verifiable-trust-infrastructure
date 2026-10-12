@@ -513,18 +513,22 @@ because on every verb but `create` (§8.4) the caller is authenticated by the
 document's own proof and authorized by the room's chain, never by the
 community's ACL or a session.
 
-- **Keyspaces**: `rooms` (one row per room), `room_records`, `room_epoch_links`
-  and `room_blobs` (the index of room files and their usage) are in
-  `BACKED_UP`, so a community backup captures them. `room_blob_transfers`
-  (uploads and downloads in flight) is not; a client resumes from `begin`.
-- **Room files are off until you turn them on.** Until storage configs exist, a
-  file's ciphertext goes to a directory on this host, under limits that apply
-  to every room alike, so a VTC accepts no uploads unless its config says so:
+- **Keyspaces**: `rooms` (one row per room), `room_records`, `room_epoch_links`,
+  `room_blobs` (the index of room files and their usage) and `storage_configs`
+  (where files are stored, below) are in `BACKED_UP`, so a community backup
+  captures them. `room_blob_transfers` (uploads and downloads in flight) is
+  not; a client resumes from `begin`.
+- **Room files are off until you turn them on.** A VTC accepts no uploads
+  unless its config says so:
 
   ```toml
   [rooms.files]
   enabled = true
-  # blob_dir = "/var/lib/vtc/room-blobs"   # default <store.data_dir>/room-blobs
+  # blob_dir = "/var/lib/vtc/room-blobs"   # the seeded `local` config's root;
+  #                                        # default <store.data_dir>/room-blobs
+  # local_storage_bases = ["/srv/vtc-rooms"]  # where an administrator may place
+  #                                        # another local config; default
+  #                                        # <store.data_dir>/room-storage
   # max_file_bytes = 104857600             # at most 1 GiB
   # storage_capacity_bytes = 107374182400
   # orphan_grace_hours = 168               # a released file is deleted after this
@@ -538,7 +542,26 @@ community's ACL or a session.
 
   With it off, a stored file is still served and records without files are
   unaffected; `begin` answers `filesDisabled`. **A VTC backup carries the index
-  and never the bytes**: back up `blob_dir` beside the data directory. The VTC
+  and never the bytes**: back up every local config's root beside the data
+  directory.
+- **Storage configs** (`data-rooms-files.md` §7). Where files go is a set of
+  named configs, each a backend; every room is assigned to one, which receives
+  its new uploads, and every file remembers the config it was written to, so
+  reassigning a room strands nothing. On first start the VTC seeds one, `local`,
+  at `blob_dir`, as the default; every room is assigned to the default when it
+  is created. A holder of `vtc.rooms.admin` manages them with
+  `vtc/storage/configs/{list,get,create,update,retire,probe}/0.1` and
+  `vtc/rooms/storage/assign/0.1`. Creating, changing and retiring a config, and
+  reassigning a room, are **parked for the other holders' consent** in the
+  administrator action list. This build stores to `local` configs only; `s3`
+  and `gcs` (through the VTA's external accounts, or the host's own identity
+  downscoped per room) and `walrus` follow. A local config's root must lie
+  strictly beneath one of `local_storage_bases` once symbolic links are
+  resolved, and never overlaps another config's: an administrator cannot point
+  the service at the rest of the machine, and one config's collection never
+  reaches another's files. Once seeded, the stored `local` config wins over
+  `blob_dir`; a VTC whose `blob_dir` changes logs that and keeps the stored
+  root. The VTC
   holds ciphertext only. A file's key is derived in the member's VTA, and no
   host ever holds one. Upload chunks are larger than the 64 KiB a document from
   a party with no ACL entry may be, so a chunk is admitted at its declared size

@@ -139,6 +139,7 @@ pub(crate) mod step_up_approver_tasks;
 // (`vtc-admin-roles.md` §6.2). The records are `crate::acl::roles`'s; this is
 // their only door.
 pub(crate) mod role_tasks;
+pub(crate) mod storage_tasks;
 // Direct admission: adding a member without a join request, and making an
 // existing ACL entry a membership — decided by the community's `admission`
 // policy, which may park either for approval (`crate::ceremony::admission`).
@@ -1276,6 +1277,13 @@ fn dispatch_typed<'a>(
                 None => unreachable!("policy_tasks::URIS names {uri}, which it does not route"),
             }
         }),
+        uri if storage_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match Box::pin(storage_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("storage_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
         uri if role_tasks::URIS.contains(&uri) => Box::pin(async move {
             match Box::pin(role_tasks::dispatch(state, ctx, doc, uri)).await {
                 Some(outcome) => outcome,
@@ -1952,6 +1960,18 @@ mod spine_proof_tests {
         (
             role_tasks::SHOW_TYPE,
             "reads one role; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            storage_tasks::LIST_TYPE,
+            "reads the storage configs; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            storage_tasks::GET_TYPE,
+            "reads one storage config; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            storage_tasks::PROBE_TYPE,
+            "probes one storage config; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
             vetting_wire::VETTING_VETTER_SHOW_TYPE,
@@ -2873,6 +2893,15 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     role_tasks::LIST_TYPE,
     role_tasks::SHOW_TYPE,
     role_tasks::DELETE_TYPE,
+    // Where room files are stored (`data-rooms-files.md` §7): reads and the probe for
+    // a holder of `vtc.rooms.admin`, changes through the action list. No REST route.
+    storage_tasks::LIST_TYPE,
+    storage_tasks::GET_TYPE,
+    storage_tasks::CREATE_TYPE,
+    storage_tasks::UPDATE_TYPE,
+    storage_tasks::RETIRE_TYPE,
+    storage_tasks::PROBE_TYPE,
+    storage_tasks::ASSIGN_TYPE,
     // A subject rolling its own admin entry to a new key (VTI-CLT-025 – 032).
     ACL_SWAP_KEY_TYPE,
     // Capability modules (`vtc-capability-modules.md`): a member's listing of

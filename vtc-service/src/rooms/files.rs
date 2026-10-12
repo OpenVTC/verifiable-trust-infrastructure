@@ -33,6 +33,7 @@ use vti_rooms::wire::{AuthorityPresentation, GetRecordBody, ListRecordsBody, Put
 use vti_rooms::{Room, storage};
 
 use super::handlers::{RoomCtx, now, presenter_and_verifier};
+use super::storage_configs::RoomStorage;
 use crate::config::RoomFilesConfig;
 use crate::store::keyspaces;
 use crate::trust_tasks::helpers::{
@@ -40,37 +41,57 @@ use crate::trust_tasks::helpers::{
     success_response,
 };
 
-/// The storage config every blob here is recorded under, until storage configs (§7) exist.
-const LOCAL_CONFIG_ID: &str = "local";
+/// Open this community's storage configs (`[rooms.files]`, §7): the `local` config is
+/// seeded from `blob_dir` (default `<data_dir>/room-blobs`) on first start, and a
+/// `local` root may be placed only beneath `local_storage_bases` (default
+/// `<data_dir>/room-storage`).
+pub async fn open_room_storage(
+    store: &Store,
+    data_dir: &Path,
+    config: &RoomFilesConfig,
+    community_did: Option<&str>,
+) -> Result<Arc<RoomStorage>, AppError> {
+    let seed_root = config
+        .blob_dir
+        .clone()
+        .unwrap_or_else(|| data_dir.join("room-blobs"));
+    let bases = if config.local_storage_bases.is_empty() {
+        vec![data_dir.join("room-storage")]
+    } else {
+        config.local_storage_bases.clone()
+    };
+    RoomStorage::open(
+        store.keyspace(keyspaces::STORAGE_CONFIGS)?,
+        &store.keyspace(keyspaces::ROOMS)?,
+        seed_root,
+        bases,
+        community_did,
+    )
+    .await
+}
 
-/// Open the room-file host over this service's store, from `[rooms.files]`.
-///
-/// Staging and the default blob directory sit under the data directory; a configured
-/// `blob_dir` moves only the committed blobs.
+/// Open the room-file host over this service's store, from `[rooms.files]`, storing
+/// committed blobs in the configs `storage` holds. Staging sits under the data directory.
 pub fn open_blob_host(
     store: &Store,
     data_dir: &Path,
     config: &RoomFilesConfig,
+    storage: Arc<RoomStorage>,
 ) -> Result<BlobHost, AppError> {
-    let blob_dir = config
-        .blob_dir
-        .clone()
-        .unwrap_or_else(|| data_dir.join("room-blobs"));
-    let blob_store: Arc<dyn vti_common::blob_store::BlobStore> =
-        Arc::new(vti_common::blob_store::local::LocalDirStore::new(blob_dir));
     Ok(BlobHost::new(
         store.keyspace(keyspaces::ROOM_BLOBS)?,
         store.keyspace(keyspaces::ROOM_BLOB_TRANSFERS)?,
         data_dir.join("room-blob-staging"),
-        blob_store,
-        LOCAL_CONFIG_ID,
+        storage,
         config.limits(),
     ))
 }
 
-/// Collect deleted, orphaned-past-grace and abandoned files every `interval_secs`.
+/// Collect deleted, orphaned-past-grace and abandoned files every `interval_secs`, and
+/// retire each `draining` storage config once its last blob is gone.
 pub(crate) fn spawn_sweeper(
     files: Arc<BlobHost>,
+    storage: Arc<RoomStorage>,
     interval_secs: u64,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
@@ -92,6 +113,13 @@ pub(crate) fn spawn_sweeper(
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "room file sweep failed"),
+            }
+            let settled = match files.config_holdings().await {
+                Ok(holdings) => storage.settle_draining(&holdings).await,
+                Err(e) => Err(e),
+            };
+            if let Err(e) = settled {
+                tracing::warn!(error = %e, "draining storage configs not settled");
             }
         }
     });

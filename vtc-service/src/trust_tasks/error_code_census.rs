@@ -99,6 +99,114 @@ fn witnesses() -> Vec<Witness> {
     #[allow(unused_mut)]
     let mut table = vec![
         witness!(
+            s::storage::configs::list::v0_1::error_codes::INVALID_CURSOR,
+            crate::rooms::storage_configs::codes::LIST_INVALID_CURSOR,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_list_refuses_a_foreign_cursor"
+        ),
+        witness!(
+            s::storage::configs::get::v0_1::error_codes::NOT_FOUND,
+            crate::rooms::storage_configs::codes::GET_NOT_FOUND,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_get_answers_not_found"
+        ),
+        witness!(
+            s::storage::configs::create::v0_1::error_codes::EXISTS,
+            crate::rooms::storage_configs::codes::CREATE_EXISTS,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_create_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::configs::create::v0_1::error_codes::INVALID_SETTINGS,
+            crate::rooms::storage_configs::codes::CREATE_INVALID_SETTINGS,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_create_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::configs::create::v0_1::error_codes::AUTH_NOT_ALLOWED,
+            crate::rooms::storage_configs::codes::CREATE_AUTH_NOT_ALLOWED,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_create_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::configs::update::v0_1::error_codes::NOT_FOUND,
+            crate::rooms::storage_configs::codes::UPDATE_NOT_FOUND,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_update_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::configs::update::v0_1::error_codes::KIND_IMMUTABLE,
+            crate::rooms::storage_configs::codes::UPDATE_KIND_IMMUTABLE,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_update_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::configs::update::v0_1::error_codes::LOCATION_IMMUTABLE,
+            crate::rooms::storage_configs::codes::UPDATE_LOCATION_IMMUTABLE,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_update_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::configs::update::v0_1::error_codes::INVALID_SETTINGS,
+            crate::rooms::storage_configs::codes::UPDATE_INVALID_SETTINGS,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_update_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::configs::update::v0_1::error_codes::AUTH_NOT_ALLOWED,
+            crate::rooms::storage_configs::codes::UPDATE_AUTH_NOT_ALLOWED,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_update_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::configs::update::v0_1::error_codes::NOT_ACTIVE,
+            crate::rooms::storage_configs::codes::UPDATE_NOT_ACTIVE,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_update_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::configs::retire::v0_1::error_codes::NOT_FOUND,
+            crate::rooms::storage_configs::codes::RETIRE_NOT_FOUND,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_retire_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::configs::retire::v0_1::error_codes::ROOMS_ASSIGNED,
+            crate::rooms::storage_configs::codes::RETIRE_ROOMS_ASSIGNED,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_retire_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::configs::retire::v0_1::error_codes::IS_DEFAULT,
+            crate::rooms::storage_configs::codes::RETIRE_IS_DEFAULT,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_retire_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::configs::probe::v0_1::error_codes::NOT_FOUND,
+            crate::rooms::storage_configs::codes::PROBE_NOT_FOUND,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_probe_answers_not_found"
+        ),
+        witness!(
+            s::rooms::storage::assign::v0_1::error_codes::ROOM_NOT_FOUND,
+            crate::rooms::storage_configs::codes::ASSIGN_ROOM_NOT_FOUND,
+            "room_storage_configs.rs",
+            "vtc_rooms_storage_assign_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::rooms::storage::assign::v0_1::error_codes::CONFIG_NOT_FOUND,
+            crate::rooms::storage_configs::codes::ASSIGN_CONFIG_NOT_FOUND,
+            "room_storage_configs.rs",
+            "vtc_rooms_storage_assign_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::rooms::storage::assign::v0_1::error_codes::CONFIG_NOT_ACTIVE,
+            crate::rooms::storage_configs::codes::ASSIGN_CONFIG_NOT_ACTIVE,
+            "room_storage_configs.rs",
+            "vtc_rooms_storage_assign_refuses_with_its_declared_codes"
+        ),
+        witness!(
             s::join_requests::wallet_session::start::v0_1::error_codes::CRITERION_NOT_FOUND,
             jr::WALLET_SESSION_START_ERR_CRITERION_NOT_FOUND,
             "wallet_session.rs",
@@ -1357,6 +1465,17 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // before anything else, so different bytes are `chunkMismatch` first;
         // the same bytes are the idempotent `stored: false`.
         s::website::upload::chunk::v0_1::error_codes::ALREADY_STORED,
+        // A storage config's credential: `unknownAccount` is the VTA saying an
+        // external account does not exist, and `credentialRequired` a config
+        // whose credential is missing — a `sealed` one never set. This build
+        // serves `local` configs only (`crate::rooms::storage_configs`), which
+        // take no `auth`, so neither can arise until the `vta-account` and
+        // `sealed` backends land (data-rooms-files.md P4b); they leave this list
+        // with them.
+        s::storage::configs::create::v0_1::error_codes::UNKNOWN_ACCOUNT,
+        s::storage::configs::update::v0_1::error_codes::UNKNOWN_ACCOUNT,
+        s::storage::configs::probe::v0_1::error_codes::CREDENTIAL_REQUIRED,
+        s::rooms::storage::assign::v0_1::error_codes::CREDENTIAL_REQUIRED,
         // BASELINE-END
     ]
 }
@@ -1369,7 +1488,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// the baseline past the ceiling — a newly bound task declaring codes
 /// nothing tests — requires raising this constant, which is the point:
 /// that always wants a human decision, never a silent pass.
-const UNWITNESSED_CEILING: usize = 9;
+const UNWITNESSED_CEILING: usize = 13;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.

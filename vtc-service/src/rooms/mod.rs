@@ -12,6 +12,7 @@
 pub mod files;
 pub mod handlers;
 pub mod policy;
+pub mod storage_configs;
 
 pub use vti_rooms::{
     ROOM_RECORDS_KEYSPACE, ROOMS_KEYSPACE, Record, RecordStatus, Room, Visibility, authz, storage,

@@ -1591,8 +1591,10 @@ pub fn open_state_with_files(
             store.keyspace(vti_rooms::blobs::ROOM_BLOBS_KEYSPACE)?,
             store.keyspace(vti_rooms::blobs::ROOM_BLOB_TRANSFERS_KEYSPACE)?,
             data_dir.join("blob-staging"),
-            blob_store,
-            files.config_id.unwrap_or_else(|| "local".into()),
+            Arc::new(vti_rooms::blobs::FixedStore::new(
+                files.config_id.unwrap_or_else(|| "local".into()),
+                blob_store,
+            )),
             files.limits,
         )),
         resolver,

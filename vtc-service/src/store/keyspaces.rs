@@ -70,6 +70,11 @@ pub const OID4VP_SESSIONS: &str = "oid4vp_sessions";
 /// not in a VTC backup: they live in the blob store.
 pub use vti_rooms::blobs::ROOM_BLOBS_KEYSPACE as ROOM_BLOBS;
 
+/// Storage configs (`crate::rooms::storage_configs`): the backends room files are
+/// stored to, which config each room's new uploads go to, and each config's last probe.
+/// **Backed up**: nothing in it is a secret, and the blob index names its configs.
+pub const STORAGE_CONFIGS: &str = "storage_configs";
+
 /// Uploads and downloads in flight. Hours long at most, so **not backed up**: a restored
 /// host starts with none, and a client resumes from `begin`.
 pub use vti_rooms::blobs::ROOM_BLOB_TRANSFERS_KEYSPACE as ROOM_BLOB_TRANSFERS;
@@ -238,6 +243,7 @@ pub const ALL: &[&str] = &[
     ROOM_EPOCH_LINKS,
     ROOM_BLOBS,
     ROOM_BLOB_TRANSFERS,
+    STORAGE_CONFIGS,
     AUDIT,
     AUDIT_KEY,
     AUDIT_CHECKPOINT,
@@ -291,6 +297,9 @@ pub const BACKED_UP: &[&str] = &[
     ROOM_RECORDS,
     ROOM_EPOCH_LINKS,
     ROOM_BLOBS,
+    // Which backend each room's files are on. The blob index names configs, so a
+    // restore without them would hold blobs it could not find.
+    STORAGE_CONFIGS,
     AUDIT,
     AUDIT_KEY,
     // Required, not optional: restoring the audit log without its
@@ -435,8 +444,9 @@ mod tests {
         // the three `AppState::git_ns` carries, plus the 2 hidden-vetting
         // keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`) from the
         // `zkp-pcs` development branch, plus the two room-file keyspaces
-        // `AppState::room_files` holds (`ROOM_BLOBS`, `ROOM_BLOB_TRANSFERS`).
-        assert_eq!(ALL.len(), 50, "ALL must list every AppState keyspace");
+        // `AppState::room_files` holds (`ROOM_BLOBS`, `ROOM_BLOB_TRANSFERS`), plus the
+        // one `AppState::room_storage` holds (`STORAGE_CONFIGS`).
+        assert_eq!(ALL.len(), 51, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

@@ -358,6 +358,11 @@ pub(crate) async fn handle_create(
     if let Err(e) = storage::create_room(&state.rooms_ks, &room).await {
         return app_error_to_reject(&doc, &e);
     }
+    // Pinned to today's default, so a later change of default does not move its new
+    // uploads. A failure here is not the room's: the first upload assigns it instead.
+    if let Err(e) = state.room_storage.assign_new_room(&room.room_id).await {
+        tracing::warn!(room = %room.room_id, error = %e, "room not yet assigned a storage config");
+    }
 
     success_response(
         &doc,

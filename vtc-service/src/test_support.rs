@@ -366,14 +366,24 @@ impl TestVtcBuilder {
             .expect("room_epoch_links ks");
         // Uploads on, unlike a deployment's default: tests exercise room files
         // without writing a `[rooms.files]` section.
+        let files_config = crate::config::RoomFilesConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let room_storage = crate::rooms::files::open_room_storage(
+            &store,
+            dir.path(),
+            &files_config,
+            Some(&self.vtc_did),
+        )
+        .await
+        .expect("room storage");
         let room_files = Arc::new(
             crate::rooms::files::open_blob_host(
                 &store,
                 dir.path(),
-                &crate::config::RoomFilesConfig {
-                    enabled: true,
-                    ..Default::default()
-                },
+                &files_config,
+                room_storage.clone(),
             )
             .expect("room files"),
         );
@@ -576,6 +586,7 @@ impl TestVtcBuilder {
             room_records_ks,
             room_epoch_links_ks,
             room_files,
+            room_storage,
             audit_ks,
             audit_key_ks,
             audit_checkpoint_ks,

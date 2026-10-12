@@ -4107,6 +4107,12 @@ pub(crate) async fn sign_requests(
             "The subject becomes a member with membership credentials, without a join request \
              or the join criteria.",
         ),
+        Act::ChangeStorage => (
+            "storageChange",
+            json!({ "subject": rec.subject }),
+            "Where this community keeps its members' room files, or what it uses to reach them, \
+             changes.",
+        ),
     };
     let effect = Effect::new(kind, rec.summary_text.clone())
         .detail(detail.as_object().cloned().unwrap_or_default());

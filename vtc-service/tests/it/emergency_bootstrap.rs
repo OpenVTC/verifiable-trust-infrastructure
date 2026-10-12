@@ -309,6 +309,14 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         vtc_service::install::InstallTokenSigner::from_master_seed(&*ed25519_priv).unwrap(),
     );
 
+    let room_storage = vtc_service::rooms::files::open_room_storage(
+        &store,
+        dir.path(),
+        &Default::default(),
+        Some("did:key:zCommunity"),
+    )
+    .await
+    .unwrap();
     let state = AppState {
         publish_rate_limiter: vtc_service::relationships::rate_limit::PublishRateLimiter::new(
             [0x5a; 32],
@@ -345,9 +353,15 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         room_records_ks: room_records_ks.clone(),
         room_epoch_links_ks: room_epoch_links_ks.clone(),
         room_files: std::sync::Arc::new(
-            vtc_service::rooms::files::open_blob_host(&store, dir.path(), &Default::default())
-                .unwrap(),
+            vtc_service::rooms::files::open_blob_host(
+                &store,
+                dir.path(),
+                &Default::default(),
+                room_storage.clone(),
+            )
+            .unwrap(),
         ),
+        room_storage,
         invitations_ks,
         consumed_invitations_ks,
         console_keys_ks,
