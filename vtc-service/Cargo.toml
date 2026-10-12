@@ -181,6 +181,9 @@ vta-sdk = { path = "../vta-sdk", version = "0.67", features = [
   "vetting",
   # Lets `main()` install the rustls aws-lc-rs CryptoProvider at startup.
   "crypto-provider",
+  # Credential issuers known by an X.509 chain to a configured anchor (EUDI
+  # PID and Rulebook credentials, `[oid4vp] x509_trust_anchors`, #1988).
+  "x509-issuers",
 ] }
 affinidi-tdk = { workspace = true }
 # D1 delivery layer (P1a cut-over): `MessagingService` (subscribe/send) over a

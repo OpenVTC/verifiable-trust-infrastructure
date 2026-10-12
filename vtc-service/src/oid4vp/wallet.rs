@@ -22,7 +22,6 @@
 //! and then records the evidence on the session.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use affinidi_oid4vc_core::jwe::{ContentEncryption, EcdhEsDecryptionKey};
 use affinidi_openid4vp::dcql::CandidateCredential;
@@ -37,7 +36,6 @@ use chrono::{DateTime, Duration, Utc};
 use serde_json::{Map, Value, json};
 use tracing::{info, warn};
 use uuid::Uuid;
-use vti_common::auth::PurposeVmResolver;
 use vti_common::error::AppError;
 
 use super::session::{
@@ -45,10 +43,8 @@ use super::session::{
 };
 use super::{VerifierIdentityRecord, VerifierKind, list_identities};
 use crate::ceremony::CredentialStatus;
-use crate::credentials::vm_resolver::DidVmResolver;
 use crate::join::JoinStatus;
 use crate::join::criteria::{LDP_VC_FORMAT, SD_JWT_VC_FORMAT};
-use crate::recognition::HttpStatusListFetcher;
 use crate::server::AppState;
 
 /// The swiyu Verification Profile a request object declares in its header.
@@ -498,11 +494,12 @@ async fn verify_answer(
     let mut verified = Vec::new();
     for (query_id, presentations) in &response.vp_token {
         for presentation in presentations {
-            let set = crate::credentials::verify_vp_token(
+            let set = crate::credentials::verify_vp_token_with_anchors(
                 presentation,
                 &session.client_id,
                 &session.nonce,
                 state.did_resolver.as_ref(),
+                &state.x509_trust_anchors,
                 now,
             )
             .await
@@ -529,14 +526,7 @@ async fn verify_answer(
     }
 
     // 4. Status, never assumed.
-    let fetcher = match state.did_resolver.clone() {
-        Some(resolver) => {
-            let key_resolver: Arc<dyn PurposeVmResolver> =
-                Arc::new(DidVmResolver::new(Some(resolver)));
-            HttpStatusListFetcher::with_issuer_verification(key_resolver)
-        }
-        None => HttpStatusListFetcher::new(),
-    };
+    let fetcher = crate::routes::join_requests::present::credential_status_fetcher(state);
     for (_, _, p) in &verified {
         let status = crate::routes::join_requests::present::resolve_presented_status(
             p.credential_status.as_ref(),

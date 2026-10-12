@@ -46,11 +46,22 @@ struct Fixture {
 }
 
 async fn fixture_with(identities: Vec<VerifierIdentityRecord>) -> Fixture {
+    fixture_trusting(identities, None).await
+}
+
+/// A fixture whose `[oid4vp] x509_trust_anchors` is `anchor_pem`.
+async fn fixture_trusting(
+    identities: Vec<VerifierIdentityRecord>,
+    anchor_pem: Option<&str>,
+) -> Fixture {
     let mut builder = TestVtc::builder()
         .with_audit(true)
         .with_public_url(PUBLIC_URL);
     for identity in identities {
         builder = builder.with_oid4vp_identity(identity);
+    }
+    if let Some(pem) = anchor_pem {
+        builder = builder.with_x509_trust_anchor_pem(pem);
     }
     let vtc = builder.build().await;
     // The join decision runs the active `join` policy, as `server::run`
@@ -196,6 +207,9 @@ fn decode_segment(jws: &str, n: usize) -> Value {
 
 struct Es256Signer {
     private: Vec<u8>,
+    /// An `x5c` chain to name the key by, for an issuer known by a
+    /// certificate.
+    x5c: Option<Vec<String>>,
 }
 impl affinidi_sd_jwt::signer::JwtSigner for Es256Signer {
     fn algorithm(&self) -> &str {
@@ -205,8 +219,12 @@ impl affinidi_sd_jwt::signer::JwtSigner for Es256Signer {
         None
     }
     fn sign_jwt(&self, header: &Value, payload: &Value) -> Result<String, SdJwtError> {
+        let mut header = header.clone();
+        if let Some(chain) = &self.x5c {
+            header["x5c"] = json!(chain);
+        }
         let enc = |v: &Value| URL_SAFE_NO_PAD.encode(serde_json::to_vec(v).unwrap());
-        let input = format!("{}.{}", enc(header), enc(payload));
+        let input = format!("{}.{}", enc(&header), enc(payload));
         let sig = affinidi_crypto::p256::sign(&self.private, input.as_bytes())
             .map_err(|e| SdJwtError::Verification(e.to_string()))?;
         Ok(format!("{input}.{}", URL_SAFE_NO_PAD.encode(sig)))
@@ -224,10 +242,24 @@ fn p256(seed: u8) -> (Vec<u8>, Value, String) {
 /// An SD-JWT VC of type `vct` from a P-256 `did:key` issuer, bound to a P-256
 /// holder, presented to `aud` under `nonce`. Returns `(holder_did, presentation)`.
 fn presentation(vct: &str, aud: &str, nonce: &str) -> (String, String) {
+    let (_, _, issuer_did) = p256(0x51);
+    presentation_by(vct, aud, nonce, &issuer_did, None)
+}
+
+/// [`presentation`] from the P-256 key of seed `0x51`, issued as `iss` and —
+/// for an issuer known by a certificate — naming its key by `x5c`.
+fn presentation_by(
+    vct: &str,
+    aud: &str,
+    nonce: &str,
+    iss: &str,
+    x5c: Option<Vec<String>>,
+) -> (String, String) {
     use affinidi_sd_jwt::holder::{KbJwtInput, present, select_disclosures};
     let now = Utc::now();
     let iat = now.timestamp() as u64;
-    let (issuer_priv, _, issuer_did) = p256(0x51);
+    let (issuer_priv, _, _) = p256(0x51);
+    let issuer_did = iss;
     let (holder_priv, holder_jwk, holder_did) = p256(0x52);
     let claims = json!({
         "iss": issuer_did, "vct": vct, "iat": iat,
@@ -239,6 +271,7 @@ fn presentation(vct: &str, aud: &str, nonce: &str) -> (String, String) {
         &json!({ "_sd": ["givenName"] }),
         &Es256Signer {
             private: issuer_priv,
+            x5c,
         },
         &hasher,
         Some(&holder_jwk),
@@ -247,6 +280,7 @@ fn presentation(vct: &str, aud: &str, nonce: &str) -> (String, String) {
     let selected = select_disclosures(&sd, &["givenName"]);
     let holder = Es256Signer {
         private: holder_priv,
+        x5c: None,
     };
     let kb = KbJwtInput {
         audience: aud,
@@ -455,6 +489,74 @@ async fn an_eudi_wallet_is_asked_under_the_access_certificate() {
 
     let (_, body) = session_status(&f, &APPLICANT_SEED, &session_id).await;
     assert_eq!(body["payload"]["state"], "presented", "{body}");
+}
+
+const X509_ISSUER: &str = "https://pid.example.org";
+
+/// The `x5c` of a certificate a test CA issued for the presentations' issuer
+/// key (seed `0x51`), naming `pid.example.org`, and that CA's PEM.
+fn x509_issuer_chain(ca_seed: u8) -> (Vec<String>, String) {
+    use base64::engine::general_purpose::STANDARD;
+    let issuer_key = oid4vp_test_identity("issuer", 0x51);
+    let (leaf, ca) =
+        vtc_service::oid4vp::x509::issue_for_test_with(&issuer_key, ca_seed, &["pid.example.org"]);
+    (vec![STANDARD.encode(leaf.der())], ca.pem())
+}
+
+/// Present into a fresh session; returns the session's final status payload.
+async fn present_once(f: &Fixture, vp_for: impl Fn(&str, &str) -> String) -> Value {
+    let client_id = format!("decentralized_identifier:{TEST_VERIFIER_DID}");
+    let (_, body) = start_session(f, &APPLICANT_SEED, json!({ "criterion": f.digest })).await;
+    let session_id = body["payload"]["sessionId"].as_str().unwrap().to_string();
+    let (_, _, bytes) = get_request_object(f, &session_id).await;
+    let request = decode_segment(&String::from_utf8(bytes).unwrap(), 1);
+    let vp = vp_for(&client_id, request["nonce"].as_str().unwrap());
+    let form = encrypted_response(
+        &request,
+        &json!({ "vp_token": { "residence": [vp] }, "state": request["state"] }),
+    );
+    post_response(f, &session_id, form).await;
+    session_status(f, &APPLICANT_SEED, &session_id).await.1["payload"].clone()
+}
+
+/// A credential whose issuer is known by an X.509 chain, not a DID — an EUDI
+/// PID provider's — is evidence when the chain ends at a configured trust
+/// anchor and names the issuer; under an `any` criterion it is admitted.
+#[tokio::test]
+async fn an_x509_issuers_credential_is_trusted_through_its_anchor() {
+    let (x5c, ca_pem) = x509_issuer_chain(0x81);
+    let f = fixture_trusting(vec![oid4vp_test_identity("swiyu", 0x31)], Some(&ca_pem)).await;
+    let status = present_once(&f, |aud, nonce| {
+        presentation_by(VCT, aud, nonce, X509_ISSUER, Some(x5c.clone())).1
+    })
+    .await;
+    assert_eq!(status["state"], "presented", "{status}");
+    assert_eq!(
+        status["evidence"]["credentials"][0]["issuer"], X509_ISSUER,
+        "{status}"
+    );
+}
+
+/// Without an anchor for it, or for an issuer its certificate does not name,
+/// the same credential does not verify.
+#[tokio::test]
+async fn an_x509_issuer_without_an_anchor_or_its_name_is_refused() {
+    let (x5c, ca_pem) = x509_issuer_chain(0x81);
+    let (_, other_ca) = x509_issuer_chain(0x82);
+
+    for (anchor, iss) in [
+        (None, X509_ISSUER),
+        (Some(other_ca.as_str()), X509_ISSUER),
+        (Some(ca_pem.as_str()), "https://other.example.org"),
+    ] {
+        let f = fixture_trusting(vec![oid4vp_test_identity("swiyu", 0x31)], anchor).await;
+        let status = present_once(&f, |aud, nonce| {
+            presentation_by(VCT, aud, nonce, iss, Some(x5c.clone())).1
+        })
+        .await;
+        assert_eq!(status["state"], "refused", "{iss}: {status}");
+        assert_eq!(status["reason"], "presentationInvalid", "{iss}: {status}");
+    }
 }
 
 /// An EUDI identity whose access certificate is not installed yet opens no

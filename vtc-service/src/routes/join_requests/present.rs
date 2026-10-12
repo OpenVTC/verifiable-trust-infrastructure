@@ -47,7 +47,7 @@ use crate::ceremony::{Credential, CredentialStatus, Presentation};
 use crate::credentials::present_challenge::{self, DEFAULT_CHALLENGE_TTL};
 use crate::credentials::task_context::{self, TaskContextBinding};
 use crate::credentials::witness::{self, WitnessBinding};
-use crate::credentials::{VerifiedPresentation, VerifiedPresentationSet, verify_vp_token};
+use crate::credentials::{VerifiedPresentation, VerifiedPresentationSet};
 use vti_common::auth::PurposeVmResolver;
 
 use crate::credentials::vm_resolver::DidVmResolver;
@@ -88,11 +88,12 @@ pub async fn present_and_decide_join(
     // 1. Cryptographically verify every presentation in the vp_token. The holder
     //    is proven (kb-jwt / DI holder proof) and consistent across the set.
     //    did:webvh / did:web issuers + holders resolve through the DID cache.
-    let set = verify_vp_token(
+    let set = crate::credentials::verify_vp_token_with_anchors(
         vp_token,
         expected_aud,
         expected_nonce,
         state.did_resolver.as_ref(),
+        &state.x509_trust_anchors,
         now,
     )
     .await?;
@@ -351,14 +352,7 @@ async fn presentation_from_verified_set(
     // the list credential's own issuer signature (bound to the presented
     // credential's issuer) — so a MITM on the status-list host can't forge or
     // hide a revocation. Built once for the whole set.
-    let status_fetcher = match state.did_resolver.clone() {
-        Some(resolver) => {
-            let key_resolver: Arc<dyn PurposeVmResolver> =
-                Arc::new(DidVmResolver::new(Some(resolver)));
-            HttpStatusListFetcher::with_issuer_verification(key_resolver)
-        }
-        None => HttpStatusListFetcher::new(),
-    };
+    let status_fetcher = credential_status_fetcher(state);
 
     // Statements are accepted fail-closed, by predicate: one under a predicate
     // this community has not registered is refused rather than processed as a
@@ -475,6 +469,22 @@ fn credential_from_verified(
         // which is a property of the ceremony rather than of the credential.
         task_context,
     }
+}
+
+/// The status-list fetcher for credentials presented to this community: it
+/// verifies each list's signature as its credential issuer's — through the DID
+/// resolver when one is configured, and through the X.509 trust anchors for an
+/// issuer known by a certificate chain.
+pub(crate) fn credential_status_fetcher(state: &AppState) -> HttpStatusListFetcher {
+    let fetcher = match state.did_resolver.clone() {
+        Some(resolver) => {
+            let key_resolver: Arc<dyn PurposeVmResolver> =
+                Arc::new(DidVmResolver::new(Some(resolver)));
+            HttpStatusListFetcher::with_issuer_verification(key_resolver)
+        }
+        None => HttpStatusListFetcher::new(),
+    };
+    fetcher.with_x509_anchors(state.x509_trust_anchors.clone())
 }
 
 /// Resolve a presented credential's lifecycle [`CredentialStatus`] against the

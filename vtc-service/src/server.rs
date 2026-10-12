@@ -161,6 +161,9 @@ pub struct AppState {
     /// Open and recently closed OpenID4VP wallet sessions
     /// (`crate::oid4vp::session`). Encrypted at rest.
     pub oid4vp_sessions_ks: KeyspaceHandle,
+    /// Certificates trusted to certify credential issuers known by an X.509
+    /// chain (`[oid4vp] x509_trust_anchors`). Empty: none is trusted.
+    pub x509_trust_anchors: Arc<vta_sdk::x509_issuer::X509TrustAnchors>,
     /// Which members were recently seen sending here over TSP, recorded from
     /// the proven sender of each inbound TSP frame. A member whose DID
     /// document advertises no transport (a `did:key` wallet) is pushed to over
@@ -677,6 +680,7 @@ pub async fn run(
             "OpenID4VP verifier identities loaded"
         );
     }
+    let x509_trust_anchors = Arc::new(load_x509_trust_anchors(&config.oid4vp.x509_trust_anchors)?);
     let (install_ks, passkey_ks, audit_key_ks) = match storage_key {
         Some(key) => {
             let n_install = install_ks.migrate_to_encrypted(key).await?;
@@ -908,6 +912,7 @@ pub async fn run(
         oid4vp_keys_ks,
         oid4vp_signers,
         oid4vp_sessions_ks,
+        x509_trust_anchors,
         tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
         geoip,
         backup_bundles_ks,
@@ -2898,4 +2903,29 @@ mod p0_9_init_auth_tests {
         )
         .await;
     }
+}
+
+/// Read the X.509 trust anchors `[oid4vp] x509_trust_anchors` names, refusing
+/// the boot on any file that does not load: an anchor file that silently
+/// loaded nothing would refuse every credential it was configured to admit.
+pub fn load_x509_trust_anchors(
+    paths: &[std::path::PathBuf],
+) -> Result<vta_sdk::x509_issuer::X509TrustAnchors, AppError> {
+    let mut anchors = vta_sdk::x509_issuer::X509TrustAnchors::new();
+    for path in paths {
+        let pem = std::fs::read(path).map_err(|e| {
+            AppError::Config(format!(
+                "[oid4vp] x509_trust_anchors: read {}: {e}",
+                path.display()
+            ))
+        })?;
+        let added = anchors.add_pem(&pem).map_err(|e| {
+            AppError::Config(format!(
+                "[oid4vp] x509_trust_anchors: {}: {e}",
+                path.display()
+            ))
+        })?;
+        info!(file = %path.display(), certificates = added, "X.509 issuer trust anchors loaded");
+    }
+    Ok(anchors)
 }

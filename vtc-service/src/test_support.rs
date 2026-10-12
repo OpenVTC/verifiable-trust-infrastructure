@@ -146,6 +146,7 @@ pub struct TestVtcBuilder {
     /// OpenID4VP verifier identities installed before the router is built,
     /// as `vtc oid4vp install` would leave them.
     oid4vp_identities: Vec<crate::oid4vp::VerifierIdentityRecord>,
+    x509_trust_anchors: vta_sdk::x509_issuer::X509TrustAnchors,
 }
 
 impl Default for TestVtcBuilder {
@@ -165,6 +166,7 @@ impl Default for TestVtcBuilder {
             git_ns_config: None,
             registry_client: None,
             oid4vp_identities: Vec::new(),
+            x509_trust_anchors: Default::default(),
         }
     }
 }
@@ -221,6 +223,15 @@ impl TestVtcBuilder {
     /// so wallet sessions can be opened against it.
     pub fn with_oid4vp_identity(mut self, record: crate::oid4vp::VerifierIdentityRecord) -> Self {
         self.oid4vp_identities.push(record);
+        self
+    }
+
+    /// Trust the certificates of a PEM file to certify credential issuers
+    /// known by an X.509 chain (`[oid4vp] x509_trust_anchors`).
+    pub fn with_x509_trust_anchor_pem(mut self, pem: &str) -> Self {
+        self.x509_trust_anchors
+            .add_pem(pem.as_bytes())
+            .expect("a PEM trust anchor");
         self
     }
 
@@ -605,6 +616,7 @@ impl TestVtcBuilder {
             },
             oid4vp_keys_ks,
             oid4vp_sessions_ks,
+            x509_trust_anchors: Arc::new(self.x509_trust_anchors),
             tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
             geoip: Arc::new(crate::geoip::GeoIp::disabled()),
             backup_bundles_ks,

@@ -146,7 +146,10 @@ own `did:key` (`zDn…` / `zQ3s…`):
 
 - **Credentials others issue**: an SD-JWT-VC issuer or `cnf.jwk` holder may
   sign EdDSA, ES256 (P-256) or ES256K (secp256k1), so swiyu / EUDI credentials
-  verify.
+  verify. An EUDI issuer that is not a DID names its key by an `x5c` chain,
+  trusted only through operator-configured anchors
+  (`vta_sdk::x509_issuer`, `[oid4vp] x509_trust_anchors`) — never by the chain
+  alone.
 - **Members' own signatures**: a member's Trust Task proof may be
   `ecdsa-jcs-2019` (P-256; the framework's SHOULD-verify suite for
   hardware-backed signers — there is no secp256k1 Data Integrity suite), and

@@ -10,6 +10,7 @@ use affinidi_sd_jwt::verifier::{VerificationOptions, verify as verify_sd_jwt};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use vta_sdk::jws::{JwsKey, sd_jwt_issuer_method};
+use vta_sdk::x509_issuer::X509TrustAnchors;
 use vti_common::auth::PurposeVmResolver;
 use vti_common::error::AppError;
 
@@ -125,8 +126,11 @@ pub struct ParsedSdJwtPresentation {
     pub issuer_did: String,
     /// The issuer verification method — the JWS `kid`, checked to sit under
     /// `issuer_did`, or a `did:key` issuer's own key
-    /// ([`sd_jwt_issuer_method`]).
-    pub issuer_vm: String,
+    /// ([`sd_jwt_issuer_method`]). `None` for an issuer that is not a DID and
+    /// names its key by an `x5c` chain instead ([`Self::issuer_header`]).
+    pub issuer_vm: Option<String>,
+    /// The issuer JWS header — where an `x5c` chain is read from.
+    pub issuer_header: Value,
     /// The holder binding key, decoded from `cnf.jwk` (RFC 9901 §8.3):
     /// Ed25519, P-256 or secp256k1.
     pub holder_key: JwsKey,
@@ -170,8 +174,18 @@ pub fn parse_sd_jwt_presentation(compact: &str) -> Result<ParsedSdJwtPresentatio
     let header = sd
         .header()
         .map_err(|e| AppError::Validation(format!("presentation header: {e}")))?;
-    let issuer_vm = sd_jwt_issuer_method(&header, &issuer_did)
-        .map_err(|e| AppError::Validation(format!("SD-JWT issuer: {e}")))?;
+    // An issuer that is not a DID may be known by an X.509 chain (`x5c`) to a
+    // trust anchor instead — an EUDI PID or Rulebook issuer, whose `iss` is an
+    // `https` URL. Its key is checked against the anchors at verification.
+    let issuer_vm =
+        if !issuer_did.starts_with("did:") && vta_sdk::x509_issuer::names_key_by_x5c(&header) {
+            None
+        } else {
+            Some(
+                sd_jwt_issuer_method(&header, &issuer_did)
+                    .map_err(|e| AppError::Validation(format!("SD-JWT issuer: {e}")))?,
+            )
+        };
 
     let cnf_jwk = payload
         .get("cnf")
@@ -188,6 +202,7 @@ pub fn parse_sd_jwt_presentation(compact: &str) -> Result<ParsedSdJwtPresentatio
         sd,
         issuer_did,
         issuer_vm,
+        issuer_header: header,
         holder_key,
         holder_did,
     })
@@ -215,6 +230,28 @@ pub async fn verify_presentation(
     did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
     now: DateTime<Utc>,
 ) -> Result<VerifiedPresentation, AppError> {
+    verify_presentation_with_anchors(
+        vp_token,
+        expected_aud,
+        expected_nonce,
+        did_resolver,
+        &X509TrustAnchors::new(),
+        now,
+    )
+    .await
+}
+
+/// [`verify_presentation`], also accepting an issuer known by an `x5c` chain to
+/// one of `anchors` instead of a DID ([`vta_sdk::x509_issuer::x5c_issuer_key`]:
+/// valid now, each certificate signed by the next, the leaf naming `iss`).
+pub async fn verify_presentation_with_anchors(
+    vp_token: &Value,
+    expected_aud: &str,
+    expected_nonce: &str,
+    did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
+    anchors: &X509TrustAnchors,
+    now: DateTime<Utc>,
+) -> Result<VerifiedPresentation, AppError> {
     let compact = vp_token.as_str().ok_or_else(|| {
         AppError::Validation("vp_token must be a compact SD-JWT-VC string".into())
     })?;
@@ -223,20 +260,31 @@ pub async fn verify_presentation(
         sd,
         issuer_did,
         issuer_vm,
+        issuer_header,
         holder_key,
         holder_did,
     } = parse_sd_jwt_presentation(compact)?;
 
     let hasher = Sha256Hasher;
-    let resolver = DidVmResolver::new(did_resolver.cloned());
-    let issuer_key = resolver
-        .resolve_vm_for_purpose(&issuer_vm, vti_common::auth::ProofPurpose::AssertionMethod)
-        .await
-        .map_err(|e| AppError::Validation(format!("verification method refused: {e}")))?;
-    let issuer_verifier = KeyJwtVerifier {
-        key: JwsKey::from_resolved(&issuer_key)
-            .map_err(|e| AppError::Validation(format!("issuer key: {e}")))?,
+    let key = match issuer_vm {
+        Some(issuer_vm) => {
+            let resolver = DidVmResolver::new(did_resolver.cloned());
+            let issuer_key = resolver
+                .resolve_vm_for_purpose(&issuer_vm, vti_common::auth::ProofPurpose::AssertionMethod)
+                .await
+                .map_err(|e| AppError::Validation(format!("verification method refused: {e}")))?;
+            JwsKey::from_resolved(&issuer_key)
+                .map_err(|e| AppError::Validation(format!("issuer key: {e}")))?
+        }
+        None => vta_sdk::x509_issuer::x5c_issuer_key(
+            &issuer_header,
+            &issuer_did,
+            anchors,
+            now.timestamp(),
+        )
+        .map_err(|e| AppError::Validation(format!("issuer certificate: {e}")))?,
     };
+    let issuer_verifier = KeyJwtVerifier { key };
 
     let holder_verifier = KeyJwtVerifier { key: holder_key };
 
@@ -353,6 +401,27 @@ pub async fn verify_vp_token(
     did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
     now: DateTime<Utc>,
 ) -> Result<VerifiedPresentationSet, AppError> {
+    verify_vp_token_with_anchors(
+        vp_token,
+        expected_aud,
+        expected_nonce,
+        did_resolver,
+        &X509TrustAnchors::new(),
+        now,
+    )
+    .await
+}
+
+/// [`verify_vp_token`], also accepting SD-JWT VCs whose issuer is known by an
+/// `x5c` chain to one of `anchors` ([`verify_presentation_with_anchors`]).
+pub async fn verify_vp_token_with_anchors(
+    vp_token: &Value,
+    expected_aud: &str,
+    expected_nonce: &str,
+    did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
+    anchors: &X509TrustAnchors,
+    now: DateTime<Utc>,
+) -> Result<VerifiedPresentationSet, AppError> {
     // Flatten the vp_token into the individual presentation values to verify.
     let entries = flatten_vp_token(vp_token)?;
 
@@ -369,7 +438,17 @@ pub async fn verify_vp_token(
                 verify_di_vp(entry, expected_aud, expected_nonce, did_resolver, now).await?
             }
         } else {
-            vec![verify_presentation(entry, expected_aud, expected_nonce, did_resolver, now).await?]
+            vec![
+                verify_presentation_with_anchors(
+                    entry,
+                    expected_aud,
+                    expected_nonce,
+                    did_resolver,
+                    anchors,
+                    now,
+                )
+                .await?,
+            ]
         };
         for v in verified {
             match &holder {

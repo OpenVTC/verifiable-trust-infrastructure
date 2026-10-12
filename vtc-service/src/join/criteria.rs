@@ -626,14 +626,7 @@ pub async fn verify_embedded_credentials(
         return Ok(Vec::new());
     }
     let resolver = crate::credentials::vm_resolver::DidVmResolver::new(state.did_resolver.clone());
-    let fetcher = match state.did_resolver.clone() {
-        Some(r) => {
-            let key_resolver: std::sync::Arc<dyn vti_common::auth::PurposeVmResolver> =
-                std::sync::Arc::new(crate::credentials::vm_resolver::DidVmResolver::new(Some(r)));
-            crate::recognition::HttpStatusListFetcher::with_issuer_verification(key_resolver)
-        }
-        None => crate::recognition::HttpStatusListFetcher::new(),
-    };
+    let fetcher = crate::routes::join_requests::present::credential_status_fetcher(state);
     let aliases = type_aliases(state).await?;
 
     let mut out = Vec::new();

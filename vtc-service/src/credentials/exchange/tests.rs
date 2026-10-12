@@ -889,7 +889,13 @@ fn parse_core_extracts_a_well_formed_presentation_without_io() {
     assert!(parsed.holder_did.starts_with("did:key:"));
     // The issuer VM sits under `iss`.
     assert_eq!(
-        parsed.issuer_vm.split('#').next().unwrap(),
+        parsed
+            .issuer_vm
+            .as_deref()
+            .unwrap()
+            .split('#')
+            .next()
+            .unwrap(),
         parsed.issuer_did
     );
 }

@@ -134,6 +134,10 @@ pub mod token_status_list;
 /// `vti-common` when a *client* needed it too — see the module docs.
 #[cfg(feature = "proof-verify")]
 pub mod trust_task_proof;
+/// Credential issuers known by an X.509 certificate chain to a configured
+/// trust anchor, instead of a DID.
+#[cfg(feature = "x509-issuers")]
+pub mod x509_issuer;
 // DID → human-readable display name. The single seam every operator-facing
 // surface (PNM/CNM CLIs, VTC operator CLI, VTC admin UI) renders DIDs
 // through. Core is dependency-light and always compiled; the one source that

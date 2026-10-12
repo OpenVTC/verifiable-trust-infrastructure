@@ -198,6 +198,41 @@ task then reports the evidence — the wallet's holder key, recorded beside the
 applicant and never as them, and each credential's query id, format, issuer and
 type. It never returns a claim value. A refusal reports which check failed.
 
+### Issuers known by a certificate
+
+An EUDI credential — the PID, or one a Rulebook governs — is not issued by a
+DID. Its `iss` is an `https` URL and its issuer JWS names the signing key by an
+`x5c` certificate chain. The VTC trusts such an issuer only through the trust
+anchors you configure:
+
+```toml
+[oid4vp]
+x509_trust_anchors = ["/etc/vtc/eudi-pid-providers.pem"]
+```
+
+Each file holds one or more PEM certificates (for the PID, the providers'
+anchors from the EU trusted list; for a Rulebook, its own). They are read at
+boot, and a file that is missing or holds no certificate stops it. A
+credential's chain is accepted only if:
+
+- it ends at one of those anchors (or at a certificate an anchor signed);
+- every certificate in it is valid now, and each is signed by the next;
+- every certificate above the leaf is a CA, and the leaf may sign;
+- the leaf names the issuer: a subject-alternative-name `URI` equal to `iss`,
+  or a `dNSName` equal to its host.
+
+Its Token Status List must be signed the same way, by a chain to the same
+anchors whose leaf names the same issuer, or its status is unknown and the
+credential is refused. With no anchors configured, no certificate-named issuer
+is trusted.
+
+Such an issuer is neither this community nor one it recognises, so it meets
+only a criterion whose `credentialIssuers` is `any`. Keep that criterion to the
+credential you mean — its query's `vct_values`, say, the PID's type — and the
+anchors to the issuers you mean: `any` admits every issuer whose credential
+verifies, DIDs included. The same anchors apply to a credential a member's
+agent presents on the credential-exchange path.
+
 ### What the evidence does for the join
 
 Wallet evidence counts toward the criterion its session was opened for, and no
@@ -233,6 +268,7 @@ evidence_hold_secs = 21600      # unbound evidence kept for a submission
 max_response_bytes = 4194304    # the largest wallet response accepted
 # default_identity = "swiyu"    # when the applicant names no prefix
 # wallet_uri_scheme = "openid4vp"
+# x509_trust_anchors = ["/etc/vtc/eudi-pid-providers.pem"]
 ```
 
 The VTC needs an `https` `public_url` for wallets to reach; without one no
@@ -250,8 +286,7 @@ verifier identities. `oid4vp_sessions` is not: a session lasts minutes.
 ## Not yet
 
 - swiyu trust statements in `verifier_info`, and swiyu's trusted issuers.
-- EUDI issuer trust: credentials whose issuer is named by an `x5c` chain to a
-  configured trust anchor (the PID list, or a Rulebook's anchor). Today an
-  issuer is accepted only by DID.
+- DCQL `trusted_authorities` in a criterion's query: anchors are configured per
+  community, not per credential query.
 - Keeping the key in the VTA instead (`keys/sign-jws`), for a deployment that
   wants it never to leave.

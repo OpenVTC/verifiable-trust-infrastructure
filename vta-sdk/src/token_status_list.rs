@@ -19,6 +19,11 @@
 //! issuer's through a certificate chain (§13.5). That model is not supported: a
 //! list signed by any other key is refused, and its credential's status is
 //! indeterminate (VTI-CRD-012), never valid.
+//!
+//! An issuer known by an X.509 chain rather than a DID (feature
+//! `x509-issuers`) signs its list as it signs its credentials: with the key of
+//! an `x5c` chain to a configured anchor whose leaf names the issuer
+//! ([`verify_status_list_token_with_anchors`]).
 
 use affinidi_status_list::token::{StatusListReference, VerifiedStatusListToken, VerifyOptions};
 use base64::Engine;
@@ -69,14 +74,7 @@ pub async fn verify_status_list_token(
     resolver: &(dyn PurposeVmResolver + '_),
     now_unix: i64,
 ) -> Result<VerifiedStatusListToken, TokenStatusListError> {
-    let header = jwt
-        .split('.')
-        .next()
-        .and_then(|segment| URL_SAFE_NO_PAD.decode(segment).ok())
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .filter(Value::is_object)
-        .ok_or_else(|| TokenStatusListError::Malformed("no JSON header".into()))?;
-
+    let header = token_header(jwt)?;
     let method = sd_jwt_issuer_method(&header, credential_issuer)
         .map_err(|e| TokenStatusListError::Issuer(e.to_string()))?;
     let resolved = resolver
@@ -85,7 +83,53 @@ pub async fn verify_status_list_token(
         .map_err(|e| TokenStatusListError::Key(e.to_string()))?;
     let key =
         JwsKey::from_resolved(&resolved).map_err(|e| TokenStatusListError::Key(e.to_string()))?;
+    verify_with_key(jwt, reference, credential_issuer, &key, now_unix)
+}
 
+/// [`verify_status_list_token`] for a credential whose issuer may also be
+/// known by an X.509 chain instead of a DID: such an issuer's token is signed
+/// by the key of an `x5c` chain to one of `anchors`, whose leaf names the
+/// issuer ([`crate::x509_issuer::issuer_jws_key`]). A DID issuer's token is
+/// checked exactly as [`verify_status_list_token`] checks it.
+#[cfg(feature = "x509-issuers")]
+pub async fn verify_status_list_token_with_anchors(
+    jwt: &str,
+    reference: &StatusListReference,
+    credential_issuer: &str,
+    resolver: &(dyn PurposeVmResolver + '_),
+    anchors: &crate::x509_issuer::X509TrustAnchors,
+    now_unix: i64,
+) -> Result<VerifiedStatusListToken, TokenStatusListError> {
+    let header = token_header(jwt)?;
+    let key =
+        crate::x509_issuer::issuer_jws_key(&header, credential_issuer, resolver, anchors, now_unix)
+            .await
+            .map_err(|e| match e {
+                crate::jws::JwsError::Issuer(m) => TokenStatusListError::Issuer(m),
+                other => TokenStatusListError::Key(other.to_string()),
+            })?;
+    verify_with_key(jwt, reference, credential_issuer, &key, now_unix)
+}
+
+/// The token's JSON header, read unverified only to select its key.
+fn token_header(jwt: &str) -> Result<Value, TokenStatusListError> {
+    jwt.split('.')
+        .next()
+        .and_then(|segment| URL_SAFE_NO_PAD.decode(segment).ok())
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .filter(Value::is_object)
+        .ok_or_else(|| TokenStatusListError::Malformed("no JSON header".into()))
+}
+
+/// Check the token's signature under `key`, then its claims, then that any
+/// `iss` it names is the credential's issuer.
+fn verify_with_key(
+    jwt: &str,
+    reference: &StatusListReference,
+    credential_issuer: &str,
+    key: &JwsKey,
+    now_unix: i64,
+) -> Result<VerifiedStatusListToken, TokenStatusListError> {
     let token = VerifiedStatusListToken::verify(
         jwt,
         reference,
@@ -118,6 +162,41 @@ pub async fn resolve_token_status(
     resolver: &(dyn PurposeVmResolver + '_),
     now_unix: i64,
 ) -> Result<TokenStatus, TokenStatusListError> {
+    let jwt = fetch_token(client, reference).await?;
+    let token =
+        verify_status_list_token(&jwt, reference, credential_issuer, resolver, now_unix).await?;
+    Ok(token.status_of(reference)?)
+}
+
+/// [`resolve_token_status`] for an issuer that may be known by an X.509 chain
+/// to one of `anchors` ([`verify_status_list_token_with_anchors`]).
+#[cfg(all(feature = "client", feature = "x509-issuers"))]
+pub async fn resolve_token_status_with_anchors(
+    client: &reqwest::Client,
+    reference: &StatusListReference,
+    credential_issuer: &str,
+    resolver: &(dyn PurposeVmResolver + '_),
+    anchors: &crate::x509_issuer::X509TrustAnchors,
+    now_unix: i64,
+) -> Result<TokenStatus, TokenStatusListError> {
+    let jwt = fetch_token(client, reference).await?;
+    let token = verify_status_list_token_with_anchors(
+        &jwt,
+        reference,
+        credential_issuer,
+        resolver,
+        anchors,
+        now_unix,
+    )
+    .await?;
+    Ok(token.status_of(reference)?)
+}
+
+#[cfg(feature = "client")]
+async fn fetch_token(
+    client: &reqwest::Client,
+    reference: &StatusListReference,
+) -> Result<String, TokenStatusListError> {
     let uri = reference.uri.as_str();
     let fetch_failed = |detail: String| TokenStatusListError::Fetch {
         uri: uri.to_string(),
@@ -135,13 +214,10 @@ pub async fn resolve_token_status(
     let body = crate::http::read_body_capped(response, crate::http::DEFAULT_MAX_FOREIGN_BODY)
         .await
         .map_err(|e| fetch_failed(e.to_string()))?;
-    let jwt = std::str::from_utf8(&body)
+    Ok(std::str::from_utf8(&body)
         .map_err(|_| fetch_failed("the body is not UTF-8".into()))?
-        .trim();
-
-    let token =
-        verify_status_list_token(jwt, reference, credential_issuer, resolver, now_unix).await?;
-    Ok(token.status_of(reference)?)
+        .trim()
+        .to_string())
 }
 
 #[cfg(test)]
@@ -242,6 +318,66 @@ mod tests {
         assert_eq!(
             verified.status_of(&reference(5)).unwrap(),
             TokenStatus::Valid
+        );
+    }
+
+    /// An issuer known by an X.509 chain signs its list with the chain's leaf
+    /// key: read only through a configured anchor, and only for the issuer the
+    /// leaf names.
+    #[cfg(feature = "x509-issuers")]
+    #[tokio::test]
+    async fn an_x509_issuers_list_is_read_through_its_anchor() {
+        use crate::x509_issuer::{X509TrustAnchors, test_chain};
+        const X509_ISSUER: &str = "https://pid.example.org";
+        let ca = test_chain::ca("Test PID CA");
+        let (leaf, key) = test_chain::leaf(&ca, &["pid.example.org"], false);
+        let now = chrono::Utc::now().timestamp();
+        let payload =
+            status_list_token_payload(URI, now - 10, Some(now + 600), None, &list()).unwrap();
+        let mut header = test_chain::header(&[&leaf]);
+        header["typ"] = json!("statuslist+jwt");
+        let jwt = test_chain::sign_jws(&key, &header, &payload);
+        let no_dids = issuer(0x11).keys;
+
+        let anchors = X509TrustAnchors::from_pem(ca.pem.as_bytes()).unwrap();
+        let verified = verify_status_list_token_with_anchors(
+            &jwt,
+            &reference(3),
+            X509_ISSUER,
+            &no_dids,
+            &anchors,
+            now,
+        )
+        .await
+        .expect("the anchored issuer's list");
+        assert_eq!(
+            verified.status_of(&reference(3)).unwrap(),
+            TokenStatus::Invalid
+        );
+
+        // Another issuer's credential, or no anchors: refused.
+        let err = verify_status_list_token_with_anchors(
+            &jwt,
+            &reference(3),
+            "https://other.example.org",
+            &no_dids,
+            &anchors,
+            now,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TokenStatusListError::Issuer(_)), "{err}");
+        assert!(
+            verify_status_list_token_with_anchors(
+                &jwt,
+                &reference(3),
+                X509_ISSUER,
+                &no_dids,
+                &X509TrustAnchors::new(),
+                now,
+            )
+            .await
+            .is_err()
         );
     }
 

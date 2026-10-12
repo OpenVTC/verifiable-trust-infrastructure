@@ -289,6 +289,18 @@ pub fn check_chain(
 /// `(leaf PEM, CA PEM)`.
 #[cfg(any(test, feature = "test-support"))]
 pub fn issue_for_test(record: &VerifierIdentityRecord, ca_seed: u8) -> (String, String) {
+    let (leaf, ca) = issue_for_test_with(record, ca_seed, &["vtc.example.org"]);
+    (leaf.pem(), ca.pem())
+}
+
+/// [`issue_for_test`] for a leaf naming `dns_names` in its subject alternative
+/// name — e.g. a credential issuer's host. Returns `(leaf, CA)`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn issue_for_test_with(
+    record: &VerifierIdentityRecord,
+    ca_seed: u8,
+    dns_names: &[&str],
+) -> (rcgen::Certificate, rcgen::Certificate) {
     let key = |r: &VerifierIdentityRecord| CsrKey {
         signer: LocalP256Signer::from_record(r).expect("test key"),
         point: public_point(r).expect("test key"),
@@ -306,7 +318,8 @@ pub fn issue_for_test(record: &VerifierIdentityRecord, ca_seed: u8) -> (String, 
     let issuer = rcgen::Issuer::new(ca_params, ca_key);
 
     let mut leaf_params =
-        rcgen::CertificateParams::new(vec!["vtc.example.org".to_string()]).expect("leaf params");
+        rcgen::CertificateParams::new(dns_names.iter().map(|n| n.to_string()).collect::<Vec<_>>())
+            .expect("leaf params");
     leaf_params
         .distinguished_name
         .push(rcgen::DnType::CommonName, "Example community verifier");
@@ -314,7 +327,7 @@ pub fn issue_for_test(record: &VerifierIdentityRecord, ca_seed: u8) -> (String, 
     let leaf = leaf_params
         .signed_by(&key(record), &issuer)
         .expect("access certificate");
-    (leaf.pem(), ca.pem())
+    (leaf, ca)
 }
 
 #[cfg(test)]
@@ -411,6 +424,28 @@ pub(crate) mod tests {
         // rcgen's default validity ends in 4096; read it as at year 5000.
         let err = check_chain(&record, leaf.as_bytes(), 95_617_584_000).unwrap_err();
         assert!(err.to_string().contains("not now"), "{err}");
+    }
+
+    /// `[oid4vp] x509_trust_anchors` loads every file it names, and a file
+    /// that is missing or holds no certificate stops the boot.
+    #[test]
+    fn trust_anchor_files_load_or_stop_the_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, ca) = issue_for_test(&eudi_record(0x41), 0x51);
+        let good = dir.path().join("anchors.pem");
+        std::fs::write(&good, &ca).unwrap();
+        let empty = dir.path().join("empty.pem");
+        std::fs::write(&empty, "").unwrap();
+
+        let anchors = crate::server::load_x509_trust_anchors(std::slice::from_ref(&good)).unwrap();
+        assert_eq!(anchors.len(), 1);
+        assert!(crate::server::load_x509_trust_anchors(&[good.clone(), empty]).is_err());
+        assert!(crate::server::load_x509_trust_anchors(&[dir.path().join("missing.pem")]).is_err());
+        assert!(
+            crate::server::load_x509_trust_anchors(&[])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

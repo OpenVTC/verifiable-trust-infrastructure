@@ -41,5 +41,5 @@ pub use issue::{ProvenHolderProof, credential_offer, issue_on_request, verify_oi
 pub use pending::{DEFAULT_OFFER_TTL, make_offer, redeem, sweep_expired_pending, withdraw_offer};
 pub use verify::{
     ParsedSdJwtPresentation, VerifiedPresentation, VerifiedPresentationSet, flatten_vp_token,
-    parse_sd_jwt_presentation, verify_presentation, verify_vp_token,
+    parse_sd_jwt_presentation, verify_presentation, verify_vp_token, verify_vp_token_with_anchors,
 };

@@ -256,6 +256,12 @@ pub struct Oid4vpConfig {
     /// ecosystem's own (`swiyu-verify` for a swiyu identity).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallet_uri_scheme: Option<String>,
+    /// PEM files of the certificates this community trusts to certify
+    /// credential issuers that are known by an X.509 chain instead of a DID —
+    /// the EUDI PID providers' list, a Rulebook's anchor. Read at boot; a file
+    /// that does not load stops it. Empty: no such issuer is trusted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub x509_trust_anchors: Vec<std::path::PathBuf>,
 }
 
 fn default_oid4vp_session_ttl() -> u64 {
@@ -281,6 +287,7 @@ impl Default for Oid4vpConfig {
             max_open_sessions: default_oid4vp_max_open_sessions(),
             evidence_hold_secs: default_oid4vp_evidence_hold(),
             max_response_bytes: default_oid4vp_max_response_bytes(),
+            x509_trust_anchors: Vec::new(),
             default_identity: None,
             wallet_uri_scheme: None,
         }
