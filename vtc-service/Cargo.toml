@@ -219,6 +219,11 @@ jsonschema = { workspace = true }
 affinidi-openid4vp = { workspace = true, features = ["direct-post-jwt"] }
 # The response-decryption key and its `enc` allow-list, named directly.
 affinidi-oid4vc-core = { workspace = true, features = ["jwe"] }
+# An EUDI verifier's access certificate: the CSR `vtc oid4vp csr` writes (no
+# crypto backend — the identity's own key signs it) and the chain
+# `vtc oid4vp certificate` checks (`crate::oid4vp::x509`).
+rcgen = { version = "0.14", default-features = false, features = ["pem"] }
+x509-parser = { workspace = true }
 # OID4VCI — the issuer side of credential-exchange (offer/request/issue);
 # the body the `credential-exchange/*` Trust Tasks carry (Phase 3 §6).
 affinidi-openid4vci = { workspace = true }
@@ -355,8 +360,7 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 trust-tasks-rs = { workspace = true }
 # Signs ES256K holder signatures in tests; the service only verifies them,
 # through `vta_sdk::jws`.
-k256 = { version = "0.14", features = ["ecdsa"] }
-# Signed room fixtures. Cargo unifies this feature with the normal dependency
+k256 = { version = "0.14", features = ["ecdsa"] }# Signed room fixtures. Cargo unifies this feature with the normal dependency
 # above, so the fixtures reach tests without shipping in the service binary.
 vti-rooms-dtg = { path = "../vti-rooms-dtg", features = ["test-support"] }
 # Self-dep with `test-support` enabled so integration tests under

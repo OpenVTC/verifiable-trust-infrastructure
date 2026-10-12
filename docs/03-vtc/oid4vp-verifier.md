@@ -7,16 +7,17 @@ recognises. That identity is not the community's own DID — swiyu wants a
 P-256 key; EUDI wants an X.509 access certificate. So a VTC that verifies
 wallet presentations holds a separate **verifier identity**, minted by its VTA.
 
-This page covers getting a swiyu verifier identity onto a VTC, and the wallet
-sessions it serves. The design is
+This page covers getting a swiyu or EUDI verifier identity onto a VTC, and the
+wallet sessions it serves. The design is
 `docs/05-design-notes/oid4vp-wallet-verifier.md`.
 
 ## What lives where
 
-- **The VTA** mints the identity and its keys, as it mints every key this VTC
-  holds: an Ed25519 update key that signs the DID's log (kept out of the DID
-  document, as the profile requires) and a P-256 key that signs OpenID4VP
-  request objects.
+- **The VTA** mints the identity's keys, as it mints every key this VTC holds.
+  For swiyu: an Ed25519 update key that signs the DID's log (kept out of the
+  DID document, as the profile requires) and a P-256 key that signs OpenID4VP
+  request objects. For EUDI: one P-256 key, which the access certificate
+  certifies and which signs the request objects.
 - **The VTC** caches the P-256 key and signs with it locally, so a wallet's
   request never waits on the VTA. It lives in the `oid4vp_keys` keyspace,
   encrypted at rest under the storage key, and is loaded at boot — a record
@@ -25,8 +26,11 @@ sessions it serves. The design is
   community issues.
 - **The swiyu Base Registry** hosts the DID's log. swiyu wallets do not accept a
   self-hosted one.
+- **Your EUDI registrar** issues the access certificate (and the registration
+  certificate) for the EUDI identity's key. The VTC keeps the chain beside the
+  key.
 
-## Steps
+## A swiyu identity
 
 You need: a swiyu business-partner account with a reserved identifier-registry
 slot (its URL is what the swiyu API returns as `identifierRegistryUrl`), and an
@@ -77,9 +81,82 @@ becomes that context's primary DID, which is what `pnm keys bundle` exports.
 
 4. Start the VTC. Its log names the verifier identities it loaded.
 
+## An EUDI identity
+
+An EUDI wallet identifies a relying party by its X.509 access certificate,
+issued by an Access CA on the wallet's trusted list: `client_id` is
+`x509_hash:<base64url SHA-256 of the certificate>`, and each request object
+carries the certificate chain as `x5c`. There is no DID.
+
+You need: a registration with an EUDI registrar (for testing, the EU's
+reference registry at `registry.serviceproviders.eudiw.dev` issues test
+certificates), and an admin on the VTA.
+
+1. **On the VTC host**, with the daemon stopped:
+
+   ```sh
+   vtc oid4vp request --identity eudi --out eudi-request.json
+   ```
+
+2. **On the admin workstation**, mint a P-256 key and seal it to the request:
+
+   ```sh
+   pnm keys create --key-type p256 --context eudi-verifier --label eudi-verifier
+   pnm keys bundle-key <key id> --recipient eudi-request.json --out eudi.armor
+   ```
+
+   `bundle-key` seals one key that no DID publishes, as `pnm keys bundle` seals
+   a DID's. The VTA audits the export. Carry the printed digest separately.
+
+3. **On the VTC host**, still stopped, install the key and write the
+   certificate signing request:
+
+   ```sh
+   vtc oid4vp install --identity eudi --bundle eudi.armor --digest <digest>
+   vtc oid4vp csr --identity eudi --common-name "Example Community" \
+     --organization "Example e.V." --organization-identifier VATDE-123456789 \
+     --country DE --dns vtc.example.org --out eudi.csr
+   ```
+
+   The request is signed by the identity's own key, which is the proof of
+   possession a registrar asks for. Your registrar decides what the issued
+   certificate finally says.
+
+4. **Submit `eudi.csr` to your registrar.** Install what it issues — the
+   access certificate, then each issuer in turn, in one PEM file — and, if it
+   gave you one, the registration certificate:
+
+   ```sh
+   vtc oid4vp certificate --identity eudi --chain eudi-chain.pem \
+     --registration-certificate eudi-wrprc.jwt --registration-format <format>
+   ```
+
+   The chain is refused if its first certificate does not certify the
+   identity's key, is outside its validity window or may not sign, if any
+   certificate is not signed by the one after it, or if it is a single
+   self-signed certificate. A self-signed root at the end is left out of `x5c`:
+   the wallet holds its trust anchors already. The registration certificate is
+   carried in every request's `verifier_info` as `{ "format": <format>,
+   "data": <file contents> }`; give the format identifier your ecosystem
+   names for it. A wallet checks the claims a request asks for against it, so
+   join criteria the EUDI identity serves have to stay inside what it
+   registers.
+
+5. Start the VTC.
+
+Until step 4, the identity opens no session (`verifierNotConfigured`). An
+applicant's agent chooses it with `clientIdPrefix: "x509_hash"` on the start
+task; its wallet link is `haip-vp://?client_id=…&request_uri=…`, and the
+response may be encrypted with `A128GCM` or `A256GCM`. When the certificate is
+renewed, run `vtc oid4vp certificate` again with the new chain; a new key
+needs a new `request` and `install`, and then a new certificate.
+
+## Managing identities
+
 `vtc oid4vp list` shows what is installed, with each identity's `client_id`
-(`decentralized_identifier:<did>`); `vtc oid4vp remove --identity swiyu` removes
-one. Installing again under the same name replaces it.
+(`decentralized_identifier:<did>` or `x509_hash:<hash>`);
+`vtc oid4vp remove --identity <name>` removes one. Installing again under the
+same name replaces it, certificate included.
 
 ## Wallet sessions
 
@@ -92,8 +169,10 @@ Task, so the applicant's own agent opens the exchange for it:
    have one, the join request the evidence is for). The criterion must ask for
    an SD-JWT VC (`dc+sd-jwt`).
 2. The VTC answers with a `walletUri` — `swiyu-verify://?client_id=…&request_uri=…`
-   for a swiyu identity — which the applicant shows as a QR code or opens as a
-   deep link.
+   for a swiyu identity, `haip-vp://…` for an EUDI one — which the applicant
+   shows as a QR code or opens as a deep link. With both installed, the
+   applicant's `clientIdPrefix` chooses; without one, `default_identity`, else
+   the first installed.
 3. The wallet fetches the signed request object from
    `GET /v1/oid4vp/request/{session}` (answered once), asks its holder, and
    posts the encrypted answer to `POST /v1/oid4vp/response/{session}`
@@ -103,10 +182,12 @@ Task, so the applicant's own agent opens the exchange for it:
 
 The request object asks for the criterion's published query and nothing else,
 names the community (`client_name`, from `vtc_name`) so the holder sees whom
-they are presenting to, and is signed ES256 by the identity's key under swiyu's
-profile (`profile_version`, `aud` `https://self-issued.me/v2`). The response is
-`direct_post.jwt`, encrypted to a P-256 key made for that session alone with
-`A256GCM`; the key is dropped when the session closes.
+they are presenting to, and is signed ES256 by the identity's key — under
+swiyu's profile (`kid`, `profile_version`) or with the EUDI access certificate
+chain (`x5c`, plus `verifier_info`), with `aud` `https://self-issued.me/v2`.
+The response is `direct_post.jwt`, encrypted to a P-256 key made for that
+session alone (`A256GCM` for swiyu; `A128GCM` or `A256GCM` for EUDI); the key
+is dropped when the session closes.
 
 A response is accepted only if, in order: it decrypts and echoes the session's
 `state`; each presentation's issuer signature, validity window and key-binding
@@ -169,7 +250,8 @@ verifier identities. `oid4vp_sessions` is not: a session lasts minutes.
 ## Not yet
 
 - swiyu trust statements in `verifier_info`, and swiyu's trusted issuers.
-- EUDI: the X.509 access certificate — a certificate request built from a
-  VTA-held key, and the issued chain and registration certificate.
+- EUDI issuer trust: credentials whose issuer is named by an `x5c` chain to a
+  configured trust anchor (the PID list, or a Rulebook's anchor). Today an
+  issuer is accepted only by DID.
 - Keeping the key in the VTA instead (`keys/sign-jws`), for a deployment that
   wants it never to leave.

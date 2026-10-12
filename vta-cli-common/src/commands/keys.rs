@@ -580,6 +580,53 @@ pub async fn cmd_key_bundle(
     crate::sealed_producer::emit_did_secrets_bundle(bundle, &recipient, context, None).await
 }
 
+/// `pnm keys bundle-key <key-id>`: seal one P-256 key, which no DID publishes,
+/// to a recipient. This is the hand-off for a key whose identity another
+/// protocol fixes, such as an EUDI verifier's access-certificate key (#1988):
+/// the identity is an X.509 certificate, so there is no DID whose secrets
+/// `pnm keys bundle <context>` could export.
+///
+/// The VTA exports the key under `keys/export-secret/0.1`, which audits it,
+/// and the key leaves this process only inside the sealed bundle.
+pub async fn cmd_key_bundle_one(
+    client: &VtaClient,
+    key_id: &str,
+    recipient: crate::sealed_producer::SealedRecipient,
+    out: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let secret = client.get_key_secret(key_id).await?;
+    if secret.key_type != KeyType::P256 {
+        return Err(format!(
+            "key {key_id} is {}; `pnm keys bundle-key` seals a P-256 key that no DID publishes. \
+             For a DID's keys run `pnm keys bundle <context>`",
+            secret.key_type
+        )
+        .into());
+    }
+    let scalar = p256_private_scalar(&secret.private_key_multibase)?;
+    crate::sealed_producer::emit_raw_private_key_bundle(
+        KeyType::P256,
+        &scalar,
+        key_id,
+        &recipient,
+        out,
+    )
+    .await
+}
+
+/// The 32-byte private scalar of a `p256-priv` multikey (multicodec 0x1306).
+fn p256_private_scalar(
+    private_key_multibase: &str,
+) -> Result<zeroize::Zeroizing<Vec<u8>>, Box<dyn std::error::Error>> {
+    const P256_PRIV: [u8; 2] = [0x86, 0x26];
+    let (_, bytes) = multibase::decode(private_key_multibase)?;
+    let bytes = zeroize::Zeroizing::new(bytes);
+    match bytes.strip_prefix(&P256_PRIV[..]) {
+        Some(scalar) if scalar.len() == 32 => Ok(zeroize::Zeroizing::new(scalar.to_vec())),
+        _ => Err("the VTA returned a key that is not a P-256 private multikey".into()),
+    }
+}
+
 pub async fn cmd_key_secrets(
     client: &VtaClient,
     key_ids: Vec<String>,
@@ -618,8 +665,25 @@ pub async fn cmd_key_secrets(
 
 #[cfg(test)]
 mod tests {
-    use super::{ImportCarrier, import_carrier};
+    use super::{ImportCarrier, import_carrier, p256_private_scalar};
     use vta_sdk::client::SurfaceTransport;
+
+    /// The scalar comes out of a `p256-priv` multikey; anything else is
+    /// refused rather than sealed as if it were one.
+    #[test]
+    fn bundle_key_takes_the_p256_scalar_and_nothing_else() {
+        let mut p256 = vec![0x86, 0x26];
+        p256.extend([7u8; 32]);
+        let mb = multibase::encode(multibase::Base::Base58Btc, &p256);
+        assert_eq!(p256_private_scalar(&mb).unwrap().as_slice(), &[7u8; 32]);
+
+        let mut ed25519 = vec![0x80, 0x26];
+        ed25519.extend([7u8; 32]);
+        let mb = multibase::encode(multibase::Base::Base58Btc, &ed25519);
+        assert!(p256_private_scalar(&mb).is_err());
+        let short = multibase::encode(multibase::Base::Base58Btc, [0x86, 0x26, 1]);
+        assert!(p256_private_scalar(&short).is_err());
+    }
 
     /// `keys/import/0.1` over DIDComm or TSP takes the multibase carrier, with
     /// no wrapping-key fetch (a REST route). Over REST the key is sealed, since

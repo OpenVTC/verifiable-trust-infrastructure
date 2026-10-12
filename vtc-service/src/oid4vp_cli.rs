@@ -1,5 +1,6 @@
-//! `vtc oid4vp {request,install,list,remove}` — install the key of an
-//! OpenID4VP verifier identity this VTC presents to wallets (`crate::oid4vp`).
+//! `vtc oid4vp {request,install,csr,certificate,list,remove}` — install the key
+//! of an OpenID4VP verifier identity this VTC presents to wallets
+//! (`crate::oid4vp`).
 //!
 //! The VTA mints the identity and its key; the VTC keeps no VTA credential, so
 //! the key reaches it by a sealed hand-off the operator relays, the same shape
@@ -16,6 +17,13 @@
 //!    opens the bundle, keeps the P-256 request-signing key, and stores it
 //!    encrypted in `oid4vp_keys`.
 //!
+//! An EUDI identity has no DID; its key is a bare P-256 key
+//! (`pnm keys create --key-type p256`) sealed by `pnm keys bundle-key`. After
+//! `install`, `vtc oid4vp csr` writes a certificate signing request signed by
+//! that key, and `vtc oid4vp certificate` installs the access certificate chain
+//! the operator's registrar issued (`crate::oid4vp::x509`). Until then the
+//! identity opens no session.
+//!
 //! Offline: run on a **stopped** daemon, which holds the store's lock and
 //! loads the identities at boot. Not for TEE deployments (the VTC has none).
 
@@ -29,6 +37,7 @@ use vta_sdk::sealed_transfer::{
 };
 
 use crate::config::AppConfig;
+use crate::oid4vp::x509::{CsrSubject, build_csr, check_chain};
 use crate::oid4vp::{
     LocalP256Signer, VerifierIdentityRecord, VerifierKind, delete_identity, get_identity,
     list_identities, put_identity,
@@ -108,6 +117,10 @@ pub async fn run_request(
     eprintln!("  # upload the printed did.jsonl to that slot with your swiyu API token, then:");
     eprintln!("  pnm keys bundle <context> --recipient <this request file> > bundle.armor");
     eprintln!();
+    eprintln!("For an EUDI verifier:");
+    eprintln!("  pnm keys create --key-type p256 --context <context> --label eudi-verifier");
+    eprintln!("  pnm keys bundle-key <key id> --recipient <this request file> --out bundle.armor");
+    eprintln!();
     eprintln!("Then, with this VTC stopped:");
     eprintln!(
         "  vtc oid4vp install --identity {identity} --bundle <bundle file> --digest <digest pnm \
@@ -147,11 +160,145 @@ pub async fn run_install(
         "{} verifier identity '{identity}'.",
         if replaced { "Replaced" } else { "Installed" }
     );
-    println!("  DID:       {}", record.did);
-    println!("  Key:       {}", record.kid);
-    println!("  client_id: {}", record.client_id());
-    println!("Start the VTC to load it.");
+    print_identity(&record);
+    match record.kind {
+        VerifierKind::Swiyu => println!("Start the VTC to load it."),
+        VerifierKind::Eudi => {
+            println!("Next, request its access certificate from your registrar:");
+            println!(
+                "  vtc oid4vp csr --identity {identity} --common-name <name> --organization <org> \
+                 --organization-identifier <id> --country <CC> --out {identity}.csr"
+            );
+            println!("then install what it issues:");
+            println!("  vtc oid4vp certificate --identity {identity} --chain <chain.pem>");
+        }
+    }
     Ok(())
+}
+
+fn print_identity(record: &VerifierIdentityRecord) {
+    println!("  kind:      {:?}", record.kind);
+    if let Some(did) = &record.did {
+        println!("  DID:       {did}");
+    }
+    if let Some(kid) = &record.kid {
+        println!("  key:       {kid}");
+    }
+    match record.client_id() {
+        Some(client_id) => println!("  client_id: {client_id}"),
+        None => println!("  client_id: (none yet — install its access certificate)"),
+    }
+}
+
+/// Read an installed EUDI identity, offline.
+async fn open_eudi_identity(
+    config: &AppConfig,
+    identity: &str,
+) -> Result<
+    (
+        crate::store::Store,
+        crate::store::KeyspaceHandle,
+        VerifierIdentityRecord,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let storage_key = crate::server::offline_storage_key(config).await?;
+    let store = crate::store::offline::open_offline(&config.store)?;
+    let ks = store
+        .keyspace(keyspaces::OID4VP_KEYS)?
+        .with_encryption(storage_key);
+    let record = get_identity(&ks, identity).await?.ok_or_else(|| {
+        format!("no verifier identity '{identity}'; `vtc oid4vp list` shows them")
+    })?;
+    if record.kind != VerifierKind::Eudi {
+        return Err(format!(
+            "verifier identity '{identity}' is a {:?} identity; only an EUDI identity has an \
+             access certificate",
+            record.kind
+        )
+        .into());
+    }
+    Ok((store, ks, record))
+}
+
+/// `vtc oid4vp csr --identity <id> --common-name … [--out <file>]`.
+pub async fn run_csr(
+    config_path: Option<PathBuf>,
+    identity: String,
+    subject: CsrSubject,
+    out: Option<PathBuf>,
+) -> CliResult {
+    let config = AppConfig::load(config_path)?;
+    let (_store, _ks, record) = open_eudi_identity(&config, &identity).await?;
+    let pem = build_csr(&record, &subject)?;
+    match &out {
+        Some(path) => {
+            std::fs::write(path, &pem)?;
+            eprintln!("Certificate signing request written to {}.", path.display());
+        }
+        None => print!("{pem}"),
+    }
+    eprintln!(
+        "Submit it to your registrar for an access certificate, then:\n  vtc oid4vp certificate \
+         --identity {identity} --chain <chain.pem>"
+    );
+    Ok(())
+}
+
+/// `vtc oid4vp certificate --identity <id> --chain <pem>
+/// [--registration-certificate <file> --registration-format <format>]`.
+pub async fn run_certificate(
+    config_path: Option<PathBuf>,
+    identity: String,
+    chain: PathBuf,
+    registration: Option<(PathBuf, String)>,
+) -> CliResult {
+    let config = AppConfig::load(config_path)?;
+    let (store, ks, mut record) = open_eudi_identity(&config, &identity).await?;
+    let pem = std::fs::read(&chain).map_err(|e| format!("read {}: {e}", chain.display()))?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let checked = check_chain(&record, &pem, now)?;
+    record.x5c = Some(checked.x5c);
+    if let Some((path, format)) = registration {
+        record.verifier_info = Some(vec![registration_info(&path, &format)?]);
+    }
+    put_identity(&ks, &record).await?;
+    store.persist().await?;
+
+    println!("Installed the access certificate of verifier identity '{identity}'.");
+    println!("  subject:   {}", checked.subject);
+    println!(
+        "  expires:   {}",
+        chrono::DateTime::from_timestamp(checked.not_after, 0)
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_else(|| checked.not_after.to_string())
+    );
+    if checked.dropped_root {
+        println!("  (the self-signed root at the end of the file is left out of x5c)");
+    }
+    if let Some(info) = &record.verifier_info {
+        println!("  verifier_info: {} entry", info.len());
+    }
+    print_identity(&record);
+    println!("Start the VTC to use it.");
+    Ok(())
+}
+
+/// A `verifier_info` entry for a registration certificate file.
+fn registration_info(
+    path: &Path,
+    format: &str,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let data =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let (data, format) = (data.trim(), format.trim());
+    if data.is_empty() || format.is_empty() {
+        return Err("the registration certificate and its format must not be empty".into());
+    }
+    Ok(serde_json::json!({ "format": format, "data": data }))
 }
 
 /// Open the sealed bundle with the pending request's key and pick out the
@@ -193,11 +340,22 @@ fn open_and_select(
         bundle,
         Some(digest.trim()),
     )?;
-    let SealedPayloadV1::DidSecrets(secrets) = opened.payload else {
-        return Err(
-            "the bundle does not carry DID secrets; seal it with `pnm keys bundle <context>`"
-                .into(),
-        );
+    let secrets = match opened.payload {
+        SealedPayloadV1::DidSecrets(secrets) => secrets,
+        SealedPayloadV1::RawPrivateKey(raw) => {
+            if kid.is_some() {
+                return Err("--kid names a key of a DID; this bundle holds one bare key".into());
+            }
+            return eudi_record(identity, &raw);
+        }
+        _ => {
+            return Err(
+                "the bundle carries neither DID secrets nor a key; seal it with \
+                        `pnm keys bundle <context>` (swiyu) or `pnm keys bundle-key <key id>` \
+                        (EUDI)"
+                    .into(),
+            );
+        }
     };
 
     let p256: Vec<_> = secrets
@@ -253,14 +411,61 @@ fn open_and_select(
     Ok(VerifierIdentityRecord {
         id: identity.to_string(),
         kind: VerifierKind::Swiyu,
-        did: secrets.did.clone(),
-        kid: entry.key_id.clone(),
+        did: Some(secrets.did.clone()),
+        kid: Some(entry.key_id.clone()),
         public_jwk,
         private_key_multibase: entry.private_key_multibase.clone(),
-        installed_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
+        x5c: None,
+        verifier_info: None,
+        installed_at: now_secs(),
+    })
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// An EUDI identity from the bare P-256 key `pnm keys bundle-key` sealed. It
+/// has no certificate yet.
+fn eudi_record(
+    identity: &str,
+    raw: &vta_sdk::sealed_transfer::RawPrivateKey,
+) -> Result<VerifierIdentityRecord, Box<dyn std::error::Error>> {
+    use base64::Engine as _;
+    if raw.key_type != KeyType::P256.to_string() {
+        return Err(format!(
+            "the bundle holds a {} key; an EUDI verifier signs its requests with a P-256 key",
+            raw.key_type
+        )
+        .into());
+    }
+    let scalar = zeroize::Zeroizing::new(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&raw.key_bytes_b64)?,
+    );
+    let kp = affinidi_crypto::p256::generate(Some(&scalar))?;
+    let secret = affinidi_tdk::secrets_resolver::secrets::Secret::generate_p256(
+        None,
+        Some(&kp.private_bytes),
+    )?;
+    let mut public_jwk = serde_json::to_value(&kp.jwk)?;
+    if let Some(obj) = public_jwk.as_object_mut() {
+        obj.remove("d");
+        obj.remove("kid");
+        obj.retain(|_, v| !v.is_null());
+    }
+    Ok(VerifierIdentityRecord {
+        id: identity.to_string(),
+        kind: VerifierKind::Eudi,
+        did: None,
+        kid: None,
+        public_jwk,
+        private_key_multibase: secret.get_private_keymultibase()?,
+        x5c: None,
+        verifier_info: None,
+        installed_at: now_secs(),
     })
 }
 
@@ -279,9 +484,7 @@ pub async fn run_list(config_path: Option<PathBuf>) -> CliResult {
     }
     for r in identities {
         println!("{}", r.id);
-        println!("  kind:      {:?}", r.kind);
-        println!("  client_id: {}", r.client_id());
-        println!("  key:       {}", r.kid);
+        print_identity(&r);
     }
     Ok(())
 }
@@ -330,6 +533,17 @@ mod tests {
     /// A pending request's key file and a bundle sealed to it, as `request`
     /// and `pnm keys bundle` would leave them.
     async fn sealed(dir: &Path, secrets: Vec<SecretEntry>) -> (PathBuf, PathBuf, String) {
+        sealed_payload(
+            dir,
+            SealedPayloadV1::DidSecrets(Box::new(DidSecretsBundle {
+                did: DID.into(),
+                secrets,
+            })),
+        )
+        .await
+    }
+
+    async fn sealed_payload(dir: &Path, payload: SealedPayloadV1) -> (PathBuf, PathBuf, String) {
         let (seed, public) = generate_ed25519_keypair();
         let nonce = [9u8; 16];
         let key_path = dir.join("swiyu.request-key");
@@ -338,10 +552,6 @@ mod tests {
         std::fs::write(&key_path, &stored).unwrap();
 
         let request = BootstrapRequest::new(public, nonce, None);
-        let payload = SealedPayloadV1::DidSecrets(Box::new(DidSecretsBundle {
-            did: DID.into(),
-            secrets,
-        }));
         let (_p, producer_pk) = generate_ed25519_keypair();
         let bundle = seal_payload(
             &request.decode_client_x25519_pub().unwrap(),
@@ -368,8 +578,8 @@ mod tests {
         let (key, bundle, digest) =
             sealed(dir.path(), vec![p256_entry("verifier-key-1", 0x31)]).await;
         let record = open_and_select(&key, &bundle, &digest, "swiyu", None).unwrap();
-        assert_eq!(record.did, DID);
-        assert_eq!(record.kid, format!("{DID}#verifier-key-1"));
+        assert_eq!(record.did.as_deref(), Some(DID));
+        assert_eq!(record.kid, Some(format!("{DID}#verifier-key-1")));
         assert_eq!(record.public_jwk["crv"], "P-256");
         assert!(record.public_jwk.get("d").is_none());
         LocalP256Signer::from_record(&record).expect("a usable signer");
@@ -409,7 +619,47 @@ mod tests {
         .await;
         let record =
             open_and_select(&key, &bundle, &digest, "swiyu", Some(&format!("{DID}#b"))).unwrap();
-        assert_eq!(record.kid, format!("{DID}#b"));
+        assert_eq!(record.kid, Some(format!("{DID}#b")));
+    }
+
+    fn raw_key(key_type: &str, bytes: &[u8]) -> SealedPayloadV1 {
+        use base64::Engine as _;
+        SealedPayloadV1::RawPrivateKey(vta_sdk::sealed_transfer::RawPrivateKey {
+            key_type: key_type.into(),
+            key_bytes_b64: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes),
+        })
+    }
+
+    /// A bare P-256 key (`pnm keys bundle-key`) installs as an EUDI identity
+    /// with no DID and, until its certificate, no `client_id`.
+    #[tokio::test]
+    async fn a_bare_p256_key_installs_as_an_eudi_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, bundle, digest) = sealed_payload(dir.path(), raw_key("p256", &[0x44; 32])).await;
+        let record = open_and_select(&key, &bundle, &digest, "eudi", None).unwrap();
+        assert_eq!(record.kind, VerifierKind::Eudi);
+        assert!(record.did.is_none() && record.kid.is_none());
+        assert!(record.client_id().is_none());
+        let expected = affinidi_crypto::p256::generate(Some(&[0x44; 32])).unwrap();
+        assert_eq!(
+            record.public_jwk["x"],
+            serde_json::to_value(&expected.jwk).unwrap()["x"]
+        );
+        LocalP256Signer::from_record(&record).expect("a usable signer");
+    }
+
+    #[tokio::test]
+    async fn a_bare_key_of_another_type_or_with_kid_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, bundle, digest) =
+            sealed_payload(dir.path(), raw_key("ed25519", &[0x44; 32])).await;
+        let err = open_and_select(&key, &bundle, &digest, "eudi", None).unwrap_err();
+        assert!(err.to_string().contains("P-256"), "{err}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let (key, bundle, digest) = sealed_payload(dir.path(), raw_key("p256", &[0x44; 32])).await;
+        let err = open_and_select(&key, &bundle, &digest, "eudi", Some("x")).unwrap_err();
+        assert!(err.to_string().contains("--kid"), "{err}");
     }
 
     #[test]

@@ -3430,6 +3430,26 @@ pub(crate) enum KeyCommands {
         #[arg(long, requires = "recipient_did", conflicts_with = "recipient")]
         recipient_nonce: Option<String>,
     },
+    /// Seal one P-256 key that no DID publishes to a recipient, as an armored
+    /// bundle — e.g. an EUDI verifier's access-certificate key, for
+    /// `vtc oid4vp install`. A DID's keys go through `pnm keys bundle`.
+    BundleKey {
+        /// The key's id (`pnm keys list`)
+        key_id: String,
+        /// Path to the recipient's request JSON (`vtc oid4vp request`,
+        /// `pnm bootstrap request`).
+        #[arg(long, conflicts_with_all = ["recipient_did", "recipient_nonce"])]
+        recipient: Option<std::path::PathBuf>,
+        /// Recipient's `did:key` (Ed25519).
+        #[arg(long, requires = "recipient_nonce", conflicts_with = "recipient")]
+        recipient_did: Option<String>,
+        /// Recipient's 16-byte nonce in hex.
+        #[arg(long, requires = "recipient_did", conflicts_with = "recipient")]
+        recipient_nonce: Option<String>,
+        /// Write the armored bundle here instead of stdout.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
     /// List seed generations
     Seeds,
     /// Rotate to a new seed generation

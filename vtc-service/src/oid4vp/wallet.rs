@@ -94,6 +94,7 @@ pub struct Started {
 fn prefix_of(kind: VerifierKind) -> &'static str {
     match kind {
         VerifierKind::Swiyu => "decentralized_identifier",
+        VerifierKind::Eudi => "x509_hash",
     }
 }
 
@@ -101,26 +102,38 @@ fn prefix_of(kind: VerifierKind) -> &'static str {
 fn scheme_of(kind: VerifierKind) -> &'static str {
     match kind {
         VerifierKind::Swiyu => "swiyu-verify",
+        // HAIP's own scheme, which EUDI wallets register.
+        VerifierKind::Eudi => "haip-vp",
     }
 }
 
 /// The JWE `enc` values a response to an identity may use. swiyu requires
-/// `A256GCM`.
+/// `A256GCM`; HAIP has wallets support both `A128GCM` and `A256GCM`.
 fn enc_values_of(kind: VerifierKind) -> Vec<ContentEncryption> {
     match kind {
         VerifierKind::Swiyu => vec![ContentEncryption::A256Gcm],
+        VerifierKind::Eudi => vec![ContentEncryption::A128Gcm, ContentEncryption::A256Gcm],
     }
 }
 
-/// Header members an identity's ecosystem requires beyond `alg`, `typ`, `kid`.
-fn extra_header_of(kind: VerifierKind) -> Map<String, Value> {
-    let mut extra = Map::new();
-    match kind {
+/// Header members an identity's ecosystem requires beyond `alg` and `typ`:
+/// how the key is named (a swiyu DID URL as `kid`, an EUDI access
+/// certificate chain as `x5c`) and any profile marker.
+fn identity_header_of(
+    identity: &VerifierIdentityRecord,
+    signer: &dyn super::VerifierSigner,
+) -> Map<String, Value> {
+    let mut header = Map::new();
+    match identity.kind {
         VerifierKind::Swiyu => {
-            extra.insert("profile_version".into(), json!(SWIYU_PROFILE_VERSION));
+            header.insert("kid".into(), json!(signer.kid()));
+            header.insert("profile_version".into(), json!(SWIYU_PROFILE_VERSION));
+        }
+        VerifierKind::Eudi => {
+            header.insert("x5c".into(), json!(identity.x5c));
         }
     }
-    extra
+    header
 }
 
 /// Choose the verifier identity a session presents itself as: the first
@@ -135,6 +148,8 @@ async fn choose_identity(
         .await?
         .into_iter()
         .filter(|r| state.oid4vp_signers.contains_key(&r.id))
+        // An EUDI identity is not usable until its certificate is installed.
+        .filter(|r| r.client_id().is_some())
         .collect();
     let chosen = match prefix {
         Some(p) => installed.into_iter().find(|r| prefix_of(r.kind) == p),
@@ -240,7 +255,10 @@ pub async fn start(
     let encs = enc_values_of(identity.kind);
     let expires_at = now + Duration::seconds(cfg.session_ttl_secs as i64);
 
-    let client_id = ClientId::parse(&identity.client_id())
+    let client_id = identity
+        .client_id()
+        .ok_or_else(|| StartRefusal::VerifierNotConfigured(identity.id.clone()))?;
+    let client_id = ClientId::parse(&client_id)
         .map_err(|e| AppError::Internal(format!("verifier identity client_id: {e}")))?;
     let request_uri = format!("{public_url}/v1/oid4vp/request/{id}");
     let response_uri = format!("{public_url}/v1/oid4vp/response/{id}");
@@ -268,6 +286,9 @@ pub async fn start(
         },
     );
     request.state = Some(wallet_state.clone());
+    // What the identity's ecosystem has said about it — an EUDI registration
+    // certificate, which the wallet checks the requested claims against.
+    request.verifier_info = identity.verifier_info.clone();
     request.iat = Some(now.timestamp());
     request.exp = Some(expires_at.timestamp());
     let jar = sign_request_object(&request, &identity, signer.as_ref()).await?;
@@ -325,8 +346,8 @@ pub async fn start(
 }
 
 /// Sign a request object as a JAR through the identity's [`super::VerifierSigner`]
-/// — `typ: oauth-authz-req+jwt`, `kid` the identity's verification method,
-/// plus the header members its ecosystem requires.
+/// — `typ: oauth-authz-req+jwt`, plus the header members its ecosystem
+/// requires ([`identity_header_of`]).
 async fn sign_request_object(
     request: &RequestObject,
     identity: &VerifierIdentityRecord,
@@ -335,10 +356,9 @@ async fn sign_request_object(
     request
         .validate()
         .map_err(|e| AppError::Internal(format!("request object: {e}")))?;
-    let mut header = extra_header_of(identity.kind);
+    let mut header = identity_header_of(identity, signer);
     header.insert("alg".into(), json!(signer.alg()));
     header.insert("typ".into(), json!(REQUEST_OBJECT_TYP));
-    header.insert("kid".into(), json!(signer.kid()));
     let claims = serde_json::to_vec(request)
         .map_err(|e| AppError::Internal(format!("request object: {e}")))?;
     let header = serde_json::to_vec(&Value::Object(header))

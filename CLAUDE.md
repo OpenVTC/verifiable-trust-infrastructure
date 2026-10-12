@@ -158,8 +158,9 @@ What the workspace mints stays Ed25519 / X25519, with one exception: a
 such as a swiyu or EUDI OpenID4VP verifier (`swiyu-verifier` template), whose
 request objects those wallets accept only as ES256 — may hold P-256 (or
 secp256k1) keys. The VTA still mints and custodies them, from the seed like any
-other key; such a key is published only in that identity's own DID, never on a
-community's or the VTA's own. Every key `sealed_transfer` seals **to** stays
+other key; such a key is published only in that identity's own DID (or, for an
+EUDI verifier, which has no DID, certified only in its own X.509 access
+certificate), never on a community's or the VTA's own. Every key `sealed_transfer` seals **to** stays
 X25519 (from an Ed25519 `did:key`).
 
 ## Prefer TSP, then DIDComm, then REST

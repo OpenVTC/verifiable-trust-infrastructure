@@ -62,14 +62,35 @@ pub fn oid4vp_test_identity(id: &str, seed: u8) -> crate::oid4vp::VerifierIdenti
     crate::oid4vp::VerifierIdentityRecord {
         id: id.into(),
         kind: crate::oid4vp::VerifierKind::Swiyu,
-        did: TEST_VERIFIER_DID.into(),
-        kid: format!("{TEST_VERIFIER_DID}#verifier-key-1"),
+        did: Some(TEST_VERIFIER_DID.into()),
+        kid: Some(format!("{TEST_VERIFIER_DID}#verifier-key-1")),
         public_jwk: jwk,
         private_key_multibase: secret
             .get_private_keymultibase()
             .expect("private key multibase"),
+        x5c: None,
+        verifier_info: None,
         installed_at: 0,
     }
+}
+
+/// An EUDI verifier identity over a P-256 key from `seed`, with an access
+/// certificate a test Access CA issued for it — as `vtc oid4vp install` then
+/// `vtc oid4vp certificate` leave one.
+pub fn oid4vp_test_eudi_identity(id: &str, seed: u8) -> crate::oid4vp::VerifierIdentityRecord {
+    let mut record = oid4vp_test_identity(id, seed);
+    record.kind = crate::oid4vp::VerifierKind::Eudi;
+    record.did = None;
+    record.kid = None;
+    let (leaf, ca) = crate::oid4vp::x509::issue_for_test(&record, seed.wrapping_add(1));
+    let checked = crate::oid4vp::x509::check_chain(
+        &record,
+        format!("{leaf}{ca}").as_bytes(),
+        chrono::Utc::now().timestamp(),
+    )
+    .expect("the test chain is accepted");
+    record.x5c = Some(checked.x5c);
+    record
 }
 
 /// Deterministic 32-byte JWT signing seed. Stable across runs so tests

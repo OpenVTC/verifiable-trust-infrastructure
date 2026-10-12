@@ -29,8 +29,11 @@ use vta_sdk::protocols::join_requests::{
     wallet_session::{start::v0_1 as start, status::v0_1 as status},
 };
 use vtc_service::join::JoinStatus;
+use vtc_service::oid4vp::VerifierIdentityRecord;
 use vtc_service::schemas::accepts::{AcceptsCriterion, Admission, CredentialIssuers};
-use vtc_service::test_support::{TEST_VERIFIER_DID, TestVtc, oid4vp_test_identity};
+use vtc_service::test_support::{
+    TEST_VERIFIER_DID, TestVtc, oid4vp_test_eudi_identity, oid4vp_test_identity,
+};
 
 const PUBLIC_URL: &str = "https://vtc.example";
 const VCT: &str = "https://example.org/credentials/residence-permit";
@@ -42,12 +45,12 @@ struct Fixture {
     digest: String,
 }
 
-async fn fixture_with(identity: bool) -> Fixture {
+async fn fixture_with(identities: Vec<VerifierIdentityRecord>) -> Fixture {
     let mut builder = TestVtc::builder()
         .with_audit(true)
         .with_public_url(PUBLIC_URL);
-    if identity {
-        builder = builder.with_oid4vp_identity(oid4vp_test_identity("swiyu", 0x31));
+    for identity in identities {
+        builder = builder.with_oid4vp_identity(identity);
     }
     let vtc = builder.build().await;
     // The join decision runs the active `join` policy, as `server::run`
@@ -92,7 +95,7 @@ async fn fixture_with(identity: bool) -> Fixture {
 }
 
 async fn fixture() -> Fixture {
-    fixture_with(true).await
+    fixture_with(vec![oid4vp_test_identity("swiyu", 0x31)]).await
 }
 
 /// A signed Trust Task document from the applicant key `seed`.
@@ -392,6 +395,88 @@ async fn a_wallet_presentation_becomes_evidence_the_applicant_can_read() {
     );
 }
 
+/// An EUDI identity beside the swiyu one: a start naming `x509_hash` gets a
+/// request signed by the access certificate's key, carrying its chain as
+/// `x5c` and the registration certificate in `verifier_info`, and a wallet
+/// that binds its presentation to that `client_id` is accepted.
+#[tokio::test]
+async fn an_eudi_wallet_is_asked_under_the_access_certificate() {
+    let mut eudi = oid4vp_test_eudi_identity("eudi", 0x61);
+    eudi.verifier_info = Some(vec![
+        json!({ "format": "jwt", "data": "eyJ.registration.cert" }),
+    ]);
+    let client_id = eudi.client_id().expect("a certificate is installed");
+    assert!(client_id.starts_with("x509_hash:"), "{client_id}");
+    let f = fixture_with(vec![oid4vp_test_identity("swiyu", 0x31), eudi.clone()]).await;
+
+    let (code, body) = start_session(
+        &f,
+        &APPLICANT_SEED,
+        json!({ "criterion": f.digest, "clientIdPrefix": "x509_hash" }),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    let started: start::Response = serde_json::from_value(body["payload"].clone()).unwrap();
+    assert_eq!(started.client_id.as_str(), client_id);
+    assert!(
+        started.wallet_uri.starts_with("haip-vp://?"),
+        "{}",
+        started.wallet_uri
+    );
+    let session_id = started.session_id.to_string();
+
+    let (code, _, bytes) = get_request_object(&f, &session_id).await;
+    assert_eq!(code, StatusCode::OK);
+    let jar = String::from_utf8(bytes).unwrap();
+    let header = decode_segment(&jar, 0);
+    assert_eq!(header["alg"], "ES256");
+    assert_eq!(header["x5c"], json!(eudi.x5c));
+    assert!(header.get("kid").is_none(), "{header}");
+    assert!(header.get("profile_version").is_none(), "{header}");
+    let request = vta_sdk::jws::JwsKey::from_jwk(&eudi.public_jwk)
+        .unwrap()
+        .verify_compact(&jar)
+        .expect("the request object verifies under the certified key");
+    assert_eq!(request["client_id"], client_id);
+    assert_eq!(request["verifier_info"], json!(eudi.verifier_info));
+    assert_eq!(
+        request["client_metadata"]["encrypted_response_enc_values_supported"],
+        json!(["A128GCM", "A256GCM"])
+    );
+
+    let nonce = request["nonce"].as_str().unwrap();
+    let (_, vp) = presentation(VCT, &client_id, nonce);
+    let form = encrypted_response(
+        &request,
+        &json!({ "vp_token": { "residence": [vp] }, "state": request["state"] }),
+    );
+    let (code, body) = post_response(&f, &session_id, form).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+
+    let (_, body) = session_status(&f, &APPLICANT_SEED, &session_id).await;
+    assert_eq!(body["payload"]["state"], "presented", "{body}");
+}
+
+/// An EUDI identity whose access certificate is not installed yet opens no
+/// session: there is no `client_id` to present.
+#[tokio::test]
+async fn an_eudi_identity_without_its_certificate_opens_no_session() {
+    let mut eudi = oid4vp_test_eudi_identity("eudi", 0x61);
+    eudi.x5c = None;
+    let f = fixture_with(vec![eudi]).await;
+    let (code, body) = start_session(
+        &f,
+        &APPLICANT_SEED,
+        json!({ "criterion": f.digest, "clientIdPrefix": "x509_hash" }),
+    )
+    .await;
+    assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        jr::WALLET_SESSION_START_ERR_VERIFIER_NOT_CONFIGURED
+    );
+}
+
 /// A wallet whose holder declines answers with an OpenID4VP error; that is
 /// received, and the session ends `refused` with `walletDeclined`.
 #[tokio::test]
@@ -564,7 +649,7 @@ async fn the_start_task_bounds_an_applicants_open_sessions() {
 /// A community with no verifier identity installed refuses every session.
 #[tokio::test]
 async fn a_community_with_no_verifier_identity_opens_no_session() {
-    let f = fixture_with(false).await;
+    let f = fixture_with(Vec::new()).await;
     let (code, body) = start_session(&f, &APPLICANT_SEED, json!({ "criterion": f.digest })).await;
     assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(

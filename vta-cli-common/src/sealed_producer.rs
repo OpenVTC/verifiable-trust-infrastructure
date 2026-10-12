@@ -206,6 +206,38 @@ pub async fn emit_did_secrets_bundle(
     emit_sealed_output(&sealed, out)
 }
 
+/// Seal one raw private key ([`SealedPayloadV1::RawPrivateKey`]) to the given
+/// recipient and emit the armored output + stderr banner. Used by
+/// `pnm keys bundle-key` for a key no DID publishes.
+pub async fn emit_raw_private_key_bundle(
+    key_type: vta_sdk::keys::KeyType,
+    key_bytes: &[u8],
+    key_id: &str,
+    recipient: &SealedRecipient,
+    out: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use base64::Engine as _;
+    let payload = SealedPayloadV1::RawPrivateKey(vta_sdk::sealed_transfer::RawPrivateKey {
+        key_type: key_type.to_string(),
+        key_bytes_b64: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key_bytes),
+    });
+    let sealed = seal_for_recipient(recipient, &payload).await?;
+
+    eprintln!();
+    eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════╗");
+    eprintln!("║  Private key (sealed — armored to the recipient)         ║");
+    eprintln!("╚══════════════════════════════════════════════════════════╝\x1b[0m");
+    eprintln!();
+    eprintln!("  Key:  {key_id}");
+    eprintln!("  Type: {key_type}");
+    if let Some(ref label) = recipient.label {
+        eprintln!("  Recipient: {label}");
+    }
+    eprintln!();
+
+    emit_sealed_output(&sealed, out)
+}
+
 /// Seal a [`vta_sdk::context_provision::ContextProvisionBundle`] to the
 /// given recipient and emit the armored output + stderr banner. Shared
 /// between `pnm context reprovision` and `vta context reprovision` —

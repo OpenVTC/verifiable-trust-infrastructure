@@ -79,6 +79,20 @@ pub(crate) async fn run(
             Ok(recipient) => keys::cmd_key_bundle(client, &context, recipient).await,
             Err(e) => Err(e),
         },
+        KeyCommands::BundleKey {
+            key_id,
+            recipient,
+            recipient_did,
+            recipient_nonce,
+            out,
+        } => {
+            let recipient = resolve_recipient(
+                recipient.as_deref(),
+                recipient_did.as_deref(),
+                recipient_nonce.as_deref(),
+            )?;
+            keys::cmd_key_bundle_one(client, &key_id, recipient, out.as_deref()).await
+        }
         KeyCommands::Seeds => keys::cmd_seeds_list(client).await,
         KeyCommands::RotateSeed { mnemonic } => keys::cmd_seeds_rotate(client, mnemonic).await,
     }
