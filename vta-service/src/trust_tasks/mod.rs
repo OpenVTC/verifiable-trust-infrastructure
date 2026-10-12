@@ -502,7 +502,7 @@ pub async fn dispatch_trust_task(
     };
     // REST is hop-by-hop by construction: TLS terminates at whatever the
     // operator put in front of this process, and the plaintext exists there.
-    Ok(transport::with_binding(
+    let outcome = transport::with_binding(
         "https",
         dispatch_trust_task_core(
             &state,
@@ -511,8 +511,12 @@ pub async fn dispatch_trust_task(
             transport::TransportConfidentiality::HopByHop,
         ),
     )
-    .await
-    .into_response())
+    .await;
+    if outcome.restart {
+        state.restart_gate.request();
+        state.restart_gate.fire();
+    }
+    Ok(outcome.into_response())
 }
 
 /// The largest body an anonymous caller may send: the cap the other
@@ -681,6 +685,7 @@ pub(crate) async fn sign_response(state: &AppState, outcome: TrustTaskOutcome) -
         Some(body) => TrustTaskOutcome {
             status: outcome.status,
             body,
+            restart: outcome.restart,
         },
         None if is_success => {
             tracing::error!(%vm_id, "the signature would not attach");
@@ -690,6 +695,7 @@ pub(crate) async fn sign_response(state: &AppState, outcome: TrustTaskOutcome) -
                 Some(body) => TrustTaskOutcome {
                     status: refusal.status,
                     body,
+                    restart: refusal.restart,
                 },
                 None => refusal,
             }
@@ -720,6 +726,7 @@ fn cannot_sign(vm_id: &str, why: &str) -> TrustTaskOutcome {
     TrustTaskOutcome {
         status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
         body: serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec()),
+        restart: false,
     }
 }
 
@@ -995,6 +1002,7 @@ pub(crate) async fn accept_from_proven_sender(
     let silent = || TrustTaskOutcome {
         status: axum::http::StatusCode::NO_CONTENT,
         body: Vec::new(),
+        restart: false,
     };
 
     // Classified off a bare `Value`: it reads two fields and must not depend on
@@ -1202,6 +1210,7 @@ pub(crate) async fn dispatch_trust_task_core(
             Some(body) => TrustTaskOutcome {
                 status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 body,
+                restart: outcome.restart,
             },
             None => outcome,
         };
@@ -1225,6 +1234,7 @@ pub(crate) async fn dispatch_auth_family(state: &AppState, body: &[u8]) -> Trust
             Some(body) => TrustTaskOutcome {
                 status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 body,
+                restart: outcome.restart,
             },
             None => outcome,
         };
@@ -1287,6 +1297,7 @@ async fn dispatch_trust_task_inner(
         return TrustTaskOutcome {
             status: axum::http::StatusCode::NO_CONTENT,
             body: Vec::new(),
+            restart: false,
         };
     }
 
@@ -1645,6 +1656,7 @@ async fn dispatch_trust_task_validated(
                     Ok(body) => TrustTaskOutcome {
                         status: axum::http::StatusCode::OK,
                         body,
+                        restart: false,
                     },
                     Err(e) => reject_with(
                         &doc,
@@ -1665,6 +1677,7 @@ async fn dispatch_trust_task_validated(
                     // §7.2 forbids reporting for a duplicate.
                     status: axum::http::StatusCode::ACCEPTED,
                     body: Vec::new(),
+                    restart: false,
                 },
                 // Fire-and-forget: the specification defines no success
                 // response, so silence is the correct disposition. Never
@@ -1672,6 +1685,7 @@ async fn dispatch_trust_task_validated(
                 None => TrustTaskOutcome {
                     status: axum::http::StatusCode::NO_CONTENT,
                     body: Vec::new(),
+                    restart: false,
                 },
             };
         }
@@ -3193,6 +3207,7 @@ mod tests {
             status: axum::http::StatusCode::OK,
             body: br#"{"id":"urn:uuid:x","type":"https://example.org/t#response","payload":{}}"#
                 .to_vec(),
+            restart: false,
         };
 
         // No resident secret: the answer still goes out, unsigned. Cleared
@@ -3258,6 +3273,7 @@ mod tests {
                 body:
                     br#"{"id":"urn:uuid:z","type":"https://example.org/t#response","payload":{}}"#
                         .to_vec(),
+                restart: false,
             },
         )
         .await;

@@ -81,6 +81,8 @@ pub struct TenantMessagingOverlay {
     pub mediator_did: Option<String>,
     #[serde(default)]
     pub mediator_url: Option<String>,
+    #[serde(default)]
+    pub setup_acl: Option<bool>,
 }
 
 /// Failure applying a [`TenantConfigOverlay`] to a baked base config.
@@ -296,6 +298,9 @@ pub fn apply_tenant_overlay(
                 if let Some(v) = m.mediator_url {
                     msg.mediator_url = v;
                 }
+                if let Some(v) = m.setup_acl {
+                    msg.setup_acl = v;
+                }
             }
             None => {
                 // `MessagingConfig` has no `Default` because `mediator_did` is
@@ -310,7 +315,7 @@ pub fn apply_tenant_overlay(
                     mediator_did,
                     mediator_url: m.mediator_url.unwrap_or_default(),
                     mediator_host: None,
-                    setup_acl: false,
+                    setup_acl: m.setup_acl.unwrap_or(false),
                     drain_inbox_on_start: false,
                 });
             }
@@ -361,7 +366,6 @@ mod tests {
             r#"{"tee":{"mode":"optional"}}"#,
             r#"{"resolver_url":"http://evil"}"#,
             r#"{"storage_key_salt":"x"}"#,
-            r#"{"messaging":{"mediator_did":"did:x","setup_acl":true}}"#,
             // A bare, keyless DID string is NOT identity provisioning (ADR-0109):
             // the enclave provisions from `vta_did_template`, so `vta_did` is not
             // an overlay field and must be rejected structurally.
@@ -622,6 +626,86 @@ mod tests {
         let msg = base.messaging.as_ref().unwrap();
         assert_eq!(msg.mediator_did, "did:web:mediator.test");
         assert_eq!(msg.mediator_url, "wss://mediator.test/ws");
+        assert!(
+            !msg.setup_acl,
+            "setup_acl defaults to false unless the overlay passes it"
+        );
+
+        // The overlay may pass setup_acl explicitly.
+        let mut base: crate::AppConfig = toml::from_str("").unwrap();
+        let with_acl: TenantConfigOverlay = serde_json::from_str(
+            r#"{"messaging":{"mediator_did":"did:web:mediator.test","setup_acl":true}}"#,
+        )
+        .unwrap();
+        apply_tenant_overlay(&mut base, with_acl).expect("apply succeeds");
+        assert!(
+            base.messaging.unwrap().setup_acl,
+            "setup_acl=true in the overlay must apply"
+        );
+    }
+
+    /// Regression: the baked fleet-base.toml used to pre-populate `[messaging]`
+    /// with `mediator_did = "OVERLAY_PLACEHOLDER_MEDIATOR_DID"`, which pre-empted
+    /// the `None` branch above — an overlay that supplied no `messaging` block at
+    /// all (a tenant with no mediator) left that literal placeholder in
+    /// `base.messaging`, which the enclave then treated as a real mediator: it
+    /// retried connecting to it forever and published it in the DID document.
+    /// The actual baked file must parse with `messaging: None`, and an overlay
+    /// that doesn't mention messaging must leave it that way.
+    #[cfg(feature = "tee")]
+    #[test]
+    fn fleet_base_boots_rest_only_when_the_overlay_sends_no_mediator() {
+        let fleet_base = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../deploy/nitro/config.fleet-base.toml"
+        ))
+        .expect("deploy/nitro/config.fleet-base.toml reads");
+        let mut base: crate::AppConfig =
+            toml::from_str(&fleet_base).expect("the baked fleet base parses");
+        assert!(
+            base.messaging.is_none(),
+            "the baked config must not pre-populate [messaging] — REST-only \
+             must be representable without an overlay"
+        );
+        // Swap the build-arg placeholder allowlist for GOOD_ARN's account —
+        // the actual deploy pipeline fills this in before baking; it is not
+        // what this test is about.
+        base.tee.allowed_kms_accounts = vec!["111122223333".to_string()];
+
+        // The overlay a tenant with no mediator sends: tee_kms only, no
+        // messaging block at all (not even an empty one).
+        let overlay: TenantConfigOverlay = serde_json::from_str(&format!(
+            r#"{{"tee_kms":{{"key_arn":"{GOOD_ARN}","anchor_table_name":"vta-anchor-acme"}}}}"#
+        ))
+        .unwrap();
+        apply_tenant_overlay(&mut base, overlay).expect("apply succeeds");
+        assert!(
+            base.messaging.is_none(),
+            "an overlay silent on messaging must leave the VTA REST-only, \
+             never a placeholder mediator DID"
+        );
+
+        // The overlay a tenant WITH a mediator sends, against the same baked
+        // file: `[messaging]` must still materialize, with setup_acl passed
+        // through from the overlay (defaulting to false if omitted).
+        let fleet_base = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../deploy/nitro/config.fleet-base.toml"
+        ))
+        .expect("deploy/nitro/config.fleet-base.toml reads");
+        let mut base: crate::AppConfig = toml::from_str(&fleet_base).unwrap();
+        base.tee.allowed_kms_accounts = vec!["111122223333".to_string()];
+        let overlay_with_mediator: TenantConfigOverlay = serde_json::from_str(&format!(
+            r#"{{"tee_kms":{{"key_arn":"{GOOD_ARN}","anchor_table_name":"vta-anchor-acme"}},
+               "messaging":{{"mediator_did":"did:web:mediator.test","setup_acl":true}}}}"#
+        ))
+        .unwrap();
+        apply_tenant_overlay(&mut base, overlay_with_mediator).expect("apply succeeds");
+        let msg = base
+            .messaging
+            .expect("a supplied mediator_did must materialize [messaging]");
+        assert_eq!(msg.mediator_did, "did:web:mediator.test");
+        assert!(msg.setup_acl, "setup_acl=true in the overlay must apply");
     }
 
     #[cfg(feature = "tee")]

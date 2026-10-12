@@ -23,8 +23,12 @@ trust-tasks-rs = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 vta-sdk = { path = "../vta-sdk", version = "0.64", features = [
   "client",
+  "session",
   "sealed-transfer",
   "provision-integration",
+  # The DIDComm-enable readiness poll opens this client's own mediator account
+  # before probing; without it `provision_client_acl` compiles to a no-op.
+  "acl-setup",
 ] }
 # Owner-only file-permission helper (`secure_file`), shared workspace-wide.
 vti-common = { path = "../vti-common", version = "0.40" }

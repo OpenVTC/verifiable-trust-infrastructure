@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
@@ -27,6 +28,7 @@ use crate::keys::seeds::load_seed_bytes;
 use crate::routes;
 use crate::store::{KeyspaceHandle, Store};
 use tokio::sync::{RwLock, watch};
+use tokio_util::sync::CancellationToken;
 #[cfg(feature = "rest")]
 use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer};
 use tracing::Level;
@@ -35,8 +37,6 @@ use tracing::{debug, error, info, warn};
 // D2 P2a: the reliable-messaging delivery layer replaces the
 // `affinidi-messaging-didcomm-service` framework. `MessagingService` (built in
 // `messaging::service`) drives inbound + outbound over a `DidCommTransport`.
-#[cfg(any(feature = "didcomm", feature = "tsp"))]
-use tokio_util::sync::CancellationToken;
 // The mediator ACL is keyed on the VTA DID, so it authorises whichever
 // protocol rides the socket — either transport wires it on connect.
 #[cfg(any(feature = "didcomm", feature = "tsp"))]
@@ -59,14 +59,68 @@ pub struct TeeContext {
 #[cfg(not(feature = "tee"))]
 pub struct TeeContext(());
 
-/// Trigger a soft restart after a short delay, allowing the current
-/// response to be sent before threads shut down.
-pub fn trigger_restart(restart_tx: &watch::Sender<bool>) {
-    let tx = restart_tx.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        let _ = tx.send(true);
-    });
+/// Maximum time to wait for a transport to finish sending a restart-triggering
+/// reply before the safety backstop starts the restart anyway.
+///
+/// This matches the current TSP reply-send budget: 10 seconds for peer
+/// mediator lookup plus 20 seconds for rate-limit retries. Keep this value in
+/// sync if either transport budget changes; the Rust const evaluator cannot
+/// currently add `Duration` constants here (rust-lang/rust#143874).
+const RESTART_BACKSTOP: Duration = Duration::from_secs(30);
+
+/// Coordinates a restart request with the reply that caused it.
+///
+/// The transport calls [`Self::fire`] after its send has completed. The
+/// backstop covers handlers that request a restart but never reach a transport
+/// send path, so a successful mutation cannot leave the service enabled but
+/// inactive forever.
+pub struct RestartGate {
+    tx: watch::Sender<bool>,
+    pending: AtomicBool,
+    fired: AtomicBool,
+    backstop_cancel: CancellationToken,
+}
+
+impl RestartGate {
+    pub(crate) fn new(tx: watch::Sender<bool>) -> Self {
+        Self {
+            tx,
+            pending: AtomicBool::new(false),
+            fired: AtomicBool::new(false),
+            backstop_cancel: CancellationToken::new(),
+        }
+    }
+
+    /// Request a restart and arm the delayed safety backstop.
+    pub fn request(self: &Arc<Self>) {
+        self.request_with_delay(RESTART_BACKSTOP);
+    }
+
+    fn request_with_delay(self: &Arc<Self>, delay: Duration) {
+        if self.fired.load(Ordering::Acquire) || self.pending.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let gate = Arc::clone(self);
+        let cancellation = self.backstop_cancel.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => gate.fire(),
+                _ = cancellation.cancelled() => {}
+            }
+        });
+    }
+
+    /// Fire the restart exactly once.
+    pub fn fire(&self) {
+        if !self.fired.swap(true, Ordering::AcqRel) {
+            self.backstop_cancel.cancel();
+            let _ = self.tx.send(true);
+        }
+    }
+
+    pub fn is_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire) && !self.fired.load(Ordering::Acquire)
+    }
 }
 
 /// Shared handle graph for every route, task handler and sweeper.
@@ -325,8 +379,8 @@ pub struct AppState {
     pub jwt_keys: Option<Arc<JwtKeys>>,
     pub atm: Option<ATM>,
     pub tee: Option<TeeContext>,
-    /// Send `true` to trigger a soft restart (threads shut down and re-initialize).
-    pub restart_tx: watch::Sender<bool>,
+    /// Coordinates a reply-safe soft restart for this generation.
+    pub restart_gate: Arc<RestartGate>,
     /// Prometheus metrics handle for rendering `/metrics` endpoint.
     #[cfg(feature = "rest")]
     pub metrics_handle: Option<crate::metrics::PrometheusHandle>,
@@ -467,6 +521,8 @@ pub async fn build_app_state(
             ks
         }
     };
+
+    let restart_gate = Arc::new(RestartGate::new(restart_tx));
 
     let keys_ks = apply_encryption(store.keyspace(crate::keyspaces::KEYS)?);
     let sessions_ks = apply_encryption(store.keyspace(crate::keyspaces::SESSIONS)?);
@@ -664,7 +720,7 @@ pub async fn build_app_state(
         jwt_keys: auth.jwt_keys,
         atm: auth.atm,
         tee: tee_context,
-        restart_tx,
+        restart_gate,
         #[cfg(feature = "rest")]
         metrics_handle: parts.metrics_handle,
     };
@@ -940,6 +996,19 @@ pub async fn run(
     // or restart signal, tears everything down, then either exits
     // or loops back to re-initialize with updated state.
     loop {
+        // The pre-loop guard above cannot re-run — the listener and the metrics
+        // recorder are bound once per process — so a reload that leaves nothing
+        // enabled is reported rather than fatal. Killing a VTA that is already
+        // serving, over an edited file, is the worse failure.
+        if !(cfg!(feature = "rest") && config.services.rest
+            || cfg!(feature = "didcomm") && config.services.didcomm)
+        {
+            warn!(
+                "no services enabled — this VTA is running with no transport; \
+                 enable one with `pnm services {{kind}} enable`"
+            );
+        }
+
         // Keyspace handles `run()` needs directly: the storage-thread inputs
         // (un-gated, so the storage thread compiles in every feature combo) and
         // the drain set (webvh — needed for boot replay + the sweeper, which
@@ -1334,24 +1403,48 @@ pub async fn run(
                     // D6/D9: durable-store maintenance — enumerate surviving
                     // relationships on boot, then periodically sweep idle ones.
                     // D8: sample the drop counter into the telemetry sink.
-                    // Both spawned ONCE here at startup, over their own handles —
-                    // not in `build_messaging`, which re-runs on every mediator
-                    // reconnect and would leak a task per reconnect.
+                    // Not in `build_messaging`, which re-runs on every mediator
+                    // reconnect and would leak a task per reconnect. Each is
+                    // scoped to this generation's shutdown token: spawning them
+                    // once per process instead would leave them holding the
+                    // first generation's `AppState` — and so a `DIDCommBridge`
+                    // no later generation ever publishes into.
                     #[cfg(feature = "tsp")]
                     {
-                        tokio::spawn(crate::messaging::tsp_relationship_store::maintenance_loop(
-                            app_state.tsp_relationships.clone(),
-                        ));
-                        tokio::spawn(
-                            crate::messaging::tsp_relationship_store::drop_telemetry_loop(
-                                relationship_drop_counter.clone(),
-                                app_state.telemetry.clone(),
-                            ),
-                        );
+                        let token = didcomm_shutdown.clone();
+                        let relationships = app_state.tsp_relationships.clone();
+                        tokio::spawn(async move {
+                            tokio::select! {
+                                _ = token.cancelled() => {}
+                                _ = crate::messaging::tsp_relationship_store::maintenance_loop(
+                                    relationships,
+                                ) => {}
+                            }
+                        });
+                        let token = didcomm_shutdown.clone();
+                        let counter = relationship_drop_counter.clone();
+                        let telemetry = app_state.telemetry.clone();
+                        tokio::spawn(async move {
+                            tokio::select! {
+                                _ = token.cancelled() => {}
+                                _ = crate::messaging::tsp_relationship_store::drop_telemetry_loop(
+                                    counter, telemetry,
+                                ) => {}
+                            }
+                        });
                     }
-                    // Durable Trust Task pushes: one sweep for the life of the
-                    // process, reading the current session each pass.
-                    tokio::spawn(crate::messaging::push::sweep_loop(app_state.clone()));
+                    // Durable Trust Task pushes, reading the current session
+                    // each pass.
+                    {
+                        let token = didcomm_shutdown.clone();
+                        let push_state = app_state.clone();
+                        tokio::spawn(async move {
+                            tokio::select! {
+                                _ = token.cancelled() => {}
+                                _ = crate::messaging::push::sweep_loop(push_state) => {}
+                            }
+                        });
+                    }
                     let supervisor = MessagingConnect {
                         app_state: app_state.clone(),
                         vta_did: vta_did.clone(),
@@ -1562,10 +1655,53 @@ pub async fn run(
         // ── Soft restart: reload config and re-derive keys ───────
         info!("soft restart: re-initializing services");
 
-        // Config and seed are updated in-memory by the import handler.
-        // The restart loop re-initializes auth and keyspace handles from
-        // the current config and seed_store on the next iteration.
+        // Without this the next generation re-reads the same stale local, so a
+        // `services {kind} enable` that just flipped fjall is silently ignored
+        // and the restart accomplishes nothing. Every failure path keeps the
+        // running configuration: an edited `config.toml` must not be able to
+        // kill a VTA that is already up.
+        match reload_config_for_restart(&config, &boot_service_state_ks).await {
+            Ok(reloaded) => config = reloaded,
+            Err(e) => {
+                warn!(error = %e, "soft restart kept the running configuration")
+            }
+        }
     }
+}
+
+/// Re-read `config.toml` for the next generation and re-apply the authoritative
+/// service enablement over it.
+///
+/// Enablement comes from fjall, not the file: `pnm services {kind}
+/// {enable,disable}` writes runtime state, and the `[services]` block is legacy
+/// (consumed only by the first-boot migration). Mirroring exactly the two
+/// services boot mirrors keeps the two paths from disagreeing about what a
+/// generation starts with.
+async fn reload_config_for_restart(
+    current: &AppConfig,
+    #[cfg_attr(not(feature = "webvh"), allow(unused_variables))] service_state_ks: &KeyspaceHandle,
+) -> Result<AppConfig, AppError> {
+    #[cfg_attr(not(feature = "webvh"), allow(unused_mut))]
+    let mut reloaded = current.reload_for_restart()?;
+
+    #[cfg(feature = "webvh")]
+    {
+        use crate::operations::protocol::runtime_state;
+        reloaded.services.rest = runtime_state::is_rest_enabled(service_state_ks).await?;
+        reloaded.services.didcomm = runtime_state::is_didcomm_enabled(service_state_ks).await?;
+    }
+
+    if reloaded.effective_config_digest.is_some() {
+        reloaded.capture_effective_config_attestation()?;
+    }
+
+    // Boot refuses to start on this; a restart cannot refuse without killing a
+    // running VTA, so reject the reload instead and keep what works.
+    if let Some(reason) = tsp_configured_but_unbuilt(reloaded.services.tsp, TSP_BUILT) {
+        return Err(AppError::Config(reason.into()));
+    }
+    reloaded.validate()?;
+    Ok(reloaded)
 }
 
 /// Storage thread: runs session cleanup loop and persists the store on shutdown.
@@ -2957,6 +3093,35 @@ mod tests {
             .keyspace(crate::keyspaces::KEYS)
             .expect("keys keyspace");
         (store, keys_ks, dir)
+    }
+
+    #[tokio::test]
+    async fn restart_gate_fires_only_once() {
+        let (tx, mut rx) = watch::channel(false);
+        let gate = Arc::new(RestartGate::new(tx));
+
+        gate.request();
+        gate.fire();
+        gate.fire();
+
+        rx.changed().await.expect("restart signal");
+        assert!(*rx.borrow());
+        assert!(!gate.is_pending());
+        assert!(gate.backstop_cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn restart_gate_backstop_fires_without_transport_release() {
+        let (tx, mut rx) = watch::channel(false);
+        let gate = Arc::new(RestartGate::new(tx));
+
+        gate.request_with_delay(Duration::from_millis(1));
+
+        tokio::time::timeout(Duration::from_secs(1), rx.changed())
+            .await
+            .expect("restart backstop did not fire")
+            .expect("restart signal channel closed");
+        assert!(*rx.borrow());
     }
 
     #[cfg(feature = "webvh")]

@@ -84,6 +84,8 @@ pub struct EnableDidcommResponse {
     /// `#[serde(default)]` for back-compat.
     #[serde(default)]
     pub serverless: bool,
+    #[serde(default)]
+    pub restarting: bool,
 }
 
 /// Response body for `GET /services/didcomm`.
@@ -245,6 +247,18 @@ mod via_trust_tasks {
         pub draining_mediator: Option<String>,
         pub vta_did: String,
         pub serverless: bool,
+        pub ext: Option<serde_json::Value>,
+    }
+
+    impl Mutation {
+        pub(super) fn is_restarting(&self) -> bool {
+            self.ext
+                .as_ref()
+                .and_then(|ext| ext.get("org.openvtc"))
+                .and_then(|namespace| namespace.get("restarting"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        }
     }
 
     impl From<spec::enable::v1_0::ServiceMutationResult> for Mutation {
@@ -256,6 +270,7 @@ mod via_trust_tasks {
                 draining_mediator: r.draining_mediator,
                 vta_did: r.vta_did.unwrap_or_default(),
                 serverless: r.serverless,
+                ext: r.ext.and_then(|ext| serde_json::to_value(ext).ok()),
             }
         }
     }
@@ -268,6 +283,7 @@ mod via_trust_tasks {
                 drain_until: m.drain_until,
                 vta_did: m.vta_did,
                 serverless: m.serverless,
+                ext: m.ext,
             }
         }
     }
@@ -568,6 +584,7 @@ impl VtaClient {
                 60,
             )
             .await?;
+        let restarting = m.is_restarting();
         Ok(EnableDidcommResponse {
             new_version_id: m.log_entry_version_id,
             mediator_did: req.mediator_did,
@@ -576,6 +593,7 @@ impl VtaClient {
             mediator_endpoint: String::new(),
             vta_did: m.vta_did,
             serverless: m.serverless,
+            restarting,
         })
     }
 

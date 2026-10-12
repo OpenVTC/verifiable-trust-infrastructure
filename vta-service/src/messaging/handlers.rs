@@ -80,7 +80,9 @@ pub async fn handle_trust_task(
             return Ok(None);
         }
         let doc: serde_json::Value = serde_json::from_slice(&response.body).map_err(handler_err)?;
-        return Ok(Some(DIDCommResponse::new(TRUST_TASK_ENVELOPE_TYPE, doc)));
+        return Ok(Some(
+            DIDCommResponse::new(TRUST_TASK_ENVELOPE_TYPE, doc).with_restart_if(response.restart),
+        ));
     }
 
     // The DIDComm sender is a claim, not a proof of who composed the
@@ -135,6 +137,10 @@ pub async fn handle_trust_task(
         }
     };
 
+    if response.restart {
+        app_state.restart_gate.request();
+    }
+
     // The dispatch core returns a typed `TrustTaskOutcome`; its `body` is
     // already the serialised framework trust-task document, so we parse it
     // straight into the DIDComm reply — no round-trip through an
@@ -154,7 +160,9 @@ pub async fn handle_trust_task(
 
     // The reply is itself a trust-task envelope; the service sets `thid`
     // from the inbound message id for client correlation.
-    Ok(Some(DIDCommResponse::new(TRUST_TASK_ENVELOPE_TYPE, doc)))
+    Ok(Some(
+        DIDCommResponse::new(TRUST_TASK_ENVELOPE_TYPE, doc).with_restart_if(response.restart),
+    ))
 }
 
 // ---------------------------------------------------------------------------

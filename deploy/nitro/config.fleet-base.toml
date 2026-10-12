@@ -71,9 +71,21 @@ allow_anchor_init = true
 # vta_did_template is delivered by the overlay on first boot:
 # vta_did_template = "did:webvh:{SCID}:example.com:vta"
 
-# ── DIDComm mediator (tenant-scoped — PLACEHOLDER, overlay fills this) ────────
-[messaging]
-mediator_did = "OVERLAY_PLACEHOLDER_MEDIATOR_DID"
+# ── DIDComm mediator (tenant-scoped, overlay-optional) ───────────────────────
+#
+# Absent on purpose. `messaging` is `Option<MessagingConfig>`, and
+# `apply_tenant_overlay` only materializes it when the overlay supplies
+# `mediator_did` (vta-config/src/tenant_overlay.rs). Baking a placeholder here
+# instead pre-empts that branch: an overlay that omits `messaging` entirely
+# (a tenant with no mediator configured) left the baked placeholder in place,
+# so the enclave booted believing DIDComm WAS configured, published
+# "OVERLAY_PLACEHOLDER_MEDIATOR_DID" as its mediator in the DID document, and
+# retried the (unresolvable) connection forever.
+#
+# A tenant that wants DIDComm at boot supplies `messaging.mediator_did` (+
+# optional `mediator_url`) in the overlay; one that doesn't boots REST-only
+# and enables it later with:
+#   pnm services didcomm enable --mediator-did <did> --setup-acl
 
 # ── Server / log / store (fleet policy, baked) ───────────────────────────────
 

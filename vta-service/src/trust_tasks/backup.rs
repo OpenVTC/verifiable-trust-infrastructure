@@ -348,6 +348,7 @@ pub(super) async fn handle_finalize_import(
     let deps = crate::operations::descriptor_deps_from_app_state(state, &committer);
     match descriptors::finalize_import(&deps, auth, req).await {
         Ok(body) => {
+            let committed = body.status == "committed";
             // The most consequential row this service writes. On commit the
             // agent's keys, ACLs, contexts and trail are REPLACED with the
             // bundle's — including, note, the audit trail itself. Anything this
@@ -378,10 +379,15 @@ pub(super) async fn handle_finalize_import(
             .await;
             // A commit staged the restore and committed its seed; it takes
             // effect only when the VTA boots again. The reply goes out first.
-            if body.status == "committed" {
-                crate::restore::request_reboot(&state.restart_tx);
+            if committed {
+                crate::restore::request_reboot(&state.restart_gate);
             }
-            success_response(&doc, body)
+            let response = success_response(&doc, body);
+            if committed {
+                response.with_restart()
+            } else {
+                response
+            }
         }
         Err(e) => app_error_to_reject(&doc, e),
     }

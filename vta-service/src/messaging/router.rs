@@ -126,8 +126,6 @@ pub struct VtaState {
     pub ka_vm_id: Option<String>,
     #[cfg(feature = "tee")]
     pub tee_state: Option<crate::tee::TeeState>,
-    /// Send `true` to trigger a soft restart.
-    pub restart_tx: tokio::sync::watch::Sender<bool>,
     /// Mirrored from `AppState` for backup and restore, which read every
     /// keyspace and stage into the unencrypted `bootstrap` one.
     pub store: vti_common::store::Store,
@@ -223,7 +221,6 @@ impl From<&AppState> for VtaState {
             ka_vm_id: state.ka_vm_id.clone(),
             #[cfg(feature = "tee")]
             tee_state: state.tee.as_ref().map(|tc| tc.state.clone()),
-            restart_tx: state.restart_tx.clone(),
             store: state.store.clone(),
             storage_encryption_key: state.storage_encryption_key,
             in_enclave: state.tee.is_some(),

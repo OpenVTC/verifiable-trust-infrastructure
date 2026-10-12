@@ -2032,6 +2032,12 @@ pub(crate) enum DidcommCommands {
         /// Trust-ping round-trip timeout in seconds (default 10).
         #[arg(long)]
         handshake_timeout: Option<u64>,
+        /// Maximum time to wait for the restarted DIDComm listener (default 300).
+        #[arg(long, conflicts_with = "no_wait")]
+        wait_secs: Option<u64>,
+        /// Return after the enable response without polling readiness.
+        #[arg(long, conflicts_with = "wait_secs")]
+        no_wait: bool,
     },
     /// Update which mediator the `#vta-didcomm` entry advertises.
     /// (Replaces `pnm mediator migrate`.) Runs the pre-promotion

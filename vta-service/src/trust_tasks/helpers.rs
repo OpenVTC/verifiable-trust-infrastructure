@@ -58,6 +58,14 @@ pub(super) const TRANSPORT_TRUST_TASK: &str = "trust-task";
 pub(crate) struct TrustTaskOutcome {
     pub(crate) status: StatusCode,
     pub(crate) body: Vec<u8>,
+    pub(crate) restart: bool,
+}
+
+impl TrustTaskOutcome {
+    pub(crate) fn with_restart(mut self) -> Self {
+        self.restart = true;
+        self
+    }
 }
 
 impl IntoResponse for TrustTaskOutcome {
@@ -472,6 +480,7 @@ pub(super) fn success_response<R: serde::Serialize>(
     TrustTaskOutcome {
         status: StatusCode::OK,
         body,
+        restart: false,
     }
 }
 
@@ -493,6 +502,7 @@ pub(super) fn silence() -> TrustTaskOutcome {
     TrustTaskOutcome {
         status: StatusCode::NO_CONTENT,
         body: Vec::new(),
+        restart: false,
     }
 }
 
@@ -620,7 +630,11 @@ pub(super) fn error_response(err_doc: ErrorResponse) -> TrustTaskOutcome {
     let status = StatusCode::from_u16(status_for_code(&err_doc.payload.code))
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let body = serde_json::to_vec(&err_doc).unwrap_or_else(|_| Vec::new());
-    TrustTaskOutcome { status, body }
+    TrustTaskOutcome {
+        status,
+        body,
+        restart: false,
+    }
 }
 
 /// The framework's error-document Type URI — the one `TrustTask::reject_with`

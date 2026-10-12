@@ -1358,6 +1358,35 @@ impl VtaClient {
         }
     }
 
+    /// Open a reusable trust-ping session to `mediator_did`, paired with the VTA
+    /// DID to probe, with this client's own mediator account provisioned.
+    ///
+    /// A VTA's `--setup-acl` opens the *VTA's* account. The pong travels back
+    /// forwarded, which a mediator that refuses forwarded delivery by default
+    /// drops until this client's own account accepts it — the same step
+    /// `pnm health` takes before its forwarded ping. Returned rather than
+    /// pinged here so a caller polling for readiness pays the session setup
+    /// once instead of out of every probe window.
+    #[cfg(feature = "session")]
+    pub async fn open_vta_ping_session(
+        &self,
+        mediator_did: &str,
+        client_name: &str,
+    ) -> Result<(crate::session::TrustPingSession, String), Box<dyn std::error::Error>> {
+        let identity = self
+            .identity
+            .as_ref()
+            .ok_or("client has no identity for trust-ping")?;
+        let session = crate::session::TrustPingSession::new(
+            &identity.client_did,
+            &identity.private_key_multibase,
+            mediator_did,
+        )
+        .await?;
+        session.provision_client_acl(client_name).await;
+        Ok((session, identity.vta_did.clone()))
+    }
+
     /// Human-readable identifier for the VTA this client talks to — the
     /// REST URL, or the VTA DID on a DIDComm client with no REST URL.
     ///

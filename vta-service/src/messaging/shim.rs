@@ -63,6 +63,7 @@ pub struct DIDCommResponse {
     pub type_: String,
     pub body: Value,
     pub thid: Option<String>,
+    pub restart: bool,
 }
 
 impl DIDCommResponse {
@@ -71,7 +72,13 @@ impl DIDCommResponse {
             type_: type_.into(),
             body,
             thid: None,
+            restart: false,
         }
+    }
+
+    pub fn with_restart_if(mut self, restart: bool) -> Self {
+        self.restart = restart;
+        self
     }
 
     /// A problem-report reply. Uses the same DIDComm v2 report-problem type URI

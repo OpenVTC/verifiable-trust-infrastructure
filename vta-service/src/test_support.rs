@@ -1536,7 +1536,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         jwt_keys: Some(jwt_keys.clone()),
         atm: transport.atm.or(opts.atm),
         tee: None,
-        restart_tx,
+        restart_gate: std::sync::Arc::new(crate::server::RestartGate::new(restart_tx)),
         #[cfg(feature = "rest")]
         metrics_handle: None,
     };

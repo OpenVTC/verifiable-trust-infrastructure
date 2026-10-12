@@ -25,6 +25,8 @@ use vta_sdk::protocol::{DisableDidcommRequest, EnableDidcommRequest, UpdateDidco
 
 use crate::display::{NAME_HEADER, NameBook, UNNAMED, book_from_acl, inline, shorten_did};
 
+const DIDCOMM_RESTART_WAIT_SECS: u64 = 300;
+
 // ── services list ──────────────────────────────────────────────────
 
 /// `pnm services list` — show current REST + DIDComm advertisements.
@@ -246,6 +248,8 @@ pub async fn cmd_services_didcomm_enable(
     setup_acl: bool,
     force: bool,
     handshake_timeout_secs: Option<u64>,
+    wait_secs: Option<u64>,
+    no_wait: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut req = EnableDidcommRequest::new(&mediator_did);
     req.setup_acl = setup_acl;
@@ -274,7 +278,92 @@ pub async fn cmd_services_didcomm_enable(
         println!("  Note: --force was set; mediator handshake steps 2-5 were bypassed.");
     }
     print_serverless_hint(resp.serverless, &resp.vta_did);
+    if resp.restarting {
+        if no_wait {
+            println!("  The VTA is restarting; readiness polling was disabled.");
+        } else {
+            wait_for_didcomm_restart(
+                client,
+                &mediator_did,
+                wait_secs.unwrap_or(DIDCOMM_RESTART_WAIT_SECS),
+            )
+            .await?;
+        }
+    }
     Ok(())
+}
+
+async fn wait_for_didcomm_restart(
+    client: &VtaClient,
+    mediator_did: &str,
+    wait_secs: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Duration;
+
+    // One session for the whole wait, as `pnm health` does. It opens this
+    // client's own mediator account once — `--setup-acl` opens the VTA's, and
+    // the pong comes back forwarded — and keeps the ~4s TDK/ATM/websocket setup
+    // out of every probe window.
+    let (session, vta_did) = client.open_vta_ping_session(mediator_did, "pnm").await?;
+    let probe_session = &session;
+    let probe_target = vta_did.as_str();
+
+    let result = wait_for_didcomm_restart_with_probe(
+        move |probe_window| async move {
+            tokio::time::timeout(probe_window, probe_session.ping(Some(probe_target)))
+                .await
+                .unwrap_or_else(|_| Err("trust-ping timed out".into()))
+        },
+        Duration::from_secs(wait_secs),
+        Duration::from_secs(10),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    session.shutdown().await;
+    result
+}
+
+async fn wait_for_didcomm_restart_with_probe<Probe, ProbeFuture>(
+    mut probe: Probe,
+    timeout: std::time::Duration,
+    probe_window: std::time::Duration,
+    retry_delay: std::time::Duration,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    Probe: FnMut(std::time::Duration) -> ProbeFuture,
+    ProbeFuture: std::future::Future<Output = Result<u128, Box<dyn std::error::Error>>>,
+{
+    use std::time::Instant;
+
+    let deadline = Instant::now() + timeout;
+    println!(
+        "  Waiting for the restarted DIDComm listener (up to {}s)...",
+        timeout.as_secs()
+    );
+
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        if let Ok(latency) = probe(probe_window.min(remaining)).await {
+            println!("  Trust-ping:     pong ({latency}ms)");
+            return Ok(());
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        tokio::time::sleep(retry_delay.min(remaining)).await;
+    }
+
+    Err(format!(
+        "timed out waiting for DIDComm readiness after {}s; the VTA's mediator self-DID readiness gate may still be waiting for the VTA DID to resolve, or the mediator may be dropping the pong because this client's own account refuses forwarded delivery",
+        timeout.as_secs()
+    )
+    .into())
 }
 
 pub async fn cmd_services_didcomm_update(
@@ -624,5 +713,144 @@ mod tests {
         );
         assert_eq!(webvh_log_url("did:key:z6Mk"), None);
         assert_eq!(webvh_log_url("did:webvh:QmScid"), None);
+    }
+
+    #[tokio::test]
+    async fn readiness_poll_retries_until_a_pong_arrives() {
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        let attempts = Arc::new(Mutex::new(0u32));
+        let attempts_for_probe = Arc::clone(&attempts);
+        let result = super::wait_for_didcomm_restart_with_probe(
+            move |_| {
+                let attempt = {
+                    let mut attempts = attempts_for_probe.lock().unwrap();
+                    *attempts += 1;
+                    *attempts
+                };
+                async move {
+                    if attempt < 3 {
+                        Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "not ready").into())
+                    } else {
+                        Ok(12)
+                    }
+                }
+            },
+            Duration::from_millis(100),
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(*attempts.lock().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn readiness_poll_names_the_gate_when_deadline_expires() {
+        use std::time::Duration;
+
+        let result = super::wait_for_didcomm_restart_with_probe(
+            |_| async {
+                Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "not ready").into())
+            },
+            Duration::from_millis(5),
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+        )
+        .await;
+
+        let error = result.expect_err("poll should time out").to_string();
+        assert!(error.contains("self-DID readiness gate"), "{error}");
+        // The other cause, and the one an operator cannot guess from the symptom.
+        assert!(error.contains("forwarded delivery"), "{error}");
+    }
+
+    /// A pong ends the wait. The retry delay is long enough that sleeping
+    /// before returning would stall this test rather than let it pass slowly.
+    #[tokio::test]
+    async fn readiness_poll_stops_after_the_first_pong() {
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+
+        let attempts = Arc::new(Mutex::new(0u32));
+        let counter = Arc::clone(&attempts);
+        let started = Instant::now();
+        let result = super::wait_for_didcomm_restart_with_probe(
+            move |_| {
+                *counter.lock().unwrap() += 1;
+                async { Ok::<u128, Box<dyn std::error::Error>>(7) }
+            },
+            Duration::from_secs(300),
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(*attempts.lock().unwrap(), 1);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a pong must return immediately, not after the retry delay: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// `--wait-secs` is the operator's deadline, so no single probe may be
+    /// handed more time than is left of it. Unclamped, the 10s window below
+    /// would overrun a 50ms budget by two orders of magnitude.
+    #[tokio::test]
+    async fn readiness_poll_never_hands_a_probe_more_time_than_remains() {
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        let windows = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&windows);
+        let budget = Duration::from_millis(50);
+
+        let result = super::wait_for_didcomm_restart_with_probe(
+            move |window| {
+                seen.lock().unwrap().push(window);
+                async { Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "not ready").into()) }
+            },
+            budget,
+            Duration::from_secs(10),
+            Duration::from_millis(1),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let windows = windows.lock().unwrap();
+        assert!(!windows.is_empty(), "the poll must probe at least once");
+        assert!(
+            windows.iter().all(|w| *w <= budget),
+            "a probe was given more than the {budget:?} budget: {windows:?}"
+        );
+    }
+
+    /// The gap between attempts is clamped the same way — an unclamped 10s
+    /// retry would leave the CLI sitting there long after the deadline passed.
+    #[tokio::test]
+    async fn readiness_poll_clamps_its_retry_delay_to_the_deadline() {
+        use std::time::{Duration, Instant};
+
+        let started = Instant::now();
+        let result = super::wait_for_didcomm_restart_with_probe(
+            |_| async {
+                Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "not ready").into())
+            },
+            Duration::from_millis(50),
+            Duration::from_millis(1),
+            Duration::from_secs(10),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the poll slept past its own deadline: {:?}",
+            started.elapsed()
+        );
     }
 }

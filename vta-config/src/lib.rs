@@ -963,6 +963,66 @@ impl AppConfig {
         Ok(())
     }
 
+    /// Re-read [`config_path`] for a soft restart, carrying forward the
+    /// effective values boot injects and deliberately never persists.
+    ///
+    /// **The carry-forward list below is the contract.** A new boot-time
+    /// mutation of `AppConfig` — the hardened / KMS `auth.jwt_signing_key`, a
+    /// TEE-generated `vta_did`, anything a future bootstrap derives — must be
+    /// added here, or a soft restart silently drops it and the next generation
+    /// comes up without an identity it had a moment earlier.
+    ///
+    /// An **attested** boot reloads the persisted effective configuration and
+    /// preserves only the boot-only values here. The restart orchestrator
+    /// captures the final digest after it applies runtime-state flags.
+    ///
+    /// [`config_path`]: Self::config_path
+    /// [`effective_config_digest`]: Self::effective_config_digest
+    pub fn reload_for_restart(&self) -> Result<Self, AppError> {
+        let mut reloaded = Self::load(Some(self.config_path.clone()))?;
+
+        // Hardened and TEE boot paths inject the signing key outside TOML; a
+        // persisted value must not replace that boot-only key. For ordinary
+        // deployments, preserve the prior fallback when TOML omits it.
+        if self.effective_config_digest.is_some()
+            || self.hardened.enabled
+            || reloaded.auth.jwt_signing_key.is_none()
+        {
+            reloaded.auth.jwt_signing_key = self.auth.jwt_signing_key.clone();
+        }
+        // An attested/generated identity is also boot-only. Ordinary VTA
+        // deployments retain the existing fallback when TOML omits it.
+        if self.effective_config_digest.is_some() || reloaded.vta_did.is_none() {
+            reloaded.vta_did = self.vta_did.clone();
+        }
+
+        if self.effective_config_digest.is_some() {
+            let current_view = self.compute_config_attestation_view()?;
+            let reloaded_view = reloaded.compute_config_attestation_view()?;
+            let mut current_value: serde_json::Value = serde_json::from_slice(&current_view)
+                .map_err(|e| AppError::Internal(format!("current config view failed: {e}")))?;
+            let mut reloaded_value: serde_json::Value = serde_json::from_slice(&reloaded_view)
+                .map_err(|e| AppError::Internal(format!("reloaded config view failed: {e}")))?;
+            for value in [&mut current_value, &mut reloaded_value] {
+                if let Some(object) = value.as_object_mut() {
+                    // Runtime service operations persist only these config fields.
+                    object.insert("messaging".into(), serde_json::Value::Null);
+                    object.insert("services".into(), serde_json::Value::Null);
+                }
+            }
+            if current_value != reloaded_value {
+                return Err(AppError::Config(
+                    "attested soft restart found non-runtime changes in config.toml; \
+                     only persisted service configuration may change without a new boot \
+                     attestation"
+                        .into(),
+                ));
+            }
+        }
+
+        Ok(reloaded)
+    }
+
     pub fn load(config_path: Option<PathBuf>) -> Result<Self, AppError> {
         let path = config_path
             .or_else(|| std::env::var("VTA_CONFIG_PATH").ok().map(PathBuf::from))
@@ -1536,6 +1596,119 @@ mod validate_tests {
         std::fs::write(&path, contents).expect("write config");
         let config = AppConfig::load(Some(path)).expect("load config");
         (config, dir)
+    }
+
+    /// The hardened / KMS boot writes the JWT signing key into memory only
+    /// (`main.rs`, `vta-enclave/src/main.rs`). A soft restart that re-read the
+    /// file would drop it and bring the next generation up with no ability to
+    /// issue tokens — every authenticated request 401s.
+    #[test]
+    fn reload_for_restart_carries_forward_the_injected_jwt_key() {
+        let (mut config, _dir) = load("vta_did = \"did:key:z6MkTest\"\n");
+        assert!(config.auth.jwt_signing_key.is_none());
+        config.auth.jwt_signing_key = Some("injected-at-boot".into());
+
+        let reloaded = config.reload_for_restart().expect("reload");
+        assert_eq!(
+            reloaded.auth.jwt_signing_key.as_deref(),
+            Some("injected-at-boot")
+        );
+    }
+
+    /// `tee::did_autogen` can mint the DID at boot without writing it back.
+    #[test]
+    fn reload_for_restart_carries_forward_an_injected_vta_did() {
+        let (mut config, _dir) = load("");
+        assert!(config.vta_did.is_none());
+        config.vta_did = Some("did:key:z6MkGenerated".into());
+
+        let reloaded = config.reload_for_restart().expect("reload");
+        assert_eq!(reloaded.vta_did.as_deref(), Some("did:key:z6MkGenerated"));
+    }
+
+    /// A value the operator has since written into the file wins over the
+    /// in-memory copy — carry-forward fills a gap, it does not pin.
+    #[test]
+    fn reload_for_restart_prefers_the_file_over_the_carried_value() {
+        let (mut config, _dir) = load("vta_did = \"did:key:z6MkFromFile\"\n");
+        config.vta_did = Some("did:key:z6MkInMemory".into());
+
+        let reloaded = config.reload_for_restart().expect("reload");
+        assert_eq!(reloaded.vta_did.as_deref(), Some("did:key:z6MkFromFile"));
+    }
+
+    /// The point of the reload: an edit made since boot takes effect.
+    #[test]
+    fn reload_for_restart_picks_up_an_edited_file() {
+        let (config, dir) = load("vta_did = \"did:key:z6MkTest\"\n");
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "vta_did = \"did:key:z6MkTest\"\n\
+             [messaging]\nmediator_did = \"did:web:new.example\"\nmediator_url = \"https://new.example\"\n",
+        )
+        .expect("rewrite config");
+
+        let reloaded = config.reload_for_restart().expect("reload");
+        assert_eq!(
+            reloaded.messaging.expect("messaging").mediator_did,
+            "did:web:new.example"
+        );
+    }
+
+    /// Runtime service operations persist authorized changes before requesting
+    /// a restart, so an attested generation must re-read them.
+    #[test]
+    fn reload_for_restart_reloads_persisted_changes_without_attesting() {
+        let (mut config, dir) = load("vta_did = \"did:key:z6MkTest\"\n");
+        config.auth.jwt_signing_key = Some("boot-injected-jwt".into());
+        config
+            .capture_effective_config_attestation()
+            .expect("capture");
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "vta_did = \"did:key:z6MkTest\"\n\
+             [messaging]\nmediator_did = \"did:web:new.example\"\nmediator_url = \"https://new.example\"\n",
+        )
+        .expect("rewrite config");
+
+        let reloaded = config.reload_for_restart().expect("reload");
+        assert_eq!(reloaded.vta_did.as_deref(), Some("did:key:z6MkTest"));
+        assert_eq!(
+            reloaded.auth.jwt_signing_key.as_deref(),
+            Some("boot-injected-jwt")
+        );
+        assert_eq!(
+            reloaded.messaging.expect("messaging").mediator_did,
+            "did:web:new.example"
+        );
+        assert_eq!(reloaded.effective_config_digest, None);
+        assert_eq!(reloaded.effective_config_view, None);
+    }
+
+    #[test]
+    fn reload_for_restart_rejects_unrelated_attested_changes() {
+        let (mut config, dir) = load("vta_did = \"did:key:z6MkTest\"\n");
+        config
+            .capture_effective_config_attestation()
+            .expect("capture");
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "vta_did = \"did:key:z6MkTest\"\npublic_url = \"https://changed.example\"\n",
+        )
+        .expect("rewrite config");
+
+        assert!(config.reload_for_restart().is_err());
+    }
+
+    /// A broken edit must surface as an error so the caller keeps the running
+    /// configuration, rather than half-applying or killing a live VTA.
+    #[test]
+    fn reload_for_restart_errors_on_a_malformed_file() {
+        let (config, dir) = load("vta_did = \"did:key:z6MkTest\"\n");
+        std::fs::write(dir.path().join("config.toml"), "this is not = = toml")
+            .expect("rewrite config");
+
+        assert!(config.reload_for_restart().is_err());
     }
 
     #[test]

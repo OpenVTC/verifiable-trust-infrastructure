@@ -694,6 +694,8 @@ mod tests {
             setup_acl: false,
             force: false,
             handshake_timeout: None,
+            wait_secs: None,
+            no_wait: false,
         });
         assert_eq!(
             pending_mediator_hint(&cmd, &vta_config(Some("did:web:old-mediator"))),
