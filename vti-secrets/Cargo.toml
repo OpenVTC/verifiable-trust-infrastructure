@@ -2,7 +2,7 @@
 name = "vti-secrets"
 description = "Pluggable secret-store backends + integration onboarding flow for Verifiable Trust Infrastructure"
 readme = "README.md"
-version = "0.15.1"
+version = "0.16.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -47,7 +47,7 @@ onboarding = [
 ]
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.42" }
+vti-common = { path = "../vti-common", version = "0.43" }
 serde = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }
