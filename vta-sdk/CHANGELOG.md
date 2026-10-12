@@ -2,6 +2,27 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.67.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.66.0...vta-sdk-v0.67.0) — 2026-10-12
+
+
+### Added
+
+- **services**: Complete DIDComm enable with a soft restart and a readiness wait ([#2045](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2045))
+
+* feat(services): complete DIDComm enable with a soft restart and a readiness wait
+
+  `services didcomm enable` published the DID document change but left the
+  VTA without a running messaging runtime until the next manual restart. The
+  operation now signals `ext["org.openvtc"].restarting` and performs a soft
+  restart after the reply reaches the transport send boundary, and `pnm`
+  waits for the restarted listener before returning.
+
+  Also fixes a TEE fleet image that could not boot REST-only, by removing the
+  baked `[messaging]` placeholder that pre-empted the tenant overlay's
+  "materialize messaging only when a mediator_did is supplied" branch.
+
+
+
 ## [0.66.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.65.1...vta-sdk-v0.66.0) — 2026-10-11
 
 

@@ -2,6 +2,59 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.59.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.58.0...vta-service-v0.59.0) — 2026-10-12
+
+
+### Added
+
+- **services**: Complete DIDComm enable with a soft restart and a readiness wait ([#2045](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2045))
+
+* feat(services): complete DIDComm enable with a soft restart and a readiness wait
+
+  `services didcomm enable` published the DID document change but left the
+  VTA without a running messaging runtime until the next manual restart. The
+  operation now signals `ext["org.openvtc"].restarting` and performs a soft
+  restart after the reply reaches the transport send boundary, and `pnm`
+  waits for the restarted listener before returning.
+
+  Also fixes a TEE fleet image that could not boot REST-only, by removing the
+  baked `[messaging]` placeholder that pre-empted the tenant overlay's
+  "materialize messaging only when a mediator_did is supplied" branch.
+
+
+
+### Build & CI
+
+- Trust-tasks-rs 0.30, affinidi-messaging-sdk 0.35 and affinidi-tdk 0.25 ([#2049](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2049))
+
+Moves the Trust Task stack to trust-tasks-rs 0.30 (capability-client,
+  https, didcomm, tsp and proof with it) and the Affinidi crates that move in
+  lockstep with it (affinidi-tdk-rs #940): affinidi-messaging-sdk 0.35,
+  affinidi-tdk 0.25, mediator-admin/tui 0.10 and test-mediator 0.21. One copy
+  of each resolves; trust-tasks-rs 0.28 no longer appears in the graph.
+
+  0.30 carries dtgwg-trust-tasks-tf #750, which makes the rooms/info and
+  rooms/usage proofs REQUIRED. The interim DISPATCHED_WITHOUT_PROOF entry for
+  rooms/info ([#2040](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2040)) and its skip in
+  every_rooms_task_declares_the_proof_its_arm_requires are removed: the
+  census now holds the VTC's rooms/info arm to the specification.
+
+
+
+### Security
+
+- **config**: Runtime config write-backs never write the boot-injected JWT key ([#2046](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2046))
+
+Every runtime operation that persists configuration — `config/patch`, audit
+  retention, `services {didcomm,webauthn} {enable,update,disable}` — wrote it
+  back by serialising the whole in-memory `AppConfig`. On a hardened or
+  KMS-backed VTA that includes `auth.jwt_signing_key`, which boot injects into
+  memory precisely so it never reaches `config.toml`; the first such operation
+  put it on disk. `VTA_AUTH_JWT_SIGNING_KEY` leaked the same way, replacing the
+  file's own key with the environment's.
+
+
+
 ## [0.58.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.57.0...vta-service-v0.58.0) — 2026-10-11
 
 
