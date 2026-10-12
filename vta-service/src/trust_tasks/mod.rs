@@ -293,11 +293,16 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     "https://trusttasks.org/spec/vault/unarchive/0.1",
     "https://trusttasks.org/spec/vault/restore/0.1",
     "https://trusttasks.org/spec/vault/purge/0.1",
-    //   The eight `vault/credentials/*` entries that sat here are gone: the
     //   family was specified upstream (trust-tasks-tf#338) and shipped in
     //   trust-tasks-rs 0.17.4, so it has a published schema, a conformance
     //   witness, and payload validation on the dispatch spine. Debt discharged
     //   by specification rather than by deletion.
+    // ─ keys/sign-jws/0.1 — a VTA-built compact JWS (a JWT) whose header is
+    //   `typ`-allow-listed, added here for the Agent Gateway signing
+    //   integration ahead of an upstream spec. Dispatched unvalidated like any
+    //   unknown-schema task; author the spec upstream and bump trust-tasks-rs
+    //   to discharge this entry.
+    "https://trusttasks.org/spec/keys/sign-jws/0.1",
 ];
 
 /// A dispatched handler's future, on the heap. See `dispatch_typed`.
@@ -2400,6 +2405,11 @@ dispatch_table! {
     // Matches the spec's declarations (none / none / actsAsSubject), as
     // `keys/sign` beside it does.
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_SSHSIG_0_1 => keys::handle_sign_sshsig
+        [ None None true ],
+    // The VTA builds the JWS signing input itself and constrains the header,
+    // so — like `keys/sign-sshsig` — it is not a general oracle (none / none /
+    // actsAsSubject).
+    vta_sdk::trust_tasks::TASK_KEYS_SIGN_JWS_0_1 => keys::handle_sign_jws
         [ None None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1 => keys::handle_derive_and_sign
         [ Mutating None true ],
@@ -6107,6 +6117,109 @@ mod response_coverage {
             json!({ "keyId": key_id, "payload": payload, "algorithm": "EdDSA" }),
         )
         .await;
+    }
+
+    /// `keys/sign-jws/0.1` builds a real compact JWS: the VTA assembles the
+    /// signing input, sets `alg` from the key, and the three parts round-trip.
+    #[tokio::test]
+    async fn keys_sign_jws_builds_a_compact_jwt() {
+        use base64::Engine as _;
+        let (state, _dir) = build_signing_test_app_state().await;
+        let key_id = a_key(&state, "coverage-sign-jws").await;
+
+        let p = ok(
+            &state,
+            t::TASK_KEYS_SIGN_JWS_0_1,
+            json!({
+                "keyId": key_id,
+                "header": { "typ": "JWT" },
+                "payload": { "sub": "urn:example:agent", "scope": "a b" },
+                "algorithm": "EdDSA",
+            }),
+        )
+        .await;
+
+        let jws = p["jws"].as_str().expect("a jws string");
+        let parts: Vec<&str> = jws.split('.').collect();
+        assert_eq!(parts.len(), 3, "compact JWS has three parts: {jws}");
+
+        let decode = |s: &str| {
+            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(s)
+                .expect("base64url part");
+            serde_json::from_slice::<Value>(&bytes).expect("json part")
+        };
+        let header = decode(parts[0]);
+        assert_eq!(header["typ"], "JWT");
+        assert_eq!(header["alg"], "EdDSA", "the VTA sets alg from the key");
+        let claims = decode(parts[1]);
+        assert_eq!(claims["sub"], "urn:example:agent");
+        assert!(!parts[2].is_empty(), "the signature part is present");
+    }
+
+    /// The wall-off: a `typ` that is not an allow-listed JWT profile — such as
+    /// a Verifiable Credential media type — is refused before anything is
+    /// signed, so the task can never be pointed at producing a credential.
+    #[tokio::test]
+    async fn keys_sign_jws_refuses_a_non_jwt_typ() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let key_id = a_key(&state, "coverage-sign-jws-typ").await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+
+        let body = signed_body(
+            t::TASK_KEYS_SIGN_JWS_0_1,
+            &vta_did,
+            json!({
+                "keyId": key_id,
+                "header": { "typ": "vc+ld+json" },
+                "payload": { "sub": "urn:example:agent" },
+                "algorithm": "EdDSA",
+            }),
+        );
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &crate::test_support::super_admin_claims(),
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        assert_eq!(
+            doc["payload"]["code"], "malformedRequest",
+            "a non-JWT typ must be refused: {doc}"
+        );
+    }
+
+    /// The payload must be a JWT claims set — a bare string (what the opaque
+    /// oracle takes) is refused here.
+    #[tokio::test]
+    async fn keys_sign_jws_refuses_a_non_object_payload() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let key_id = a_key(&state, "coverage-sign-jws-payload").await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+
+        let body = signed_body(
+            t::TASK_KEYS_SIGN_JWS_0_1,
+            &vta_did,
+            json!({
+                "keyId": key_id,
+                "header": { "typ": "JWT" },
+                "payload": "not-a-claims-set",
+                "algorithm": "EdDSA",
+            }),
+        );
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &crate::test_support::super_admin_claims(),
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        assert_eq!(
+            doc["payload"]["code"], "malformedRequest",
+            "a non-object payload must be refused: {doc}"
+        );
     }
 
     /// An internal key is actually internal.

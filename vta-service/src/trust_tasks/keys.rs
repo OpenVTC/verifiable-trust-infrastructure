@@ -20,6 +20,9 @@ use vta_sdk::protocols::key_management::revoke::RevokeKeyBody;
 use vta_sdk::protocols::key_management::secret::GetKeySecretBody;
 use vta_sdk::protocols::key_management::sign::SignRequestBody;
 use vta_sdk::protocols::key_management::sign::SigningDomain;
+use vta_sdk::protocols::key_management::sign_jws::{
+    SignJwsRequestBody, SignJwsResultBody, finalize_protected_header,
+};
 
 use crate::auth::AuthClaims;
 use crate::operations;
@@ -340,6 +343,90 @@ pub(super) async fn handle_sign(
     .await
     {
         Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// Handler for `keys/sign-jws/0.1` — a compact JWS (a JWT) built by the VTA.
+/// Application-or-higher (write).
+///
+/// Not a general oracle: the VTA assembles the
+/// `b64url(header).b64url(payload)` signing input itself, the header's `typ`
+/// must be allow-listed and its `alg` is set by the VTA from the key, so the
+/// signature verifies only as an allow-listed JWT — never as a credential
+/// proof. Signed under [`SigningDomain::ProtocolDefined`], because the bytes
+/// were built here and already mean a JWS; framing them again would produce a
+/// JWS no verifier would accept.
+pub(super) async fn handle_sign_jws(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(e) = auth.require_write() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: SignJwsRequestBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if !req.payload.is_object() {
+        return reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: "payload must be a JSON object (a JWT claims set)".to_owned(),
+            },
+        );
+    }
+    let header = match finalize_protected_header(&req.header, &req.algorithm) {
+        Ok(h) => h,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            );
+        }
+    };
+    let (header_bytes, payload_bytes) = match (
+        serde_json::to_vec(&Value::Object(header)),
+        serde_json::to_vec(&req.payload),
+    ) {
+        (Ok(h), Ok(p)) => (h, p),
+        _ => {
+            return reject_with(
+                &doc,
+                RejectReason::InternalError {
+                    reason: "failed to serialize JWS header/payload".to_owned(),
+                },
+            );
+        }
+    };
+    let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+    let signing_input = format!("{}.{}", b64(&header_bytes), b64(&payload_bytes));
+    match operations::keys::sign_payload(
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.internal_ks,
+        &state.contexts_ks,
+        &state.acl_ks,
+        &state.seed_store,
+        &state.audit_sink,
+        auth,
+        &req.key_id,
+        signing_input.as_bytes(),
+        &req.algorithm,
+        // The VTA built these bytes and they already mean a JWS: sign them as
+        // presented, not under the opaque domain, so the JWS verifies.
+        SigningDomain::ProtocolDefined,
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(body) => {
+            let jws = format!("{signing_input}.{}", body.signature);
+            success_response(&doc, SignJwsResultBody { jws })
+        }
         Err(e) => app_error_to_reject(&doc, e),
     }
 }
