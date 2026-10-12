@@ -343,8 +343,7 @@ pub async fn update_config(
                 applied.push(def.key.to_string());
             }
         }
-        let contents = toml::to_string_pretty(&*config)
-            .map_err(|e| AppError::Config(format!("failed to serialize config: {e}")))?;
+        let contents = config.to_runtime_toml()?;
         let mut changed: Vec<String> = writes
             .iter()
             .map(|(def, _)| format!("{}={}", def.key, value_of(&config, def.key)))

@@ -426,8 +426,7 @@ pub async fn update_retention(
         let mut config = config.write().await;
         config.audit.retention_days = retention_days;
         let result = RetentionResultBody { retention_days };
-        let contents = toml::to_string_pretty(&*config)
-            .map_err(|e| AppError::Internal(format!("failed to serialize config: {e}")))?;
+        let contents = config.to_runtime_toml()?;
         let path = config.config_path.clone();
         (result, contents, path)
     };

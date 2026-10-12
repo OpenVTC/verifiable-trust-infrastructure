@@ -1442,6 +1442,44 @@ impl AppConfig {
         Ok(())
     }
 
+    /// Serialise this configuration for a **runtime** write-back to
+    /// [`config_path`] — a service enable, a `config/patch`, a retention
+    /// change — keeping `[auth] jwt_signing_key` exactly as the file has it.
+    ///
+    /// The in-memory key is not always the file's. Hardened and KMS boots
+    /// inject one that must never reach disk ([`HardenedConfig::enabled`]),
+    /// and `VTA_AUTH_JWT_SIGNING_KEY` overrides whatever the file holds.
+    /// Serialising the whole running config, as every runtime writer did,
+    /// wrote that key into `config.toml`. No runtime operation changes the
+    /// key, so the file's own value is always the right one to keep; one
+    /// that does (setup, a restore onto a plain VTA) uses [`Self::save`].
+    ///
+    /// A file that does not parse is refused rather than overwritten.
+    ///
+    /// [`config_path`]: Self::config_path
+    pub fn to_runtime_toml(&self) -> Result<String, AppError> {
+        let on_disk = match std::fs::read_to_string(&self.config_path) {
+            Ok(contents) => contents
+                .parse::<toml::Table>()
+                .map_err(|e| {
+                    AppError::Config(format!(
+                        "{} does not parse; not overwriting it: {e}",
+                        self.config_path.display()
+                    ))
+                })?
+                .get("auth")
+                .and_then(|auth| auth.get("jwt_signing_key"))
+                .and_then(|key| key.as_str())
+                .map(str::to_owned),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(AppError::Io(e)),
+        };
+        let mut persisted = self.clone();
+        persisted.auth.jwt_signing_key = on_disk;
+        toml::to_string_pretty(&persisted)
+            .map_err(|e| AppError::Config(format!("failed to serialize config: {e}")))
+    }
+
     pub fn save(&self) -> Result<(), AppError> {
         let contents = toml::to_string_pretty(self)
             .map_err(|e| AppError::Config(format!("failed to serialize config: {e}")))?;
@@ -1702,6 +1740,41 @@ mod validate_tests {
             .expect("rewrite config");
 
         assert!(config.reload_for_restart().is_err());
+    }
+
+    /// A hardened / KMS boot injects the JWT key into memory only. A runtime
+    /// write-back (service enable, `config/patch`) must not carry it to disk.
+    #[test]
+    fn runtime_toml_never_writes_an_injected_jwt_key() {
+        let (mut config, _dir) = load("[hardened]\nenabled = true\n");
+        config.auth.jwt_signing_key = Some("injected-at-boot".into());
+        config.vta_name = Some("patched".into());
+
+        let written = config.to_runtime_toml().expect("serialise");
+        assert!(!written.contains("injected-at-boot"), "{written}");
+        assert!(
+            written.contains("patched"),
+            "the runtime change itself is written"
+        );
+    }
+
+    /// `VTA_AUTH_JWT_SIGNING_KEY` overrides the file in memory; the file keeps
+    /// the key it had.
+    #[test]
+    fn runtime_toml_keeps_the_files_own_jwt_key() {
+        let (mut config, _dir) = load("[auth]\njwt_signing_key = \"from-file\"\n");
+        config.auth.jwt_signing_key = Some("from-env".into());
+
+        let written = config.to_runtime_toml().expect("serialise");
+        assert!(written.contains("from-file"), "{written}");
+        assert!(!written.contains("from-env"), "{written}");
+    }
+
+    #[test]
+    fn runtime_toml_refuses_to_overwrite_a_file_that_does_not_parse() {
+        let (config, dir) = load("");
+        std::fs::write(dir.path().join("config.toml"), "this is not = = toml").expect("write");
+        assert!(config.to_runtime_toml().is_err());
     }
 
     #[test]

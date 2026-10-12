@@ -223,7 +223,8 @@ async fn persist_webauthn_disabled(
     let (contents, path) = {
         let mut cfg = config.write().await;
         cfg.services.webauthn = false;
-        let contents = toml::to_string_pretty(&*cfg)
+        let contents = cfg
+            .to_runtime_toml()
             .map_err(|e| DisableWebauthnError::ConfigPersistence(e.to_string()))?;
         let path = cfg.config_path.clone();
         (contents, path)
