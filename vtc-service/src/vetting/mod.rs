@@ -142,6 +142,9 @@ pub const HIDDEN_NO_PROOF: &str = "no-proof";
 /// The criterion counts vetting from a hidden-vetting proof, and this build does not verify one.
 pub const HIDDEN_UNSUPPORTED: &str = "unsupported";
 
+/// A named vetting statement presented under a criterion that counts hidden vetting only.
+pub const NAMED_ON_HIDDEN: &str = "named-statement-on-hidden-criterion";
+
 /// What the host established about the vetting evidence of one join request.
 /// Every member is a host verdict; policy reads it and decides.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -280,6 +283,15 @@ pub async fn vetting_facts(
     {
         return Ok(Some(facts));
     }
+    // A criterion that publishes hidden-vetting parameters counts vetting from a hidden-vetting
+    // proof and nothing else: never mix named and hidden vetting in one criterion
+    // (`vetting-hidden-vetters-pcs.md` §12.1). A vetter who gave the applicant both a named
+    // statement and a hidden attestation would count twice, and the community cannot tell the
+    // two are one person. Reaching here means no proof was counted — the submission carried
+    // none, or this build cannot read one — so its named statements are recorded, never counted.
+    if selected.hidden_vetting.is_some() {
+        return Ok(Some(hidden_without_proof(applicant_did, selected, vp, now)));
+    }
     let resolver = state.trust_task_vm_resolver();
     // Fail closed: a statement counts only under a predicate this community
     // registered (vtc/endorsement-types/register/0.1).
@@ -410,28 +422,7 @@ pub async fn vetting_facts(
         }
     }
 
-    let mut needs: Vec<String> = evaluation.needs.iter().map(|n| n.to_wire()).collect();
-    // A criterion that counts vetting from a hidden-vetting proof reaches the named count only
-    // when the submission carried no proof (or this build cannot read one). Its applicant was
-    // never going to present named statements, so "one more statement" is the wrong thing to
-    // tell them — and the operator should see that no proof arrived, not infer it from silence.
-    if selected.hidden_vetting.is_some() && !evaluation.satisfied() {
-        let reason = if cfg!(feature = "vetting-pcs") {
-            HIDDEN_NO_PROOF
-        } else {
-            HIDDEN_UNSUPPORTED
-        };
-        tracing::info!(
-            applicant = %applicant_did,
-            criterion = %selected.criterion_id,
-            digest = %selected.digest,
-            reason,
-            named_statements = statements.len(),
-            "criterion counts hidden vetting, but no hidden-vetting proof was counted for this \
-             submission"
-        );
-        needs.push(format!("{NEED_HIDDEN_PREFIX}{reason}"));
-    }
+    let needs: Vec<String> = evaluation.needs.iter().map(|n| n.to_wire()).collect();
 
     Ok(Some(VettingFacts {
         criterion_id: selected.criterion_id,
@@ -453,6 +444,67 @@ pub async fn vetting_facts(
         satisfied: evaluation.satisfied(),
         needs,
     }))
+}
+
+/// The facts for a submission under a hidden-vetting criterion that carried no countable proof.
+///
+/// Never satisfied. Each named statement the presentation carried is recorded as not counted,
+/// unverified, under [`NAMED_ON_HIDDEN`], so the operator sees what arrived and why it was
+/// refused; the applicant is told the one thing that would count — a proof — rather than "one
+/// more statement", which on this criterion never would.
+fn hidden_without_proof(
+    applicant_did: &str,
+    selected: Selected,
+    vp: &JsonValue,
+    now: DateTime<Utc>,
+) -> VettingFacts {
+    let reason = if cfg!(feature = "vetting-pcs") {
+        HIDDEN_NO_PROOF
+    } else {
+        HIDDEN_UNSUPPORTED
+    };
+    let statements: Vec<VettingStatementFact> =
+        vetting_credentials(vp, &selected.requirements.statement_type)
+            .map(|vc| VettingStatementFact {
+                id: vc.get("id").and_then(JsonValue::as_str).map(str::to_string),
+                issuer: issuer_of(vc),
+                verified: false,
+                eligible: false,
+                revoked: false,
+                method: None,
+                declared_relationship: None,
+                counted: false,
+                failures: vec![NAMED_ON_HIDDEN.to_string()],
+            })
+            .collect();
+    tracing::info!(
+        applicant = %applicant_did,
+        criterion = %selected.criterion_id,
+        digest = %selected.digest,
+        reason,
+        named_statements_refused = statements.len(),
+        "criterion counts hidden vetting only, and no hidden-vetting proof was counted for this \
+         submission"
+    );
+    // Nothing counted: the count's own verdict on the empty set, so the consistency members read
+    // as any other unmet criterion's do.
+    let evaluation = evaluate(&selected.requirements, &[], now);
+    VettingFacts {
+        criterion_id: selected.criterion_id,
+        requirements_digest: selected.digest,
+        applicant_digest_matches: selected.applicant_digest_matches,
+        statements,
+        distinct_counted_vetters: 0,
+        by_method: BTreeMap::new(),
+        commitments_consistent: evaluation.commitments_consistent,
+        independence_ok: evaluation.independence_ok,
+        invitation_required: matches!(
+            selected.requirements.invitation,
+            Some(VettingRequirementsInvitation::Required)
+        ),
+        satisfied: false,
+        needs: vec![format!("{NEED_HIDDEN_PREFIX}{reason}")],
+    }
 }
 
 /// Why a hidden-vetting proof's attestations did not count, as the `needs` codes an applicant
@@ -483,8 +535,8 @@ fn hidden_reasons(statements: &[VettingStatementFact]) -> Vec<String> {
 /// The hidden-vetter path (development branch `zkp-pcs`).
 ///
 /// `Ok(None)` when this criterion publishes no anonymity parameters, or when the submission
-/// carries no proof — which is every named-path submission, including one to a community that
-/// runs both.
+/// carries no proof. The caller then refuses to count named statements under a hidden
+/// criterion ([`hidden_without_proof`]): a criterion is named or hidden, never both.
 #[cfg(feature = "vetting-pcs")]
 async fn hidden_facts(
     state: &AppState,
@@ -607,8 +659,7 @@ struct Selected {
     requirements: VettingRequirements,
     digest: String,
     applicant_digest_matches: bool,
-    /// Read only by the hidden-vetter path.
-    #[cfg_attr(not(feature = "vetting-pcs"), allow(dead_code))]
+    /// Set: the criterion counts vetting from a hidden-vetting proof only.
     hidden_vetting: Option<JsonValue>,
 }
 

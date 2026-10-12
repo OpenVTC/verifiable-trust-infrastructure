@@ -2188,6 +2188,11 @@ async fn seed_member(fix: &Fixture, did: &str) {
 /// the community's only way in, so a submission naming no criterion is decided
 /// under it.
 async fn store_vetting_criterion(fix: &Fixture) {
+    store_vetting_criterion_with(fix, None).await;
+}
+
+/// As [`store_vetting_criterion`], publishing `hidden_vetting` parameters.
+async fn store_vetting_criterion_with(fix: &Fixture, hidden_vetting: Option<Value>) {
     use vtc_service::schemas::accepts::{AcceptsCriterion, store_accepts};
     clear_criteria(fix).await;
     store_accepts(
@@ -2200,7 +2205,7 @@ async fn store_vetting_criterion(fix: &Fixture) {
             position: 0,
             query: None,
             description: Some("Two vetters".into()),
-            hidden_vetting: None,
+            hidden_vetting,
             vetting: Some(
                 serde_json::from_value(json!({
                     "version": "0.1",
@@ -2310,6 +2315,66 @@ async fn vetted_applicant_with_two_eligible_vetters_is_admitted() {
             .unwrap()
             .is_some(),
         "an allowed vetted join admits the applicant"
+    );
+}
+
+/// A criterion that publishes hidden-vetting parameters counts vetting from a hidden-vetting
+/// proof only (`vetting-hidden-vetters-pcs.md` §12.1: a criterion is named or hidden, never
+/// both). The same two statements that admit under the named criterion
+/// ([`vetted_applicant_with_two_eligible_vetters_is_admitted`]) admit nobody here, and the
+/// applicant is told a proof is what is missing.
+#[tokio::test]
+async fn named_statements_never_satisfy_a_hidden_vetting_criterion() {
+    let fix = build_fixture().await;
+    // Parameters a hidden community publishes. The keys are never read: a submission with no
+    // proof is refused before anything is verified against them.
+    store_vetting_criterion_with(
+        &fix,
+        Some(json!({
+            "suite": "ps-ddh-bls12381",
+            "hvk": "zUnreadHvk",
+            "tvk": "zUnreadTvk",
+            "livePeriods": ["2026-10"],
+            "liveTokenLabels": ["token/2026-10"],
+        })),
+    )
+    .await;
+    let (applicant, _) = did_key_secret(MEMBER_SEED);
+    let (carol, carol_key) = did_key_secret([0x11; 32]);
+    let (dave, dave_key) = did_key_secret([0x22; 32]);
+    seed_vetter(&fix, &carol).await;
+    seed_vetter(&fix, &dave).await;
+
+    let vp = vetting_vp(
+        &applicant,
+        vec![
+            vetting_statement(&carol_key, &applicant, 1).await,
+            vetting_statement(&dave_key, &applicant, 2).await,
+        ],
+    );
+    let (_did, doc) = submit_doc(&vp).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(verdict_effect(&body), "requestMore", "got {body}");
+    let reason = if cfg!(feature = "vetting-pcs") {
+        vtc_service::vetting::HIDDEN_NO_PROOF
+    } else {
+        vtc_service::vetting::HIDDEN_UNSUPPORTED
+    };
+    assert_eq!(
+        body.pointer("/payload/verdict/with/needs"),
+        Some(&json!([format!(
+            "{}{reason}",
+            vtc_service::vetting::NEED_HIDDEN_PREFIX
+        )])),
+        "a hidden criterion asks for a proof, never for named statements: {body}"
+    );
+    assert!(
+        get_member(&fix.members_ks, &applicant)
+            .await
+            .unwrap()
+            .is_none(),
+        "named statements do not admit under a hidden criterion"
     );
 }
 

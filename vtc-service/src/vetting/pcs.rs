@@ -474,8 +474,9 @@ impl std::fmt::Display for DecideError {
 
 /// Verify the `hiddenVetting` member of a submission's `extensions` and count it.
 ///
-/// `Ok(None)` when the member is absent: that is every submission of a community that does not
-/// run hidden mode, and every named-path submission in one that does.
+/// `Ok(None)` when the member is absent. Under a hidden criterion that is a submission with no
+/// proof, which the caller refuses rather than counting its named statements
+/// (`vetting::hidden_without_proof`).
 pub async fn decide(
     state: &AppState,
     community_did: &str,
