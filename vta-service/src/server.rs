@@ -1678,12 +1678,12 @@ pub async fn run(
         // ── Soft restart: reload config and re-derive keys ───────
         info!("soft restart: re-initializing services");
 
-        // Without this the next generation re-reads the same stale local, so a
-        // `services {kind} enable` that just flipped fjall is silently ignored
-        // and the restart accomplishes nothing. Every failure path keeps the
-        // running configuration: an edited `config.toml` must not be able to
-        // kill a VTA that is already up.
-        match reload_config_for_restart(&config, &boot_service_state_ks).await {
+        // Read the config the generation actually ran with — the shared copy
+        // every runtime operation mutates, not `run()`'s local, which was
+        // cloned into `app_state` at boot and never sees those writes. Every
+        // failure path keeps the running configuration: an edited
+        // `config.toml` must not be able to kill a VTA that is already up.
+        match reload_config_for_restart(&app_state.config, &boot_service_state_ks).await {
             Ok(reloaded) => config = reloaded,
             Err(e) => {
                 warn!(error = %e, "soft restart kept the running configuration")
@@ -1692,8 +1692,14 @@ pub async fn run(
     }
 }
 
-/// Re-read `config.toml` for the next generation and re-apply the authoritative
-/// service enablement over it.
+/// The configuration the next generation runs with, over the authoritative
+/// service enablement.
+///
+/// Takes the **shared** handle, not an `AppConfig`: `run()` holds a detached
+/// clone of the boot config, and a snapshot of it looks enough like the running
+/// configuration to pass for it. `services didcomm enable` persists the
+/// mediator to the shared copy, so a restart that read the local one brought
+/// the next generation up with DIDComm enabled and no mediator.
 ///
 /// Enablement comes from fjall, not the file: `pnm services {kind}
 /// {enable,disable}` writes runtime state, and the `[services]` block is legacy
@@ -1701,9 +1707,11 @@ pub async fn run(
 /// services boot mirrors keeps the two paths from disagreeing about what a
 /// generation starts with.
 async fn reload_config_for_restart(
-    current: &AppConfig,
+    current: &Arc<RwLock<AppConfig>>,
     #[cfg_attr(not(feature = "webvh"), allow(unused_variables))] service_state_ks: &KeyspaceHandle,
 ) -> Result<AppConfig, AppError> {
+    let current = current.read().await.clone();
+
     #[cfg_attr(not(feature = "webvh"), allow(unused_mut))]
     let mut reloaded = current.reload_for_restart()?;
 
@@ -3192,15 +3200,64 @@ mod tests {
             .capture_effective_config_attestation()
             .expect("capture");
 
-        let next = reload_config_for_restart(&current, &service_state_ks)
+        let next = reload_config_for_restart(&Arc::new(RwLock::new(current)), &service_state_ks)
             .await
             .expect("reload");
         assert!(next.effective_config_digest.is_some());
         assert!(next.effective_config_view.is_some());
-        let again = reload_config_for_restart(&next, &service_state_ks)
+        let again = reload_config_for_restart(&Arc::new(RwLock::new(next)), &service_state_ks)
             .await
             .expect("second reload");
         assert!(again.effective_config_digest.is_some());
+    }
+
+    /// The restart must read the config the generation ran with, not `run()`'s
+    /// detached boot clone: `services didcomm enable` persists the mediator to
+    /// the shared copy only, and a restart that missed it brought the next
+    /// generation up with DIDComm enabled and no mediator to connect to.
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn soft_restart_keeps_a_mediator_enabled_at_runtime() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("store open");
+        let service_state_ks = store
+            .keyspace(crate::keyspaces::SERVICE_STATE)
+            .expect("service state keyspace");
+        crate::operations::protocol::runtime_state::set_didcomm_enabled(&service_state_ks, true)
+            .await
+            .expect("didcomm on");
+
+        // Attested, so the reload takes the "running configuration" path and
+        // never consults the file — exactly where a stale snapshot is invisible.
+        let mut boot: AppConfig = toml::from_str("").expect("default config");
+        boot.capture_effective_config_attestation()
+            .expect("capture");
+        let shared = Arc::new(RwLock::new(boot));
+
+        // What `enable_didcomm` persists: the shared copy, not `run()`'s local.
+        shared.write().await.messaging = Some(vti_common::config::MessagingConfig {
+            mediator_did: "did:web:mediator.test".into(),
+            mediator_url: "wss://mediator.test/ws".into(),
+            mediator_host: None,
+            setup_acl: true,
+            drain_inbox_on_start: false,
+        });
+
+        let next = reload_config_for_restart(&shared, &service_state_ks)
+            .await
+            .expect("reload");
+
+        assert!(
+            next.services.didcomm,
+            "fjall is authoritative for enablement"
+        );
+        let messaging = next
+            .messaging
+            .expect("the next generation must keep the mediator enabled at runtime");
+        assert_eq!(messaging.mediator_did, "did:web:mediator.test");
     }
 
     #[cfg(feature = "webvh")]
