@@ -263,6 +263,26 @@ pub enum Capability {
     /// often. Derived by the roles that already hold [`Capability::Sign`],
     /// because the binding, not the role, is what bounds the grant.
     ExternalAuthUse,
+    /// Acting as the principal's **vetter** under hidden vetting — the vetter
+    /// tasks of `vta/pcs/*` (enrolment, the token drip, attesting): the VTA runs
+    /// the PCS engine and the caller carries its messages.
+    ///
+    /// Registered upstream as `pcsVetter`. Deliberately **not**
+    /// [`Capability::Sign`] and not conferred by it (VTI-VTA-007): these tasks
+    /// produce PCS artefacts and nothing else, so a caller that may drive a
+    /// vetter's drip is not thereby a caller that may sign as the vetter. An
+    /// attestation is the vetter's word that a person was checked, so it is
+    /// derived only by the roles that act as the principal — [`Role::Admin`]
+    /// and [`Role::Initiator`] — and never by [`Role::Application`]: an agent
+    /// vets on the principal's behalf only where it is granted this by name.
+    PcsVetter,
+    /// Acting as the principal's **applicant** under hidden vetting — the
+    /// applicant tasks of `vta/pcs/*` (an application's key, taking in
+    /// attestations, the proof a join submission carries).
+    ///
+    /// Registered upstream as `pcsApplicant`. Not [`Capability::Sign`], for the
+    /// same reason as [`Capability::PcsVetter`], and derived by the same roles.
+    PcsApplicant,
 }
 
 /// Capabilities that no role derives, and that an entry therefore holds only
@@ -396,6 +416,8 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::KeyExport,
             Capability::ExternalAccountsManage,
             Capability::ExternalAuthUse,
+            Capability::PcsVetter,
+            Capability::PcsApplicant,
         ],
         Role::Initiator => vec![
             Capability::VaultRead,
@@ -413,6 +435,8 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::SignTrustTask,
             Capability::KeyMint,
             Capability::ExternalAuthUse,
+            Capability::PcsVetter,
+            Capability::PcsApplicant,
         ],
         // `application` is the role a memory agent runs as — `vta-agent-memory`
         // grants exactly it, deliberately, so the memory service is not the
@@ -1841,6 +1865,30 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Capability::ExternalAuthUse).unwrap(),
             "external-auth-use"
+        );
+    }
+
+    /// The hidden-vetting engine capabilities are the principal's to exercise:
+    /// derived by the roles that act as the principal, never by `application`
+    /// (an agent vets for the principal only when granted by name), and never
+    /// implied by `sign` (VTI-VTA-007).
+    #[test]
+    fn pcs_capabilities_are_the_principals_and_not_sign() {
+        for cap in [Capability::PcsVetter, Capability::PcsApplicant] {
+            assert!(role_has_capability(&Role::Admin, cap));
+            assert!(role_has_capability(&Role::Initiator, cap));
+            assert!(!role_has_capability(&Role::Application, cap));
+            assert!(!role_has_capability(&Role::Reader, cap));
+            assert!(!role_has_capability(&Role::Monitor, cap));
+            assert!(!is_additive(cap));
+        }
+        assert_eq!(
+            serde_json::to_value(Capability::PcsVetter).unwrap(),
+            "pcs-vetter"
+        );
+        assert_eq!(
+            serde_json::to_value(Capability::PcsApplicant).unwrap(),
+            "pcs-applicant"
         );
     }
 

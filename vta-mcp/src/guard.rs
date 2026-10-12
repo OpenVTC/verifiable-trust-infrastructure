@@ -322,6 +322,12 @@ const DESTRUCTIVE_VERBS: &[&str] = &[
     "initiate-import",
     "finalize-import",
     "reload-services",
+    // `vta/pcs/attest`: spends an attestation token for good and is the
+    // vetter's word that a person was checked — the act a host must confirm.
+    "attest",
+    // `vta/pcs/tokens/abandon`: discards a draw's serials, so an answer the
+    // community sends later can never be taken.
+    "abandon",
 ];
 
 /// The slug of a Trust Task URI — the part after [`SPEC_PREFIX`], with the
@@ -647,6 +653,16 @@ mod tests {
         // permit it. Nothing leaves the agent, which is why it stops here and
         // does not join `present` among the sensitive slugs.
         "preview",
+        // `vta/pcs/*` (the hidden-vetting engine): each stores engine state —
+        // an attestation kept, an enrolment or a draw in flight, tokens or a
+        // class credential taken in — and none removes anything. `prove`
+        // stores nothing, but it exercises the applicant's key to build the
+        // proof a join is decided on, so `--read-only` must not permit it.
+        "verify-attestation",
+        "prove",
+        "root-request",
+        "root-accept",
+        "accept",
         "create",
         "update",
         "update-did",

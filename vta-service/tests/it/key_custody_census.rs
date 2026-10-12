@@ -42,8 +42,8 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     ),
     (
         "vta-keys/src/custody.rs",
-        2,
-        "the custody door: loads the seed for an authorized record, holds the root privately",
+        4,
+        "the custody doors: load the seed for an authorized record (holding the root privately), and for an authorized PCS member key (returning only its domain-separated seed)",
     ),
     (
         "vta-service/src/operations/key_custody.rs",
@@ -142,6 +142,11 @@ const ALLOWED: &[(&str, usize, &str)] = &[
         "vta-external/src/store.rs",
         2,
         "external-account secrets: the seed feeds only the imported-secret KEK (HKDF, no BIP-32 path), wrapping on set and unwrapping for one presign or probe; gated by external-accounts-manage / a binding",
+    ),
+    (
+        "vta-service/src/operations/pcs.rs",
+        2,
+        "PCS engine state: the seed feeds only the imported-secret KEK (HKDF, no BIP-32 path) that wraps and unwraps an engine's credentials, tokens and attestations; member keys come through key_custody::derive_pcs_member_seed; gated by pcs-vetter / pcs-applicant in the engine's context",
     ),
 ];
 

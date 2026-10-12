@@ -577,6 +577,62 @@ fn external_record() -> vta_external::model::AccountRecord {
     }
 }
 
+// ─── vta/pcs fixtures ────────────────────────────────────────────────────
+
+const PCS_COMMUNITY: &str = "did:webvh:QmCommunity:vtc.example.org";
+/// A multibase base58btc placeholder (no `0`, `O`, `I` or `l`).
+const PCS_B58: &str = "z3ZeMb8yW1fRq2Rr5b6tHn7Kx9Lp2Vd";
+/// An `idBinding`: lowercase hex of a SHA-256.
+const PCS_BINDING: &str = "4f9b2c7e1a0d3e8f6b5c4a39281706f5e4d3c2b1a09f8e7d6c5b4a3928170615";
+
+fn pcs_params() -> Value {
+    json!({
+        "suite": "ps-ddh-bls12381", "helperKey": PCS_B58, "tokenKey": PCS_B58,
+        "vetterLabels": ["vetter/2026-10"], "tokenLabels": ["token/2026-10"],
+        "dripPerTick": 3, "tickLength": "P3D", "events": [],
+    })
+}
+
+/// Statement metadata; `with_token` adds the members the engine fills from the token it spends.
+fn pcs_meta(with_token: bool) -> Value {
+    let mut m = json!({
+        "community": PCS_COMMUNITY, "requirementsDigest": PCS_B58, "method": "inPerson",
+        "claimsVerified": ["name.legal"], "livenessConfirmed": true, "declaredRelationship": "none",
+        "identityCommitment": PCS_B58, "cardDigestMultibase": PCS_B58,
+        "validFrom": "2026-10-12", "validUntil": "2027-01-10",
+    });
+    if with_token {
+        m["tokenLabel"] = json!("token/2026-10");
+        m["tokenSerial"] = json!(PCS_B58);
+    }
+    m
+}
+
+fn pcs_token() -> Value {
+    json!({ "label": "token/2026-10", "serial": PCS_B58, "shown": PCS_B58 })
+}
+
+fn pcs_attestation() -> Value {
+    json!({ "suite": "ps-ddh-bls12381", "attestation": PCS_B58, "meta": pcs_meta(true), "token": pcs_token() })
+}
+
+fn pcs_application() -> Value {
+    json!({
+        "applicationId": "app-1", "contextId": "personal", "community": PCS_COMMUNITY,
+        "joinDid": SUBJECT, "suite": "ps-ddh-bls12381", "id": PCS_B58,
+        "attestations": [pcs_meta(true)], "createdAt": TS,
+    })
+}
+
+fn pcs_vetter() -> Value {
+    json!({
+        "contextId": "personal", "community": PCS_COMMUNITY, "memberDid": SUBJECT,
+        "suite": "ps-ddh-bls12381", "id": PCS_B58, "enrolledLabels": ["vetter/2026-10"],
+        "pendingLabels": [], "tokensFree": 3, "tokensHeld": 3,
+        "drawsInFlight": [{ "label": "token/2026-10", "tick": 4 }], "attested": 1,
+    })
+}
+
 /// The account as the slice renders it: `AccountRecord::to_wire`, with the
 /// egress hosts the driver derives.
 fn external_account() -> Value {
@@ -2141,6 +2197,120 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::external::credentials::issue::v0_1::Response,
                 json!({ "context": "community", "account": "r2-main", "scope": { "prefix": "rooms/3f9a/", "actions": ["get"], "objectKey": "blob" }, "ttlSeconds": 600 }),
                 json!({ "sealedCredential": SEALED_ARMOR, "expiresAt": TS, "scope": { "prefix": "rooms/3f9a/", "actions": ["get"], "objectKey": "blob" } })
+            ),
+        ),
+        // ─── vta/pcs — the hidden-vetting engine ─────────────────
+        (
+            uris::TASK_VTA_PCS_APPLICATIONS_CREATE_0_1,
+            checked!(
+                specs::vta::pcs::applications::create::v0_1::Payload,
+                specs::vta::pcs::applications::create::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "joinDid": SUBJECT, "parameters": pcs_params() }),
+                json!({ "application": pcs_application() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_APPLICATIONS_SHOW_0_1,
+            checked!(
+                specs::vta::pcs::applications::show::v0_1::Payload,
+                specs::vta::pcs::applications::show::v0_1::Response,
+                json!({ "applicationId": "app-1" }),
+                json!({ "application": pcs_application() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_APPLICATIONS_DELETE_0_1,
+            checked!(
+                specs::vta::pcs::applications::delete::v0_1::Payload,
+                specs::vta::pcs::applications::delete::v0_1::Response,
+                json!({ "applicationId": "app-1" }),
+                json!({ "applicationId": "app-1", "deleted": true })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_VERIFY_ATTESTATION_0_1,
+            checked!(
+                specs::vta::pcs::verify_attestation::v0_1::Payload,
+                specs::vta::pcs::verify_attestation::v0_1::Response,
+                json!({ "applicationId": "app-1", "parameters": pcs_params(), "attestation": pcs_attestation() }),
+                json!({ "application": pcs_application(), "accepted": pcs_meta(true) })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_PROVE_0_1,
+            checked!(
+                specs::vta::pcs::prove::v0_1::Payload,
+                specs::vta::pcs::prove::v0_1::Response,
+                json!({ "applicationId": "app-1", "parameters": pcs_params(), "requirementsDigest": PCS_B58, "challenge": "c-1" }),
+                json!({ "hiddenVetting": {
+                    "suite": "ps-ddh-bls12381", "id": PCS_B58, "joinDid": SUBJECT,
+                    "idBinding": PCS_BINDING, "challenge": "c-1",
+                    "statements": [{ "meta": pcs_meta(true), "token": pcs_token() }],
+                    "proof": PCS_B58,
+                } })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_ROOT_REQUEST_0_1,
+            checked!(
+                specs::vta::pcs::root_request::v0_1::Payload,
+                specs::vta::pcs::root_request::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "memberDid": SUBJECT, "parameters": pcs_params(), "label": "vetter/2026-10" }),
+                json!({ "request": { "label": "vetter/2026-10", "id": PCS_B58, "request": { "encoding": PCS_B58, "t0": PCS_B58, "proof": PCS_B58 } } })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_ROOT_ACCEPT_0_1,
+            checked!(
+                specs::vta::pcs::root_accept::v0_1::Payload,
+                specs::vta::pcs::root_accept::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": pcs_params(), "response": { "label": "vetter/2026-10", "preCredential": PCS_B58 } }),
+                json!({ "vetter": pcs_vetter() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TOKENS_REQUEST_0_1,
+            checked!(
+                specs::vta::pcs::tokens::request::v0_1::Payload,
+                specs::vta::pcs::tokens::request::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": pcs_params(), "label": "token/2026-10", "tick": 4, "count": 3 }),
+                json!({ "request": { "label": "token/2026-10", "tick": 4, "requests": [{ "commitment": PCS_B58, "openingProof": PCS_B58 }] } })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TOKENS_ACCEPT_0_1,
+            checked!(
+                specs::vta::pcs::tokens::accept::v0_1::Payload,
+                specs::vta::pcs::tokens::accept::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": pcs_params(), "response": { "label": "token/2026-10", "tick": 4, "preCredentials": [PCS_B58] } }),
+                json!({ "received": 1, "vetter": pcs_vetter() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TOKENS_ABANDON_0_1,
+            checked!(
+                specs::vta::pcs::tokens::abandon::v0_1::Payload,
+                specs::vta::pcs::tokens::abandon::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "draw": { "label": "token/2026-10", "tick": 4 } }),
+                json!({ "vetter": pcs_vetter() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_ATTEST_0_1,
+            checked!(
+                specs::vta::pcs::attest::v0_1::Payload,
+                specs::vta::pcs::attest::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": pcs_params(), "applicantId": PCS_B58, "meta": pcs_meta(false) }),
+                json!({ "attestation": pcs_attestation() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_VETTER_SHOW_0_1,
+            checked!(
+                specs::vta::pcs::vetter::show::v0_1::Payload,
+                specs::vta::pcs::vetter::show::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY }),
+                json!({ "vetter": pcs_vetter() })
             ),
         ),
         // ─── vta/memory ──────────────────────────────────────────

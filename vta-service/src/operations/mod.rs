@@ -56,6 +56,7 @@ pub mod passkey_login;
 /// `docs/02-vta/passkey-verification-methods.md`.
 #[cfg(feature = "webvh")]
 pub mod passkey_vms;
+pub mod pcs;
 pub mod policy;
 /// DIDComm protocol management: enable/disable/migrate operations that
 /// patch the VTA's own DID document service array. See

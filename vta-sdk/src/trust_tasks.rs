@@ -2218,6 +2218,59 @@ pub const TASK_EXTERNAL_ACCOUNTS_DELETE_0_1: &str =
 pub const TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1: &str =
     <trust_tasks_rs::specs::external::credentials::issue::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+// ─── Hidden-vetting PCS engine (`vta/pcs/*`, trust-tasks-tf #756) ──────────
+// The VTA holds its principal's PCS keys and runs every member-side
+// hidden-vetting operation; the client carries messages and never holds a key.
+// Design: openvtc `vetting-hidden-vetters-pcs.md` §13 C7; docs/02-vta/pcs-engine.md.
+
+/// `vta/pcs/applications/create/0.1` — start a hidden-vetting application: a fresh PCS key in the VTA, and the identifier vetters attest to.
+pub const TASK_VTA_PCS_APPLICATIONS_CREATE_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::applications::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/applications/show/0.1` — read an application back, never its key.
+pub const TASK_VTA_PCS_APPLICATIONS_SHOW_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::applications::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/applications/delete/0.1` — forget an application, its key and its attestations.
+pub const TASK_VTA_PCS_APPLICATIONS_DELETE_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::applications::delete::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/verify-attestation/0.1` — check an attestation a vetter sent, and keep it for the proof.
+pub const TASK_VTA_PCS_VERIFY_ATTESTATION_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::verify_attestation::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/prove/0.1` — the proof a hidden-vetting join submission carries.
+pub const TASK_VTA_PCS_PROVE_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::prove::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/root-request/0.1` — a vetter's blinded enrolment request; creates the vetter's engine on first use.
+pub const TASK_VTA_PCS_ROOT_REQUEST_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::root_request::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/root-accept/0.1` — unblind the community's answer into the vetter's class credential.
+pub const TASK_VTA_PCS_ROOT_ACCEPT_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::root_accept::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/tokens/request/0.1` — one draw of a vetter's attestation-token drip.
+pub const TASK_VTA_PCS_TOKENS_REQUEST_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::tokens::request::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/tokens/accept/0.1` — take the community's answer to a draw into the wallet.
+pub const TASK_VTA_PCS_TOKENS_ACCEPT_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::tokens::accept::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/tokens/abandon/0.1` — discard a draw the community refused.
+pub const TASK_VTA_PCS_TOKENS_ABANDON_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::tokens::abandon::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/attest/0.1` — spend a token and attest, after the human check, for an applicant.
+pub const TASK_VTA_PCS_ATTEST_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::attest::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/vetter/show/0.1` — read a vetter engine back: labels and counts, never its key or tokens.
+pub const TASK_VTA_PCS_VETTER_SHOW_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::vetter::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// Every URI registered in this module — handy for the dispatcher's
 /// parity harness and for operator tooling that wants to enumerate
 /// the VTA's wire surface programmatically.
@@ -2483,6 +2536,19 @@ pub const ALL_URIS: &[&str] = &[
     TASK_EXTERNAL_ACCOUNTS_RESTORE_0_1,
     TASK_EXTERNAL_ACCOUNTS_DELETE_0_1,
     TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1,
+    // Hidden-vetting PCS engine (`vta/pcs/*`)
+    TASK_VTA_PCS_APPLICATIONS_CREATE_0_1,
+    TASK_VTA_PCS_APPLICATIONS_SHOW_0_1,
+    TASK_VTA_PCS_APPLICATIONS_DELETE_0_1,
+    TASK_VTA_PCS_VERIFY_ATTESTATION_0_1,
+    TASK_VTA_PCS_PROVE_0_1,
+    TASK_VTA_PCS_ROOT_REQUEST_0_1,
+    TASK_VTA_PCS_ROOT_ACCEPT_0_1,
+    TASK_VTA_PCS_TOKENS_REQUEST_0_1,
+    TASK_VTA_PCS_TOKENS_ACCEPT_0_1,
+    TASK_VTA_PCS_TOKENS_ABANDON_0_1,
+    TASK_VTA_PCS_ATTEST_0_1,
+    TASK_VTA_PCS_VETTER_SHOW_0_1,
     // Application-state slice (spec/vta/app-state/*)
     TASK_VTA_APP_STATE_GET_1_0,
     TASK_VTA_APP_STATE_PUT_1_0,

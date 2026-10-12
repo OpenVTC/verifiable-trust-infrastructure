@@ -263,6 +263,9 @@ pub struct AppState {
     pub external_secrets_ks: KeyspaceHandle,
     /// Per-binding issuance rate for `external/credentials/issue`.
     pub external_rate: Arc<vta_external::rate::BindingRateLimiter>,
+    /// The hidden-vetting PCS engine (`vta/pcs/*`): vetter and applicant
+    /// engines, their secret state wrapped under the seed-derived KEK.
+    pub pcs_engine_ks: KeyspaceHandle,
     /// A member's MLS group for each room they belong to. Group secrets — see
     /// [`crate::keyspaces::ROOM_GROUPS`].
     pub room_groups_ks: KeyspaceHandle,
@@ -596,6 +599,9 @@ pub async fn build_app_state(
     // Provider secrets, wrapped under the seed-derived KEK on top of the
     // keyspace's own at-rest encryption.
     let external_secrets_ks = apply_encryption(store.keyspace(crate::keyspaces::EXTERNAL_SECRETS)?);
+    // PCS engine state: wrapped under the seed-derived KEK, like the provider
+    // secrets above, on top of the keyspace's own at-rest encryption.
+    let pcs_engine_ks = apply_encryption(store.keyspace(crate::keyspaces::PCS_ENGINE)?);
     // Encrypted alongside the key store where a TEE deployment provides a storage key: a
     // group snapshot decrypts every record its room holds, which is the same class of
     // material as a derived key and deserves the same treatment.
@@ -702,6 +708,7 @@ pub async fn build_app_state(
         external_accounts_ks,
         external_secrets_ks,
         external_rate: Arc::new(vta_external::rate::BindingRateLimiter::new()),
+        pcs_engine_ks,
         room_groups_ks,
         room_invitations_ks,
         app_state_ks,

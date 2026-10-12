@@ -399,7 +399,7 @@ async fn a_vetter_enrols_draws_and_an_applicant_gets_a_challenge() {
         .map(|p| vti_vetting_pcs::scheme::dec(p.as_str().unwrap()).unwrap())
         .collect();
     wallet
-        .receive(issuer.tvk(), &pres)
+        .receive(issuer.tvk(), TOKEN_LABEL, 1, &pres)
         .expect("the tokens verify under the published token key");
     assert_eq!(wallet.free(), DRIP);
 
@@ -702,7 +702,7 @@ async fn an_approved_event_opens_its_label_at_the_tier_rate() {
         .map(|p| vti_vetting_pcs::scheme::dec(p.as_str().unwrap()).unwrap())
         .collect();
     wallet
-        .receive(issuer.tvk(), &pres)
+        .receive(issuer.tvk(), EVENT_LABEL, 0, &pres)
         .expect("event tokens verify under the same published key");
     assert_eq!(wallet.free(), EVENT_DRIP, "the tier's rate, not the drip's");
 }

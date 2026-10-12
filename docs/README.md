@@ -61,6 +61,7 @@ VTA via the `vtc-host` DID template.
 | Require a second person to approve an operation | [Approvals](02-vta/approvals.md) |
 | Understand the consent ceremony (DTTE) end to end | [Task consent](02-vta/task-consent.md) |
 | Create or run a data room | [Data rooms](02-vta/data-rooms.md) |
+| Apply to, or vet for, a hidden-vetting community from a client with no PCS (a mobile wallet) | [The VTA as hidden-vetting (PCS) engine](02-vta/pcs-engine.md) |
 | Configure community membership policy | [VTC community lifecycle](03-vtc/community-lifecycle.md) |
 | Update a custom Rego policy for the DTG Credentials v1 shapes | [Custom policies after the DTG v1 upgrade](03-vtc/policy-upgrade-dtg-v1.md) |
 | Host a public community website | [VTC website + admin UX](03-vtc/website-and-admin.md) |

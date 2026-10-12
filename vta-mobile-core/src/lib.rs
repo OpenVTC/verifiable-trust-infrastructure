@@ -45,6 +45,7 @@ pub mod didcomm;
 pub mod display_name;
 pub mod keys;
 pub mod mediator;
+pub mod pcs;
 pub mod push;
 pub mod reply;
 pub mod resolver;

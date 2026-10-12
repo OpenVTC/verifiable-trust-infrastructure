@@ -485,6 +485,33 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── Memory ──────────────────────────────────────────────────────────
     (trust_tasks::TASK_VTA_MEMORY_PUT_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_MEMORY_LIST_0_1, ReadOnly),
+    // ── Hidden-vetting PCS engine (`vta/pcs/*`) ─────────────────────────
+    // A second create is a second application with a second key.
+    (trust_tasks::TASK_VTA_PCS_APPLICATIONS_CREATE_0_1, Keyed),
+    (trust_tasks::TASK_VTA_PCS_APPLICATIONS_SHOW_0_1, ReadOnly),
+    // A retry after a lost reply would answer `notFound`; keyed so it gets
+    // the original answer.
+    (trust_tasks::TASK_VTA_PCS_APPLICATIONS_DELETE_0_1, Keyed),
+    // Replaces an attestation with the same tag, so a repeat converges.
+    (trust_tasks::TASK_VTA_PCS_VERIFY_ATTESTATION_0_1, RetrySafe),
+    // Builds a proof and stores nothing; the challenge is spent at the
+    // community, not here.
+    (trust_tasks::TASK_VTA_PCS_PROVE_0_1, ReadOnly),
+    // A repeat replaces the blinding state for the same label; the client sends
+    // whichever request it received last, and it unblinds.
+    (trust_tasks::TASK_VTA_PCS_ROOT_REQUEST_0_1, RetrySafe),
+    // A repeat finds no enrolment in flight; keyed so it gets the original answer.
+    (trust_tasks::TASK_VTA_PCS_ROOT_ACCEPT_0_1, Keyed),
+    // A repeat is refused `alreadyInFlight`, a lost first reply strands the
+    // draw: keyed so the retry is answered with the commitments it would have
+    // had. They are blinded; the serials never leave the VTA.
+    (trust_tasks::TASK_VTA_PCS_TOKENS_REQUEST_0_1, Keyed),
+    (trust_tasks::TASK_VTA_PCS_TOKENS_ACCEPT_0_1, Keyed),
+    (trust_tasks::TASK_VTA_PCS_TOKENS_ABANDON_0_1, Keyed),
+    // Spends a token: a second execution is a second attestation and a second
+    // token gone.
+    (trust_tasks::TASK_VTA_PCS_ATTEST_0_1, Keyed),
+    (trust_tasks::TASK_VTA_PCS_VETTER_SHOW_0_1, ReadOnly),
     // ── External accounts (`external/*`) ────────────────────────────────
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_LIST_0_1, ReadOnly),
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_GET_0_1, ReadOnly),

@@ -291,6 +291,20 @@ pub const EXTERNAL_ACCOUNTS: &str = "external_accounts";
 /// `providerSetupRequired` until its secret is set again.
 pub const EXTERNAL_SECRETS: &str = "external_secrets";
 
+/// The VTA's hidden-vetting **PCS engine** state (`vta/pcs/*`): one vetter
+/// engine per (context, community), keyed `vetter:<context>:<community>`, and
+/// one applicant engine per application, keyed `app:<applicationId>`.
+///
+/// Never a `usk`: each member key is re-derived from its context's base on
+/// every use (VTI-KEY-030). The rest of an engine — class credentials, unspent
+/// tokens, draws and enrolments in flight, attestations held — is secret, and
+/// is stored wrapped under the seed-derived KEK the way imported keys are.
+///
+/// In [`BACKED_UP`]: an applicant's attestations cannot be replaced without
+/// its vetters sitting again, and the KEK is a function of the seed the
+/// restore brings back.
+pub const PCS_ENGINE: &str = "pcs_engine";
+
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
 /// asserts the partition stays exhaustive so a newly-added keyspace can't be
@@ -330,6 +344,7 @@ pub const ALL: &[&str] = &[
     RELATIONSHIPS,
     EXTERNAL_ACCOUNTS,
     EXTERNAL_SECRETS,
+    PCS_ENGINE,
 ];
 
 /// Keyspaces a backup carries, **every row of each**, as a raw dump.
@@ -398,6 +413,9 @@ pub const BACKED_UP: &[&str] = &[
     // The external accounts a community's integrations are bound to. Their
     // secrets are not here; see EXTERNAL_SECRETS.
     EXTERNAL_ACCOUNTS,
+    // Hidden-vetting engine state, wrapped. An applicant's attestations are not
+    // replaceable without its vetters sitting again.
+    PCS_ENGINE,
 ];
 
 /// Keyspaces deliberately **not** in a backup, each for a stated reason.
@@ -620,6 +638,10 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         // twice. Single use means single use, and the record is the only thing
         // that remembers.
         b"room_groups" | b"room_invitations" => Cascade,
+        // Hidden-vetting engines: a vetter's names the member DID it draws
+        // tokens as, an applicant's the DID it joins as. Held for that holder in
+        // the vault's sense, and useless to anyone once the DID is gone.
+        b"pcs_engine" => Cascade,
 
         // Persona is two scopes in one keyspace and only one half is DID-keyed,
         // which the per-keyspace enum cannot say — so it is said here. The

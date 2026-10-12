@@ -82,6 +82,7 @@ mod messaging;
 mod metrics;
 #[cfg(all(feature = "webvh", feature = "didcomm"))]
 mod passkey_vms;
+mod pcs;
 pub mod pending_replies;
 mod persona;
 pub(crate) mod planner;
@@ -2578,6 +2579,33 @@ dispatch_table! {
         [ Destructive Metadata false ],
     vta_sdk::trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1 => external::handle_issue
         [ Mutating Secret true ],
+    // ─── Hidden-vetting PCS engine (`vta/pcs/*`) ───────────────────
+    // Classes match each specification's own declarations. `actsAsSubject` is
+    // true wherever the engine exercises the member's PCS key.
+    vta_sdk::trust_tasks::TASK_VTA_PCS_APPLICATIONS_CREATE_0_1 => pcs::handle_applications_create
+        [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_APPLICATIONS_SHOW_0_1 => pcs::handle_applications_show
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_APPLICATIONS_DELETE_0_1 => pcs::handle_applications_delete
+        [ Destructive None false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VERIFY_ATTESTATION_0_1 => pcs::handle_verify_attestation
+        [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_PROVE_0_1 => pcs::handle_prove
+        [ None Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_ROOT_REQUEST_0_1 => pcs::handle_root_request
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_ROOT_ACCEPT_0_1 => pcs::handle_root_accept
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TOKENS_REQUEST_0_1 => pcs::handle_tokens_request
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TOKENS_ACCEPT_0_1 => pcs::handle_tokens_accept
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TOKENS_ABANDON_0_1 => pcs::handle_tokens_abandon
+        [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_ATTEST_0_1 => pcs::handle_attest
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VETTER_SHOW_0_1 => pcs::handle_vetter_show
+        [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_PUT_0_1 => memory::handle_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_LIST_0_1 => memory::handle_list

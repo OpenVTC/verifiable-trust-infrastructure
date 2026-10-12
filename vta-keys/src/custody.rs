@@ -419,6 +419,82 @@ impl AuthorizedRecordDerivation {
     }
 }
 
+/// The domain tag of a PCS member key's seed. A new use of a derived node gets a
+/// new tag, never this one.
+pub const PCS_MEMBER_KEY_DOMAIN: &[u8] = b"vta/pcs/member-key/v1\0";
+
+/// A hidden-vetting (PCS) member key's derivation, authorized: its path is
+/// strictly inside the base of the context it belongs to. Constructed only by
+/// [`authorize_pcs_derivation`], so holding one proves rules 3 and 6 were
+/// checked at the point of use.
+///
+/// A PCS key is not a [`KeyRecord`]: it is a BLS12-381 scalar, no other task may
+/// use it, and nothing may export it. Its path is allocated under the context's
+/// base from the same counter key records use, so no record can ever be given
+/// the same path, and the engine state that names the path is what owns it.
+#[derive(Debug)]
+pub struct AuthorizedPcsDerivation {
+    path: DerivationPath,
+    seed_id: Option<u32>,
+}
+
+/// Rules 3 and 6 for a PCS member key (`vta/pcs/*`): authorize deriving the key
+/// at `path` for the context whose base is `context_base`.
+///
+/// Refuses a path that is not strictly inside the base, so engine state naming
+/// a path outside its own context — written by an older build, restored, or
+/// planted — is inert rather than a way to reach another context's key.
+pub fn authorize_pcs_derivation(
+    path: &str,
+    context_id: &str,
+    context_base: &str,
+    seed_id: Option<u32>,
+) -> Result<AuthorizedPcsDerivation, CustodyViolation> {
+    let parsed = parse_path(path)?;
+    let within = parse_path(context_base)
+        .map(|base| is_strictly_within(&base, &parsed))
+        .unwrap_or(false);
+    if !within {
+        return Err(CustodyViolation::ForeignPath {
+            path: path.to_string(),
+            requested_context: Some(context_id.to_string()),
+            owning_context: None,
+        });
+    }
+    Ok(AuthorizedPcsDerivation {
+        path: parsed,
+        seed_id,
+    })
+}
+
+impl AuthorizedPcsDerivation {
+    /// The 32-byte seed the PCS engine builds the member's key pair from:
+    /// SHA-256 of [`PCS_MEMBER_KEY_DOMAIN`] and the SLIP-0010 node at the path.
+    /// Domain-separated, so the PCS key and an Ed25519 key at the same node are
+    /// unrelated values. The seed bytes and the node are dropped (and zeroized)
+    /// before this returns.
+    pub async fn seed(
+        self,
+        keys_ks: &KeyspaceHandle,
+        seed_store: &dyn SeedStore,
+    ) -> Result<Zeroizing<[u8; 32]>, AppError> {
+        use sha2::{Digest, Sha256};
+        let seed = load_seed_bytes(keys_ks, seed_store, self.seed_id)
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+        let root = ExtendedSigningKey::from_seed(&seed)
+            .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
+        let node = root
+            .derive(&self.path)
+            .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
+        let node_bytes = Zeroizing::new(*node.signing_key.as_bytes());
+        let mut hasher = Sha256::new();
+        hasher.update(PCS_MEMBER_KEY_DOMAIN);
+        hasher.update(node_bytes.as_slice());
+        Ok(Zeroizing::new(hasher.finalize().into()))
+    }
+}
+
 /// The key material for exactly one authorized record.
 ///
 /// The BIP-32 root is private and every method derives at the record's own
@@ -674,5 +750,20 @@ mod tests {
             authorize_record_derivation(&r, None),
             Err(CustodyViolation::NotDerived { .. })
         ));
+    }
+
+    /// A PCS member key may be derived only strictly inside its own context's
+    /// base: never at the base itself, never under a sibling context, never in
+    /// the delegated-identity subtree. Rules 3 and 6, checked at the point of use.
+    #[test]
+    fn a_pcs_key_derives_only_inside_its_own_contexts_base() {
+        let base = "m/26'/2'/4'";
+        assert!(authorize_pcs_derivation("m/26'/2'/4'/7'", "acme", base, None).is_ok());
+        for path in ["m/26'/2'/4'", "m/26'/2'/5'/7'", "m/26'/9'/1'", "not a path"] {
+            assert!(
+                authorize_pcs_derivation(path, "acme", base, None).is_err(),
+                "{path} must be refused"
+            );
+        }
     }
 }

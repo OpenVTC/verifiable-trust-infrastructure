@@ -11640,6 +11640,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "multibase",
  "p256 0.14.0",
+ "predicate-credential-system",
  "rand 0.10.2",
  "regorus",
  "reqwest",
@@ -11691,6 +11692,7 @@ dependencies = [
  "vti-rooms",
  "vti-rooms-dtg",
  "vti-secrets",
+ "vti-vetting-pcs",
  "vti-webauthn",
  "webauthn-rs",
  "webauthn-rs-proto",
@@ -12137,7 +12139,7 @@ dependencies = [
 
 [[package]]
 name = "vti-vetting-pcs"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ark-bls12-381",
  "ark-ec",
@@ -12154,6 +12156,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.21",
  "vta-sdk",
+ "vti-vetting-pcs",
 ]
 
 [[package]]

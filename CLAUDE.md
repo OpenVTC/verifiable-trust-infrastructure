@@ -48,6 +48,7 @@ Layer 0 (leaves):
 Layer 1 (VTA foundations):
   vta-keyspaces   → vti-common
   vta-config      → vti-common, vti-secrets
+  vti-vetting-pcs → vta-sdk   (hidden vetting: community + member engines)
   vta-audit       → vta-sdk, vti-common
 
 Layer 2 (VTA subsystems):
@@ -86,6 +87,7 @@ Layer 4 (the spine + consumers):
 | `vta-support` | Shared mid-layer services — trust-context storage (the BIP-32 key-hierarchy roots) and the other clean glue subsystems need |
 | `vta-keys` | **Key management**: master-seed storage, BIP-32 hierarchical derivation, key wrapping (AES-GCM), imported-key handling, `create_seed_store` backend selection, `derive_pre_rotation_keys` |
 | `vta-vault` | **Holder credential vault**: storage, query, receive/verify, present, status refresh, and the archival lifecycle (`VaultStatus {Active,Archived,Deleted}`) |
+| `vti-vetting-pcs` | **Hidden vetting** on the Predicate Credential System: the community's `issuer` and `verifier` (`vtc-service`, feature `vetting-pcs`) and the member-side `vetter` / `applicant` engines the VTA runs as its principal's PCS engine (`vta/pcs/*`). Feature `harness`: an in-process community (`vtc::Vtc`) for end-to-end tests. Docs: `docs/02-vta/pcs-engine.md` |
 | `vta-external` | **External accounts** (`external/*`): identities the VTA holds at clouds and third-party services — account store (`external_accounts`; secrets in `external_secrets`, excluded from backup), the `ExternalAuthDriver` trait and drivers (`s3-static-presign` first), scope and binding checks, the per-binding rate. Design: `docs/05-design-notes/vta-external-accounts.md` |
 | `vta-webvh` | WebVH hosting infrastructure for the `did:webvh` lifecycle and its other consumers |
 | `vta-policy` | Policy subsystem: the regorus (Rego) engine + default bundle, the DTTE consent model, decision evaluators, policy storage |
@@ -914,6 +916,32 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Docs**: `docs/02-vta/external-accounts.md`,
   `docs/05-design-notes/vta-external-accounts.md`.
 
+### Hidden-vetting PCS engine (`vta/pcs/*`)
+- **What**: The VTA holds its principal's PCS keys and runs every member-side
+  hidden-vetting operation — an applicant's application, attestation receipt
+  and proof; a vetter's enrolment, token drip and attestation — so a client with
+  no PCS implementation (a mobile wallet) can take part. The client carries the
+  messages to the community and the other party; the VTA never talks to the
+  community itself (yet). Design §13 C7.
+- **Invariants to preserve**: **no `usk` is stored or returned** — each member
+  key is re-derived on every use from a path allocated under its context's base
+  (VTI-KEY-030), through `key_custody::derive_pcs_member_seed` (custody rules 3
+  and 6), domain-separated from the Ed25519 node at that path. One vetter key
+  per (context, community) for life; a second member DID is `memberMismatch`.
+  No task returns a key, a class credential, an unspent token or blinding
+  state; everything secret is wrapped under the seed-derived KEK in
+  `pcs_engine` (backed up). `pcs-vetter` / `pcs-applicant` are never `sign` and
+  `application` derives neither. Audit never pairs a vetter with an applicant
+  identifier, tag or statement metadata. The community-side verifier
+  (`vti_vetting_pcs::verifier`) is authoritative for the wire; a spec that
+  disagrees with it is the one to fix (`idBinding` is hex, not multibase).
+- **Code**: `vti-vetting-pcs/src/{vetter,applicant,snapshot}.rs`,
+  `vta-service/src/operations/pcs.rs`, `vta-service/src/trust_tasks/pcs.rs`
+  (+ `pcs_tests.rs`, the end-to-end run against `vtc::Vtc`),
+  `vta-keys/src/custody.rs` (`authorize_pcs_derivation`),
+  `vta_sdk::client::pcs`, `vta-mobile-core/src/pcs.rs`.
+- **Docs**: `docs/02-vta/pcs-engine.md`.
+
 ### Vault archival lifecycle (archive / soft-delete / restore / purge)
 - **What**: Full lifecycle for **both** VTA stores — the password
   vault (`vault:` keyspace, `vti_common::vault::VaultEntry`) and the
@@ -1514,7 +1542,7 @@ The other 20 are `vta-sdk`, `vti-common`, `vti-secrets`, `vta-cli-common`,
 `vtc-client`, `pnm-cli`, `cnm-cli` — plus `vta-service` and its closure
 (`vta-audit`, `vta-backup`, `vta-config`, `vta-keys`, `vta-keyspaces`,
 `vta-policy`, `vta-support`, `vta-sweepers`, `vta-tee`, `vta-vault`,
-`vta-webvh`, `vti-webauthn`, `vta-external`).
+`vta-webvh`, `vti-webauthn`, `vta-external`, `vti-vetting-pcs`).
 
 **`vta-service` is published for one reason and it is not its own API:**
 `openvtc-core` dev-depends on it for `test_support::MockVta`, the in-process

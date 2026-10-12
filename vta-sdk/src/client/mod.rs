@@ -419,6 +419,7 @@ pub use external::{open_external_credential, seal_external_secret};
 #[cfg(feature = "test-loopback")]
 pub mod loopback;
 mod memory;
+mod pcs;
 mod persona;
 mod policy;
 mod rooms;

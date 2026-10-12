@@ -387,7 +387,7 @@ mod tests {
             .expect("three is within the drip rate");
         assert_eq!(pres.len(), 3);
         wallet
-            .receive(issuer.tvk(), &pres)
+            .receive(issuer.tvk(), LABEL, 2, &pres)
             .expect("the tokens unblind under the published key");
         assert_eq!(wallet.free(), 3);
     }

@@ -921,6 +921,8 @@ mod tests {
             "key-export",
             "external-accounts-manage",
             "external-auth-use",
+            "pcs-vetter",
+            "pcs-applicant",
         ] {
             assert!(
                 p.contains(&cap.to_string()),
