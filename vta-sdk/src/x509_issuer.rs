@@ -219,6 +219,21 @@ fn leaf_names_issuer(leaf: &X509Certificate, iss: &str) -> bool {
     })
 }
 
+/// The subject key of one DER certificate, checking nothing else about it — no
+/// validity, no chain, no trust. For a custodian asked to put the certificate
+/// into a JWS header beside a key it holds (`keys/sign-jws`'s `x5c` rule),
+/// which needs only to know whose key it certifies.
+pub fn certificate_key(der: &[u8]) -> Result<JwsKey, JwsError> {
+    let (rest, cert) = X509Certificate::from_der(der)
+        .map_err(|e| JwsError::Key(format!("not a DER certificate: {e}")))?;
+    if !rest.is_empty() {
+        return Err(JwsError::Key(
+            "trailing bytes after the DER certificate".into(),
+        ));
+    }
+    spki_key(cert.public_key())
+}
+
 /// A certificate's subject key as a [`JwsKey`]: P-256, secp256k1 or Ed25519.
 fn spki_key(spki: &SubjectPublicKeyInfo) -> Result<JwsKey, JwsError> {
     const EC_PUBLIC_KEY: &str = "1.2.840.10045.2.1";

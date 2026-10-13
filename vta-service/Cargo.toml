@@ -215,7 +215,7 @@ vta-policy = { path = "../vta-policy", version = "0.15" }
 # The local did:webvh store, extracted to its own crate and re-exported as
 # crate::webvh_store behind this crate's `webvh` feature.
 vta-webvh = { path = "../vta-webvh", version = "0.16", optional = true }
-vta-sdk = { path = "../vta-sdk", version = "0.67", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup"] }
+vta-sdk = { path = "../vta-sdk", version = "0.67", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup", "x509-issuers"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.
 # Distinct from `webauthn-rs` (which drives the passkey *enrolment*
@@ -352,6 +352,9 @@ subtle = { workspace = true }
 x25519-dalek = { workspace = true }
 multibase = { workspace = true }
 p256 = "0.14"
+# DER writer for the `keys/sign-csr` certificate request the VTA builds and
+# signs itself (`operations::sign_formats`). The version rcgen 0.14 uses.
+yasna = "0.6"
 # WebAuthn — used by `operations::passkey_vms` to drive the
 # registration ceremony for passkey-as-verificationMethod enrolment.
 webauthn-rs = { workspace = true }
@@ -392,6 +395,10 @@ hmac = "0.13"
 aws-lc-rs = { version = "1", optional = true }
 
 [dev-dependencies]
+# Reads back the `keys/sign-csr` request and checks its signature.
+x509-parser = { workspace = true }
+# A test CA certifying a VTA-held key, for `keys/sign-jws`'s `x5c` check.
+rcgen = { version = "0.14", features = ["x509-parser"] }
 # The signed room fixtures, for the oracle round-trip test. A dev-dependency so
 # the feature never reaches a release build — a permissive fixture is exactly
 # what should not ship, which is why the crate gates it.

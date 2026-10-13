@@ -430,6 +430,248 @@ pub(super) async fn handle_sign_sshsig(
     }
 }
 
+/// Render a [`operations::keys::ProtocolSignRefusal`] with the codes `slug`'s
+/// specification declares. A missing key is `keys:notFound` — said only to a
+/// super-admin, since for anyone else an absent key and one outside their
+/// scope are the same refusal.
+fn protocol_sign_refusal(
+    doc: &TrustTask<Value>,
+    refusal: operations::keys::ProtocolSignRefusal,
+    codes: ProtocolSignCodes,
+) -> TrustTaskOutcome {
+    use operations::keys::ProtocolSignRefusal as R;
+    use operations::sign_formats::FormatRefusal as F;
+    match refusal {
+        R::KeyNotActive(m) => reject_declared(doc, codes.failed_precondition, m),
+        R::KeyTypeUnsupported(key_type) => super::helpers::reject_with_code(
+            doc,
+            declared_code(codes.key_type_unsupported),
+            format!("a {key_type} key signs nothing this task produces"),
+            Some(serde_json::json!({ "keyType": key_type.to_string() })),
+        ),
+        R::Format(F::HeaderMemberForbidden(member)) => super::helpers::reject_with_code(
+            doc,
+            declared_code(
+                codes
+                    .header_member_forbidden
+                    .unwrap_or(codes.invalid_argument),
+            ),
+            format!("the custodian sets or refuses header member `{member}`"),
+            Some(serde_json::json!({ "member": member })),
+        ),
+        R::Format(F::InvalidArgument(m)) => reject_declared(doc, codes.invalid_argument, m),
+        R::Format(F::PayloadInvalid(m)) => reject_declared(
+            doc,
+            codes.payload_invalid.unwrap_or(codes.invalid_argument),
+            m,
+        ),
+        R::Format(F::SubjectInvalid {
+            member,
+            index,
+            reason,
+        }) => {
+            let mut details = serde_json::json!({ "member": member, "reason": reason });
+            if let Some(i) = index {
+                details["index"] = i.into();
+            }
+            super::helpers::reject_with_code(
+                doc,
+                declared_code(codes.subject_invalid.unwrap_or(codes.invalid_argument)),
+                reason,
+                Some(details),
+            )
+        }
+        R::App(crate::error::AppError::NotFound(m)) => reject_declared(doc, codes.not_found, m),
+        R::App(e) => app_error_to_reject(doc, e),
+    }
+}
+
+/// The declared codes one protocol signing task renders its refusals with.
+struct ProtocolSignCodes {
+    not_found: trust_tasks_rs::DeclaredErrorCode,
+    invalid_argument: trust_tasks_rs::DeclaredErrorCode,
+    failed_precondition: trust_tasks_rs::DeclaredErrorCode,
+    key_type_unsupported: trust_tasks_rs::DeclaredErrorCode,
+    header_member_forbidden: Option<trust_tasks_rs::DeclaredErrorCode>,
+    payload_invalid: Option<trust_tasks_rs::DeclaredErrorCode>,
+    subject_invalid: Option<trust_tasks_rs::DeclaredErrorCode>,
+}
+
+fn declared_code(code: trust_tasks_rs::DeclaredErrorCode) -> trust_tasks_rs::TrustTaskCode {
+    trust_tasks_rs::TrustTaskCode::Extended {
+        slug: code.namespace().to_string(),
+        local: code.local().to_string(),
+    }
+}
+
+/// Handler for `keys/sign-jws/0.1` — a compact JWS from a key that never leaves
+/// the VTA. Parsed into the generated payload, answered with the generated
+/// response; every declared refusal is rendered with its code.
+pub(super) async fn handle_sign_jws(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use operations::sign_formats::JwsPayload;
+    use vta_sdk::protocols::key_management::sign_jws::{
+        SignJwsAlg, SignJwsPayload, SignJwsResponse, error_codes,
+    };
+
+    if let Err(e) = auth.require_write() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: SignJwsPayload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let (key_id, header, payload) = match &req {
+        SignJwsPayload::Variant0 {
+            key_id,
+            header,
+            payload,
+            ..
+        } => (key_id.as_str(), header, JwsPayload::Json(payload)),
+        SignJwsPayload::Variant1 {
+            key_id,
+            header,
+            payload_base64_url,
+            ..
+        } => (
+            key_id.as_str(),
+            header,
+            JwsPayload::Base64Url(payload_base64_url.as_str()),
+        ),
+        _ => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: "keys/sign-jws: unrecognised payload shape".into(),
+                },
+            );
+        }
+    };
+
+    let signed = operations::keys::sign_jws(
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.internal_ks,
+        &state.contexts_ks,
+        &state.acl_ks,
+        &state.seed_store,
+        &state.audit_sink,
+        auth,
+        key_id,
+        header,
+        payload,
+        TRANSPORT_TRUST_TASK,
+    )
+    .await;
+    match signed {
+        Ok((jws, alg)) => {
+            let response = (|| {
+                SignJwsResponse::try_from(
+                    SignJwsResponse::builder()
+                        .key_id(key_id)
+                        .alg(alg.parse::<SignJwsAlg>()?)
+                        .jws(jws),
+                )
+            })();
+            match response {
+                Ok(r) => success_response(&doc, r),
+                Err(e) => reject_with(
+                    &doc,
+                    RejectReason::InternalError {
+                        reason: format!("keys/sign-jws response: {e}"),
+                    },
+                ),
+            }
+        }
+        Err(refusal) => protocol_sign_refusal(
+            &doc,
+            refusal,
+            ProtocolSignCodes {
+                not_found: error_codes::NOT_FOUND,
+                invalid_argument: error_codes::INVALID_ARGUMENT,
+                failed_precondition: error_codes::FAILED_PRECONDITION,
+                key_type_unsupported: error_codes::KEY_TYPE_UNSUPPORTED,
+                header_member_forbidden: Some(error_codes::HEADER_MEMBER_FORBIDDEN),
+                payload_invalid: Some(error_codes::PAYLOAD_INVALID),
+                subject_invalid: None,
+            },
+        ),
+    }
+}
+
+/// Handler for `keys/sign-csr/0.1` — a PKCS#10 certificate signing request for
+/// a key that never leaves the VTA, built by the VTA from the structured
+/// subject.
+pub(super) async fn handle_sign_csr(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use vta_sdk::protocols::key_management::sign_csr::{
+        SignCsrPayload, SignCsrResponse, error_codes,
+    };
+
+    if let Err(e) = auth.require_write() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: SignCsrPayload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let signed = operations::keys::sign_csr(
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.internal_ks,
+        &state.contexts_ks,
+        &state.acl_ks,
+        &state.seed_store,
+        &state.audit_sink,
+        auth,
+        req.key_id.as_str(),
+        &req.subject,
+        req.subject_alt_names.as_ref(),
+        TRANSPORT_TRUST_TASK,
+    )
+    .await;
+    // No `keys:invalidArgument` is declared for this task; a format refusal it
+    // could reach would be a subject one.
+    match signed {
+        Ok((csr, public_key)) => {
+            let response = SignCsrResponse::try_from(
+                SignCsrResponse::builder()
+                    .key_id(req.key_id.as_str())
+                    .csr(csr)
+                    .public_key(public_key),
+            );
+            match response {
+                Ok(r) => success_response(&doc, r),
+                Err(e) => reject_with(
+                    &doc,
+                    RejectReason::InternalError {
+                        reason: format!("keys/sign-csr response: {e}"),
+                    },
+                ),
+            }
+        }
+        Err(refusal) => protocol_sign_refusal(
+            &doc,
+            refusal,
+            ProtocolSignCodes {
+                not_found: error_codes::NOT_FOUND,
+                invalid_argument: error_codes::SUBJECT_INVALID,
+                failed_precondition: error_codes::FAILED_PRECONDITION,
+                key_type_unsupported: error_codes::KEY_TYPE_UNSUPPORTED,
+                header_member_forbidden: None,
+                payload_invalid: None,
+                subject_invalid: Some(error_codes::SUBJECT_INVALID),
+            },
+        ),
+    }
+}
+
 /// Handler for `keys/derive-and-sign/0.1`. Super-admin, path inside `m/26'/9'`: both
 /// enforced, and the signature audited, in the operation (`vta_keys::custody`).
 ///

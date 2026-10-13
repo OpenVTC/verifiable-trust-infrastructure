@@ -2429,6 +2429,11 @@ dispatch_table! {
     // `keys/sign` beside it does.
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_SSHSIG_0_1 => keys::handle_sign_sshsig
         [ None None true ],
+    // Both declare sideEffects none, discloses none, actsAsSubject.
+    vta_sdk::trust_tasks::TASK_KEYS_SIGN_JWS_0_1 => keys::handle_sign_jws
+        [ None None true ],
+    vta_sdk::trust_tasks::TASK_KEYS_SIGN_CSR_0_1 => keys::handle_sign_csr
+        [ None None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1 => keys::handle_derive_and_sign
         [ Mutating None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1 => keys::handle_derive_and_sign_document

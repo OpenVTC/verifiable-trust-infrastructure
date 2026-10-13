@@ -11641,6 +11641,7 @@ dependencies = [
  "multibase",
  "p256 0.14.0",
  "rand 0.10.2",
+ "rcgen 0.14.10",
  "regorus",
  "reqwest",
  "serde",
@@ -11696,6 +11697,8 @@ dependencies = [
  "webauthn-rs-proto",
  "wiremock",
  "x25519-dalek 3.0.0",
+ "x509-parser 0.18.1",
+ "yasna 0.6.0",
  "zeroize",
 ]
 

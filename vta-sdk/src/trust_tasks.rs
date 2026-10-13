@@ -510,6 +510,22 @@ pub const TASK_KEYS_SIGN_0_1: &str = "https://trusttasks.org/spec/keys/sign/0.1"
 pub const TASK_KEYS_SIGN_SSHSIG_0_1: &str =
     <crate::protocols::key_management::sign_sshsig::SignSshsigPayload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `keys/sign-jws/0.1` — a compact JWS from a key the VTA holds. The VTA sets
+/// `alg` from the key and builds the signing input itself, so the result
+/// verifies as a JWS and as nothing else.
+/// Payload: [`crate::protocols::key_management::sign_jws::SignJwsPayload`].
+/// Auth: write, plus the `sign-jws` capability (`sign` is not accepted).
+pub const TASK_KEYS_SIGN_JWS_0_1: &str =
+    <crate::protocols::key_management::sign_jws::SignJwsPayload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `keys/sign-csr/0.1` — a PKCS#10 certificate signing request for a key the
+/// VTA holds, built by the VTA from a structured subject and the key's own
+/// public key.
+/// Payload: [`crate::protocols::key_management::sign_csr::SignCsrPayload`].
+/// Auth: write, plus the `sign-csr` capability (`sign` is not accepted).
+pub const TASK_KEYS_SIGN_CSR_0_1: &str =
+    <crate::protocols::key_management::sign_csr::SignCsrPayload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/vta/keys/derive-and-sign/1.0` — derive a key at a BIP-32 path from the
 /// seed, sign a base64url payload, and return `{ public_key, signature }`
 /// WITHOUT persisting a key record (ephemeral signing oracle over the seed's
@@ -2287,6 +2303,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_KEYS_EXPORT_SECRET_0_1,
     TASK_KEYS_SIGN_0_1,
     TASK_KEYS_SIGN_SSHSIG_0_1,
+    TASK_KEYS_SIGN_JWS_0_1,
+    TASK_KEYS_SIGN_CSR_0_1,
     TASK_KEYS_DERIVE_AND_SIGN_0_1,
     TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
     // Seeds slice

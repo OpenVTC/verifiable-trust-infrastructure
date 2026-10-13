@@ -823,6 +823,15 @@ new flow, update both this section and the relevant `docs/*.md`.
   and is gated on its own `sign-sshsig` capability (`sign` also accepted).
   Never let it sign caller-supplied bytes; that would make the narrow grant
   equal to `sign`.
+- **JWS and certificate requests**: `keys/sign-jws/0.1` (an OpenID4VP request
+  object) and `keys/sign-csr/0.1` (a PKCS#10 request for an EUDI access
+  certificate) — the VTA sets `alg` from the key, refuses `alg`/`crit`/`b64`/
+  `jwk`/`jku`/`x5u`, checks an `x5c` certifies the named key, and builds the
+  JWS signing input (RFC 8785) or the `CertificationRequestInfo` itself
+  (`operations::sign_formats`), signed as `ProtocolDefined`. Gated on
+  `sign-jws` / `sign-csr` **only**: `sign` is not accepted, because this VTA
+  frames `keys/sign` payloads and the specs say such a custodian SHOULD NOT
+  widen `sign` into either.
 - **Delegated identities**: `keys/derive-and-sign*` signs as a path without a
   key record. Super-admin only, confined to `m/26'/9'`, audited with a digest
   of what was signed.

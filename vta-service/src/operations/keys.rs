@@ -2108,6 +2108,242 @@ pub async fn sign_sshsig(
     .await?)
 }
 
+/// Why [`sign_jws`] or [`sign_csr`] refused, where its specification declares a
+/// code for it. Every other refusal is an [`AppError`], rendered as usual.
+#[derive(Debug)]
+pub enum ProtocolSignRefusal {
+    /// `…:failedPrecondition` — the key is the caller's to use and not
+    /// `active`.
+    KeyNotActive(String),
+    /// `…:keyTypeUnsupported`, with the key's type.
+    KeyTypeUnsupported(KeyType),
+    /// A refusal of the request's own content.
+    Format(super::sign_formats::FormatRefusal),
+    /// Anything else: the capability gate, scope, policy, quota, storage.
+    App(AppError),
+}
+
+impl From<AppError> for ProtocolSignRefusal {
+    fn from(e: AppError) -> Self {
+        ProtocolSignRefusal::App(e)
+    }
+}
+
+impl From<super::sign_formats::FormatRefusal> for ProtocolSignRefusal {
+    fn from(e: super::sign_formats::FormatRefusal) -> Self {
+        ProtocolSignRefusal::Format(e)
+    }
+}
+
+/// The gate of a protocol signing task: the caller must hold `cap` itself.
+///
+/// Unlike SSHSIG, `sign` is **not** accepted in its place. `keys/sign-jws` and
+/// `keys/sign-csr` say a custodian that frames `keys/sign` payloads under its
+/// own signing domain — this one does, [`SigningDomain::Opaque`] — has made
+/// `sign` a grant that cannot yield a JWS or a certificate request, and SHOULD
+/// NOT widen it into one here. Every role that derives `sign` derives both, so
+/// only an entry narrowed to `sign` alone is refused.
+async fn ensure_may_protocol_sign(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    task: &str,
+    cap: Capability,
+    cap_name: &str,
+) -> Result<(), AppError> {
+    let entry = entry_for_capability_gate(acl_ks, auth, task, cap_name).await?;
+    if entry_or_role_has(entry.as_ref(), auth, cap) {
+        return Ok(());
+    }
+    Err(AppError::Forbidden(format!(
+        "{task} denied: {} does not carry the {cap_name} capability",
+        auth.did
+    )))
+}
+
+/// The active record `key_id` names for a protocol signing task, the
+/// algorithm the chokepoint signs it with, and its public key.
+async fn protocol_signing_key(
+    keys_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    key_id: &str,
+) -> Result<(KeyRecord, SignAlgorithm, vta_sdk::jws::JwsKey), ProtocolSignRefusal> {
+    let record = load_record_in_caller_scope(keys_ks, auth, key_id).await?;
+    if record.status != KeyStatus::Active {
+        return Err(ProtocolSignRefusal::KeyNotActive(format!(
+            "key {key_id} is not active and cannot sign"
+        )));
+    }
+    // The key alone decides the algorithm (RFC 8725 §2.1). The chokepoint signs
+    // Ed25519 and P-256; anything else this custodian does not implement.
+    let algorithm = match record.key_type {
+        KeyType::Ed25519 => SignAlgorithm::EdDSA,
+        KeyType::P256 => SignAlgorithm::ES256,
+        ref other => return Err(ProtocolSignRefusal::KeyTypeUnsupported(other.clone())),
+    };
+    let public = vta_sdk::jws::JwsKey::from_did_key(&format!("did:key:{}", record.public_key))
+        .map_err(|e| AppError::Internal(format!("key {key_id}'s public key: {e}")))?;
+    Ok((record, algorithm, public))
+}
+
+/// `keys/sign-jws/0.1`: a compact JWS from a key that never leaves the VTA.
+///
+/// The VTA writes `alg` from the key, refuses the header members it sets or
+/// never signs, checks an `x5c` names this key, and builds the signing input
+/// itself ([`super::sign_formats`]) — signed as
+/// [`SigningDomain::ProtocolDefined`], since a JWS signing input is its own
+/// domain separation. Scope, the context's signing policy and its daily quota
+/// apply through the same chokepoint as `keys/sign`. The audit row records
+/// `alg`, `typ` and the SHA-256 of the signing input, never the payload.
+#[allow(clippy::too_many_arguments)]
+pub async fn sign_jws(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    internal_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
+    auth: &AuthClaims,
+    key_id: &str,
+    header: &serde_json::Map<String, serde_json::Value>,
+    payload: super::sign_formats::JwsPayload<'_>,
+    channel: &str,
+) -> Result<(String, &'static str), ProtocolSignRefusal> {
+    use sha2::{Digest, Sha256};
+    ensure_may_protocol_sign(
+        acl_ks,
+        auth,
+        "keys/sign-jws",
+        Capability::SignJws,
+        "sign-jws",
+    )
+    .await?;
+    let (_, algorithm, public) = protocol_signing_key(keys_ks, auth, key_id).await?;
+    super::sign_formats::check_jws_header(header, &public)?;
+    let input = super::sign_formats::jws_signing_input(public.alg(), header, payload)?;
+
+    let typ = header
+        .get("typ")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("-");
+    let detail = format!(
+        "alg={} typ={typ} sha256={}",
+        public.alg(),
+        hex::encode(Sha256::digest(input.as_bytes()))
+    );
+    let signed = sign_payload_recorded(
+        keys_ks,
+        imported_ks,
+        internal_ks,
+        contexts_ks,
+        acl_ks,
+        seed_store,
+        audit,
+        auth,
+        key_id,
+        input.as_bytes(),
+        &algorithm,
+        SigningDomain::ProtocolDefined,
+        channel,
+        SignAuditRow {
+            action: "keys.sign-jws",
+            detail: Some(&detail),
+        },
+    )
+    .await?;
+    Ok((format!("{input}.{}", signed.signature), public.alg()))
+}
+
+/// `keys/sign-csr/0.1`: a PKCS#10 certificate signing request (PEM) for a key
+/// that never leaves the VTA, and that key's public half as its record
+/// carries it.
+///
+/// The VTA builds the `CertificationRequestInfo` from the checked subject, the
+/// requested alternative names and the key's own public key
+/// ([`super::sign_formats`]), and signs that DER as
+/// [`SigningDomain::ProtocolDefined`] through the same chokepoint as
+/// `keys/sign`. The audit row records the subject, the alternative names and
+/// the SHA-256 of the signed DER.
+#[allow(clippy::too_many_arguments)]
+pub async fn sign_csr(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    internal_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
+    auth: &AuthClaims,
+    key_id: &str,
+    subject: &[vta_sdk::protocols::key_management::sign_csr::SignCsrRdnAttribute],
+    alt_names: Option<&vta_sdk::protocols::key_management::sign_csr::SignCsrSubjectAltNames>,
+    channel: &str,
+) -> Result<(String, String), ProtocolSignRefusal> {
+    use super::sign_formats::{
+        CsrKey, certification_request_info, certification_request_pem, check_csr_subject,
+    };
+    use sha2::{Digest, Sha256};
+    ensure_may_protocol_sign(
+        acl_ks,
+        auth,
+        "keys/sign-csr",
+        Capability::SignCsr,
+        "sign-csr",
+    )
+    .await?;
+    let (record, algorithm, public) = protocol_signing_key(keys_ks, auth, key_id).await?;
+    let key = CsrKey::from_jws_key(&public)
+        .ok_or_else(|| ProtocolSignRefusal::KeyTypeUnsupported(record.key_type.clone()))?;
+    check_csr_subject(subject)?;
+    let info = certification_request_info(subject, alt_names, &key);
+
+    let subject_text = subject
+        .iter()
+        .map(|a| format!("{}={}", a.type_, a.value.as_str()))
+        .collect::<Vec<_>>()
+        .join(",");
+    let names_text = alt_names
+        .map(|n| {
+            n.dns
+                .iter()
+                .map(|d| format!("dns:{}", d.as_str()))
+                .chain(n.uri.iter().map(|u| format!("uri:{}", u.as_str())))
+                .chain(n.email.iter().map(|e| format!("email:{}", e.as_str())))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_default();
+    let detail = format!(
+        "subject={subject_text} san={names_text} sha256={}",
+        hex::encode(Sha256::digest(&info))
+    );
+    let signed = sign_payload_recorded(
+        keys_ks,
+        imported_ks,
+        internal_ks,
+        contexts_ks,
+        acl_ks,
+        seed_store,
+        audit,
+        auth,
+        key_id,
+        &info,
+        &algorithm,
+        SigningDomain::ProtocolDefined,
+        channel,
+        SignAuditRow {
+            action: "keys.sign-csr",
+            detail: Some(&detail),
+        },
+    )
+    .await?;
+    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&signed.signature)
+        .map_err(|e| AppError::Internal(format!("signature encoding: {e}")))?;
+    let pem = certification_request_pem(&info, &key, &signature).map_err(AppError::Internal)?;
+    Ok((pem, record.public_key))
+}
+
 /// Ephemeral derive-and-sign: derive an Ed25519 key at `derivation_path` from
 /// the VTA's seed, sign `payload`, and return `{ public_key, signature }`
 /// **without persisting a `KeyRecord`**.
@@ -5401,5 +5637,453 @@ mod tests {
         assert_eq!(signed[0].resource.as_deref(), Some("git-key"));
         let detail = signed[0].detail.as_deref().unwrap_or_default();
         assert!(detail.starts_with("namespace=git sha512="), "{detail}");
+    }
+
+    // ── keys/sign-jws and keys/sign-csr ───────────────────────────────
+
+    async fn mint_of_type(h: &TestHarness, key_id: &str, key_type: KeyType) -> KeyRecord {
+        create_key(
+            &h.keys_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.acl_ks,
+            &h.super_admin_auth(),
+            CreateKeyParams {
+                internal: false,
+                key_type,
+                derivation_path: None,
+                key_id: Some(key_id.to_string()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("test-ctx".to_string()),
+            },
+            "test",
+        )
+        .await
+        .expect("mint key");
+        h.keys_ks
+            .get(keys::store_key(key_id))
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    /// A community server's verifier: an application of `test-ctx` narrowed
+    /// to `capabilities`.
+    async fn verifier(h: &TestHarness, capabilities: Vec<Capability>) -> AuthClaims {
+        let auth = AuthClaims {
+            did: "did:key:z6MkVerifier".to_string(),
+            role: Role::Application,
+            allowed_contexts: vec!["test-ctx".to_string()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            issued_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        };
+        store_narrowed(h, &auth, capabilities).await;
+        auth
+    }
+
+    async fn jws(
+        h: &TestHarness,
+        audit: &vta_audit::SharedAuditSink,
+        auth: &AuthClaims,
+        key_id: &str,
+        header: serde_json::Value,
+        payload: serde_json::Value,
+    ) -> Result<(String, &'static str), ProtocolSignRefusal> {
+        sign_jws(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            audit,
+            auth,
+            key_id,
+            header.as_object().unwrap(),
+            super::super::sign_formats::JwsPayload::Json(payload.as_object().unwrap()),
+            "test",
+        )
+        .await
+    }
+
+    async fn csr(
+        h: &TestHarness,
+        audit: &vta_audit::SharedAuditSink,
+        auth: &AuthClaims,
+        key_id: &str,
+        request: serde_json::Value,
+    ) -> Result<(String, String), ProtocolSignRefusal> {
+        use vta_sdk::protocols::key_management::sign_csr::SignCsrPayload;
+        let mut request = request;
+        request["keyId"] = key_id.into();
+        let req: SignCsrPayload = serde_json::from_value(request).expect("a schema-valid request");
+        sign_csr(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            audit,
+            auth,
+            key_id,
+            &req.subject,
+            req.subject_alt_names.as_ref(),
+            "test",
+        )
+        .await
+    }
+
+    fn record_key(record: &KeyRecord) -> vta_sdk::jws::JwsKey {
+        vta_sdk::jws::JwsKey::from_did_key(&format!("did:key:{}", record.public_key)).unwrap()
+    }
+
+    /// A JWS from a P-256 and an Ed25519 key: `alg` from the key, the header
+    /// the producer asked for, and a signature that verifies under the key.
+    #[tokio::test]
+    async fn sign_jws_signs_a_jws_that_verifies_under_the_key() {
+        let h = TestHarness::new().await;
+        let auth = verifier(&h, vec![Capability::SignJws]).await;
+        for (key_id, key_type, want_alg) in [
+            ("verifier-p256", KeyType::P256, "ES256"),
+            ("verifier-ed", KeyType::Ed25519, "EdDSA"),
+        ] {
+            let record = mint_of_type(&h, key_id, key_type).await;
+            let (token, alg) = jws(
+                &h,
+                &h.audit,
+                &auth,
+                key_id,
+                serde_json::json!({ "typ": "oauth-authz-req+jwt", "kid": "did:example:v#key-1" }),
+                serde_json::json!({ "nonce": "n-1", "iat": 1_791_709_200 }),
+            )
+            .await
+            .expect("a sign-jws holder signs");
+            assert_eq!(alg, want_alg);
+            let claims = record_key(&record)
+                .verify_compact(&token)
+                .expect("verifies");
+            assert_eq!(claims["nonce"], "n-1");
+            let header: serde_json::Value = serde_json::from_slice(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(token.split('.').next().unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                header,
+                serde_json::json!({ "alg": want_alg, "typ": "oauth-authz-req+jwt", "kid": "did:example:v#key-1" })
+            );
+        }
+    }
+
+    /// `sign` does not authorize either task here — this VTA frames
+    /// `keys/sign` payloads, so `sign` is a grant that cannot yield a JWS or a
+    /// certificate request — and each narrowed grant reaches only its own task.
+    #[tokio::test]
+    async fn protocol_signing_takes_its_own_capability_only() {
+        let h = TestHarness::new().await;
+        mint_of_type(&h, "verifier-p256", KeyType::P256).await;
+        let subject = serde_json::json!({ "subject": [{ "type": "CN", "value": "Verifier" }] });
+
+        let auth = verifier(&h, vec![Capability::Sign]).await;
+        let denied = jws(
+            &h,
+            &h.audit,
+            &auth,
+            "verifier-p256",
+            serde_json::json!({}),
+            serde_json::json!({}),
+        )
+        .await;
+        assert!(
+            matches!(denied, Err(ProtocolSignRefusal::App(AppError::Forbidden(ref m))) if m.contains("sign-jws")),
+            "{denied:?}"
+        );
+        let denied = csr(&h, &h.audit, &auth, "verifier-p256", subject.clone()).await;
+        assert!(
+            matches!(denied, Err(ProtocolSignRefusal::App(AppError::Forbidden(ref m))) if m.contains("sign-csr")),
+            "{denied:?}"
+        );
+
+        let auth = verifier(&h, vec![Capability::SignJws]).await;
+        let denied = csr(&h, &h.audit, &auth, "verifier-p256", subject.clone()).await;
+        assert!(matches!(
+            denied,
+            Err(ProtocolSignRefusal::App(AppError::Forbidden(_)))
+        ));
+        let denied = sign_payload(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &h.audit,
+            &auth,
+            "verifier-p256",
+            b"anything at all",
+            &SignAlgorithm::ES256,
+            SigningDomain::Opaque,
+            "test",
+        )
+        .await;
+        assert!(matches!(denied, Err(AppError::Forbidden(_))), "{denied:?}");
+
+        let auth = verifier(&h, vec![Capability::SignCsr]).await;
+        csr(&h, &h.audit, &auth, "verifier-p256", subject)
+            .await
+            .expect("a sign-csr holder gets a request");
+    }
+
+    /// The SPKI of a VTA-held key, certified by a throwaway CA, as an `x5c`.
+    fn x5c_for(record: &KeyRecord) -> String {
+        use super::super::sign_formats::{CsrKey, subject_public_key_info};
+        let spki = subject_public_key_info(&CsrKey::from_jws_key(&record_key(record)).unwrap());
+        let spki = rcgen::SubjectPublicKeyInfo::from_der(&spki).unwrap();
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let issuer = rcgen::Issuer::new(ca_params, ca_key);
+        let leaf = rcgen::CertificateParams::new(vec!["verifier.example".to_string()])
+            .unwrap()
+            .signed_by(&spki, &issuer)
+            .unwrap();
+        base64::engine::general_purpose::STANDARD.encode(leaf.der())
+    }
+
+    /// The refusals `keys/sign-jws/0.1` declares a code for.
+    #[tokio::test]
+    async fn sign_jws_declared_refusals() {
+        use super::super::sign_formats::FormatRefusal;
+        let h = TestHarness::new().await;
+        let record = mint_of_type(&h, "verifier-p256", KeyType::P256).await;
+        let other = mint_of_type(&h, "other-p256", KeyType::P256).await;
+        mint_of_type(&h, "agreement", KeyType::X25519).await;
+        let auth = verifier(&h, vec![Capability::SignJws]).await;
+        let sign = |key: &'static str, header: serde_json::Value| {
+            jws(
+                &h,
+                &h.audit,
+                &auth,
+                key,
+                header,
+                serde_json::json!({ "a": 1 }),
+            )
+        };
+
+        let forbidden = sign("verifier-p256", serde_json::json!({ "alg": "none" })).await;
+        assert!(
+            matches!(forbidden, Err(ProtocolSignRefusal::Format(FormatRefusal::HeaderMemberForbidden(ref m))) if m == "alg"),
+            "{forbidden:?}"
+        );
+        let wrong_cert = sign(
+            "verifier-p256",
+            serde_json::json!({ "x5c": [x5c_for(&other)] }),
+        )
+        .await;
+        assert!(
+            matches!(
+                wrong_cert,
+                Err(ProtocolSignRefusal::Format(FormatRefusal::InvalidArgument(
+                    _
+                )))
+            ),
+            "{wrong_cert:?}"
+        );
+        let (token, _) = sign(
+            "verifier-p256",
+            serde_json::json!({ "x5c": [x5c_for(&record)] }),
+        )
+        .await
+        .expect("an x5c certifying the named key is signed");
+        record_key(&record).verify_compact(&token).unwrap();
+
+        let ka = sign("agreement", serde_json::json!({})).await;
+        assert!(
+            matches!(
+                ka,
+                Err(ProtocolSignRefusal::KeyTypeUnsupported(KeyType::X25519))
+            ),
+            "{ka:?}"
+        );
+
+        let mut revoked = record.clone();
+        revoked.status = KeyStatus::Revoked;
+        h.keys_ks
+            .insert(keys::store_key("verifier-p256"), &revoked)
+            .await
+            .unwrap();
+        let inactive = sign("verifier-p256", serde_json::json!({})).await;
+        assert!(
+            matches!(inactive, Err(ProtocolSignRefusal::KeyNotActive(_))),
+            "{inactive:?}"
+        );
+    }
+
+    /// The request names what was asked, carries the key's own public key, and
+    /// its signature verifies — for P-256 (the EUDI access-certificate case)
+    /// and Ed25519.
+    #[tokio::test]
+    async fn sign_csr_builds_a_request_a_ca_accepts() {
+        use x509_parser::prelude::*;
+        let h = TestHarness::new().await;
+        let auth = verifier(&h, vec![Capability::SignCsr]).await;
+        for (key_id, key_type) in [
+            ("access-p256", KeyType::P256),
+            ("access-ed", KeyType::Ed25519),
+        ] {
+            let record = mint_of_type(&h, key_id, key_type.clone()).await;
+            let (pem, public_key) = csr(
+                &h,
+                &h.audit,
+                &auth,
+                key_id,
+                serde_json::json!({
+                    "subject": [
+                        { "type": "C", "value": "DE" },
+                        { "type": "O", "value": "Example Community e.V." },
+                        { "type": "organizationIdentifier", "value": "LEIXG-5299000EXAMPLE000001" },
+                        { "type": "CN", "value": "Example Community Verifier" }
+                    ],
+                    "subjectAltNames": {
+                        "dns": ["verifier.community.example"],
+                        "uri": ["https://verifier.community.example"]
+                    }
+                }),
+            )
+            .await
+            .expect("a request");
+            assert_eq!(public_key, record.public_key);
+            assert!(pem.starts_with("-----BEGIN CERTIFICATE REQUEST-----\n"));
+            assert!(pem.lines().all(|l| l.len() <= 64));
+
+            let (_, der) = x509_parser::pem::parse_x509_pem(pem.as_bytes()).unwrap();
+            let (rest, req) = X509CertificationRequest::from_der(&der.contents).unwrap();
+            assert!(rest.is_empty());
+            req.verify_signature()
+                .expect("the request's signature verifies");
+            let info = &req.certification_request_info;
+            assert_eq!(
+                info.subject.to_string(),
+                "C=DE, O=Example Community e.V., OID(2.5.4.97)=LEIXG-5299000EXAMPLE000001, CN=Example Community Verifier",
+                "{key_type:?}"
+            );
+            let own = super::super::sign_formats::subject_public_key_info(
+                &super::super::sign_formats::CsrKey::from_jws_key(&record_key(&record)).unwrap(),
+            );
+            assert_eq!(
+                info.subject_pki.raw,
+                own.as_slice(),
+                "the key's own public key"
+            );
+            let extensions: Vec<_> = req.requested_extensions().unwrap().collect();
+            assert_eq!(extensions.len(), 1, "the subjectAltName alone");
+            let ParsedExtension::SubjectAlternativeName(san) = extensions[0] else {
+                panic!("{:?}", extensions[0]);
+            };
+            assert_eq!(
+                san.general_names,
+                vec![
+                    GeneralName::DNSName("verifier.community.example"),
+                    GeneralName::URI("https://verifier.community.example"),
+                ]
+            );
+        }
+    }
+
+    /// A subject attribute that breaks the table is refused as it stands, and
+    /// nothing is signed.
+    #[tokio::test]
+    async fn sign_csr_refuses_a_subject_it_would_have_to_repair() {
+        use super::super::sign_formats::FormatRefusal;
+        let h = TestHarness::new().await;
+        mint_of_type(&h, "access-p256", KeyType::P256).await;
+        let auth = verifier(&h, vec![Capability::SignCsr]).await;
+        let sink = recording_sink(false);
+        let audit: vta_audit::SharedAuditSink = sink.clone();
+        let refused = csr(
+            &h,
+            &audit,
+            &auth,
+            "access-p256",
+            serde_json::json!({ "subject": [{ "type": "CN", "value": "ok" }, { "type": "C", "value": "de" }] }),
+        )
+        .await;
+        assert!(
+            matches!(
+                refused,
+                Err(ProtocolSignRefusal::Format(FormatRefusal::SubjectInvalid {
+                    member: "subject",
+                    index: Some(1),
+                    ..
+                }))
+            ),
+            "{refused:?}"
+        );
+        assert!(
+            sink.rows
+                .lock()
+                .await
+                .iter()
+                .all(|r| !r.action.starts_with("keys.sign"))
+        );
+    }
+
+    /// One row per signature, under each task's own action, carrying the
+    /// digest of what was signed and never the payload.
+    #[tokio::test]
+    async fn protocol_signing_audits_the_digest_not_the_payload() {
+        let h = TestHarness::new().await;
+        mint_of_type(&h, "verifier-p256", KeyType::P256).await;
+        let auth = verifier(&h, vec![Capability::SignJws, Capability::SignCsr]).await;
+        let sink = recording_sink(false);
+        let audit: vta_audit::SharedAuditSink = sink.clone();
+
+        jws(
+            &h,
+            &audit,
+            &auth,
+            "verifier-p256",
+            serde_json::json!({ "typ": "oauth-authz-req+jwt" }),
+            serde_json::json!({ "nonce": "secret-nonce" }),
+        )
+        .await
+        .unwrap();
+        csr(
+            &h,
+            &audit,
+            &auth,
+            "verifier-p256",
+            serde_json::json!({ "subject": [{ "type": "CN", "value": "Verifier" }] }),
+        )
+        .await
+        .unwrap();
+
+        let rows = sink.rows.lock().await;
+        let signed: Vec<_> = rows
+            .iter()
+            .filter(|r| r.action.starts_with("keys.sign"))
+            .collect();
+        assert_eq!(signed.len(), 2, "{rows:?}");
+        assert_eq!(signed[0].action, "keys.sign-jws");
+        let detail = signed[0].detail.as_deref().unwrap_or_default();
+        assert!(
+            detail.starts_with("alg=ES256 typ=oauth-authz-req+jwt sha256="),
+            "{detail}"
+        );
+        assert!(!detail.contains("secret-nonce"));
+        assert_eq!(signed[1].action, "keys.sign-csr");
+        let detail = signed[1].detail.as_deref().unwrap_or_default();
+        assert!(
+            detail.starts_with("subject=CN=Verifier san= sha256="),
+            "{detail}"
+        );
     }
 }

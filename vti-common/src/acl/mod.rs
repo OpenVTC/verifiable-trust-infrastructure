@@ -176,6 +176,26 @@ pub enum Capability {
     /// Derived by every role that derives `Sign`, which already confers strictly
     /// more; the gate accepts either.
     SignSshsig,
+    /// JWS signing — `keys/sign-jws/0.1`: a compact JWS (an OpenID4VP request
+    /// object, a proof-of-possession JWT) from a key that never leaves the VTA.
+    ///
+    /// Registered upstream as `signJws`. The VTA writes the header's `alg`
+    /// and builds the JWS signing input itself, so a holder obtains a JWS and
+    /// nothing else. Unlike [`Capability::SignSshsig`], the gate does **not**
+    /// accept [`Capability::Sign`] in its place: this VTA frames `keys/sign`
+    /// payloads under its own signing domain, so `sign` is a grant that cannot
+    /// yield a JWS, and the specification says such a custodian SHOULD NOT
+    /// widen it into one.
+    ///
+    /// Derived by every role that derives `Sign`.
+    SignJws,
+    /// Certificate-request signing — `keys/sign-csr/0.1`: a PKCS#10 request for
+    /// a key that never leaves the VTA, so a CA can certify it (an EUDI access
+    /// certificate). Registered upstream as `signCsr`; `sign` is not accepted
+    /// for it, for the reason given on [`Capability::SignJws`].
+    ///
+    /// Derived by every role that derives `Sign`.
+    SignCsr,
     /// Mutating the **archival lifecycle** of a stored credential — the
     /// `vault/credentials/{archive,unarchive,delete,restore,purge}/0.1`
     /// tasks. Distinct from `VaultWrite` (which gates `vault/credentials/
@@ -391,6 +411,8 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::DeviceAdmin,
             Capability::Sign,
             Capability::SignSshsig,
+            Capability::SignJws,
+            Capability::SignCsr,
             Capability::SignTrustTask,
             Capability::KeyMint,
             Capability::KeyExport,
@@ -410,6 +432,8 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::DeviceAdmin,
             Capability::Sign,
             Capability::SignSshsig,
+            Capability::SignJws,
+            Capability::SignCsr,
             Capability::SignTrustTask,
             Capability::KeyMint,
             Capability::ExternalAuthUse,
@@ -440,6 +464,8 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::FillRelease,
             Capability::Sign,
             Capability::SignSshsig,
+            Capability::SignJws,
+            Capability::SignCsr,
             Capability::SignTrustTask,
             Capability::MemoryRead,
             Capability::MemoryWrite,
@@ -1871,6 +1897,42 @@ mod tests {
         assert!(entry_has_capability(&entry, Capability::SignSshsig));
         assert!(!entry_has_capability(&entry, Capability::Sign));
         assert!(!entry_has_capability(&entry, Capability::VaultRead));
+    }
+
+    /// `sign-jws` and `sign-csr` follow `sign` through the roles, and a
+    /// verifier narrowed to them holds neither the general oracle nor the
+    /// other's, on the wire under their registered names.
+    #[test]
+    fn sign_jws_and_sign_csr_follow_sign_and_narrow_alone() {
+        for role in [
+            Role::Admin,
+            Role::Initiator,
+            Role::Application,
+            Role::Reader,
+            Role::Monitor,
+        ] {
+            for cap in [Capability::SignJws, Capability::SignCsr] {
+                assert_eq!(
+                    role_has_capability(&role, Capability::Sign),
+                    role_has_capability(&role, cap),
+                    "{role:?} {cap:?}"
+                );
+                assert!(!is_additive(cap));
+            }
+        }
+        let mut entry = AclEntry::new("did:key:zVerifier", Role::Application, "did:key:zRoot");
+        entry.capabilities = vec![Capability::SignJws];
+        assert!(entry_has_capability(&entry, Capability::SignJws));
+        assert!(!entry_has_capability(&entry, Capability::SignCsr));
+        assert!(!entry_has_capability(&entry, Capability::Sign));
+        assert_eq!(
+            serde_json::to_value(Capability::SignJws).unwrap(),
+            "sign-jws"
+        );
+        assert_eq!(
+            serde_json::to_value(Capability::SignCsr).unwrap(),
+            "sign-csr"
+        );
     }
 
     // ── Additive capabilities ───────────────────────────────────────

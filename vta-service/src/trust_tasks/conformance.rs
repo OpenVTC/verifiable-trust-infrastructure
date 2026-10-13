@@ -1305,6 +1305,49 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_KEYS_SIGN_JWS_0_1,
+            // The specification's own example, whose JWS verifies.
+            checked!(
+                specs::keys::sign_jws::v0_1::Payload,
+                specs::keys::sign_jws::v0_1::Response,
+                serde_json::json!({
+                    "keyId": "verifier-p256",
+                    "header": {
+                        "typ": "oauth-authz-req+jwt",
+                        "kid": "did:example:community-verifier#key-1"
+                    },
+                    "payload": { "aud": "https://self-issued.me/v2", "nonce": "q8vTt3yN5mQ0aW2f" }
+                }),
+                serde_json::json!({
+                    "keyId": "verifier-p256",
+                    "alg": "ES256",
+                    "jws": "eyJhbGciOiJFUzI1NiJ9.eyJub25jZSI6InE4dlR0M3lONW1RMGFXMmYifQ.9w2it71b0W3qKXW-vPPTvwCxJo7tGZgH5Fqn9oSFJMgaaYKlt3GS1GQAbXKfOYl51eZ3a8FJzoRwXctc4oiUvg"
+                })
+            ),
+        ),
+        (
+            uris::TASK_KEYS_SIGN_CSR_0_1,
+            checked!(
+                specs::keys::sign_csr::v0_1::Payload,
+                specs::keys::sign_csr::v0_1::Response,
+                serde_json::json!({
+                    "keyId": "eudi-access-p256",
+                    "subject": [
+                        { "type": "C", "value": "DE" },
+                        { "type": "O", "value": "Example Community e.V." },
+                        { "type": "organizationIdentifier", "value": "LEIXG-5299000EXAMPLE000001" },
+                        { "type": "CN", "value": "Example Community Verifier" }
+                    ],
+                    "subjectAltNames": { "dns": ["verifier.community.example"] }
+                }),
+                serde_json::json!({
+                    "keyId": "eudi-access-p256",
+                    "csr": "-----BEGIN CERTIFICATE REQUEST-----\nMIIBAA==\n-----END CERTIFICATE REQUEST-----\n",
+                    "publicKey": "zDnaeTZCJom8WYgWfqp7ubMUwHK9ayrv31SSBJACRDDFiazq7"
+                })
+            ),
+        ),
+        (
             uris::TASK_KEYS_DERIVE_AND_SIGN_0_1,
             checked!(
                 specs::keys::derive_and_sign::v0_1::Payload,

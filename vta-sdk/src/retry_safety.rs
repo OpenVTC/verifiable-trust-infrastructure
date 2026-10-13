@@ -224,6 +224,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // deterministic; an ES256 retry yields another valid signature). Nothing
     // durable beyond the audit row.
     (trust_tasks::TASK_KEYS_SIGN_SSHSIG_0_1, ReadOnly),
+    // The VTA builds the same signing input from the same request (RFC 8785),
+    // and a certificate request from the same subject and key; a retry yields
+    // another valid signature over it. Nothing durable beyond the audit row.
+    (trust_tasks::TASK_KEYS_SIGN_JWS_0_1, ReadOnly),
+    (trust_tasks::TASK_KEYS_SIGN_CSR_0_1, ReadOnly),
     (trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1, ReadOnly),
     (
         trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
