@@ -1137,13 +1137,25 @@ jobs:
       # meaningless or tight enough to fail on a dependency's patch release, and
       # what a reviewer needs is the number in the log next to the diff that
       # moved it.
+      #
+      # Built as the npm package `@openvtc/vti-rooms-wasm` and packed, so the
+      # package a maintainer publishes is one CI has built. The `wasm-bindgen`
+      # CLI must match the crate `Cargo.lock` pins; the script refuses another.
+      - name: wasm-bindgen version
+        id: wasm-bindgen
+        run: |
+          echo "version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)" \
+            >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }}
       - name: vti-rooms-wasm artifact
         run: |
-          cargo build -p vti-rooms-wasm --profile wasm-release \
-            --target wasm32-unknown-unknown
+          scripts/build-rooms-wasm-npm.sh
           f=target/wasm32-unknown-unknown/wasm-release/vti_rooms_wasm.wasm
           echo "raw:      $(( $(wc -c < "$f") / 1024 )) KB"
           echo "gzipped:  $(( $(gzip -9 -c "$f" | wc -c) / 1024 )) KB"
+          (cd target/npm/vti-rooms-wasm && npm pack --dry-run)
 
   features-mediator:
     # Behaviour tests that stand up a real embedded mediator, grouped because
