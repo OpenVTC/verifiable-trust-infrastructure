@@ -188,7 +188,7 @@ vta-external = { path = "../vta-external", version = "0.3" }
 # The hidden-vetting PCS engine (`vta/pcs/*`): the member-side vetter and
 # applicant engines this VTA runs for its principal. Always compiled — a hosted
 # VTA is what serves a wallet that cannot run PCS itself.
-vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.1" }
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.0" }
 # The PCS crate itself, for the multibase codec of the blinding state an
 # enrolment in flight is stored as. Pinned with `vti-vetting-pcs`.
 predicate-credential-system = { version = "0.1", features = ["serde"] }
@@ -405,7 +405,7 @@ aws-lc-rs = { version = "1", optional = true }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.16", features = ["test-support"] }
 # An in-process community (`vtc::Vtc`) for driving the PCS engine end to end:
 # enrolment, the drip, attestation, the proof and the community's decision.
-vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.1", features = ["harness"] }
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.0", features = ["harness"] }
 tempfile = "3"
 # The exact parser the DID-hosting server uses to read `alsoKnownAs` off a
 # published log. Dev-only: it lets the agent-name contract test assert that
