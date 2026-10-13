@@ -247,6 +247,19 @@ as `keys.sign-jws` (`alg`, `typ`, the SHA-256 of the signing input — never the
 payload) or `keys.sign-csr` (subject, alternative names, the SHA-256 of the
 signed request).
 
+From the command line, `pnm keys sign-csr` writes the request:
+
+```sh
+pnm keys sign-csr <key-id> --country DE --organization "Example e.V." \
+  --organization-identifier VATDE-123456789 --common-name "Example Community" \
+  --dns vtc.example.org --out access.csr
+```
+
+The flags become the subject in encoded order (`C`, `ST`, `L`, `O`, `OU`,
+`organizationIdentifier`, `serialNumber`, `CN`, `emailAddress`) whatever order
+they are given in. Before writing the request, `pnm` checks that the VTA
+certified the key it named.
+
 So an integration that operates its context's DID, and loads that DID's keys
 at startup (a mediator, a room host, anything using
 `vta_sdk::integration::startup`), must be an admin **scoped to that context**:

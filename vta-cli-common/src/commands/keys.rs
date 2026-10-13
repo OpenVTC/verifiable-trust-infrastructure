@@ -614,6 +614,132 @@ pub async fn cmd_key_bundle_one(
     .await
 }
 
+/// The subject a `pnm keys sign-csr` request names, attribute by attribute.
+#[derive(Debug, Default, Clone)]
+pub struct CsrSubjectArgs {
+    pub country: Option<String>,
+    pub state: Option<String>,
+    pub locality: Option<String>,
+    pub organization: Option<String>,
+    pub organizational_units: Vec<String>,
+    pub organization_identifier: Option<String>,
+    pub serial_number: Option<String>,
+    pub common_name: String,
+    pub email_address: Option<String>,
+    pub dns: Vec<String>,
+    pub uri: Vec<String>,
+    pub email: Vec<String>,
+}
+
+impl CsrSubjectArgs {
+    /// The `keys/sign-csr` subject in encoded order — `C`, `ST`, `L`, `O`,
+    /// `OU`…, `organizationIdentifier`, `serialNumber`, `CN`, `emailAddress`:
+    /// most general first, the order a DN prints in reverse — and the
+    /// alternative names, if any. Values go as given; the VTA checks them
+    /// and repairs nothing.
+    pub fn to_request(
+        &self,
+    ) -> Result<
+        (
+            Vec<vta_sdk::protocols::key_management::sign_csr::SignCsrRdnAttribute>,
+            Option<vta_sdk::protocols::key_management::sign_csr::SignCsrSubjectAltNames>,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        fn one<'a>(t: &'static str, v: &'a Option<String>) -> Option<(&'static str, &'a str)> {
+            v.as_deref().map(|v| (t, v))
+        }
+        let attrs: Vec<(&str, &str)> = [
+            one("C", &self.country),
+            one("ST", &self.state),
+            one("L", &self.locality),
+            one("O", &self.organization),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(
+            self.organizational_units
+                .iter()
+                .map(|ou| ("OU", ou.as_str())),
+        )
+        .chain(
+            [
+                one("organizationIdentifier", &self.organization_identifier),
+                one("serialNumber", &self.serial_number),
+                Some(("CN", self.common_name.as_str())),
+                one("emailAddress", &self.email_address),
+            ]
+            .into_iter()
+            .flatten(),
+        )
+        .collect();
+        let subject = attrs
+            .into_iter()
+            .map(|(t, v)| serde_json::from_value(serde_json::json!({ "type": t, "value": v })))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("subject: {e}"))?;
+        let names = if self.dns.is_empty() && self.uri.is_empty() && self.email.is_empty() {
+            None
+        } else {
+            let mut names = serde_json::Map::new();
+            for (member, list) in [
+                ("dns", &self.dns),
+                ("uri", &self.uri),
+                ("email", &self.email),
+            ] {
+                if !list.is_empty() {
+                    names.insert(member.into(), serde_json::json!(list));
+                }
+            }
+            Some(
+                serde_json::from_value(serde_json::Value::Object(names))
+                    .map_err(|e| format!("subject alternative names: {e}"))?,
+            )
+        };
+        Ok((subject, names))
+    }
+}
+
+/// `pnm keys sign-csr <key-id>`: a PKCS#10 certificate signing request for a
+/// key that stays in the VTA (`keys/sign-csr/0.1`) — for an EUDI verifier's
+/// access certificate, say, whose key the VTC uses through the VTA rather than
+/// holding it.
+///
+/// The VTA builds the request from the subject and the key's own public key.
+/// As the specification asks of a producer, the `publicKey` it answers with is
+/// compared with the key's record before the request is written.
+pub async fn cmd_key_sign_csr(
+    client: &VtaClient,
+    key_id: &str,
+    subject: &CsrSubjectArgs,
+    out: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (rdns, names) = subject.to_request()?;
+    let record = client.get_key(key_id).await?;
+    let response = client.sign_csr(key_id, rdns, names).await?;
+    if response.public_key.as_str() != record.public_key {
+        return Err(format!(
+            "the VTA's request certifies {}, not key {key_id} ({}); not writing it",
+            response.public_key.as_str(),
+            record.public_key
+        )
+        .into());
+    }
+    match out {
+        Some(path) => {
+            std::fs::write(path, response.csr.as_str())?;
+            eprintln!(
+                "Wrote the certificate signing request to {}",
+                path.display()
+            );
+        }
+        None => print!("{}", response.csr.as_str()),
+    }
+    eprintln!("Key:        {key_id} ({})", record.key_type);
+    eprintln!("Public key: {}", record.public_key);
+    Ok(())
+}
+
 /// The 32-byte private scalar of a `p256-priv` multikey (multicodec 0x1306).
 fn p256_private_scalar(
     private_key_multibase: &str,
@@ -665,8 +791,42 @@ pub async fn cmd_key_secrets(
 
 #[cfg(test)]
 mod tests {
-    use super::{ImportCarrier, import_carrier, p256_private_scalar};
+    use super::{CsrSubjectArgs, ImportCarrier, import_carrier, p256_private_scalar};
     use vta_sdk::client::SurfaceTransport;
+
+    /// The flags become the subject in encoded order (most general first),
+    /// whatever order they were given in, and the names only when asked for.
+    #[test]
+    fn sign_csr_subject_is_in_encoded_order() {
+        let args = CsrSubjectArgs {
+            common_name: "Example Community Verifier".into(),
+            organization_identifier: Some("LEIXG-5299000EXAMPLE000001".into()),
+            organization: Some("Example Community e.V.".into()),
+            country: Some("DE".into()),
+            dns: vec!["verifier.community.example".into()],
+            ..CsrSubjectArgs::default()
+        };
+        let (subject, names) = args.to_request().unwrap();
+        assert_eq!(
+            serde_json::to_value(&subject).unwrap(),
+            serde_json::json!([
+                { "type": "C", "value": "DE" },
+                { "type": "O", "value": "Example Community e.V." },
+                { "type": "organizationIdentifier", "value": "LEIXG-5299000EXAMPLE000001" },
+                { "type": "CN", "value": "Example Community Verifier" }
+            ])
+        );
+        assert_eq!(
+            serde_json::to_value(names.unwrap()).unwrap(),
+            serde_json::json!({ "dns": ["verifier.community.example"] })
+        );
+
+        let bare = CsrSubjectArgs {
+            common_name: "Verifier".into(),
+            ..CsrSubjectArgs::default()
+        };
+        assert!(bare.to_request().unwrap().1.is_none());
+    }
 
     /// The scalar comes out of a `p256-priv` multikey; anything else is
     /// refused rather than sealed as if it were one.

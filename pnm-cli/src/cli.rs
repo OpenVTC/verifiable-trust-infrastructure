@@ -3289,6 +3289,7 @@ pub(crate) enum RetentionCommands {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum KeyCommands {
     /// Create a new key.
     ///
@@ -3447,6 +3448,55 @@ pub(crate) enum KeyCommands {
         #[arg(long, requires = "recipient_did", conflicts_with = "recipient")]
         recipient_nonce: Option<String>,
         /// Write the armored bundle here instead of stdout.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+    /// Write a certificate signing request (PKCS#10, PEM) for a key that stays
+    /// in the VTA — e.g. an EUDI verifier's access-certificate key, used by
+    /// the VTC through the VTA. The VTA builds the request from these
+    /// attributes and the key's own public key. Needs the `sign-csr`
+    /// capability.
+    SignCsr {
+        /// The key's id (`pnm keys list`); P-256 or Ed25519
+        key_id: String,
+        /// CN: the common name
+        #[arg(long)]
+        common_name: String,
+        /// O: the organisation name
+        #[arg(long)]
+        organization: Option<String>,
+        /// organizationIdentifier, e.g. `VATDE-123456789` or `LEIXG-…`
+        #[arg(long)]
+        organization_identifier: Option<String>,
+        /// C: an ISO 3166-1 alpha-2 country code, e.g. `DE`
+        #[arg(long)]
+        country: Option<String>,
+        /// ST: state or province
+        #[arg(long)]
+        state: Option<String>,
+        /// L: locality
+        #[arg(long)]
+        locality: Option<String>,
+        /// OU: an organisational unit (repeatable)
+        #[arg(long = "organizational-unit")]
+        organizational_units: Vec<String>,
+        /// serialNumber attribute of the subject
+        #[arg(long)]
+        serial_number: Option<String>,
+        /// emailAddress in the subject (prefer `--email`, a subject
+        /// alternative name)
+        #[arg(long)]
+        email_address: Option<String>,
+        /// A dNSName subject alternative name (repeatable)
+        #[arg(long)]
+        dns: Vec<String>,
+        /// A URI subject alternative name (repeatable)
+        #[arg(long)]
+        uri: Vec<String>,
+        /// An rfc822Name subject alternative name (repeatable)
+        #[arg(long)]
+        email: Vec<String>,
+        /// Write the PEM here instead of stdout.
         #[arg(long)]
         out: Option<std::path::PathBuf>,
     },

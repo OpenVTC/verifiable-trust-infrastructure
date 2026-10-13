@@ -93,6 +93,38 @@ pub(crate) async fn run(
             )?;
             keys::cmd_key_bundle_one(client, &key_id, recipient, out.as_deref()).await
         }
+        KeyCommands::SignCsr {
+            key_id,
+            common_name,
+            organization,
+            organization_identifier,
+            country,
+            state,
+            locality,
+            organizational_units,
+            serial_number,
+            email_address,
+            dns,
+            uri,
+            email,
+            out,
+        } => {
+            let subject = keys::CsrSubjectArgs {
+                country,
+                state,
+                locality,
+                organization,
+                organizational_units,
+                organization_identifier,
+                serial_number,
+                common_name,
+                email_address,
+                dns,
+                uri,
+                email,
+            };
+            keys::cmd_key_sign_csr(client, &key_id, &subject, out.as_deref()).await
+        }
         KeyCommands::Seeds => keys::cmd_seeds_list(client).await,
         KeyCommands::RotateSeed { mnemonic } => keys::cmd_seeds_rotate(client, mnemonic).await,
     }
