@@ -110,7 +110,10 @@ pub async fn present_and_decide_join(
     // carries no invitation and no vetting statements, so a criterion asking
     // for either is not met by it.
     let presented = crate::join::criteria::Presented {
-        credentials: crate::join::criteria::presented_from_verified(&presentation),
+        credentials: crate::join::criteria::presented_from_verified(
+            &presentation,
+            &set.presentations,
+        ),
         ..Default::default()
     };
     let governing =
@@ -687,6 +690,7 @@ mod tests {
             claims: json!({ "givenName": "Alice", "exp": 1_900_000_000 }),
             credential_status: None,
             task_context: None,
+            issuer_authority_key_ids: Vec::new(),
         }
     }
 

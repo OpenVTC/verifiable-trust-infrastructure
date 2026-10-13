@@ -551,9 +551,28 @@ async fn verify_answer(
         }
     }
 
-    // 6. The criterion's query, satisfied by what verified.
+    // 6. The criterion's query, satisfied by what verified — each credential
+    //    certified by an authority its query's `trusted_authorities` names,
+    //    which the matcher does not read.
     let query =
         DcqlQuery::from_json(&session.dcql_query).map_err(|e| invalid("stored query", &e))?;
+    for (query_id, _, p) in &verified {
+        let authorities = query
+            .credentials
+            .iter()
+            .find(|cq| cq.id == *query_id)
+            .and_then(|cq| cq.trusted_authorities.as_deref());
+        if let Some(authorities) = authorities
+            && !crate::join::criteria::meets_trusted_authorities(
+                authorities,
+                &p.issuer_authority_key_ids,
+            )
+        {
+            warn!(session = %session.id, issuer = %p.issuer_did,
+                "wallet response refused: no authority the query trusts certifies its issuer");
+            return Err(RefusalReason::IssuerNotTrusted);
+        }
+    }
     let mut answered: BTreeMap<String, Vec<CandidateCredential>> = BTreeMap::new();
     for (n, (query_id, format, p)) in verified.iter().enumerate() {
         answered
@@ -585,6 +604,7 @@ async fn verify_answer(
                 issuer: p.issuer_did,
                 vct: p.vct,
                 claims: p.claims,
+                issuer_authority_key_ids: p.issuer_authority_key_ids,
             })
             .collect(),
     })

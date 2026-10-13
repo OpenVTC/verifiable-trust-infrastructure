@@ -68,6 +68,14 @@ async fn fixture_trusting(
 
 /// The criterion and its policies, over a VTC `builder` makes.
 async fn fixture_built(builder: vtc_service::test_support::TestVtcBuilder) -> Fixture {
+    fixture_built_with(builder, None).await
+}
+
+/// [`fixture_built`], the criterion's query carrying `trusted_authorities`.
+async fn fixture_built_with(
+    builder: vtc_service::test_support::TestVtcBuilder,
+    trusted_authorities: Option<Value>,
+) -> Fixture {
     let vtc = builder.build().await;
     // The join decision runs the active `join` policy, as `server::run`
     // installs it.
@@ -100,6 +108,9 @@ async fn fixture_built(builder: vtc_service::test_support::TestVtcBuilder) -> Fi
             "claims": [{ "path": ["givenName"] }]
         }]
     }));
+    if let Some(authorities) = trusted_authorities {
+        criterion.query.as_mut().unwrap()["credentials"][0]["trusted_authorities"] = authorities;
+    }
     criterion.credential_issuers = Some(CredentialIssuers::Any);
     let stored = vtc_service::schemas::accepts::store_accepts(&vtc.state.schemas_ks, &criterion)
         .await
@@ -632,6 +643,63 @@ async fn an_x509_issuer_without_an_anchor_or_its_name_is_refused() {
         assert_eq!(status["state"], "refused", "{iss}: {status}");
         assert_eq!(status["reason"], "presentationInvalid", "{iss}: {status}");
     }
+}
+
+/// The key identifier (base64url) of the CA that issued an `x5c` leaf.
+fn authority_of(x5c: &[String]) -> String {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+    use x509_parser::prelude::*;
+    let der = STANDARD.decode(&x5c[0]).unwrap();
+    let (_, leaf) = X509Certificate::from_der(&der).unwrap();
+    let id = leaf
+        .extensions()
+        .iter()
+        .find_map(|e| match e.parsed_extension() {
+            ParsedExtension::AuthorityKeyIdentifier(aki) => aki.key_identifier.clone(),
+            _ => None,
+        })
+        .expect("the leaf names its CA");
+    URL_SAFE_NO_PAD.encode(id.0)
+}
+
+/// A query's `trusted_authorities` is published to the wallet and held at the
+/// response: a credential certified by another anchored CA verifies, and is
+/// still refused, because no authority the query names certifies it.
+#[tokio::test]
+async fn trusted_authorities_admits_only_the_named_authoritys_issuers() {
+    let (x5c, ca_pem) = x509_issuer_chain(0x81);
+    let (other_x5c, other_pem) = x509_issuer_chain(0x82);
+    let authorities = json!([{ "type": "aki", "values": [authority_of(&x5c)] }]);
+    let builder = TestVtc::builder()
+        .with_audit(true)
+        .with_public_url(PUBLIC_URL)
+        .with_oid4vp_identity(oid4vp_test_identity("swiyu", 0x31))
+        .with_x509_trust_anchor_pem(&format!("{ca_pem}{other_pem}"));
+    let f = fixture_built_with(builder, Some(authorities.clone())).await;
+
+    // The wallet is told which authorities count.
+    let (_, body) = start_session(&f, &APPLICANT_SEED, json!({ "criterion": f.digest })).await;
+    let session_id = body["payload"]["sessionId"].as_str().unwrap();
+    let (_, _, bytes) = get_request_object(&f, session_id).await;
+    let request = decode_segment(&String::from_utf8(bytes).unwrap(), 1);
+    assert_eq!(
+        request["dcql_query"]["credentials"][0]["trusted_authorities"], authorities,
+        "{request}"
+    );
+
+    let status = present_once(&f, |aud, nonce| {
+        presentation_by(VCT, aud, nonce, X509_ISSUER, Some(x5c.clone())).1
+    })
+    .await;
+    assert_eq!(status["state"], "presented", "{status}");
+
+    let status = present_once(&f, |aud, nonce| {
+        presentation_by(VCT, aud, nonce, X509_ISSUER, Some(other_x5c.clone())).1
+    })
+    .await;
+    assert_eq!(status["state"], "refused", "{status}");
+    assert_eq!(status["reason"], "issuerNotTrusted", "{status}");
 }
 
 /// An EUDI identity whose access certificate is not installed yet opens no

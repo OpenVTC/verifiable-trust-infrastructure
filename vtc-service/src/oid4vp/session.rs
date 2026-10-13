@@ -99,6 +99,10 @@ pub struct EvidenceCredential {
     /// The disclosed claims. Kept for the join decision; never returned by the
     /// status task.
     pub claims: Value,
+    /// The key identifiers (base64url) of the authorities certifying an issuer
+    /// known by an `x5c` chain, for a query's `trusted_authorities`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issuer_authority_key_ids: Vec<String>,
 }
 
 impl std::fmt::Debug for EvidenceCredential {

@@ -281,6 +281,32 @@ anchors to the issuers you mean: `any` admits every issuer whose credential
 verifies, DIDs included. The same anchors apply to a credential a member's
 agent presents on the credential-exchange path.
 
+To narrow one credential query to the issuers a particular authority
+certifies — the PID providers among several anchors, say — give it
+`trusted_authorities` of type `aki`, with the authority's key identifier
+(base64url) as the value:
+
+```json
+{
+  "id": "pid",
+  "format": "dc+sd-jwt",
+  "meta": { "vct_values": ["urn:eudi:pid:1"] },
+  "trusted_authorities": [{ "type": "aki", "values": ["s9tIpPmhxdiuNkHMEWNpYim8S8Y"] }]
+}
+```
+
+The wallet uses it to choose a credential, and the VTC holds it: a credential
+meets the query only if one of the values is the key identifier of a CA in its
+issuer's chain, up to and including the anchor. That chain must still end at a
+configured anchor; `trusted_authorities` narrows the anchors, never adds one. A
+DID issuer has no chain, so it meets no such query; a credential that fails one
+on a wallet session is refused `issuerNotTrusted`.
+
+Only `aki`, and only on a `dc+sd-jwt` query, is accepted. A criterion asking
+for `etsi_tl` or `openid_federation`, or with `trusted_authorities` on another
+format, is refused when registered, not published to the wallet and then
+ignored.
+
 ### What the evidence does for the join
 
 Wallet evidence counts toward the criterion its session was opened for, and no
@@ -334,5 +360,5 @@ verifier identities. `oid4vp_sessions` is not: a session lasts minutes.
 ## Not yet
 
 - swiyu trust statements in `verifier_info`, and swiyu's trusted issuers.
-- DCQL `trusted_authorities` in a criterion's query: anchors are configured per
-  community, not per credential query.
+- `trusted_authorities` of type `etsi_tl` or `openid_federation`: the VTC does
+  not read ETSI trusted lists or resolve OpenID Federation trust chains.
