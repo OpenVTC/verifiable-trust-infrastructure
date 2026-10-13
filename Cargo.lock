@@ -12142,7 +12142,7 @@ dependencies = [
 
 [[package]]
 name = "vti-vetting-pcs"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ark-bls12-381",
  "ark-ec",

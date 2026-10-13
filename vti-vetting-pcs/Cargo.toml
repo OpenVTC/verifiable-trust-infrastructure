@@ -2,7 +2,7 @@
 name = "vti-vetting-pcs"
 description = "Hidden-vetter admission (ZKP) on the Predicate Credential System: the community's issuer and verifier, and the member-side vetter and applicant engines a VTA runs"
 readme = "README.md"
-version = "0.0.0"
+version = "0.1.0"
 edition.workspace = true
 # Published, because `vta-service` is: the VTA runs the member-side engines as
 # its principal's PCS engine (the `vta/pcs/*` Trust Tasks), and a crate cannot

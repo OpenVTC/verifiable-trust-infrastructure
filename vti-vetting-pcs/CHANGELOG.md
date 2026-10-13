@@ -2,7 +2,7 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
-## [0.0.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/releases/tag/vti-vetting-pcs-v0.0.0) — 2026-10-13
+## [0.1.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/releases/tag/vti-vetting-pcs-v0.1.0) — 2026-10-13
 
 
 ### Added
