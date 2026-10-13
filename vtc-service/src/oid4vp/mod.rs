@@ -40,6 +40,7 @@ use vti_common::error::AppError;
 use crate::store::KeyspaceHandle;
 
 pub mod session;
+pub mod trust_statement;
 pub mod wallet;
 pub mod x509;
 
@@ -91,7 +92,8 @@ pub struct VerifierIdentityRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x5c: Option<Vec<String>>,
     /// Attestations about the verifier carried in every request's
-    /// `verifier_info` — an EUDI registration certificate.
+    /// `verifier_info` — an EUDI registration certificate, or a swiyu
+    /// identity's trust statements ([`trust_statement`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verifier_info: Option<Vec<Value>>,
     /// When it was installed, seconds since the epoch.

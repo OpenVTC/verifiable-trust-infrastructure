@@ -43,6 +43,7 @@ use vta_sdk::sealed_transfer::{
 };
 
 use crate::config::AppConfig;
+use crate::oid4vp::trust_statement;
 use crate::oid4vp::x509::{CsrSubject, build_csr, check_chain};
 use crate::oid4vp::{
     KeyCustody, LocalP256Signer, VerifierIdentityRecord, VerifierKind, delete_identity,
@@ -298,6 +299,31 @@ fn print_identity(record: &VerifierIdentityRecord) {
     match record.client_id() {
         Some(client_id) => println!("  client_id: {client_id}"),
         None => println!("  client_id: (none yet — install its access certificate)"),
+    }
+    let now = now_secs() as i64;
+    let statements: Vec<_> = record
+        .verifier_info
+        .iter()
+        .flatten()
+        .filter_map(trust_statement::held)
+        .collect();
+    for s in &statements {
+        let state = if s.exp <= now { "EXPIRED" } else { "expires" };
+        println!(
+            "  statement: {} ({state} {})",
+            s.kind.label(),
+            trust_statement::timestamp(s.exp)
+        );
+    }
+    if record.kind == VerifierKind::Swiyu
+        && !statements
+            .iter()
+            .any(|s| s.kind == trust_statement::StatementKind::Identity && s.exp > now)
+    {
+        println!(
+            "  statement: no current identity trust statement — wallets cannot tell who is \
+             asking (`vtc oid4vp trust-statement`)"
+        );
     }
 }
 
@@ -606,6 +632,65 @@ pub async fn run_list(config_path: Option<PathBuf>) -> CliResult {
         println!("{}", r.id);
         print_identity(&r);
     }
+    Ok(())
+}
+
+/// `vtc oid4vp trust-statement --identity <id> --file <jwt> [--file …]`.
+///
+/// Every file is checked before anything is stored: one statement for another
+/// DID, or already expired, installs none of them.
+pub async fn run_trust_statement(
+    config_path: Option<PathBuf>,
+    identity: String,
+    files: Vec<PathBuf>,
+) -> CliResult {
+    let config = AppConfig::load(config_path)?;
+    let storage_key = crate::server::offline_storage_key(&config).await?;
+    let store = crate::store::offline::open_offline(&config.store)?;
+    let ks = store
+        .keyspace(keyspaces::OID4VP_KEYS)?
+        .with_encryption(storage_key);
+    let mut record = get_identity(&ks, &identity).await?.ok_or_else(|| {
+        format!("no verifier identity '{identity}'; `vtc oid4vp list` shows them")
+    })?;
+    let did = match (&record.kind, &record.did) {
+        (VerifierKind::Swiyu, Some(did)) => did.clone(),
+        _ => {
+            return Err(format!(
+                "verifier identity '{identity}' is not a swiyu identity; an EUDI identity \
+                 carries its registration certificate instead (`vtc oid4vp certificate \
+                 --registration-certificate …`)"
+            )
+            .into());
+        }
+    };
+    let now = now_secs() as i64;
+    let mut checked = Vec::new();
+    for path in &files {
+        let jwt =
+            std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let statement = trust_statement::check(&jwt, &did, now)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        checked.push(statement);
+    }
+    let mut entries = record.verifier_info.take().unwrap_or_default();
+    for statement in &checked {
+        entries = trust_statement::merge(&entries, statement);
+    }
+    record.verifier_info = Some(entries);
+    put_identity(&ks, &record).await?;
+    store.persist().await?;
+
+    println!("Installed on verifier identity '{identity}':");
+    for s in &checked {
+        println!(
+            "  {} (expires {})",
+            s.kind.label(),
+            trust_statement::timestamp(s.exp)
+        );
+    }
+    print_identity(&record);
+    println!("Start the VTC to carry them.");
     Ok(())
 }
 

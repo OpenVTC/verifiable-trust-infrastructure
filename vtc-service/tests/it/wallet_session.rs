@@ -515,6 +515,41 @@ async fn a_vta_held_identity_signs_its_request_object_through_the_vta() {
     assert_eq!(header["kid"], format!("{TEST_VERIFIER_DID}#verifier-key-1"));
 }
 
+/// A swiyu identity's trust statements ride in `verifier_info`, the identity
+/// statement first and an expired one left out (Trust Protocol 2.0).
+#[tokio::test]
+async fn a_swiyu_identity_carries_its_current_trust_statements() {
+    use vtc_service::oid4vp::trust_statement::{IDENTITY_TYP, PROTECTED_VERIFICATION_TYP};
+    let statement = |typ: &str, exp: i64| {
+        let enc = |v: Value| URL_SAFE_NO_PAD.encode(serde_json::to_vec(&v).unwrap());
+        format!(
+            "{}.{}.c2ln",
+            enc(json!({ "typ": typ, "alg": "ES256" })),
+            enc(json!({ "sub": TEST_VERIFIER_DID, "exp": exp, "jti": typ }))
+        )
+    };
+    let now = Utc::now().timestamp();
+    let identity_ts = statement(IDENTITY_TYP, now + 3600);
+    let mut swiyu = oid4vp_test_identity("swiyu", 0x31);
+    swiyu.verifier_info = Some(vec![
+        json!({ "format": "jwt", "data": identity_ts }),
+        json!({ "format": "jwt", "data": statement(PROTECTED_VERIFICATION_TYP, now - 1) }),
+    ]);
+    let f = fixture_with(vec![swiyu]).await;
+
+    let (code, body) = start_session(&f, &APPLICANT_SEED, json!({ "criterion": f.digest })).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    let session_id = body["payload"]["sessionId"].as_str().unwrap();
+    let (_, _, bytes) = get_request_object(&f, session_id).await;
+    let request = decode_segment(&String::from_utf8(bytes).unwrap(), 1);
+    // The identity statement first; the expired one left out.
+    assert_eq!(
+        request["verifier_info"],
+        json!([{ "format": "jwt", "data": identity_ts }]),
+        "{request}"
+    );
+}
+
 /// An EUDI identity beside the swiyu one: a start naming `x509_hash` gets a
 /// request signed by the access certificate's key, carrying its chain as
 /// `x5c` and the registration certificate in `verifier_info`, and a wallet

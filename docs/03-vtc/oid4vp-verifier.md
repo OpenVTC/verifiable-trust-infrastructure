@@ -80,7 +80,32 @@ becomes that context's primary DID, which is what `pnm keys bundle` exports.
    publishes more than one P-256 key, name the request-signing one with
    `--kid`.
 
-4. Start the VTC. Its log names the verifier identities it loaded.
+4. **Its trust statements.** Complete swiyu's trust onboarding for the DID
+   (the Service Portal), after which the trust registry publishes an
+   **Identity Trust Statement** about it. Fetch it, and any **Protected
+   Verification Authorization** statement you were granted, and install them,
+   still with the daemon stopped:
+
+   ```sh
+   curl -s https://trust-reg.trust-infra.swiyu-int.admin.ch/api/v2/identity-trust-statement/<did> > idts.jwt
+   vtc oid4vp trust-statement --identity swiyu --file idts.jwt
+   ```
+
+   Each is checked before it is stored: it must be a swiyu trust statement
+   about this identity's DID and not yet expired. Every request object then
+   carries them in `verifier_info` (Trust Protocol 2.0), the identity
+   statement first, which is where a wallet reads it. Installing a newer one
+   replaces the one of its kind; `vtc oid4vp list` shows each with its expiry.
+   An expired statement is left out of requests, with a warning in the log —
+   renew it before then. Without an identity statement the request still goes
+   out, and the wallet cannot say who is asking.
+
+   The VTC checks what the statement says, not who signed it: the wallet
+   verifies its signature against the trust registry, and so would refuse a
+   forged one. A Verification Query Public Statement is not accepted yet (see
+   *Not yet*).
+
+5. Start the VTC. Its log names the verifier identities it loaded.
 
 ## An EUDI identity
 
@@ -359,6 +384,12 @@ verifier identities. `oid4vp_sessions` is not: a session lasts minutes.
 
 ## Not yet
 
-- swiyu trust statements in `verifier_info`, and swiyu's trusted issuers.
+- swiyu Verification Query Public Statements: one describes a single query,
+  and the swiyu Profile pairs it with `scope`, where the VTC sends each
+  criterion's DCQL query. Statements are installed by hand, not fetched and
+  renewed from the trust registry.
+- swiyu issuer trust from the trust registry (an issuer's Identity Trust
+  Statement); a swiyu issuer is trusted as any DID issuer is, through the
+  criterion's `credentialIssuers`.
 - `trusted_authorities` of type `etsi_tl` or `openid_federation`: the VTC does
   not read ETSI trusted lists or resolve OpenID Federation trust chains.

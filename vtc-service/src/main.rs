@@ -244,6 +244,17 @@ enum Oid4vpCommands {
         #[arg(long, requires = "registration_certificate")]
         registration_format: Option<String>,
     },
+    /// Install the trust statements the swiyu trust registry issued about a
+    /// swiyu identity — its identity trust statement and any protected
+    /// verification authorization — carried in every request's
+    /// `verifier_info`. Each replaces the one of its kind it renews.
+    TrustStatement {
+        #[arg(long)]
+        identity: String,
+        /// A file holding one statement, a compact JWT; repeatable.
+        #[arg(long = "file", required = true)]
+        files: Vec<PathBuf>,
+    },
     /// List the installed verifier identities.
     List,
     /// Remove a verifier identity and its key.
@@ -609,6 +620,9 @@ async fn main() {
                         registration_certificate.zip(registration_format),
                     )
                     .await
+                }
+                Oid4vpCommands::TrustStatement { identity, files } => {
+                    oid4vp_cli::run_trust_statement(cli.config, identity, files).await
                 }
                 Oid4vpCommands::List => oid4vp_cli::run_list(cli.config).await,
                 Oid4vpCommands::Remove { identity } => {

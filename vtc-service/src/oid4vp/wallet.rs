@@ -283,8 +283,18 @@ pub async fn start(
     );
     request.state = Some(wallet_state.clone());
     // What the identity's ecosystem has said about it — an EUDI registration
-    // certificate, which the wallet checks the requested claims against.
-    request.verifier_info = identity.verifier_info.clone();
+    // certificate, which the wallet checks the requested claims against, or
+    // swiyu trust statements. One that has expired is left out: the wallet
+    // would refuse it, and it says nothing a missing one does not.
+    request.verifier_info = identity.verifier_info.as_deref().and_then(|entries| {
+        let (kept, expired) = super::trust_statement::current(entries, now.timestamp());
+        for s in &expired {
+            warn!(identity = %identity.id, expired_at = %super::trust_statement::timestamp(s.exp),
+                "verifier identity's {} has expired and is left out of the request; install a \
+                 new one with `vtc oid4vp trust-statement`", s.kind.label());
+        }
+        (!kept.is_empty()).then_some(kept)
+    });
     request.iat = Some(now.timestamp());
     request.exp = Some(expires_at.timestamp());
     let jar = sign_request_object(&request, &identity, signer.as_ref()).await?;
