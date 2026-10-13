@@ -604,8 +604,9 @@ pub struct TeeConfig {
     pub allowed_kms_accounts: Vec<String>,
     /// Ed25519 `did:key` that alone may claim first-boot admin via Mode B
     /// (`POST /bootstrap/request`). Authorizes the claimant only — it is never
-    /// an admin identity. Unset means no Mode B claim is accepted. Tenant
-    /// overlay field, so it is in the attested config digest.
+    /// an admin identity. Unset means no Mode B claim is accepted. Baked
+    /// (self-host, PCR0-committed) or delivered by the tenant overlay (fleet,
+    /// parent-supplied); either way it is in the attested config digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bootstrap_claim_did: Option<String>,
 }
@@ -1426,6 +1427,17 @@ impl AppConfig {
         if self.audit.retention_days == 0 {
             errors.push("audit.retention_days must be > 0 (default is 28)".into());
         }
+        // Whether baked or overlay-delivered: a malformed claim DID would
+        // otherwise surface only at the one-shot Mode-B claim.
+        #[cfg(feature = "tee")]
+        if let Some(did) = self.tee.bootstrap_claim_did.as_deref()
+            && affinidi_crypto::did_key::did_key_to_ed25519_pub(did).is_err()
+        {
+            errors.push(format!(
+                "tee.bootstrap_claim_did is not an Ed25519 did:key: {did} — use the DID \
+                 printed by `pnm bootstrap claim-did create`"
+            ));
+        }
 
         if !errors.is_empty() {
             return Err(AppError::Config(format!(
@@ -1531,6 +1543,23 @@ mod validate_tests {
         assert!(format!("{err}").contains("vta/attestation"), "{err}");
         // Absent is the one accepted state.
         cfg("[tee]\nmode = \"simulated\"\n");
+    }
+
+    /// A baked claim DID is checked at boot like an overlay-delivered one, so
+    /// a typo fails startup rather than the one-shot Mode-B claim.
+    #[cfg(feature = "tee")]
+    #[test]
+    fn a_malformed_bootstrap_claim_did_is_rejected() {
+        let err = cfg("[tee]\nbootstrap_claim_did = \"did:web:example.com\"\n")
+            .validate()
+            .expect_err("a non-did:key claim DID must be rejected");
+        assert!(
+            format!("{err:?}").contains("bootstrap_claim_did"),
+            "{err:?}"
+        );
+        cfg("[tee]\nbootstrap_claim_did = \"did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK\"\n")
+            .validate()
+            .expect("an Ed25519 did:key is accepted");
     }
 
     #[test]

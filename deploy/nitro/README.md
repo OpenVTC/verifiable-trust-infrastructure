@@ -64,7 +64,12 @@ storage, and signed enclave images.
 > admin_did`. With the typed overlay those can no longer be *delivered* at all —
 > the floor now guards against a bug in the merge, not a malicious parent. Leave
 > `admin_did` unset and use the attested sealed-bootstrap flow (Mode B,
-> `POST /bootstrap/request`).
+> `POST /bootstrap/request`). Only the overlay's `bootstrap_claim_did` — minted
+> by the operator with `pnm bootstrap claim-did create` before the VTA exists —
+> can claim it; without one, no claim is accepted. Because the parent delivers
+> that DID, it is part of the attested config digest below: verify it like
+> `key_arn`, and treat a `403` from `pnm bootstrap connect` as a substituted
+> claim DID.
 >
 > **Config attestation anchor — and the verification step it REQUIRES.** Because
 > the parent supplies `tee.kms.key_arn`, on first boot the enclave generates its

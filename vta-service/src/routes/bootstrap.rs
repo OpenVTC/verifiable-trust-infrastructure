@@ -216,9 +216,7 @@ async fn mint_mode_b(
     bundle_id: [u8; 16],
     now: u64,
 ) -> Result<vta_sdk::sealed_transfer::SealedBundle, AppError> {
-    use crate::tee::admin_bootstrap::{
-        BOOTSTRAP_CARVEOUT_CLOSED_KEY, BOOTSTRAP_CLAIM_DID_BURNED_KEY, LEGACY_ADMIN_CREDENTIAL_KEY,
-    };
+    use crate::tee::admin_bootstrap::{BOOTSTRAP_CARVEOUT_CLOSED_KEY, LEGACY_ADMIN_CREDENTIAL_KEY};
 
     let tee_state =
         state.tee.as_ref().map(|tc| &tc.state).ok_or_else(|| {
@@ -250,11 +248,6 @@ async fn mint_mode_b(
         || state
             .keys_ks
             .get_raw(LEGACY_ADMIN_CREDENTIAL_KEY)
-            .await?
-            .is_some()
-        || state
-            .keys_ks
-            .get_raw(BOOTSTRAP_CLAIM_DID_BURNED_KEY)
             .await?
             .is_some()
     {
@@ -365,14 +358,6 @@ async fn mint_mode_b(
         let _ = delete_acl_entry(&state.acl_ks, &did).await;
         return Err(carve_out_closed_error());
     }
-
-    // Burn the claim DID in the same persist as the sentinel. The bool is
-    // ignored: under MODE_B_LOCK an existing record was already refused above.
-    let claim_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(client_ed25519_pub);
-    state
-        .keys_ks
-        .insert_raw_if_absent(BOOTSTRAP_CLAIM_DID_BURNED_KEY, claim_did.into_bytes())
-        .await?;
 
     // Durability barrier: do not return the bundle until the carve-out
     // close is on disk.
@@ -648,20 +633,18 @@ mod tests {
         state
     }
 
-    /// Nothing minted: no sentinel, no burn record.
+    /// Nothing minted: the carve-out sentinel was not written.
     async fn assert_nothing_minted(state: &AppState) {
-        use crate::tee::admin_bootstrap::{
-            BOOTSTRAP_CARVEOUT_CLOSED_KEY, BOOTSTRAP_CLAIM_DID_BURNED_KEY,
-        };
-        for key in [
-            BOOTSTRAP_CARVEOUT_CLOSED_KEY,
-            BOOTSTRAP_CLAIM_DID_BURNED_KEY,
-        ] {
-            assert!(
-                state.keys_ks.get_raw(key).await.unwrap().is_none(),
-                "{key} must not be written for a refused claim"
-            );
-        }
+        use crate::tee::admin_bootstrap::BOOTSTRAP_CARVEOUT_CLOSED_KEY;
+        assert!(
+            state
+                .keys_ks
+                .get_raw(BOOTSTRAP_CARVEOUT_CLOSED_KEY)
+                .await
+                .unwrap()
+                .is_none(),
+            "the carve-out sentinel must not be written for a refused claim"
+        );
     }
 
     /// The API-contract regression this module exists to close: a consumed
@@ -720,19 +703,19 @@ mod tests {
         assert_nothing_minted(&state).await;
     }
 
-    /// The carve-out sentinel vanishes after a successful claim (a host
-    /// forging its absence, or dropping its write). A stranger is still
-    /// refused, and the claim DID's own holder cannot claim twice either.
+    /// The carve-out sentinel vanishes after a successful claim (a lost write,
+    /// or a host deleting it — which the TEE integrity manifest catches at the
+    /// next boot, not here). A stranger is still refused: the claim DID, not the
+    /// sentinel, is what keeps an anonymous caller out.
     #[tokio::test]
-    async fn missing_sentinel_does_not_reopen_the_claim() {
+    async fn missing_sentinel_does_not_admit_a_stranger() {
         use crate::tee::admin_bootstrap::BOOTSTRAP_CARVEOUT_CLOSED_KEY;
 
         let (_, claim_pub) = generate_ed25519_keypair();
         let (_, stranger_pub) = generate_ed25519_keypair();
         let state = claim_state(Some(&claim_pub)).await;
-        let now = now_epoch();
 
-        mint_mode_b(&state, &claim_pub, [1u8; 16], now)
+        mint_mode_b(&state, &claim_pub, [1u8; 16], now_epoch())
             .await
             .expect("first bootstrap mints an admin");
         state
@@ -741,15 +724,10 @@ mod tests {
             .await
             .unwrap();
 
-        let err = mint_mode_b(&state, &stranger_pub, [2u8; 16], now)
+        let err = mint_mode_b(&state, &stranger_pub, [2u8; 16], now_epoch())
             .await
             .expect_err("a stranger must not walk through a reopened window");
         assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
-
-        let err = mint_mode_b(&state, &claim_pub, [3u8; 16], now)
-            .await
-            .expect_err("a burned claim DID must not claim again");
-        assert!(matches!(err, AppError::Gone(_)), "got {err:?}");
     }
 
     fn body_from(req: vta_sdk::sealed_transfer::BootstrapRequest) -> BootstrapRequestBody {

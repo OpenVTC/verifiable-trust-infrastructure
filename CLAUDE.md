@@ -552,8 +552,9 @@ new flow, update both this section and the relevant `docs/*.md`.
 
 ### TEE Mode B bootstrap (attested first-boot)
 - **What**: One-command admin provisioning against a fresh Nitro-Enclave VTA.
-- **Entry point**: `pnm bootstrap connect --vta-did <did> --expect-pcr0 <hex>`.
-  `--vta-did` and `--vta-url` are mutually exclusive and exactly one is
+- **Entry point**: `pnm bootstrap claim-did create --slug <slug>` **before the
+  VTA exists**, then `pnm bootstrap connect --slug <slug> --vta-did <did>
+  --expect-pcr0 <hex>`. `--vta-did` and `--vta-url` are mutually exclusive and exactly one is
   required. The DID is resolved **locally** (SCID + signed log verified on the
   operator's machine, deliberately ignoring `PNM_RESOLVER_URL`), and bootstrap
   uses the `VTARest` endpoint that document advertises — never a URL guessed
@@ -561,6 +562,15 @@ new flow, update both this section and the relevant `docs/*.md`.
   is the explicit alternative when the log is not yet resolvable; it gives up
   identity pinning.
 - **Transport**: REST `POST /bootstrap/request` (unauth, rate-limited).
+- **Claimant**: only `tee.bootstrap_claim_did` — an Ed25519 `did:key` the
+  operator minted (key in the OS keyring only) and delivered in the baked config
+  or the tenant overlay — may claim; the request names it as `client_did` and
+  carries `claim_signature` over `vti/bootstrap-claim/v1\0 ‖ pub ‖ nonce`
+  (verified before the lock). Unset admits nobody. The claimant is checked
+  **before** the carve-out, so a stranger gets 403 whatever the carve-out's
+  state. The claim DID authorizes the claim only; it is not the admin identity.
+  In a fleet build the parent delivers it, so it is in the attested config
+  digest — a `403` at the real operator's `connect` is the substitution signal.
 - **Trust anchor**: Nitro attestation quote committing to the client's
   Ed25519 pubkey + bundle_id + producer's Ed25519 pubkey via SHA-256.
   `--expect-pcr0` pins the enclave image on top of it and is the anchor this

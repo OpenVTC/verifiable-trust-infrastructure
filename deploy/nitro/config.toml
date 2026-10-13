@@ -88,9 +88,9 @@ key_arn = "REPLACE_WITH_KMS_KEY_ARN"
 # input), so `admin_did` is fine there. For the un-baked (vsock) path leave it
 # unset and use the attested sealed-bootstrap flow (Mode B, POST /bootstrap/request).
 #
-# If omitted, the VTA generates a random did:key and stores the credential in the
-# bootstrap keyspace; claim it via the attested `pnm bootstrap connect --vta-url
-# <URL>` flow (the old `GET /attestation/admin-credential` endpoint was retired).
+# If omitted, the first admin is claimed via the attested `pnm bootstrap connect`
+# flow — but only by the holder of `[tee] bootstrap_claim_did` below (the old
+# `GET /attestation/admin-credential` endpoint was retired).
 # admin_did = "did:key:z6Mk..."
 
 # Template for auto-generating the VTA's did:webvh identity on first boot.
@@ -124,6 +124,13 @@ mediator_did = "REPLACE_WITH_MEDIATOR_DID"
 
 [tee]
 mode = "required"
+
+# The only DID that may claim the first admin via Mode B (POST /bootstrap/request),
+# when `admin_did` above is unset. Mint it on your machine BEFORE building:
+#   pnm bootstrap claim-did create --slug <slug>
+# and paste the printed did:key here. Its private key stays in your OS keyring;
+# claim with `pnm bootstrap connect --slug <slug> ...`. Unset = no claim accepted.
+# bootstrap_claim_did = "did:key:z6Mk..."
 
 # ── Server (rarely need to change) ──────────────────────────────────────────
 

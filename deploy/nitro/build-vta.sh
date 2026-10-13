@@ -455,7 +455,8 @@ if [ "$BAKE_CONFIG" = "false" ]; then
       "vta_did_template": "did:webvh:{SCID}:REPLACE.example.com:vta",
       "anchor_table_name": "REPLACE_vta_rollback_anchor_table"
     },
-    "messaging": { "mediator_did": "REPLACE_mediator_did" }
+    "messaging": { "mediator_did": "REPLACE_mediator_did" },
+    "bootstrap_claim_did": "REPLACE_did_from_pnm_bootstrap_claim_did_create"
   },
   "integrity": null
 }
@@ -464,7 +465,8 @@ JSON
     info "Render a per-tenant overlay, e.g.:"
     info "  deploy/nitro/render-tenant-overlay.sh --key-arn $KEY_ARN \\"
     info "    --mediator-did <did> --anchor-table-name <table> \\"
-    info "    --vta-did-template <tmpl> > tenant-overlay.json"
+    info "    --vta-did-template <tmpl> \\"
+    info "    --bootstrap-claim-did <did from 'pnm bootstrap claim-did create'> > tenant-overlay.json"
     info "Then serve it: deploy-enclave.sh --config-envelope tenant-overlay.json"
 else
     # ── SELF-HOST (BAKE_CONFIG=true): bake the tenant config into the EIF ──
@@ -562,7 +564,9 @@ if [ "$BAKE_CONFIG" = "false" ]; then
     echo "  one, so deploy-enclave.sh requires the rendered file:"
     echo "    deploy/nitro/render-tenant-overlay.sh --key-arn $KEY_ARN \\"
     echo "      --mediator-did <did> --anchor-table-name <table> \\"
-    echo "      --vta-did-template <tmpl> > <bundle>/tenant-overlay.json"
+    echo "      --vta-did-template <tmpl> \\"
+    echo "      --bootstrap-claim-did <did from 'pnm bootstrap claim-did create'> \\"
+    echo "      > <bundle>/tenant-overlay.json"
     echo "    ./deploy/nitro/deploy-enclave.sh --bundle <path-to-bundle>"
     echo "  (or pass it explicitly: deploy-enclave.sh --bundle <path> \\"
     echo "     --config-envelope <path-to>/tenant-overlay.json)"

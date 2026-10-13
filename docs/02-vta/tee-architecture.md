@@ -329,9 +329,26 @@ with the new PCR0 value from `nitro-cli build-enclave` output.
 it *client-side* at first-boot bootstrap:
 
 ```bash
-pnm bootstrap connect --vta-did "$VTA_DID" \
+pnm bootstrap connect --slug my-vta --vta-did "$VTA_DID" \
     --expect-pcr0 "$EXPECTED_PCR0"
 ```
+
+**Only the pre-registered claim DID can claim.** Before the VTA exists, run
+`pnm bootstrap claim-did create --slug my-vta` on the machine that will claim it.
+It mints an Ed25519 `did:key`, keeps the private key in the OS keyring (it refuses
+`VTI_SECURE_STORE=file` or a build without the keyring), and prints the DID.
+Supply that DID as `[tee] bootstrap_claim_did` in a baked config, or as
+`--bootstrap-claim-did` to `render-tenant-overlay.sh` for a fleet image. The
+enclave verifies the request's signature by that key and refuses any other
+caller with `403` **before** looking at the carve-out; with no claim DID
+configured it accepts no claim at all. `connect` removes the claim key once a
+genuine enclave has minted for it (`claim-did show` / `discard` reprint or
+remove it otherwise).
+
+In a fleet build the parent delivers the claim DID, so a hostile parent could
+deliver its own. It is part of the attested effective-config digest — verify it
+there as you verify `key_arn` — and if `connect` with your own claim DID gets a
+`403`, the VTA was not configured with your DID: do not trust it.
 
 The attestation is always cryptographically verified; `--expect-pcr0/--expect-pcr8`
 add defense-in-depth — a genuine-but-*wrong* enclave build produces a valid quote
@@ -376,8 +393,10 @@ without `VTARest` needs an authenticated **signed log update**:
 1. Upgrade to a build with the serverless WebVH startup backfill. Keep the
    existing seed, encrypted store, and DID; do not reset bootstrap state.
 2. Use the existing super-admin credential. If first-admin bootstrap has not
-   yet been consumed, claim it once with the explicit URL alternative:
-   `pnm bootstrap connect --vta-url "$VTA_URL" --expect-pcr0 "$EXPECTED_PCR0"`.
+   yet been consumed, configure a `bootstrap_claim_did` (see above — an
+   unconsumed VTA without one accepts no claim) and claim it once with the
+   explicit URL alternative:
+   `pnm bootstrap connect --slug <slug> --vta-url "$VTA_URL" --expect-pcr0 "$EXPECTED_PCR0"`.
    This recovery step pins the enclave image but gives up DID identity pinning.
    Do not repeat bootstrap for an already-claimed VTA.
 3. Select that VTA's PNM profile (`--vta <slug>` if it is not the default), then

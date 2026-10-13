@@ -281,7 +281,7 @@ cnm-cli bootstrap connect ...                              # mirrors pnm-cli
 openvtc-cli2                                               # setup wizard → same flow under the hood
 ```
 
-- Connecting to a first-boot TEE VTA: `--token` omitted. Client verifies attestation quote; quote's `user_data` must match `SHA256(client_ed25519_pub || nonce || producer_ed25519_pub)` — the raw Ed25519 pubkeys underlying `client_did` (what the client sent) and `producer_did` (what the bundle's `ProducerAssertion` carries).
+- Connecting to a first-boot TEE VTA: `--token` omitted. Only the holder of the VTA's configured `tee.bootstrap_claim_did` may claim: the operator mints it with `pnm bootstrap claim-did create --slug <slug>` before the VTA exists, supplies it in the baked config or tenant overlay, and `connect --slug <slug>` sends it as `client_did` with a `claim_signature` proving control (#1987). Client verifies attestation quote; quote's `user_data` must match `SHA256(client_ed25519_pub || nonce || producer_ed25519_pub)` — the raw Ed25519 pubkeys underlying `client_did` (what the client sent) and `producer_did` (what the bundle's `ProducerAssertion` carries).
 - Any other VTA: `--token` required.
 
 ### Offline (Mode C)

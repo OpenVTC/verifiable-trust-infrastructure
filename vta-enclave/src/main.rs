@@ -587,7 +587,8 @@ fn config_floor_violation(
         return Some(
             "/dev/nsm is present and the delivered config sets [tee.kms] admin_did — a \
              runtime-delivered admin_did is not attested and must not grant super-admin; leave it \
-             unset and use the attested sealed-bootstrap flow (Mode B: POST /bootstrap/request)"
+             unset, deliver tee.bootstrap_claim_did instead and claim through the attested \
+             sealed-bootstrap flow (Mode B: POST /bootstrap/request)"
                 .to_string(),
         );
     }

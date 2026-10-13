@@ -617,6 +617,18 @@ pub async fn run_connect(
                  needed, remove it with: pnm bootstrap claim-did discard --slug {slug}"
             );
         }
+        // VTI-CLT-016: an enrolled bootstrap identity that is refused is the
+        // signal that the registration was substituted, not a transport fault.
+        if status == reqwest::StatusCode::FORBIDDEN {
+            eprintln!(
+                "The VTA refused this claim before minting anything. Check that the DID it was \
+                 created with is this slug's claim DID:\n  {}\n\
+                 If it was, and the VTA still refuses it, the VTA is not configured with your \
+                 claim DID — someone else may hold its first admin. Do not trust this VTA; \
+                 recreate it.",
+                claim.did
+            );
+        }
         return Err(format!("bootstrap request failed ({status}): {body}").into());
     }
     let wire: BootstrapResponseWire = serde_json::from_slice(&bytes)?;

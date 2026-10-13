@@ -33,10 +33,6 @@ pub const BOOTSTRAP_CARVEOUT_CLOSED_KEY: &str = "tee:bootstrap-carveout-closed";
 /// No longer written; cleaned up on first startup after the upgrade.
 pub const LEGACY_ADMIN_CREDENTIAL_KEY: &str = "tee:admin_credential";
 
-/// Records that the configured bootstrap claim DID has claimed admin. Written
-/// with the carve-out sentinel; either one refuses any further Mode B claim.
-pub const BOOTSTRAP_CLAIM_DID_BURNED_KEY: &str = "tee:bootstrap-claim-did-burned";
-
 /// Bootstrap a super-admin credential on first boot.
 ///
 /// - If an admin credential already exists in the store, this is a no-op.
@@ -134,9 +130,9 @@ pub async fn maybe_bootstrap_admin(
         );
     } else {
         // No admin_did configured — leave the first-boot carve-out OPEN.
-        // The operator completes the swap by running
-        // `pnm bootstrap connect --vta-url <URL>` against this VTA (no token),
-        // which triggers the Mode B attestation branch and closes the carve-out.
+        // The holder of `tee.bootstrap_claim_did` completes the swap with
+        // `pnm bootstrap connect --slug <slug>`, which triggers the Mode B
+        // attestation branch and closes the carve-out.
         info!(
             context_id,
             "no admin_did configured — first-boot carve-out remains open for \

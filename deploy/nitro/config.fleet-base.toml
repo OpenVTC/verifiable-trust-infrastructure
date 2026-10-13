@@ -18,11 +18,13 @@
 #                                  a bare vta_did is NOT overlay-settable)
 #   - messaging.mediator_did / mediator_url
 #   - public_url, vta_name
+#   - tee.bootstrap_claim_did   (the one did:key that may claim first-boot admin)
 # See docs/05-design-notes/tenant-config-allowlist.md.
 #
 # NEVER put secrets here. NEVER set admin_did here — a fleet image serves many
 # tenants; super-admin is established per-tenant via the attested sealed-bootstrap
-# flow (Mode B, POST /bootstrap/request), and the overlay cannot carry admin_did.
+# flow (Mode B, POST /bootstrap/request), claimable only by the overlay's
+# bootstrap_claim_did, and the overlay cannot carry admin_did.
 
 # ── Top-level settings (fleet policy, baked) ─────────────────────────────────
 
