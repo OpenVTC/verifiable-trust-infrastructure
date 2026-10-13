@@ -870,7 +870,7 @@ on their own merit:
 | P2 | `vti-rooms::files`: KDF, STREAM, manifest; wasm build; test vectors | M | P1 |
 | P3 | `BlobStore` trait in `vti-common`; local, S3 and GCS via `object_store`; conformance suite | M | — |
 | P4 | Storage configs (§7): config store, per-room prefixes, ambient auth with self-downscoping, the `sealed` fallback, action-list consent for storage changes, `vtc.rooms.admin`. **First part landed**: the config store and room assignment, `vtc.rooms.admin`, the configs and assign tasks with action-list consent, `local` configs confined to operator-allowed bases; ambient and `sealed` follow | L | P3 |
-| P4b | `vta-account` auth: a `CredentialProvider` over `external/credentials/issue`, per-room credential cache, presigned-URL path for `s3-static-presign`, and the console's External accounts pages. Needs E0–E3 of the external-accounts note | M | P4, E0–E3 |
+| P4b | `vta-account` auth: a `CredentialProvider` over `external/credentials/issue`, per-room credential cache, presigned-URL path for `s3-static-presign`, and the console's External accounts pages. Needs E0–E3 of the external-accounts note. **Presigned path landed** (E3's model): `s3` configs through a VTA account, one presigned request per object operation over the VTC's messaging link (the config names the account by context and identifier), the account confirmed with the VTA at create and update; session-credential models wait on E1/E2 | M | P4, E0–E3 |
 | P5 | Host: `room_blobs`, upload/download tasks, `size.rs` bundle gate, limits at three scopes with reservations, usage counters, GC sweeper. In **both** `vtc-service` and `room-host` (one config, set from its command line) | L | P1, P3, P4 |
 | P6 | VTA `rooms/keys/file-key`; `pnm rooms file {put,get}` | M | P2 |
 | P7 | Extension: page allow-list + per-room consent, file crypto in the extension's own context with plaintext streamed over a port (§4.1); manager-pane files (§8.3) | M | P6 |
@@ -891,11 +891,13 @@ download a file from the CLI after P6, and from the portal after P8.
    console does as the balance runs low. Custody is settled (§7.4: the VTA's key,
    else a sealed credential); funding is an operator decision. It blocks P11 and
    nothing earlier.
-2. **The VTC's runtime link to its VTA.** `vta-account` auth needs the VTC to
-   call its community VTA at runtime, as an integration with a narrow ACL
-   entry. **Proposed:** a VTC that hosts rooms with files must keep that link,
-   and `sealed` stays only for evaluation setups. Confirm it, and decide whether
-   the VTC refuses `sealed` outright in production builds.
+2. **The VTC's runtime link to its VTA.** Settled for `vta-account`: the VTC
+   reaches its VTA as a peer over the messaging socket it already keeps (TSP or
+   DIDComm, chosen from the VTA's DID document), signed with its own key, with
+   an ACL entry holding only `external-auth-use` in the account's context. The
+   VTA is reached through its mediator, so it gains no inbound surface. Still
+   open: whether `sealed` stays only for evaluation setups, and whether the VTC
+   refuses it outright in production builds.
 3. **Rooms bringing their own storage.** A room owner who wants their files in
    *their* bucket. §7.4's sealed credential already keeps it from the VTC's
    administrators. What is open is whether the `rooms` policy should allow an

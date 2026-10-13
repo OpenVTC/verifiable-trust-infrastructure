@@ -158,6 +158,9 @@ vti-common = { path = "../vti-common", version = "0.43", features = [
   # the OpenAPI-aware Trust-Task route helpers (`task_routes`/`task_layer`).
   "openapi",
   "rate-limit",
+  # Room files in S3 through presigned requests the community's VTA issues
+  # (`rooms::vta_storage`): no storage credential is held here.
+  "blob-presigned",
 ] }
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend

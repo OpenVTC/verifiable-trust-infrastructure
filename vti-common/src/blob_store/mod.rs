@@ -44,6 +44,9 @@ pub mod local;
 #[cfg(any(feature = "blob-s3", feature = "blob-gcs"))]
 pub mod object;
 
+#[cfg(any(test, feature = "blob-presigned"))]
+pub mod presigned;
+
 #[cfg(any(test, feature = "test-support"))]
 pub mod conformance;
 

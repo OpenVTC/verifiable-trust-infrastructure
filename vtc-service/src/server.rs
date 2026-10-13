@@ -818,32 +818,49 @@ pub async fn run(
             },
         };
 
-    // The link to the VTA, for the verifier identities whose key it keeps. One
-    // that cannot be built stops the boot: those identities would answer every
-    // wallet with nothing, and the reason belongs in front of the operator.
+    // The link to the VTA (`vta_link`), over this VTC's messaging socket: the
+    // verifier identities whose key it keeps sign through it, and `vta-account`
+    // room storage asks it for presigned requests. Built when this VTC names
+    // its VTA and can sign and resolve.
+    let vta_link = match (
+        config.vta_did.clone(),
+        credential_signer.clone(),
+        did_resolver.clone(),
+    ) {
+        (Some(vta_did), Some(signer), Some(resolver)) => {
+            Some(Arc::new(crate::vta_link::VtaLink::new(
+                vta_did,
+                didcomm_cell.clone(),
+                signer,
+                pending_replies.clone(),
+                resolver,
+            )))
+        }
+        _ => None,
+    };
+
+    // One that cannot be built stops the boot when a verifier identity needs
+    // it: those identities would answer every wallet with nothing, and the
+    // reason belongs in front of the operator.
     if !vta_held_identities.is_empty() {
-        let (Some(vta_did), Some(vtc_did), Some(signer), Some(resolver)) = (
-            config.vta_did.clone(),
-            config.vtc_did.clone(),
-            credential_signer.clone(),
-            did_resolver.clone(),
-        ) else {
+        let Some(link) = vta_link.clone() else {
             return Err(AppError::Config(format!(
                 "verifier identities {vta_held_identities:?} keep their key in the VTA, which \
-                 needs vta_did, vtc_did, the VTC's signing key and a DID resolver; set them, or \
-                 remove the identities with `vtc oid4vp remove`"
+                 needs vta_did, the VTC's signing key and a DID resolver; set them, or remove \
+                 the identities with `vtc oid4vp remove`"
             )));
         };
-        info!(%vta_did, identities = ?vta_held_identities, "verifier identities sign through the VTA");
-        let link: Arc<dyn crate::oid4vp::VtaJwsSigner> = Arc::new(crate::vta_link::VtaLink::new(
-            vta_did,
-            vtc_did,
-            didcomm_cell.clone(),
-            signer,
-            pending_replies.clone(),
-            resolver,
-        ));
-        let _ = vta_link_cell.set(link);
+        info!(vta_did = link.vta_did(), identities = ?vta_held_identities, "verifier identities sign through the VTA");
+        let _ = vta_link_cell.set(link as Arc<dyn crate::oid4vp::VtaJwsSigner>);
+    }
+
+    // Room files through the community's VTA (`rooms::vta_storage`): the
+    // presigned requests come sealed to this community's key-agreement key.
+    if let (Some(link), Some(vtc_did), Some(secrets)) =
+        (vta_link, config.vtc_did.clone(), secrets_resolver.clone())
+    {
+        let storage = crate::rooms::vta_storage::VtaStorage::new(link, vtc_did, secrets);
+        room_storage.set_vta_storage(Arc::new(storage)).await?;
     }
 
     // Bind TCP listener on the main thread for early port validation

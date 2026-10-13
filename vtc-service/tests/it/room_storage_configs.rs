@@ -680,3 +680,316 @@ async fn vtc_rooms_storage_assign_refuses_with_its_declared_codes() {
         "{reply}"
     );
 }
+
+// ─── through the community's VTA ─────────────────────────────────────────
+
+mod vta_account {
+    use super::*;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use affinidi_secrets_resolver::secrets::Secret;
+    use affinidi_secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
+    use trust_tasks_rs::TrustTask;
+    use vta_sdk::sealed_transfer::{
+        AssertionProof, ExternalCredentialPayload, InMemoryNonceStore, ProducerAssertion,
+        SealedPayloadV1, armor, seal_payload,
+    };
+    use vtc_service::rooms::vta_storage::{PeerError, VtaChannel, VtaStorage};
+    use vti_common::blob_store::presigned::PresignAction;
+
+    const ISSUE: &str = "https://trusttasks.org/spec/external/credentials/issue/0.1";
+    const BUCKET_URL: &str = "https://rooms.invalid/";
+
+    /// A VTA holding one account, `known`, this community is bound to: it presigns
+    /// against `rooms.invalid` (which resolves nowhere), sealed to the community's
+    /// key-agreement key. Any other account is `external:notFound`, as the VTA
+    /// answers an unbound caller.
+    struct FakeVta {
+        known: &'static str,
+        community_x25519: [u8; 32],
+    }
+
+    #[async_trait::async_trait]
+    impl VtaChannel for FakeVta {
+        async fn exchange(
+            &self,
+            type_uri: &str,
+            payload: &Value,
+            _timeout: Duration,
+        ) -> Result<TrustTask<Value>, PeerError> {
+            assert_eq!(type_uri, ISSUE);
+            if payload["account"] != self.known || payload["context"] != "community" {
+                return Ok(TrustTask::new(
+                    "urn:uuid:refused",
+                    "https://trusttasks.org/spec/trust-task-error/0.1"
+                        .parse()
+                        .unwrap(),
+                    json!({ "code": "external:notFound", "message": "no such account" }),
+                ));
+            }
+            let scope = &payload["scope"];
+            let object = format!(
+                "{}{}",
+                scope["prefix"].as_str().unwrap(),
+                scope["objectKey"].as_str().unwrap()
+            );
+            let credential = SealedPayloadV1::ExternalCredential(Box::new(
+                ExternalCredentialPayload::PresignedRequest {
+                    method: scope["actions"][0].as_str().unwrap().to_uppercase(),
+                    url: format!("{BUCKET_URL}{object}?X-Amz-Signature=sig"),
+                    headers: Default::default(),
+                    expires_at: (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
+                    provider_request_id: None,
+                },
+            ));
+            let bundle = seal_payload(
+                &self.community_x25519,
+                [7u8; 16],
+                ProducerAssertion {
+                    producer_did: "did:key:zVta".into(),
+                    proof: AssertionProof::PinnedOnly,
+                },
+                &credential,
+                &InMemoryNonceStore::new(),
+            )
+            .await
+            .unwrap();
+            Ok(TrustTask::new(
+                "urn:uuid:issued",
+                format!("{ISSUE}#response").parse().unwrap(),
+                json!({
+                    "sealedCredential": armor::encode(&bundle),
+                    "expiresAt": "2030-01-01T00:00:00Z",
+                    "scope": scope,
+                }),
+            ))
+        }
+    }
+
+    /// Connect a stand-in VTA, holding this community's key-agreement secret as
+    /// `<vtc>#key-1` the way its boot does.
+    async fn link(fix: &Fixture) -> Arc<VtaStorage> {
+        let mut bytes = [0u8; 32];
+        rand::fill(&mut bytes);
+        let mut secret = Secret::generate_x25519(None, Some(&bytes)).unwrap();
+        secret.id = format!("{TEST_VTC_DID}#key-1");
+        let public: [u8; 32] = secret.get_public_bytes().try_into().unwrap();
+        let (resolver, _h) = ThreadedSecretsResolver::new(None).await;
+        resolver.insert(secret).await;
+        let link = Arc::new(VtaStorage::new(
+            Arc::new(FakeVta {
+                known: "eu-r2",
+                community_x25519: public,
+            }),
+            TEST_VTC_DID.into(),
+            Arc::new(resolver),
+        ));
+        fix.vtc
+            .state
+            .room_storage
+            .set_vta_storage(link.clone())
+            .await
+            .unwrap();
+        link
+    }
+
+    fn s3() -> Value {
+        json!({ "kind": "s3", "region": "eu-west-1", "bucket": "rooms", "prefix": "community/" })
+    }
+
+    fn through_vta(account: &str) -> Value {
+        json!({ "mode": "vta-account", "context": "community", "account": account })
+    }
+
+    /// An `s3` config through a VTA account, stored as an executed create leaves it.
+    async fn stored_s3(fix: &Fixture, id: &str) {
+        let record = json!({
+            "id": id,
+            "label": id,
+            "settings": s3(),
+            "auth": through_vta("eu-r2"),
+            "state": "active",
+            "createdBy": "did:key:zAdmin",
+            "createdAt": chrono::Utc::now().to_rfc3339(),
+        });
+        let _guard = fix.vtc.state.room_storage.lock().await;
+        fix.vtc.state.room_storage.put_config(record).await.unwrap();
+    }
+
+    /// The VTA confirms the account before the change is parked, and the config lands
+    /// on approval with a store that asks the VTA for each object.
+    #[tokio::test]
+    async fn an_s3_config_through_a_vta_account_lands_on_approval() {
+        let mut fix = fixture().await;
+        link(&fix).await;
+        let a = requester(&mut fix).await;
+        let b = seed(&fix, AdminAuthority::community_admin()).await;
+        let (status, reply) = through(
+            &mut fix,
+            &a,
+            &[&b],
+            CREATE,
+            json!({
+                "id": "eu-r2",
+                "label": "EU R2",
+                "settings": s3(),
+                "auth": through_vta("eu-r2"),
+                "reason": "room files in R2, credentials held by our VTA",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        assert_eq!(
+            reply["payload"]["config"]["auth"]["mode"], "vta-account",
+            "{reply}"
+        );
+        assert!(fix.vtc.state.room_storage.store("eu-r2").is_some());
+        let got = send(&fix, &a, GET, json!({ "configId": "eu-r2" })).await;
+        assert_eq!(
+            got["payload"]["facts"]["credential"],
+            json!({ "status": "vta-account", "context": "community", "account": "eu-r2" }),
+            "{got}"
+        );
+    }
+
+    /// What the VTA seals to the community's key-agreement key opens here, as a
+    /// request for exactly the object asked.
+    #[tokio::test]
+    async fn a_presigned_request_is_opened_with_the_communitys_key() {
+        let fix = fixture().await;
+        let link = link(&fix).await;
+        let request = link
+            .presigner("community", "eu-r2", "rooms", None)
+            .presign(PresignAction::Put, "community/rooms/abc/", "zObject")
+            .await
+            .unwrap();
+        assert_eq!(request.method, "PUT");
+        assert!(
+            request
+                .url
+                .starts_with("https://rooms.invalid/community/rooms/abc/zObject"),
+            "{request:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn vtc_storage_configs_create_refuses_an_account_the_vta_does_not_know() {
+        let mut fix = fixture().await;
+        link(&fix).await;
+        let a = requester(&mut fix).await;
+        let reply = send(
+            &fix,
+            &a,
+            CREATE,
+            json!({
+                "id": "eu-r2",
+                "label": "EU R2",
+                "settings": s3(),
+                "auth": through_vta("somebody-elses"),
+                "reason": "x",
+            }),
+        )
+        .await;
+        assert_eq!(
+            tt_error_code(&reply),
+            Some(CREATE_UNKNOWN_ACCOUNT),
+            "{reply}"
+        );
+        assert!(
+            actions_of_kind(&fix, "storage.config.create")
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn vtc_storage_configs_update_refuses_an_account_the_vta_does_not_know() {
+        let mut fix = fixture().await;
+        link(&fix).await;
+        stored_s3(&fix, "eu-r2").await;
+        let a = requester(&mut fix).await;
+        let reply = send(
+            &fix,
+            &a,
+            UPDATE,
+            json!({
+                "configId": "eu-r2",
+                "auth": through_vta("somebody-elses"),
+                "reason": "x",
+            }),
+        )
+        .await;
+        assert_eq!(
+            tt_error_code(&reply),
+            Some(UPDATE_UNKNOWN_ACCOUNT),
+            "{reply}"
+        );
+    }
+
+    /// `ambient` and `sealed` are not served yet: refused naming the member, never
+    /// stored and left unusable.
+    #[tokio::test]
+    async fn auth_other_than_a_vta_account_is_refused_for_now() {
+        let mut fix = fixture().await;
+        link(&fix).await;
+        let a = requester(&mut fix).await;
+        let reply = send(
+            &fix,
+            &a,
+            CREATE,
+            json!({
+                "id": "eu-s3",
+                "label": "EU S3",
+                "settings": s3(),
+                "auth": { "mode": "ambient" },
+                "reason": "x",
+            }),
+        )
+        .await;
+        assert_eq!(
+            tt_error_code(&reply),
+            Some(CREATE_INVALID_SETTINGS),
+            "{reply}"
+        );
+        assert_eq!(
+            reply["payload"]["details"]["member"], "auth.mode",
+            "{reply}"
+        );
+    }
+
+    /// A config whose store this host cannot build — a VTA account with no link to
+    /// the VTA — cannot be probed or take rooms.
+    #[tokio::test]
+    async fn vtc_storage_configs_probe_refuses_a_config_without_a_usable_credential() {
+        let fix = fixture().await;
+        stored_s3(&fix, "eu-r2").await;
+        let a = seed(&fix, AdminAuthority::community_admin()).await;
+        let reply = send(&fix, &a, PROBE, json!({ "configId": "eu-r2" })).await;
+        assert_eq!(
+            tt_error_code(&reply),
+            Some(PROBE_CREDENTIAL_REQUIRED),
+            "{reply}"
+        );
+    }
+
+    #[tokio::test]
+    async fn vtc_rooms_storage_assign_refuses_a_config_without_a_usable_credential() {
+        let fix = fixture().await;
+        stored_s3(&fix, "eu-r2").await;
+        let room = hosted_room(&fix).await;
+        let a = seed(&fix, AdminAuthority::community_admin()).await;
+        let reply = send(
+            &fix,
+            &a,
+            ASSIGN,
+            json!({ "roomId": room, "configId": "eu-r2", "reason": "x" }),
+        )
+        .await;
+        assert_eq!(
+            tt_error_code(&reply),
+            Some(ASSIGN_CREDENTIAL_REQUIRED),
+            "{reply}"
+        );
+    }
+}

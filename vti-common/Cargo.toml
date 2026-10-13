@@ -67,6 +67,10 @@ blob-s3 = ["dep:object_store", "object_store/aws"]
 # Room file storage on Google Cloud Storage, natively (not its S3
 # interoperability mode, which needs static HMAC keys).
 blob-gcs = ["dep:object_store", "object_store/gcp"]
+# Room file storage through presigned requests only (`blob_store::presigned`):
+# the store holds no credential, and asks a `Presigner` (a community's VTA
+# external account) for one request per operation.
+blob-presigned = ["reqwest/stream"]
 
 [dependencies]
 # vta-sdk for the canonical auth wire shapes
@@ -185,6 +189,9 @@ tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 bytes = "1"
+# `blob_store::presigned` streams a staged file as a request body; its tests
+# run without the `blob-presigned` feature, so they ask for the same here.
+reqwest = { workspace = true, features = ["stream"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 # `umask` in the secure_file tests, to prove a secret file is 0600 regardless

@@ -27,9 +27,13 @@
 //!
 //! # Backends served
 //!
-//! `local` only, for now. `s3` and `gcs` (through the VTA's external accounts, or the
-//! machine's own identity downscoped per room) and `walrus` follow; until they do, a
-//! config of those kinds is refused at creation rather than stored and left unusable.
+//! - `local`.
+//! - `s3` with `auth: vta-account`: every object operation is one presigned request
+//!   the community's VTA issues for that object alone, under the room's prefix
+//!   ([`super::vta_storage`]). The community holds no storage credential.
+//!
+//! `ambient` and `sealed` auth, `gcs` and `walrus` follow; until they do, a config
+//! using them is refused at creation rather than stored and left unusable.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -45,6 +49,8 @@ use vti_common::blob_store::local::LocalDirStore;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 use vti_rooms::blobs::{BlobStores, ConfigHoldings, UploadTarget};
+
+use super::vta_storage::{AccountCheck, VtaStorage};
 
 /// The declared error codes of the storage tasks, read off the generated
 /// specifications — what the tests that witness each one compare against.
@@ -73,6 +79,10 @@ pub mod codes {
     pub const ASSIGN_ROOM_NOT_FOUND: &str = assign::error_codes::ROOM_NOT_FOUND.code;
     pub const ASSIGN_CONFIG_NOT_FOUND: &str = assign::error_codes::CONFIG_NOT_FOUND.code;
     pub const ASSIGN_CONFIG_NOT_ACTIVE: &str = assign::error_codes::CONFIG_NOT_ACTIVE.code;
+    pub const CREATE_UNKNOWN_ACCOUNT: &str = create::error_codes::UNKNOWN_ACCOUNT.code;
+    pub const UPDATE_UNKNOWN_ACCOUNT: &str = update::error_codes::UNKNOWN_ACCOUNT.code;
+    pub const PROBE_CREDENTIAL_REQUIRED: &str = probe::error_codes::CREDENTIAL_REQUIRED.code;
+    pub const ASSIGN_CREDENTIAL_REQUIRED: &str = assign::error_codes::CREDENTIAL_REQUIRED.code;
 }
 
 /// The config seeded from `[rooms.files] blob_dir` — the one every blob written before
@@ -110,6 +120,8 @@ pub enum SettingsError {
     Invalid { member: String, reason: String },
     /// `authNotAllowed`.
     AuthNotAllowed(String),
+    /// `unknownAccount`: the VTA says the community may use no such account.
+    UnknownAccount(String),
 }
 
 /// A config's kind, read from its settings.
@@ -133,6 +145,7 @@ pub fn credential_state(record: &Value) -> Value {
         None => json!({ "status": "none" }),
         Some("vta-account") => json!({
             "status": "vta-account",
+            "context": record["auth"]["context"],
             "account": record["auth"]["account"],
         }),
         Some("ambient") => json!({ "status": "ambient" }),
@@ -200,6 +213,9 @@ pub struct RoomStorage {
     local_bases: Vec<PathBuf>,
     /// One store per config that has one.
     stores: RwLock<HashMap<String, Arc<dyn BlobStore>>>,
+    /// The community's link to its VTA, once messaging is up: what a
+    /// `vta-account` config's store asks for credentials.
+    vta: RwLock<Option<Arc<VtaStorage>>>,
     /// Serialises every write here: the single default, overlap checks and
     /// assignments are read-check-write.
     write_lock: tokio::sync::Mutex<()>,
@@ -240,6 +256,7 @@ impl RoomStorage {
             community_did: community_did.unwrap_or_default().to_string(),
             local_bases: bases,
             stores: RwLock::new(HashMap::new()),
+            vta: RwLock::new(None),
             write_lock: tokio::sync::Mutex::new(()),
         });
 
@@ -263,7 +280,7 @@ impl RoomStorage {
 
         for record in this.configs().await? {
             let id = record["id"].as_str().unwrap_or_default().to_string();
-            match build_store(&record) {
+            match this.build_store(&record) {
                 Ok(Some(store)) => {
                     this.stores.write().expect("stores lock").insert(id, store);
                 }
@@ -306,12 +323,22 @@ impl RoomStorage {
         &self.ks
     }
 
+    /// Connect the community's VTA, and build the stores of the configs that use it.
+    pub async fn set_vta_storage(&self, link: Arc<VtaStorage>) -> Result<(), AppError> {
+        *self.vta.write().expect("vta lock") = Some(link);
+        self.reload_stores().await
+    }
+
+    fn vta_storage(&self) -> Option<Arc<VtaStorage>> {
+        self.vta.read().expect("vta lock").clone()
+    }
+
     /// Rebuild every config's store from the keyspace: after a restore has written it
     /// in place, before the restart the import asks for.
     pub async fn reload_stores(&self) -> Result<(), AppError> {
         let mut fresh = HashMap::new();
         for record in self.configs().await? {
-            if let Ok(Some(store)) = build_store(&record) {
+            if let Ok(Some(store)) = self.build_store(&record) {
                 fresh.insert(record["id"].as_str().unwrap_or_default().to_string(), store);
             }
         }
@@ -365,7 +392,7 @@ impl RoomStorage {
                 }
             }
         }
-        let store = build_store(&record).map_err(AppError::Validation)?;
+        let store = self.build_store(&record).map_err(AppError::Validation)?;
         self.ks.insert(config_key(&id), &record).await?;
         let mut stores = self.stores.write().expect("stores lock");
         match store {
@@ -512,15 +539,90 @@ impl RoomStorage {
         exclude: Option<&str>,
         prepare: bool,
     ) -> Result<(), SettingsError> {
-        let kind = kind_of(settings);
-        if kind != "local" {
-            return Err(SettingsError::Invalid {
+        match kind_of(settings) {
+            "local" => self.validate_local(settings, auth, exclude, prepare).await,
+            "s3" => self.validate_s3(settings, auth).await,
+            kind => Err(SettingsError::Invalid {
                 member: "settings.kind".into(),
                 reason: format!(
-                    "this community does not store files to `{kind}` yet; only `local` is served"
+                    "this community does not store files to `{kind}` yet; `local` and `s3` are \
+                     served"
+                ),
+            }),
+        }
+    }
+
+    /// An `s3` config: through a VTA account, the one mode served. Asks the VTA
+    /// whether the community may use the account here (item 5).
+    async fn validate_s3(
+        &self,
+        settings: &Value,
+        auth: Option<&Value>,
+    ) -> Result<(), SettingsError> {
+        let Some(auth) = auth else {
+            return Err(SettingsError::AuthNotAllowed(
+                "an `s3` config needs `auth`: the community holds no storage credential of its \
+                 own"
+                .into(),
+            ));
+        };
+        let mode = auth["mode"].as_str().unwrap_or_default();
+        if mode != "vta-account" {
+            return Err(SettingsError::Invalid {
+                member: "auth.mode".into(),
+                reason: format!(
+                    "`{mode}` is not served yet; use `vta-account`, an external account at the \
+                     community's VTA"
                 ),
             });
         }
+        let prefix = settings["prefix"].as_str().unwrap_or_default();
+        if !prefix.is_empty() && !provider_prefix(prefix) {
+            return Err(SettingsError::Invalid {
+                member: "settings.prefix".into(),
+                reason: "through a VTA account, a prefix is up to 14 segments of lowercase \
+                         letters, digits, '.', '_' and '-', each beginning with a letter or \
+                         digit and ending in '/'"
+                    .into(),
+            });
+        }
+        let Some(link) = self.vta_storage() else {
+            return Err(SettingsError::Invalid {
+                member: "auth".into(),
+                reason: "this community has no link to its VTA: its host's operator sets \
+                         `vta_did` in its configuration"
+                    .into(),
+            });
+        };
+        let context = auth["context"].as_str().unwrap_or_default();
+        let account = auth["account"].as_str().unwrap_or_default();
+        match link.check_account(context, account, prefix).await {
+            AccountCheck::Usable => Ok(()),
+            AccountCheck::Unknown(why) => Err(SettingsError::UnknownAccount(format!(
+                "the community's VTA has no account `{account}` in context `{context}` this \
+                 community is bound to use: {why}"
+            ))),
+            AccountCheck::Unfit { member, problem } => Err(SettingsError::Invalid {
+                member: member.into(),
+                reason: problem,
+            }),
+            // The account exists for this community; whether it works now is the
+            // probe's to say. And an unanswered question is not a refusal (item 5 is
+            // a SHOULD).
+            AccountCheck::NotReady(why) | AccountCheck::Unconfirmed(why) => {
+                tracing::warn!(%account, %why, "storage account not confirmed usable yet");
+                Ok(())
+            }
+        }
+    }
+
+    async fn validate_local(
+        &self,
+        settings: &Value,
+        auth: Option<&Value>,
+        exclude: Option<&str>,
+        prepare: bool,
+    ) -> Result<(), SettingsError> {
         if auth.is_some() {
             return Err(SettingsError::AuthNotAllowed(
                 "a `local` config writes to this host's own disk and takes no `auth`".into(),
@@ -597,17 +699,63 @@ fn checked(record: &Value) -> Result<(), AppError> {
         .map_err(|e| AppError::Internal(format!("storage config does not conform: {e}")))
 }
 
-/// The store a config writes to: `Ok(None)` for a config that has none in this build.
-fn build_store(record: &Value) -> Result<Option<Arc<dyn BlobStore>>, String> {
-    match kind_of(&record["settings"]) {
-        "local" => {
-            let root = record["settings"]["root"]
-                .as_str()
-                .ok_or("a local config has no root")?;
-            Ok(Some(Arc::new(LocalDirStore::new(root))))
+impl RoomStorage {
+    /// The store a config writes to: `Ok(None)` for a config that has none on this
+    /// host now (a kind this build does not serve, or a VTA account with no link to
+    /// the VTA yet).
+    fn build_store(&self, record: &Value) -> Result<Option<Arc<dyn BlobStore>>, String> {
+        let settings = &record["settings"];
+        match kind_of(settings) {
+            "local" => {
+                let root = settings["root"]
+                    .as_str()
+                    .ok_or("a local config has no root")?;
+                Ok(Some(Arc::new(LocalDirStore::new(root))))
+            }
+            "s3" if record["auth"]["mode"] == "vta-account" => {
+                let Some(link) = self.vta_storage() else {
+                    return Ok(None);
+                };
+                let context = record["auth"]["context"]
+                    .as_str()
+                    .ok_or("a vta-account config names no context")?;
+                let account = record["auth"]["account"]
+                    .as_str()
+                    .ok_or("a vta-account config names no account")?;
+                let bucket = settings["bucket"]
+                    .as_str()
+                    .ok_or("an s3 config names no bucket")?;
+                let presigner =
+                    link.presigner(context, account, bucket, settings["endpoint"].as_str());
+                let store = vti_common::blob_store::presigned::PresignedBlobs::new(
+                    "s3",
+                    presigner,
+                    settings["prefix"].as_str(),
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(Some(Arc::new(store)))
+            }
+            _ => Ok(None),
         }
-        _ => Ok(None),
     }
+}
+
+/// Whether `prefix` is what a VTA account's scope accepts (`ProviderObjectPrefix`):
+/// lowercase segments, each ending `/`. Up to 14, leaving two for `rooms/<hash>/`.
+fn provider_prefix(prefix: &str) -> bool {
+    let Some(body) = prefix.strip_suffix('/') else {
+        return false;
+    };
+    let segments: Vec<&str> = body.split('/').collect();
+    segments.len() <= 14
+        && segments.iter().all(|seg| {
+            let mut chars = seg.chars();
+            chars
+                .next()
+                .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                && seg.len() <= 128
+                && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._-".contains(c))
+        })
 }
 
 fn unavailable(message: String) -> AppError {
@@ -698,8 +846,13 @@ mod tests {
             credential_state(&json!({"auth": {"mode": "sealed"}}))["status"],
             "required"
         );
-        let vta = credential_state(&json!({"auth": {"mode": "vta-account", "account": "eu"}}));
-        assert_eq!(vta, json!({"status": "vta-account", "account": "eu"}));
+        let vta = credential_state(
+            &json!({"auth": {"mode": "vta-account", "context": "community", "account": "eu"}}),
+        );
+        assert_eq!(
+            vta,
+            json!({"status": "vta-account", "context": "community", "account": "eu"})
+        );
     }
 
     async fn registry(dir: &Path) -> Arc<RoomStorage> {
@@ -798,8 +951,33 @@ mod tests {
                 true
             )
             .await,
-            Err(SettingsError::Invalid { .. })
+            Err(SettingsError::AuthNotAllowed(_))
         ));
+        // Through a VTA account, but this host has no link to its VTA.
+        assert!(matches!(
+            reg.validate(
+                &json!({"kind": "s3", "region": "eu-west-1", "bucket": "abc"}),
+                Some(&json!({"mode": "vta-account", "context": "community", "account": "eu"})),
+                None,
+                true
+            )
+            .await,
+            Err(SettingsError::Invalid { member, .. }) if member == "auth"
+        ));
+        assert!(matches!(
+            reg.validate(&json!({"kind": "gcs", "bucket": "abc"}), None, None, true)
+                .await,
+            Err(SettingsError::Invalid { member, .. }) if member == "settings.kind"
+        ));
+    }
+
+    #[test]
+    fn a_prefix_through_a_vta_account_is_what_its_scope_accepts() {
+        assert!(provider_prefix("community/"));
+        assert!(provider_prefix("a/b.c/d-e_f/"));
+        for bad in ["Community/", "a", "a//", "/a/", "a*/", "a b/"] {
+            assert!(!provider_prefix(bad), "{bad}");
+        }
     }
 
     #[tokio::test]

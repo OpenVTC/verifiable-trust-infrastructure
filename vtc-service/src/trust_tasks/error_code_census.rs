@@ -207,6 +207,30 @@ fn witnesses() -> Vec<Witness> {
             "vtc_rooms_storage_assign_refuses_with_its_declared_codes"
         ),
         witness!(
+            s::storage::configs::create::v0_1::error_codes::UNKNOWN_ACCOUNT,
+            crate::rooms::storage_configs::codes::CREATE_UNKNOWN_ACCOUNT,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_create_refuses_an_account_the_vta_does_not_know"
+        ),
+        witness!(
+            s::storage::configs::update::v0_1::error_codes::UNKNOWN_ACCOUNT,
+            crate::rooms::storage_configs::codes::UPDATE_UNKNOWN_ACCOUNT,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_update_refuses_an_account_the_vta_does_not_know"
+        ),
+        witness!(
+            s::storage::configs::probe::v0_1::error_codes::CREDENTIAL_REQUIRED,
+            crate::rooms::storage_configs::codes::PROBE_CREDENTIAL_REQUIRED,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_probe_refuses_a_config_without_a_usable_credential"
+        ),
+        witness!(
+            s::rooms::storage::assign::v0_1::error_codes::CREDENTIAL_REQUIRED,
+            crate::rooms::storage_configs::codes::ASSIGN_CREDENTIAL_REQUIRED,
+            "room_storage_configs.rs",
+            "vtc_rooms_storage_assign_refuses_a_config_without_a_usable_credential"
+        ),
+        witness!(
             s::join_requests::wallet_session::start::v0_1::error_codes::CRITERION_NOT_FOUND,
             jr::WALLET_SESSION_START_ERR_CRITERION_NOT_FOUND,
             "wallet_session.rs",
@@ -1465,17 +1489,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // before anything else, so different bytes are `chunkMismatch` first;
         // the same bytes are the idempotent `stored: false`.
         s::website::upload::chunk::v0_1::error_codes::ALREADY_STORED,
-        // A storage config's credential: `unknownAccount` is the VTA saying an
-        // external account does not exist, and `credentialRequired` a config
-        // whose credential is missing — a `sealed` one never set. This build
-        // serves `local` configs only (`crate::rooms::storage_configs`), which
-        // take no `auth`, so neither can arise until the `vta-account` and
-        // `sealed` backends land (data-rooms-files.md P4b); they leave this list
-        // with them.
-        s::storage::configs::create::v0_1::error_codes::UNKNOWN_ACCOUNT,
-        s::storage::configs::update::v0_1::error_codes::UNKNOWN_ACCOUNT,
-        s::storage::configs::probe::v0_1::error_codes::CREDENTIAL_REQUIRED,
-        s::rooms::storage::assign::v0_1::error_codes::CREDENTIAL_REQUIRED,
         // BASELINE-END
     ]
 }
@@ -1488,7 +1501,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// the baseline past the ceiling — a newly bound task declaring codes
 /// nothing tests — requires raising this constant, which is the point:
 /// that always wants a human decision, never a silent pass.
-const UNWITNESSED_CEILING: usize = 13;
+const UNWITNESSED_CEILING: usize = 9;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.

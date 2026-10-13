@@ -553,9 +553,9 @@ community's ACL or a session.
   `vtc/storage/configs/{list,get,create,update,retire,probe}/0.1` and
   `vtc/rooms/storage/assign/0.1`. Creating, changing and retiring a config, and
   reassigning a room, are **parked for the other holders' consent** in the
-  administrator action list. This build stores to `local` configs only; `s3`
-  and `gcs` (through the VTA's external accounts, or the host's own identity
-  downscoped per room) and `walrus` follow. A local config's root must lie
+  administrator action list. This build stores to `local` configs and to `s3`
+  configs through the community's VTA (below); `ambient` and `sealed` auth,
+  `gcs` and `walrus` follow. A local config's root must lie
   strictly beneath one of `local_storage_bases` once symbolic links are
   resolved, and never overlaps another config's: an administrator cannot point
   the service at the rest of the machine, and one config's collection never
@@ -568,6 +568,31 @@ community's ACL or a session.
   only from the party holding the open upload it belongs to, and a `begin` only
   when it names a room this VTC hosts, both under the same per-address budget as
   any other large document.
+- **S3 through the community's VTA** (`auth: vta-account`). The VTC holds no
+  storage credential. For every object operation it asks its VTA, over the
+  messaging channel it already keeps, for one presigned request
+  (`external/credentials/issue/0.1` on an `s3-static-presign` account): one
+  method on one object of one room, valid for five minutes, checked against the
+  community's binding and audited at the VTA, and sealed to the community's
+  key-agreement key. A download's ranges reuse one read request until shortly
+  before it expires. The VTA needs no inbound surface for any of it. To set one
+  up:
+  1. On the VTA, create the account and set its secret
+     (`docs/02-vta/external-accounts.md`).
+  2. Give the community's DID an ACL entry holding `external-auth-use` in the
+     account's context, and bind it to the account with a ceiling of
+     `<prefix>rooms/` and `<prefix>probe/` (`<prefix>` is the config's
+     `prefix`, if any), actions `put`, `get` and `delete`, `maxTtlSeconds` of at
+     least 300, and a rate per minute that covers an upload, a delete, and a
+     read per file being downloaded.
+  3. Create the config, with `auth` naming the account by its context and
+     identifier, and `settings` naming the same bucket (and `endpoint`
+     for R2, B2 or MinIO) as the account. Creating it asks the VTA once: an
+     account the community is not bound to use is `unknownAccount`, a ceiling
+     that does not cover the prefix is `invalidSettings` on `settings.prefix`. A
+     presigned request for a different bucket or endpoint than the config's is
+     refused before it is sent. Through a VTA account, `prefix` is lowercase
+     segments only, as the VTA's scope accepts.
 - **Audit**: room operations land in the VTC's hash-chained audit keyspace, with
   the same tier rule as above.
 - **Governance**: the `rooms` policy purpose (`vtc.rooms` package) decides who

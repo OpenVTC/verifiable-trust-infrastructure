@@ -42,7 +42,6 @@ use trust_tasks_rs::specs::git_ns::bridge::{
     event::v0_4 as event_wire, job::v0_4 as job_wire, job::v0_5 as job_wire5,
     result::v0_1 as result_wire,
 };
-use vta_sdk::protocol::matching::{Protocol, ProtocolMatch, ServiceCapabilities, select_protocol};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -640,10 +639,7 @@ pub async fn send_job_inline(
 /// transport both parties advertise, signs the job with the community's key,
 /// and awaits the acknowledgement by `threadId`.
 pub struct MessagingBridgeClient {
-    didcomm: Arc<OnceCell<Arc<VtcMessaging>>>,
-    signer: Option<Arc<LocalSigner>>,
-    replies: PendingReplies,
-    resolver: Option<affinidi_did_resolver_cache_sdk::DIDCacheClient>,
+    peers: crate::outbound::PeerTasks,
 }
 
 impl MessagingBridgeClient {
@@ -654,44 +650,13 @@ impl MessagingBridgeClient {
         resolver: Option<affinidi_did_resolver_cache_sdk::DIDCacheClient>,
     ) -> Self {
         Self {
-            didcomm,
-            signer,
-            replies,
-            resolver,
+            peers: crate::outbound::PeerTasks {
+                didcomm,
+                signer,
+                replies,
+                resolver,
+            },
         }
-    }
-
-    async fn select(&self, bridge_did: &str) -> Result<ProtocolMatch, BridgeSendError> {
-        let resolver = self.resolver.as_ref().ok_or_else(|| {
-            BridgeSendError::Transient(
-                "no DID resolver configured — cannot read the bridge's advertised transports"
-                    .into(),
-            )
-        })?;
-        let resolved = resolver.resolve(bridge_did).await.map_err(|e| {
-            BridgeSendError::Transient(format!("could not resolve bridge DID {bridge_did}: {e}"))
-        })?;
-        let doc = serde_json::to_value(&resolved.doc)
-            .map_err(|e| BridgeSendError::Transient(format!("unreadable DID document: {e}")))?;
-        let theirs = ServiceCapabilities::from_did_document(&doc);
-        let up = self.didcomm.get().is_some();
-        let ours = ServiceCapabilities {
-            tsp: (up && cfg!(feature = "tsp")).then(|| bridge_did.to_string()),
-            didcomm: up.then(|| bridge_did.to_string()),
-            // A bridge is reached over messaging only; a REST-only bridge has
-            // no transport in common with this client, which is reported as
-            // such rather than guessed around.
-            rest: None,
-        };
-        if ours.advertised().is_empty() {
-            return Err(BridgeSendError::Transient(
-                "VTC messaging is not running yet".into(),
-            ));
-        }
-        select_protocol(&ours, &theirs, bridge_did).map_err(|e| BridgeSendError::Rejected {
-            code: "noMatchingProtocol".into(),
-            message: e.to_string(),
-        })
     }
 }
 
@@ -773,81 +738,17 @@ impl MessagingBridgeClient {
         payload: &Value,
         timeout: Duration,
     ) -> Result<TrustTask<Value>, BridgeSendError> {
-        let messaging = self
-            .didcomm
-            .get()
-            .ok_or_else(|| BridgeSendError::Transient("VTC messaging is not running yet".into()))?;
-        let signer = self
-            .signer
-            .as_ref()
-            .ok_or_else(|| BridgeSendError::Transient("this VTC has no signing key yet".into()))?;
-        let matched = self.select(bridge_did).await?;
-        let protocol = matched.protocol;
-
-        let doc = vti_common::capability_client::build_document(
-            &messaging.vtc_did,
-            bridge_did,
-            type_uri,
-            payload.clone(),
-        );
-        let mut value = serde_json::to_value(&doc)
-            .map_err(|e| BridgeSendError::Transient(format!("serialise job: {e}")))?;
-        signer
-            .sign_operational_doc(&mut value)
+        use crate::outbound::PeerError;
+        self.peers
+            .exchange(bridge_did, type_uri, payload, timeout)
             .await
-            .map_err(|e| BridgeSendError::Transient(format!("sign job: {e}")))?;
-        let doc: TrustTask<Value> = serde_json::from_value(value)
-            .map_err(|e| BridgeSendError::Transient(format!("reparse signed job: {e}")))?;
-
-        let receiver = self.replies.register(&doc.id, bridge_did);
-        let sent = match protocol {
-            #[cfg(feature = "tsp")]
-            Protocol::Tsp => {
-                let body = crate::outbound::seal_trust_task_tsp(&doc)
-                    .map_err(|e| BridgeSendError::Transient(e.to_string()))?;
-                // `peer_endpoint` is the bridge's TSP mediator; a bridge on
-                // another mediator is reached through it (VTI-56).
-                vti_common::tsp_route::send_reestablishing(
-                    &messaging.atm,
-                    &messaging.profile,
-                    &messaging.mediator_did,
-                    bridge_did,
-                    Some(matched.peer_endpoint.as_str()),
-                    &body,
-                )
-                .await
-                .map(|_| ())
-                .map_err(|e| BridgeSendError::Transient(format!("TSP send failed: {e}")))
-            }
-            Protocol::Didcomm => {
-                crate::outbound::send_trust_task_didcomm(messaging, bridge_did, &doc)
-                    .await
-                    .map_err(|e| BridgeSendError::Transient(e.to_string()))
-            }
-            _ => Err(BridgeSendError::Rejected {
-                code: "noMatchingProtocol".into(),
-                message: format!("{bridge_did} can be reached by no transport this VTC speaks"),
-            }),
-        };
-        if let Err(e) = sent {
-            self.replies.abandon(&doc.id);
-            return Err(e);
-        }
-        let reply = match tokio::time::timeout(timeout, receiver).await {
-            Ok(Ok(reply)) => reply,
-            Ok(Err(_)) => {
-                self.replies.abandon(&doc.id);
-                return Err(BridgeSendError::Transient("reply channel closed".into()));
-            }
-            Err(_) => {
-                self.replies.abandon(&doc.id);
-                return Err(BridgeSendError::Transient(format!(
-                    "no reply from the bridge within {}s",
-                    timeout.as_secs()
-                )));
-            }
-        };
-        Ok(reply)
+            .map_err(|e| match e {
+                PeerError::Transient(m) => BridgeSendError::Transient(m),
+                PeerError::NoMatchingProtocol(message) => BridgeSendError::Rejected {
+                    code: "noMatchingProtocol".into(),
+                    message,
+                },
+            })
     }
 }
 

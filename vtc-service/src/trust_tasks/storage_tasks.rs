@@ -37,7 +37,7 @@ use super::helpers::{
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::acl::Capability;
 use crate::acl::admin_consent::Act;
-use crate::rooms::storage_configs::{SettingsError, credential_state, kind_of, state_of};
+use crate::rooms::storage_configs::{SettingsError, kind_of, state_of};
 use crate::routes::acl::conform;
 use crate::server::AppState;
 
@@ -133,6 +133,7 @@ fn settings_refusal(
     doc: &TrustTask<Value>,
     invalid: &str,
     auth_not_allowed: &str,
+    unknown_account: &str,
     e: SettingsError,
 ) -> TrustTaskOutcome {
     match e {
@@ -143,6 +144,7 @@ fn settings_refusal(
             Some(json!({ "member": member, "problem": truncate(&reason, 500) })),
         ),
         SettingsError::AuthNotAllowed(reason) => refuse(doc, auth_not_allowed, reason, None),
+        SettingsError::UnknownAccount(reason) => refuse(doc, unknown_account, reason, None),
     }
 }
 
@@ -435,6 +437,7 @@ async fn create_refusal(
             doc,
             c::INVALID_SETTINGS.code,
             c::AUTH_NOT_ALLOWED.code,
+            c::UNKNOWN_ACCOUNT.code,
             e,
         ));
     }
@@ -539,6 +542,7 @@ async fn plan_update(
                 doc,
                 c::INVALID_SETTINGS.code,
                 c::AUTH_NOT_ALLOWED.code,
+                c::UNKNOWN_ACCOUNT.code,
                 e,
             ));
         }
@@ -794,8 +798,19 @@ async fn run_probe(state: &AppState, id: &str) -> Result<Value, vti_common::erro
 
     let started = std::time::Instant::now();
     let store = state.room_storage.store(id);
+    // A store's own account of whether it can reach its backend: for a VTA
+    // account, that the VTA issues it a request.
     let authenticated = match &store {
-        Some(_) => Ok(()),
+        Some(store) => {
+            let health = store.health().await;
+            if health.ok {
+                Ok(())
+            } else {
+                Err(health
+                    .detail
+                    .unwrap_or_else(|| "the store reports itself unhealthy".into()))
+            }
+        }
         None => Err("this host has no usable store for the config".to_string()),
     };
     ok &= authenticated.is_ok();
@@ -855,11 +870,18 @@ async fn run_probe(state: &AppState, id: &str) -> Result<Value, vti_common::erro
     }
 
     state.room_storage.record_probe(id, ok, probed_at).await?;
+    // `probe/` beneath the config's own prefix, where the store wrote it.
+    let config_prefix = state
+        .room_storage
+        .config(id)
+        .await?
+        .and_then(|c| c["settings"]["prefix"].as_str().map(str::to_string))
+        .unwrap_or_default();
     Ok(json!({
         "configId": id,
         "ok": ok,
         "probedAt": probed_at.to_rfc3339(),
-        "prefix": PROBE_PREFIX,
+        "prefix": format!("{config_prefix}{PROBE_PREFIX}"),
         "steps": steps,
     }))
 }
@@ -891,7 +913,7 @@ async fn handle_probe(
         }
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    if credential_state(&config)["status"] == "required" {
+    if !state.room_storage.usable(&config) {
         return refuse(
             &doc,
             c::CREDENTIAL_REQUIRED.code,
