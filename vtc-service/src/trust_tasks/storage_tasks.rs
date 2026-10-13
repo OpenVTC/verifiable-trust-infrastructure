@@ -808,8 +808,18 @@ async fn run_probe(state: &AppState, id: &str) -> Result<Value, vti_common::erro
             rand::fill(&mut b[..]);
             b
         };
-        let staging = tempfile::tempdir()?;
-        let staged = staging.path().join("canary");
+        // Staged beside upload staging, under the data directory: `tempfile` is a
+        // test-only dependency of this crate, and the system temp directory is
+        // not owner-only.
+        let staging_dir = state
+            .config
+            .read()
+            .await
+            .store
+            .data_dir
+            .join("room-blob-staging");
+        tokio::fs::create_dir_all(&staging_dir).await?;
+        let staged = staging_dir.join(format!("probe-{}", uuid::Uuid::new_v4()));
         tokio::fs::write(&staged, &canary).await?;
 
         let started = std::time::Instant::now();
@@ -841,6 +851,7 @@ async fn run_probe(state: &AppState, id: &str) -> Result<Value, vti_common::erro
             ok &= deleted.is_ok();
             steps.push(step("delete", started, deleted));
         }
+        let _ = tokio::fs::remove_file(&staged).await;
     }
 
     state.room_storage.record_probe(id, ok, probed_at).await?;
