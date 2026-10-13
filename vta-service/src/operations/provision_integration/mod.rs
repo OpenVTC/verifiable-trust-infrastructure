@@ -394,6 +394,12 @@ pub async fn provision_integration(
     // before the did:key / did:webvh dispatch.
     let use_did_peer = templates::template_targets_did_peer(&integration_template);
     let use_did_key = templates::template_targets_did_key_only(&integration_template);
+    // did:key and did:peer mint their own signing + key-agreement pair; only
+    // a webvh template's slots decide what the bundle can carry. Refused
+    // before the mint, so a refusal leaves no DID behind.
+    if !use_did_peer && !use_did_key {
+        templates::require_bundle_shape(&template_name, &integration_template)?;
+    }
 
     // When the did:key or did:peer path runs, we already hold the full
     // `DidKeyMaterial` (signing + KA public/private) from the mint
@@ -2042,6 +2048,85 @@ mod tests {
             output.summary.integration_did.as_deref(),
             "bound DID must match the minted integration DID returned in the summary"
         );
+    }
+
+    /// `swiyu-verifier` keeps its update key out of the document and has no
+    /// key agreement, so no integration bundle can describe it. It is refused
+    /// with the commands that do mint it, before anything is minted: the
+    /// context keeps no DID and no key is created.
+    #[tokio::test]
+    async fn a_template_no_bundle_can_carry_is_refused_before_the_mint() {
+        let ts = open_test_store().await;
+        let (_vta_did, deps) = bootstrap_test_vta(&ts).await;
+        crate::contexts::create_context(&ts.contexts_ks, "verifier", "Verifier")
+            .await
+            .expect("create context");
+        let keys_before = ts.keys_ks.prefix_iter_raw("").await.unwrap().len();
+
+        let request = signed_request_with_vars(
+            "swiyu-verifier",
+            "verifier",
+            BTreeMap::from([(
+                "URL".to_string(),
+                Value::String("https://identifier-reg.example/api/v1/did/abc".into()),
+            )]),
+        )
+        .await;
+        let refused = provision_integration(
+            &deps,
+            &super_admin_claims(),
+            ProvisionIntegrationParams {
+                request,
+                context: "verifier".into(),
+                admin_scope: AdminScope::Context,
+                assertion_mode: AssertionMode::PinnedOnly,
+                vc_validity: None,
+            },
+        )
+        .await;
+        let message = match refused {
+            Err(AppError::Validation(message)) => message,
+            Err(other) => panic!("expected a validation refusal, got {other:?}"),
+            Ok(_) => panic!("swiyu-verifier was provisioned"),
+        };
+        assert!(message.contains("cannot be provisioned"), "{message}");
+        assert!(
+            message
+                .contains("pnm did-mgmt dids create --context <context> --template swiyu-verifier"),
+            "{message}"
+        );
+        assert!(message.contains("vtc oid4vp attach"), "{message}");
+
+        let ctx = crate::contexts::get_context(&ts.contexts_ks, "verifier")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(ctx.did.is_none(), "no DID was minted");
+        assert_eq!(
+            ts.keys_ks.prefix_iter_raw("").await.unwrap().len(),
+            keys_before,
+            "no key was created"
+        );
+    }
+
+    /// Every built-in webvh template but the verifier one is an integration a
+    /// bundle can carry.
+    #[test]
+    fn every_builtin_webvh_integration_template_has_the_bundle_shape() {
+        for name in vta_sdk::did_templates::BUILTIN_NAMES {
+            let template = vta_sdk::did_templates::load_embedded(name).unwrap();
+            if templates::template_targets_did_peer(&template)
+                || templates::template_targets_did_key_only(&template)
+            {
+                continue;
+            }
+            let shaped = templates::require_bundle_shape(name, &template);
+            assert_eq!(
+                shaped.is_ok(),
+                *name != "swiyu-verifier",
+                "{name}: {shaped:?}"
+            );
+        }
     }
 
     #[tokio::test]
