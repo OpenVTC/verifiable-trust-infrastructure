@@ -604,7 +604,9 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # require a proof (trust-tasks-tf #750), which the spine-proof census checks
 # against the rooms arm; below it the census needs an interim exemption for
 # `rooms/info`. 0.29 adds `keys/sign-jws` and `keys/sign-csr` (#749).
-trust-tasks-rs = { version = "0.30.0", default-features = false, features = [
+# 0.30.2 is a FLOOR: it adds the `vta/pcs/*` hidden-vetting engine tasks
+# (trust-tasks-tf #756), which `trust_tasks::pcs` serves.
+trust-tasks-rs = { version = "0.30.2", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
