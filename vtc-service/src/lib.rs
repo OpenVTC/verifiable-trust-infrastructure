@@ -71,6 +71,7 @@ pub mod sync_jobs_cli;
 pub mod transport_capability;
 pub mod trust_tasks;
 pub mod vetting;
+pub mod vta_link;
 pub mod webauthn;
 pub mod website;
 

@@ -65,9 +65,12 @@ pub fn oid4vp_test_identity(id: &str, seed: u8) -> crate::oid4vp::VerifierIdenti
         did: Some(TEST_VERIFIER_DID.into()),
         kid: Some(format!("{TEST_VERIFIER_DID}#verifier-key-1")),
         public_jwk: jwk,
-        private_key_multibase: secret
-            .get_private_keymultibase()
-            .expect("private key multibase"),
+        private_key_multibase: Some(
+            secret
+                .get_private_keymultibase()
+                .expect("private key multibase"),
+        ),
+        vta_key_id: None,
         x5c: None,
         verifier_info: None,
         installed_at: 0,
@@ -146,6 +149,7 @@ pub struct TestVtcBuilder {
     /// OpenID4VP verifier identities installed before the router is built,
     /// as `vtc oid4vp install` would leave them.
     oid4vp_identities: Vec<crate::oid4vp::VerifierIdentityRecord>,
+    vta_link: Option<Arc<dyn crate::oid4vp::VtaJwsSigner>>,
     x509_trust_anchors: vta_sdk::x509_issuer::X509TrustAnchors,
 }
 
@@ -166,6 +170,7 @@ impl Default for TestVtcBuilder {
             git_ns_config: None,
             registry_client: None,
             oid4vp_identities: Vec::new(),
+            vta_link: None,
             x509_trust_anchors: Default::default(),
         }
     }
@@ -223,6 +228,13 @@ impl TestVtcBuilder {
     /// so wallet sessions can be opened against it.
     pub fn with_oid4vp_identity(mut self, record: crate::oid4vp::VerifierIdentityRecord) -> Self {
         self.oid4vp_identities.push(record);
+        self
+    }
+
+    /// Stand `vta` in for the community's VTA, for verifier identities whose
+    /// key it keeps (`keys/sign-jws`).
+    pub fn with_vta_link(mut self, vta: Arc<dyn crate::oid4vp::VtaJwsSigner>) -> Self {
+        self.vta_link = Some(vta);
         self
     }
 
@@ -619,8 +631,12 @@ impl TestVtcBuilder {
                         .await
                         .expect("install oid4vp identity");
                 }
+                let link = crate::oid4vp::VtaLinkCell::default();
+                if let Some(vta) = self.vta_link {
+                    let _ = link.set(vta);
+                }
                 Arc::new(
-                    crate::oid4vp::load_signers(&oid4vp_keys_ks)
+                    crate::oid4vp::load_signers(&oid4vp_keys_ks, &link)
                         .await
                         .expect("load oid4vp signers"),
                 )

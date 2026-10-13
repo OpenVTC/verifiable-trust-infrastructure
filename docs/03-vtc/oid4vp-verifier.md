@@ -19,7 +19,8 @@ wallet sessions it serves. The design is
   request objects. For EUDI: one P-256 key, which the access certificate
   certifies and which signs the request objects.
 - **The VTC** caches the P-256 key and signs with it locally, so a wallet's
-  request never waits on the VTA. It lives in the `oid4vp_keys` keyspace,
+  request never waits on the VTA — or, if you prefer the key never to leave
+  the VTA, signs through it instead (see *Keeping the key in the VTA*). It lives in the `oid4vp_keys` keyspace,
   encrypted at rest under the storage key, and is loaded at boot — a record
   that does not load stops the boot. It is never added to the credential
   signer: that key would otherwise put a proof on every credential the
@@ -150,6 +151,53 @@ task; its wallet link is `haip-vp://?client_id=…&request_uri=…`, and the
 response may be encrypted with `A128GCM` or `A256GCM`. When the certificate is
 renewed, run `vtc oid4vp certificate` again with the new chain; a new key
 needs a new `request` and `install`, and then a new certificate.
+
+## Keeping the key in the VTA
+
+Instead of `request` and `install`, an identity can name a key the VTA keeps.
+Every request object is then signed by the VTA through `keys/sign-jws`, over
+the VTC's TSP or DIDComm link to it, and the VTC holds no private key. The cost
+is a VTA round trip on each wallet session's start, and a VTA that must be
+reachable for one to start.
+
+1. **On the admin workstation**, mint the identity as above — for swiyu the
+   `swiyu-verifier` DID, for EUDI a P-256 key — and note the key's id and
+   public key (`pnm keys list --context <context>`). Let this VTC sign with it:
+
+   ```sh
+   pnm acl create --did <the VTC's DID> --role application --contexts <context> \
+     --capabilities sign-jws
+   ```
+
+   `sign-jws` is a capability of its own; the VTA does not accept `sign` for
+   it. For EUDI, request the access certificate there too — the VTC has no key
+   to sign the request with:
+
+   ```sh
+   pnm keys sign-csr <key id> --country DE --organization "Example e.V." \
+     --organization-identifier VATDE-123456789 --common-name "Example Community" \
+     --dns vtc.example.org --out eudi.csr
+   ```
+
+2. **On the VTC host**, with the daemon stopped:
+
+   ```sh
+   # swiyu
+   vtc oid4vp attach --identity swiyu --vta-key <key id> --public-key <zDn…> \
+     --did <the swiyu DID> --kid <the DID's verification method for that key>
+   # EUDI
+   vtc oid4vp attach --identity eudi --vta-key <key id> --public-key <zDn…>
+   vtc oid4vp certificate --identity eudi --chain eudi-chain.pem
+   ```
+
+   The VTC needs `vta_did` in its configuration. A VTC with such an identity and
+   no `vta_did` does not start.
+
+3. Start the VTC. Each JWS the VTA returns is checked against the identity's
+   public key before a wallet sees it; a VTA that refuses (an entry without
+   `sign-jws`, say) refuses the session's start, with the reason in the log.
+
+`vtc oid4vp list` shows where each identity's key is held.
 
 ## Managing identities
 
@@ -288,5 +336,3 @@ verifier identities. `oid4vp_sessions` is not: a session lasts minutes.
 - swiyu trust statements in `verifier_info`, and swiyu's trusted issuers.
 - DCQL `trusted_authorities` in a criterion's query: anchors are configured per
   community, not per credential query.
-- Keeping the key in the VTA instead (`keys/sign-jws`), for a deployment that
-  wants it never to leave.

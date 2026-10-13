@@ -353,22 +353,15 @@ async fn sign_request_object(
         .validate()
         .map_err(|e| AppError::Internal(format!("request object: {e}")))?;
     let mut header = identity_header_of(identity, signer);
-    header.insert("alg".into(), json!(signer.alg()));
     header.insert("typ".into(), json!(REQUEST_OBJECT_TYP));
-    let claims = serde_json::to_vec(request)
-        .map_err(|e| AppError::Internal(format!("request object: {e}")))?;
-    let header = serde_json::to_vec(&Value::Object(header))
-        .map_err(|e| AppError::Internal(format!("request object header: {e}")))?;
-    let signing_input = format!(
-        "{}.{}",
-        URL_SAFE_NO_PAD.encode(header),
-        URL_SAFE_NO_PAD.encode(claims)
-    );
-    let signature = signer.sign(signing_input.as_bytes()).await?;
-    Ok(format!(
-        "{signing_input}.{}",
-        URL_SAFE_NO_PAD.encode(signature)
-    ))
+    let Value::Object(claims) = serde_json::to_value(request)
+        .map_err(|e| AppError::Internal(format!("request object: {e}")))?
+    else {
+        return Err(AppError::Internal(
+            "request object: not a JSON object".into(),
+        ));
+    };
+    signer.sign_jws(header, claims).await
 }
 
 /// What became of a wallet's post to `response_uri`.

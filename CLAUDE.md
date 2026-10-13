@@ -825,7 +825,8 @@ new flow, update both this section and the relevant `docs/*.md`.
   and is gated on its own `sign-sshsig` capability (`sign` also accepted).
   Never let it sign caller-supplied bytes; that would make the narrow grant
   equal to `sign`.
-- **JWS and certificate requests**: `keys/sign-jws/0.1` (an OpenID4VP request
+- **JWS and certificate requests** (the VTC's VTA-held verifier identities,
+  `vtc oid4vp attach` → `vtc_service::vta_link`): `keys/sign-jws/0.1` (an OpenID4VP request
   object) and `keys/sign-csr/0.1` (a PKCS#10 request for an EUDI access
   certificate) — the VTA sets `alg` from the key, refuses `alg`/`crit`/`b64`/
   `jwk`/`jku`/`x5u`, checks an `x5c` certifies the named key, and builds the

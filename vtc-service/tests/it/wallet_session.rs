@@ -63,6 +63,11 @@ async fn fixture_trusting(
     if let Some(pem) = anchor_pem {
         builder = builder.with_x509_trust_anchor_pem(pem);
     }
+    fixture_built(builder).await
+}
+
+/// The criterion and its policies, over a VTC `builder` makes.
+async fn fixture_built(builder: vtc_service::test_support::TestVtcBuilder) -> Fixture {
     let vtc = builder.build().await;
     // The join decision runs the active `join` policy, as `server::run`
     // installs it.
@@ -427,6 +432,76 @@ async fn a_wallet_presentation_becomes_evidence_the_applicant_can_read() {
         tt_error_code(&body),
         jr::WALLET_SESSION_STATUS_ERR_NOT_FOUND
     );
+}
+
+/// A VTA standing in for `keys/sign-jws`: it holds the key, sets `alg` itself,
+/// and records what it was asked to sign.
+struct FakeVta {
+    signer: vtc_service::oid4vp::LocalP256Signer,
+    asked: std::sync::Mutex<Vec<(String, serde_json::Map<String, Value>)>>,
+}
+
+#[async_trait::async_trait]
+impl vtc_service::oid4vp::VtaJwsSigner for FakeVta {
+    async fn sign_jws(
+        &self,
+        key_id: &str,
+        header: serde_json::Map<String, Value>,
+        claims: serde_json::Map<String, Value>,
+    ) -> Result<String, vti_common::error::AppError> {
+        use vtc_service::oid4vp::VerifierSigner;
+        self.asked
+            .lock()
+            .unwrap()
+            .push((key_id.to_string(), header.clone()));
+        self.signer.sign_jws(header, claims).await
+    }
+}
+
+/// A swiyu identity whose key the VTA keeps: the VTC holds no private key, the
+/// request object is signed by the VTA through `keys/sign-jws`, and a wallet
+/// verifies it under the identity's published key as before.
+#[tokio::test]
+async fn a_vta_held_identity_signs_its_request_object_through_the_vta() {
+    let cached = oid4vp_test_identity("swiyu", 0x31);
+    let vta = std::sync::Arc::new(FakeVta {
+        signer: vtc_service::oid4vp::LocalP256Signer::from_record(&cached).unwrap(),
+        asked: Default::default(),
+    });
+    let mut held = cached.clone();
+    held.private_key_multibase = None;
+    held.vta_key_id = Some("swiyu-verifier-p256".into());
+    let f = fixture_built(
+        TestVtc::builder()
+            .with_audit(true)
+            .with_public_url(PUBLIC_URL)
+            .with_oid4vp_identity(held)
+            .with_vta_link(vta.clone()),
+    )
+    .await;
+
+    let (code, body) = start_session(&f, &APPLICANT_SEED, json!({ "criterion": f.digest })).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    let session_id = body["payload"]["sessionId"].as_str().unwrap().to_string();
+    let (code, _, bytes) = get_request_object(&f, &session_id).await;
+    assert_eq!(code, StatusCode::OK);
+    let jar = String::from_utf8(bytes).unwrap();
+    let request = vta_sdk::jws::JwsKey::from_jwk(&cached.public_jwk)
+        .unwrap()
+        .verify_compact(&jar)
+        .expect("the request object verifies under the published key");
+    assert_eq!(
+        request["client_id"],
+        format!("decentralized_identifier:{TEST_VERIFIER_DID}")
+    );
+
+    let asked = vta.asked.lock().unwrap();
+    assert_eq!(asked.len(), 1, "one keys/sign-jws per request object");
+    let (key_id, header) = &asked[0];
+    assert_eq!(key_id, "swiyu-verifier-p256");
+    assert!(!header.contains_key("alg"), "the VTA sets alg: {header:?}");
+    assert_eq!(header["typ"], "oauth-authz-req+jwt");
+    assert_eq!(header["kid"], format!("{TEST_VERIFIER_DID}#verifier-key-1"));
 }
 
 /// An EUDI identity beside the swiyu one: a start naming `x509_hash` gets a

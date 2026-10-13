@@ -180,6 +180,28 @@ enum Oid4vpCommands {
         #[arg(long)]
         kid: Option<String>,
     },
+    /// Record a verifier identity whose key the VTA keeps: every request
+    /// object is signed there, through `keys/sign-jws`, and this VTC holds no
+    /// private key. The VTC's DID needs `sign-jws` in the key's context at the
+    /// VTA.
+    Attach {
+        #[arg(long)]
+        identity: String,
+        /// The key's id at the VTA (`pnm keys list`); a P-256 key.
+        #[arg(long)]
+        vta_key: String,
+        /// The key's public half, multibase (`zDn…`), as `pnm keys list`
+        /// shows it. Every JWS the VTA returns must verify under it.
+        #[arg(long)]
+        public_key: String,
+        /// A swiyu identity's DID. Omitted: an EUDI identity, known by the
+        /// access certificate `vtc oid4vp certificate` installs.
+        #[arg(long, requires = "kid")]
+        did: Option<String>,
+        /// The verification method of `--did` that is this key.
+        #[arg(long, requires = "did")]
+        kid: Option<String>,
+    },
     /// Write a certificate signing request for an EUDI identity's key, signed
     /// by it, for your registrar to issue the access certificate from.
     Csr {
@@ -546,6 +568,16 @@ async fn main() {
                     digest,
                     kid,
                 } => oid4vp_cli::run_install(cli.config, identity, bundle, digest, kid).await,
+                Oid4vpCommands::Attach {
+                    identity,
+                    vta_key,
+                    public_key,
+                    did,
+                    kid,
+                } => {
+                    oid4vp_cli::run_attach(cli.config, identity, vta_key, public_key, did.zip(kid))
+                        .await
+                }
                 Oid4vpCommands::Csr {
                     identity,
                     common_name,

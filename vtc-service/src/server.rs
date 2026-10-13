@@ -678,7 +678,13 @@ pub async fn run(
         Some(key) => oid4vp_keys_ks.with_encryption(key),
         None => oid4vp_keys_ks,
     };
-    let oid4vp_signers = Arc::new(crate::oid4vp::load_signers(&oid4vp_keys_ks).await?);
+    // An identity whose key the VTA keeps signs over the link to the VTA,
+    // which can be built only once messaging and the credential signer exist —
+    // below. The signers hold the cell it lands in.
+    let vta_link_cell = crate::oid4vp::VtaLinkCell::default();
+    let oid4vp_signers =
+        Arc::new(crate::oid4vp::load_signers(&oid4vp_keys_ks, &vta_link_cell).await?);
+    let vta_held_identities = crate::oid4vp::needs_vta_link(&oid4vp_keys_ks).await?;
     // A session holds the ephemeral key a wallet's response is encrypted to
     // and, once answered, the presented claims. New, so nothing plaintext to
     // migrate.
@@ -811,6 +817,34 @@ pub async fn run(
                 }
             },
         };
+
+    // The link to the VTA, for the verifier identities whose key it keeps. One
+    // that cannot be built stops the boot: those identities would answer every
+    // wallet with nothing, and the reason belongs in front of the operator.
+    if !vta_held_identities.is_empty() {
+        let (Some(vta_did), Some(vtc_did), Some(signer), Some(resolver)) = (
+            config.vta_did.clone(),
+            config.vtc_did.clone(),
+            credential_signer.clone(),
+            did_resolver.clone(),
+        ) else {
+            return Err(AppError::Config(format!(
+                "verifier identities {vta_held_identities:?} keep their key in the VTA, which \
+                 needs vta_did, vtc_did, the VTC's signing key and a DID resolver; set them, or \
+                 remove the identities with `vtc oid4vp remove`"
+            )));
+        };
+        info!(%vta_did, identities = ?vta_held_identities, "verifier identities sign through the VTA");
+        let link: Arc<dyn crate::oid4vp::VtaJwsSigner> = Arc::new(crate::vta_link::VtaLink::new(
+            vta_did,
+            vtc_did,
+            didcomm_cell.clone(),
+            signer,
+            pending_replies.clone(),
+            resolver,
+        ));
+        let _ = vta_link_cell.set(link);
+    }
 
     // Bind TCP listener on the main thread for early port validation
     let addr = format!("{}:{}", config.server.host, config.server.port);

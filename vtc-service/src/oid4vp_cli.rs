@@ -1,4 +1,4 @@
-//! `vtc oid4vp {request,install,csr,certificate,list,remove}` — install the key
+//! `vtc oid4vp {request,install,attach,csr,certificate,list,remove}` — install the key
 //! of an OpenID4VP verifier identity this VTC presents to wallets
 //! (`crate::oid4vp`).
 //!
@@ -24,6 +24,12 @@
 //! the operator's registrar issued (`crate::oid4vp::x509`). Until then the
 //! identity opens no session.
 //!
+//! Or the key stays in the VTA: `vtc oid4vp attach` records the VTA's key id
+//! and public key, and the daemon signs every request object through
+//! `keys/sign-jws` (`crate::oid4vp::VtaHeldSigner`). An EUDI identity's
+//! certificate request then comes from the admin workstation
+//! (`pnm keys sign-csr`), since this VTC has no key to sign one with.
+//!
 //! Offline: run on a **stopped** daemon, which holds the store's lock and
 //! loads the identities at boot. Not for TEE deployments (the VTC has none).
 
@@ -39,8 +45,8 @@ use vta_sdk::sealed_transfer::{
 use crate::config::AppConfig;
 use crate::oid4vp::x509::{CsrSubject, build_csr, check_chain};
 use crate::oid4vp::{
-    LocalP256Signer, VerifierIdentityRecord, VerifierKind, delete_identity, get_identity,
-    list_identities, put_identity,
+    KeyCustody, LocalP256Signer, VerifierIdentityRecord, VerifierKind, delete_identity,
+    get_identity, list_identities, put_identity,
 };
 use crate::store::keyspaces;
 
@@ -176,8 +182,113 @@ pub async fn run_install(
     Ok(())
 }
 
+/// `vtc oid4vp attach --identity <id> --vta-key <key id> --public-key <zDn…>
+/// [--did <did> --kid <kid>]`.
+pub async fn run_attach(
+    config_path: Option<PathBuf>,
+    identity: String,
+    vta_key: String,
+    public_key: String,
+    swiyu: Option<(String, String)>,
+) -> CliResult {
+    let config = AppConfig::load(config_path)?;
+    let record = attach_record(&identity, &vta_key, &public_key, swiyu)?;
+    crate::oid4vp::VtaHeldSigner::from_record(&record, Default::default())?;
+
+    let storage_key = crate::server::offline_storage_key(&config).await?;
+    let store = crate::store::offline::open_offline(&config.store)?;
+    let ks = store
+        .keyspace(keyspaces::OID4VP_KEYS)?
+        .with_encryption(storage_key);
+    let replaced = get_identity(&ks, &identity).await?.is_some();
+    put_identity(&ks, &record).await?;
+    store.persist().await?;
+
+    println!(
+        "{} verifier identity '{identity}', signed by the VTA's key {vta_key}.",
+        if replaced { "Replaced" } else { "Attached" }
+    );
+    print_identity(&record);
+    println!();
+    println!("The VTA must let this VTC sign with that key. On the admin workstation:");
+    println!(
+        "  pnm acl create --did {} --role application --contexts <the key's context> \
+         --capabilities sign-jws",
+        config.vtc_did.as_deref().unwrap_or("<this VTC's DID>")
+    );
+    if config.vta_did.is_none() {
+        println!("and set `vta_did` in this VTC's config: the daemon will not start without it.");
+    }
+    if record.kind == VerifierKind::Eudi {
+        println!("Request its access certificate there too:");
+        println!(
+            "  pnm keys sign-csr {vta_key} --common-name <name> --organization <org> \
+             --organization-identifier <id> --country <CC> --out {identity}.csr"
+        );
+        println!("then install what the registrar issues:");
+        println!("  vtc oid4vp certificate --identity {identity} --chain <chain.pem>");
+    } else {
+        println!("Then start the VTC to load it.");
+    }
+    Ok(())
+}
+
+/// The record `attach` stores: a P-256 public key and the VTA's id for it,
+/// with no private key. Split out to be testable without a store.
+fn attach_record(
+    identity: &str,
+    vta_key: &str,
+    public_key: &str,
+    swiyu: Option<(String, String)>,
+) -> Result<VerifierIdentityRecord, Box<dyn std::error::Error>> {
+    check_identity_name(identity)?;
+    if vta_key.trim().is_empty() {
+        return Err("--vta-key must name the key at the VTA".into());
+    }
+    let jwk = affinidi_crypto::JWK::from_multikey(public_key.trim())
+        .map_err(|e| format!("--public-key is not a multibase public key: {e}"))?;
+    let mut public_jwk = serde_json::to_value(&jwk)?;
+    if let Some(obj) = public_jwk.as_object_mut() {
+        obj.remove("d");
+        obj.remove("kid");
+        obj.retain(|_, v| !v.is_null());
+    }
+    if public_jwk.get("crv").and_then(serde_json::Value::as_str) != Some("P-256") {
+        return Err(
+            "--public-key must be a P-256 key (zDn…); swiyu and EUDI wallets accept ES256 only"
+                .into(),
+        );
+    }
+    let (kind, did, kid) = match swiyu {
+        Some((did, kid)) => {
+            if !kid.starts_with(&format!("{did}#")) {
+                return Err(format!("--kid {kid} is not a verification method of {did}").into());
+            }
+            (VerifierKind::Swiyu, Some(did), Some(kid))
+        }
+        None => (VerifierKind::Eudi, None, None),
+    };
+    Ok(VerifierIdentityRecord {
+        id: identity.to_string(),
+        kind,
+        did,
+        kid,
+        public_jwk,
+        private_key_multibase: None,
+        vta_key_id: Some(vta_key.trim().to_string()),
+        x5c: None,
+        verifier_info: None,
+        installed_at: now_secs(),
+    })
+}
+
 fn print_identity(record: &VerifierIdentityRecord) {
     println!("  kind:      {:?}", record.kind);
+    match record.custody() {
+        Ok(KeyCustody::Local(_)) => println!("  key held:  here (signs locally)"),
+        Ok(KeyCustody::Vta(id)) => println!("  key held:  in the VTA, as {id} (keys/sign-jws)"),
+        Err(e) => println!("  key held:  {e}"),
+    }
     if let Some(did) = &record.did {
         println!("  DID:       {did}");
     }
@@ -230,6 +341,13 @@ pub async fn run_csr(
 ) -> CliResult {
     let config = AppConfig::load(config_path)?;
     let (_store, _ks, record) = open_eudi_identity(&config, &identity).await?;
+    if let KeyCustody::Vta(key_id) = record.custody()? {
+        return Err(format!(
+            "verifier identity '{identity}' keeps its key in the VTA; request its certificate \
+             there: pnm keys sign-csr {key_id} --common-name … (same subject flags)"
+        )
+        .into());
+    }
     let pem = build_csr(&record, &subject)?;
     match &out {
         Some(path) => {
@@ -414,7 +532,8 @@ fn open_and_select(
         did: Some(secrets.did.clone()),
         kid: Some(entry.key_id.clone()),
         public_jwk,
-        private_key_multibase: entry.private_key_multibase.clone(),
+        private_key_multibase: Some(entry.private_key_multibase.clone()),
+        vta_key_id: None,
         x5c: None,
         verifier_info: None,
         installed_at: now_secs(),
@@ -462,7 +581,8 @@ fn eudi_record(
         did: None,
         kid: None,
         public_jwk,
-        private_key_multibase: secret.get_private_keymultibase()?,
+        private_key_multibase: Some(secret.get_private_keymultibase()?),
+        vta_key_id: None,
         x5c: None,
         verifier_info: None,
         installed_at: now_secs(),
@@ -528,6 +648,52 @@ mod tests {
             key_type: KeyType::P256,
             private_key_multibase: secret.get_private_keymultibase().unwrap(),
         }
+    }
+
+    /// `attach` records the VTA's key and its public half — never a private
+    /// key — as a swiyu identity under its DID or an EUDI one without, and
+    /// refuses a key wallets would not accept or a `kid` outside the DID.
+    #[test]
+    fn attach_records_a_vta_key_and_no_private_key() {
+        let p256 =
+            affinidi_tdk::secrets_resolver::secrets::Secret::generate_p256(None, Some(&[9; 32]))
+                .unwrap()
+                .get_public_keymultibase()
+                .unwrap();
+        let swiyu = attach_record(
+            "swiyu",
+            "verifier-p256",
+            &p256,
+            Some((DID.into(), format!("{DID}#key-1"))),
+        )
+        .unwrap();
+        assert_eq!(swiyu.kind, VerifierKind::Swiyu);
+        assert!(matches!(
+            swiyu.custody(),
+            Ok(KeyCustody::Vta("verifier-p256"))
+        ));
+        assert_eq!(swiyu.public_jwk["crv"], "P-256");
+        assert!(swiyu.public_jwk.get("d").is_none());
+        crate::oid4vp::VtaHeldSigner::from_record(&swiyu, Default::default()).unwrap();
+
+        let eudi = attach_record("eudi", "access-p256", &p256, None).unwrap();
+        assert_eq!(eudi.kind, VerifierKind::Eudi);
+        assert!(eudi.client_id().is_none(), "no certificate yet");
+
+        let ed25519 =
+            affinidi_tdk::secrets_resolver::secrets::Secret::generate_ed25519(None, Some(&[9; 32]))
+                .get_public_keymultibase()
+                .unwrap();
+        assert!(attach_record("eudi", "k", &ed25519, None).is_err());
+        assert!(
+            attach_record(
+                "swiyu",
+                "k",
+                &p256,
+                Some((DID.into(), "did:example:other#key-1".into()))
+            )
+            .is_err()
+        );
     }
 
     /// A pending request's key file and a bundle sealed to it, as `request`
