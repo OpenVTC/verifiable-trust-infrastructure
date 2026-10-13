@@ -2,6 +2,17 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.15.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.14.0...vti-rooms-v0.15.0) — 2026-10-13
+
+
+### Added
+
+- **vtc**: Storage configs — where a community keeps its rooms' files, changed only with consent ([#2052](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2052))
+
+Phase P4 (first part) of docs/05-design-notes/data-rooms-files.md §7.
+
+
+
 ## [0.14.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.13.0...vti-rooms-v0.14.0) — 2026-10-12
 
 

@@ -41,7 +41,7 @@ hex.workspace = true
 thiserror.workspace = true
 # The counting rule the VTC already uses: `requirements::evaluate` and
 # `StatementFacts`, unchanged.
-vta-sdk = { path = "../vta-sdk", version = "0.67", features = ["vetting"] }
+vta-sdk = { path = "../vta-sdk", version = "0.68", features = ["vetting"] }
 
 [dev-dependencies]
 rand = { version = "0.8", features = ["std", "std_rng"] }

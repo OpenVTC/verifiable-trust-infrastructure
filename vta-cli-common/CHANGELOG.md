@@ -2,6 +2,19 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.40.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.40.0...vta-cli-common-v0.40.1) — 2026-10-13
+
+
+### Added
+
+- **pnm**: Pnm keys sign-csr — a certificate request for a key that stays in the VTA ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2058](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2058))
+
+Wraps keys/sign-csr/0.1 ([#2057](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2057)) for the admin workstation: an EUDI verifier's access-certificate key can be certified without leaving the VTA, which is what custody B needs before the VTC signs request objects through it.
+
+  Named flags (--country, --organization, --organization-identifier, --common-name, OU, ST, L, serialNumber, emailAddress; --dns/--uri/--email alternative names) become the subject in encoded order whatever order they are given in. As keys/sign-csr asks of a producer, the publicKey the VTA answers with is compared with the key's record before the PEM is written. vta-cli-common: CsrSubjectArgs, cmd_key_sign_csr.
+
+
+
 ## [0.40.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.39.0...vta-cli-common-v0.40.0) — 2026-10-12
 
 

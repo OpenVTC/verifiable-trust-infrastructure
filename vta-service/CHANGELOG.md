@@ -2,6 +2,44 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.60.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.59.0...vta-service-v0.60.0) — 2026-10-13
+
+
+### Added
+
+- **keys**: Serve keys/sign-jws and keys/sign-csr — a verifier key that never leaves the VTA ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2057](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2057))
+
+Custody B for the OpenID4VP verifier, VTA side. A VTC signing request objects
+  with a VTA-held key, or obtaining an EUDI access certificate for one, needs the
+  VTA to produce a JWS or a PKCS#10 request; keys/sign cannot, since it frames
+  caller bytes under the opaque signing domain.
+
+  keys/sign-jws/0.1 (tt-tf #749): the VTA sets alg from the key (ES256 for P-256,
+  EdDSA for Ed25519), refuses alg/crit/b64/jwk/jku/x5u, checks the registered
+  header members' types and that an x5c's first certificate carries the named
+  key, and builds the signing input itself (RFC 8785 header and payload;
+  payloadBase64Url checked canonical; integers beyond 2^53 refused). The
+  specification's example signing input and its digest are reproduced in a test.
+
+- **vta**: The VTA as hidden-vetting (PCS) engine — vta/pcs/* for clients that cannot run PCS ([#2056](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2056))
+
+* feat(vta)!: the VTA as hidden-vetting (PCS) engine — vta/pcs/* for clients that cannot run PCS
+
+  A community that runs hidden vetting admits an applicant on a zero-knowledge
+  proof that distinct eligible vetters vetted them. Every vetter and applicant
+  holds a PCS secret key, and until now the member side ran only in a client
+  linking the PCS library, so a mobile wallet (Keyring) could not take part.
+
+  The VTA now holds those keys and runs every member-side operation (design
+  vetting-hidden-vetters-pcs.md §13 C7); the client carries messages and never
+  holds a key. Twelve Trust Tasks (trust-tasks-tf #756):
+
+  - applicant: applications/{create,show,delete}, verify-attestation, prove
+  - vetter: root-request, root-accept, tokens/{request,accept,abandon}, attest,
+    vetter/show
+
+
+
 ## [0.59.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.58.0...vta-service-v0.59.0) — 2026-10-12
 
 
