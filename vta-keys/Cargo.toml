@@ -35,9 +35,9 @@ tee = ["vti-secrets/tee"]
 
 [dependencies]
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.17" }
-vta-config = { path = "../vta-config", version = "0.20" }
+vta-config = { path = "../vta-config", version = "0.21" }
 vti-common = { path = "../vti-common", version = "0.44" }
-vti-secrets = { path = "../vti-secrets", version = "0.16" }
+vti-secrets = { path = "../vti-secrets", version = "0.17" }
 vta-sdk = { path = "../vta-sdk", version = "0.68", features = ["sealed-transfer"] }
 affinidi-tdk = { workspace = true }
 affinidi-crypto = { workspace = true }

@@ -22,7 +22,7 @@ vti-rooms-dtg = { path = "../vti-rooms-dtg" }
 # The room client, for pulling from a write-primary. Host-neutral despite the
 # name: a mirror reads its primary exactly as any member would, because that is
 # the only way to read a room.
-vtc-client = { path = "../vtc-client", version = "0.22" }
+vtc-client = { path = "../vtc-client", version = "0.23" }
 
 axum = { workspace = true }
 # `retention_policy` needs a clock to compute a record's expiry.
@@ -64,7 +64,7 @@ affinidi-messaging-core = { workspace = true, optional = true }
 # host's identity is a private key; it belongs behind the same `[secrets]`
 # config and the same backends the VTA and VTC take, not in a file this crate
 # invented. See `didcomm::HostIdentity`.
-vti-secrets = { path = "../vti-secrets", version = "0.16", optional = true }
+vti-secrets = { path = "../vti-secrets", version = "0.17", optional = true }
 # The session store behind `onboarding` — which backend is an operator's choice,
 # exactly as `[secrets]` is.
 vta-sdk = { path = "../vta-sdk", version = "0.68", optional = true }

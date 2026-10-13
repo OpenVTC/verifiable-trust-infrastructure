@@ -2,7 +2,7 @@
 name = "vta-external"
 description = "VTA external accounts — the VTA as the key authority for cloud and third-party accounts: account store, auth-model drivers, downscoped credential issuance"
 readme = "README.md"
-version = "0.3.1"
+version = "0.4.0"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
