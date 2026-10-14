@@ -33,6 +33,7 @@ const EVERYTHING = viewer([
   "vtc.sessions.revoke",
   "vtc.surface.admin",
   "vtc.registry.admin",
+  "vtc.rooms.admin",
   "git.ns.admin",
 ]);
 
@@ -88,7 +89,13 @@ describe("the grouped sidebar", () => {
       "grouped",
     ]);
     expect(ids(byId.governance!.plugins)).toEqual(["ceremonies", "roles", "acl", "sessions"]);
-    expect(ids(byId.community!.plugins)).toEqual(["profile", "recognition", "rooms", "repos"]);
+    expect(ids(byId.community!.plugins)).toEqual([
+      "profile",
+      "recognition",
+      "rooms",
+      "room-usage",
+      "repos",
+    ]);
   });
 
   it("relabels Ceremonies as Policies and Community profile as Profile, on the same routes", () => {

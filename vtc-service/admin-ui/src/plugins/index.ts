@@ -13,6 +13,7 @@
 
 import {
   BadgeCheck,
+  ChartColumn,
   ClipboardList,
   DoorOpen,
   FolderGit2,
@@ -49,6 +50,7 @@ import { Recognition } from "@/plugins/recognition";
 import { Relationships } from "@/plugins/relationshipsGraph";
 import { Repos } from "@/plugins/repos";
 import { Roles } from "@/plugins/roles";
+import { RoomUsage } from "@/plugins/roomUsage";
 import { Rooms } from "@/plugins/rooms";
 import { Sessions } from "@/plugins/sessions";
 import { Vetting } from "@/plugins/vetting";
@@ -205,6 +207,18 @@ export function registerBuiltinPlugins(): void {
     path: "/rooms",
     iconComponent: DoorOpen,
     reactComponent: Rooms,
+    // The host's authority over rooms (`vtc/rooms/*` admin reads), never a room's.
+    capabilities: ["vtc.rooms.admin"],
+  });
+
+  registerPlugin({
+    id: "room-usage",
+    group: "community",
+    label: "Room usage",
+    path: "/room-usage",
+    iconComponent: ChartColumn,
+    reactComponent: RoomUsage,
+    capabilities: ["vtc.rooms.admin"],
   });
 
   registerPlugin({

@@ -922,6 +922,10 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1",
     "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1",
     "https://trusttasks.org/spec/vtc/rooms/list/0.1",
+    // A room's detail page and Room usage (`trust_tasks::room_admin_tasks`).
+    "https://trusttasks.org/spec/vtc/rooms/get/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/usage/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/limits/set/0.1",
     // The console's signing keys (`trust_tasks::signing_key_tasks`).
     "https://trusttasks.org/spec/auth/signing-key/enroll/0.2",
     "https://trusttasks.org/spec/auth/signing-key/list/0.1",

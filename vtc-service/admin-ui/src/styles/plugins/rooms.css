@@ -16,3 +16,97 @@
   font-size: var(--text-sm);
   margin: var(--space-3) 0;
 }
+
+/* A room's facts: label and value side by side, stacking on a phone. */
+.rooms-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+}
+.rooms-facts dt {
+  color: var(--text-muted);
+}
+.rooms-facts dd {
+  margin: 0;
+  min-width: 0;
+}
+@media (max-width: 600px) {
+  .rooms-facts {
+    grid-template-columns: 1fr;
+    gap: var(--space-1);
+  }
+  .rooms-facts dd {
+    margin-bottom: var(--space-2);
+  }
+}
+.rooms-id {
+  overflow-wrap: anywhere;
+}
+
+/* Range, figure and grouping controls above a chart or table. */
+.rooms-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+/* An inline form opened under a table row's action. */
+.rooms-edit {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+.rooms-limits-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-3);
+}
+.rooms-limits-mode {
+  border: 0;
+  padding: 0;
+  margin: 0 0 var(--space-3);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+.rooms-form-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/* The day chart: hand-drawn bars, one per day. */
+.rooms-chart {
+  margin: var(--space-3) 0 0;
+}
+.rooms-chart svg {
+  display: block;
+  width: 100%;
+  height: 140px;
+}
+.rooms-chart-bar {
+  fill: var(--brand);
+}
+.rooms-chart-bar.empty {
+  fill: var(--border);
+}
+.rooms-chart-axis {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+.rooms-chart-caption {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.rooms-near-limits {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: var(--space-2);
+}

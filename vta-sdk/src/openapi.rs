@@ -57,6 +57,9 @@ use trust_tasks_rs::specs::vtc::invitations::deliver as invitation_deliver;
 use trust_tasks_rs::specs::vtc::join_requests::manifest;
 use trust_tasks_rs::specs::vtc::members::credentials as member_credentials;
 use trust_tasks_rs::specs::vtc::registry::{records, sync_jobs};
+use trust_tasks_rs::specs::vtc::rooms::{
+    get as rooms_get, limits::set as rooms_limits_set, usage as rooms_usage,
+};
 use trust_tasks_rs::specs::vtc::schemas::accepts;
 
 /// Transparent wrappers documenting generated types, one per line.
@@ -202,6 +205,17 @@ spec_types! {
     /// `vtc/members/credentials/0.1#response` — the membership pair's bodies
     /// for one member, plus whether the acknowledgement is bound to the grant.
     MemberCredentials01Response(member_credentials::v0_1::Response);
+    /// `vtc/rooms/get/0.1#response` — one hosted room's host record, storage
+    /// placement, limits and usage.
+    RoomsGet01Response(rooms_get::v0_1::Response);
+    /// `vtc/rooms/usage/0.1` payload — grouping, filter, sort and page.
+    RoomsUsage01Payload(rooms_usage::v0_1::Payload);
+    /// `vtc/rooms/usage/0.1#response` — one page of usage rows.
+    RoomsUsage01Response(rooms_usage::v0_1::Response);
+    /// `vtc/rooms/limits/set/0.1` payload — an override, or the clearing of one.
+    RoomsLimitsSet01Payload(rooms_limits_set::v0_1::Payload);
+    /// `vtc/rooms/limits/set/0.1#response` — the limits after the change.
+    RoomsLimitsSet01Response(rooms_limits_set::v0_1::Response);
     /// `git-ns/view/0.1#response` — namespaces, repositories and recorded git
     /// rights. Also the body of a VTC's `GET /v1/git-ns/view`, the
     /// administrator's complete view.

@@ -6580,6 +6580,853 @@
           "admin"
         ]
       },
+      "VtcRoomsGetV0_1ConfigHoldings": {
+        "type": "object",
+        "description": "A config holding some of this room's blobs, other than the one it is assigned to.",
+        "required": [
+          "configId",
+          "files",
+          "bytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "configId": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_1StorageConfigId"
+          },
+          "files": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_1EffectiveLimits": {
+        "type": "object",
+        "description": "The limits a room is enforced against now, with where each scope's came from.",
+        "required": [
+          "limits",
+          "roomSource",
+          "memberSource"
+        ],
+        "properties": {
+          "hostCeilingBytes": {
+            "type": "integer",
+            "description": "The host-wide largest-file ceiling, which no room or member limit can exceed.",
+            "maximum": 1073741824,
+            "minimum": 0
+          },
+          "limits": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_1RoomLimits"
+          },
+          "memberSource": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_1LimitSource"
+          },
+          "roomSource": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_1LimitSource"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcRoomsGetV0_1HostedRoom": {
+        "type": "object",
+        "description": "One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.1, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none.",
+        "required": [
+          "roomId",
+          "ownerDid",
+          "visibility",
+          "retentionPolicy",
+          "epoch",
+          "lifecycle",
+          "retentionDays",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "epochExpiresAt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "live",
+              "lapsed",
+              "dormant",
+              "reclaimable"
+            ]
+          },
+          "mirrorOf": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1
+          },
+          "ownerDid": {
+            "type": "string",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "retentionDays": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retentionPolicy": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_1RetentionPolicy"
+          },
+          "roomId": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "updatedAt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_1Visibility"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_1LimitSource": {
+        "type": "string",
+        "description": "Where an effective limit came from. `policy`: the community's rooms policy at the room's creation. `override`: an administrator's vtc/rooms/limits/set. `default`: the community's configured defaults, where neither applies. The host-wide ceiling bounds all three.",
+        "enum": [
+          "policy",
+          "override",
+          "default"
+        ]
+      },
+      "VtcRoomsGetV0_1MigrationProgress": {
+        "type": "object",
+        "description": "Progress of the room's migration, as vtc/rooms/storage/migrate reports it.",
+        "required": [
+          "migrationId",
+          "state",
+          "totalFiles",
+          "totalBytes",
+          "doneFiles",
+          "doneBytes"
+        ],
+        "properties": {
+          "doneBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "doneFiles": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "migrationId": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "state": {
+            "type": "string",
+            "description": "`paused`: halted by a capacity or backend failure and resumable by issuing vtc/rooms/storage/migrate again. `failed`: halted on a blob whose copy did not verify; the blob stays where it was.",
+            "enum": [
+              "running",
+              "paused",
+              "complete",
+              "failed"
+            ]
+          },
+          "totalBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "totalFiles": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_1Response": {
+        "type": "object",
+        "required": [
+          "room",
+          "storage",
+          "limits",
+          "usage"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_1Ext"
+          },
+          "largestBlobs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "size",
+                "configId",
+                "createdAt"
+              ],
+              "properties": {
+                "configId": {
+                  "$ref": "#/components/schemas/VtcRoomsGetV0_1StorageConfigId"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "size": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            "description": "The room's largest committed blobs, by size only.",
+            "maxItems": 10
+          },
+          "limits": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_1EffectiveLimits"
+          },
+          "membersWithUsage": {
+            "type": "integer",
+            "description": "On an `attributed` room only: how many members have added files. Absent on `open` and `private` rooms.",
+            "minimum": 0
+          },
+          "room": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_1HostedRoom"
+          },
+          "storage": {
+            "type": "object",
+            "description": "Where the room's blobs are.",
+            "required": [
+              "configId",
+              "earlierConfigs"
+            ],
+            "properties": {
+              "configId": {
+                "$ref": "#/components/schemas/VtcRoomsGetV0_1StorageConfigId"
+              },
+              "earlierConfigs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/VtcRoomsGetV0_1ConfigHoldings"
+                },
+                "maxItems": 64
+              },
+              "migration": {
+                "$ref": "#/components/schemas/VtcRoomsGetV0_1MigrationProgress"
+              }
+            },
+            "additionalProperties": false
+          },
+          "usage": {
+            "type": "object",
+            "required": [
+              "room",
+              "orphans"
+            ],
+            "properties": {
+              "orphans": {
+                "type": "object",
+                "description": "Blobs no record names, awaiting deletion after the grace window.",
+                "required": [
+                  "files",
+                  "bytes"
+                ],
+                "properties": {
+                  "bytes": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "files": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "oldestOrphanedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "room": {
+                "$ref": "#/components/schemas/VtcRoomsGetV0_1Usage"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_1RetentionPolicy": {
+        "type": "string",
+        "description": "Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.",
+        "enum": [
+          "chained",
+          "fromJoin"
+        ]
+      },
+      "VtcRoomsGetV0_1RoomLimits": {
+        "type": "object",
+        "description": "How much a host is willing to store for one room, at the room and per member. A hosting decision, set by the host and never by anything in the room's credentials. An upload must fit every scope at once: the object against the smallest `maxFileBytes` that applies, and the member and the room with the file added.",
+        "required": [
+          "filesEnabled"
+        ],
+        "properties": {
+          "filesEnabled": {
+            "type": "boolean",
+            "description": "False refuses every rooms/blobs/* upload for the room. Reads of blobs already stored continue."
+          },
+          "member": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_1ScopeLimits"
+          },
+          "room": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_1ScopeLimits"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_1ScopeLimits": {
+        "type": "object",
+        "description": "Limits at one scope. Every member is optional: an absent member means the scope sets no limit of that kind, and the next wider scope's limit, or the host's ceiling, governs. All sizes are ciphertext bytes.",
+        "properties": {
+          "maxBytes": {
+            "type": "integer",
+            "description": "The total size of the committed and reserved blobs the scope may hold.",
+            "minimum": 0
+          },
+          "maxFileBytes": {
+            "type": "integer",
+            "description": "The largest single blob the scope accepts. Never above 1 GiB, the transfer ceiling (BlobManifest).",
+            "maximum": 1073741824,
+            "minimum": 0
+          },
+          "maxFiles": {
+            "type": "integer",
+            "description": "The number of committed blobs the scope may hold. 0 refuses every upload at this scope.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_1StorageConfigId": {
+        "type": "string",
+        "description": "A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value.",
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+      },
+      "VtcRoomsGetV0_1Usage": {
+        "type": "object",
+        "description": "What one scope holds now. Ciphertext bytes throughout.",
+        "required": [
+          "files",
+          "bytes",
+          "reservedBytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "description": "Their total size. A blob stops counting the moment it is orphaned (its last record dropped it or was retracted), not when the host finally deletes it, so a member who deletes a file has the room back at once.",
+            "minimum": 0
+          },
+          "files": {
+            "type": "integer",
+            "description": "Committed blobs that are not orphaned.",
+            "minimum": 0
+          },
+          "reservedBytes": {
+            "type": "integer",
+            "description": "Bytes reserved by uploads begun and not yet committed, aborted or expired. Counted against `maxBytes`, so two concurrent uploads cannot both fit under a limit only one of them fits.",
+            "minimum": 0
+          },
+          "reservedFiles": {
+            "type": "integer",
+            "description": "Uploads begun and not yet committed, aborted or expired. Counted against `maxFiles`.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_1Visibility": {
+        "type": "string",
+        "description": "How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.",
+        "enum": [
+          "open",
+          "attributed",
+          "private"
+        ]
+      },
+      "VtcRoomsLimitsSetV0_1EffectiveLimits": {
+        "type": "object",
+        "description": "The limits a room is enforced against now, with where each scope's came from.",
+        "required": [
+          "limits",
+          "roomSource",
+          "memberSource"
+        ],
+        "properties": {
+          "hostCeilingBytes": {
+            "type": "integer",
+            "description": "The host-wide largest-file ceiling, which no room or member limit can exceed.",
+            "maximum": 1073741824,
+            "minimum": 0
+          },
+          "limits": {
+            "$ref": "#/components/schemas/VtcRoomsLimitsSetV0_1RoomLimits"
+          },
+          "memberSource": {
+            "$ref": "#/components/schemas/VtcRoomsLimitsSetV0_1LimitSource"
+          },
+          "roomSource": {
+            "$ref": "#/components/schemas/VtcRoomsLimitsSetV0_1LimitSource"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsLimitsSetV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcRoomsLimitsSetV0_1LimitSource": {
+        "type": "string",
+        "description": "Where an effective limit came from. `policy`: the community's rooms policy at the room's creation. `override`: an administrator's vtc/rooms/limits/set. `default`: the community's configured defaults, where neither applies. The host-wide ceiling bounds all three.",
+        "enum": [
+          "policy",
+          "override",
+          "default"
+        ]
+      },
+      "VtcRoomsLimitsSetV0_1LimitTarget": {
+        "type": "object",
+        "description": "Which limits an override applies to. `room`: the room as a whole. `memberDefault`: every member of the room who has no override of their own. `member`: one named member — `member` is REQUIRED with this kind and forbidden with the others, a rule this schema does not express; a community refuses a violation with `malformedRequest`.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "room",
+              "memberDefault",
+              "member"
+            ]
+          },
+          "member": {
+            "type": "string",
+            "description": "The member's DID: the subject at the root of the authority chains they present, which is what their uploads are charged to.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsLimitsSetV0_1Payload": {
+        "type": "object",
+        "description": "Override, or clear an override of, the limits one hosted room is enforced against: for the room, its members by default, or one member. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "roomId",
+          "target",
+          "reason"
+        ],
+        "properties": {
+          "clear": {
+            "type": "boolean",
+            "description": "`true` removes the target's override, so the policy's or the community's default applies again. Exclusive with `limits`."
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsLimitsSetV0_1Ext"
+          },
+          "filesEnabled": {
+            "type": "boolean",
+            "description": "With a `room` target only: `false` refuses every new upload to the room; reads continue."
+          },
+          "limits": {
+            "$ref": "#/components/schemas/VtcRoomsLimitsSetV0_1ScopeLimits"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
+            "maxLength": 500,
+            "minLength": 1
+          },
+          "roomId": {
+            "type": "string",
+            "description": "The room's identifier, as its owner minted it.",
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "target": {
+            "$ref": "#/components/schemas/VtcRoomsLimitsSetV0_1LimitTarget"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsLimitsSetV0_1Response": {
+        "type": "object",
+        "required": [
+          "roomId",
+          "target",
+          "limits",
+          "usage",
+          "overLimit"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsLimitsSetV0_1Ext"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/VtcRoomsLimitsSetV0_1EffectiveLimits"
+          },
+          "overLimit": {
+            "type": "boolean",
+            "description": "True when `usage` already exceeds the new limits. New uploads at this scope are refused until it does not; nothing is deleted."
+          },
+          "roomId": {
+            "type": "string",
+            "description": "The room's identifier, as its owner minted it.",
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "target": {
+            "$ref": "#/components/schemas/VtcRoomsLimitsSetV0_1LimitTarget"
+          },
+          "targetLimits": {
+            "$ref": "#/components/schemas/VtcRoomsLimitsSetV0_1ScopeLimits"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/VtcRoomsLimitsSetV0_1Usage"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsLimitsSetV0_1RoomLimits": {
+        "type": "object",
+        "description": "How much a host is willing to store for one room, at the room and per member. A hosting decision, set by the host and never by anything in the room's credentials. An upload must fit every scope at once: the object against the smallest `maxFileBytes` that applies, and the member and the room with the file added.",
+        "required": [
+          "filesEnabled"
+        ],
+        "properties": {
+          "filesEnabled": {
+            "type": "boolean",
+            "description": "False refuses every rooms/blobs/* upload for the room. Reads of blobs already stored continue."
+          },
+          "member": {
+            "$ref": "#/components/schemas/VtcRoomsLimitsSetV0_1ScopeLimits"
+          },
+          "room": {
+            "$ref": "#/components/schemas/VtcRoomsLimitsSetV0_1ScopeLimits"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsLimitsSetV0_1ScopeLimits": {
+        "type": "object",
+        "description": "Limits at one scope. Every member is optional: an absent member means the scope sets no limit of that kind, and the next wider scope's limit, or the host's ceiling, governs. All sizes are ciphertext bytes.",
+        "properties": {
+          "maxBytes": {
+            "type": "integer",
+            "description": "The total size of the committed and reserved blobs the scope may hold.",
+            "minimum": 0
+          },
+          "maxFileBytes": {
+            "type": "integer",
+            "description": "The largest single blob the scope accepts. Never above 1 GiB, the transfer ceiling (BlobManifest).",
+            "maximum": 1073741824,
+            "minimum": 0
+          },
+          "maxFiles": {
+            "type": "integer",
+            "description": "The number of committed blobs the scope may hold. 0 refuses every upload at this scope.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsLimitsSetV0_1Usage": {
+        "type": "object",
+        "description": "What one scope holds now. Ciphertext bytes throughout.",
+        "required": [
+          "files",
+          "bytes",
+          "reservedBytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "description": "Their total size. A blob stops counting the moment it is orphaned (its last record dropped it or was retracted), not when the host finally deletes it, so a member who deletes a file has the room back at once.",
+            "minimum": 0
+          },
+          "files": {
+            "type": "integer",
+            "description": "Committed blobs that are not orphaned.",
+            "minimum": 0
+          },
+          "reservedBytes": {
+            "type": "integer",
+            "description": "Bytes reserved by uploads begun and not yet committed, aborted or expired. Counted against `maxBytes`, so two concurrent uploads cannot both fit under a limit only one of them fits.",
+            "minimum": 0
+          },
+          "reservedFiles": {
+            "type": "integer",
+            "description": "Uploads begun and not yet committed, aborted or expired. Counted against `maxFiles`.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsUsageV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcRoomsUsageV0_1Payload": {
+        "type": "object",
+        "description": "A room-hosting administrator reports the storage and activity of the community's hosted rooms, grouped by room, member, storage config or day. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "groupBy"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "description": "Opaque continuation token from a previous page's `nextCursor`.",
+            "maxLength": 1024,
+            "minLength": 1
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsUsageV0_1Ext"
+          },
+          "filter": {
+            "type": "object",
+            "description": "Every member optional; all given apply together.",
+            "properties": {
+              "from": {
+                "type": "string",
+                "format": "date",
+                "description": "First UTC day of the range. Default: 29 days before `to`."
+              },
+              "member": {
+                "type": "string",
+                "description": "One member's figures, across the `attributed` rooms selected.",
+                "maxLength": 2048,
+                "pattern": "^did:"
+              },
+              "roomId": {
+                "type": "string",
+                "description": "The room's identifier, as its owner minted it.",
+                "maxLength": 512,
+                "minLength": 1
+              },
+              "storageConfig": {
+                "$ref": "#/components/schemas/VtcRoomsUsageV0_1StorageConfigId"
+              },
+              "to": {
+                "type": "string",
+                "format": "date",
+                "description": "Last UTC day of the range, inclusive. Default: today."
+              }
+            },
+            "additionalProperties": false
+          },
+          "groupBy": {
+            "type": "string",
+            "description": "What each row describes. `day` is the daily history of whatever the filter selects.",
+            "enum": [
+              "room",
+              "member",
+              "storageConfig",
+              "day"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size. The community chooses when absent (50 in the reference implementation).",
+            "maximum": 100,
+            "minimum": 1
+          },
+          "sort": {
+            "type": "object",
+            "required": [
+              "by"
+            ],
+            "properties": {
+              "by": {
+                "type": "string",
+                "enum": [
+                  "bytes",
+                  "files",
+                  "uploads",
+                  "downloads",
+                  "egressBytes",
+                  "date"
+                ]
+              },
+              "order": {
+                "type": "string",
+                "enum": [
+                  "asc",
+                  "desc"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsUsageV0_1Response": {
+        "type": "object",
+        "required": [
+          "asOf",
+          "from",
+          "to",
+          "items"
+        ],
+        "properties": {
+          "asOf": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsUsageV0_1Ext"
+          },
+          "from": {
+            "type": "string",
+            "format": "date"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcRoomsUsageV0_1UsageRow"
+            },
+            "maxItems": 100
+          },
+          "nextCursor": {
+            "type": "string",
+            "description": "Present when more remain; pass it as `cursor`.",
+            "maxLength": 1024,
+            "minLength": 1
+          },
+          "to": {
+            "type": "string",
+            "format": "date"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsUsageV0_1ScopeLimits": {
+        "type": "object",
+        "description": "Limits at one scope. Every member is optional: an absent member means the scope sets no limit of that kind, and the next wider scope's limit, or the host's ceiling, governs. All sizes are ciphertext bytes.",
+        "properties": {
+          "maxBytes": {
+            "type": "integer",
+            "description": "The total size of the committed and reserved blobs the scope may hold.",
+            "minimum": 0
+          },
+          "maxFileBytes": {
+            "type": "integer",
+            "description": "The largest single blob the scope accepts. Never above 1 GiB, the transfer ceiling (BlobManifest).",
+            "maximum": 1073741824,
+            "minimum": 0
+          },
+          "maxFiles": {
+            "type": "integer",
+            "description": "The number of committed blobs the scope may hold. 0 refuses every upload at this scope.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsUsageV0_1StorageConfigId": {
+        "type": "string",
+        "description": "A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value.",
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+      },
+      "VtcRoomsUsageV0_1UsageRow": {
+        "type": "object",
+        "description": "One group's figures. Holdings as of the read (or the end of the day, on a `day` row); activity over the range (or the day).",
+        "required": [
+          "files",
+          "bytes",
+          "reservedBytes",
+          "uploads",
+          "downloads",
+          "egressBytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "capacityBytes": {
+            "type": "integer",
+            "description": "On a `storageConfig` row, the config's capacity when it has one.",
+            "minimum": 0
+          },
+          "date": {
+            "type": "string",
+            "format": "date",
+            "description": "Present on a `day` row."
+          },
+          "downloads": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "egressBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "files": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limits": {
+            "$ref": "#/components/schemas/VtcRoomsUsageV0_1ScopeLimits"
+          },
+          "member": {
+            "type": "string",
+            "description": "Present on a `member` row.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "reservedBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "roomId": {
+            "type": "string",
+            "description": "Present on a `room` row.",
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "storageConfig": {
+            "$ref": "#/components/schemas/VtcRoomsUsageV0_1StorageConfigId"
+          },
+          "uploads": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "VtcSchemasAcceptsListV0_2AcceptsCriterion": {
         "type": "object",
         "description": "One way into the community: what an applicant must present, and how a submission that presents it is decided. Every requirement it states must be met; requirements it does not state are not requirements. A criterion stating none is met by every submission. A community's criteria are alternatives: a submission is decided under the one it names. What vtc/join-requests/manifest/0.3 publishes to applicants as a `Criterion` is derived from this.",

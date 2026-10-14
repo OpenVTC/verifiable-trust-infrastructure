@@ -112,6 +112,13 @@ use crate::server::AppState;
         vta_sdk::openapi::RegistrySyncJobsRetry01Response,
         vta_sdk::openapi::RegistrySyncJobsDiscard01Response,
         vta_sdk::openapi::RegistryRecordsList01Response,
+        // The room-hosting administrator's reads and limit override
+        // (`trust_tasks::room_admin_tasks`), signed documents only.
+        vta_sdk::openapi::RoomsGet01Response,
+        vta_sdk::openapi::RoomsUsage01Payload,
+        vta_sdk::openapi::RoomsUsage01Response,
+        vta_sdk::openapi::RoomsLimitsSet01Payload,
+        vta_sdk::openapi::RoomsLimitsSet01Response,
         audit::AuditListResponse,
         crate::config_store::EffectiveConfig,
         admin::config::PatchResponse,

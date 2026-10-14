@@ -59,6 +59,7 @@
 // a different question, which is worse than not asking.
 
 import { useMemo, useState } from "react";
+import { Link, Route, Routes } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { DoorOpen, RefreshCw } from "lucide-react";
 
@@ -72,6 +73,9 @@ import { PageHeader } from "@/components/PageHeader";
 import { useNameBook } from "@/lib/names";
 import type { HostedRoom, PolicyTestResponse } from "@/lib/wire-types";
 
+import { RoomDetail } from "./rooms/RoomDetail";
+import { LifecyclePill, TIER_BLURB, TIERS, roomPath, type Tier } from "./rooms/shared";
+
 const TRUST_TASK_TEST = "https://trusttasks.org/spec/vtc/policies/test/0.1";
 /** `vtc/rooms/list/0.1` — under `vtc/`, not `rooms/`: it is answered from the
  *  host's own admin authority, which invariant I5 forbids any `rooms/*` task. */
@@ -79,15 +83,6 @@ const TRUST_TASK_ROOMS_LIST = "https://trusttasks.org/spec/vtc/rooms/list/0.1";
 
 /** The query the real creation path evaluates. Anything else probes a different rule. */
 const DECISION_QUERY = "data.vtc.rooms.decision";
-
-const TIERS = ["open", "attributed", "private"] as const;
-type Tier = (typeof TIERS)[number];
-
-const TIER_BLURB: Record<Tier, string> = {
-  open: "Records are stored in the clear. This host can read every one of them.",
-  attributed: "Records are sealed, and this host sees who wrote which.",
-  private: "Records are sealed and this host cannot see the membership at all.",
-};
 
 /**
  * The rooms this community hosts.
@@ -203,28 +198,6 @@ function pluckDecision(resp: PolicyTestResponse): Verdict | null {
   };
 }
 
-const LIFECYCLE_MEANS: Record<string, string> = {
-  live: "Renewed. Accepting writes.",
-  lapsed:
-    "The epoch expired, so the room is read-only. Nothing is destroyed or hidden, and one renewal returns it to live \u2014 often this is just somebody on holiday.",
-  dormant:
-    "Still unrenewed after the grace window. The owner is owed the notice, and a successor the room nominated may claim it from here.",
-  reclaimable:
-    "Past the retention period agreed at creation. The host may delete it; reads keep working until it does.",
-};
-
-function LifecyclePill({ value }: { value: string }) {
-  // `lapsed` must not read as a failure — the room is intact and one renewal
-  // fixes it. `reclaimable` is the only state where anything is at risk.
-  const tone =
-    value === "live" ? "success" : value === "reclaimable" ? "danger" : "warning";
-  return (
-    <span className={`chip ${tone}`} title={LIFECYCLE_MEANS[value] ?? value}>
-      {value}
-    </span>
-  );
-}
-
 function RoomsTable({ rooms }: { rooms: HostedRoom[] }) {
   const nameBook = useNameBook();
   return (
@@ -242,7 +215,9 @@ function RoomsTable({ rooms }: { rooms: HostedRoom[] }) {
       {rooms.map((r) => (
         <tr key={r.roomId}>
           <td>
-            <code title={r.roomId}>{shorten(r.roomId)}</code>
+            <Link to={roomPath(r.roomId)} title={r.roomId}>
+              <code>{shorten(r.roomId)}</code>
+            </Link>
             {r.mirrorOf && (
               <div className="muted rooms-sub">
                 read-only copy of {shorten(r.mirrorOf)}
@@ -409,6 +384,15 @@ function CreationPolicy() {
 }
 
 export function Rooms() {
+  return (
+    <Routes>
+      <Route index element={<RoomsList />} />
+      <Route path=":roomId" element={<RoomDetail />} />
+    </Routes>
+  );
+}
+
+function RoomsList() {
   const roomsQuery = useQuery({ queryKey: ["rooms"], queryFn: fetchRooms });
   const rooms = roomsQuery.data?.rooms ?? [];
   const filesOff = roomsQuery.data?.filesEnabled === false;

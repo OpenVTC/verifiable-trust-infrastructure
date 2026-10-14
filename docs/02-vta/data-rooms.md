@@ -598,6 +598,27 @@ community's ACL or a session.
      presigned request for a different bucket or endpoint than the config's is
      refused before it is sent. Through a VTA account, `prefix` is lowercase
      segments only, as the VTA's scope accepts.
+- **Usage and limits** (`data-rooms-files.md` §6.3). The VTC keeps one row per
+  room per UTC day (and one per member per room, on rooms that are not
+  `private`) for 400 days: space held at the day's close, uploads, downloads
+  begun and bytes served. A holder of `vtc.rooms.admin` reads them with
+  `vtc/rooms/usage/0.1` and one room in full with `vtc/rooms/get/0.1`, and
+  overrides a room's limits, its members' default or one member's with
+  `vtc/rooms/limits/set/0.1` (a reason is required and audited; it is not
+  parked, since an allowance can be reversed and loses nothing, and a lower
+  limit deletes nothing). A room's owner reads their room's figures per member
+  with `rooms/usage/0.1`. In the console:
+  - **Data rooms** lists the rooms; each opens its own page with its storage,
+    its limits and where each came from, per-member usage (not on `private`
+    rooms; members who added nothing are not listed, since the host never saw
+    them), and daily activity over 30, 90 or 365 days. Limits are changed and
+    uploads paused from there.
+  - **Room usage** groups the same figures by room, member, storage config or
+    day, lists rooms and configs past 80 %, 95 % or 100 % of a limit or of
+    capacity, and exports what it shows as CSV.
+
+  Both need `vtc.rooms.admin`. Neither shows a record title, a file name or a
+  file's contents: the host has none of them.
 - **Audit**: room operations land in the VTC's hash-chained audit keyspace, with
   the same tier rule as above.
 - **Governance**: the `rooms` policy purpose (`vtc.rooms` package) decides who

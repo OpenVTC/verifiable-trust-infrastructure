@@ -234,3 +234,19 @@ export type GitNsAccountList = Schemas["GitNsAccountList"];
 export type GitNsActivity = Schemas["GitNsActivity"];
 export type GitNsActivityItem = Schemas["GitNsActivityItem"];
 export type GitNsBreakGlassMark = Schemas["GitNsBreakGlassMark"];
+
+// ── Data rooms: the room-hosting administrator's reads ──────────────────
+//
+// The published `vtc/rooms/{get,usage,limits/set}` shapes, rendered from the
+// specification (`vta_sdk::openapi`). Signed documents only; no REST route.
+export type RoomGetResponse = Schemas["VtcRoomsGetV0_1Response"];
+export type RoomEffectiveLimits = Schemas["VtcRoomsGetV0_1EffectiveLimits"];
+export type RoomScopeLimits = Schemas["VtcRoomsGetV0_1ScopeLimits"];
+export type RoomUsageNow = Schemas["VtcRoomsGetV0_1Usage"];
+export type RoomLimitSource = Schemas["VtcRoomsGetV0_1LimitSource"];
+export type RoomsUsagePayload = Schemas["VtcRoomsUsageV0_1Payload"];
+export type RoomsUsageResponse = Schemas["VtcRoomsUsageV0_1Response"];
+export type RoomsUsageRow = Schemas["VtcRoomsUsageV0_1UsageRow"];
+export type RoomsLimitsSetPayload = Schemas["VtcRoomsLimitsSetV0_1Payload"];
+export type RoomsLimitsSetResponse = Schemas["VtcRoomsLimitsSetV0_1Response"];
+export type RoomLimitTarget = Schemas["VtcRoomsLimitsSetV0_1LimitTarget"];
