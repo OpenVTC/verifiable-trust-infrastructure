@@ -503,7 +503,7 @@ mod tests {
             "did:key:{}",
             multibase::encode(multibase::Base::Base58Btc, &mc)
         );
-        let secret = affinidi_secrets_resolver::secrets::Secret::from_str(
+        let secret = affinidi_secrets_resolver::secrets::Secret::from_jwk_value(
             // The `did:key` convention: the multibase tag IS the fragment.
             &format!("{did}#{}", did.trim_start_matches("did:key:")),
             &serde_json::json!({
@@ -525,7 +525,7 @@ mod tests {
     fn a_secret_for(vm: &str, seed: u8) -> affinidi_secrets_resolver::secrets::Secret {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64U;
         let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-        affinidi_secrets_resolver::secrets::Secret::from_str(
+        affinidi_secrets_resolver::secrets::Secret::from_jwk_value(
             vm,
             &serde_json::json!({
                 "crv": "Ed25519",

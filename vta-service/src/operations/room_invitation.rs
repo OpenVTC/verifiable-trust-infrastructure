@@ -255,7 +255,7 @@ mod tests {
             "did:key:{}",
             multibase::encode(multibase::Base::Base58Btc, &mc)
         );
-        let secret = affinidi_secrets_resolver::secrets::Secret::from_str(
+        let secret = affinidi_secrets_resolver::secrets::Secret::from_jwk_value(
             &format!("{did}#{}", did.trim_start_matches("did:key:")),
             &serde_json::json!({
                 "crv": "Ed25519",

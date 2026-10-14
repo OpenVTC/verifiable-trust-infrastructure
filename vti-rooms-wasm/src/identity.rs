@@ -112,7 +112,7 @@ impl MemberIdentity {
     }
 
     fn secret(&self) -> Result<affinidi_secrets_resolver::secrets::Secret, String> {
-        affinidi_secrets_resolver::secrets::Secret::from_str(
+        affinidi_secrets_resolver::secrets::Secret::from_jwk_value(
             &self.verification_method(),
             &serde_json::json!({
                 "crv": "Ed25519",
