@@ -460,19 +460,32 @@ hosting to someone who is not a full administrator
 The host already knows everything usage needs: it is the counters §6.1 enforces.
 Reporting adds no new disclosure, only a place to read it.
 
-**Live counters**, updated in the same write as the blob index (§5.5):
+**Live counters**, updated in the same write as the blob index (§5.5), in
+`room_blobs` (`vti_rooms::blobs`):
 
 ```
-room_usage:<roomId>                    →  { files, bytes, reservedBytes, uploads30d, downloads30d, egressBytes30d }
-room_usage:<roomId>:member:<memberDid> →  { files, bytes, reservedBytes, lastUploadAt }
-storage_usage:<configId>               →  { rooms, files, bytes, pendingDeleteBytes }
+usage:room:<room>              →  { files, bytes, reservedBytes, reservedFiles }
+usage:member:<room>:<member>   →  the same, for one member
+usage:config:<configId>        →  { files, bytes, reservedBytes }
+member:<room>:<member>         →  { member DID, lastUploadAt }   (the counters key members by hash)
 ```
 
-**History**: one row per room per day in `room_usage_daily` (files, bytes,
-uploads, downloads, egress bytes), kept 400 days, so a community can see growth
-and cost over a year. **Egress is counted**, because on S3 reads are what cost
-money, and a room whose files are downloaded a thousand times a day is a
-different conversation from one that is merely large.
+**History**: one row per room per UTC day (`daily:<room>:<date>`), and one per
+member per room per day on rooms that are not `private` (`mdaily:…`): holdings
+at the day's close, and uploads committed, downloads begun and chunk bytes
+served (egress) during it. Activity is counted as it happens, under its own
+lock so a download never waits behind a commit; the collection pass writes
+today's row for every room and member that has one, so a quiet day still has a
+level, and drops rows older than 400 days. A year can be compared with the one
+before. **Egress is counted**, because on S3 reads are what cost money, and a
+room whose files are downloaded a thousand times a day is a different
+conversation from one that is merely large. "Uploads in the last 30 days" is a
+sum over these rows, not a counter of its own.
+
+Limit overrides (§6.2 item 2) live beside them: `limits:room:<room>` (the
+room's limits, its per-member default and `filesEnabled`) and
+`limits:member:<room>:<member>`. Every key is in `room_blobs`, so a community's
+backup carries the history and the overrides with the index.
 
 **Who sees what:**
 

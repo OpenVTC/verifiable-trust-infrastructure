@@ -223,12 +223,19 @@ pub async fn abort(files: &BlobHost, presenter: &str, payload: &Value) -> TaskRe
     }
 }
 
-/// `rooms/blobs/get/0.1`, once the chain has been verified for `read`.
-pub async fn get(files: &BlobHost, room: &Room, presenter: &str, payload: &Value) -> TaskResult {
+/// `rooms/blobs/get/0.1`, once the chain has been verified for `read`. The download
+/// counts under the member `authorized` descends from.
+pub async fn get(
+    files: &BlobHost,
+    room: &Room,
+    presenter: &str,
+    authorized: &AuthorizedAction,
+    payload: &Value,
+) -> TaskResult {
     use blob_get::error_codes as codes;
     let req: blob_get::Payload = parse(payload)?;
     match files
-        .open_download(&room.room_id, presenter, req.blob_ref.as_str())
+        .open_download(room, presenter, authorized.member(), req.blob_ref.as_str())
         .await
     {
         Ok(d) => checked::<blob_get::Response>(json!({
@@ -279,7 +286,7 @@ pub async fn info(
     payload: &Value,
 ) -> TaskResult {
     parse::<rooms_info::Payload>(payload)?;
-    let limits = files.effective_limits(room);
+    let limits = files.effective_limits(room).await.map_err(Refusal::App)?;
     let room_usage = files
         .room_usage(&room.room_id)
         .await
@@ -294,7 +301,12 @@ pub async fn info(
             .member_usage(&room.room_id, member)
             .await
             .map_err(Refusal::App)?;
-        usage["member"] = json!({ "usage": u, "limits": limits.member });
+        // Their own limits: an override set for them by name, else the default.
+        let own = files
+            .member_limits(room, member)
+            .await
+            .map_err(Refusal::App)?;
+        usage["member"] = json!({ "usage": u, "limits": own.limits });
     }
     checked::<rooms_info::Response>(json!({
         "roomId": room.room_id,

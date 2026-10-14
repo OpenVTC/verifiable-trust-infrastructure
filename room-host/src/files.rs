@@ -189,13 +189,13 @@ pub(crate) async fn get(state: &HostState, doc: &TrustTask<Value>, payload: Valu
     {
         return refused(doc, r);
     }
-    let (room, presenter, _authorized) = match authorize(state, doc, &payload, Action::Read).await {
+    let (room, presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
         Ok(r) => r,
         Err(a) => return a,
     };
     render(
         doc,
-        blob_tasks::get(&state.files, &room, &presenter, &payload).await,
+        blob_tasks::get(&state.files, &room, &presenter, &authorized, &payload).await,
     )
 }
 

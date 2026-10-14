@@ -49,6 +49,12 @@ use vti_common::store::KeyspaceHandle;
 
 use crate::{Room, Visibility};
 
+mod usage;
+pub use usage::{
+    Activity, DailyUsage, LimitTarget, MemberUsage, OverrideChange, OverrideError, RETENTION_DAYS,
+    RoomBlobsSummary,
+};
+
 /// The blob index, upload and download records, record references and usage
 /// counters. Part of the storage contract, like [`crate::ROOMS_KEYSPACE`].
 pub const ROOM_BLOBS_KEYSPACE: &str = "room_blobs";
@@ -102,9 +108,10 @@ impl ScopeLimits {
 
 /// What a host is willing to store, for every room it serves.
 ///
-/// One set for the host, from its configuration: a standalone host has one
-/// storage config and no per-room overrides. Per-room and per-member overrides
-/// (`vtc/rooms/limits/set`) are a community's, and come with its integration.
+/// One set for the host, from its configuration. These are the defaults: a
+/// room may carry overrides of its own, at the room, per-member-default and
+/// per-member scopes ([`BlobHost::set_limit_override`], which a community sets
+/// through `vtc/rooms/limits/set`), and the ceiling bounds every one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostLimits {
     /// False refuses every upload. Reads of stored blobs continue.
@@ -464,6 +471,10 @@ struct DownloadRecord {
     blob_ref: String,
     expires_at: DateTime<Utc>,
     ceiling: DateTime<Utc>,
+    /// The member the reader's chain descends from, whose activity the chunks
+    /// served count under; `None` on a `private` room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    member: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -525,12 +536,39 @@ pub struct SweepStats {
     pub forgotten: usize,
 }
 
-/// A room's limits as a host reports them.
+/// A room's limits as a host enforces them, and where each scope's came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct EffectiveLimits {
     pub files_enabled: bool,
     pub room: ScopeLimits,
+    /// The per-member default: what a member without an override of their own
+    /// is held to.
     pub member: ScopeLimits,
+    pub room_source: LimitSource,
+    pub member_source: LimitSource,
+    /// The host-wide ceiling on one blob, which bounds every scope.
+    pub host_ceiling_bytes: u64,
+}
+
+/// Where a scope's limits came from (`vtc/rooms/get`'s `roomSource` /
+/// `memberSource`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LimitSource {
+    /// The host's configured defaults.
+    Default,
+    /// Set for this room by `vtc/rooms/limits/set`.
+    Override,
+}
+
+/// The limits one member of one room is held to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct MemberLimits {
+    pub limits: ScopeLimits,
+    /// Set for this member by name, rather than the room's per-member default.
+    pub overridden: bool,
 }
 
 /// Where a room's new uploads go: a storage config, and its capacity.
@@ -622,6 +660,9 @@ pub struct BlobHost {
     stores: Arc<dyn BlobStores>,
     limits: HostLimits,
     lock: tokio::sync::Mutex<()>,
+    /// Serialises the activity counters and daily rows, apart from `lock`: a
+    /// chunk served must not wait behind a commit writing to a store.
+    activity: tokio::sync::Mutex<()>,
 }
 
 fn room_hash(room_id: &str) -> String {
@@ -716,6 +757,7 @@ impl BlobHost {
             stores,
             limits,
             lock: tokio::sync::Mutex::new(()),
+            activity: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -790,20 +832,6 @@ impl BlobHost {
         }
     }
 
-    /// The limits this host applies to `room`, as it reports them.
-    pub fn effective_limits(&self, _room: &Room) -> EffectiveLimits {
-        EffectiveLimits {
-            files_enabled: self.limits.files_enabled,
-            room: self.limits.room.capped(self.limits.max_file_bytes),
-            member: self
-                .limits
-                .member
-                .capped(self.limits.max_file_bytes)
-                // A member's largest file is never more than the room's.
-                .min_file(self.limits.room.max_file_bytes),
-        }
-    }
-
     /// The room's usage, reservations included.
     pub async fn room_usage(&self, room_id: &str) -> Result<Usage, AppError> {
         Ok(self
@@ -850,6 +878,12 @@ impl BlobHost {
             _ => member,
         };
         let _guard = self.lock.lock().await;
+        // Read under the lock, so an override set before this begin is the one
+        // it is checked against (`vtc/rooms/limits/set` item 5).
+        let limits = self.limits_for(&room.room_id, member).await?;
+        if !limits.files_enabled {
+            return Err(BlobError::FilesDisabled);
+        }
 
         // Resume: the same opener, room and manifest, while its slot is open.
         let index = upload_index_key(opener, &room.room_id, &manifest.blob_ref);
@@ -927,7 +961,7 @@ impl BlobHost {
         }
 
         let target = self.stores.upload_target(&room.room_id).await?;
-        self.check_limits(&room.room_id, member, manifest.size, &target)
+        self.check_limits(&room.room_id, member, manifest.size, &target, &limits)
             .await?;
 
         let slot = match chunked::initiate_import_with(
@@ -1110,6 +1144,8 @@ impl BlobHost {
             .insert(blob_key(&entry.room_id, &entry.blob_ref), &entry)
             .await?;
         self.convert_reservation(&rec, &config_id).await?;
+        self.record_upload(&rec.room_id, rec.charged_to.as_deref())
+            .await?;
         rec.phase = UploadPhase::Committed;
         rec.finished_at = Some(now_secs());
         self.blobs.insert(upload_key(&id), &rec).await?;
@@ -1159,12 +1195,21 @@ impl BlobHost {
     ///
     /// An orphaned blob not yet collected is still served: a member may hold a
     /// record version that names it.
+    ///
+    /// `member` is the subject at the root of the reader's chain, `None` on a
+    /// `private` room; the download counts under it.
     pub async fn open_download(
         &self,
-        room_id: &str,
+        room: &Room,
         opener: &str,
+        member: Option<&str>,
         blob_ref: &str,
     ) -> Result<Download, BlobError> {
+        let room_id = room.room_id.as_str();
+        let member = match room.visibility {
+            Visibility::Private => None,
+            _ => member,
+        };
         let entry = self
             .blob(room_id, blob_ref)
             .await?
@@ -1177,9 +1222,12 @@ impl BlobHost {
             blob_ref: blob_ref.to_string(),
             expires_at: now + Duration::seconds(DOWNLOAD_TTL_SECS),
             ceiling: now + Duration::seconds(DOWNLOAD_LIFETIME_SECS),
+            member: member.map(str::to_string),
         };
         self.blobs
             .insert(download_key(&rec.download_id), &rec)
+            .await?;
+        self.record_activity(room_id, member, usage::Activity::download())
             .await?;
         Ok(Download {
             download_id: rec.download_id,
@@ -1243,6 +1291,14 @@ impl BlobHost {
         }
         rec.expires_at = (now + Duration::seconds(DOWNLOAD_TTL_SECS)).min(rec.ceiling);
         self.blobs.insert(download_key(&id), &rec).await?;
+        // Every chunk served counts, a repeated one included: egress is what
+        // left the store, which is what a cloud bills.
+        self.record_activity(
+            &rec.room_id,
+            rec.member.as_deref(),
+            usage::Activity::egress(data.len() as u64),
+        )
+        .await?;
         Ok(ServedChunk {
             data,
             digest_multibase: digest.clone(),
@@ -1306,7 +1362,8 @@ impl BlobHost {
             }
         }
         if files > 0 {
-            self.check_totals(&room.room_id, member, files, bytes, false)
+            let limits = self.limits_for(&room.room_id, member).await?;
+            self.check_totals(&room.room_id, member, files, bytes, false, &limits)
                 .await?;
         }
         Ok(RecordBlobs {
@@ -1531,6 +1588,7 @@ impl BlobHost {
                 stats.forgotten += 1;
             }
         }
+        self.roll_days().await?;
         Ok(stats)
     }
 
@@ -1590,14 +1648,12 @@ impl BlobHost {
         member: Option<&str>,
         size: u64,
         target: &UploadTarget,
+        limits: &usage::Applied,
     ) -> Result<(), BlobError> {
         let mut smallest: Option<(LimitScope, u64)> = None;
         let candidates = [
-            (
-                LimitScope::Member,
-                member.and(self.limits.member.max_file_bytes),
-            ),
-            (LimitScope::Room, self.limits.room.max_file_bytes),
+            (LimitScope::Member, member.and(limits.member.max_file_bytes)),
+            (LimitScope::Room, limits.room.max_file_bytes),
             (LimitScope::Host, Some(self.limits.max_file_bytes)),
         ];
         // Narrowest first, replaced only by a strictly smaller limit, so a tie
@@ -1620,7 +1676,8 @@ impl BlobHost {
                 requested: size,
             }));
         }
-        self.check_totals(room_id, member, 1, size, true).await?;
+        self.check_totals(room_id, member, 1, size, true, limits)
+            .await?;
         // The config's own capacity, across every room assigned to it.
         if let Some(capacity) = target.capacity_bytes {
             let s = self.counter(&config_usage_key(&target.config_id)).await?;
@@ -1648,6 +1705,7 @@ impl BlobHost {
         files: u64,
         bytes: u64,
         storage: bool,
+        limits: &usage::Applied,
     ) -> Result<(), BlobError> {
         let fits = |scope: LimitScope, limits: &ScopeLimits, usage: &Usage| {
             let used_files = usage.files + usage.reserved_files;
@@ -1678,10 +1736,10 @@ impl BlobHost {
         };
         if let Some(member) = member {
             let usage = self.member_usage(room_id, member).await?;
-            fits(LimitScope::Member, &self.limits.member, &usage)?;
+            fits(LimitScope::Member, &limits.member, &usage)?;
         }
         let usage = self.room_usage(room_id).await?;
-        fits(LimitScope::Room, &self.limits.room, &usage)?;
+        fits(LimitScope::Room, &limits.room, &usage)?;
         if storage && let Some(capacity) = self.limits.storage_capacity_bytes {
             let s = self.storage_usage().await?;
             let used = s.bytes + s.reserved_bytes;
@@ -1796,7 +1854,12 @@ impl BlobHost {
             self.update_usage(member_usage_key(&entry.room_id, m), apply)
                 .await?;
         }
-        Ok(())
+        self.record_activity(
+            &entry.room_id,
+            entry.charged_to.as_deref(),
+            usage::Activity::default(),
+        )
+        .await
     }
 }
 

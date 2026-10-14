@@ -335,13 +335,20 @@ pub(crate) async fn handle_blob_get(
         Ok(p) => p,
         Err(o) => return o,
     };
-    let (room, _authorized) = match authorize(&doc, &ctx, &payload, Action::Read).await {
+    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Read).await {
         Ok(r) => r,
         Err(o) => return o,
     };
     render(
         &doc,
-        blob_tasks::get(&ctx.state.room_files, &room, &ctx.presenter, &payload).await,
+        blob_tasks::get(
+            &ctx.state.room_files,
+            &room,
+            &ctx.presenter,
+            &authorized,
+            &payload,
+        )
+        .await,
     )
 }
 
