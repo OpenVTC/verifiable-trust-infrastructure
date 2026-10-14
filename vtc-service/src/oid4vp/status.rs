@@ -491,6 +491,64 @@ mod tests {
         assert_eq!(ids[2]["usable"], false);
     }
 
+    /// A link that reports its own connection, as `VtaLink` reads the mediator
+    /// socket's.
+    struct Link(std::sync::atomic::AtomicBool);
+
+    #[async_trait::async_trait]
+    impl crate::oid4vp::VtaJwsSigner for Link {
+        fn reachable(&self) -> bool {
+            self.0.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        async fn sign_jws(
+            &self,
+            _: &str,
+            _: serde_json::Map<String, Value>,
+            _: serde_json::Map<String, Value>,
+        ) -> Result<String, AppError> {
+            Err(AppError::Internal("not in this test".into()))
+        }
+    }
+
+    /// A VTA-held key: no link, a link whose messaging is down, a link that is
+    /// up — and back down again, never latched (R6.2).
+    #[test]
+    fn a_vta_held_key_follows_its_link_live() {
+        let mut record = p256_record("held", 0x37);
+        record.private_key_multibase = None;
+        record.vta_key_id = Some("verifier-p256".into());
+        let cell = crate::oid4vp::VtaLinkCell::default();
+        let signer: Arc<dyn VerifierSigner> =
+            Arc::new(crate::oid4vp::VtaHeldSigner::from_record(&record, cell.clone()).unwrap());
+        let signers: VerifierSigners = [(record.id.clone(), signer)].into_iter().collect();
+        let row = |signers: &VerifierSigners| {
+            as_json(&report(std::slice::from_ref(&record), signers, None, URL, now()).unwrap())
+                ["identities"][0]
+                .clone()
+        };
+
+        let v = row(&signers);
+        assert_eq!(v["custody"], "agent");
+        assert_eq!(codes(&v)[0], "agentLinkMissing");
+        assert_eq!(v["usable"], false);
+
+        let link = Arc::new(Link(std::sync::atomic::AtomicBool::new(false)));
+        assert!(cell.set(link.clone()).is_ok());
+        assert_eq!(codes(&row(&signers))[0], "agentLinkMissing", "set but down");
+
+        link.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        let v = row(&signers);
+        assert!(!codes(&v).contains(&"agentLinkMissing".to_string()), "{v}");
+        assert_eq!(v["usable"], true);
+
+        link.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            codes(&row(&signers))[0],
+            "agentLinkMissing",
+            "dropped again"
+        );
+    }
+
     /// An EUDI identity: no certificate, then an expiring one; and the
     /// community-wide problems make nothing usable (`noPublicUrl`) or name a
     /// default that is not there.

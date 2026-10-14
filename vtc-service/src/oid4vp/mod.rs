@@ -222,8 +222,9 @@ pub trait VerifierSigner: Send + Sync {
     /// The verification method the signature verifies under.
     fn kid(&self) -> &str;
     /// Whether it could sign now: `false` while a key the VTA keeps has no
-    /// link to sign over. Read by the administrators' status view
-    /// ([`status`]); signing reports the same condition as an error.
+    /// link to sign over, or the link's messaging is down. Read by the
+    /// administrators' status view ([`status`]); signing reports the same
+    /// condition as an error.
     fn can_sign(&self) -> bool {
         true
     }
@@ -337,6 +338,11 @@ impl VerifierSigner for LocalP256Signer {
 /// can stand a VTA in.
 #[async_trait::async_trait]
 pub trait VtaJwsSigner: Send + Sync {
+    /// Whether the VTA can be reached now — read live on every call, never
+    /// latched (R6.2): a link that was up and dropped answers `false`.
+    fn reachable(&self) -> bool {
+        true
+    }
     /// The compact JWS the VTA returns for key `key_id`.
     async fn sign_jws(
         &self,
@@ -407,7 +413,7 @@ impl VerifierSigner for VtaHeldSigner {
     }
 
     fn can_sign(&self) -> bool {
-        self.link.get().is_some()
+        self.link.get().is_some_and(|link| link.reachable())
     }
 
     async fn sign_jws(
