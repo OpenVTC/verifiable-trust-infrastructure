@@ -235,6 +235,18 @@ version counter. **Sign this one as the owner**: creation is the single verb no
 chain can authorize, so the request's own proof is the check, and a signer who
 is not the `ownerDid` they name is refused (§8.4).
 
+**Through your VTA instead** — `rooms/owner/register/0.1`, for a surface that
+can reach its own agent and no host (a wallet extension, a phone): the VTA sends
+`rooms/create` for you, and **signs it as the owner**, which is what "the key
+holder speaks to the host as its principal" means. The owner (`ownerDid`, or you
+when it is absent) must be a DID the VTA holds the signing key for, in a context
+you act in: a `did:webvh` it minted for you (its key is found from the DID's own
+log, under `assertionMethod`), a `did:key` whose key it holds, or the VTA's own
+DID. Anything else is refused with `permissionDenied` and a message saying to
+name an `ownerDid` the VTA holds — a `pnm` session's `did:key`, whose key lives
+in your client, is not one. On a **VTC** the owner must also be a member of the
+community: its `rooms` policy decides creation against the party that signed.
+
 ### 5.3 Issue the owner's own credentials
 
 The room is now registered and **nobody can do anything in it**, including you.
@@ -1013,7 +1025,7 @@ holds the room's key:
 | `rooms/owner/invite/0.1` | a VIC — single-use consent to join | `credentialWrite` + control of the room's key |
 | `rooms/owner/issue-membership/0.1` | a VMC — the room's statement that a DID is a member | same |
 | `rooms/owner/issue-authority/0.1` | a VAC chain root; `validUntil` required | same |
-| `rooms/owner/register/0.1` | nothing — asks this VTA to call `rooms/create` on a host, signing **as the agent**, not as the room | same, plus a VTA DID and a resolver |
+| `rooms/owner/register/0.1` | nothing — asks this VTA to call `rooms/create` on a host, signing **as the owner** (a DID it holds the key for, in a context you act in), not as the room or the agent | same, plus a resolver |
 
 **Constants**
 

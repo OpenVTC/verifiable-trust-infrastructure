@@ -224,9 +224,447 @@ pub async fn send_room_task(
     read_reply(&reply, response_task, host)
 }
 
+/// The key, and the verification method it is published as, that this agent signs
+/// with **as** `owner`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnerKey {
+    /// The key record the gated oracle signs with.
+    pub key_id: String,
+    /// The method the owner's DID document lists the key under, which the proof names.
+    pub verification_method: String,
+}
+
+/// Find the key this agent may sign with as `owner`, for `auth`.
+///
+/// `rooms/create` is issued by the room's **Owner** (its `parties`), and a host records as
+/// owner only the party whose proof is on the request (`vti_rooms::authz::authorize_create`).
+/// `rooms/owner/register` has the key holder "speak to the host as its principal", so the
+/// document it sends must be signed by the owner — never by this agent under its own DID
+/// while naming someone else.
+///
+/// The owner is a DID this agent holds the signing key for, in a context the caller may act
+/// in:
+///
+/// - **This agent's own DID**: its `#key-0`, as before. Whether the caller may sign as the
+///   agent is the oracle's question, asked when the proof is made.
+/// - **A `did:webvh` this agent minted**: the caller must act in the DID's context. The
+///   method is read from the DID's **own log** (no resolution: this agent published it, and a
+///   registration that depends on the network is one a host can shape), as the first
+///   `assertionMethod` entry whose public key is an active key record of that same context.
+/// - **A `did:key`**: an active key record with that public key, in a context the caller
+///   acts in.
+///
+/// Anything else is refused as `Forbidden` — the same refusal whether the DID is unknown or
+/// held in a context the caller cannot reach, so the answer does not say which DIDs this
+/// agent holds for others. The oracle re-checks the key when it signs, so this decides only
+/// *which* key; it confers nothing.
+pub async fn owner_signing_key(
+    keys_ks: &vti_common::store::KeyspaceHandle,
+    webvh_ks: &vti_common::store::KeyspaceHandle,
+    auth: &crate::auth::AuthClaims,
+    owner: &str,
+    vta_did: Option<&str>,
+) -> Result<OwnerKey, AppError> {
+    let not_held = || {
+        AppError::Forbidden(format!(
+            "this agent holds no signing key for `{owner}` that you may use, so it cannot \
+             register a room in its name. Name as `ownerDid` a DID this agent minted in a \
+             context you act in — a host records as owner only the party that signed the \
+             request"
+        ))
+    };
+
+    if vta_did == Some(owner) {
+        return Ok(OwnerKey {
+            key_id: format!("{owner}#key-0"),
+            verification_method: crate::operations::credentials::vta_signing_vm(owner),
+        });
+    }
+
+    if let Some(id) = owner.strip_prefix("did:key:") {
+        let id = id.split('#').next().unwrap_or(id);
+        let record = held_ed25519(keys_ks, id, |ctx| match ctx {
+            Some(ctx) => auth.has_context_access(ctx),
+            None => auth.is_super_admin(),
+        })
+        .await?
+        .ok_or_else(not_held)?;
+        return Ok(OwnerKey {
+            key_id: record.key_id,
+            verification_method: format!("did:key:{id}#{id}"),
+        });
+    }
+
+    let record = crate::webvh_store::get_did(webvh_ks, owner)
+        .await?
+        .ok_or_else(not_held)?;
+    if !auth.has_context_access(&record.context_id) {
+        return Err(not_held());
+    }
+    let log = crate::webvh_store::get_did_log(webvh_ks, owner)
+        .await?
+        .ok_or_else(not_held)?;
+    let document = crate::operations::protocol::document::current_document_from_log(&log)
+        .map_err(|e| AppError::Internal(format!("read the current document of {owner}: {e}")))?;
+
+    // Every method, by id, with its public key — `assertionMethod` may list ids or embed
+    // the method itself.
+    let mut methods: Vec<(String, String)> = Vec::new();
+    let mut add = |m: &Value| {
+        if let (Some(id), Some(pk)) = (
+            m.get("id").and_then(Value::as_str),
+            m.get("publicKeyMultibase").and_then(Value::as_str),
+        ) {
+            methods.push((id.to_string(), pk.to_string()));
+        }
+    };
+    for m in document["verificationMethod"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        add(m);
+    }
+    for m in document["assertionMethod"].as_array().into_iter().flatten() {
+        add(m);
+    }
+    let absolute = |id: &str| {
+        if id.starts_with('#') {
+            format!("{owner}{id}")
+        } else {
+            id.to_string()
+        }
+    };
+    for entry in document["assertionMethod"].as_array().into_iter().flatten() {
+        let id = match entry {
+            Value::String(s) => s.as_str(),
+            other => match other.get("id").and_then(Value::as_str) {
+                Some(s) => s,
+                None => continue,
+            },
+        };
+        let id = absolute(id);
+        // Only the DID's own methods: a key named under another DID is not this owner's.
+        if !id.starts_with(&format!("{owner}#")) {
+            continue;
+        }
+        let Some((_, public_key)) = methods.iter().find(|(m, _)| absolute(m) == id) else {
+            continue;
+        };
+        // Of the DID's own context only: a public key someone copied into their document
+        // must not reach a record another context holds.
+        if let Some(held) = held_ed25519(keys_ks, public_key, |ctx| {
+            ctx == Some(record.context_id.as_str())
+        })
+        .await?
+        {
+            return Ok(OwnerKey {
+                key_id: held.key_id,
+                verification_method: id,
+            });
+        }
+    }
+    Err(not_held())
+}
+
+/// An active Ed25519 key record holding `public_key`, in a context `in_scope` accepts.
+///
+/// Compared as key bytes, not as strings: a key published with its multicodec prefix and
+/// one recorded without it are the same key.
+async fn held_ed25519(
+    keys_ks: &vti_common::store::KeyspaceHandle,
+    public_key: &str,
+    in_scope: impl Fn(Option<&str>) -> bool,
+) -> Result<Option<vta_sdk::keys::KeyRecord>, AppError> {
+    use vta_sdk::did_key::decode_ed25519_public_key_multibase as decode;
+    let Ok(wanted) = decode(public_key) else {
+        return Ok(None);
+    };
+    for (_, value) in keys_ks.prefix_iter_raw("key:").await? {
+        let Ok(record) = serde_json::from_slice::<vta_sdk::keys::KeyRecord>(&value) else {
+            continue;
+        };
+        if record.key_type == vta_sdk::keys::KeyType::Ed25519
+            && record.status == vta_sdk::keys::KeyStatus::Active
+            && decode(&record.public_key).is_ok_and(|k| k == wanted)
+            && in_scope(record.context_id.as_deref())
+        {
+            return Ok(Some(record));
+        }
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A room owner's identity as this agent mints one: a real published `did:webvh` log
+    /// whose document numbers its signing method `#key-1` (as the templates do), over a
+    /// key minted through the real path into `context`. The key record is named after
+    /// nothing in particular — the resolver matches by key, never by name.
+    struct Owner {
+        did: String,
+        key_id: String,
+        public_key: [u8; 32],
+    }
+
+    struct Fixture {
+        ts: crate::test_support::TestStore,
+        seed: std::sync::Arc<dyn vti_secrets::SeedStore>,
+    }
+
+    impl Fixture {
+        async fn new() -> Self {
+            let ts = crate::test_support::open_test_store().await;
+            for (id, name) in [("rooms", "Rooms"), ("other", "Other")] {
+                crate::contexts::create_context(&ts.contexts_ks, id, name)
+                    .await
+                    .expect("create context");
+            }
+            Self {
+                ts,
+                seed: std::sync::Arc::new(crate::test_support::TestSeedStore(vec![7u8; 32])),
+            }
+        }
+
+        fn signing<'a>(&'a self, auth: &'a crate::auth::AuthClaims) -> SigningContext<'a> {
+            SigningContext {
+                keys_ks: &self.ts.keys_ks,
+                imported_ks: &self.ts.imported_ks,
+                internal_ks: &self.ts.internal_ks,
+                contexts_ks: &self.ts.contexts_ks,
+                acl_ks: &self.ts.acl_ks,
+                seed_store: &self.seed,
+                audit: &self.ts.audit,
+                auth,
+            }
+        }
+
+        async fn mint_key(&self, context: &str, key_id: &str) -> (String, [u8; 32]) {
+            let created = crate::operations::keys::create_key(
+                &self.ts.keys_ks,
+                &self.ts.internal_ks,
+                &self.ts.contexts_ks,
+                &self.seed,
+                &self.ts.audit,
+                &self.ts.acl_ks,
+                &crate::test_support::super_admin_claims(),
+                crate::operations::keys::CreateKeyParams {
+                    key_type: vta_keys::KeyType::Ed25519,
+                    internal: true,
+                    derivation_path: None,
+                    key_id: Some(key_id.into()),
+                    mnemonic: None,
+                    label: None,
+                    context_id: Some(context.into()),
+                },
+                "test",
+            )
+            .await
+            .expect("mint a key");
+            let raw = vta_sdk::did_key::decode_ed25519_public_key_multibase(&created.public_key)
+                .expect("the minted key");
+            (created.public_key, raw)
+        }
+
+        async fn owner_in(&self, context: &str) -> Owner {
+            use didwebvh_rs::create::{CreateDIDConfig, create_did};
+            use didwebvh_rs::parameters::Parameters as WebVHParameters;
+
+            let key_id = format!("owner-signing-{context}");
+            let (_, raw) = self.mint_key(context, &key_id).await;
+            let published = vta_sdk::did_key::ed25519_multibase_pubkey(&raw);
+
+            // The log's own update key is separate from the owner's signing key.
+            let mut update = affinidi_tdk::secrets_resolver::secrets::Secret::generate_ed25519(
+                None,
+                Some(&[9u8; 32]),
+            );
+            let update_pub = update.get_public_keymultibase().expect("update key");
+            update.id = format!("did:key:{update_pub}#{update_pub}");
+            let document = serde_json::json!({
+                "@context": ["https://www.w3.org/ns/did/v1"],
+                "id": "{DID}",
+                "verificationMethod": [
+                    { "id": "{DID}#key-1", "type": "Multikey", "controller": "{DID}",
+                      "publicKeyMultibase": published },
+                ],
+                "authentication": ["{DID}#key-1"],
+                "assertionMethod": ["{DID}#key-1"],
+            });
+            let cfg = CreateDIDConfig::builder()
+                .address(format!("https://example.invalid/{context}/owner/did.jsonl"))
+                .authorization_key(update)
+                .did_document(document)
+                .parameters(WebVHParameters {
+                    update_keys: Some(std::sync::Arc::new(vec![update_pub.into()])),
+                    ..Default::default()
+                })
+                .build()
+                .expect("create config");
+            let result = create_did(cfg).await.expect("create did");
+            let did = result.did().to_string();
+            let log = serde_json::to_string(result.log_entry()).expect("serialise log");
+            crate::webvh_store::store_did_log(&self.ts.webvh_ks, &did, &log)
+                .await
+                .expect("store log");
+            let now = chrono::Utc::now();
+            crate::webvh_store::store_did(
+                &self.ts.webvh_ks,
+                &vta_sdk::webvh::WebvhDidRecord {
+                    did: did.clone(),
+                    server_id: "serverless".into(),
+                    mnemonic: String::new(),
+                    scid: "irrelevant".into(),
+                    context_id: context.into(),
+                    portable: false,
+                    log_entry_count: 1,
+                    pre_rotation_count: 0,
+                    next_fragment_id: 2,
+                    created_at: now,
+                    updated_at: now,
+                },
+            )
+            .await
+            .expect("store did record");
+            Owner {
+                did,
+                key_id,
+                public_key: raw,
+            }
+        }
+    }
+
+    /// The fix, end to end at this agent's edge: `rooms/create` leaves signed by the owner,
+    /// under the method the owner's document publishes, with a proof that verifies against
+    /// the owner's published key — and the rule every host applies to a registration
+    /// (`authorize_create`: the signer is the owner named) holds. Before, the document was
+    /// signed by this agent while naming the caller, which that rule refuses.
+    #[tokio::test]
+    async fn register_signs_rooms_create_as_the_owner() {
+        let f = Fixture::new().await;
+        let owner = f.owner_in("rooms").await;
+        let caller = crate::test_support::admin_claims_for_context("rooms");
+
+        let key = owner_signing_key(
+            &f.ts.keys_ks,
+            &f.ts.webvh_ks,
+            &caller,
+            &owner.did,
+            Some("did:webvh:QmAgent:agent.example"),
+        )
+        .await
+        .expect("the owner's key");
+        assert_eq!(key.key_id, owner.key_id);
+        assert_eq!(key.verification_method, format!("{}#key-1", owner.did));
+
+        let room = "did:webvh:QmRoom:rooms.example:northwind";
+        let document = build_room_task(
+            vti_rooms::wire::ROOMS_CREATE_TYPE,
+            "did:webvh:QmHost:community.example",
+            &owner.did,
+            serde_json::json!({ "roomId": room, "visibility": "attributed", "ownerDid": owner.did }),
+        );
+        let signer = VtaKeySigner::new(f.signing(&caller), &key.key_id, &key.verification_method);
+        let proof = affinidi_data_integrity::DataIntegrityProof::sign(
+            &document,
+            &signer,
+            affinidi_data_integrity::SignOptions::new(),
+        )
+        .await
+        .expect("sign as the owner");
+
+        assert_eq!(document["issuer"], owner.did);
+        assert_eq!(proof.verification_method, format!("{}#key-1", owner.did));
+        assert_eq!(proof.proof_purpose, "assertionMethod");
+        proof
+            .verify_with_public_key(
+                &document,
+                &owner.public_key,
+                affinidi_data_integrity::VerifyOptions::new(),
+            )
+            .expect("the proof verifies against the owner's published key");
+        vti_rooms::authz::authorize_create(room, &owner.did, &proof.verification_method)
+            .expect("a host records the signer as the owner it names");
+    }
+
+    /// A DID this agent holds for another context is not the caller's to speak as — and the
+    /// refusal does not say that the DID is held at all.
+    #[tokio::test]
+    async fn an_owner_in_another_context_is_refused() {
+        let f = Fixture::new().await;
+        let elsewhere = f.owner_in("other").await;
+        let caller = crate::test_support::admin_claims_for_context("rooms");
+
+        let err = owner_signing_key(&f.ts.keys_ks, &f.ts.webvh_ks, &caller, &elsewhere.did, None)
+            .await
+            .expect_err("another context's DID");
+        assert!(matches!(err, AppError::Forbidden(_)), "{err}");
+        let unknown = owner_signing_key(
+            &f.ts.keys_ks,
+            &f.ts.webvh_ks,
+            &caller,
+            "did:webvh:QmNobody:nowhere.example",
+            None,
+        )
+        .await
+        .expect_err("an unknown DID");
+        assert_eq!(
+            err.to_string(),
+            unknown
+                .to_string()
+                .replace("did:webvh:QmNobody:nowhere.example", &elsewhere.did,),
+            "held-elsewhere and unknown read the same"
+        );
+    }
+
+    /// With no `ownerDid` the owner is the caller — and a caller whose key lives in their own
+    /// client (a `pnm` session's `did:key`) is not one this agent can sign as. Refused, with
+    /// what to do instead, rather than signed as this agent.
+    #[tokio::test]
+    async fn a_caller_whose_key_this_agent_does_not_hold_is_refused() {
+        let f = Fixture::new().await;
+        let caller = crate::test_support::admin_claims_for_context("rooms");
+        let err = owner_signing_key(&f.ts.keys_ks, &f.ts.webvh_ks, &caller, &caller.did, None)
+            .await
+            .expect_err("a client-held key");
+        assert!(matches!(err, AppError::Forbidden(_)), "{err}");
+        assert!(err.to_string().contains("ownerDid"), "{err}");
+    }
+
+    /// A `did:key` this agent holds the key for, in the caller's context, signs as itself.
+    #[tokio::test]
+    async fn a_held_did_key_owner_signs_as_itself() {
+        let f = Fixture::new().await;
+        let (_, raw) = f.mint_key("rooms", "a-did-key-owner").await;
+        let id = vta_sdk::did_key::ed25519_multibase_pubkey(&raw);
+        let did = format!("did:key:{id}");
+        let caller = crate::test_support::admin_claims_for_context("rooms");
+        let key = owner_signing_key(&f.ts.keys_ks, &f.ts.webvh_ks, &caller, &did, None)
+            .await
+            .expect("a held did:key");
+        assert_eq!(key.key_id, "a-did-key-owner");
+        assert_eq!(key.verification_method, format!("{did}#{id}"));
+
+        let other = crate::test_support::admin_claims_for_context("other");
+        owner_signing_key(&f.ts.keys_ks, &f.ts.webvh_ks, &other, &did, None)
+            .await
+            .expect_err("not from another context");
+    }
+
+    /// The agent's own DID keeps signing as the agent, as it did before.
+    #[tokio::test]
+    async fn the_agents_own_did_signs_with_its_own_key() {
+        let f = Fixture::new().await;
+        let caller = crate::test_support::super_admin_claims();
+        let vta = "did:webvh:QmAgent:agent.example";
+        let key = owner_signing_key(&f.ts.keys_ks, &f.ts.webvh_ks, &caller, vta, Some(vta))
+            .await
+            .expect("the agent itself");
+        assert_eq!(key.key_id, format!("{vta}#key-0"));
+        assert_eq!(key.verification_method, format!("{vta}#key-0"));
+    }
 
     #[test]
     fn the_document_is_addressed_and_attributed() {
