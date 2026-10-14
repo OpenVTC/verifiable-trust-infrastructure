@@ -1079,6 +1079,22 @@ pub const TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1: &str =
 pub const TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2: &str =
     "https://trusttasks.org/spec/rooms/owner/issue-authority/0.2";
 
+/// `spec/rooms/owner/group/create/0.1` — found a sealed room's MLS group with the owner
+/// as its only member, at room epoch 1. Every other member joins by a Welcome; nobody can
+/// welcome the owner.
+/// Auth: `credentialWrite` capability, plus control of the room's signing key — the gate
+/// issuing its credentials uses.
+pub const TASK_ROOMS_OWNER_GROUP_CREATE_0_1: &str =
+    "https://trusttasks.org/spec/rooms/owner/group/create/0.1";
+
+/// `spec/rooms/owner/group/add/0.1` — admit a member's KeyPackage to a room's group:
+/// advance the room's epoch at its host first, then this agent's group, and return the
+/// Welcome for the caller to deliver with `rooms/keys/welcome`.
+/// Auth: `credentialWrite` capability, plus the caller's `admin` authority credential for
+/// the room in this agent's vault.
+pub const TASK_ROOMS_OWNER_GROUP_ADD_0_1: &str =
+    "https://trusttasks.org/spec/rooms/owner/group/add/0.1";
+
 /// `spec/vta/memory/delete/0.1` — remove one entry by key (`not_found` if
 /// absent). Auth: context access. Payload:
 /// [`crate::protocols::memory::MemoryDeleteBody`].
@@ -2536,6 +2552,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_OWNER_ANCHOR_0_1,
     TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
     TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,
+    TASK_ROOMS_OWNER_GROUP_CREATE_0_1,
+    TASK_ROOMS_OWNER_GROUP_ADD_0_1,
     TASK_VTA_MEMORY_DELETE_0_1,
     // External accounts (`external/*`)
     TASK_EXTERNAL_ACCOUNTS_LIST_0_1,

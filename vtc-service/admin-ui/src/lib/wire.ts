@@ -3617,6 +3617,312 @@ export interface components {
          * @example admin
          */
         VtcRole: string;
+        /** @description A config holding some of this room's blobs, other than the one it is assigned to. */
+        VtcRoomsGetV0_1ConfigHoldings: {
+            bytes: number;
+            configId: components["schemas"]["VtcRoomsGetV0_1StorageConfigId"];
+            files: number;
+        };
+        /** @description The limits a room is enforced against now, with where each scope's came from. */
+        VtcRoomsGetV0_1EffectiveLimits: {
+            /** @description The host-wide largest-file ceiling, which no room or member limit can exceed. */
+            hostCeilingBytes?: number;
+            limits: components["schemas"]["VtcRoomsGetV0_1RoomLimits"];
+            memberSource: components["schemas"]["VtcRoomsGetV0_1LimitSource"];
+            roomSource: components["schemas"]["VtcRoomsGetV0_1LimitSource"];
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcRoomsGetV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.1, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
+        VtcRoomsGetV0_1HostedRoom: {
+            createdAt: number;
+            epoch: number;
+            epochExpiresAt?: number;
+            /** @enum {string} */
+            lifecycle: "live" | "lapsed" | "dormant" | "reclaimable";
+            mirrorOf?: string;
+            ownerDid: string;
+            retentionDays: number;
+            retentionPolicy: components["schemas"]["VtcRoomsGetV0_1RetentionPolicy"];
+            roomId: string;
+            updatedAt: number;
+            visibility: components["schemas"]["VtcRoomsGetV0_1Visibility"];
+        };
+        /**
+         * @description Where an effective limit came from. `policy`: the community's rooms policy at the room's creation. `override`: an administrator's vtc/rooms/limits/set. `default`: the community's configured defaults, where neither applies. The host-wide ceiling bounds all three.
+         * @enum {string}
+         */
+        VtcRoomsGetV0_1LimitSource: "policy" | "override" | "default";
+        /** @description Progress of the room's migration, as vtc/rooms/storage/migrate reports it. */
+        VtcRoomsGetV0_1MigrationProgress: {
+            doneBytes: number;
+            doneFiles: number;
+            migrationId: string;
+            /**
+             * @description `paused`: halted by a capacity or backend failure and resumable by issuing vtc/rooms/storage/migrate again. `failed`: halted on a blob whose copy did not verify; the blob stays where it was.
+             * @enum {string}
+             */
+            state: "running" | "paused" | "complete" | "failed";
+            totalBytes: number;
+            totalFiles: number;
+        };
+        VtcRoomsGetV0_1Response: {
+            ext?: components["schemas"]["VtcRoomsGetV0_1Ext"];
+            /** @description The room's largest committed blobs, by size only. */
+            largestBlobs?: {
+                configId: components["schemas"]["VtcRoomsGetV0_1StorageConfigId"];
+                /** Format: date-time */
+                createdAt: string;
+                size: number;
+            }[];
+            limits: components["schemas"]["VtcRoomsGetV0_1EffectiveLimits"];
+            /** @description On an `attributed` room only: how many members have added files. Absent on `open` and `private` rooms. */
+            membersWithUsage?: number;
+            room: components["schemas"]["VtcRoomsGetV0_1HostedRoom"];
+            /** @description Where the room's blobs are. */
+            storage: {
+                configId: components["schemas"]["VtcRoomsGetV0_1StorageConfigId"];
+                earlierConfigs: components["schemas"]["VtcRoomsGetV0_1ConfigHoldings"][];
+                migration?: components["schemas"]["VtcRoomsGetV0_1MigrationProgress"];
+            };
+            usage: {
+                /** @description Blobs no record names, awaiting deletion after the grace window. */
+                orphans: {
+                    bytes: number;
+                    files: number;
+                    /** Format: date-time */
+                    oldestOrphanedAt?: string;
+                };
+                room: components["schemas"]["VtcRoomsGetV0_1Usage"];
+            };
+        };
+        /**
+         * @description Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.
+         * @enum {string}
+         */
+        VtcRoomsGetV0_1RetentionPolicy: "chained" | "fromJoin";
+        /** @description How much a host is willing to store for one room, at the room and per member. A hosting decision, set by the host and never by anything in the room's credentials. An upload must fit every scope at once: the object against the smallest `maxFileBytes` that applies, and the member and the room with the file added. */
+        VtcRoomsGetV0_1RoomLimits: {
+            /** @description False refuses every rooms/blobs/* upload for the room. Reads of blobs already stored continue. */
+            filesEnabled: boolean;
+            member?: components["schemas"]["VtcRoomsGetV0_1ScopeLimits"];
+            room?: components["schemas"]["VtcRoomsGetV0_1ScopeLimits"];
+        };
+        /** @description Limits at one scope. Every member is optional: an absent member means the scope sets no limit of that kind, and the next wider scope's limit, or the host's ceiling, governs. All sizes are ciphertext bytes. */
+        VtcRoomsGetV0_1ScopeLimits: {
+            /** @description The total size of the committed and reserved blobs the scope may hold. */
+            maxBytes?: number;
+            /** @description The largest single blob the scope accepts. Never above 1 GiB, the transfer ceiling (BlobManifest). */
+            maxFileBytes?: number;
+            /** @description The number of committed blobs the scope may hold. 0 refuses every upload at this scope. */
+            maxFiles?: number;
+        };
+        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
+        VtcRoomsGetV0_1StorageConfigId: string;
+        /** @description What one scope holds now. Ciphertext bytes throughout. */
+        VtcRoomsGetV0_1Usage: {
+            /** @description Their total size. A blob stops counting the moment it is orphaned (its last record dropped it or was retracted), not when the host finally deletes it, so a member who deletes a file has the room back at once. */
+            bytes: number;
+            /** @description Committed blobs that are not orphaned. */
+            files: number;
+            /** @description Bytes reserved by uploads begun and not yet committed, aborted or expired. Counted against `maxBytes`, so two concurrent uploads cannot both fit under a limit only one of them fits. */
+            reservedBytes: number;
+            /** @description Uploads begun and not yet committed, aborted or expired. Counted against `maxFiles`. */
+            reservedFiles?: number;
+        };
+        /**
+         * @description How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.
+         * @enum {string}
+         */
+        VtcRoomsGetV0_1Visibility: "open" | "attributed" | "private";
+        /** @description The limits a room is enforced against now, with where each scope's came from. */
+        VtcRoomsLimitsSetV0_1EffectiveLimits: {
+            /** @description The host-wide largest-file ceiling, which no room or member limit can exceed. */
+            hostCeilingBytes?: number;
+            limits: components["schemas"]["VtcRoomsLimitsSetV0_1RoomLimits"];
+            memberSource: components["schemas"]["VtcRoomsLimitsSetV0_1LimitSource"];
+            roomSource: components["schemas"]["VtcRoomsLimitsSetV0_1LimitSource"];
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcRoomsLimitsSetV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /**
+         * @description Where an effective limit came from. `policy`: the community's rooms policy at the room's creation. `override`: an administrator's vtc/rooms/limits/set. `default`: the community's configured defaults, where neither applies. The host-wide ceiling bounds all three.
+         * @enum {string}
+         */
+        VtcRoomsLimitsSetV0_1LimitSource: "policy" | "override" | "default";
+        /** @description Which limits an override applies to. `room`: the room as a whole. `memberDefault`: every member of the room who has no override of their own. `member`: one named member — `member` is REQUIRED with this kind and forbidden with the others, a rule this schema does not express; a community refuses a violation with `malformedRequest`. */
+        VtcRoomsLimitsSetV0_1LimitTarget: {
+            /** @enum {string} */
+            kind: "room" | "memberDefault" | "member";
+            /** @description The member's DID: the subject at the root of the authority chains they present, which is what their uploads are charged to. */
+            member?: string;
+        };
+        /** @description Override, or clear an override of, the limits one hosted room is enforced against: for the room, its members by default, or one member. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcRoomsLimitsSetV0_1Payload: {
+            /** @description `true` removes the target's override, so the policy's or the community's default applies again. Exclusive with `limits`. */
+            clear?: boolean;
+            ext?: components["schemas"]["VtcRoomsLimitsSetV0_1Ext"];
+            /** @description With a `room` target only: `false` refuses every new upload to the room; reads continue. */
+            filesEnabled?: boolean;
+            limits?: components["schemas"]["VtcRoomsLimitsSetV0_1ScopeLimits"];
+            /** @description Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
+            reason: string;
+            /** @description The room's identifier, as its owner minted it. */
+            roomId: string;
+            target: components["schemas"]["VtcRoomsLimitsSetV0_1LimitTarget"];
+        };
+        VtcRoomsLimitsSetV0_1Response: {
+            ext?: components["schemas"]["VtcRoomsLimitsSetV0_1Ext"];
+            limits: components["schemas"]["VtcRoomsLimitsSetV0_1EffectiveLimits"];
+            /** @description True when `usage` already exceeds the new limits. New uploads at this scope are refused until it does not; nothing is deleted. */
+            overLimit: boolean;
+            /** @description The room's identifier, as its owner minted it. */
+            roomId: string;
+            target: components["schemas"]["VtcRoomsLimitsSetV0_1LimitTarget"];
+            targetLimits?: components["schemas"]["VtcRoomsLimitsSetV0_1ScopeLimits"];
+            usage: components["schemas"]["VtcRoomsLimitsSetV0_1Usage"];
+        };
+        /** @description How much a host is willing to store for one room, at the room and per member. A hosting decision, set by the host and never by anything in the room's credentials. An upload must fit every scope at once: the object against the smallest `maxFileBytes` that applies, and the member and the room with the file added. */
+        VtcRoomsLimitsSetV0_1RoomLimits: {
+            /** @description False refuses every rooms/blobs/* upload for the room. Reads of blobs already stored continue. */
+            filesEnabled: boolean;
+            member?: components["schemas"]["VtcRoomsLimitsSetV0_1ScopeLimits"];
+            room?: components["schemas"]["VtcRoomsLimitsSetV0_1ScopeLimits"];
+        };
+        /** @description Limits at one scope. Every member is optional: an absent member means the scope sets no limit of that kind, and the next wider scope's limit, or the host's ceiling, governs. All sizes are ciphertext bytes. */
+        VtcRoomsLimitsSetV0_1ScopeLimits: {
+            /** @description The total size of the committed and reserved blobs the scope may hold. */
+            maxBytes?: number;
+            /** @description The largest single blob the scope accepts. Never above 1 GiB, the transfer ceiling (BlobManifest). */
+            maxFileBytes?: number;
+            /** @description The number of committed blobs the scope may hold. 0 refuses every upload at this scope. */
+            maxFiles?: number;
+        };
+        /** @description What one scope holds now. Ciphertext bytes throughout. */
+        VtcRoomsLimitsSetV0_1Usage: {
+            /** @description Their total size. A blob stops counting the moment it is orphaned (its last record dropped it or was retracted), not when the host finally deletes it, so a member who deletes a file has the room back at once. */
+            bytes: number;
+            /** @description Committed blobs that are not orphaned. */
+            files: number;
+            /** @description Bytes reserved by uploads begun and not yet committed, aborted or expired. Counted against `maxBytes`, so two concurrent uploads cannot both fit under a limit only one of them fits. */
+            reservedBytes: number;
+            /** @description Uploads begun and not yet committed, aborted or expired. Counted against `maxFiles`. */
+            reservedFiles?: number;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcRoomsStorageAssignV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Point one hosted room at another storage config for its new uploads. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcRoomsStorageAssignV0_1Payload: {
+            configId: components["schemas"]["VtcRoomsStorageAssignV0_1StorageConfigId"];
+            ext?: components["schemas"]["VtcRoomsStorageAssignV0_1Ext"];
+            /** @description Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
+            reason: string;
+            /** @description The room's identifier, as its owner minted it. */
+            roomId: string;
+        };
+        VtcRoomsStorageAssignV0_1Response: {
+            /** @description The room's blobs now on a config other than its assigned one. vtc/rooms/storage/migrate moves them. */
+            blobsOnEarlierConfigs: number;
+            configId: components["schemas"]["VtcRoomsStorageAssignV0_1StorageConfigId"];
+            ext?: components["schemas"]["VtcRoomsStorageAssignV0_1Ext"];
+            previousConfigId: components["schemas"]["VtcRoomsStorageAssignV0_1StorageConfigId"];
+            /** @description The room's identifier, as its owner minted it. */
+            roomId: string;
+        };
+        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
+        VtcRoomsStorageAssignV0_1StorageConfigId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcRoomsUsageV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description A room-hosting administrator reports the storage and activity of the community's hosted rooms, grouped by room, member, storage config or day. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcRoomsUsageV0_1Payload: {
+            /** @description Opaque continuation token from a previous page's `nextCursor`. */
+            cursor?: string;
+            ext?: components["schemas"]["VtcRoomsUsageV0_1Ext"];
+            /** @description Every member optional; all given apply together. */
+            filter?: {
+                /**
+                 * Format: date
+                 * @description First UTC day of the range. Default: 29 days before `to`.
+                 */
+                from?: string;
+                /** @description One member's figures, across the `attributed` rooms selected. */
+                member?: string;
+                /** @description The room's identifier, as its owner minted it. */
+                roomId?: string;
+                storageConfig?: components["schemas"]["VtcRoomsUsageV0_1StorageConfigId"];
+                /**
+                 * Format: date
+                 * @description Last UTC day of the range, inclusive. Default: today.
+                 */
+                to?: string;
+            };
+            /**
+             * @description What each row describes. `day` is the daily history of whatever the filter selects.
+             * @enum {string}
+             */
+            groupBy: "room" | "member" | "storageConfig" | "day";
+            /** @description Page size. The community chooses when absent (50 in the reference implementation). */
+            limit?: number;
+            sort?: {
+                /** @enum {string} */
+                by: "bytes" | "files" | "uploads" | "downloads" | "egressBytes" | "date";
+                /** @enum {string} */
+                order?: "asc" | "desc";
+            };
+        };
+        VtcRoomsUsageV0_1Response: {
+            /** Format: date-time */
+            asOf: string;
+            ext?: components["schemas"]["VtcRoomsUsageV0_1Ext"];
+            /** Format: date */
+            from: string;
+            items: components["schemas"]["VtcRoomsUsageV0_1UsageRow"][];
+            /** @description Present when more remain; pass it as `cursor`. */
+            nextCursor?: string;
+            /** Format: date */
+            to: string;
+        };
+        /** @description Limits at one scope. Every member is optional: an absent member means the scope sets no limit of that kind, and the next wider scope's limit, or the host's ceiling, governs. All sizes are ciphertext bytes. */
+        VtcRoomsUsageV0_1ScopeLimits: {
+            /** @description The total size of the committed and reserved blobs the scope may hold. */
+            maxBytes?: number;
+            /** @description The largest single blob the scope accepts. Never above 1 GiB, the transfer ceiling (BlobManifest). */
+            maxFileBytes?: number;
+            /** @description The number of committed blobs the scope may hold. 0 refuses every upload at this scope. */
+            maxFiles?: number;
+        };
+        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
+        VtcRoomsUsageV0_1StorageConfigId: string;
+        /** @description One group's figures. Holdings as of the read (or the end of the day, on a `day` row); activity over the range (or the day). */
+        VtcRoomsUsageV0_1UsageRow: {
+            bytes: number;
+            /** @description On a `storageConfig` row, the config's capacity when it has one. */
+            capacityBytes?: number;
+            /**
+             * Format: date
+             * @description Present on a `day` row.
+             */
+            date?: string;
+            downloads: number;
+            egressBytes: number;
+            files: number;
+            limits?: components["schemas"]["VtcRoomsUsageV0_1ScopeLimits"];
+            /** @description Present on a `member` row. */
+            member?: string;
+            reservedBytes: number;
+            /** @description Present on a `room` row. */
+            roomId?: string;
+            storageConfig?: components["schemas"]["VtcRoomsUsageV0_1StorageConfigId"];
+            uploads: number;
+        };
         /** @description One way into the community: what an applicant must present, and how a submission that presents it is decided. Every requirement it states must be met; requirements it does not state are not requirements. A criterion stating none is met by every submission. A community's criteria are alternatives: a submission is decided under the one it names. What vtc/join-requests/manifest/0.3 publishes to applicants as a `Criterion` is derived from this. */
         VtcSchemasAcceptsListV0_2AcceptsCriterion: {
             admission: components["schemas"]["VtcSchemasAcceptsListV0_2Admission"];
@@ -3888,6 +4194,661 @@ export interface components {
             version: string;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * @description `active`: accepts new rooms and new uploads. `draining`: retired by an administrator while blobs still name it — refuses new rooms and new uploads, keeps serving reads, and becomes `retired` when a migration has emptied it. `retired`: refuses new rooms and new uploads and holds no blob. A config is never deleted while a blob names it.
+         * @enum {string}
+         */
+        VtcStorageConfigsCreateV0_1ConfigState: "active" | "draining" | "retired";
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcStorageConfigsCreateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description The context at the community's VTA that owns an external account. The VTA names an account by its context and its identifier, and decides who may use it by act scope in that context: the community must hold `external-auth-use` there, and be bound to the account, for the account to issue it anything. Naming a context grants nothing; the VTA's binding is the gate. */
+        VtcStorageConfigsCreateV0_1ExternalAccountContextId: string;
+        /** @description The identifier of an external account held by the community's VTA (the external/accounts/* family), which issues the community short-lived, room-scoped credentials and holds the long-lived authority itself. */
+        VtcStorageConfigsCreateV0_1ExternalAccountId: string;
+        VtcStorageConfigsCreateV0_1GcsSettings: {
+            /** @description The bucket name. Validated against GCS naming rules here, because it is placed in a Credential Access Boundary condition and must never carry anything but a name. */
+            bucket: string;
+            /** @enum {unknown} */
+            kind: "gcs";
+            prefix?: components["schemas"]["VtcStorageConfigsCreateV0_1ObjectPrefix"];
+        };
+        VtcStorageConfigsCreateV0_1LocalSettings: {
+            /** @enum {unknown} */
+            kind: "local";
+            /** @description Absolute path of the directory the community writes blobs under, on its own host. Created owner-only. Not carried by the community's backup: back it up beside it. */
+            root: string;
+        };
+        /** @description A key prefix inside the bucket, ending in `/`, under which the config's `rooms/` tree is placed. Restricted to the S3 safe-character set so that it can be placed in a downscoped policy without escaping. */
+        VtcStorageConfigsCreateV0_1ObjectPrefix: string;
+        /** @description Add a storage config: a named backend and how the community authenticates to it. Never a secret. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcStorageConfigsCreateV0_1Payload: {
+            auth?: components["schemas"]["VtcStorageConfigsCreateV0_1StorageAuth"];
+            /** @description Total ciphertext bytes the community will store on this config across every room. Absent means none set. */
+            capacityBytes?: number;
+            ext?: components["schemas"]["VtcStorageConfigsCreateV0_1Ext"];
+            id: components["schemas"]["VtcStorageConfigsCreateV0_1StorageConfigId"];
+            /** @description Make this the config rooms are assigned to when neither policy nor creator names one. */
+            isDefault?: boolean;
+            /** @description A display name for administrators and, with the kind, for a room's creator. */
+            label: string;
+            /** @description Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
+            reason: string;
+            settings: components["schemas"]["VtcStorageConfigsCreateV0_1StorageSettings"];
+        };
+        VtcStorageConfigsCreateV0_1Response: {
+            config: components["schemas"]["VtcStorageConfigsCreateV0_1StorageConfig"];
+            ext?: components["schemas"]["VtcStorageConfigsCreateV0_1Ext"];
+        };
+        VtcStorageConfigsCreateV0_1S3Settings: {
+            /** @description The bucket name. Validated against S3 naming rules here, because it is placed in downscoped session policies and must never carry anything but a name. */
+            bucket: string;
+            /**
+             * Format: uri
+             * @description The S3 API endpoint, for a store other than AWS (R2, B2, MinIO). Absent means AWS S3 in `region`. HTTPS only.
+             */
+            endpoint?: string;
+            /** @enum {unknown} */
+            kind: "s3";
+            /** @description Address the bucket in the path rather than the host name, as MinIO usually needs. Absent means virtual-hosted style. */
+            pathStyle?: boolean;
+            prefix?: components["schemas"]["VtcStorageConfigsCreateV0_1ObjectPrefix"];
+            /** @description The bucket's region, as the store names it (`eu-west-1`; `auto` for R2). */
+            region: string;
+        };
+        /**
+         * @description How the community authenticates to a config's backend. Absent on a `local` config, which needs none.
+         *
+         *     `vta-account` (RECOMMENDED): an external account in the community's VTA, named by the context that owns it and its identifier there. The VTA holds the long-lived authority; the community holds nothing that outlives a credential lifetime, and asks for credentials scoped to one room's prefix for at most 15 minutes, every issuance audited at the VTA. Required for a `walrus` config other than a `sealed` one, since the VTA's `sui-signer` account signs its storage transactions.
+         *
+         *     `ambient`: the cloud identity of the machine the community runs on (an instance role, workload identity), downscoped to one room's prefix by the community itself. Not audited or rate-limited by the VTA, and usable by anything on that machine that reaches the metadata endpoint. Not valid for `walrus`.
+         *
+         *     `sealed` (discouraged): a long-lived credential stored by the community, set with vtc/storage/credentials/set. Protects against every administrator through every surface the community offers; does not protect against whoever operates the machine.
+         */
+        VtcStorageConfigsCreateV0_1StorageAuth: {
+            account: components["schemas"]["VtcStorageConfigsCreateV0_1ExternalAccountId"];
+            context: components["schemas"]["VtcStorageConfigsCreateV0_1ExternalAccountContextId"];
+            /** @enum {unknown} */
+            mode: "vta-account";
+        } | {
+            /** @enum {unknown} */
+            mode: "ambient";
+        } | {
+            /** @enum {unknown} */
+            mode: "sealed";
+        };
+        /** @description One storage config as the community holds it. Carries no secret. */
+        VtcStorageConfigsCreateV0_1StorageConfig: {
+            auth?: components["schemas"]["VtcStorageConfigsCreateV0_1StorageAuth"];
+            /** @description Total ciphertext bytes the community will store on this config, across every room assigned to it. A capacity, not a policy: an upload that would cross it is refused with scope `storage`. Absent means no capacity set. */
+            capacityBytes?: number;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string;
+            id: components["schemas"]["VtcStorageConfigsCreateV0_1StorageConfigId"];
+            /** @description True for the config a room is assigned to when neither the community's policy nor its creator names one. */
+            isDefault?: boolean;
+            /** @description A display name for administrators (`EU — S3 (main account)`). Shown to a room's creator with the config's kind when the community lets them choose. */
+            label: string;
+            settings: components["schemas"]["VtcStorageConfigsCreateV0_1StorageSettings"];
+            state: components["schemas"]["VtcStorageConfigsCreateV0_1ConfigState"];
+            /** Format: date-time */
+            updatedAt?: string;
+            updatedBy?: string;
+        };
+        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
+        VtcStorageConfigsCreateV0_1StorageConfigId: string;
+        /** @description A config's backend settings, discriminated by `kind`. Never a secret: a credential is a StorageAuth, held elsewhere. */
+        VtcStorageConfigsCreateV0_1StorageSettings: components["schemas"]["VtcStorageConfigsCreateV0_1LocalSettings"] | components["schemas"]["VtcStorageConfigsCreateV0_1S3Settings"] | components["schemas"]["VtcStorageConfigsCreateV0_1GcsSettings"] | components["schemas"]["VtcStorageConfigsCreateV0_1WalrusSettings"];
+        VtcStorageConfigsCreateV0_1WalrusSettings: {
+            /**
+             * Format: uri
+             * @description The Walrus aggregator the community reads through.
+             */
+            aggregatorUrl: string;
+            /** @description Storage epochs to buy when a blob is registered. Walrus sells storage in epochs (two weeks on mainnet) and caps one purchase at 53. */
+            epochs: number;
+            /** @description How many epochs before a live blob's end epoch the community extends it. A blob that has become an orphan is not extended, and lapses: the Walrus form of deletion. */
+            extendBeforeEpochs: number;
+            /** @enum {unknown} */
+            kind: "walrus";
+            /**
+             * Format: uri
+             * @description The Walrus upload relay the community writes through. The community never runs a publisher: a publisher holds a hot wallet in its own configuration, which is the long-lived secret these tasks exist to avoid.
+             */
+            relayUrl: string;
+        };
+        /**
+         * @description `active`: accepts new rooms and new uploads. `draining`: retired by an administrator while blobs still name it — refuses new rooms and new uploads, keeps serving reads, and becomes `retired` when a migration has emptied it. `retired`: refuses new rooms and new uploads and holds no blob. A config is never deleted while a blob names it.
+         * @enum {string}
+         */
+        VtcStorageConfigsGetV0_1ConfigState: "active" | "draining" | "retired";
+        /** @description Whether a config can authenticate now, and how — never the credential. `status`: `vta-account`, `ambient` and `sealed` are usable; `required` means the config cannot store until a credential is provided (a `sealed` config never set, or set before a restore, which carries no credential); `none` is a `local` config. */
+        VtcStorageConfigsGetV0_1CredentialState: {
+            account?: components["schemas"]["VtcStorageConfigsGetV0_1ExternalAccountId"];
+            context?: components["schemas"]["VtcStorageConfigsGetV0_1ExternalAccountContextId"];
+            fingerprint?: components["schemas"]["VtcStorageConfigsGetV0_1DigestMultibase"];
+            /** @description Present with `vta-account`: how many rooms the community currently holds a live room-scoped credential for. */
+            roomsHoldingCredentials?: number;
+            /**
+             * Format: date-time
+             * @description Present with `sealed`: when the stored credential was last set.
+             */
+            setAt?: string;
+            /** @enum {string} */
+            status: "vta-account" | "ambient" | "sealed" | "required" | "none";
+        };
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcStorageConfigsGetV0_1DigestMultibase: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcStorageConfigsGetV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description The context at the community's VTA that owns an external account. The VTA names an account by its context and its identifier, and decides who may use it by act scope in that context: the community must hold `external-auth-use` there, and be bound to the account, for the account to issue it anything. Naming a context grants nothing; the VTA's binding is the gate. */
+        VtcStorageConfigsGetV0_1ExternalAccountContextId: string;
+        /** @description The identifier of an external account held by the community's VTA (the external/accounts/* family), which issues the community short-lived, room-scoped credentials and holds the long-lived authority itself. */
+        VtcStorageConfigsGetV0_1ExternalAccountId: string;
+        VtcStorageConfigsGetV0_1GcsSettings: {
+            /** @description The bucket name. Validated against GCS naming rules here, because it is placed in a Credential Access Boundary condition and must never carry anything but a name. */
+            bucket: string;
+            /** @enum {unknown} */
+            kind: "gcs";
+            prefix?: components["schemas"]["VtcStorageConfigsGetV0_1ObjectPrefix"];
+        };
+        VtcStorageConfigsGetV0_1LocalSettings: {
+            /** @enum {unknown} */
+            kind: "local";
+            /** @description Absolute path of the directory the community writes blobs under, on its own host. Created owner-only. Not carried by the community's backup: back it up beside it. */
+            root: string;
+        };
+        /** @description A key prefix inside the bucket, ending in `/`, under which the config's `rooms/` tree is placed. Restricted to the S3 safe-character set so that it can be placed in a downscoped policy without escaping. */
+        VtcStorageConfigsGetV0_1ObjectPrefix: string;
+        VtcStorageConfigsGetV0_1Response: {
+            assignedRooms: string[];
+            assignedRoomsTruncated: boolean;
+            config: components["schemas"]["VtcStorageConfigsGetV0_1StorageConfig"];
+            ext?: components["schemas"]["VtcStorageConfigsGetV0_1Ext"];
+            facts: components["schemas"]["VtcStorageConfigsGetV0_1StorageConfigFacts"];
+        };
+        VtcStorageConfigsGetV0_1S3Settings: {
+            /** @description The bucket name. Validated against S3 naming rules here, because it is placed in downscoped session policies and must never carry anything but a name. */
+            bucket: string;
+            /**
+             * Format: uri
+             * @description The S3 API endpoint, for a store other than AWS (R2, B2, MinIO). Absent means AWS S3 in `region`. HTTPS only.
+             */
+            endpoint?: string;
+            /** @enum {unknown} */
+            kind: "s3";
+            /** @description Address the bucket in the path rather than the host name, as MinIO usually needs. Absent means virtual-hosted style. */
+            pathStyle?: boolean;
+            prefix?: components["schemas"]["VtcStorageConfigsGetV0_1ObjectPrefix"];
+            /** @description The bucket's region, as the store names it (`eu-west-1`; `auto` for R2). */
+            region: string;
+        };
+        /**
+         * @description How the community authenticates to a config's backend. Absent on a `local` config, which needs none.
+         *
+         *     `vta-account` (RECOMMENDED): an external account in the community's VTA, named by the context that owns it and its identifier there. The VTA holds the long-lived authority; the community holds nothing that outlives a credential lifetime, and asks for credentials scoped to one room's prefix for at most 15 minutes, every issuance audited at the VTA. Required for a `walrus` config other than a `sealed` one, since the VTA's `sui-signer` account signs its storage transactions.
+         *
+         *     `ambient`: the cloud identity of the machine the community runs on (an instance role, workload identity), downscoped to one room's prefix by the community itself. Not audited or rate-limited by the VTA, and usable by anything on that machine that reaches the metadata endpoint. Not valid for `walrus`.
+         *
+         *     `sealed` (discouraged): a long-lived credential stored by the community, set with vtc/storage/credentials/set. Protects against every administrator through every surface the community offers; does not protect against whoever operates the machine.
+         */
+        VtcStorageConfigsGetV0_1StorageAuth: {
+            account: components["schemas"]["VtcStorageConfigsGetV0_1ExternalAccountId"];
+            context: components["schemas"]["VtcStorageConfigsGetV0_1ExternalAccountContextId"];
+            /** @enum {unknown} */
+            mode: "vta-account";
+        } | {
+            /** @enum {unknown} */
+            mode: "ambient";
+        } | {
+            /** @enum {unknown} */
+            mode: "sealed";
+        };
+        /** @description One storage config as the community holds it. Carries no secret. */
+        VtcStorageConfigsGetV0_1StorageConfig: {
+            auth?: components["schemas"]["VtcStorageConfigsGetV0_1StorageAuth"];
+            /** @description Total ciphertext bytes the community will store on this config, across every room assigned to it. A capacity, not a policy: an upload that would cross it is refused with scope `storage`. Absent means no capacity set. */
+            capacityBytes?: number;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string;
+            id: components["schemas"]["VtcStorageConfigsGetV0_1StorageConfigId"];
+            /** @description True for the config a room is assigned to when neither the community's policy nor its creator names one. */
+            isDefault?: boolean;
+            /** @description A display name for administrators (`EU — S3 (main account)`). Shown to a room's creator with the config's kind when the community lets them choose. */
+            label: string;
+            settings: components["schemas"]["VtcStorageConfigsGetV0_1StorageSettings"];
+            state: components["schemas"]["VtcStorageConfigsGetV0_1ConfigState"];
+            /** Format: date-time */
+            updatedAt?: string;
+            updatedBy?: string;
+        };
+        /** @description What a config holds and whether it works, computed at the time of the read. Ciphertext bytes throughout. */
+        VtcStorageConfigsGetV0_1StorageConfigFacts: {
+            /** @description Their total size. Counts against `capacityBytes` until the backend deletion has actually happened, unlike room and member usage, which stop counting an orphaned blob at once. */
+            bytes: number;
+            credential: components["schemas"]["VtcStorageConfigsGetV0_1CredentialState"];
+            /** @description Blobs stored on this config that are not yet deleted, wherever their rooms are now assigned. */
+            files: number;
+            health: components["schemas"]["VtcStorageConfigsGetV0_1StorageHealth"];
+            /** @description Bytes of orphaned blobs awaiting deletion after their grace window. */
+            pendingDeleteBytes: number;
+            /** @description Rooms assigned to this config. */
+            rooms: number;
+            /** @description Present on a `walrus` config. */
+            walrus?: {
+                /** Format: date-time */
+                nextExtensionDueAt?: string;
+                /** @description The Sui address that pays for storage, derived from the VTA account's key. */
+                signerAddress?: string;
+            };
+        };
+        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
+        VtcStorageConfigsGetV0_1StorageConfigId: string;
+        /** @description The last evidence the community has that a config works. Every member is optional: a config never probed and never used has none. */
+        VtcStorageConfigsGetV0_1StorageHealth: {
+            /**
+             * Format: date-time
+             * @description The last successful deletion (on `walrus`, the last lapse the community observed).
+             */
+            lastDeleteAt?: string;
+            /**
+             * Format: date-time
+             * @description The last successful chunk read.
+             */
+            lastGetAt?: string;
+            /** Format: date-time */
+            lastProbeAt?: string;
+            lastProbeOk?: boolean;
+            /**
+             * Format: date-time
+             * @description The last successful blob write.
+             */
+            lastPutAt?: string;
+        };
+        /** @description A config's backend settings, discriminated by `kind`. Never a secret: a credential is a StorageAuth, held elsewhere. */
+        VtcStorageConfigsGetV0_1StorageSettings: components["schemas"]["VtcStorageConfigsGetV0_1LocalSettings"] | components["schemas"]["VtcStorageConfigsGetV0_1S3Settings"] | components["schemas"]["VtcStorageConfigsGetV0_1GcsSettings"] | components["schemas"]["VtcStorageConfigsGetV0_1WalrusSettings"];
+        VtcStorageConfigsGetV0_1WalrusSettings: {
+            /**
+             * Format: uri
+             * @description The Walrus aggregator the community reads through.
+             */
+            aggregatorUrl: string;
+            /** @description Storage epochs to buy when a blob is registered. Walrus sells storage in epochs (two weeks on mainnet) and caps one purchase at 53. */
+            epochs: number;
+            /** @description How many epochs before a live blob's end epoch the community extends it. A blob that has become an orphan is not extended, and lapses: the Walrus form of deletion. */
+            extendBeforeEpochs: number;
+            /** @enum {unknown} */
+            kind: "walrus";
+            /**
+             * Format: uri
+             * @description The Walrus upload relay the community writes through. The community never runs a publisher: a publisher holds a hot wallet in its own configuration, which is the long-lived secret these tasks exist to avoid.
+             */
+            relayUrl: string;
+        };
+        /** @description One config and what it holds. */
+        VtcStorageConfigsListV0_1ConfigItem: {
+            config: components["schemas"]["VtcStorageConfigsListV0_1StorageConfig"];
+            facts: components["schemas"]["VtcStorageConfigsListV0_1StorageConfigFacts"];
+        };
+        /**
+         * @description `active`: accepts new rooms and new uploads. `draining`: retired by an administrator while blobs still name it — refuses new rooms and new uploads, keeps serving reads, and becomes `retired` when a migration has emptied it. `retired`: refuses new rooms and new uploads and holds no blob. A config is never deleted while a blob names it.
+         * @enum {string}
+         */
+        VtcStorageConfigsListV0_1ConfigState: "active" | "draining" | "retired";
+        /** @description Whether a config can authenticate now, and how — never the credential. `status`: `vta-account`, `ambient` and `sealed` are usable; `required` means the config cannot store until a credential is provided (a `sealed` config never set, or set before a restore, which carries no credential); `none` is a `local` config. */
+        VtcStorageConfigsListV0_1CredentialState: {
+            account?: components["schemas"]["VtcStorageConfigsListV0_1ExternalAccountId"];
+            context?: components["schemas"]["VtcStorageConfigsListV0_1ExternalAccountContextId"];
+            fingerprint?: components["schemas"]["VtcStorageConfigsListV0_1DigestMultibase"];
+            /** @description Present with `vta-account`: how many rooms the community currently holds a live room-scoped credential for. */
+            roomsHoldingCredentials?: number;
+            /**
+             * Format: date-time
+             * @description Present with `sealed`: when the stored credential was last set.
+             */
+            setAt?: string;
+            /** @enum {string} */
+            status: "vta-account" | "ambient" | "sealed" | "required" | "none";
+        };
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcStorageConfigsListV0_1DigestMultibase: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcStorageConfigsListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description The context at the community's VTA that owns an external account. The VTA names an account by its context and its identifier, and decides who may use it by act scope in that context: the community must hold `external-auth-use` there, and be bound to the account, for the account to issue it anything. Naming a context grants nothing; the VTA's binding is the gate. */
+        VtcStorageConfigsListV0_1ExternalAccountContextId: string;
+        /** @description The identifier of an external account held by the community's VTA (the external/accounts/* family), which issues the community short-lived, room-scoped credentials and holds the long-lived authority itself. */
+        VtcStorageConfigsListV0_1ExternalAccountId: string;
+        VtcStorageConfigsListV0_1GcsSettings: {
+            /** @description The bucket name. Validated against GCS naming rules here, because it is placed in a Credential Access Boundary condition and must never carry anything but a name. */
+            bucket: string;
+            /** @enum {unknown} */
+            kind: "gcs";
+            prefix?: components["schemas"]["VtcStorageConfigsListV0_1ObjectPrefix"];
+        };
+        VtcStorageConfigsListV0_1LocalSettings: {
+            /** @enum {unknown} */
+            kind: "local";
+            /** @description Absolute path of the directory the community writes blobs under, on its own host. Created owner-only. Not carried by the community's backup: back it up beside it. */
+            root: string;
+        };
+        /** @description A key prefix inside the bucket, ending in `/`, under which the config's `rooms/` tree is placed. Restricted to the S3 safe-character set so that it can be placed in a downscoped policy without escaping. */
+        VtcStorageConfigsListV0_1ObjectPrefix: string;
+        VtcStorageConfigsListV0_1Response: {
+            ext?: components["schemas"]["VtcStorageConfigsListV0_1Ext"];
+            items: components["schemas"]["VtcStorageConfigsListV0_1ConfigItem"][];
+            /** @description Present when more remain; pass it as `cursor`. */
+            nextCursor?: string;
+        };
+        VtcStorageConfigsListV0_1S3Settings: {
+            /** @description The bucket name. Validated against S3 naming rules here, because it is placed in downscoped session policies and must never carry anything but a name. */
+            bucket: string;
+            /**
+             * Format: uri
+             * @description The S3 API endpoint, for a store other than AWS (R2, B2, MinIO). Absent means AWS S3 in `region`. HTTPS only.
+             */
+            endpoint?: string;
+            /** @enum {unknown} */
+            kind: "s3";
+            /** @description Address the bucket in the path rather than the host name, as MinIO usually needs. Absent means virtual-hosted style. */
+            pathStyle?: boolean;
+            prefix?: components["schemas"]["VtcStorageConfigsListV0_1ObjectPrefix"];
+            /** @description The bucket's region, as the store names it (`eu-west-1`; `auto` for R2). */
+            region: string;
+        };
+        /**
+         * @description How the community authenticates to a config's backend. Absent on a `local` config, which needs none.
+         *
+         *     `vta-account` (RECOMMENDED): an external account in the community's VTA, named by the context that owns it and its identifier there. The VTA holds the long-lived authority; the community holds nothing that outlives a credential lifetime, and asks for credentials scoped to one room's prefix for at most 15 minutes, every issuance audited at the VTA. Required for a `walrus` config other than a `sealed` one, since the VTA's `sui-signer` account signs its storage transactions.
+         *
+         *     `ambient`: the cloud identity of the machine the community runs on (an instance role, workload identity), downscoped to one room's prefix by the community itself. Not audited or rate-limited by the VTA, and usable by anything on that machine that reaches the metadata endpoint. Not valid for `walrus`.
+         *
+         *     `sealed` (discouraged): a long-lived credential stored by the community, set with vtc/storage/credentials/set. Protects against every administrator through every surface the community offers; does not protect against whoever operates the machine.
+         */
+        VtcStorageConfigsListV0_1StorageAuth: {
+            account: components["schemas"]["VtcStorageConfigsListV0_1ExternalAccountId"];
+            context: components["schemas"]["VtcStorageConfigsListV0_1ExternalAccountContextId"];
+            /** @enum {unknown} */
+            mode: "vta-account";
+        } | {
+            /** @enum {unknown} */
+            mode: "ambient";
+        } | {
+            /** @enum {unknown} */
+            mode: "sealed";
+        };
+        /** @description One storage config as the community holds it. Carries no secret. */
+        VtcStorageConfigsListV0_1StorageConfig: {
+            auth?: components["schemas"]["VtcStorageConfigsListV0_1StorageAuth"];
+            /** @description Total ciphertext bytes the community will store on this config, across every room assigned to it. A capacity, not a policy: an upload that would cross it is refused with scope `storage`. Absent means no capacity set. */
+            capacityBytes?: number;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string;
+            id: components["schemas"]["VtcStorageConfigsListV0_1StorageConfigId"];
+            /** @description True for the config a room is assigned to when neither the community's policy nor its creator names one. */
+            isDefault?: boolean;
+            /** @description A display name for administrators (`EU — S3 (main account)`). Shown to a room's creator with the config's kind when the community lets them choose. */
+            label: string;
+            settings: components["schemas"]["VtcStorageConfigsListV0_1StorageSettings"];
+            state: components["schemas"]["VtcStorageConfigsListV0_1ConfigState"];
+            /** Format: date-time */
+            updatedAt?: string;
+            updatedBy?: string;
+        };
+        /** @description What a config holds and whether it works, computed at the time of the read. Ciphertext bytes throughout. */
+        VtcStorageConfigsListV0_1StorageConfigFacts: {
+            /** @description Their total size. Counts against `capacityBytes` until the backend deletion has actually happened, unlike room and member usage, which stop counting an orphaned blob at once. */
+            bytes: number;
+            credential: components["schemas"]["VtcStorageConfigsListV0_1CredentialState"];
+            /** @description Blobs stored on this config that are not yet deleted, wherever their rooms are now assigned. */
+            files: number;
+            health: components["schemas"]["VtcStorageConfigsListV0_1StorageHealth"];
+            /** @description Bytes of orphaned blobs awaiting deletion after their grace window. */
+            pendingDeleteBytes: number;
+            /** @description Rooms assigned to this config. */
+            rooms: number;
+            /** @description Present on a `walrus` config. */
+            walrus?: {
+                /** Format: date-time */
+                nextExtensionDueAt?: string;
+                /** @description The Sui address that pays for storage, derived from the VTA account's key. */
+                signerAddress?: string;
+            };
+        };
+        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
+        VtcStorageConfigsListV0_1StorageConfigId: string;
+        /** @description The last evidence the community has that a config works. Every member is optional: a config never probed and never used has none. */
+        VtcStorageConfigsListV0_1StorageHealth: {
+            /**
+             * Format: date-time
+             * @description The last successful deletion (on `walrus`, the last lapse the community observed).
+             */
+            lastDeleteAt?: string;
+            /**
+             * Format: date-time
+             * @description The last successful chunk read.
+             */
+            lastGetAt?: string;
+            /** Format: date-time */
+            lastProbeAt?: string;
+            lastProbeOk?: boolean;
+            /**
+             * Format: date-time
+             * @description The last successful blob write.
+             */
+            lastPutAt?: string;
+        };
+        /**
+         * @description Which backend a config stores to. `local`: plain files in a directory on the community's own host. `s3`: an S3-compatible object store (AWS S3, Cloudflare R2, Backblaze B2, MinIO). `gcs`: native Google Cloud Storage. `walrus`: the Walrus decentralised store, where every blob is public ciphertext and deletion is a lapse, not an erasure.
+         * @enum {string}
+         */
+        VtcStorageConfigsListV0_1StorageKind: "local" | "s3" | "gcs" | "walrus";
+        /** @description A config's backend settings, discriminated by `kind`. Never a secret: a credential is a StorageAuth, held elsewhere. */
+        VtcStorageConfigsListV0_1StorageSettings: components["schemas"]["VtcStorageConfigsListV0_1LocalSettings"] | components["schemas"]["VtcStorageConfigsListV0_1S3Settings"] | components["schemas"]["VtcStorageConfigsListV0_1GcsSettings"] | components["schemas"]["VtcStorageConfigsListV0_1WalrusSettings"];
+        VtcStorageConfigsListV0_1WalrusSettings: {
+            /**
+             * Format: uri
+             * @description The Walrus aggregator the community reads through.
+             */
+            aggregatorUrl: string;
+            /** @description Storage epochs to buy when a blob is registered. Walrus sells storage in epochs (two weeks on mainnet) and caps one purchase at 53. */
+            epochs: number;
+            /** @description How many epochs before a live blob's end epoch the community extends it. A blob that has become an orphan is not extended, and lapses: the Walrus form of deletion. */
+            extendBeforeEpochs: number;
+            /** @enum {unknown} */
+            kind: "walrus";
+            /**
+             * Format: uri
+             * @description The Walrus upload relay the community writes through. The community never runs a publisher: a publisher holds a hot wallet in its own configuration, which is the long-lived secret these tasks exist to avoid.
+             */
+            relayUrl: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcStorageConfigsProbeV0_1Ext: {
+            [key: string]: unknown;
+        };
+        VtcStorageConfigsProbeV0_1Response: {
+            configId: components["schemas"]["VtcStorageConfigsProbeV0_1StorageConfigId"];
+            ext?: components["schemas"]["VtcStorageConfigsProbeV0_1Ext"];
+            /** @description True when every step attempted succeeded. */
+            ok: boolean;
+            /** @description Where the canary was written, relative to the config's own prefix. */
+            prefix: string;
+            /** Format: date-time */
+            probedAt: string;
+            steps: components["schemas"]["VtcStorageConfigsProbeV0_1StepResult"][];
+        };
+        VtcStorageConfigsProbeV0_1StepResult: {
+            durationMs: number;
+            /** @description On failure, the backend's error verbatim, truncated, with anything credential-like removed. Untrusted text: render it as text, never as markup or instructions. */
+            error?: string;
+            ok: boolean;
+            /** @enum {string} */
+            step: "authenticate" | "put" | "get" | "delete" | "reachRelay" | "reachAggregator";
+        };
+        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
+        VtcStorageConfigsProbeV0_1StorageConfigId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcStorageConfigsRetireV0_1Ext: {
+            [key: string]: unknown;
+        };
+        VtcStorageConfigsRetireV0_1Response: {
+            blobsRemaining: number;
+            configId: components["schemas"]["VtcStorageConfigsRetireV0_1StorageConfigId"];
+            ext?: components["schemas"]["VtcStorageConfigsRetireV0_1Ext"];
+            /** @enum {string} */
+            state: "draining" | "retired";
+        };
+        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
+        VtcStorageConfigsRetireV0_1StorageConfigId: string;
+        /**
+         * @description `active`: accepts new rooms and new uploads. `draining`: retired by an administrator while blobs still name it — refuses new rooms and new uploads, keeps serving reads, and becomes `retired` when a migration has emptied it. `retired`: refuses new rooms and new uploads and holds no blob. A config is never deleted while a blob names it.
+         * @enum {string}
+         */
+        VtcStorageConfigsUpdateV0_1ConfigState: "active" | "draining" | "retired";
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcStorageConfigsUpdateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description The context at the community's VTA that owns an external account. The VTA names an account by its context and its identifier, and decides who may use it by act scope in that context: the community must hold `external-auth-use` there, and be bound to the account, for the account to issue it anything. Naming a context grants nothing; the VTA's binding is the gate. */
+        VtcStorageConfigsUpdateV0_1ExternalAccountContextId: string;
+        /** @description The identifier of an external account held by the community's VTA (the external/accounts/* family), which issues the community short-lived, room-scoped credentials and holds the long-lived authority itself. */
+        VtcStorageConfigsUpdateV0_1ExternalAccountId: string;
+        VtcStorageConfigsUpdateV0_1GcsSettings: {
+            /** @description The bucket name. Validated against GCS naming rules here, because it is placed in a Credential Access Boundary condition and must never carry anything but a name. */
+            bucket: string;
+            /** @enum {unknown} */
+            kind: "gcs";
+            prefix?: components["schemas"]["VtcStorageConfigsUpdateV0_1ObjectPrefix"];
+        };
+        VtcStorageConfigsUpdateV0_1LocalSettings: {
+            /** @enum {unknown} */
+            kind: "local";
+            /** @description Absolute path of the directory the community writes blobs under, on its own host. Created owner-only. Not carried by the community's backup: back it up beside it. */
+            root: string;
+        };
+        /** @description A key prefix inside the bucket, ending in `/`, under which the config's `rooms/` tree is placed. Restricted to the S3 safe-character set so that it can be placed in a downscoped policy without escaping. */
+        VtcStorageConfigsUpdateV0_1ObjectPrefix: string;
+        /** @description Change a storage config's label, settings that do not locate stored blobs, authentication, capacity or default flag. Never a secret. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcStorageConfigsUpdateV0_1Payload: {
+            auth?: components["schemas"]["VtcStorageConfigsUpdateV0_1StorageAuth"];
+            /** @description Total ciphertext bytes the community will store on this config across every room. Absent means none set. */
+            capacityBytes?: number;
+            configId: components["schemas"]["VtcStorageConfigsUpdateV0_1StorageConfigId"];
+            ext?: components["schemas"]["VtcStorageConfigsUpdateV0_1Ext"];
+            /** @description Make this the config rooms are assigned to when neither policy nor creator names one. */
+            isDefault?: boolean;
+            /** @description A display name for administrators and, with the kind, for a room's creator. */
+            label?: string;
+            /** @description Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
+            reason: string;
+            settings?: components["schemas"]["VtcStorageConfigsUpdateV0_1StorageSettings"];
+        };
+        VtcStorageConfigsUpdateV0_1Response: {
+            config: components["schemas"]["VtcStorageConfigsUpdateV0_1StorageConfig"];
+            ext?: components["schemas"]["VtcStorageConfigsUpdateV0_1Ext"];
+        };
+        VtcStorageConfigsUpdateV0_1S3Settings: {
+            /** @description The bucket name. Validated against S3 naming rules here, because it is placed in downscoped session policies and must never carry anything but a name. */
+            bucket: string;
+            /**
+             * Format: uri
+             * @description The S3 API endpoint, for a store other than AWS (R2, B2, MinIO). Absent means AWS S3 in `region`. HTTPS only.
+             */
+            endpoint?: string;
+            /** @enum {unknown} */
+            kind: "s3";
+            /** @description Address the bucket in the path rather than the host name, as MinIO usually needs. Absent means virtual-hosted style. */
+            pathStyle?: boolean;
+            prefix?: components["schemas"]["VtcStorageConfigsUpdateV0_1ObjectPrefix"];
+            /** @description The bucket's region, as the store names it (`eu-west-1`; `auto` for R2). */
+            region: string;
+        };
+        /**
+         * @description How the community authenticates to a config's backend. Absent on a `local` config, which needs none.
+         *
+         *     `vta-account` (RECOMMENDED): an external account in the community's VTA, named by the context that owns it and its identifier there. The VTA holds the long-lived authority; the community holds nothing that outlives a credential lifetime, and asks for credentials scoped to one room's prefix for at most 15 minutes, every issuance audited at the VTA. Required for a `walrus` config other than a `sealed` one, since the VTA's `sui-signer` account signs its storage transactions.
+         *
+         *     `ambient`: the cloud identity of the machine the community runs on (an instance role, workload identity), downscoped to one room's prefix by the community itself. Not audited or rate-limited by the VTA, and usable by anything on that machine that reaches the metadata endpoint. Not valid for `walrus`.
+         *
+         *     `sealed` (discouraged): a long-lived credential stored by the community, set with vtc/storage/credentials/set. Protects against every administrator through every surface the community offers; does not protect against whoever operates the machine.
+         */
+        VtcStorageConfigsUpdateV0_1StorageAuth: {
+            account: components["schemas"]["VtcStorageConfigsUpdateV0_1ExternalAccountId"];
+            context: components["schemas"]["VtcStorageConfigsUpdateV0_1ExternalAccountContextId"];
+            /** @enum {unknown} */
+            mode: "vta-account";
+        } | {
+            /** @enum {unknown} */
+            mode: "ambient";
+        } | {
+            /** @enum {unknown} */
+            mode: "sealed";
+        };
+        /** @description One storage config as the community holds it. Carries no secret. */
+        VtcStorageConfigsUpdateV0_1StorageConfig: {
+            auth?: components["schemas"]["VtcStorageConfigsUpdateV0_1StorageAuth"];
+            /** @description Total ciphertext bytes the community will store on this config, across every room assigned to it. A capacity, not a policy: an upload that would cross it is refused with scope `storage`. Absent means no capacity set. */
+            capacityBytes?: number;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string;
+            id: components["schemas"]["VtcStorageConfigsUpdateV0_1StorageConfigId"];
+            /** @description True for the config a room is assigned to when neither the community's policy nor its creator names one. */
+            isDefault?: boolean;
+            /** @description A display name for administrators (`EU — S3 (main account)`). Shown to a room's creator with the config's kind when the community lets them choose. */
+            label: string;
+            settings: components["schemas"]["VtcStorageConfigsUpdateV0_1StorageSettings"];
+            state: components["schemas"]["VtcStorageConfigsUpdateV0_1ConfigState"];
+            /** Format: date-time */
+            updatedAt?: string;
+            updatedBy?: string;
+        };
+        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
+        VtcStorageConfigsUpdateV0_1StorageConfigId: string;
+        /** @description A config's backend settings, discriminated by `kind`. Never a secret: a credential is a StorageAuth, held elsewhere. */
+        VtcStorageConfigsUpdateV0_1StorageSettings: components["schemas"]["VtcStorageConfigsUpdateV0_1LocalSettings"] | components["schemas"]["VtcStorageConfigsUpdateV0_1S3Settings"] | components["schemas"]["VtcStorageConfigsUpdateV0_1GcsSettings"] | components["schemas"]["VtcStorageConfigsUpdateV0_1WalrusSettings"];
+        VtcStorageConfigsUpdateV0_1WalrusSettings: {
+            /**
+             * Format: uri
+             * @description The Walrus aggregator the community reads through.
+             */
+            aggregatorUrl: string;
+            /** @description Storage epochs to buy when a blob is registered. Walrus sells storage in epochs (two weeks on mainnet) and caps one purchase at 53. */
+            epochs: number;
+            /** @description How many epochs before a live blob's end epoch the community extends it. A blob that has become an orphan is not extended, and lapses: the Walrus form of deletion. */
+            extendBeforeEpochs: number;
+            /** @enum {unknown} */
+            kind: "walrus";
+            /**
+             * Format: uri
+             * @description The Walrus upload relay the community writes through. The community never runs a publisher: a publisher holds a hot wallet in its own configuration, which is the long-lived secret these tasks exist to avoid.
+             */
+            relayUrl: string;
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcVettingVettersGrantV0_1Ext: {

@@ -1759,9 +1759,12 @@ async fn a_member_session_is_bounded_by_the_grants_not_after_across_refreshes() 
         .expect("refresh cookie")
         .to_string();
     for _ in 0..3 {
+        // Read before the request: a cookie's Max-Age counts from the server's
+        // clock, which is never earlier than this, whereas a reading taken after
+        // the response can be a second later and overstate the cookie's end.
+        let before = now_epoch();
         let r = member_refresh(&f, &refresh).await;
         assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-        let now = now_epoch();
         assert!(r.body["expiresAt"].as_u64().unwrap() <= not_after);
         for name in [
             "vtc_member_session",
@@ -1769,7 +1772,7 @@ async fn a_member_session_is_bounded_by_the_grants_not_after_across_refreshes() 
             "vtc_member_csrf",
         ] {
             assert!(
-                now + max_age(&r.cookies, name) <= not_after,
+                before + max_age(&r.cookies, name) <= not_after,
                 "{name} outlives the grant: {:?}",
                 r.cookies
             );
@@ -1789,19 +1792,21 @@ async fn a_member_session_is_bounded_by_the_grants_not_after_across_refreshes() 
 #[tokio::test]
 async fn a_member_refresh_near_the_end_is_clamped_to_it() {
     let f = fixture().await;
-    // Nearer than both the access and the refresh TTL.
-    let not_after = now_epoch() + 30;
+    // Nearer than both the access and the refresh TTL. Clock readings are taken
+    // before each request: a Max-Age counts from the server's clock, never earlier.
+    let start = now_epoch();
+    let not_after = start + 30;
     let (member, done) = member_signed_in_until(&f, "198.51.100.111", not_after).await;
     assert_eq!(done.body["payload"]["notAfter"].as_u64(), Some(not_after));
-    assert!(now_epoch() + max_age(&done.cookies, "vtc_member_session") <= not_after);
+    assert!(start + max_age(&done.cookies, "vtc_member_session") <= not_after);
 
     let refresh = cookie_in(&done.cookies, "vtc_member_refresh").unwrap();
+    let before = now_epoch();
     let r = member_refresh(&f, refresh).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-    let now = now_epoch();
     assert!(r.body["expiresAt"].as_u64().unwrap() <= not_after);
     assert!(max_age(&r.cookies, "vtc_member_session") <= 30);
-    assert!(now + max_age(&r.cookies, "vtc_member_refresh") <= not_after);
+    assert!(before + max_age(&r.cookies, "vtc_member_refresh") <= not_after);
 
     // The access token's own `exp` is clamped too, not just its cookie.
     let token = cookie_in(&r.cookies, "vtc_member_session").unwrap();
@@ -1834,7 +1839,10 @@ async fn a_member_refresh_after_the_end_is_refused() {
 #[tokio::test]
 async fn a_console_session_is_bounded_by_the_grants_not_after() {
     let f = fixture().await;
-    let not_after = now_epoch() + 600;
+    // Clock readings are taken before each request: a Max-Age counts from the
+    // server's clock, which is never earlier.
+    let start = now_epoch();
+    let not_after = start + 600;
     let (admin, done) = admin_signed_in_until(&f, "198.51.100.113", not_after).await;
     let refresh_cookie = vti_common::auth::extractor::ADMIN_REFRESH_COOKIE;
 
@@ -1842,23 +1850,23 @@ async fn a_console_session_is_bounded_by_the_grants_not_after() {
     assert_eq!(done.body["payload"]["notAfter"].as_u64(), Some(not_after));
     let row = session_row(&f.vtc.state.sessions_ks, &admin.did).await;
     assert_eq!(row.not_after, Some(not_after));
-    assert!(now_epoch() + max_age(&done.cookies, refresh_cookie) <= not_after);
+    assert!(start + max_age(&done.cookies, refresh_cookie) <= not_after);
 
     let mut refresh = cookie_in(&done.cookies, refresh_cookie)
         .unwrap()
         .to_string();
     for _ in 0..2 {
+        let before = now_epoch();
         let r = admin_refresh(&f, &refresh).await;
         assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-        let now = now_epoch();
         for name in ["vtc_admin_session", refresh_cookie, "csrf"] {
             assert!(
-                now + max_age(&r.cookies, name) <= not_after,
+                before + max_age(&r.cookies, name) <= not_after,
                 "{name} outlives the grant: {:?}",
                 r.cookies
             );
         }
-        assert!(now + r.body["tokens"]["refreshExpiresIn"].as_u64().unwrap() <= not_after);
+        assert!(before + r.body["tokens"]["refreshExpiresIn"].as_u64().unwrap() <= not_after);
         let row = session_row(&f.vtc.state.sessions_ks, &admin.did).await;
         assert_eq!(row.not_after, Some(not_after));
         assert!(row.refresh_expires_at.unwrap() <= not_after);

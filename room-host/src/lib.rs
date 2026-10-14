@@ -500,6 +500,7 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         files::BLOB_GET_TYPE => files::get(state, &doc, payload).await,
         files::DOWNLOAD_CHUNK_TYPE => files::download_chunk(state, &doc, payload).await,
         files::INFO_TYPE => files::info(state, &doc, payload).await,
+        files::USAGE_TYPE => files::usage(state, &doc, payload).await,
         other => reject(
             &doc,
             // The framework's own code for this: a host that does not implement a task
@@ -528,6 +529,7 @@ fn is_consequential(type_uri: &str) -> bool {
             | files::BLOB_GET_TYPE
             | files::DOWNLOAD_CHUNK_TYPE
             | files::INFO_TYPE
+            | files::USAGE_TYPE
             | files::GET_V2_TYPE
             | files::LIST_V2_TYPE
     )

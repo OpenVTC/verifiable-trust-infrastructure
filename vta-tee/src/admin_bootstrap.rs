@@ -130,9 +130,9 @@ pub async fn maybe_bootstrap_admin(
         );
     } else {
         // No admin_did configured — leave the first-boot carve-out OPEN.
-        // The operator completes the swap by running
-        // `pnm bootstrap connect --vta-url <URL>` against this VTA (no token),
-        // which triggers the Mode B attestation branch and closes the carve-out.
+        // The holder of `tee.bootstrap_claim_did` completes the swap with
+        // `pnm bootstrap connect --slug <slug>`, which triggers the Mode B
+        // attestation branch and closes the carve-out.
         info!(
             context_id,
             "no admin_did configured — first-boot carve-out remains open for \

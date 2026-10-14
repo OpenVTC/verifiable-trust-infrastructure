@@ -98,6 +98,21 @@ own `Cargo.toml`, each with a comment saying why: `vtc-service`, `vta-enclave`,
 | `vta-service` | **openvtc-core**, as a dev-dependency — `test_support::MockVta` |
 | the twelve subsystem crates | nothing directly; they are `vta-service`'s closure |
 
+### npm: `@openvtc/vti-rooms-wasm`
+
+`vti-rooms-wasm` is `publish = false` on crates.io and published to npm instead,
+for the wallet extension. release-plz does not publish it. A maintainer does,
+from `main`, when the extension needs a change in it:
+
+```sh
+scripts/build-rooms-wasm-npm.sh            # into target/npm/vti-rooms-wasm
+cd target/npm/vti-rooms-wasm && npm publish --access public
+```
+
+The npm version is the crate's `version`, so publishing again needs that to
+have moved. CI builds and packs the same package on every change to the crate
+(`Feature combos (vti-rooms)`), so what is published is what CI built.
+
 ### Why `vta-service` publishes again
 
 #938 unpublished it, and its eleven-plus-one closure, on the finding that

@@ -96,6 +96,7 @@ pub(crate) mod received;
 mod room_group;
 mod room_keys;
 mod room_owner;
+mod room_owner_group;
 mod seeds;
 // `operations::protocol` — every service operation these handlers call — is
 // `#[cfg(feature = "webvh")]`, because advertising a transport means editing
@@ -2674,6 +2675,13 @@ dispatch_table! {
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2 => room_owner::handle_issue_authority
         [ Mutating Metadata false ],
+    // Founding a room's group keeps everything inside this agent.
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_CREATE_0_1 => room_owner_group::handle_create
+        [ Mutating Metadata false ],
+    // `actsAsSubject`, like register: it advances the room at its host in the
+    // principal's name, presenting their `admin` authority.
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_1 => room_owner_group::handle_add
+        [ Mutating Metadata true ],
     // ─── Application-state slice (spec/vta/app-state/*) ──────────
     // Versioned, namespaced per-context JSON the VTA stores but never
     // interprets. Gated on context access (require_context), NOT operator

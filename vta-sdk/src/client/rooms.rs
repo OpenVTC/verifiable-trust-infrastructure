@@ -183,4 +183,79 @@ impl VtaClient {
             ))
         })
     }
+
+    /// `rooms/owner/group/create/0.1` — found a sealed room's group, with the owner as its
+    /// only member, in this VTA.
+    ///
+    /// `signing_key_id` is the room's signing key, as named to the issuance tasks: control
+    /// of it is the entitlement. `member` is the DID the owner's leaf identifies — the
+    /// subject of their room credentials — and defaults to the caller.
+    ///
+    /// Register the room with its host first: a refused registration then costs nothing
+    /// to retry, and the group starts at room epoch 1, which is what the host records.
+    pub async fn room_group_create(
+        &self,
+        room_id: &str,
+        signing_key_id: &str,
+        member: Option<&str>,
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::create::v0_1::Response, VtaError> {
+        let mut payload = json!({ "roomId": room_id, "signingKeyId": signing_key_id });
+        if let Some(m) = member {
+            payload["member"] = json!(m);
+        }
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_OWNER_GROUP_CREATE_0_1,
+                payload,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| {
+            VtaError::Protocol(format!(
+                "rooms/owner/group/create response does not match its schema: {e}"
+            ))
+        })
+    }
+
+    /// `rooms/owner/group/add/0.1` — admit `member` to a room's group from the KeyPackage
+    /// their key holder minted (base64url).
+    ///
+    /// The VTA advances the room's epoch at `host_did` first, and only then its own group.
+    /// The reply carries the **Welcome** (and, where the group needs it, the ratchet tree):
+    /// deliver both to the member's key holder with `rooms/keys/welcome`, never through the
+    /// host. The answer is the only copy of the Welcome, so call this inside
+    /// [`VtaClient::idempotent`]: the task is `Keyed`, and a retry carrying the same key
+    /// gets the first answer back instead of an `alreadyMember` refusal and a lost Welcome.
+    pub async fn room_group_add(
+        &self,
+        room_id: &str,
+        host_did: &str,
+        member: &str,
+        key_package: &str,
+        reason: Option<&str>,
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::add::v0_1::Response, VtaError> {
+        let mut payload = json!({
+            "roomId": room_id,
+            "host": host_did,
+            "member": member,
+            "keyPackage": key_package,
+        });
+        if let Some(r) = reason {
+            payload["reason"] = json!(r);
+        }
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_1,
+                payload,
+                // Two host round trips at most (an earlier admission settled, then the
+                // advance), each over whatever transport the host speaks.
+                ROOM_TT_TIMEOUT * 4,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| {
+            VtaError::Protocol(format!(
+                "rooms/owner/group/add response does not match its schema: {e}"
+            ))
+        })
+    }
 }

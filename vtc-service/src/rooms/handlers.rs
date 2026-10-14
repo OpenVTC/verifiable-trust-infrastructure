@@ -145,6 +145,7 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
         .on_async(super::files::handle_blob_get)
         .on_async(super::files::handle_download_chunk)
         .on_async(super::files::handle_info)
+        .on_async(super::files::handle_usage)
 }
 
 pub(super) fn presenter_and_verifier(

@@ -76,9 +76,9 @@ use crate::server::AppState;
 pub const PRESENTATION_LIFETIME: Duration = Duration::hours(4);
 
 /// The VC `type` tag a room's authority credential carries.
-const AUTHORITY_TYPE: &str = "AuthorityCredential";
+pub(crate) const AUTHORITY_TYPE: &str = "AuthorityCredential";
 /// The VC `type` tag a room's membership credential carries.
-const MEMBERSHIP_TYPE: &str = "MembershipCredential";
+pub(crate) const MEMBERSHIP_TYPE: &str = "MembershipCredential";
 
 /// What the oracle produces.
 #[derive(Debug, Clone, serde::Serialize)]

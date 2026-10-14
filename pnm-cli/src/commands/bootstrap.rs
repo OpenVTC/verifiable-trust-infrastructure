@@ -2,8 +2,8 @@
 //!
 //! Bootstrap is split across two main-loop phases:
 //!
-//! - [`run_offline`] handles `request`, `open`, `connect`, and
-//!   `provision-request` — none of which need an authenticated
+//! - [`run_offline`] handles `request`, `open`, `claim-did`, `connect`,
+//!   and `provision-request` — none of which need an authenticated
 //!   `VtaClient`. It returns `None` when the subcommand is the
 //!   authenticated `provision-integration`, signalling the caller
 //!   to fall through to the post-auth dispatch.
@@ -13,7 +13,8 @@
 use vta_sdk::client::VtaClient;
 
 use crate::bootstrap;
-use crate::cli::BootstrapCommands;
+use crate::bootstrap_claim;
+use crate::cli::{BootstrapCommands, ClaimDidCommands};
 use crate::config::PnmConfig;
 
 pub(crate) async fn run_offline(
@@ -40,6 +41,11 @@ pub(crate) async fn run_offline(
             )
             .await,
         ),
+        BootstrapCommands::ClaimDid { command } => Some(match command {
+            ClaimDidCommands::Create { slug } => bootstrap_claim::run_create(slug).await,
+            ClaimDidCommands::Show { slug } => bootstrap_claim::run_show(slug).await,
+            ClaimDidCommands::Discard { slug } => bootstrap_claim::run_discard(slug).await,
+        }),
         BootstrapCommands::Connect {
             vta_did,
             vta_url,
@@ -114,6 +120,7 @@ pub(crate) async fn run_authed(
         }
         BootstrapCommands::Request { .. }
         | BootstrapCommands::Open { .. }
+        | BootstrapCommands::ClaimDid { .. }
         | BootstrapCommands::Connect { .. }
         | BootstrapCommands::ProvisionRequest { .. } => unreachable!(
             "offline bootstrap subcommands run via run_offline; reaching run_authed is a bug"

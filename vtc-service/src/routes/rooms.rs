@@ -50,35 +50,45 @@ pub struct HostedRoom {
 
 /// `GET /v1/rooms` — every room this community hosts.
 pub(crate) async fn hosted_rooms(state: &AppState) -> Result<Vec<HostedRoom>, AppError> {
-    let now = std::time::SystemTime::now()
+    let now = now_secs();
+    let rooms = vti_rooms::storage::list_rooms(&state.rooms_ks).await?;
+    Ok(rooms.into_iter().map(|r| hosted(r, now)).collect())
+}
+
+/// One room this community hosts (`notFound` when it hosts no such room).
+pub(crate) async fn hosted_room(state: &AppState, room_id: &str) -> Result<HostedRoom, AppError> {
+    let room = vti_rooms::storage::get_room(&state.rooms_ks, room_id).await?;
+    Ok(hosted(room, now_secs()))
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
 
-    let rooms = vti_rooms::storage::list_rooms(&state.rooms_ks).await?;
-    Ok(rooms
-        .into_iter()
-        .map(|r| HostedRoom {
-            lifecycle: r.lifecycle(now).as_str().to_string(),
-            room_id: r.room_id,
-            owner_did: r.owner_did,
-            visibility: match r.visibility {
-                vti_rooms::Visibility::Open => "open",
-                vti_rooms::Visibility::Attributed => "attributed",
-                vti_rooms::Visibility::Private => "private",
-            }
-            .to_string(),
-            retention_policy: match r.retention_policy {
-                vti_rooms::RetentionPolicy::Chained => "chained",
-                vti_rooms::RetentionPolicy::FromJoin => "fromJoin",
-            }
-            .to_string(),
-            epoch: r.epoch,
-            epoch_expires_at: r.epoch_expires_at,
-            retention_days: r.retention_days,
-            mirror_of: r.mirror_of,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
-        })
-        .collect())
+fn hosted(r: vti_rooms::Room, now: u64) -> HostedRoom {
+    HostedRoom {
+        lifecycle: r.lifecycle(now).as_str().to_string(),
+        room_id: r.room_id,
+        owner_did: r.owner_did,
+        visibility: match r.visibility {
+            vti_rooms::Visibility::Open => "open",
+            vti_rooms::Visibility::Attributed => "attributed",
+            vti_rooms::Visibility::Private => "private",
+        }
+        .to_string(),
+        retention_policy: match r.retention_policy {
+            vti_rooms::RetentionPolicy::Chained => "chained",
+            vti_rooms::RetentionPolicy::FromJoin => "fromJoin",
+        }
+        .to_string(),
+        epoch: r.epoch,
+        epoch_expires_at: r.epoch_expires_at,
+        retention_days: r.retention_days,
+        mirror_of: r.mirror_of,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+    }
 }

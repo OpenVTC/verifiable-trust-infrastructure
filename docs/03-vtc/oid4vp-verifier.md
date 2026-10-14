@@ -80,7 +80,32 @@ becomes that context's primary DID, which is what `pnm keys bundle` exports.
    publishes more than one P-256 key, name the request-signing one with
    `--kid`.
 
-4. Start the VTC. Its log names the verifier identities it loaded.
+4. **Its trust statements.** Complete swiyu's trust onboarding for the DID
+   (the Service Portal), after which the trust registry publishes an
+   **Identity Trust Statement** about it. Fetch it, and any **Protected
+   Verification Authorization** statement you were granted, and install them,
+   still with the daemon stopped:
+
+   ```sh
+   curl -s https://trust-reg.trust-infra.swiyu-int.admin.ch/api/v2/identity-trust-statement/<did> > idts.jwt
+   vtc oid4vp trust-statement --identity swiyu --file idts.jwt
+   ```
+
+   Each is checked before it is stored: it must be a swiyu trust statement
+   about this identity's DID and not yet expired. Every request object then
+   carries them in `verifier_info` (Trust Protocol 2.0), the identity
+   statement first, which is where a wallet reads it. Installing a newer one
+   replaces the one of its kind; `vtc oid4vp list` shows each with its expiry.
+   An expired statement is left out of requests, with a warning in the log —
+   renew it before then. Without an identity statement the request still goes
+   out, and the wallet cannot say who is asking.
+
+   The VTC checks what the statement says, not who signed it: the wallet
+   verifies its signature against the trust registry, and so would refuse a
+   forged one. A Verification Query Public Statement is not accepted yet (see
+   *Not yet*).
+
+5. Start the VTC. Its log names the verifier identities it loaded.
 
 ## An EUDI identity
 
@@ -206,6 +231,32 @@ reachable for one to start.
 `vtc oid4vp remove --identity <name>` removes one. Installing again under the
 same name replaces it, certificate included.
 
+### Checking them from the console
+
+The console's **Community → Wallet verifier** page (for holders of
+`vtc.config.admin`, through the signed `vtc/oid4vp/identities/list/0.1`)
+shows each identity's `client_id`, where its key is held, its access
+certificate's validity, and each `verifier_info` attestation with its expiry.
+It also lists what is wrong, with the command that fixes each problem. A wallet
+that refuses a request object tells the community nothing, so this page is the
+place to find out.
+
+| Problem | Severity | Fix |
+|---|---|---|
+| Key record is invalid | error | `vtc oid4vp remove`, then install again |
+| Not loaded | error | the identity was installed after start: restart the VTC |
+| No link to the VTA | error | the VTA keeps the key and the VTC cannot reach it: check messaging, and `sign-jws` at the VTA |
+| No access certificate | error | `vtc oid4vp csr`, then `vtc oid4vp certificate` |
+| Certificate not yet valid / expired | error | `vtc oid4vp csr` for a new one |
+| Certificate expires soon | warning | the same, within 30 days of expiry |
+| No identity trust statement | warning | `vtc oid4vp trust-statement` |
+| Statement expired / expires soon | warning | `vtc oid4vp trust-statement` with a new one; an expired one is already left out of every request |
+| Default identity not installed | error | `[oid4vp] default_identity` names nothing usable; requests that name a prefix still work |
+| No https public URL | error | set `public_url`: wallets reach the VTC over https |
+
+An identity is **ready** when it has no problem, **needs attention** when it
+has only warnings, and **cannot open sessions** when it has an error.
+
 ## Wallet sessions
 
 With an identity installed, an applicant can collect evidence for a join
@@ -281,6 +332,64 @@ anchors to the issuers you mean: `any` admits every issuer whose credential
 verifies, DIDs included. The same anchors apply to a credential a member's
 agent presents on the credential-exchange path.
 
+To narrow one credential query to the issuers a particular authority
+certifies — the PID providers among several anchors, say — give it
+`trusted_authorities` of type `aki`, with the authority's key identifier
+(base64url) as the value:
+
+```json
+{
+  "id": "pid",
+  "format": "dc+sd-jwt",
+  "meta": { "vct_values": ["urn:eudi:pid:1"] },
+  "trusted_authorities": [{ "type": "aki", "values": ["s9tIpPmhxdiuNkHMEWNpYim8S8Y"] }]
+}
+```
+
+The wallet uses it to choose a credential, and the VTC holds it: a credential
+meets the query only if one of the values is the key identifier of a CA in its
+issuer's chain, up to and including the anchor. That chain must still end at a
+configured anchor; `trusted_authorities` narrows the anchors, never adds one. A
+DID issuer has no chain, so it meets no such query; a credential that fails one
+on a wallet session is refused `issuerNotTrusted`.
+
+Only `aki`, and only on a `dc+sd-jwt` query, is accepted. A criterion asking
+for `etsi_tl` or `openid_federation`, or with `trusted_authorities` on another
+format, is refused when registered, not published to the wallet and then
+ignored.
+
+### swiyu issuers
+
+A swiyu credential's issuer is a `did:webvh`, and the swiyu trust registry
+says which issuers are real: it publishes an **Identity Trust Statement**
+about each one it has onboarded. Tell the VTC to take issuer trust from it:
+
+```toml
+[oid4vp.swiyu_trust]
+registry_url = "https://trust-reg.trust-infra.swiyu-int.admin.ch"   # the Sandbox
+trust_anchor_did = "did:webvh:…:identifier-reg.trust-infra.swiyu-int.admin.ch:api:v1:did:…"
+```
+
+`trust_anchor_did` is the DID that signs the registry's trust statements; take
+it from swiyu's trust profile for the environment you join. A registry that
+is not `https`, or an anchor that is not a DID, stops the VTC at boot.
+
+An issuer then counts as one this community **recognises** when the registry
+serves a statement about it (`/api/v2/identity-trust-statement/{did}`) that:
+
+- is an identity trust statement, signed by a key of the trust anchor;
+- names the issuer's DID as its `sub`, and has not expired;
+- names a Token Status List the anchor also signed, whose entry is valid. A
+  statement with no status list is refused: whether it was withdrawn cannot be
+  known.
+
+So a criterion whose `credentialIssuers` is `recognised` admits swiyu
+issuers, and one asking for `community` still does not. The check runs on
+every presentation, as recognition through the community's own trust registry
+does, so a statement the registry withdraws stops counting at once. Any
+failure (unreachable registry, refused statement) is logged and the issuer is
+not recognised.
+
 ### What the evidence does for the join
 
 Wallet evidence counts toward the criterion its session was opened for, and no
@@ -333,6 +442,12 @@ verifier identities. `oid4vp_sessions` is not: a session lasts minutes.
 
 ## Not yet
 
-- swiyu trust statements in `verifier_info`, and swiyu's trusted issuers.
-- DCQL `trusted_authorities` in a criterion's query: anchors are configured per
-  community, not per credential query.
+- swiyu Verification Query Public Statements: one describes a single query,
+  and the swiyu Profile pairs it with `scope`, where the VTC sends each
+  criterion's DCQL query. Statements are installed by hand, not fetched and
+  renewed from the trust registry.
+- swiyu's finer issuer trust: the protected-issuance and non-compliance trust
+  lists, and which credential types a statement says an issuer may issue. An
+  issuer with a current identity trust statement is recognised for every type.
+- `trusted_authorities` of type `etsi_tl` or `openid_federation`: the VTC does
+  not read ETSI trusted lists or resolve OpenID Federation trust chains.

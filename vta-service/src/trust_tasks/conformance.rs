@@ -2939,6 +2939,31 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_OWNER_GROUP_CREATE_0_1,
+            checked!(
+                specs::rooms::owner::group::create::v0_1::Payload,
+                specs::rooms::owner::group::create::v0_1::Response,
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "signingKeyId": "room-northwind-signing" }),
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind", "epoch": 1 })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_OWNER_GROUP_ADD_0_1,
+            checked!(
+                specs::rooms::owner::group::add::v0_1::Payload,
+                specs::rooms::owner::group::add::v0_1::Response,
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "keyPackage": "AAEAAgADAAQ" }),
+                // The Welcome comes back to the caller, never through the host.
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "epoch": 2, "welcome": "AAEAAgADAAQ" })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
             checked!(
                 specs::rooms::owner::issue_membership::v0_1::Payload,

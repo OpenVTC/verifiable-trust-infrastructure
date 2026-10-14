@@ -16,6 +16,7 @@
 
 mod auth;
 mod bootstrap;
+mod bootstrap_claim;
 mod cli;
 mod commands;
 mod config;

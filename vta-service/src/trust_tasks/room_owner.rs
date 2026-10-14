@@ -427,10 +427,13 @@ async fn anchor_inner(
 /// then told about a room that already exists. A host that named the room would
 /// be a host the room could not leave.
 ///
-/// This signs as the **agent**, not as the room. A registration is a request to
-/// store something, authorised by the host's own creation policy against the
-/// party asking; signing as the room would claim the room is asking to be stored,
-/// which is neither true nor something the host can check.
+/// This signs as the **owner** — a DID this agent holds the key for, in a context
+/// the caller acts in ([`crate::operations::room_host::owner_signing_key`]) — not as
+/// the room and not as this agent. A host records as owner only the party whose
+/// proof is on the request (`vti_rooms::authz::authorize_create`), so a
+/// registration signed by this agent while naming someone else is refused by every
+/// host. Signing as the room would claim the room is asking to be stored, which is
+/// neither true nor something the host can check.
 pub(super) async fn handle_register(
     state: &AppState,
     auth: &AuthClaims,
@@ -454,18 +457,7 @@ pub(super) async fn handle_register(
             Err(resp) => return resp,
         };
 
-    let vta_did = match state.config.read().await.vta_did.clone() {
-        Some(d) => d,
-        None => {
-            return app_error_to_reject(
-                &doc,
-                vti_common::error::AppError::Validation(
-                    "this agent has no DID of its own, so it cannot speak to a host as itself"
-                        .into(),
-                ),
-            );
-        }
-    };
+    let vta_did = state.config.read().await.vta_did.clone();
     let Some(resolver) = state.did_resolver.clone() else {
         return app_error_to_reject(
             &doc,
@@ -492,16 +484,33 @@ pub(super) async fn handle_register(
         payload["retentionDays"] = serde_json::json!(u64::from(days));
     }
 
-    let key = format!("{vta_did}#key-0");
+    // Signed as the owner, not as this agent: `rooms/create` is issued by its Owner, and a
+    // host records as owner only the party whose proof is on the request. This is what
+    // `rooms/owner/register` means by the key holder speaking "as its principal".
+    let owner_key = match crate::operations::room_host::owner_signing_key(
+        crate::operations::room_host::OwnerKeyStores {
+            keys_ks: &state.keys_ks,
+            #[cfg(feature = "webvh")]
+            webvh_ks: &state.webvh_ks,
+        },
+        auth,
+        &owner_did,
+        vta_did.as_deref(),
+    )
+    .await
+    {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
     let reply = match crate::operations::room_host::send_room_task(
         signing_context(state, auth),
         &state.room_groups_ks,
         &req.room_id,
         &crate::operations::outbound::Outbound::from_app_state(state, &resolver),
         &req.host,
-        &key,
-        &vta_did,
-        &crate::operations::credentials::vta_signing_vm(&vta_did),
+        &owner_key.key_id,
+        &owner_did,
+        &owner_key.verification_method,
         vti_rooms::wire::ROOMS_CREATE_TYPE,
         &format!("{}#response", vti_rooms::wire::ROOMS_CREATE_TYPE),
         payload,

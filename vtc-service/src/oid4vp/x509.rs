@@ -313,6 +313,8 @@ pub fn issue_for_test_with(
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     // Without a crypto backend rcgen draws no serial number of its own.
     ca_params.serial_number = Some(rcgen::SerialNumber::from(u64::from(ca_seed) + 1));
+    // Nor does it hash a key identifier: without one, every identifier is empty.
+    ca_params.key_identifier_method = rcgen::KeyIdMethod::PreSpecified(vec![ca_seed; 20]);
     let ca_key = key(&ca_record);
     let ca = ca_params.self_signed(&ca_key).expect("CA certificate");
     let issuer = rcgen::Issuer::new(ca_params, ca_key);
@@ -324,6 +326,8 @@ pub fn issue_for_test_with(
         .distinguished_name
         .push(rcgen::DnType::CommonName, "Example community verifier");
     leaf_params.serial_number = Some(rcgen::SerialNumber::from(0x1000 + u64::from(ca_seed)));
+    // As a real one does: names its CA, which DCQL `trusted_authorities` reads.
+    leaf_params.use_authority_key_identifier_extension = true;
     let leaf = leaf_params
         .signed_by(&key(record), &issuer)
         .expect("access certificate");

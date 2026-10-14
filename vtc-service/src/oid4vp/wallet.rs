@@ -283,8 +283,18 @@ pub async fn start(
     );
     request.state = Some(wallet_state.clone());
     // What the identity's ecosystem has said about it — an EUDI registration
-    // certificate, which the wallet checks the requested claims against.
-    request.verifier_info = identity.verifier_info.clone();
+    // certificate, which the wallet checks the requested claims against, or
+    // swiyu trust statements. One that has expired is left out: the wallet
+    // would refuse it, and it says nothing a missing one does not.
+    request.verifier_info = identity.verifier_info.as_deref().and_then(|entries| {
+        let (kept, expired) = super::trust_statement::current(entries, now.timestamp());
+        for s in &expired {
+            warn!(identity = %identity.id, expired_at = %super::trust_statement::timestamp(s.exp),
+                "verifier identity's {} has expired and is left out of the request; install a \
+                 new one with `vtc oid4vp trust-statement`", s.kind.label());
+        }
+        (!kept.is_empty()).then_some(kept)
+    });
     request.iat = Some(now.timestamp());
     request.exp = Some(expires_at.timestamp());
     let jar = sign_request_object(&request, &identity, signer.as_ref()).await?;
@@ -551,9 +561,28 @@ async fn verify_answer(
         }
     }
 
-    // 6. The criterion's query, satisfied by what verified.
+    // 6. The criterion's query, satisfied by what verified — each credential
+    //    certified by an authority its query's `trusted_authorities` names,
+    //    which the matcher does not read.
     let query =
         DcqlQuery::from_json(&session.dcql_query).map_err(|e| invalid("stored query", &e))?;
+    for (query_id, _, p) in &verified {
+        let authorities = query
+            .credentials
+            .iter()
+            .find(|cq| cq.id == *query_id)
+            .and_then(|cq| cq.trusted_authorities.as_deref());
+        if let Some(authorities) = authorities
+            && !crate::join::criteria::meets_trusted_authorities(
+                authorities,
+                &p.issuer_authority_key_ids,
+            )
+        {
+            warn!(session = %session.id, issuer = %p.issuer_did,
+                "wallet response refused: no authority the query trusts certifies its issuer");
+            return Err(RefusalReason::IssuerNotTrusted);
+        }
+    }
     let mut answered: BTreeMap<String, Vec<CandidateCredential>> = BTreeMap::new();
     for (n, (query_id, format, p)) in verified.iter().enumerate() {
         answered
@@ -585,6 +614,7 @@ async fn verify_answer(
                 issuer: p.issuer_did,
                 vct: p.vct,
                 claims: p.claims,
+                issuer_authority_key_ids: p.issuer_authority_key_ids,
             })
             .collect(),
     })

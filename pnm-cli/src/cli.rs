@@ -564,6 +564,15 @@ pub(crate) enum RoomCommands {
         command: RoomFileCommands,
     },
 
+    /// The owner's half of a sealed room's group, held by your VTA.
+    ///
+    /// Your VTA founds the group, admits members to it, and advances the room's
+    /// epoch at its host. No group key leaves it.
+    Owner {
+        #[command(subcommand)]
+        command: RoomOwnerCommands,
+    },
+
     /// Register a room with a host.
     ///
     /// The only verb needing no presentation — the room has issued nothing yet,
@@ -728,6 +737,48 @@ pub(crate) enum ExternalCommands {
         object_key: Option<String>,
         #[arg(long, default_value_t = 900)]
         ttl: u32,
+    },
+}
+
+/// `pnm rooms owner …`.
+#[derive(Subcommand)]
+pub(crate) enum RoomOwnerCommands {
+    /// Found the room's group with you as its only member
+    /// (`rooms/owner/group/create`). Needed before anything is written to an
+    /// `attributed` or `private` room. Register the room first.
+    GroupCreate {
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room's signing key id, as printed when its DID was minted.
+        #[arg(long = "signing-key")]
+        signing_key: String,
+        /// The DID your leaf identifies — the subject of your room credentials.
+        /// Defaults to the DID this CLI authenticates as.
+        #[arg(long)]
+        member: Option<String>,
+    },
+    /// Admit a member from the KeyPackage their key holder minted
+    /// (`rooms/owner/group/add`). Your VTA advances the room at its host, then
+    /// writes the Welcome to `--out` for you to deliver to the member's key
+    /// holder (`rooms/keys/welcome`) — never through the host.
+    GroupAdd {
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room host's DID: where the epoch advances.
+        #[arg(long)]
+        host_did: String,
+        /// The DID being admitted.
+        #[arg(long)]
+        member: String,
+        /// The member's KeyPackage, base64url: a file, or `-` for stdin.
+        #[arg(long)]
+        key_package: String,
+        /// Why, carried to the host's epoch advance.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Where to write the Welcome (JSON: `welcome`, `ratchetTree`, `epoch`).
+        #[arg(long)]
+        out: std::path::PathBuf,
     },
 }
 
@@ -898,6 +949,26 @@ pub(crate) enum SetupCommands {
 }
 
 #[derive(Subcommand)]
+pub(crate) enum ClaimDidCommands {
+    /// Mint the claim DID and print it. Refuses if one already exists.
+    Create {
+        /// Slug the VTA will be registered under; pass the same one to connect.
+        #[arg(long)]
+        slug: String,
+    },
+    /// Print the claim DID for a slug.
+    Show {
+        #[arg(long)]
+        slug: String,
+    },
+    /// Remove the claim key, e.g. when its VTA was never created or is gone.
+    Discard {
+        #[arg(long)]
+        slug: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub(crate) enum BootstrapCommands {
     /// Generate an ephemeral keypair and emit a BootstrapRequest for the producer.
     ///
@@ -952,13 +1023,24 @@ pub(crate) enum BootstrapCommands {
         expect_vta_did: Option<String>,
     },
 
+    /// Manage the ephemeral DID that authorizes a TEE VTA's first-boot admin
+    /// claim.
+    ///
+    /// Create it before the VTA, supply the printed DID at VTA creation, then
+    /// run `connect` with the same `--slug`. The private key stays in the OS
+    /// keyring and is removed once the claim succeeds.
+    ClaimDid {
+        #[command(subcommand)]
+        command: ClaimDidCommands,
+    },
+
     /// One-command TEE first-boot bootstrap against a running VTA.
     ///
-    /// Generates an ephemeral keypair, POSTs to `/bootstrap/request`,
-    /// verifies the attestation quote, and installs the minted admin
-    /// credential. Only works against a fresh TEE VTA that has not yet
-    /// bootstrapped an admin — the carve-out closes permanently on first
-    /// success.
+    /// Signs the request with the claim DID created by `claim-did create`
+    /// for `--slug`, POSTs to `/bootstrap/request`, verifies the attestation
+    /// quote, and installs the minted admin credential. Only works against a
+    /// fresh TEE VTA that has not yet bootstrapped an admin — the carve-out
+    /// closes permanently on first success.
     ///
     /// For non-TEE VTAs use `pnm setup` (temp did:key + ACL grant +
     /// auto-rotate on first connect).
@@ -990,8 +1072,8 @@ pub(crate) enum BootstrapCommands {
         /// `--expect-pcr0`, but for the signing cert.
         #[arg(long)]
         expect_pcr8: Option<String>,
-        /// Slug to register this VTA under in pnm config (default: tail of the
-        /// VTA DID).
+        /// Slug to register this VTA under in pnm config; also selects the
+        /// claim DID (default: tail of the VTA DID). Required with --vta-url.
         #[arg(long)]
         slug: Option<String>,
     },

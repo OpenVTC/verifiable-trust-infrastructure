@@ -59,6 +59,7 @@
 // a different question, which is worse than not asking.
 
 import { useMemo, useState } from "react";
+import { Link, Route, Routes } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { DoorOpen, RefreshCw } from "lucide-react";
 
@@ -70,7 +71,11 @@ import { DataTable } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { PageHeader } from "@/components/PageHeader";
 import { useNameBook } from "@/lib/names";
-import type { HostedRoom, PolicyTestResponse } from "@/lib/wire-types";
+import { formatBytes } from "@/lib/rooms-api";
+import type { HostedRoom, PolicyTestResponse, RoomScopeLimits } from "@/lib/wire-types";
+
+import { RoomDetail } from "./rooms/RoomDetail";
+import { LifecyclePill, TIER_BLURB, TIERS, roomPath, type Tier } from "./rooms/shared";
 
 const TRUST_TASK_TEST = "https://trusttasks.org/spec/vtc/policies/test/0.1";
 /** `vtc/rooms/list/0.1` — under `vtc/`, not `rooms/`: it is answered from the
@@ -79,15 +84,6 @@ const TRUST_TASK_ROOMS_LIST = "https://trusttasks.org/spec/vtc/rooms/list/0.1";
 
 /** The query the real creation path evaluates. Anything else probes a different rule. */
 const DECISION_QUERY = "data.vtc.rooms.decision";
-
-const TIERS = ["open", "attributed", "private"] as const;
-type Tier = (typeof TIERS)[number];
-
-const TIER_BLURB: Record<Tier, string> = {
-  open: "Records are stored in the clear. This host can read every one of them.",
-  attributed: "Records are sealed, and this host sees who wrote which.",
-  private: "Records are sealed and this host cannot see the membership at all.",
-};
 
 /**
  * The rooms this community hosts.
@@ -98,19 +94,152 @@ const TIER_BLURB: Record<Tier, string> = {
  * the opposite question — what is this *operator* storing — from the host's
  * admin authority.
  */
-async function fetchRooms(): Promise<HostedRoom[]> {
+interface RoomsListing {
+  rooms: HostedRoom[];
+  /** Whether this community takes room files. `null` from a VTC too old to say. */
+  filesEnabled: boolean | null;
+  /** What its configuration holds every room to, when files are on. */
+  defaults: FileDefaults | null;
+}
+
+/** `ext["org.openvtc"].roomFiles` on `vtc/rooms/list`, when files are on: the
+ *  limits the configuration file sets, which a room's override or the rooms
+ *  policy may replace. */
+interface FileDefaults {
+  room: RoomScopeLimits;
+  member: RoomScopeLimits;
+  maxFileBytes: number;
+  storageCapacityBytes?: number;
+  orphanGraceHours?: number;
+}
+
+function defaultsOf(v: unknown): FileDefaults | null {
+  const f = v as {
+    defaults?: { room?: RoomScopeLimits; member?: RoomScopeLimits };
+    maxFileBytes?: unknown;
+    storageCapacityBytes?: unknown;
+    orphanGraceHours?: unknown;
+  } | null;
+  if (!f?.defaults || typeof f.maxFileBytes !== "number") return null;
+  return {
+    room: f.defaults.room ?? {},
+    member: f.defaults.member ?? {},
+    maxFileBytes: f.maxFileBytes,
+    ...(typeof f.storageCapacityBytes === "number"
+      ? { storageCapacityBytes: f.storageCapacityBytes }
+      : {}),
+    ...(typeof f.orphanGraceHours === "number" ? { orphanGraceHours: f.orphanGraceHours } : {}),
+  };
+}
+
+async function fetchRooms(): Promise<RoomsListing> {
   const rooms: HostedRoom[] = [];
+  let filesEnabled: boolean | null = null;
+  let defaults: FileDefaults | null = null;
   let cursor: string | null = null;
   for (let page = 0; page < 20; page++) {
-    const body: { items: HostedRoom[]; nextCursor?: string | null } = await postSignedRead(
-      TRUST_TASK_ROOMS_LIST,
-      { limit: 100, ...(cursor ? { cursor } : {}) },
-    );
+    const body: {
+      items: HostedRoom[];
+      nextCursor?: string | null;
+      ext?: { "org.openvtc"?: { roomFiles?: { enabled?: unknown } } };
+    } = await postSignedRead(TRUST_TASK_ROOMS_LIST, { limit: 100, ...(cursor ? { cursor } : {}) });
     rooms.push(...body.items);
+    const roomFiles = body.ext?.["org.openvtc"]?.roomFiles;
+    if (typeof roomFiles?.enabled === "boolean") filesEnabled = roomFiles.enabled;
+    defaults ??= defaultsOf(roomFiles);
     cursor = body.nextCursor ?? null;
     if (!cursor) break;
   }
-  return rooms;
+  return { rooms, filesEnabled, defaults };
+}
+
+/** What an operator adds to turn room files on. The paths are examples: absolute
+ *  directories on this host, writable by the VTC. */
+const ROOM_FILES_SNIPPET = `[rooms.files]
+local_storage_bases = ["/var/lib/vtc/room-storage"]
+blob_dir = "/var/lib/vtc/room-blobs"`;
+
+/**
+ * Room files are off: the configuration has no `[rooms.files]` section, which is
+ * every configuration written before files existed. Said here, with the section
+ * to add, rather than discovered as a refused upload.
+ */
+function RoomFilesOff() {
+  return (
+    <section className="card">
+      <h2>Room files are off</h2>
+      <p className="muted">
+        Rooms work without them — records are stored and served as before — but
+        members cannot add files. To let them, add a <code>[rooms.files]</code>{" "}
+        section to this VTC&rsquo;s configuration file and restart it:
+      </p>
+      <pre className="rooms-config-snippet">{ROOM_FILES_SNIPPET}</pre>
+      <p className="muted rooms-sub">
+        Use absolute paths on this host that the VTC can write to.{" "}
+        <code>blob_dir</code> is where files go at first; <code>local_storage_bases</code>{" "}
+        are the directories an administrator may later point a storage location
+        at. Files are encrypted by members before they arrive, so this host stores
+        ciphertext it cannot read. Neither directory is in a VTC backup: back them
+        up beside the data directory.
+      </p>
+    </section>
+  );
+}
+
+function limitsText(l: RoomScopeLimits): string {
+  const parts = [
+    l.maxFiles !== undefined ? `${l.maxFiles.toLocaleString()} files` : null,
+    l.maxBytes !== undefined ? `${formatBytes(l.maxBytes)} in all` : null,
+    l.maxFileBytes !== undefined ? `${formatBytes(l.maxFileBytes)} a file` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(", ") : "no limit";
+}
+
+/**
+ * What every room is held to unless the rooms policy or an override on the room
+ * says otherwise — the `[rooms.files]` section of the configuration file. Shown,
+ * not edited: it changes with the file and a restart, and saying where is more
+ * use than a form that could not save it.
+ */
+function FileDefaultsCard({ d }: { d: FileDefaults }) {
+  return (
+    <section className="card">
+      <h3>Defaults</h3>
+      <p className="muted">
+        What each room is held to unless the rooms policy or an override on the room
+        says otherwise. Change a single room from its own page; where its files go is
+        on the <Link to="/storage">Storage</Link> page.
+      </p>
+      <dl className="rooms-facts">
+        <dt>Each room</dt>
+        <dd>{limitsText(d.room)}</dd>
+        <dt>Each member, per room</dt>
+        <dd>
+          {limitsText(d.member)}
+          <div className="muted rooms-sub">Not applied on private rooms, whose members this host cannot tell apart.</div>
+        </dd>
+        <dt>Largest file anywhere</dt>
+        <dd>{formatBytes(d.maxFileBytes)}</dd>
+        {d.storageCapacityBytes !== undefined && (
+          <>
+            <dt>Storage capacity</dt>
+            <dd>{formatBytes(d.storageCapacityBytes)}</dd>
+          </>
+        )}
+        {d.orphanGraceHours !== undefined && (
+          <>
+            <dt>Deleted files kept for</dt>
+            <dd>{d.orphanGraceHours} hours, then removed from storage</dd>
+          </>
+        )}
+      </dl>
+      <p className="muted rooms-sub">
+        To change these, edit <code>[rooms.files]</code>, <code>[rooms.files.room]</code>{" "}
+        and <code>[rooms.files.member]</code> in this VTC&rsquo;s configuration file and
+        restart it.
+      </p>
+    </section>
+  );
 }
 
 /**
@@ -160,28 +289,6 @@ function pluckDecision(resp: PolicyTestResponse): Verdict | null {
   };
 }
 
-const LIFECYCLE_MEANS: Record<string, string> = {
-  live: "Renewed. Accepting writes.",
-  lapsed:
-    "The epoch expired, so the room is read-only. Nothing is destroyed or hidden, and one renewal returns it to live \u2014 often this is just somebody on holiday.",
-  dormant:
-    "Still unrenewed after the grace window. The owner is owed the notice, and a successor the room nominated may claim it from here.",
-  reclaimable:
-    "Past the retention period agreed at creation. The host may delete it; reads keep working until it does.",
-};
-
-function LifecyclePill({ value }: { value: string }) {
-  // `lapsed` must not read as a failure — the room is intact and one renewal
-  // fixes it. `reclaimable` is the only state where anything is at risk.
-  const tone =
-    value === "live" ? "success" : value === "reclaimable" ? "danger" : "warning";
-  return (
-    <span className={`chip ${tone}`} title={LIFECYCLE_MEANS[value] ?? value}>
-      {value}
-    </span>
-  );
-}
-
 function RoomsTable({ rooms }: { rooms: HostedRoom[] }) {
   const nameBook = useNameBook();
   return (
@@ -199,7 +306,9 @@ function RoomsTable({ rooms }: { rooms: HostedRoom[] }) {
       {rooms.map((r) => (
         <tr key={r.roomId}>
           <td>
-            <code title={r.roomId}>{shorten(r.roomId)}</code>
+            <Link to={roomPath(r.roomId)} title={r.roomId}>
+              <code>{shorten(r.roomId)}</code>
+            </Link>
             {r.mirrorOf && (
               <div className="muted rooms-sub">
                 read-only copy of {shorten(r.mirrorOf)}
@@ -366,8 +475,18 @@ function CreationPolicy() {
 }
 
 export function Rooms() {
+  return (
+    <Routes>
+      <Route index element={<RoomsList />} />
+      <Route path=":roomId" element={<RoomDetail />} />
+    </Routes>
+  );
+}
+
+function RoomsList() {
   const roomsQuery = useQuery({ queryKey: ["rooms"], queryFn: fetchRooms });
-  const rooms = roomsQuery.data ?? [];
+  const rooms = roomsQuery.data?.rooms ?? [];
+  const filesOff = roomsQuery.data?.filesEnabled === false;
 
   // Worth surfacing above the table: these two are the states that ask the
   // operator to do something, and they are invisible in a long list.
@@ -393,6 +512,8 @@ export function Rooms() {
           </>
         }
       />
+
+      {filesOff && <RoomFilesOff />}
 
       {roomsQuery.isPending && (
         <section className="card">
@@ -440,6 +561,8 @@ export function Rooms() {
           <RoomsTable rooms={rooms} />
         </section>
       )}
+
+      {roomsQuery.data?.defaults && <FileDefaultsCard d={roomsQuery.data.defaults} />}
 
       <CreationPolicy />
     </section>

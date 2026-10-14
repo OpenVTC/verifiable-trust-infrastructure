@@ -7,6 +7,8 @@ use affinidi_sd_jwt::error::SdJwtError;
 use affinidi_sd_jwt::hasher::Sha256Hasher;
 use affinidi_sd_jwt::signer::JwtVerifier;
 use affinidi_sd_jwt::verifier::{VerificationOptions, verify as verify_sd_jwt};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use vta_sdk::jws::{JwsKey, sd_jwt_issuer_method};
@@ -82,6 +84,11 @@ pub struct VerifiedPresentation {
     /// verifier that could never see the binding it is required to enforce.
     /// Resolved into a verdict by [`crate::credentials::task_context`].
     pub task_context: Option<String>,
+    /// For an issuer known by an `x5c` chain, the key identifiers of the
+    /// authorities certifying it, base64url — what a DCQL
+    /// `trusted_authorities` entry of type `aki` is matched against. Empty for
+    /// a DID issuer.
+    pub issuer_authority_key_ids: Vec<String>,
 }
 
 /// Read a credential's top-level `taskContext`.
@@ -266,6 +273,7 @@ pub async fn verify_presentation_with_anchors(
     } = parse_sd_jwt_presentation(compact)?;
 
     let hasher = Sha256Hasher;
+    let mut issuer_authority_key_ids = Vec::new();
     let key = match issuer_vm {
         Some(issuer_vm) => {
             let resolver = DidVmResolver::new(did_resolver.cloned());
@@ -276,13 +284,21 @@ pub async fn verify_presentation_with_anchors(
             JwsKey::from_resolved(&issuer_key)
                 .map_err(|e| AppError::Validation(format!("issuer key: {e}")))?
         }
-        None => vta_sdk::x509_issuer::x5c_issuer_key(
-            &issuer_header,
-            &issuer_did,
-            anchors,
-            now.timestamp(),
-        )
-        .map_err(|e| AppError::Validation(format!("issuer certificate: {e}")))?,
+        None => {
+            let issuer = vta_sdk::x509_issuer::x5c_issuer(
+                &issuer_header,
+                &issuer_did,
+                anchors,
+                now.timestamp(),
+            )
+            .map_err(|e| AppError::Validation(format!("issuer certificate: {e}")))?;
+            issuer_authority_key_ids = issuer
+                .authority_key_ids
+                .iter()
+                .map(|id| URL_SAFE_NO_PAD.encode(id))
+                .collect();
+            issuer.key
+        }
     };
     let issuer_verifier = KeyJwtVerifier { key };
 
@@ -326,6 +342,7 @@ pub async fn verify_presentation_with_anchors(
         claims: result.claims,
         credential_status,
         task_context,
+        issuer_authority_key_ids,
     })
 }
 
@@ -618,6 +635,7 @@ async fn verify_di_vp(
             claims: vc.get("credentialSubject").cloned().unwrap_or(Value::Null),
             credential_status,
             task_context,
+            issuer_authority_key_ids: Vec::new(),
         });
     }
     Ok(out)
@@ -827,5 +845,6 @@ async fn verify_bbs_presentation(
         claims: vc.get("credentialSubject").cloned().unwrap_or(Value::Null),
         credential_status,
         task_context,
+        issuer_authority_key_ids: Vec::new(),
     })
 }

@@ -842,6 +842,11 @@ pub enum AuditEvent {
     /// at another config (`vtc/rooms/storage/assign`). Never carries a
     /// credential.
     RoomStorageChanged(RoomStorageChangedData),
+
+    /// A room's file limits overridden or an override cleared
+    /// (`vtc/rooms/limits/set`): the room, the scope, what it was, what it is
+    /// now, and why. Sizes and counts only; never a file.
+    RoomLimitsChanged(RoomLimitsChangedData),
 }
 
 /// Payload for [`AuditEvent::RoomStorageChanged`].
@@ -864,6 +869,24 @@ pub struct RoomStorageChangedData {
     /// The administrators whose approvals executed it, when it was parked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub approvers: Vec<String>,
+    /// The requester's stated reason.
+    pub reason: String,
+}
+
+/// Payload for [`AuditEvent::RoomLimitsChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomLimitsChangedData {
+    pub room_id: String,
+    /// The `LimitTarget`: `{ kind, member? }`.
+    pub target: serde_json::Value,
+    /// The target's override before the change, and the room's `filesEnabled`
+    /// override on a `room` target. Absent when there was none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<serde_json::Value>,
+    /// The same after it; absent when the change cleared it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<serde_json::Value>,
     /// The requester's stated reason.
     pub reason: String,
 }
@@ -1074,6 +1097,7 @@ impl AuditEvent {
             Self::AclKeyRotated(..) => "AclKeyRotated",
             Self::CapabilityModuleChanged(..) => "CapabilityModuleChanged",
             Self::RoomStorageChanged(..) => "RoomStorageChanged",
+            Self::RoomLimitsChanged(..) => "RoomLimitsChanged",
         }
     }
 

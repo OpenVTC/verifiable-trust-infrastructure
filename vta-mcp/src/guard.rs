@@ -225,6 +225,12 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // secret leaves — the disclosure is the room's existence and who answers for
     // it — but it creates durable state at a third party.
     ("rooms/owner/register", Risk::Sensitive),
+    // The owner's half of a sealed room's group. `create` founds the key
+    // schedule every record will be sealed under; `add` admits a reader to all
+    // of it from now on and advances the room at its host. Both decide who can
+    // read the room — the same decision issuance makes, so the same tier.
+    ("rooms/owner/group/create", Risk::Sensitive),
+    ("rooms/owner/group/add", Risk::Sensitive),
     // The holder's own identity, emitted. `disclosure/present` is the one
     // persona task that hands claims to a named verifier, under a persona DID,
     // and writes the record saying it did. It sits beside `rooms/keys/present`

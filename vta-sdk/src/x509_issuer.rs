@@ -96,6 +96,31 @@ pub fn x5c_issuer_key(
     anchors: &X509TrustAnchors,
     now_unix: i64,
 ) -> Result<JwsKey, JwsError> {
+    x5c_issuer(header, iss, anchors, now_unix).map(|issuer| issuer.key)
+}
+
+/// An issuer known by an `x5c` chain that [`x5c_issuer`] accepted.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct X5cIssuer {
+    /// The leaf's key, which signs for the issuer.
+    pub key: JwsKey,
+    /// The key identifiers of the certification authorities above the leaf:
+    /// each certificate's `authorityKeyIdentifier`, the `subjectKeyIdentifier`
+    /// of each certificate above the leaf, and that of the anchor the chain
+    /// ends at. What a DCQL `trusted_authorities` entry of type `aki` names
+    /// (OpenID4VP 1.0 §6.1.1).
+    pub authority_key_ids: Vec<Vec<u8>>,
+}
+
+/// [`x5c_issuer_key`], also returning the key identifiers of the authorities
+/// that certify the issuer.
+pub fn x5c_issuer(
+    header: &Value,
+    iss: &str,
+    anchors: &X509TrustAnchors,
+    now_unix: i64,
+) -> Result<X5cIssuer, JwsError> {
     if anchors.is_empty() {
         return Err(refused(format!(
             "issuer `{iss}` is named by a certificate chain, and no X.509 trust anchors are \
@@ -161,12 +186,12 @@ pub fn x5c_issuer_key(
     // The chain ends at an anchor, or at a certificate an anchor signed.
     let last_index = chain.len() - 1;
     let last = &chain[last_index];
-    let anchored = anchors.certs.iter().any(|a| *a == ders[last_index])
-        || anchor_certs.iter().any(|a| {
-            a.validity().is_valid_at(at)
-                && last.issuer() == a.subject()
-                && last.verify_signature(Some(a.public_key())).is_ok()
-        });
+    let signing_anchor = anchor_certs.iter().find(|a| {
+        a.validity().is_valid_at(at)
+            && last.issuer() == a.subject()
+            && last.verify_signature(Some(a.public_key())).is_ok()
+    });
+    let anchored = anchors.certs.iter().any(|a| *a == ders[last_index]) || signing_anchor.is_some();
     if !anchored {
         return Err(refused(format!(
             "issuer `{iss}`'s certificate chain does not end at a configured trust anchor"
@@ -190,7 +215,26 @@ pub fn x5c_issuer_key(
             leaf.subject()
         )));
     }
-    spki_key(leaf.public_key())
+    let mut authority_key_ids: Vec<Vec<u8>> = Vec::new();
+    for (i, cert) in chain.iter().chain(signing_anchor).enumerate() {
+        for ext in cert.extensions() {
+            let id = match ext.parsed_extension() {
+                ParsedExtension::AuthorityKeyIdentifier(aki) => aki.key_identifier.as_ref(),
+                // The leaf's own key is the issuer's, not an authority's.
+                ParsedExtension::SubjectKeyIdentifier(ski) if i > 0 => Some(ski),
+                _ => None,
+            };
+            if let Some(id) = id
+                && !authority_key_ids.iter().any(|known| known == id.0)
+            {
+                authority_key_ids.push(id.0.to_vec());
+            }
+        }
+    }
+    Ok(X5cIssuer {
+        key: spki_key(leaf.public_key())?,
+        authority_key_ids,
+    })
 }
 
 fn is_ca(cert: &X509Certificate) -> bool {
@@ -320,6 +364,23 @@ pub(crate) mod test_chain {
         }
     }
 
+    /// An intermediate CA under `ca`.
+    pub fn intermediate(ca: &Ca, name: &str) -> Ca {
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, name);
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.use_authority_key_identifier_extension = true;
+        let cert = params.signed_by(&key, &ca.issuer).unwrap();
+        Ca {
+            pem: cert.pem(),
+            der: cert.der().to_vec(),
+            issuer: rcgen::Issuer::new(params, key),
+        }
+    }
+
     /// A leaf for `sans` (DNS names, or `https://` URIs) under `ca`: its DER
     /// and the key that signs with it.
     pub fn leaf(ca: &Ca, sans: &[&str], is_ca: bool) -> (Vec<u8>, rcgen::KeyPair) {
@@ -337,9 +398,13 @@ pub(crate) mod test_chain {
                     rcgen::SanType::DnsName((*san).try_into().unwrap())
                 });
         }
-        if is_ca {
-            params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        }
+        // Either way it carries a subjectKeyIdentifier, as a real one does.
+        params.is_ca = if is_ca {
+            rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained)
+        } else {
+            rcgen::IsCa::ExplicitNoCa
+        };
+        params.use_authority_key_identifier_extension = true;
         let cert = params.signed_by(&key, &ca.issuer).unwrap();
         (cert.der().to_vec(), key)
     }
@@ -407,6 +472,41 @@ mod tests {
 
     fn leaf_for(ca: &Ca, san: &str) -> (Vec<u8>, rcgen::KeyPair) {
         leaf(ca, &[san], false)
+    }
+
+    fn subject_key_id(der: &[u8]) -> Vec<u8> {
+        let (_, cert) = X509Certificate::from_der(der).unwrap();
+        cert.extensions()
+            .iter()
+            .find_map(|e| match e.parsed_extension() {
+                ParsedExtension::SubjectKeyIdentifier(ski) => Some(ski.0.to_vec()),
+                _ => None,
+            })
+            .expect("a subjectKeyIdentifier")
+    }
+
+    #[test]
+    fn the_authorities_are_the_cas_above_the_leaf_never_the_leaf() {
+        let ca = ca("Test PID CA");
+        let (direct, _) = leaf(&ca, &["pid.example.org"], false);
+        let anchors = X509TrustAnchors::from_pem(ca.pem.as_bytes()).unwrap();
+        let ca_id = subject_key_id(&ca.der);
+
+        // The anchor reached by signature, and the one carried in the chain.
+        for chain in [
+            vec![direct.as_slice()],
+            vec![direct.as_slice(), ca.der.as_slice()],
+        ] {
+            let got = x5c_issuer(&header(&chain), ISS, &anchors, now()).unwrap();
+            assert_eq!(got.authority_key_ids, vec![ca_id.clone()]);
+        }
+
+        // An intermediate: its own identifier and the root's, never the leaf's.
+        let mid = intermediate(&ca, "Test PID intermediate");
+        let (leaf2, _) = leaf(&mid, &["pid.example.org"], false);
+        let got = x5c_issuer(&header(&[&leaf2, &mid.der]), ISS, &anchors, now()).unwrap();
+        assert_eq!(got.authority_key_ids, vec![subject_key_id(&mid.der), ca_id]);
+        assert!(!got.authority_key_ids.contains(&subject_key_id(&leaf2)));
     }
 
     #[test]

@@ -83,6 +83,21 @@ pub mod codes {
     pub const UPDATE_UNKNOWN_ACCOUNT: &str = update::error_codes::UNKNOWN_ACCOUNT.code;
     pub const PROBE_CREDENTIAL_REQUIRED: &str = probe::error_codes::CREDENTIAL_REQUIRED.code;
     pub const ASSIGN_CREDENTIAL_REQUIRED: &str = assign::error_codes::CREDENTIAL_REQUIRED.code;
+
+    // What rooms store and may store (`vtc/rooms/{get,usage,limits/set}`).
+    use trust_tasks_rs::specs::vtc::rooms::{
+        get::v0_1 as room_get, limits::set::v0_1 as limits_set, usage::v0_1 as usage,
+    };
+    pub const ROOM_GET_NOT_FOUND: &str = room_get::error_codes::NOT_FOUND.code;
+    pub const USAGE_INVALID_RANGE: &str = usage::error_codes::INVALID_RANGE.code;
+    pub const USAGE_MEMBER_USAGE_UNAVAILABLE: &str =
+        usage::error_codes::MEMBER_USAGE_UNAVAILABLE.code;
+    pub const USAGE_INVALID_CURSOR: &str = usage::error_codes::INVALID_CURSOR.code;
+    pub const LIMITS_NOT_FOUND: &str = limits_set::error_codes::NOT_FOUND.code;
+    pub const LIMITS_ABOVE_CEILING: &str = limits_set::error_codes::ABOVE_CEILING.code;
+    pub const LIMITS_MEMBER_LIMITS_UNAVAILABLE: &str =
+        limits_set::error_codes::MEMBER_LIMITS_UNAVAILABLE.code;
+    pub const LIMITS_INVALID_COMBINATION: &str = limits_set::error_codes::INVALID_COMBINATION.code;
 }
 
 /// The config seeded from `[rooms.files] blob_dir` — the one every blob written before
@@ -231,7 +246,7 @@ impl RoomStorage {
     pub async fn open(
         ks: KeyspaceHandle,
         rooms_ks: &KeyspaceHandle,
-        seed_root: PathBuf,
+        seed_root: Option<PathBuf>,
         local_bases: Vec<PathBuf>,
         community_did: Option<&str>,
     ) -> Result<Arc<Self>, AppError> {
@@ -260,22 +275,27 @@ impl RoomStorage {
             write_lock: tokio::sync::Mutex::new(()),
         });
 
-        if this.configs().await?.is_empty() {
-            match community_did {
-                Some(did) => this.seed(&seed_root, did).await?,
+        match &seed_root {
+            // Room files are off: nothing to seed, and nothing to warn about.
+            None => {}
+            Some(seed_root) if this.configs().await?.is_empty() => match community_did {
+                Some(did) => this.seed(seed_root, did).await?,
                 None => tracing::warn!(
                     "no community DID yet: the `local` storage config is seeded once there is one"
                 ),
+            },
+            Some(seed_root) => {
+                if let Some(local) = this.config(SEED_CONFIG_ID).await?
+                    && local["settings"]["root"].as_str() != seed_root.to_str()
+                {
+                    tracing::warn!(
+                        stored = %local["settings"]["root"],
+                        configured = %seed_root.display(),
+                        "[rooms.files] blob_dir differs from the stored `local` config; the stored \
+                         config wins (it is changed with vtc/storage/configs/update)"
+                    );
+                }
             }
-        } else if let Some(local) = this.config(SEED_CONFIG_ID).await?
-            && local["settings"]["root"].as_str() != seed_root.to_str()
-        {
-            tracing::warn!(
-                stored = %local["settings"]["root"],
-                configured = %seed_root.display(),
-                "[rooms.files] blob_dir differs from the stored `local` config; the stored \
-                 config wins (it is changed with vtc/storage/configs/update)"
-            );
         }
 
         for record in this.configs().await? {
@@ -864,7 +884,7 @@ mod tests {
         RoomStorage::open(
             store.keyspace("storage_configs").unwrap(),
             &store.keyspace("rooms").unwrap(),
-            dir.join("room-blobs"),
+            Some(dir.join("room-blobs")),
             vec![dir.join("room-storage")],
             Some("did:key:zCommunity"),
         )

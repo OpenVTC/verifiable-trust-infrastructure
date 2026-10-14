@@ -547,14 +547,14 @@ pub async fn run(
     let room_storage = crate::rooms::files::open_room_storage(
         &store,
         &config.store.data_dir,
-        &config.rooms.files,
+        config.rooms.files.as_ref(),
         config.vtc_did.as_deref(),
     )
     .await?;
     let room_files = Arc::new(crate::rooms::files::open_blob_host(
         &store,
         &config.store.data_dir,
-        &config.rooms.files,
+        config.rooms.files.as_ref(),
         room_storage.clone(),
     )?);
     let audit_ks = store.keyspace(keyspaces::AUDIT)?;
@@ -609,7 +609,8 @@ pub async fn run(
     }
 
     // M2.10 + M2.11: provision the two BitstringStatusLists.
-    // Idempotent — only seeds decoys when the row is brand new.
+    // Idempotent — only seeds decoys when the row is brand new; an
+    // existing row is re-pointed if `public_url` has since changed.
     // Skipped when `public_url` is unset (pre-setup deployment) —
     // the status-list `list_credential_id` is baked into every
     // VMC's `credentialStatus.statusListCredential`, so we can't
@@ -699,6 +700,9 @@ pub async fn run(
         );
     }
     let x509_trust_anchors = Arc::new(load_x509_trust_anchors(&config.oid4vp.x509_trust_anchors)?);
+    if let Some(swiyu) = &config.oid4vp.swiyu_trust {
+        swiyu.check().map_err(AppError::Config)?;
+    }
     let (install_ks, passkey_ks, audit_key_ks) = match storage_key {
         Some(key) => {
             let n_install = install_ks.migrate_to_encrypted(key).await?;
@@ -1509,7 +1513,10 @@ pub async fn run(
     crate::rooms::files::spawn_sweeper(
         state.room_files.clone(),
         state.room_storage.clone(),
-        boot_cfg.rooms.files.sweep_interval_secs,
+        boot_cfg.rooms.files.as_ref().map_or_else(
+            || crate::config::RoomFilesConfig::default().sweep_interval_secs,
+            |f| f.sweep_interval_secs,
+        ),
         shutdown_rx.clone(),
     );
     crate::join::retention::RetentionSweeper::spawn(

@@ -312,7 +312,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
     let room_storage = vtc_service::rooms::files::open_room_storage(
         &store,
         dir.path(),
-        &Default::default(),
+        None,
         Some("did:key:zCommunity"),
     )
     .await
@@ -356,7 +356,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
             vtc_service::rooms::files::open_blob_host(
                 &store,
                 dir.path(),
-                &Default::default(),
+                None,
                 room_storage.clone(),
             )
             .unwrap(),

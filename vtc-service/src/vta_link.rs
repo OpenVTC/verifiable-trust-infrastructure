@@ -147,6 +147,18 @@ fn sign_jws_answer(reply: &TrustTask<Value>, key_id: &str) -> Result<String, App
 
 #[async_trait::async_trait]
 impl crate::oid4vp::VtaJwsSigner for VtaLink {
+    /// The messaging transport's own connection signal — the one
+    /// `vtc/registry/diagnostics` reports as `messagingStatus` — so a link
+    /// whose mediator socket dropped reads as down until it reconnects.
+    fn reachable(&self) -> bool {
+        self.peers.didcomm.get().is_some_and(|m| {
+            matches!(
+                m.service.status(),
+                affinidi_messaging_delivery::MessagingStatus::Connected
+            )
+        })
+    }
+
     async fn sign_jws(
         &self,
         key_id: &str,

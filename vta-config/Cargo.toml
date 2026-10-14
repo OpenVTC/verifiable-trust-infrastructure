@@ -23,7 +23,7 @@ repository.workspace = true
 default = []
 # TEE deployment config (`TeeConfig`, `TeeKmsConfig`, `TeeMode`, and the
 # `AppConfig.tee` field). Off by default; the enclave binary enables it.
-tee = []
+tee = ["dep:affinidi-crypto"]
 
 [dependencies]
 vti-common = { path = "../vti-common", version = "0.44" }
@@ -36,6 +36,8 @@ toml = { workspace = true }
 serde_ignored = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+# Validates `tee.bootstrap_claim_did` as an Ed25519 did:key (baked or overlay).
+affinidi-crypto = { workspace = true, optional = true }
 tracing = { workspace = true }
 ipnetwork = { workspace = true }
 

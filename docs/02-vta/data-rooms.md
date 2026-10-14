@@ -85,7 +85,7 @@ knowing which half you are standing on saves an afternoon.
 | Succession: nomination, transfer, claim | **Work**, including the "renewing defeats a pending claim" property |
 | **A CLI** | **`pnm rooms {create,list,get,put,curate,renew}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key. It carries **no owner verbs**, and `put` still refuses a sealed room even though `rooms/keys/seal/0.1` now seals one |
 | **Credential issuance** | **Works, on the owner's own VTA.** `rooms/owner/{invite,issue-membership,issue-authority}` mint the VIC, VMC and VAC in the *room's* name, signing through the gated key oracle so the room's key never materialises (§5.3). No `pnm` verbs and no `VtaClient` helpers yet: the operator surface is a wallet, or a Trust Task document you build yourself |
-| **The owner's MLS half** | **Library only.** `RoomGroup::{create,add_member}` — forming the group, and turning a joiner's KeyPackage into a Welcome + Commit — has no trust task and no CLI. Every *member*-side step is a task, so admitting someone to a **sealed** room is the one part of §6 that is still Rust |
+| **The owner's MLS half** | **Works, in the owner's VTA.** `rooms/owner/group/create` founds the group with the owner as its only member; `rooms/owner/group/add` admits a member's KeyPackage, advances the room's epoch at its host first, and returns the Welcome to deliver. `pnm rooms owner group-create` / `group-add` drive them (§5.4, §6). Removing a member is still library-only |
 | **A browser as a member** | **Works.** `vti-rooms-wasm` compiles the member half — group custody, sealing, opening, the epoch chain — to WebAssembly; `room-host --allow-origin` is what lets a page reach a host at all. No key ever crosses into JavaScript |
 | **Governance (`rooms.rego`)** | **On a VTC.** A community decides who may create a room on it, in Rego, with the shipped default hosting `open`/`attributed` for its own members. A standalone `room-host` has no policy engine — T1's governance is its owner (§8.4) |
 | **Read mirrors** (T3) | **`room-host --mirror-config`** — a host serves a read-only copy fed by `sinceVersion` pulls and refuses every write, naming the primary. A mirror pulls **as a member**, presenting a room-issued `read` chain |
@@ -235,6 +235,18 @@ version counter. **Sign this one as the owner**: creation is the single verb no
 chain can authorize, so the request's own proof is the check, and a signer who
 is not the `ownerDid` they name is refused (§8.4).
 
+**Through your VTA instead** — `rooms/owner/register/0.1`, for a surface that
+can reach its own agent and no host (a wallet extension, a phone): the VTA sends
+`rooms/create` for you, and **signs it as the owner**, which is what "the key
+holder speaks to the host as its principal" means. The owner (`ownerDid`, or you
+when it is absent) must be a DID the VTA holds the signing key for, in a context
+you act in: a `did:webvh` it minted for you (its key is found from the DID's own
+log, under `assertionMethod`), a `did:key` whose key it holds, or the VTA's own
+DID. Anything else is refused with `permissionDenied` and a message saying to
+name an `ownerDid` the VTA holds — a `pnm` session's `did:key`, whose key lives
+in your client, is not one. On a **VTC** the owner must also be a member of the
+community: its `rooms` policy decides creation against the party that signed.
+
 ### 5.3 Issue the owner's own credentials
 
 The room is now registered and **nobody can do anything in it**, including you.
@@ -306,20 +318,29 @@ ownership.
 
 ### 5.4 On a sealed tier, form the MLS group
 
-```rust
-use vti_rooms::mls::RoomGroup;
-use vti_rooms::sealed::SealedRoom;
+Your VTA founds the group, with you as its only member
+(`rooms/owner/group/create/0.1`):
 
-let group = RoomGroup::create(owner_did)?;      // one leaf: the owner's VTA
-let room  = SealedRoom::new(room_did, group);
+```bash
+pnm rooms owner group-create --room <room-did> --signing-key <key id from §5.1> \
+    [--member <your room DID>]
 ```
 
+The entitlement is the same as issuing the room's credentials: control of its
+signing key. `--member` is the DID your leaf identifies — the subject of your
+room credentials — and defaults to the DID `pnm` authenticates as. A VTA that
+already holds the room's group refuses (`alreadyExists`) rather than replacing
+the key schedule its sealed records depend on.
+
+Register the room first (§5.2): a refused registration then costs nothing to
+retry.
+
 **The room's epoch is the MLS epoch plus one** — MLS counts from 0, a room from
-1 — so a group you have just created is already at the epoch the host recorded
-when it registered the room, and nothing needs minting yet. Read it from
-`SealedRoom::room_epoch()` rather than computing it; an off-by-one here seals
-records under an epoch the host rejects, and the failure reads as a key problem
-rather than an arithmetic one.
+1 — so a group you have just founded is already at the epoch the host recorded
+when it registered the room, and nothing needs minting yet. The task answers
+`epoch: 1`; an off-by-one here would seal records under an epoch the host
+rejects, and the failure would read as a key problem rather than an arithmetic
+one.
 
 After that, every membership change moves the group and the number has to follow
 (§6, §10.1). The host never learns the key — minting an epoch is an `admin`
@@ -337,6 +358,7 @@ enforced, not ceremonial.
 ```mermaid
 sequenceDiagram
     participant O as Owner
+    participant OV as Owner's VTA
     participant M as Member's client
     participant V as Member's VTA
     participant H as Host
@@ -345,11 +367,13 @@ sequenceDiagram
     M->>V: rooms/keys/key-package + invitation
     V-->>M: KeyPackage (private half retained, 7 days)
     M->>O: KeyPackage
-    O->>O: group.add_member(kp) → Welcome + Commit
+    O->>OV: rooms/owner/group/add (kp)
+    OV->>H: rooms/epoch/mint (admin, link, commit)
+    H-->>OV: new epoch
+    OV-->>O: Welcome
     O->>M: Welcome
     M->>V: rooms/keys/welcome + invitation
     V-->>M: epoch (invitation now consumed)
-    O->>H: rooms/epoch/mint (admin)
     O->>M: VMC + VAC for the new member
 ```
 
@@ -364,18 +388,28 @@ Step by step:
    invitation required). Minting retains a private key against a Welcome that
    may never come, which is why it is not offered unconditionally; unused
    packages expire after 7 days.
-3. **The owner adds the leaf** — `RoomGroup::add_member(key_package)` produces a
-   Welcome and a Commit — and sends the Welcome to the joiner. **This step is
-   library-only**: no trust task, no CLI. On a sealed room the owner's half of a
-   join is Rust against `vti-rooms`, even though every step the joiner performs
-   is a task.
+3. **The owner's VTA admits the leaf** (`rooms/owner/group/add/0.1`):
+
+   ```bash
+   pnm rooms owner group-add --room <room-did> --host-did <host-did> \
+       --member <joiner-did> --key-package ./kp.b64 --out ./welcome.json
+   ```
+
+   It builds the commit and the Welcome, **advances the room's epoch at the
+   host first** (`rooms/epoch/mint`, with the epoch link and the commit, under
+   your `admin` grant), and only then moves its own group. A refusal leaves the
+   group where it was. An unanswered advance is kept pending and settled with
+   the host by the next admission, because the host may have taken it and a
+   key holder cannot process its own commit from the wire. Deliver
+   `welcome.json` to the joiner directly — **never through the host**, which
+   on a `private` room must not learn who joined.
 4. **The joiner's VTA processes it** (`rooms/keys/welcome/0.1`, same invitation).
    The invitation is consumed **after** the join succeeds, so a Welcome that
    failed to process does not strand the member with a spent invitation and no
    membership. Single use means single use, and the consumed record outlives
    leaving the room.
-5. **The owner mints the new epoch** on the host and **issues the member's VMC +
-   VAC**, which the member stores in their own VTA (§5.3).
+5. **The owner issues the member's VMC + VAC**, which the member stores in
+   their own VTA (§5.3). The epoch already advanced in step 3.
 
 Five checks stand behind the invitation, and none is optional: it parses as a
 DTG credential and is an invitation; its proof verifies; the issuer is *this*
@@ -518,17 +552,21 @@ community's ACL or a session.
   (where files are stored, below) are in `BACKED_UP`, so a community backup
   captures them. `room_blob_transfers` (uploads and downloads in flight) is
   not; a client resumes from `begin`.
-- **Room files are off until you turn them on.** A VTC accepts no uploads
-  unless its config says so:
+- **Room files are off until you add a `[rooms.files]` section.** A VTC with
+  no such section — every configuration written before room files existed —
+  starts as it always did: it creates no directory, seeds no storage config,
+  accepts no upload, and the console's Data rooms page shows the section to
+  add. Writing the section turns files on (`enabled = false` inside it keeps
+  the settings and refuses uploads):
 
   ```toml
   [rooms.files]
-  enabled = true
-  # blob_dir = "/var/lib/vtc/room-blobs"   # the seeded `local` config's root;
-  #                                        # default <store.data_dir>/room-blobs
-  # local_storage_bases = ["/srv/vtc-rooms"]  # where an administrator may place
-  #                                        # another local config; default
+  local_storage_bases = ["/var/lib/vtc/room-storage"]  # where an administrator
+  #                                        # may place a local config; default
   #                                        # <store.data_dir>/room-storage
+  blob_dir = "/var/lib/vtc/room-blobs"     # the seeded `local` config's root;
+  #                                        # default <store.data_dir>/room-blobs
+  # enabled = true                         # the default once the section exists
   # max_file_bytes = 104857600             # at most 1 GiB
   # storage_capacity_bytes = 107374182400
   # orphan_grace_hours = 168               # a released file is deleted after this
@@ -540,7 +578,8 @@ community's ACL or a session.
   # max_bytes = 1073741824                 #   defaults: 2 000 files, 1 GiB
   ```
 
-  With it off, a stored file is still served and records without files are
+  Prefer absolute paths; a relative one is resolved against the directory the
+  VTC runs in. With files off, a stored file is still served and records without files are
   unaffected; `begin` answers `filesDisabled`. **A VTC backup carries the index
   and never the bytes**: back up every local config's root beside the data
   directory.
@@ -593,6 +632,40 @@ community's ACL or a session.
      presigned request for a different bucket or endpoint than the config's is
      refused before it is sent. Through a VTA account, `prefix` is lowercase
      segments only, as the VTA's scope accepts.
+- **Usage and limits** (`data-rooms-files.md` §6.3). The VTC keeps one row per
+  room per UTC day (and one per member per room, on rooms that are not
+  `private`) for 400 days: space held at the day's close, uploads, downloads
+  begun and bytes served. A holder of `vtc.rooms.admin` reads them with
+  `vtc/rooms/usage/0.1` and one room in full with `vtc/rooms/get/0.1`, and
+  overrides a room's limits, its members' default or one member's with
+  `vtc/rooms/limits/set/0.1` (a reason is required and audited; it is not
+  parked, since an allowance can be reversed and loses nothing, and a lower
+  limit deletes nothing). A room's owner reads their room's figures per member
+  with `rooms/usage/0.1`. In the console:
+  - **Data rooms** lists the rooms; each opens its own page with its storage,
+    its limits and where each came from, per-member usage (not on `private`
+    rooms; members who added nothing are not listed, since the host never saw
+    them), and daily activity over 30, 90 or 365 days. Limits are changed and
+    uploads paused from there.
+  - **Room usage** groups the same figures by room, member, storage config or
+    day, lists rooms and configs past 80 %, 95 % or 100 % of a limit or of
+    capacity, and exports what it shows as CSV.
+
+  - **Storage** lists the storage configs with what each holds, its credential
+    state (never a credential) and its last probe; configs that need a
+    credential are listed first. Each config's page probes it, changes its
+    label, capacity or default, and retires it; **New storage** creates a
+    `local` or an `s3` (VTA account) config. A room's page sends its new
+    uploads to another config. Every one of those changes takes the
+    requester's passkey and is parked for another holder of
+    `vtc.rooms.admin`, as above.
+  - **Data rooms** also shows the defaults the `[rooms.files]` section sets —
+    each room's and each member's limits, the largest file, capacity and how
+    long a deleted file is kept — read from `vtc/rooms/list`'s
+    `ext["org.openvtc"].roomFiles` and changed only in the configuration file.
+
+  All of them need `vtc.rooms.admin`. None shows a record title, a file name or
+  a file's contents: the host has none of them.
 - **Audit**: room operations land in the VTC's hash-chained audit keyspace, with
   the same tier rule as above.
 - **Governance**: the `rooms` policy purpose (`vtc.rooms` package) decides who
@@ -739,7 +812,7 @@ author named, each chunk against the manifest, and the plaintext against the
 author's digest. A file's name comes from another member, so `get` writes it
 in the current directory under its last path component, never over an
 existing file. Files need a host that serves `rooms/records/put` 0.2:
-`room-host` does, and so does a VTC with `[rooms.files] enabled = true` (§8.2).
+`room-host` does, and so does a VTC with a `[rooms.files]` section (§8.2).
 
 One thing it cannot do: **issue credentials**. The owner's verbs (§5.3) are
 served by a VTA but reached from a wallet; the CLI has no `rooms owner …`
@@ -987,7 +1060,7 @@ holds the room's key:
 | `rooms/owner/invite/0.1` | a VIC — single-use consent to join | `credentialWrite` + control of the room's key |
 | `rooms/owner/issue-membership/0.1` | a VMC — the room's statement that a DID is a member | same |
 | `rooms/owner/issue-authority/0.1` | a VAC chain root; `validUntil` required | same |
-| `rooms/owner/register/0.1` | nothing — asks this VTA to call `rooms/create` on a host, signing **as the agent**, not as the room | same, plus a VTA DID and a resolver |
+| `rooms/owner/register/0.1` | nothing — asks this VTA to call `rooms/create` on a host, signing **as the owner** (a DID it holds the key for, in a context you act in), not as the room or the agent | same, plus a resolver |
 
 **Constants**
 

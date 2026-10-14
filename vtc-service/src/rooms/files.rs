@@ -9,7 +9,7 @@
 //! The VTC holds ciphertext only. A file's key is derived in the member's VTA and never
 //! reaches a host, and nothing here could use one.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -23,6 +23,7 @@ use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
 use trust_tasks_rs::specs::rooms::records::{
     get::v0_2 as get_v2, list::v0_2 as list_v2, put::v0_2 as put_v2,
 };
+use trust_tasks_rs::specs::rooms::usage::v0_1 as rooms_usage;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vti_common::error::AppError;
 use vti_common::store::Store;
@@ -45,45 +46,91 @@ use crate::trust_tasks::helpers::{
 /// seeded from `blob_dir` (default `<data_dir>/room-blobs`) on first start, and a
 /// `local` root may be placed only beneath `local_storage_bases` (default
 /// `<data_dir>/room-storage`).
+///
+/// With no `[rooms.files]` section (`None`) nothing is created or seeded: the registry
+/// is opened over whatever configs are already stored, and room files stay off. That is
+/// every configuration written before room files existed, and it must keep starting.
 pub async fn open_room_storage(
     store: &Store,
     data_dir: &Path,
-    config: &RoomFilesConfig,
+    config: Option<&RoomFilesConfig>,
     community_did: Option<&str>,
 ) -> Result<Arc<RoomStorage>, AppError> {
-    let seed_root = config
-        .blob_dir
-        .clone()
-        .unwrap_or_else(|| data_dir.join("room-blobs"));
+    let Some(config) = config else {
+        return RoomStorage::open(
+            store.keyspace(keyspaces::STORAGE_CONFIGS)?,
+            &store.keyspace(keyspaces::ROOMS)?,
+            None,
+            Vec::new(),
+            community_did,
+        )
+        .await;
+    };
+    // A storage config's `root` is absolute (`vtc/_shared/0.1/room-storage`), and a
+    // relative `[store] data_dir` is ordinary, so a root derived from it, or a
+    // `blob_dir` given relative, is resolved against the directory the store itself
+    // was opened from. Left relative, the seeded config fails its own schema check
+    // and the community does not start.
+    let cwd = std::env::current_dir().map_err(AppError::Io)?;
+    let seed_root = absolute_dir(
+        config
+            .blob_dir
+            .clone()
+            .unwrap_or_else(|| data_dir.join("room-blobs")),
+        &cwd,
+    )
+    .await?;
+    // Explicit bases stay as given: they must be absolute, and are refused otherwise.
     let bases = if config.local_storage_bases.is_empty() {
-        vec![data_dir.join("room-storage")]
+        vec![absolute_dir(data_dir.join("room-storage"), &cwd).await?]
     } else {
         config.local_storage_bases.clone()
     };
     RoomStorage::open(
         store.keyspace(keyspaces::STORAGE_CONFIGS)?,
         &store.keyspace(keyspaces::ROOMS)?,
-        seed_root,
+        Some(seed_root),
         bases,
         community_did,
     )
     .await
 }
 
+/// `path` as an absolute directory: unchanged when it already is one, and otherwise
+/// created beneath `cwd` and resolved, so it carries no `.` or `..`.
+async fn absolute_dir(path: PathBuf, cwd: &Path) -> Result<PathBuf, AppError> {
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    let joined = cwd.join(path);
+    tokio::fs::create_dir_all(&joined)
+        .await
+        .map_err(AppError::Io)?;
+    std::fs::canonicalize(&joined).map_err(AppError::Io)
+}
+
 /// Open the room-file host over this service's store, from `[rooms.files]`, storing
 /// committed blobs in the configs `storage` holds. Staging sits under the data directory.
+/// With no section, uploads are refused; files already stored are still served.
 pub fn open_blob_host(
     store: &Store,
     data_dir: &Path,
-    config: &RoomFilesConfig,
+    config: Option<&RoomFilesConfig>,
     storage: Arc<RoomStorage>,
 ) -> Result<BlobHost, AppError> {
+    let limits = match config {
+        Some(c) => c.limits(),
+        None => vti_rooms::blobs::HostLimits {
+            files_enabled: false,
+            ..RoomFilesConfig::default().limits()
+        },
+    };
     Ok(BlobHost::new(
         store.keyspace(keyspaces::ROOM_BLOBS)?,
         store.keyspace(keyspaces::ROOM_BLOB_TRANSFERS)?,
         data_dir.join("room-blob-staging"),
         storage,
-        config.limits(),
+        limits,
     ))
 }
 
@@ -335,13 +382,20 @@ pub(crate) async fn handle_blob_get(
         Ok(p) => p,
         Err(o) => return o,
     };
-    let (room, _authorized) = match authorize(&doc, &ctx, &payload, Action::Read).await {
+    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Read).await {
         Ok(r) => r,
         Err(o) => return o,
     };
     render(
         &doc,
-        blob_tasks::get(&ctx.state.room_files, &room, &ctx.presenter, &payload).await,
+        blob_tasks::get(
+            &ctx.state.room_files,
+            &room,
+            &ctx.presenter,
+            &authorized,
+            &payload,
+        )
+        .await,
     )
 }
 
@@ -357,6 +411,26 @@ pub(crate) async fn handle_download_chunk(
         ),
         Err(o) => o,
     }
+}
+
+/// `rooms/usage/0.1`. Needs `admin`: who is using the room's space is the owner's
+/// question, not a member's.
+pub(crate) async fn handle_usage(
+    doc: TrustTask<rooms_usage::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Admin).await {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    render(
+        &doc,
+        blob_tasks::usage(&ctx.state.room_files, &room, &authorized, &payload).await,
+    )
 }
 
 /// `rooms/info/0.1`. Needs `read`.
@@ -376,4 +450,106 @@ pub(crate) async fn handle_info(
         &doc,
         blob_tasks::info(&ctx.state.room_files, &room, &authorized, &payload).await,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// No `[rooms.files]` section — every configuration written before room files
+    /// existed — opens without touching the disk: no directory, no seeded config, and
+    /// uploads refused. Such a VTC must keep starting after an upgrade.
+    #[tokio::test]
+    async fn without_the_section_nothing_is_created_and_files_are_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&vti_common::config::StoreConfig {
+            data_dir: dir.path().join("store"),
+        })
+        .unwrap();
+        // A data directory that does not exist and cannot be created: anything that
+        // tried to make a directory beneath it would fail the open.
+        let unwritable = Path::new("/nonexistent/vtc-data");
+        let storage = open_room_storage(&store, unwritable, None, Some("did:key:zCommunity"))
+            .await
+            .expect("opens with room files off");
+        assert!(
+            storage.configs().await.unwrap().is_empty(),
+            "nothing seeded"
+        );
+        let host = open_blob_host(&store, unwritable, None, storage).unwrap();
+        assert!(!host.files_enabled());
+    }
+
+    /// A relative `[store] data_dir` is ordinary; the `local` config seeded from it
+    /// must still carry the absolute `root` the specification requires.
+    #[tokio::test]
+    async fn a_relative_blob_dir_is_resolved_against_the_working_directory() {
+        let cwd = tempfile::tempdir().unwrap();
+        let resolved = absolute_dir(PathBuf::from("data/vtc/room-blobs"), cwd.path())
+            .await
+            .unwrap();
+        assert!(resolved.is_absolute(), "{}", resolved.display());
+        assert_eq!(
+            resolved,
+            std::fs::canonicalize(cwd.path())
+                .unwrap()
+                .join("data/vtc/room-blobs")
+        );
+        assert!(resolved.is_dir());
+
+        let with_dots = absolute_dir(PathBuf::from("data/../data/./x"), cwd.path())
+            .await
+            .unwrap();
+        assert!(
+            !with_dots.components().any(|c| matches!(
+                c,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )),
+            "{}",
+            with_dots.display()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_absolute_blob_dir_is_kept_as_given() {
+        let p = PathBuf::from("/srv/vtc/room-blobs");
+        assert_eq!(
+            absolute_dir(p.clone(), Path::new("/elsewhere"))
+                .await
+                .unwrap(),
+            p
+        );
+    }
+
+    /// End to end: storage opened over a relative data directory seeds a config
+    /// that conforms, rather than refusing to start.
+    #[tokio::test]
+    async fn storage_opens_over_a_relative_data_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&vti_common::config::StoreConfig {
+            data_dir: dir.path().join("store"),
+        })
+        .unwrap();
+        // Relative to the test process's working directory, as an operator's
+        // `data_dir = "data"` is relative to theirs. Unique, and removed after.
+        let rel = PathBuf::from(format!("target/relative-data-{}", uuid::Uuid::new_v4()));
+        let storage = open_room_storage(
+            &store,
+            &rel,
+            Some(&RoomFilesConfig::default()),
+            Some("did:key:zCommunity"),
+        )
+        .await;
+        let _ = std::fs::remove_dir_all(&rel);
+        let storage = storage.expect("a relative data directory opens");
+        let local = storage
+            .config(super::super::storage_configs::SEED_CONFIG_ID)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            local["settings"]["root"].as_str().unwrap().starts_with('/'),
+            "{local}"
+        );
+    }
 }
