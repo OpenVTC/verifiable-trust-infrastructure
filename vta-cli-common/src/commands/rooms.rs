@@ -1102,6 +1102,40 @@ pub async fn cmd_rooms_owner_group_create(
     Ok(())
 }
 
+/// `rooms owner group-remove` — remove a member's leaf from a room's group
+/// (`rooms/owner/group/remove/0.1`), advancing the room at its host.
+pub async fn cmd_rooms_owner_group_remove(
+    client: &VtaClient,
+    room_id: &str,
+    host_did: &str,
+    member: &str,
+    reason: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Under one idempotency key, so a retry after a lost reply reports the removal that
+    // happened instead of `notMember`.
+    let resp = client
+        .idempotent(|| client.room_group_remove(room_id, host_did, member, reason))
+        .await
+        .map_err(|e| {
+            format!(
+                "{e}\n\n`epochConflict` means another admin advanced the room: catch up and \
+                 retry. `hostUnreachable` leaves the outcome unknown; running this again \
+                 settles it with the host before anything else. `ownLeaf` means {member} is \
+                 you: hand the room on with rooms/owner/transfer instead."
+            )
+        })?;
+    println!(
+        "Removed {member} from {room_id}; the room is now at epoch {}.",
+        resp.epoch
+    );
+    println!(
+        "  Nothing sealed from now on is readable to them. What they already read, and on a \
+         `chained` room the epochs they were in, stay theirs. Their authority credential is \
+         untouched: let it lapse, or issue none further."
+    );
+    Ok(())
+}
+
 /// `rooms owner group-add` — admit a member from their KeyPackage
 /// (`rooms/owner/group/add/0.1`) and write the Welcome to `out` for delivery.
 pub async fn cmd_rooms_owner_group_add(

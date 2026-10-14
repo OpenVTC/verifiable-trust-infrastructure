@@ -85,7 +85,7 @@ knowing which half you are standing on saves an afternoon.
 | Succession: nomination, transfer, claim | **Work**, including the "renewing defeats a pending claim" property |
 | **A CLI** | **`pnm rooms {create,list,get,put,curate,renew}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key. It carries **no owner verbs**, and `put` still refuses a sealed room even though `rooms/keys/seal/0.1` now seals one |
 | **Credential issuance** | **Works, on the owner's own VTA.** `rooms/owner/{invite,issue-membership,issue-authority}` mint the VIC, VMC and VAC in the *room's* name, signing through the gated key oracle so the room's key never materialises (§5.3). No `pnm` verbs and no `VtaClient` helpers yet: the operator surface is a wallet, or a Trust Task document you build yourself |
-| **The owner's MLS half** | **Works, in the owner's VTA.** `rooms/owner/group/create` founds the group with the owner as its only member; `rooms/owner/group/add` admits a member's KeyPackage, advances the room's epoch at its host first, and returns the Welcome to deliver. `pnm rooms owner group-create` / `group-add` drive them (§5.4, §6). Removing a member is still library-only |
+| **The owner's MLS half** | **Works, in the owner's VTA.** `rooms/owner/group/create` founds the group with the owner as its only member; `rooms/owner/group/add` admits a member's KeyPackage, advances the room's epoch at its host first, and returns the Welcome to deliver; `rooms/owner/group/remove` drops a member's leaf the same way, host first. `pnm rooms owner group-create` / `group-add` / `group-remove` drive them (§5.4, §6) |
 | **A browser as a member** | **Works.** `vti-rooms-wasm` compiles the member half — group custody, sealing, opening, the epoch chain — to WebAssembly; `room-host --allow-origin` is what lets a page reach a host at all. No key ever crosses into JavaScript |
 | **Governance (`rooms.rego`)** | **On a VTC.** A community decides who may create a room on it, in Rego, with the shipped default hosting `open`/`attributed` for its own members. A standalone `room-host` has no policy engine — T1's governance is its owner (§8.4) |
 | **Read mirrors** (T3) | **`room-host --mirror-config`** — a host serves a read-only copy fed by `sinceVersion` pulls and refuses every write, naming the primary. A mirror pulls **as a member**, presenting a room-issued `read` chain |
@@ -399,8 +399,8 @@ Step by step:
    host first** (`rooms/epoch/mint`, with the epoch link and the commit, under
    your `admin` grant), and only then moves its own group. A refusal leaves the
    group where it was. An unanswered advance is kept pending and settled with
-   the host by the next admission, because the host may have taken it and a
-   key holder cannot process its own commit from the wire. Deliver
+   the host by the next admission or removal, because the host may have taken
+   it and a key holder cannot process its own commit from the wire. Deliver
    `welcome.json` to the joiner directly — **never through the host**, which
    on a `private` room must not learn who joined.
 4. **The joiner's VTA processes it** (`rooms/keys/welcome/0.1`, same invitation).
@@ -442,6 +442,51 @@ Two error messages distinguish the cases, and they mean different things:
 |---|---|---|
 | *"a commit has not been delivered"* | the record is **newer** than this VTA's epoch | deliver the missing commit |
 | *"cannot reach … the epoch key chain reaches back only to N"* | the record is **older** than any key this VTA can derive | the links for that stretch never arrived, or the history was deliberately severed. Nothing recovers it locally |
+
+### Remove a member
+
+Removal is an epoch advance and nothing else is. A membership credential that
+lapses stops a member *presenting* it, but they still hold the keys to every
+epoch they were in; what stops them reading what is written next is a new epoch
+whose key they do not have. The owner's VTA does it
+(`rooms/owner/group/remove/0.1`):
+
+```bash
+pnm rooms owner group-remove --room <room-did> --host-did <host-did> \
+    --member <member-did> [--reason "left the deal team"]
+```
+
+It is the mirror of `group-add`, on the same machinery:
+
+- **Refused before anything is built** when the VTA holds no group
+  (`noGroup`), when `--member` has no leaf in it (`notMember`), and when
+  `--member` is the VTA's own leaf (`ownLeaf`) — a key holder does not remove
+  itself; an owner leaving hands the room on with `rooms/owner/transfer`.
+  Without your `admin` grant in the vault it is `noAuthority`.
+- **Host first.** The commit dropping the leaf, and the epoch link that keeps
+  the remaining members reading the past, are built on a copy and kept as the
+  room's pending advance; `rooms/epoch/mint` goes to the host; only an accepted
+  advance moves the VTA's own group. The host sees an epoch number, a link and
+  a commit — none of which it can read — so on a `private` room it does not
+  learn who left.
+- **A refusal** (`hostRefused`, or `epochConflict` carrying `hostEpoch` when
+  another admin advanced the room) leaves the group exactly where it was. **An
+  unanswered advance** (`hostUnreachable`) is kept, and the next admission or
+  removal asks the host its epoch (`rooms/info`) and applies it or discards it
+  first.
+- **One pending advance per room.** An admission and a removal share one slot,
+  so whichever is pending is settled before the other is built — removing a
+  member whose admission's answer was lost first applies the admission the host
+  took, then removes them.
+
+Every remaining member's VTA applies the commit (`rooms/keys/commit/0.1`) as
+for any other change; the host relays it (`rooms/epoch/commits`).
+
+**What removal does not do — say so wherever you offer it.** It recalls nothing
+the member already read, and on a `chained` room they keep reading the epochs
+they were in. It ends their access to what is written *from now on*. Their
+authority credential is untouched: let it lapse, or issue none further — until
+then they can still present it for whatever their old epochs' keys suffice for.
 
 ---
 

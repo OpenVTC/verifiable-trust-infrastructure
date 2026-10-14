@@ -258,4 +258,43 @@ impl VtaClient {
             ))
         })
     }
+
+    /// `rooms/owner/group/remove/0.1` — remove `member`'s leaf from a room's group, so
+    /// nothing sealed from then on is readable to them.
+    ///
+    /// The VTA advances the room's epoch at `host_did` first, and only then its own group.
+    /// It recalls nothing the member already read, and on a `chained` room they keep the
+    /// epochs they were in; their authority credential is untouched — let it lapse
+    /// separately. Call this inside [`VtaClient::idempotent`]: the task is `Keyed`, and a
+    /// retry after a lost reply gets the first answer back instead of a `notMember`
+    /// refusal that reads as though the wrong member had been named.
+    pub async fn room_group_remove(
+        &self,
+        room_id: &str,
+        host_did: &str,
+        member: &str,
+        reason: Option<&str>,
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::remove::v0_1::Response, VtaError> {
+        let mut payload = json!({
+            "roomId": room_id,
+            "host": host_did,
+            "member": member,
+        });
+        if let Some(r) = reason {
+            payload["reason"] = json!(r);
+        }
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
+                payload,
+                // As for add: an earlier advance settled, then this one.
+                ROOM_TT_TIMEOUT * 4,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| {
+            VtaError::Protocol(format!(
+                "rooms/owner/group/remove response does not match its schema: {e}"
+            ))
+        })
+    }
 }

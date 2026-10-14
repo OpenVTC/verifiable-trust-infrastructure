@@ -649,6 +649,12 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // the Welcome is sealed to the newcomer's KeyPackage and opens nothing for
     // anyone else, including whoever holds the cached copy.
     (trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_1, Keyed),
+    // `Keyed`, like add. A second execution after a lost reply is refused
+    // `notMember` — the removal happened, but the caller is told the member was
+    // never there, and an operator reading that may conclude the wrong person
+    // was named. Replaying the first answer reports what was done. Nothing in
+    // the answer is secret.
+    (trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1, Keyed),
     (trust_tasks::TASK_VTA_MEMORY_DELETE_0_1, RetrySafe),
     // ── Application state ───────────────────────────────────────────────
     //

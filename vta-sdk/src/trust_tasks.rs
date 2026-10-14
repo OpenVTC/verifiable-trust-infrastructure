@@ -1095,6 +1095,14 @@ pub const TASK_ROOMS_OWNER_GROUP_CREATE_0_1: &str =
 pub const TASK_ROOMS_OWNER_GROUP_ADD_0_1: &str =
     "https://trusttasks.org/spec/rooms/owner/group/add/0.1";
 
+/// `spec/rooms/owner/group/remove/0.1` — remove a member's leaf from a room's group:
+/// advance the room's epoch at its host first, then this agent's group, so nothing sealed
+/// from then on is readable to them. Recalls nothing they already read.
+/// Auth: `credentialWrite` capability, plus the caller's `admin` authority credential for
+/// the room in this agent's vault.
+pub const TASK_ROOMS_OWNER_GROUP_REMOVE_0_1: &str =
+    "https://trusttasks.org/spec/rooms/owner/group/remove/0.1";
+
 /// `spec/vta/memory/delete/0.1` — remove one entry by key (`not_found` if
 /// absent). Auth: context access. Payload:
 /// [`crate::protocols::memory::MemoryDeleteBody`].
@@ -2554,6 +2562,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,
     TASK_ROOMS_OWNER_GROUP_CREATE_0_1,
     TASK_ROOMS_OWNER_GROUP_ADD_0_1,
+    TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
     TASK_VTA_MEMORY_DELETE_0_1,
     // External accounts (`external/*`)
     TASK_EXTERNAL_ACCOUNTS_LIST_0_1,

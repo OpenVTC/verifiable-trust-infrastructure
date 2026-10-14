@@ -741,6 +741,9 @@ pub(crate) enum ExternalCommands {
 }
 
 /// `pnm rooms owner …`.
+// The shared `Group` prefix is the verb: clap derives `group-create`, `group-add` and
+// `group-remove` from these names, and the issuance verbs will sit beside them.
+#[allow(clippy::enum_variant_names)]
 #[derive(Subcommand)]
 pub(crate) enum RoomOwnerCommands {
     /// Found the room's group with you as its only member
@@ -779,6 +782,23 @@ pub(crate) enum RoomOwnerCommands {
         /// Where to write the Welcome (JSON: `welcome`, `ratchetTree`, `epoch`).
         #[arg(long)]
         out: std::path::PathBuf,
+    },
+    /// Remove a member from the room's group (`rooms/owner/group/remove`). Your
+    /// VTA advances the room at its host, then its own group: nothing sealed from
+    /// then on is readable to them. It recalls nothing they already read, and
+    /// does not touch their authority credential.
+    GroupRemove {
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room host's DID: where the epoch advances.
+        #[arg(long)]
+        host_did: String,
+        /// The DID being removed.
+        #[arg(long)]
+        member: String,
+        /// Why, carried to the host's epoch advance.
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 

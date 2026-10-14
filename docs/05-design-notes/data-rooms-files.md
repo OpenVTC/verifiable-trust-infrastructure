@@ -933,7 +933,7 @@ bump, per the workspace rule.
 | `vtc/storage/credentials/set/0.1` | new, VTC-only, for the discouraged `sealed` fallback. The payload is a `sealed_transfer` armor block; the response is the fingerprint. **No get or list task returns a value** |
 | `vtc/rooms/storage/{assign,migrate}/0.1` | new, VTC-only (§7.3) |
 | `vtc/storage/configs/probe/0.1` | new, VTC-only: put, get and delete a canary under a test prefix with the config's credentials |
-| `rooms/owner/group/{create,add,remove}/0.1` | new, on the owner's VTA (§11). `create` and `add` proposed in dtgwg-trust-tasks-tf#763, with `rooms/owner/register` clarified to sign `rooms/create` as the owner |
+| `rooms/owner/group/{create,add,remove}/0.1` | new, on the owner's VTA (§11), all three served. `create` and `add` proposed in dtgwg-trust-tasks-tf#763, with `rooms/owner/register` clarified to sign `rooms/create` as the owner; `remove` released with them in `trust-tasks-rs` 0.31.2 |
 | `vtc/rooms/community/{create,list,get}/0.1`, `vtc/rooms/community/members/{add,remove,list}/0.1` | new, VTC-only: community-owned rooms (§8.4), `vtc.rooms.manage` |
 | `vtc/rooms/offers/{list,accept}/0.1` | new, VTC-only, member audience: a member collects and accepts their admission to a community room (§8.4) |
 | the `external/*` family on the VTA | see [`vta-external-accounts.md`](vta-external-accounts.md) §11 |
@@ -963,7 +963,7 @@ on their own merit:
 
 | # | Phase | Size | Depends on |
 |---|---|---|---|
-| P0 | Owner MLS tasks + `pnm rooms owner …` + sealed `put` (§11). **In progress**: `rooms/owner/group/{create,add}` specified (dtgwg-trust-tasks-tf#763); `rooms/owner/register` signing `rooms/create` as the owner, so a community host accepts it | L | — |
+| P0 | Owner MLS tasks + `pnm rooms owner …` + sealed `put` (§11). **In progress**: `rooms/owner/group/{create,add,remove}` served on the owner's VTA (`add` and `remove` share one pending-advance slot per room, settled through `rooms/info`), with `pnm rooms owner group-{create,add,remove}`; `rooms/owner/register` signing `rooms/create` as the owner, so a community host accepts it. Sealed `put` follows | L | — |
 | P1 | Specs (§10) | M | — |
 | P2 | `vti-rooms::files`: KDF, STREAM, manifest; wasm build; test vectors | M | P1 |
 | P3 | `BlobStore` trait in `vti-common`; local, S3 and GCS via `object_store`; conformance suite | M | — |

@@ -84,6 +84,21 @@ pub(crate) async fn run(
                     )
                     .await
                 }
+                RoomOwnerCommands::GroupRemove {
+                    room_id,
+                    host_did,
+                    member,
+                    reason,
+                } => {
+                    rooms::cmd_rooms_owner_group_remove(
+                        client,
+                        &room_id,
+                        &host_did,
+                        &member,
+                        reason.as_deref(),
+                    )
+                    .await
+                }
             };
         }
         other => other,

@@ -231,6 +231,9 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // read the room — the same decision issuance makes, so the same tier.
     ("rooms/owner/group/create", Risk::Sensitive),
     ("rooms/owner/group/add", Risk::Sensitive),
+    // `remove` ends a member's reading from now on and advances the room at
+    // its host in the owner's name: the same decision, the other way.
+    ("rooms/owner/group/remove", Risk::Sensitive),
     // The holder's own identity, emitted. `disclosure/present` is the one
     // persona task that hands claims to a named verifier, under a persona DID,
     // and writes the record saying it did. It sits beside `rooms/keys/present`

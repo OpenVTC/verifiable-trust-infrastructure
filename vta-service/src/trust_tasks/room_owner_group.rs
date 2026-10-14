@@ -1,30 +1,39 @@
-//! The owner's half of a sealed room's MLS group — `rooms/owner/group/create/0.1` and
-//! `rooms/owner/group/add/0.1`.
+//! The owner's half of a sealed room's MLS group — `rooms/owner/group/create/0.1`,
+//! `rooms/owner/group/add/0.1` and `rooms/owner/group/remove/0.1`.
 //!
 //! Every member reaches a room's group by a Welcome (`rooms/keys/welcome`), except the
 //! owner, whom nobody can welcome: `create` founds the group with the owner as its only
 //! leaf. `add` admits a member — it builds the commit and the Welcome, advances the room's
-//! epoch at its host, and returns the Welcome for the caller to deliver.
+//! epoch at its host, and returns the Welcome for the caller to deliver. `remove` is its
+//! mirror: it drops a member's leaf and advances the room, so nothing sealed from then on
+//! is readable to them. It recalls nothing they already read, and on a `chained` room they
+//! keep the epochs they were in.
 //!
-//! # Remote first (`add` items 2–7)
+//! # Remote first (items 2–6 of `add` and `remove`)
 //!
-//! The host is advanced **before** this agent's own group, never after. The add is built
-//! on a copy and kept durably as a pending admission ([`room_groups::PendingAdd`]) while the
-//! live group stays where it is; `rooms/epoch/mint` goes to the host; only an accepted
-//! advance replaces the live group. A refusal discards the pending admission. An unknown
-//! outcome — a host that could not be reached, or an answer that could not be read — keeps
-//! it: the host may have accepted, and a key holder cannot process its own commit from the
-//! wire, so the pending group is the only way to follow it there. The next `add` for the
-//! room asks the host which epoch it is at and settles the pending admission first.
+//! The host is advanced **before** this agent's own group, never after. The change is
+//! built on a copy and kept durably as the room's one pending advance
+//! ([`room_groups::PendingAdvance`], an admission or a removal) while the live group stays
+//! where it is; `rooms/epoch/mint` goes to the host; only an accepted advance replaces the
+//! live group. A refusal discards the pending advance. An unknown outcome — a host that
+//! could not be reached, or an answer that could not be read — keeps it: the host may have
+//! accepted, and a key holder cannot process its own commit from the wire, so the pending
+//! group is the only way to follow it there. The next `add` or `remove` for the room asks
+//! the host which epoch it is at and settles the pending advance first, whichever kind it
+//! is: a room holds at most one.
 
 use serde_json::Value;
-use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::rooms::owner::group::{add as spec_add, create as spec_create};
+use trust_tasks_rs::specs::rooms::owner::group::{
+    add as spec_add, create as spec_create, remove as spec_remove,
+};
+use trust_tasks_rs::{DeclaredErrorCode, TrustTask};
 use vti_common::acl::Capability;
 use vti_common::error::AppError;
 
 use crate::auth::AuthClaims;
-use crate::operations::room_groups::{self, CreateGroupError, PrepareAddError, Reconciled};
+use crate::operations::room_groups::{
+    self, CreateGroupError, PendingAdvance, PrepareAddError, PrepareRemoveError, Reconciled,
+};
 use crate::operations::room_host::{RoomTaskError, send_room_task_typed};
 use crate::server::AppState;
 
@@ -111,6 +120,12 @@ pub(super) async fn handle_add(
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
     use spec_add::v0_1::error_codes as codes;
+    const ADVANCE: AdvanceCodes = AdvanceCodes {
+        no_authority: codes::NO_AUTHORITY,
+        epoch_conflict: codes::EPOCH_CONFLICT,
+        host_unreachable: codes::HOST_UNREACHABLE,
+        host_refused: codes::HOST_REFUSED,
+    };
     if let Err(r) = super::helpers::require_capability(
         state,
         auth,
@@ -130,20 +145,8 @@ pub(super) async fn handle_add(
     let host = req.host.as_str().to_string();
     let member = req.member.as_str().to_string();
 
-    if room_groups::load(&state.room_groups_ks, &room_id)
-        .await
-        .map(|g| g.is_none())
-        .unwrap_or(false)
-    {
-        return reject_with_code(
-            &doc,
-            declared(codes::NO_GROUP),
-            format!(
-                "this agent holds no group for room `{room_id}`: found one with \
-                 rooms/owner/group/create, or join by a Welcome"
-            ),
-            None,
-        );
+    if let Err(r) = require_group(state, &doc, &room_id, codes::NO_GROUP).await {
+        return r;
     }
 
     let (vta_did, resolver) = match outbound_identity(state, &doc).await {
@@ -158,75 +161,16 @@ pub(super) async fn handle_add(
         room_id: &room_id,
     };
 
-    // Item 6: an admission left pending by an earlier request is settled against the host
-    // before another is built. Its own host is asked — the one it was sent to.
-    match room_groups::pending_add(&state.room_groups_ks, &room_id).await {
-        Ok(Some(pending)) => {
-            let host_epoch = match host_call.epoch(&pending.host).await {
-                Ok(e) => e,
-                Err(e) => {
-                    return reject_with_code(
-                        &doc,
-                        declared(codes::HOST_UNREACHABLE),
-                        format!(
-                            "an earlier admission to room `{room_id}` is waiting on host `{}`, \
-                             and asking it which epoch it is at failed: {}",
-                            pending.host,
-                            e.into_app_error()
-                        ),
-                        None,
-                    );
-                }
-            };
-            match room_groups::reconcile_pending_add(
-                &state.room_groups_ks,
-                &room_id,
-                &pending,
-                host_epoch,
-                now(),
-            )
-            .await
-            {
-                Ok(Reconciled::Applied | Reconciled::Discarded) => {}
-                Ok(Reconciled::Conflict) => {
-                    return reject_with_code(
-                        &doc,
-                        declared(codes::EPOCH_CONFLICT),
-                        format!(
-                            "room `{room_id}` is at epoch {host_epoch} at its host, which this \
-                             agent's group has not reached; catch up with rooms/epoch/commits \
-                             and try again"
-                        ),
-                        Some(serde_json::json!({ "hostEpoch": host_epoch })),
-                    );
-                }
-                Err(e) => return app_error_to_reject(&doc, e),
-            }
-        }
-        Ok(None) => {}
-        Err(e) => return app_error_to_reject(&doc, e),
+    // Item 6: an advance left pending by an earlier request is settled first.
+    if let Err(r) = host_call.settle_pending(&doc, &ADVANCE).await {
+        return r;
     }
-
     // The owner's `admin` authority, minted before anything is built: a caller without it
     // learns so without leaving a pending admission behind.
-    let minted =
-        match crate::operations::room_oracle::present(state, auth, &vta_did, &room_id, "admin")
-            .await
-        {
-            Ok(m) => m,
-            Err(e @ (AppError::NotFound(_) | AppError::Forbidden(_) | AppError::Validation(_))) => {
-                return reject_with_code(
-                    &doc,
-                    declared(codes::NO_AUTHORITY),
-                    format!(
-                        "this agent holds no authority credential conferring `admin` on room \
-                     `{room_id}` for its caller, so it cannot advance the room's epoch: {e}"
-                    ),
-                    None,
-                );
-            }
-            Err(e) => return app_error_to_reject(&doc, e),
-        };
+    let presentation = match host_call.admin_presentation(&doc, &ADVANCE).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
 
     let key_package = match decode_b64(req.key_package.as_str()) {
         Ok(k) => k,
@@ -279,74 +223,19 @@ pub(super) async fn handle_add(
         Err(PrepareAddError::App(e)) => return app_error_to_reject(&doc, e),
     };
 
-    // Item 4: the advance, with the link and the commit, under the owner's authority.
-    let mut mint = serde_json::json!({
-        "roomId": room_id,
-        "epoch": pending.epoch,
-        "presentation": minted.presentation,
-        "commit": pending.commit,
-    });
-    if let Some(link) = &pending.link {
-        mint["link"] = serde_json::to_value(link).unwrap_or(Value::Null);
-    }
-    if let Some(reason) = &req.reason {
-        mint["reason"] = serde_json::json!(reason.as_str());
-    }
-    match host_call
-        .send(&host, vti_rooms::wire::ROOMS_EPOCH_MINT_TYPE, mint)
+    // Items 4 and 5.
+    if let Err(r) = host_call
+        .advance(
+            &doc,
+            &ADVANCE,
+            &host,
+            &pending,
+            presentation,
+            req.reason.as_ref().map(|r| r.as_str()),
+        )
         .await
     {
-        Ok(_) => {}
-        // Item 5: a refusal is the host's answer — the advance did not happen — so the
-        // pending admission is discarded and the live group never moved.
-        Err(RoomTaskError::Refused { code, reason, .. }) => {
-            if let Err(e) = room_groups::discard_pending_add(&state.room_groups_ks, &room_id).await
-            {
-                return app_error_to_reject(&doc, e);
-            }
-            if code == "rooms/epoch/mint:nonSequential" {
-                let host_epoch = host_call.epoch(&host).await.ok();
-                return reject_with_code(
-                    &doc,
-                    declared(codes::EPOCH_CONFLICT),
-                    format!(
-                        "host `{host}` is not at epoch {} for room `{room_id}`: another admin \
-                         advanced it. Catch up with rooms/epoch/commits and try again.",
-                        pending.epoch - 1
-                    ),
-                    host_epoch.map(|e| serde_json::json!({ "hostEpoch": e })),
-                );
-            }
-            return reject_with_code(
-                &doc,
-                declared(codes::HOST_REFUSED),
-                format!("host `{host}` declined to advance room `{room_id}`: {code}: {reason}"),
-                Some(serde_json::json!({ "code": code, "reason": reason })),
-            );
-        }
-        // An unknown outcome keeps the pending admission: the host may have accepted, and
-        // the next request settles it (item 6). Discarding here could strand this agent an
-        // epoch behind a room that did advance, with no way to follow.
-        Err(RoomTaskError::Unknown(e)) => {
-            return reject_with_code(
-                &doc,
-                declared(codes::HOST_UNREACHABLE),
-                format!(
-                    "the epoch advance for room `{room_id}` did not get an answer from host \
-                     `{host}`: {e}. Whether it took effect is unknown; the next admission to \
-                     this room settles it with the host first."
-                ),
-                None,
-            );
-        }
-    }
-
-    if let Err(e) =
-        room_groups::promote_pending_add(&state.room_groups_ks, &room_id, &pending, now()).await
-    {
-        // The host advanced and this agent could not record it. The pending row survives,
-        // and the next request promotes it (item 6), so this is a delay, not a loss.
-        return app_error_to_reject(&doc, e);
+        return r;
     }
 
     // The member's DID and the room, never the Welcome or the KeyPackage.
@@ -362,7 +251,173 @@ pub(super) async fn handle_add(
     )
 }
 
-/// What `add` needs to speak to a host as this agent.
+/// `rooms/owner/group/remove/0.1` — remove a member's leaf, advancing the room at its host
+/// first. The mirror of [`handle_add`], on the same machinery.
+pub(super) async fn handle_remove(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec_remove::v0_1::error_codes as codes;
+    const ADVANCE: AdvanceCodes = AdvanceCodes {
+        no_authority: codes::NO_AUTHORITY,
+        epoch_conflict: codes::EPOCH_CONFLICT,
+        host_unreachable: codes::HOST_UNREACHABLE,
+        host_refused: codes::HOST_REFUSED,
+    };
+    if let Err(r) = super::helpers::require_capability(
+        state,
+        auth,
+        &doc,
+        Capability::CredentialWrite,
+        "removing a member from a room's group",
+    )
+    .await
+    {
+        return r;
+    }
+    let req: spec_remove::v0_1::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let room_id = req.room_id.as_str().to_string();
+    let host = req.host.as_str().to_string();
+    let member = req.member.as_str().to_string();
+
+    // Item 1, the parts that need nobody else: no group, and this agent's own leaf. A key
+    // holder never removes itself — an owner leaving hands the room on with
+    // rooms/owner/transfer — and that answer does not wait on a host.
+    if let Err(r) = require_group(state, &doc, &room_id, codes::NO_GROUP).await {
+        return r;
+    }
+    match room_groups::is_own_leaf(&state.room_groups_ks, &room_id, &member).await {
+        Ok(true) => return own_leaf(&doc, &room_id, &member),
+        Ok(false) => {}
+        Err(e) => return app_error_to_reject(&doc, e),
+    }
+
+    let (vta_did, resolver) = match outbound_identity(state, &doc).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let host_call = HostCall {
+        state,
+        auth,
+        vta_did: &vta_did,
+        resolver: &resolver,
+        room_id: &room_id,
+    };
+
+    // Item 3/6: a pending advance — an admission as readily as a removal — is settled
+    // before this one is built. Membership is read after it, so removing a member whose
+    // admission was pending sees the admission the host actually took.
+    if let Err(r) = host_call.settle_pending(&doc, &ADVANCE).await {
+        return r;
+    }
+    let presentation = match host_call.admin_presentation(&doc, &ADVANCE).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // Items 1 to 3: refused, or built on a copy and retained durably before the host is
+    // contacted.
+    let pending =
+        match room_groups::prepare_remove(&state.room_groups_ks, &room_id, &host, &member, now())
+            .await
+        {
+            Ok(p) => p,
+            Err(PrepareRemoveError::NoGroup) => {
+                return reject_with_code(
+                    &doc,
+                    declared(codes::NO_GROUP),
+                    format!("this agent holds no group for room `{room_id}`"),
+                    None,
+                );
+            }
+            Err(PrepareRemoveError::NotMember) => {
+                return reject_with_code(
+                    &doc,
+                    declared(codes::NOT_MEMBER),
+                    format!("`{member}` has no leaf in room `{room_id}`'s group"),
+                    None,
+                );
+            }
+            Err(PrepareRemoveError::OwnLeaf) => return own_leaf(&doc, &room_id, &member),
+            Err(PrepareRemoveError::App(e)) => return app_error_to_reject(&doc, e),
+        };
+
+    // Items 4 and 5.
+    if let Err(r) = host_call
+        .advance(
+            &doc,
+            &ADVANCE,
+            &host,
+            &pending,
+            presentation,
+            req.reason.as_ref().map(|r| r.as_str()),
+        )
+        .await
+    {
+        return r;
+    }
+
+    // The room only. The audit row is this agent's; who left is the owner's business and
+    // the host never learns it either (it sees an opaque commit).
+    record(state, "rooms.owner.group.remove", auth, &room_id).await;
+    success_response(
+        &doc,
+        serde_json::json!({
+            "roomId": room_id,
+            "member": member,
+            "epoch": pending.epoch,
+        }),
+    )
+}
+
+fn own_leaf(doc: &TrustTask<Value>, room_id: &str, member: &str) -> TrustTaskOutcome {
+    reject_with_code(
+        doc,
+        declared(spec_remove::v0_1::error_codes::OWN_LEAF),
+        format!(
+            "`{member}` is this agent's own leaf in room `{room_id}`'s group; a key holder \
+             does not remove itself — hand the room on with rooms/owner/transfer"
+        ),
+        None,
+    )
+}
+
+/// `noGroup` unless this agent holds the room's group.
+async fn require_group(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    room_id: &str,
+    no_group: DeclaredErrorCode,
+) -> Result<(), TrustTaskOutcome> {
+    match room_groups::load(&state.room_groups_ks, room_id).await {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(reject_with_code(
+            doc,
+            declared(no_group),
+            format!(
+                "this agent holds no group for room `{room_id}`: found one with \
+                 rooms/owner/group/create, or join by a Welcome"
+            ),
+            None,
+        )),
+        Err(e) => Err(app_error_to_reject(doc, e)),
+    }
+}
+
+/// The codes an epoch advance answers with, in the namespace of the task that asked for
+/// it. `add` and `remove` declare the same four, each under its own slug.
+struct AdvanceCodes {
+    no_authority: DeclaredErrorCode,
+    epoch_conflict: DeclaredErrorCode,
+    host_unreachable: DeclaredErrorCode,
+    host_refused: DeclaredErrorCode,
+}
+
+/// What `add` and `remove` need to speak to a host as this agent.
 struct HostCall<'a> {
     state: &'a AppState,
     auth: &'a AuthClaims,
@@ -418,6 +473,171 @@ impl HostCall<'_> {
                 )))
             })
     }
+
+    /// Item 6: settle the room's pending advance, if it has one, against the host it was
+    /// sent to — whichever kind it is, so an admission found at a removal is settled as
+    /// surely as a removal found at an admission.
+    async fn settle_pending(
+        &self,
+        doc: &TrustTask<Value>,
+        codes: &AdvanceCodes,
+    ) -> Result<(), TrustTaskOutcome> {
+        let room_id = self.room_id;
+        let pending = match room_groups::pending_advance(&self.state.room_groups_ks, room_id).await
+        {
+            Ok(Some(p)) => p,
+            Ok(None) => return Ok(()),
+            Err(e) => return Err(app_error_to_reject(doc, e)),
+        };
+        let host_epoch = self.epoch(&pending.host).await.map_err(|e| {
+            reject_with_code(
+                doc,
+                declared(codes.host_unreachable),
+                format!(
+                    "an earlier {} in room `{room_id}` is waiting on host `{}`, and asking it \
+                     which epoch it is at failed: {}",
+                    pending.kind.noun(),
+                    pending.host,
+                    e.into_app_error()
+                ),
+                None,
+            )
+        })?;
+        match room_groups::reconcile_pending_advance(
+            &self.state.room_groups_ks,
+            room_id,
+            &pending,
+            host_epoch,
+            now(),
+        )
+        .await
+        {
+            Ok(Reconciled::Applied | Reconciled::Discarded) => Ok(()),
+            Ok(Reconciled::Conflict) => Err(reject_with_code(
+                doc,
+                declared(codes.epoch_conflict),
+                format!(
+                    "room `{room_id}` is at epoch {host_epoch} at its host, which this agent's \
+                     group has not reached; catch up with rooms/epoch/commits and try again"
+                ),
+                Some(serde_json::json!({ "hostEpoch": host_epoch })),
+            )),
+            Err(e) => Err(app_error_to_reject(doc, e)),
+        }
+    }
+
+    /// The caller's `admin` presentation for the room, or `noAuthority`.
+    async fn admin_presentation(
+        &self,
+        doc: &TrustTask<Value>,
+        codes: &AdvanceCodes,
+    ) -> Result<Value, TrustTaskOutcome> {
+        let room_id = self.room_id;
+        match crate::operations::room_oracle::present(
+            self.state,
+            self.auth,
+            self.vta_did,
+            room_id,
+            "admin",
+        )
+        .await
+        {
+            Ok(m) => Ok(m.presentation),
+            Err(e @ (AppError::NotFound(_) | AppError::Forbidden(_) | AppError::Validation(_))) => {
+                Err(reject_with_code(
+                    doc,
+                    declared(codes.no_authority),
+                    format!(
+                        "this agent holds no authority credential conferring `admin` on room \
+                         `{room_id}` for its caller, so it cannot advance the room's epoch: {e}"
+                    ),
+                    None,
+                ))
+            }
+            Err(e) => Err(app_error_to_reject(doc, e)),
+        }
+    }
+
+    /// Items 4 and 5: advance the room at `host` with `rooms/epoch/mint`, then follow the
+    /// host's answer — promote the pending advance on acceptance, discard it on refusal,
+    /// keep it on an unknown outcome.
+    async fn advance(
+        &self,
+        doc: &TrustTask<Value>,
+        codes: &AdvanceCodes,
+        host: &str,
+        pending: &PendingAdvance,
+        presentation: Value,
+        reason: Option<&str>,
+    ) -> Result<(), TrustTaskOutcome> {
+        let room_id = self.room_id;
+        let groups = &self.state.room_groups_ks;
+        let mut mint = serde_json::json!({
+            "roomId": room_id,
+            "epoch": pending.epoch,
+            "presentation": presentation,
+            "commit": pending.commit,
+        });
+        if let Some(link) = &pending.link {
+            mint["link"] = serde_json::to_value(link).unwrap_or(Value::Null);
+        }
+        if let Some(reason) = reason {
+            mint["reason"] = serde_json::json!(reason);
+        }
+        match self
+            .send(host, vti_rooms::wire::ROOMS_EPOCH_MINT_TYPE, mint)
+            .await
+        {
+            Ok(_) => {}
+            // A refusal is the host's answer — the advance did not happen — so the pending
+            // advance is discarded and the live group never moved.
+            Err(RoomTaskError::Refused { code, reason, .. }) => {
+                if let Err(e) = room_groups::discard_pending_advance(groups, room_id).await {
+                    return Err(app_error_to_reject(doc, e));
+                }
+                if code == "rooms/epoch/mint:nonSequential" {
+                    let host_epoch = self.epoch(host).await.ok();
+                    return Err(reject_with_code(
+                        doc,
+                        declared(codes.epoch_conflict),
+                        format!(
+                            "host `{host}` is not at epoch {} for room `{room_id}`: another \
+                             admin advanced it. Catch up with rooms/epoch/commits and try again.",
+                            pending.epoch - 1
+                        ),
+                        host_epoch.map(|e| serde_json::json!({ "hostEpoch": e })),
+                    ));
+                }
+                return Err(reject_with_code(
+                    doc,
+                    declared(codes.host_refused),
+                    format!("host `{host}` declined to advance room `{room_id}`: {code}: {reason}"),
+                    Some(serde_json::json!({ "code": code, "reason": reason })),
+                ));
+            }
+            // An unknown outcome keeps the pending advance: the host may have accepted, and
+            // the next request settles it (item 6). Discarding here could strand this agent
+            // an epoch behind a room that did advance, with no way to follow.
+            Err(RoomTaskError::Unknown(e)) => {
+                return Err(reject_with_code(
+                    doc,
+                    declared(codes.host_unreachable),
+                    format!(
+                        "the epoch advance for room `{room_id}` did not get an answer from host \
+                         `{host}`: {e}. Whether it took effect is unknown; the next admission or \
+                         removal in this room settles it with the host first."
+                    ),
+                    None,
+                ));
+            }
+        }
+
+        room_groups::promote_pending_advance(groups, room_id, pending, now())
+            .await
+            // The host advanced and this agent could not record it. The pending row
+            // survives, and the next request promotes it (item 6): a delay, not a loss.
+            .map_err(|e| app_error_to_reject(doc, e))
+    }
 }
 
 fn decode_b64(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
@@ -458,6 +678,9 @@ mod tests {
     struct Host {
         epoch: u32,
         mode: Mode,
+        /// The last `rooms/epoch/mint` payload the host took, so a test can relay its
+        /// commit to the members who remain.
+        last_mint: Option<Value>,
     }
 
     struct StubHost {
@@ -470,6 +693,7 @@ mod tests {
         let state = Arc::new(Mutex::new(Host {
             epoch: 1,
             mode: Mode::Accept,
+            last_mint: None,
         }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -502,6 +726,7 @@ mod tests {
                                 }
                                 mode => {
                                     h.epoch = asked;
+                                    h.last_mint = Some(req["payload"].clone());
                                     if mode == Mode::AcceptThenLose {
                                         return (
                                             axum::http::StatusCode::BAD_GATEWAY,
@@ -714,6 +939,55 @@ mod tests {
         )
     }
 
+    async fn remove(o: &Owner, member: &str) -> Value {
+        body(
+            handle_remove(
+                &o.state,
+                &crate::test_support::super_admin_claims(),
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
+                    serde_json::json!({
+                        "roomId": o.room.did, "host": o.host.did, "member": member,
+                        "reason": "left the deal team",
+                    }),
+                ),
+            )
+            .await,
+        )
+    }
+
+    /// The group this agent holds for the owner's room.
+    async fn live_group(o: &Owner) -> vti_rooms::mls::RoomGroup {
+        let r = room_groups::load(&o.state.room_groups_ks, &o.room.did)
+            .await
+            .unwrap()
+            .expect("a group");
+        vti_rooms::mls::RoomGroup::restore(&r.snapshot).unwrap()
+    }
+
+    async fn pending(o: &Owner) -> Option<room_groups::PendingAdvance> {
+        room_groups::pending_advance(&o.state.room_groups_ks, &o.room.did)
+            .await
+            .unwrap()
+    }
+
+    /// A member admitted end to end: the owner's VTA admits them, and their own VTA joins
+    /// from the Welcome.
+    async fn admitted(o: &Owner) -> (AppState, tempfile::TempDir, String) {
+        let (j_state, j_dir, j_did, kp) = joiner(&o.room.did).await;
+        let out = add(o, &j_did, &kp).await;
+        let welcome = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(out["payload"]["welcome"].as_str().expect("{out}"))
+                .unwrap()
+        };
+        room_groups::join(&j_state.room_groups_ks, &o.room.did, &j_did, &welcome, 0)
+            .await
+            .expect("joins from the Welcome");
+        (j_state, j_dir, j_did)
+    }
+
     async fn live_epoch(o: &Owner) -> u32 {
         let r = room_groups::load(&o.state.room_groups_ks, &o.room.did)
             .await
@@ -781,7 +1055,7 @@ mod tests {
         assert_eq!(o.host.state.lock().unwrap().epoch, 2, "the host advanced");
         assert_eq!(live_epoch(&o).await, 2, "and only then the owner's group");
         assert!(
-            room_groups::pending_add(&o.state.room_groups_ks, &o.room.did)
+            room_groups::pending_advance(&o.state.room_groups_ks, &o.room.did)
                 .await
                 .unwrap()
                 .is_none()
@@ -868,7 +1142,7 @@ mod tests {
             "nothing reached the host"
         );
         assert!(
-            room_groups::pending_add(&o.state.room_groups_ks, &o.room.did)
+            room_groups::pending_advance(&o.state.room_groups_ks, &o.room.did)
                 .await
                 .unwrap()
                 .is_none()
@@ -890,7 +1164,7 @@ mod tests {
         );
         assert_eq!(live_epoch(&o).await, 1);
         assert!(
-            room_groups::pending_add(&o.state.room_groups_ks, &o.room.did)
+            room_groups::pending_advance(&o.state.room_groups_ks, &o.room.did)
                 .await
                 .unwrap()
                 .is_none(),
@@ -938,7 +1212,7 @@ mod tests {
         );
         assert_eq!(live_epoch(&o).await, 1, "this agent does not know that yet");
         assert!(
-            room_groups::pending_add(&o.state.room_groups_ks, &o.room.did)
+            room_groups::pending_advance(&o.state.room_groups_ks, &o.room.did)
                 .await
                 .unwrap()
                 .is_some(),
@@ -1017,7 +1291,7 @@ mod tests {
             "{out}"
         );
         assert!(
-            room_groups::pending_add(&o.state.room_groups_ks, &o.room.did)
+            room_groups::pending_advance(&o.state.room_groups_ks, &o.room.did)
                 .await
                 .unwrap()
                 .is_none()
@@ -1033,5 +1307,422 @@ mod tests {
             out["payload"]["code"], "rooms/owner/group/add:noGroup",
             "{out}"
         );
+    }
+
+    // ─── rooms/owner/group/remove/0.1 ────────────────────────────────────────────────
+
+    /// Item 1: no group.
+    #[tokio::test]
+    async fn remove_without_a_group_is_no_group() {
+        let o = owner().await;
+        let out = remove(&o, "did:key:z6MkSomebody").await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/remove:noGroup",
+            "{out}"
+        );
+    }
+
+    /// Item 1: a DID with no leaf is refused, and nothing is built or sent.
+    #[tokio::test]
+    async fn removing_a_non_member_is_not_member_and_sends_nothing() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let out = remove(&o, "did:key:z6MkNeverAdmitted").await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/remove:notMember",
+            "{out}"
+        );
+        assert_eq!(
+            o.host.state.lock().unwrap().epoch,
+            1,
+            "nothing reached the host"
+        );
+        assert!(o.host.state.lock().unwrap().last_mint.is_none());
+        assert!(pending(&o).await.is_none());
+        assert_eq!(live_epoch(&o).await, 1);
+    }
+
+    /// Item 1: the key holder's own leaf is `ownLeaf` — refused before the host is asked
+    /// anything, and the group keeps its owner.
+    #[tokio::test]
+    async fn removing_the_own_leaf_is_refused() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        // A host that would refuse proves the refusal never needed it.
+        o.host.state.lock().unwrap().mode = Mode::Refuse;
+        let out = remove(&o, &o.member).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/remove:ownLeaf",
+            "{out}"
+        );
+        assert!(live_group(&o).await.leaf_of(&o.member).is_some());
+        assert!(pending(&o).await.is_none());
+    }
+
+    /// Items 2, 4 and 5 end to end: the host advances first and only then the owner's
+    /// group; the member who remains follows from the commit the host took and reads what
+    /// the owner seals next; the member removed cannot — while both still read what was
+    /// sealed before.
+    #[tokio::test]
+    async fn a_removed_member_reads_nothing_sealed_after_and_the_rest_carry_on() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (stay_state, _stay_dir, stay_did) = admitted(&o).await; // epoch 2
+        let (gone_state, _gone_dir, gone_did) = admitted(&o).await; // epoch 3
+
+        // The member who stays applies the second admission, as the host would relay it.
+        let commit_3 = commit_of_last_mint(&o);
+        room_groups::apply_commit(&stay_state.room_groups_ks, &o.room.did, &commit_3, 2, 0)
+            .await
+            .expect("the remaining member follows the admission");
+
+        let before = room_groups::seal_record(
+            &o.state.room_groups_ks,
+            &o.room.did,
+            "notes/1",
+            1,
+            b"before",
+        )
+        .await
+        .unwrap();
+
+        let out = remove(&o, &gone_did).await;
+        assert_eq!(out["payload"]["epoch"], 4, "{out}");
+        assert_eq!(out["payload"]["member"], gone_did, "{out}");
+        assert_eq!(o.host.state.lock().unwrap().epoch, 4, "the host advanced");
+        assert_eq!(live_epoch(&o).await, 4, "and only then the owner's group");
+        assert!(pending(&o).await.is_none());
+        let group = live_group(&o).await;
+        assert!(group.leaf_of(&gone_did).is_none(), "the leaf is gone");
+        assert!(group.leaf_of(&stay_did).is_some());
+        let mint = o.host.state.lock().unwrap().last_mint.clone().unwrap();
+        assert!(
+            mint.get("link").is_some(),
+            "the advance carries its epoch link: {mint}"
+        );
+        assert_eq!(mint["reason"], "left the deal team");
+        assert!(
+            !mint.to_string().contains(&gone_did),
+            "the host is not told who left"
+        );
+
+        let commit_4 = commit_of_last_mint(&o);
+        room_groups::apply_commit(&stay_state.room_groups_ks, &o.room.did, &commit_4, 3, 0)
+            .await
+            .expect("the remaining member follows the removal");
+        let after =
+            room_groups::seal_record(&o.state.room_groups_ks, &o.room.did, "notes/2", 1, b"after")
+                .await
+                .unwrap();
+        assert_eq!(after.epoch, 4);
+        let open = |state: &AppState, rec: &vti_rooms::wire::SealedContent, key: &'static str| {
+            let ks = state.room_groups_ks.clone();
+            let room = o.room.did.clone();
+            let rec = rec.clone();
+            async move {
+                room_groups::open_record(&ks, &room, key, 1, &rec.ciphertext, &rec.nonce, rec.epoch)
+                    .await
+            }
+        };
+        assert_eq!(
+            open(&stay_state, &after, "notes/2").await.unwrap(),
+            b"after"
+        );
+        assert!(
+            open(&gone_state, &after, "notes/2").await.is_err(),
+            "removal is forward: nothing sealed after it opens for the member removed"
+        );
+        assert_eq!(
+            open(&stay_state, &before, "notes/1").await.unwrap(),
+            b"before"
+        );
+        assert_eq!(
+            open(&gone_state, &before, "notes/1").await.unwrap(),
+            b"before",
+            "and it recalls nothing: what they could read, they still can"
+        );
+    }
+
+    fn commit_of_last_mint(o: &Owner) -> Vec<u8> {
+        use base64::Engine as _;
+        let mint = o
+            .host
+            .state
+            .lock()
+            .unwrap()
+            .last_mint
+            .clone()
+            .expect("a mint");
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(mint["commit"].as_str().unwrap())
+            .unwrap()
+    }
+
+    /// Item 5: a refusal is the host's answer — `hostRefused`, the pending removal is
+    /// discarded and the member keeps their leaf.
+    #[tokio::test]
+    async fn a_refused_removal_leaves_the_group_unchanged() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, did) = admitted(&o).await;
+        o.host.state.lock().unwrap().mode = Mode::Refuse;
+
+        let out = remove(&o, &did).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/remove:hostRefused",
+            "{out}"
+        );
+        assert_eq!(
+            out["payload"]["details"]["code"], "permissionDenied",
+            "{out}"
+        );
+        assert_eq!(live_epoch(&o).await, 2);
+        assert!(live_group(&o).await.leaf_of(&did).is_some());
+        assert!(
+            pending(&o).await.is_none(),
+            "a refused removal leaves nothing pending"
+        );
+    }
+
+    /// A host another admin advanced answers `nonSequential`: `epochConflict` with
+    /// `hostEpoch`, and nothing changes here.
+    #[tokio::test]
+    async fn a_removal_in_a_room_advanced_elsewhere_is_an_epoch_conflict() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, did) = admitted(&o).await;
+        o.host.state.lock().unwrap().epoch = 7;
+
+        let out = remove(&o, &did).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/remove:epochConflict",
+            "{out}"
+        );
+        assert_eq!(out["payload"]["details"]["hostEpoch"], 7, "{out}");
+        assert_eq!(live_epoch(&o).await, 2);
+        assert!(live_group(&o).await.leaf_of(&did).is_some());
+        assert!(pending(&o).await.is_none());
+    }
+
+    /// Items 3, 5 and 6: the host takes the removal and the answer is lost —
+    /// `hostUnreachable`, the pending removal is KEPT, the live group has not moved, and the
+    /// next request (here, another removal) finds the host at its epoch and applies it.
+    #[tokio::test]
+    async fn a_removal_whose_answer_was_lost_is_applied_by_the_next_request() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s1, _d1, first) = admitted(&o).await; // 2
+        let (_s2, _d2, second) = admitted(&o).await; // 3
+        o.host.state.lock().unwrap().mode = Mode::AcceptThenLose;
+
+        let out = remove(&o, &first).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/remove:hostUnreachable",
+            "{out}"
+        );
+        assert_eq!(
+            o.host.state.lock().unwrap().epoch,
+            4,
+            "the host did advance"
+        );
+        assert_eq!(live_epoch(&o).await, 3, "this agent does not know that yet");
+        let kept = pending(&o)
+            .await
+            .expect("an unknown outcome keeps the pending removal");
+        assert_eq!(kept.kind, room_groups::AdvanceKind::Removal);
+        assert_eq!(kept.epoch, 4);
+        assert!(kept.welcome.is_none(), "a removal welcomes nobody");
+
+        o.host.state.lock().unwrap().mode = Mode::Accept;
+        let out = remove(&o, &second).await;
+        assert_eq!(out["payload"]["epoch"], 5, "{out}");
+        let group = live_group(&o).await;
+        assert!(
+            group.leaf_of(&first).is_none(),
+            "the first removal was applied"
+        );
+        assert!(group.leaf_of(&second).is_none());
+        assert!(pending(&o).await.is_none());
+    }
+
+    /// Item 6: a pending removal the host never took is discarded — the member keeps their
+    /// leaf — and the request carries on from the live group.
+    #[tokio::test]
+    async fn a_pending_removal_the_host_never_took_is_discarded() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s1, _d1, first) = admitted(&o).await; // 2
+        let (_s2, _d2, second) = admitted(&o).await; // 3
+        // As if the process died between storing the pending removal and sending it.
+        room_groups::prepare_remove(&o.state.room_groups_ks, &o.room.did, &o.host.did, &first, 0)
+            .await
+            .unwrap();
+
+        let out = remove(&o, &second).await;
+        assert_eq!(out["payload"]["epoch"], 4, "{out}");
+        let group = live_group(&o).await;
+        assert!(group.leaf_of(&first).is_some(), "never removed");
+        assert!(group.leaf_of(&second).is_none());
+    }
+
+    /// Item 6, third case: the host is neither at the pending epoch nor the one before it.
+    /// The pending removal is discarded and the request refused `epochConflict`.
+    #[tokio::test]
+    async fn a_pending_removal_overtaken_at_the_host_is_discarded_as_a_conflict() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s1, _d1, first) = admitted(&o).await; // 2
+        room_groups::prepare_remove(&o.state.room_groups_ks, &o.room.did, &o.host.did, &first, 0)
+            .await
+            .unwrap();
+        o.host.state.lock().unwrap().epoch = 9;
+
+        let out = remove(&o, &first).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/remove:epochConflict",
+            "{out}"
+        );
+        assert_eq!(out["payload"]["details"]["hostEpoch"], 9, "{out}");
+        assert!(pending(&o).await.is_none(), "discarded");
+        assert_eq!(live_epoch(&o).await, 2);
+    }
+
+    /// Item 3: one pending advance per room, of either kind. An admission whose answer was
+    /// lost is settled by a removal — and since membership is read after settling, the
+    /// member it admitted can be the one removed.
+    #[tokio::test]
+    async fn a_pending_admission_is_settled_before_a_removal_is_built() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        o.host.state.lock().unwrap().mode = Mode::AcceptThenLose;
+        let (_s, _d, did, kp) = joiner(&o.room.did).await;
+        let out = add(&o, &did, &kp).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/add:hostUnreachable",
+            "{out}"
+        );
+        assert_eq!(
+            pending(&o).await.unwrap().kind,
+            room_groups::AdvanceKind::Admission
+        );
+
+        o.host.state.lock().unwrap().mode = Mode::Accept;
+        let out = remove(&o, &did).await;
+        assert_eq!(out["payload"]["epoch"], 3, "{out}");
+        assert!(live_group(&o).await.leaf_of(&did).is_none());
+        assert!(pending(&o).await.is_none());
+    }
+
+    /// And the other way: a removal whose answer was lost is settled by an admission.
+    #[tokio::test]
+    async fn a_pending_removal_is_settled_before_an_admission_is_built() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, gone) = admitted(&o).await; // 2
+        o.host.state.lock().unwrap().mode = Mode::AcceptThenLose;
+        remove(&o, &gone).await; // host at 3, answer lost
+
+        o.host.state.lock().unwrap().mode = Mode::Accept;
+        let (_s2, _d2, newcomer, kp) = joiner(&o.room.did).await;
+        let out = add(&o, &newcomer, &kp).await;
+        assert_eq!(out["payload"]["epoch"], 4, "{out}");
+        let group = live_group(&o).await;
+        assert!(
+            group.leaf_of(&gone).is_none(),
+            "the removal was applied first"
+        );
+        assert!(group.leaf_of(&newcomer).is_some());
+    }
+
+    /// The slot holds one advance: a second cannot be retained over a first, whichever
+    /// kinds they are. The handlers never reach this (they settle first); a request racing
+    /// another for the same room does.
+    #[tokio::test]
+    async fn a_room_holds_at_most_one_pending_advance() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, did) = admitted(&o).await;
+        room_groups::prepare_remove(&o.state.room_groups_ks, &o.room.did, &o.host.did, &did, 0)
+            .await
+            .unwrap();
+        let (_s2, _d2, other, kp) = joiner(&o.room.did).await;
+        let kp = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(&kp)
+                .unwrap()
+        };
+        let second = room_groups::prepare_add(
+            &o.state.room_groups_ks,
+            &o.room.did,
+            &o.host.did,
+            &other,
+            &kp,
+            0,
+        )
+        .await;
+        assert!(
+            matches!(second, Err(PrepareAddError::App(AppError::Conflict(_)))),
+            "{second:?}"
+        );
+        assert_eq!(
+            pending(&o).await.unwrap().kind,
+            room_groups::AdvanceKind::Removal,
+            "the first is untouched"
+        );
+    }
+
+    /// A pending admission an earlier build left at `room-add:<room>` — the row's shape
+    /// before removal existed, with no `kind` — is read as an admission and settled, then
+    /// cleared, not left to be found again.
+    #[tokio::test]
+    async fn a_legacy_pending_admission_is_settled_and_cleared() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        o.host.state.lock().unwrap().mode = Mode::AcceptThenLose;
+        let (_s, _d, did, kp) = joiner(&o.room.did).await;
+        add(&o, &did, &kp).await; // host at 2, answer lost
+        // Move the row to where, and as, the admission-only build wrote it.
+        let mut legacy = serde_json::to_value(pending(&o).await.unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("kind");
+        room_groups::discard_pending_advance(&o.state.room_groups_ks, &o.room.did)
+            .await
+            .unwrap();
+        room_groups::store_legacy_pending_add_for_test(
+            &o.state.room_groups_ks,
+            &o.room.did,
+            &legacy,
+        )
+        .await
+        .unwrap();
+        let found = pending(&o).await.expect("the legacy row is found");
+        assert_eq!(found.kind, room_groups::AdvanceKind::Admission);
+        assert!(found.welcome.is_some());
+
+        o.host.state.lock().unwrap().mode = Mode::Accept;
+        let out = remove(&o, &did).await;
+        assert_eq!(out["payload"]["epoch"], 3, "{out}");
+        assert!(pending(&o).await.is_none(), "both slots are clear");
+    }
+
+    /// Without the owner's `admin` grant nothing is built and nothing is sent.
+    #[tokio::test]
+    async fn remove_without_admin_authority_is_refused_before_anything_is_built() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, did) = admitted(&o).await;
+        crate::vault::storage::delete(
+            &o.state.vault_ks,
+            &format!("{AUTHORITY_TYPE}-{}", o.room.did),
+        )
+        .await
+        .unwrap();
+        let out = remove(&o, &did).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/remove:noAuthority",
+            "{out}"
+        );
+        assert!(pending(&o).await.is_none());
+        assert!(live_group(&o).await.leaf_of(&did).is_some());
     }
 }

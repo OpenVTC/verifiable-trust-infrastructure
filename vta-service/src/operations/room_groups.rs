@@ -607,44 +607,95 @@ pub async fn create_group(
     Ok(epoch)
 }
 
-/// Storage key for an admission waiting on its host.
-fn pending_add_key(room_id: &str) -> String {
+/// Storage key for the one epoch advance a room may have waiting on its host —
+/// an admission or a removal.
+///
+/// **One key, so one slot.** `rooms/owner/group/{add,remove}/0.1` item 3: a key
+/// holder holds at most one pending advance per room. Two would be two candidate
+/// successors of the same live group, of which the host can accept at most one;
+/// keeping both under one key makes the second unrepresentable rather than
+/// merely unlikely.
+fn pending_advance_key(room_id: &str) -> String {
+    format!("room-advance:{room_id}")
+}
+
+/// Where the slot lived while it could only hold an admission
+/// (`rooms/owner/group/add`, before removal existed).
+///
+/// **Read, never written.** A row left here by an earlier build is still a
+/// pending admission the host may have accepted, so it is settled like any
+/// other ([`pending_advance`] reads it as one, with `kind` defaulting to
+/// [`AdvanceKind::Admission`]) and cleared with the slot. Dropping it unread
+/// could strand this agent an epoch behind a room that did advance.
+fn legacy_pending_add_key(room_id: &str) -> String {
     format!("room-add:{room_id}")
 }
 
-/// An admission the host has not yet confirmed — `rooms/owner/group/add/0.1`
-/// items 3 to 6.
+/// Which membership change a pending advance makes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AdvanceKind {
+    /// `rooms/owner/group/add`. The default because every row written before
+    /// the field existed was one.
+    #[default]
+    Admission,
+    /// `rooms/owner/group/remove`.
+    Removal,
+}
+
+impl AdvanceKind {
+    /// The noun an operator reads.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Admission => "admission",
+            Self::Removal => "removal",
+        }
+    }
+}
+
+/// An epoch advance the host has not yet confirmed — items 3 to 6 of
+/// `rooms/owner/group/add/0.1` and `rooms/owner/group/remove/0.1`.
 ///
 /// # Why the whole advanced group, and not just the commit
 ///
 /// MLS lets a member process other members' commits from the wire, never its
 /// own: the committer's path secrets exist only in the state that produced the
-/// commit. So once the add is built, the *advanced group* is the only way to
+/// commit. So once the change is built, the *advanced group* is the only way to
 /// reach the next epoch. It is kept here, beside the live group it would
 /// replace, until the host's answer says which of the two is true.
 ///
-/// The live group is not touched until then. A record sealed while an admission
-/// is pending is sealed at the epoch the room is still at.
+/// The live group is not touched until then. A record sealed while an advance
+/// is pending is sealed at the epoch the room is still at — which, for a
+/// removal, the member being removed can still read. That is the cost of
+/// remote-first, and it lasts only until the host answers.
+///
+/// Serialises as the admission-only row it generalises did, plus `kind`, so a
+/// row written before removal existed reads as an admission.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PendingAdd {
-    /// The group after the add.
+pub struct PendingAdvance {
+    /// Admission or removal.
+    #[serde(default)]
+    pub kind: AdvanceKind,
+    /// The group after the change.
     pub snapshot: GroupSnapshot,
     /// The live group's links plus the one this advance produced.
     pub links: Vec<EpochLink>,
-    /// Who is being admitted.
+    /// Who is being admitted or removed.
     pub member: String,
     /// The host the epoch advance goes to, so a later request can reconcile
     /// against the same one.
     pub host: String,
-    /// The room epoch the add produces.
+    /// The room epoch the change produces.
     pub epoch: u32,
     /// The rung this advance produced, for `rooms/epoch/mint`.
     pub link: Option<EpochLink>,
     /// The commit, base64url, for `rooms/epoch/mint`.
     pub commit: String,
-    /// The Welcome, base64url, for the newcomer's key holder.
-    pub welcome: String,
+    /// The Welcome, base64url, for the newcomer's key holder. An admission's
+    /// only; a removal welcomes nobody.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub welcome: Option<String>,
     /// Unix seconds it was built.
     pub created_at: u64,
 }
@@ -658,8 +709,53 @@ pub enum PrepareAddError {
     App(AppError),
 }
 
+/// Retain `pending` as the room's one pending advance, durably — the step
+/// every advance takes **before** anything is sent to a host (item 3).
+///
+/// Refuses when the slot is taken: the caller settles what it finds first
+/// (item 6), so an occupied slot here is a request racing another for the same
+/// room, and overwriting it would lose an advance the host may have accepted.
+/// The claim is one atomic insert-if-absent, so of two racing requests exactly
+/// one holds the slot.
+async fn retain(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+    pending: &PendingAdvance,
+) -> Result<(), AppError> {
+    let taken = |found: &PendingAdvance| {
+        AppError::Conflict(format!(
+            "room `{room_id}` already has a pending {} to epoch {} waiting on host `{}`; \
+             it is settled before another advance is built",
+            found.kind.noun(),
+            found.epoch,
+            found.host
+        ))
+    };
+    // A row in the legacy slot is an advance too (item 3 counts it).
+    if let Some(found) = groups
+        .get::<PendingAdvance>(legacy_pending_add_key(room_id))
+        .await
+        .map_err(|e| AppError::Internal(format!("read the pending admission: {e}")))?
+    {
+        return Err(taken(&found));
+    }
+    let claimed = groups
+        .insert_if_absent(pending_advance_key(room_id), pending)
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!("store the pending {}: {e}", pending.kind.noun()))
+        })?;
+    if !claimed {
+        let found = pending_advance(groups, room_id)
+            .await?
+            .unwrap_or_else(|| pending.clone());
+        return Err(taken(&found));
+    }
+    Ok(())
+}
+
 /// Build the admission of `member` from their KeyPackage and retain it,
-/// durably, as a [`PendingAdd`] — **before** anything is sent to a host
+/// durably, as a [`PendingAdvance`] — **before** anything is sent to a host
 /// (items 2 and 3). The live group is unchanged.
 pub async fn prepare_add(
     groups: &KeyspaceHandle,
@@ -668,7 +764,7 @@ pub async fn prepare_add(
     member: &str,
     key_package: &[u8],
     now: u64,
-) -> Result<PendingAdd, PrepareAddError> {
+) -> Result<PendingAdvance, PrepareAddError> {
     let record = load(groups, room_id)
         .await
         .map_err(PrepareAddError::App)?
@@ -696,7 +792,8 @@ pub async fn prepare_add(
         PrepareAddError::App(AppError::Internal("an add produced no Welcome".into()))
     })?;
 
-    let pending = PendingAdd {
+    let pending = PendingAdvance {
+        kind: AdvanceKind::Admission,
         snapshot: room.group().snapshot().map_err(|e| {
             PrepareAddError::App(AppError::Internal(format!("snapshot the group: {e}")))
         })?,
@@ -706,27 +803,109 @@ pub async fn prepare_add(
         epoch: room.room_epoch(),
         link,
         commit: B64.encode(&change.commit),
-        welcome: B64.encode(&welcome),
+        welcome: Some(B64.encode(&welcome)),
         created_at: now,
     };
-    groups
-        .insert(pending_add_key(room_id), &pending)
+    retain(groups, room_id, &pending)
         .await
-        .map_err(|e| {
-            PrepareAddError::App(AppError::Internal(format!(
-                "store the pending admission: {e}"
-            )))
-        })?;
+        .map_err(PrepareAddError::App)?;
     Ok(pending)
 }
 
-/// The admission waiting on its host, if any.
-pub async fn pending_add(
+/// Why a removal could not be built — `rooms/owner/group/remove/0.1` item 1.
+#[derive(Debug)]
+pub enum PrepareRemoveError {
+    /// This agent holds no group for the room.
+    NoGroup,
+    /// `member` has no leaf in the group.
+    NotMember,
+    /// `member` is this agent's own leaf. A key holder does not remove itself.
+    OwnLeaf,
+    App(AppError),
+}
+
+/// Whether `member` is the leaf this agent holds the room's group as —
+/// `rooms/owner/group/remove/0.1`'s `ownLeaf`, answerable before anything else
+/// because the answer never changes while the group exists.
+pub async fn is_own_leaf(
     groups: &KeyspaceHandle,
     room_id: &str,
-) -> Result<Option<PendingAdd>, AppError> {
+    member: &str,
+) -> Result<bool, AppError> {
+    Ok(load(groups, room_id)
+        .await?
+        .is_some_and(|r| r.member_did == member))
+}
+
+/// Build the removal of `member`'s leaf and retain it, durably, as a
+/// [`PendingAdvance`] — **before** anything is sent to a host
+/// (`rooms/owner/group/remove/0.1` items 1 to 3). The live group is unchanged:
+/// the commit and the link are made on a copy, which is what is kept.
+pub async fn prepare_remove(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+    host: &str,
+    member: &str,
+    now: u64,
+) -> Result<PendingAdvance, PrepareRemoveError> {
+    let record = load(groups, room_id)
+        .await
+        .map_err(PrepareRemoveError::App)?
+        .ok_or(PrepareRemoveError::NoGroup)?;
+    if record.member_did == member {
+        return Err(PrepareRemoveError::OwnLeaf);
+    }
+    let group = RoomGroup::restore(&record.snapshot).map_err(|e| {
+        PrepareRemoveError::App(AppError::Internal(format!("restore the group: {e}")))
+    })?;
+    let leaf = group.leaf_of(member).ok_or(PrepareRemoveError::NotMember)?;
+    let mut room = SealedRoom::new(room_id, group);
+    room.add_links(record.links);
+
+    // Item 2: the commit and the link that seals the outgoing epoch's key under the
+    // incoming one — so the members who remain keep reading what came before, and the
+    // one removed reads nothing after.
+    let (change, link) = room.remove_member(leaf).map_err(|e| {
+        PrepareRemoveError::App(AppError::Internal(format!("build the removal: {e}")))
+    })?;
+
+    let pending = PendingAdvance {
+        kind: AdvanceKind::Removal,
+        snapshot: room.group().snapshot().map_err(|e| {
+            PrepareRemoveError::App(AppError::Internal(format!("snapshot the group: {e}")))
+        })?,
+        links: room.links(),
+        member: member.to_string(),
+        host: host.to_string(),
+        epoch: room.room_epoch(),
+        link,
+        commit: B64.encode(&change.commit),
+        welcome: None,
+        created_at: now,
+    };
+    retain(groups, room_id, &pending)
+        .await
+        .map_err(PrepareRemoveError::App)?;
+    Ok(pending)
+}
+
+/// The advance waiting on its host, if any — admission or removal.
+///
+/// Falls back to the admission-only slot an earlier build wrote
+/// ([`legacy_pending_add_key`]), so a row left there is settled, not lost.
+pub async fn pending_advance(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+) -> Result<Option<PendingAdvance>, AppError> {
+    if let Some(found) = groups
+        .get::<PendingAdvance>(pending_advance_key(room_id))
+        .await
+        .map_err(|e| AppError::Internal(format!("read the pending advance: {e}")))?
+    {
+        return Ok(Some(found));
+    }
     groups
-        .get(pending_add_key(room_id))
+        .get::<PendingAdvance>(legacy_pending_add_key(room_id))
         .await
         .map_err(|e| AppError::Internal(format!("read the pending admission: {e}")))
 }
@@ -734,11 +913,11 @@ pub async fn pending_add(
 /// The host accepted the advance: the pending group becomes the live one
 /// (item 5). One write replaces the group, then the pending row goes; a crash
 /// between the two leaves a pending row whose epoch the live group already
-/// has, which [`reconcile_pending_add`] recognises and clears.
-pub async fn promote_pending_add(
+/// has, which [`reconcile_pending_advance`] recognises and clears.
+pub async fn promote_pending_advance(
     groups: &KeyspaceHandle,
     room_id: &str,
-    pending: &PendingAdd,
+    pending: &PendingAdvance,
     now: u64,
 ) -> Result<(), AppError> {
     let record = load(groups, room_id).await?.ok_or_else(|| {
@@ -757,19 +936,29 @@ pub async fn promote_pending_add(
         now,
     )
     .await?;
-    discard_pending_add(groups, room_id).await
+    discard_pending_advance(groups, room_id).await
 }
 
-/// The host refused, or the room has moved past it: forget the admission
-/// (items 5 and 6). The live group never changed.
-pub async fn discard_pending_add(groups: &KeyspaceHandle, room_id: &str) -> Result<(), AppError> {
-    groups
-        .remove(pending_add_key(room_id))
-        .await
-        .map_err(|e| AppError::Internal(format!("clear the pending admission: {e}")))
+/// The host refused, or the room has moved past it: forget the advance
+/// (items 5 and 6). The live group never changed. Clears the legacy
+/// admission-only slot too, so nothing settled is found again.
+pub async fn discard_pending_advance(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+) -> Result<(), AppError> {
+    for key in [
+        pending_advance_key(room_id),
+        legacy_pending_add_key(room_id),
+    ] {
+        groups
+            .remove(key)
+            .await
+            .map_err(|e| AppError::Internal(format!("clear the pending advance: {e}")))?;
+    }
+    Ok(())
 }
 
-/// What a found pending admission turned out to be, given the host's epoch.
+/// What a found pending advance turned out to be, given the host's epoch.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Reconciled {
     /// The host is at the pending epoch: it accepted. Applied.
@@ -781,11 +970,11 @@ pub enum Reconciled {
     Conflict,
 }
 
-/// Item 6: settle a pending admission against the epoch the host reports.
-pub async fn reconcile_pending_add(
+/// Item 6: settle a pending advance against the epoch the host reports.
+pub async fn reconcile_pending_advance(
     groups: &KeyspaceHandle,
     room_id: &str,
-    pending: &PendingAdd,
+    pending: &PendingAdvance,
     host_epoch: u32,
     now: u64,
 ) -> Result<Reconciled, AppError> {
@@ -800,19 +989,33 @@ pub async fn reconcile_pending_add(
     };
     if live_epoch == pending.epoch {
         // Promoted already; only the pending row survived a crash.
-        discard_pending_add(groups, room_id).await?;
+        discard_pending_advance(groups, room_id).await?;
         return Ok(Reconciled::Applied);
     }
     if host_epoch == pending.epoch {
-        promote_pending_add(groups, room_id, pending, now).await?;
+        promote_pending_advance(groups, room_id, pending, now).await?;
         return Ok(Reconciled::Applied);
     }
-    discard_pending_add(groups, room_id).await?;
+    discard_pending_advance(groups, room_id).await?;
     Ok(if host_epoch == live_epoch {
         Reconciled::Discarded
     } else {
         Reconciled::Conflict
     })
+}
+
+/// Write `pending` where the admission-only build kept it, for tests that a row
+/// left there is still settled.
+#[cfg(test)]
+pub(crate) async fn store_legacy_pending_add_for_test(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+    pending: &serde_json::Value,
+) -> Result<(), AppError> {
+    groups
+        .insert(legacy_pending_add_key(room_id), pending)
+        .await
+        .map_err(|e| AppError::Internal(format!("store a legacy pending admission: {e}")))
 }
 
 /// Store a group as `join` would, for tests that need a room held at some epoch.
@@ -985,6 +1188,9 @@ pub async fn forget(groups: &KeyspaceHandle, room_id: &str) -> Result<(), AppErr
         .remove(pending_key(room_id))
         .await
         .map_err(|e| AppError::Internal(format!("discard a pending key package: {e}")))?;
+    // An advance this agent built for a group it no longer holds can never be
+    // promoted; leaving it would hand whoever rejoins a stale successor to settle.
+    discard_pending_advance(groups, room_id).await?;
     // The root history goes with the membership. It carries no record content,
     // but it is a record of when this member read this room, and an agent that
     // kept it afterwards would be keeping a diary of a room its principal can no
