@@ -309,32 +309,32 @@ async fn anchor_inner(
     // The authenticator this agent already holds. Every member derives it
     // independently and no host can compute it, which is what makes an anchored
     // one able to expose a forked group.
-    let (epoch, epoch_authenticator) = match crate::operations::room_groups::epoch_authenticator(
-        &state.room_groups_ks,
-        &req.room_id,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
+    //
+    // The owner's, as the persona whose `read` grant is presented below: one resolution for
+    // both, so the authenticator anchored and the head it is anchored beside come from the
+    // same member.
+    let (member, minted) =
+        match super::room_group::presenting_member(state, auth, &vta_did, &req.room_id).await {
+            Ok(v) => v,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
+    let (epoch, epoch_authenticator) =
+        match crate::operations::room_groups::epoch_authenticator(&state.room_groups_ks, &member)
+            .await
+        {
+            Ok(a) => a,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
 
     // The two values the agent does NOT hold. `rooms/epoch/mint` answers
     // `{roomId, epoch}` — the watermark and the commitment are facts about the
     // room's RECORDS, which live at the host — so an anchor is assembled from a
     // read, and all three head values come from ONE response.
-    let minted =
-        match crate::operations::room_oracle::present(state, auth, &vta_did, &req.room_id, "read")
-            .await
-        {
-            Ok(m) => m,
-            Err(e) => return app_error_to_reject(&doc, e),
-        };
     let key = format!("{vta_did}#key-0");
     let reply = match crate::operations::room_host::send_room_task(
         signing_context(state, auth),
         &state.room_groups_ks,
-        &req.room_id,
+        &member,
         &crate::operations::outbound::Outbound::from_app_state(state, &resolver),
         &req.host,
         &key,
@@ -502,10 +502,16 @@ pub(super) async fn handle_register(
         Ok(k) => k,
         Err(e) => return app_error_to_reject(&doc, e),
     };
+    // The owner's root memory gates the write: what this agent learned reading the room as
+    // that persona, and nobody else's.
+    let member = match crate::operations::room_groups::Member::new(&req.room_id, &owner_did) {
+        Ok(m) => m,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
     let reply = match crate::operations::room_host::send_room_task(
         signing_context(state, auth),
         &state.room_groups_ks,
-        &req.room_id,
+        &member,
         &crate::operations::outbound::Outbound::from_app_state(state, &resolver),
         &req.host,
         &owner_key.key_id,

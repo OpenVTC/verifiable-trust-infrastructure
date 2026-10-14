@@ -178,6 +178,22 @@ used for a DID your VTA does not hold at all, so a refusal never tells you whose
 personas live there. The VTA's own DID is **not** a persona: it is shared by
 everyone the VTA serves, and a room that named it would link all of their rooms.
 
+**One VTA, several members of one room.** A VTA serving several people — a
+family, a team on a company VTA — may hold several personas in the same room.
+Each is a different MLS leaf, so the VTA keeps everything it holds for a room
+**per member**, keyed by (room, persona): the group state, a pending
+KeyPackage, the one pending advance, the epoch chain and the root memory.
+Which member a call acts as comes from the call itself — the invitation's
+subject for `key-package` and `welcome`, the persona whose credentials are
+presented for `read` / `browse` / `backfill` / `anchor` and the owner group
+tasks — and otherwise is the **one** persona you may act as that holds the
+room (`open`, `seal`, `file-key`, `commit`, `chain`, `list`). If you act in
+several contexts each holding the room, act from the context of the one you
+mean. A persona in a context you cannot act in is invisible: its group answers
+as a room nobody here holds. A store written before this keying moves its rows
+under the persona its group's own leaf identifies, the first time that
+persona's caller touches the room.
+
 The one place a client DID does appear is as a *presenter* (§7): an agent your
 VTA equips with a four-hour, one-action leaf narrowed **from** your persona's
 grant. That leaf is a delegation, signed by your persona; the agent is never a
@@ -582,7 +598,8 @@ your owner persona:
   unanswered advance** (`hostUnreachable`) is kept, and the next admission or
   removal asks the host its epoch (`rooms/info`) and applies it or discards it
   first.
-- **One pending advance per room.** An admission and a removal share one slot,
+- **One pending advance per room** (per owner persona, on a VTA holding the
+  room for several). An admission and a removal share one slot,
   so whichever is pending is settled before the other is built — removing a
   member whose admission's answer was lost first applies the admission the host
   took, then removes them.
@@ -1175,6 +1192,8 @@ recover but a fresh invitation from every owner.
 | `the invitation names …, which is not a persona you may act as here` | The VIC names a DID this VTA does not hold for you — another context's persona, a DID it holds nothing for (the two read alike), or your client's own `did:key`. Invite the persona, and call from its context |
 | `this VTA holds no … issued by room … to a persona you may act as` | The member's VMC/VAC are not in the vault, or they name a persona you cannot act as (§5.3) |
 | `you may act as N personas holding a … issued by room …` | You act in several contexts, each with a persona in this room. Act from the context of the one you mean |
+| `you may act as N personas holding group state for room …` | The same, for the keys: several of your personas hold the room's group. Act from the context of the one you mean (§5) |
+| `rooms/keys/welcome:alreadyJoined` | The persona the invitation names already holds the room's group on this VTA. Another persona on the same VTA is no obstacle — each member keeps their own (§5) |
 | `… is not a persona you may act as, so it cannot be the owner's leaf` | `group/create --member` named a DID that is not your persona (§5.4) |
 | `name the owner's persona as \`member\`` | `group/create` with no `--member`, and no credential from the room names a persona of yours (§5.4) |
 | `invitation … has already been used` | Single use. Issue a fresh one |

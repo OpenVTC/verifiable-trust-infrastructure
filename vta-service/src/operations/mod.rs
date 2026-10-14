@@ -76,6 +76,7 @@ pub mod room_groups;
 pub mod room_host;
 pub mod room_invitation;
 pub mod room_issuance;
+pub mod room_member;
 pub mod room_oracle;
 pub mod seeds;
 /// The byte strings `keys/sign-jws` and `keys/sign-csr` sign: a JWS signing

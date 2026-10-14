@@ -37,7 +37,7 @@ use vti_common::acl::Capability;
 
 use crate::audit;
 use crate::auth::AuthClaims;
-use crate::operations::{room_groups, room_invitation};
+use crate::operations::{room_groups, room_invitation, room_member};
 use crate::server::AppState;
 
 use super::helpers::{
@@ -102,10 +102,16 @@ pub(super) async fn handle_key_package(
             Err(e) => return app_error_to_reject(&doc, e),
         };
 
+    // Kept under that persona: another persona on this VTA invited to the same room mints
+    // its own, and neither overwrites the other's private half.
+    let member = match room_member::member_as(state, auth, &req.room_id, invitation.subject()).await
+    {
+        Ok(m) => m,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
     let minted = match room_groups::mint_key_package(
         &state.room_groups_ks,
-        &req.room_id,
-        invitation.subject(),
+        &member,
         KEY_PACKAGE_LIFETIME_SECS,
         now(),
     )
@@ -150,17 +156,29 @@ pub(super) async fn handle_welcome(
         Err(e) => return app_error_to_reject(&doc, e),
     };
 
-    let epoch = match room_groups::join(
-        &state.room_groups_ks,
-        &req.room_id,
-        invitation.subject(),
-        &welcome,
-        now(),
-    )
-    .await
+    // The member joining is the invitation's subject, and "already joined" is asked of
+    // that member alone: another persona this VTA holds for somebody else in the same room
+    // is a different leaf, and its group is no reason to refuse this one.
+    let member = match room_member::member_as(state, auth, &req.room_id, invitation.subject()).await
     {
-        Ok(e) => e,
+        Ok(m) => m,
         Err(e) => return app_error_to_reject(&doc, e),
+    };
+    let epoch = match room_groups::join(&state.room_groups_ks, &member, &welcome, now()).await {
+        Ok(e) => e,
+        Err(room_groups::JoinError::AlreadyJoined) => {
+            return super::helpers::reject_declared(
+                &doc,
+                trust_tasks_rs::specs::rooms::keys::welcome::v0_1::error_codes::ALREADY_JOINED,
+                format!(
+                    "this VTA already holds group state for `{}` in room `{}`; leaving and \
+                     rejoining is a removal and a fresh invitation, not a second welcome",
+                    member.persona(),
+                    req.room_id
+                ),
+            );
+        }
+        Err(room_groups::JoinError::App(e)) => return app_error_to_reject(&doc, e),
     };
 
     // Consumed only after the join succeeded. Burning it on a Welcome that then failed to
@@ -195,12 +213,19 @@ pub(super) async fn handle_commit(
         Err(e) => return app_error_to_reject(&doc, e),
     };
 
-    // No gate of ours. MLS authenticates the committer as a member of the group we already
-    // hold, and an ACL here would be this service deciding who may commit to a room it is
-    // not part of — the mistake the whole family is arranged to avoid.
+    // No gate of ours on the committer. MLS authenticates the committer as a member of the
+    // group we already hold, and an ACL here would be this service deciding who may commit
+    // to a room it is not part of — the mistake the whole family is arranged to avoid.
+    //
+    // *Which* group is ours to decide, though: the one member the caller acts as. A caller
+    // in another context reaches no group here, and is told what a room nobody holds is.
+    let member = match room_member::require_acting(state, auth, &req.room_id).await {
+        Ok(m) => m,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
     let epoch = match room_groups::apply_commit(
         &state.room_groups_ks,
-        &req.room_id,
+        &member,
         &commit,
         u64::from(req.epoch),
         now(),
@@ -259,9 +284,13 @@ pub(super) async fn handle_seal(
         }
     };
 
+    let member = match room_member::require_acting(state, auth, &req.room_id).await {
+        Ok(m) => m,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
     let sealed = match room_groups::seal_record(
         &state.room_groups_ks,
-        &req.room_id,
+        &member,
         &req.key,
         req.version,
         &plaintext,
@@ -310,10 +339,20 @@ pub(super) async fn handle_list(
         return r;
     }
 
-    let rooms = match room_groups::list_rooms(&state.room_groups_ks).await {
-        Ok(r) => r,
+    // The caller's personas only. A room another context's persona holds is not one this
+    // caller can open, and listing it would tell them who else this VTA serves.
+    let members = match room_member::held_by_caller(state, auth).await {
+        Ok(m) => m,
         Err(e) => return app_error_to_reject(&doc, e),
     };
+    let mut rooms = Vec::with_capacity(members.len());
+    for m in &members {
+        match room_groups::held_room(&state.room_groups_ks, m).await {
+            Ok(r) => rooms.push(r),
+            Err(e) => return app_error_to_reject(&doc, e),
+        }
+    }
+    rooms.sort_by(|a, b| a.room_id.cmp(&b.room_id));
 
     record(state, "rooms.keys.list", auth, "").await;
     success_response(&doc, serde_json::json!({ "rooms": rooms }))
@@ -382,8 +421,12 @@ pub(super) async fn handle_chain(
         }
     };
 
+    let member = match room_member::require_acting(state, auth, &req.room_id).await {
+        Ok(m) => m,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
     let (earliest, stored) =
-        match room_groups::store_links(&state.room_groups_ks, &req.room_id, links, now()).await {
+        match room_groups::store_links(&state.room_groups_ks, &member, links, now()).await {
             Ok(r) => r,
             Err(e) => return app_error_to_reject(&doc, e),
         };
@@ -474,13 +517,10 @@ pub(super) async fn handle_backfill(
     // transfers no standing. What it does gain is sight of the principal's
     // credentials, which is a disclosure rather than an escalation — see
     // `rooms/keys/backfill/0.1`.
-    let minted =
-        match crate::operations::room_oracle::present(state, auth, &vta_did, &req.room_id, "read")
-            .await
-        {
-            Ok(m) => m,
-            Err(e) => return app_error_to_reject(&doc, e),
-        };
+    let (member, minted) = match presenting_member(state, auth, &vta_did, &req.room_id).await {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
 
     let mut payload = serde_json::json!({
         "roomId": req.room_id,
@@ -497,7 +537,7 @@ pub(super) async fn handle_backfill(
     let reply = match crate::operations::room_host::send_room_task(
         signing_context(state, auth),
         &state.room_groups_ks,
-        &req.room_id,
+        &member,
         &crate::operations::outbound::Outbound::from_app_state(state, &resolver),
         &req.host,
         &key,
@@ -533,7 +573,7 @@ pub(super) async fn handle_backfill(
     // `store_links` with an empty delivery stores nothing and still walks what
     // is held, which is the reach this must report either way.
     let (earliest, stored) =
-        match room_groups::store_links(&state.room_groups_ks, &req.room_id, links, now()).await {
+        match room_groups::store_links(&state.room_groups_ks, &member, links, now()).await {
             Ok(r) => r,
             Err(e) => return app_error_to_reject(&doc, e),
         };
@@ -548,6 +588,33 @@ pub(super) async fn handle_backfill(
             "stored": stored,
         }),
     )
+}
+
+/// The member a presentation-bearing task acts as, and the presentation it carries.
+///
+/// One resolution for both: the persona whose credentials are presented
+/// ([`crate::operations::room_oracle::principal`]) is the member whose group opens what
+/// comes back and whose root memory the host's answer is compared against. Resolving them
+/// separately could pair one persona's authority with another's keys.
+pub(super) async fn presenting_member(
+    state: &AppState,
+    auth: &AuthClaims,
+    agent_did: &str,
+    room_id: &str,
+) -> Result<
+    (
+        room_groups::Member,
+        crate::operations::room_oracle::MintedPresentation,
+    ),
+    vti_common::error::AppError,
+> {
+    let principal = crate::operations::room_oracle::principal(state, auth, room_id).await?;
+    let member = room_member::member_as(state, auth, room_id, &principal.did).await?;
+    let minted = crate::operations::room_oracle::present_as(
+        state, auth, &principal, agent_did, room_id, "read",
+    )
+    .await?;
+    Ok((member, minted))
 }
 
 /// This agent's own DID and a resolver, or the refusal that says which is missing.
@@ -646,7 +713,12 @@ async fn compare_anchor(state: &AppState, room_id: &str, head: Option<&Value>) -
     compare_to_anchor(&document, version, head["dataCommitment"].as_str()).as_wire()
 }
 
-async fn compare_head(state: &AppState, room_id: &str, head: Option<&Value>) -> &'static str {
+async fn compare_head(
+    state: &AppState,
+    member: &room_groups::Member,
+    head: Option<&Value>,
+) -> &'static str {
+    let room_id = member.room_id();
     let Some(head) = head else {
         return "notChecked";
     };
@@ -656,7 +728,7 @@ async fn compare_head(state: &AppState, room_id: &str, head: Option<&Value>) -> 
     ) else {
         return "notChecked";
     };
-    match room_groups::observe_head(&state.room_groups_ks, room_id, version, root).await {
+    match room_groups::observe_head(&state.room_groups_ks, member, version, root).await {
         Ok(room_groups::RootVerdict::Agree) => "agree",
         Ok(room_groups::RootVerdict::Conflict) => "conflict",
         Ok(room_groups::RootVerdict::NoneHeld) => "noneHeld",
@@ -739,19 +811,16 @@ pub(super) async fn handle_read(
     // `vta_did`, so a host of the caller's choosing receives something only this
     // agent can act with. What it gains is sight of the credentials, which is a
     // disclosure rather than an escalation.
-    let minted =
-        match crate::operations::room_oracle::present(state, auth, &vta_did, &req.room_id, "read")
-            .await
-        {
-            Ok(m) => m,
-            Err(e) => return app_error_to_reject(&doc, e),
-        };
+    let (member, minted) = match presenting_member(state, auth, &vta_did, &req.room_id).await {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
 
     let key = format!("{vta_did}#key-0");
     let reply = match crate::operations::room_host::send_room_task(
         signing_context(state, auth),
         &state.room_groups_ks,
-        &req.room_id,
+        &member,
         &crate::operations::outbound::Outbound::from_app_state(state, &resolver),
         &req.host,
         &key,
@@ -808,7 +877,7 @@ pub(super) async fn handle_read(
         served.head_version,
     );
     payload["verification"]["priorRoots"] =
-        serde_json::json!(compare_head(state, &req.room_id, head.as_ref()).await);
+        serde_json::json!(compare_head(state, &member, head.as_ref()).await);
     payload["verification"]["anchor"] =
         serde_json::json!(compare_anchor(state, &req.room_id, head.as_ref()).await);
     if let Some(head) = head {
@@ -818,7 +887,7 @@ pub(super) async fn handle_read(
     if let Some(sealed) = &served.record.sealed {
         let plaintext = match room_groups::open_record(
             &state.room_groups_ks,
-            &req.room_id,
+            &member,
             &served.record.key,
             served.record.version,
             &sealed.ciphertext,
@@ -871,13 +940,10 @@ pub(super) async fn handle_browse(
         Err(resp) => return resp,
     };
 
-    let minted =
-        match crate::operations::room_oracle::present(state, auth, &vta_did, &req.room_id, "read")
-            .await
-        {
-            Ok(m) => m,
-            Err(e) => return app_error_to_reject(&doc, e),
-        };
+    let (member, minted) = match presenting_member(state, auth, &vta_did, &req.room_id).await {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
 
     let key = format!("{vta_did}#key-0");
     let mut records: Vec<Value> = Vec::new();
@@ -909,7 +975,7 @@ pub(super) async fn handle_browse(
         let reply = match crate::operations::room_host::send_room_task(
             signing_context(state, auth),
             &state.room_groups_ks,
-            &req.room_id,
+            &member,
             &crate::operations::outbound::Outbound::from_app_state(state, &resolver),
             &req.host,
             &key,
@@ -981,7 +1047,7 @@ pub(super) async fn handle_browse(
     };
 
     let mut verification = serde_json::json!({
-        "priorRoots": compare_head(state, &req.room_id, head.as_ref()).await,
+        "priorRoots": compare_head(state, &member, head.as_ref()).await,
         "anchor": compare_anchor(state, &req.room_id, head.as_ref()).await,
         "count": count,
     });
@@ -1024,9 +1090,13 @@ pub(super) async fn handle_open(
         Err(resp) => return resp,
     };
 
+    let member = match room_member::require_acting(state, auth, &req.room_id).await {
+        Ok(m) => m,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
     let plaintext = match room_groups::open_record(
         &state.room_groups_ks,
-        &req.room_id,
+        &member,
         &req.key,
         u64::from(req.version),
         &req.sealed.ciphertext,
@@ -1131,53 +1201,58 @@ pub(super) async fn handle_file_key(
         Err(e) => return super::helpers::malformed_request_response(e.to_string()),
     };
 
-    let (key, epoch) = match room_groups::file_key(
-        &state.room_groups_ks,
-        &req.room_id,
-        &file_id,
-        open_epoch,
-    )
-    .await
-    {
-        Ok(k) => k,
-        // Declared rather than `taskFailed` + a reason: the framework has no standard
-        // not-found code, and a caller deciding whether to deliver a welcome needs to tell
-        // this apart from a failure.
-        Err(room_groups::FileKeyError::NoGroup) => {
+    let member = match room_member::acting(state, auth, &req.room_id).await {
+        Ok(Some(m)) => m,
+        Ok(None) => {
             return super::helpers::reject_declared(
                 &doc,
                 spec::error_codes::NO_GROUP,
                 format!("this VTA holds no group for room `{}`", req.room_id),
             );
         }
-        Err(room_groups::FileKeyError::App(e)) => return app_error_to_reject(&doc, e),
-        Err(room_groups::FileKeyError::NotDelivered { epoch, held }) => {
-            return super::helpers::reject_with_code(
-                &doc,
-                declared(spec::error_codes::UNKNOWN_EPOCH),
-                format!(
-                    "the file is sealed under epoch {epoch} and this VTA holds room `{}` \
-                         at epoch {held}; a commit has not been delivered",
-                    req.room_id
-                ),
-                Some(serde_json::json!({ "reason": "notDelivered", "heldEpoch": held })),
-            );
-        }
-        Err(room_groups::FileKeyError::BeyondChain { epoch, earliest }) => {
-            return super::helpers::reject_with_code(
-                &doc,
-                declared(spec::error_codes::UNKNOWN_EPOCH),
-                format!(
-                    "the file is sealed under epoch {epoch}, which this VTA cannot reach — \
-                         the epoch key chain reaches back only to {earliest}"
-                ),
-                Some(serde_json::json!({
-                    "reason": "beyondChain",
-                    "earliestEpoch": earliest,
-                })),
-            );
-        }
+        Err(e) => return app_error_to_reject(&doc, e),
     };
+    let (key, epoch) =
+        match room_groups::file_key(&state.room_groups_ks, &member, &file_id, open_epoch).await {
+            Ok(k) => k,
+            // Declared rather than `taskFailed` + a reason: the framework has no standard
+            // not-found code, and a caller deciding whether to deliver a welcome needs to tell
+            // this apart from a failure.
+            Err(room_groups::FileKeyError::NoGroup) => {
+                return super::helpers::reject_declared(
+                    &doc,
+                    spec::error_codes::NO_GROUP,
+                    format!("this VTA holds no group for room `{}`", req.room_id),
+                );
+            }
+            Err(room_groups::FileKeyError::App(e)) => return app_error_to_reject(&doc, e),
+            Err(room_groups::FileKeyError::NotDelivered { epoch, held }) => {
+                return super::helpers::reject_with_code(
+                    &doc,
+                    declared(spec::error_codes::UNKNOWN_EPOCH),
+                    format!(
+                        "the file is sealed under epoch {epoch} and this VTA holds room `{}` \
+                         at epoch {held}; a commit has not been delivered",
+                        req.room_id
+                    ),
+                    Some(serde_json::json!({ "reason": "notDelivered", "heldEpoch": held })),
+                );
+            }
+            Err(room_groups::FileKeyError::BeyondChain { epoch, earliest }) => {
+                return super::helpers::reject_with_code(
+                    &doc,
+                    declared(spec::error_codes::UNKNOWN_EPOCH),
+                    format!(
+                        "the file is sealed under epoch {epoch}, which this VTA cannot reach — \
+                         the epoch key chain reaches back only to {earliest}"
+                    ),
+                    Some(serde_json::json!({
+                        "reason": "beyondChain",
+                        "earliestEpoch": earliest,
+                    })),
+                );
+            }
+        };
 
     // Who asked for which file's key, for what, under which epoch — never the key. This
     // row is how a principal sees which files their agents and clients opened.
@@ -1410,15 +1485,16 @@ mod file_key_refusal_tests {
         serde_json::from_slice(&outcome.body).expect("the outcome is a document")
     }
 
-    /// A room this VTA holds at epoch 2, with no rung back to 1.
+    /// A room this VTA holds at epoch 2 for a persona the super-admin acts as, with no rung
+    /// back to 1.
     async fn hold_room_at_epoch_2(state: &AppState) {
-        let mut room = SealedRoom::new(ROOM, RoomGroup::create("did:key:zAlice").unwrap());
+        let alice = crate::test_support::seed_holder_key(state, "m/44'/0'/9'/0'/1'", None).await;
+        let mut room = SealedRoom::new(ROOM, RoomGroup::create(&alice).unwrap());
         let (_bob, kp) = IdentitySnapshot::mint("did:key:zBob").unwrap();
         room.add_member(&kp).unwrap();
         room_groups::store_for_test(
             &state.room_groups_ks,
-            ROOM,
-            "did:key:zAlice",
+            &room_groups::Member::new(ROOM, &alice).unwrap(),
             room.group(),
             Vec::new(),
         )
@@ -1625,10 +1701,14 @@ mod persona_invitation_tests {
     /// owner's key holder does: it admits the KeyPackage only for the member its leaf names.
     async fn owner_group(room: &str) -> (AppState, tempfile::TempDir) {
         let (owner, dir) = crate::test_support::build_signing_test_app_state().await;
-        room_groups::create_group(&owner.room_groups_ks, room, "did:key:zOwner", 0)
+        room_groups::create_group(&owner.room_groups_ks, &owner_member(room), 0)
             .await
             .expect("an owner's group");
         (owner, dir)
+    }
+
+    fn owner_member(room: &str) -> room_groups::Member {
+        room_groups::Member::new(room, "did:key:zOwner").unwrap()
     }
 
     fn decode(kp: &Value) -> Vec<u8> {
@@ -1659,7 +1739,7 @@ mod persona_invitation_tests {
             matches!(
                 room_groups::prepare_add(
                     &owner.room_groups_ks,
-                    &room.did,
+                    &owner_member(&room.did),
                     HOST,
                     &caller.did,
                     &kp,
@@ -1670,10 +1750,16 @@ mod persona_invitation_tests {
             ),
             "the leaf must not identify the client that asked"
         );
-        let pending =
-            room_groups::prepare_add(&owner.room_groups_ks, &room.did, HOST, &alice.did, &kp, 0)
-                .await
-                .unwrap_or_else(|_| panic!("the leaf identifies the persona"));
+        let pending = room_groups::prepare_add(
+            &owner.room_groups_ks,
+            &owner_member(&room.did),
+            HOST,
+            &alice.did,
+            &kp,
+            0,
+        )
+        .await
+        .unwrap_or_else(|_| panic!("the leaf identifies the persona"));
 
         let joined = body(
             handle_welcome(
@@ -1689,10 +1775,13 @@ mod persona_invitation_tests {
             .await,
         );
         assert!(joined["payload"]["epoch"].is_u64(), "{joined}");
-        let held = room_groups::load(&state.room_groups_ks, &room.did)
-            .await
-            .unwrap()
-            .expect("the group");
+        let held = room_groups::load(
+            &state.room_groups_ks,
+            &room_groups::Member::new(&room.did, &alice.did).unwrap(),
+        )
+        .await
+        .unwrap()
+        .expect("the group");
         let group = vti_rooms::mls::RoomGroup::restore(&held.snapshot).unwrap();
         assert!(group.leaf_of(&alice.did).is_some(), "the persona's leaf");
 
@@ -1717,9 +1806,16 @@ mod persona_invitation_tests {
         .await;
         let kp = decode(&minted["payload"]["keyPackage"]);
         let (owner, _odir) = owner_group(&room.did).await;
-        room_groups::prepare_add(&owner.room_groups_ks, &room.did, HOST, &alice.did, &kp, 0)
-            .await
-            .unwrap_or_else(|_| panic!("the leaf identifies the persona"));
+        room_groups::prepare_add(
+            &owner.room_groups_ks,
+            &owner_member(&room.did),
+            HOST,
+            &alice.did,
+            &kp,
+            0,
+        )
+        .await
+        .unwrap_or_else(|_| panic!("the leaf identifies the persona"));
     }
 
     /// **The privilege boundary.** An invitation naming bob's persona, delivered by a caller
@@ -1810,10 +1906,519 @@ mod persona_invitation_tests {
             "{welcome}"
         );
         assert!(
-            room_groups::load(&state.room_groups_ks, &room.did)
+            room_groups::holders(&state.room_groups_ks, &room.did)
                 .await
                 .unwrap()
-                .is_none()
+                .is_empty()
+        );
+    }
+}
+
+/// One VTA, several members of one room: group state is the **member's** — per (room,
+/// persona) — never the VTA's per room. A family on one VTA, or a team on a company one, can
+/// all be in the same room, each reading and writing as themselves, and none reaching
+/// another's group.
+#[cfg(test)]
+mod per_member_tests {
+    use super::*;
+    use crate::operations::persona::test_fixture::{self as personas, Persona};
+    use crate::operations::room_groups::Member;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+    use chrono::{Duration as Span, Utc};
+    use dtg_credentials::DTGCredential;
+    use trust_tasks_rs::TypeUri;
+    use vti_rooms::mls::RoomGroup;
+    use vti_rooms::sealed::SealedRoom;
+    use vti_rooms::wire::SealedContent;
+    use vti_rooms_dtg::test_support::Party;
+
+    const HOST: &str = "did:webvh:QmHost:host.example";
+    const OWNER: &str = "did:key:zOwner";
+
+    fn request(uri: &str, payload: Value) -> TrustTask<Value> {
+        let uri: TypeUri = uri.parse().unwrap();
+        TrustTask::new(format!("urn:uuid:{}", uuid::Uuid::new_v4()), uri, payload)
+    }
+
+    fn body(outcome: TrustTaskOutcome) -> Value {
+        serde_json::from_slice(&outcome.body).expect("the outcome is a document")
+    }
+
+    fn alice_caller() -> AuthClaims {
+        crate::test_support::admin_claims_for_context("alice")
+    }
+
+    fn bob_caller() -> AuthClaims {
+        crate::test_support::admin_claims_for_context("bob")
+    }
+
+    /// One VTA serving two principals, alice and bob, each with a persona in their own
+    /// context.
+    async fn shared_vta() -> (AppState, tempfile::TempDir, Persona, Persona) {
+        let (state, dir) = crate::test_support::build_signing_test_app_state().await;
+        for (id, name) in [("alice", "Alice"), ("bob", "Bob")] {
+            crate::contexts::create_context(&state.contexts_ks, id, name)
+                .await
+                .expect("create context");
+        }
+        let persona = |context: &'static str, key: &'static str| {
+            let state = &state;
+            async move {
+                personas::did_key_persona(
+                    &state.keys_ks,
+                    &state.internal_ks,
+                    &state.contexts_ks,
+                    &state.acl_ks,
+                    &state.seed_store,
+                    &state.audit_sink,
+                    context,
+                    key,
+                )
+                .await
+            }
+        };
+        let alice = persona("alice", "alice-key").await;
+        let bob = persona("bob", "bob-key").await;
+        (state, dir, alice, bob)
+    }
+
+    /// The room's owner, on a VTA of their own: the group, founded.
+    async fn owner(room: &str) -> (AppState, tempfile::TempDir, Member) {
+        let (state, dir) = crate::test_support::build_signing_test_app_state().await;
+        let owner = Member::new(room, OWNER).unwrap();
+        room_groups::create_group(&state.room_groups_ks, &owner, 0)
+            .await
+            .expect("an owner's group");
+        (state, dir, owner)
+    }
+
+    async fn invitation(room: &Party, subject: &str) -> String {
+        let now = Utc::now();
+        let mut vic = DTGCredential::new_vic(
+            room.did.clone(),
+            dtg_credentials::IssuerScope::Public,
+            subject.to_string(),
+            now - Span::minutes(1),
+            Some(now + Span::hours(1)),
+        )
+        .with_id(format!("urn:uuid:{}", uuid::Uuid::new_v4()));
+        vic.sign(&room.secret, None).await.expect("sign");
+        serde_json::to_string(vic.credential()).expect("serialise")
+    }
+
+    /// `persona` joins `room` through this VTA, as `caller` would drive it: a KeyPackage,
+    /// the owner's admission (accepted at its host), the Welcome. Returns the admission.
+    async fn join(
+        state: &AppState,
+        caller: &AuthClaims,
+        room: &Party,
+        persona: &str,
+        owner_state: &AppState,
+        owner: &Member,
+    ) -> (room_groups::PendingAdvance, Value) {
+        let vic = invitation(room, persona).await;
+        let minted = body(
+            handle_key_package(
+                state,
+                caller,
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
+                    serde_json::json!({ "roomId": room.did, "invitation": vic }),
+                ),
+            )
+            .await,
+        );
+        let kp = B64
+            .decode(minted["payload"]["keyPackage"].as_str().expect("{minted}"))
+            .unwrap();
+        let admission =
+            room_groups::prepare_add(&owner_state.room_groups_ks, owner, HOST, persona, &kp, 0)
+                .await
+                .unwrap_or_else(|e| panic!("the owner admits {persona}: {e:?}"));
+        room_groups::promote_pending_advance(&owner_state.room_groups_ks, owner, &admission, 0)
+            .await
+            .unwrap();
+        let welcomed = body(
+            handle_welcome(
+                state,
+                caller,
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WELCOME_0_1,
+                    serde_json::json!({
+                        "roomId": room.did, "welcome": admission.welcome, "invitation": vic,
+                    }),
+                ),
+            )
+            .await,
+        );
+        (admission, welcomed)
+    }
+
+    async fn open(state: &AppState, caller: &AuthClaims, room: &str, rec: &SealedContent) -> Value {
+        body(
+            handle_open(
+                state,
+                caller,
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1,
+                    serde_json::json!({
+                        "roomId": room, "key": "notes/1", "version": 1,
+                        "sealed": {
+                            "ciphertext": rec.ciphertext, "nonce": rec.nonce, "epoch": rec.epoch,
+                        },
+                    }),
+                ),
+            )
+            .await,
+        )
+    }
+
+    async fn seal(state: &AppState, caller: &AuthClaims, room: &str, text: &str) -> Value {
+        body(
+            handle_seal(
+                state,
+                caller,
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1,
+                    serde_json::json!({
+                        "roomId": room, "key": "notes/1", "version": 1,
+                        "plaintext": B64.encode(text),
+                    }),
+                ),
+            )
+            .await,
+        )
+    }
+
+    async fn commit(
+        state: &AppState,
+        caller: &AuthClaims,
+        room: &str,
+        advance: &room_groups::PendingAdvance,
+    ) -> Value {
+        body(
+            handle_commit(
+                state,
+                caller,
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_COMMIT_0_1,
+                    // The MLS epoch the commit produces, one below the room's.
+                    serde_json::json!({
+                        "roomId": room, "commit": advance.commit, "epoch": advance.epoch - 1,
+                    }),
+                ),
+            )
+            .await,
+        )
+    }
+
+    async fn list(state: &AppState, caller: &AuthClaims) -> Value {
+        body(
+            handle_list(
+                state,
+                caller,
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1,
+                    serde_json::json!({}),
+                ),
+            )
+            .await,
+        )
+    }
+
+    fn plaintext(doc: &Value) -> Vec<u8> {
+        B64.decode(
+            doc["payload"]["plaintext"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{doc}")),
+        )
+        .unwrap()
+    }
+
+    fn sealed(doc: &Value) -> SealedContent {
+        serde_json::from_value(doc["payload"]["sealed"].clone())
+            .unwrap_or_else(|e| panic!("{e}: {doc}"))
+    }
+
+    /// **The defect, end to end.** Alice and Bob share one VTA, each in their own context.
+    /// Both are admitted to one room; Bob's Welcome — refused before, as "this VTA already
+    /// holds group state" — joins; each reads what the owner seals and writes what the owner
+    /// reads, through their own caller; each sees the room once in their own list.
+    #[tokio::test]
+    async fn two_personas_in_two_contexts_on_one_vta_both_join_one_room() {
+        let (state, _d, alice, bob) = shared_vta().await;
+        let room = Party::new();
+        let (owner_state, _od, owner) = owner(&room.did).await;
+
+        let (_, joined) = join(
+            &state,
+            &alice_caller(),
+            &room,
+            &alice.did,
+            &owner_state,
+            &owner,
+        )
+        .await;
+        assert!(joined["payload"]["epoch"].is_u64(), "alice joins: {joined}");
+        let (to_bob, joined) =
+            join(&state, &bob_caller(), &room, &bob.did, &owner_state, &owner).await;
+        assert!(
+            joined["payload"]["epoch"].is_u64(),
+            "bob joins the room alice is already in, on the same VTA: {joined}"
+        );
+
+        // Alice follows Bob's admission in her own group; Bob's is untouched by it.
+        let followed = commit(&state, &alice_caller(), &room.did, &to_bob).await;
+        assert_eq!(followed["payload"]["epoch"], 2, "{followed}");
+
+        let from_owner =
+            room_groups::seal_record(&owner_state.room_groups_ks, &owner, "notes/1", 1, b"to all")
+                .await
+                .unwrap();
+        for (who, caller) in [("alice", alice_caller()), ("bob", bob_caller())] {
+            let opened = open(&state, &caller, &room.did, &from_owner).await;
+            assert_eq!(plaintext(&opened), b"to all", "{who} reads: {opened}");
+
+            let written = seal(&state, &caller, &room.did, who).await;
+            let read_back = room_groups::open_record(
+                &owner_state.room_groups_ks,
+                &owner,
+                "notes/1",
+                1,
+                &sealed(&written).ciphertext,
+                &sealed(&written).nonce,
+                sealed(&written).epoch,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("the owner reads what {who} sealed: {e}"));
+            assert_eq!(read_back, who.as_bytes());
+
+            let listed = list(&state, &caller).await;
+            let rooms = listed["payload"]["rooms"].as_array().expect("{listed}");
+            assert_eq!(rooms.len(), 1, "{who} holds the room once: {listed}");
+            assert_eq!(rooms[0]["roomId"], room.did);
+        }
+
+        // Two groups, two leaves, both on this VTA.
+        let held = room_groups::holders(&state.room_groups_ks, &room.did)
+            .await
+            .unwrap();
+        assert_eq!(held.len(), 2, "{held:?}");
+    }
+
+    /// The same member twice is still `alreadyJoined` — the spec's rule, asked of the member.
+    #[tokio::test]
+    async fn the_same_persona_welcomed_twice_is_already_joined() {
+        let (state, _d, alice, _bob) = shared_vta().await;
+        let room = Party::new();
+        let (owner_state, _od, owner) = owner(&room.did).await;
+        join(
+            &state,
+            &alice_caller(),
+            &room,
+            &alice.did,
+            &owner_state,
+            &owner,
+        )
+        .await;
+
+        // A second invitation and package for the same persona: the group it would make
+        // collides with the one held.
+        let groups = &state.room_groups_ks;
+        let member = Member::new(&room.did, &alice.did).unwrap();
+        room_groups::mint_key_package(groups, &member, 3600, 0)
+            .await
+            .unwrap();
+        let again = body(
+            handle_welcome(
+                &state,
+                &alice_caller(),
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WELCOME_0_1,
+                    serde_json::json!({
+                        "roomId": room.did, "welcome": "AAAA",
+                        "invitation": invitation(&room, &alice.did).await,
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(
+            again["payload"]["code"], "rooms/keys/welcome:alreadyJoined",
+            "{again}"
+        );
+    }
+
+    /// **Context isolation.** A room only Bob holds is, to a caller in Alice's context, a
+    /// room nobody here holds: open, seal, commit and list all answer as they would for an
+    /// unknown room, and Bob's group does not move.
+    #[tokio::test]
+    async fn a_caller_in_one_context_cannot_touch_another_contexts_group() {
+        let (state, _d, _alice, bob) = shared_vta().await;
+        let room = Party::new();
+        let (owner_state, _od, owner) = owner(&room.did).await;
+        join(&state, &bob_caller(), &room, &bob.did, &owner_state, &owner).await;
+        let bobs = Member::new(&room.did, &bob.did).unwrap();
+        let before = room_groups::load(&state.room_groups_ks, &bobs)
+            .await
+            .unwrap()
+            .unwrap()
+            .updated_at;
+
+        let unknown = Party::new().did;
+        let from_owner =
+            room_groups::seal_record(&owner_state.room_groups_ks, &owner, "notes/1", 1, b"x")
+                .await
+                .unwrap();
+        let opened = open(&state, &alice_caller(), &room.did, &from_owner).await;
+        let opened_unknown = open(&state, &alice_caller(), &unknown, &from_owner).await;
+        assert!(opened["payload"]["plaintext"].is_null(), "{opened}");
+        assert_eq!(
+            opened["payload"]["message"]
+                .as_str()
+                .map(|m| m.replace(&room.did, "R")),
+            opened_unknown["payload"]["message"]
+                .as_str()
+                .map(|m| m.replace(&unknown, "R")),
+            "bob's room reads to alice's caller as a room nobody holds"
+        );
+        let sealed_by_alice = seal(&state, &alice_caller(), &room.did, "x").await;
+        assert!(
+            sealed_by_alice["payload"]["sealed"].is_null(),
+            "{sealed_by_alice}"
+        );
+
+        // A commit alice's caller delivers advances nothing of bob's.
+        let (to_carol, _) = {
+            let carol = crate::operations::persona::test_fixture::did_key_persona(
+                &state.keys_ks,
+                &state.internal_ks,
+                &state.contexts_ks,
+                &state.acl_ks,
+                &state.seed_store,
+                &state.audit_sink,
+                "alice",
+                "carol-key",
+            )
+            .await;
+            join(
+                &state,
+                &alice_caller(),
+                &room,
+                &carol.did,
+                &owner_state,
+                &owner,
+            )
+            .await
+        };
+        // Carol, in alice's context, now holds the room too — so alice's caller's commit
+        // lands on carol's group, never bob's.
+        let delivered = commit(&state, &alice_caller(), &room.did, &to_carol).await;
+        assert!(delivered["payload"]["epoch"].is_u64(), "{delivered}");
+        let after = room_groups::load(&state.room_groups_ks, &bobs)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.updated_at, before, "bob's group did not move");
+        assert_eq!(
+            SealedRoom::new(&room.did, RoomGroup::restore(&after.snapshot).unwrap()).room_epoch(),
+            2,
+            "bob is still where his own deliveries left him"
+        );
+
+        let listed = list(&state, &alice_caller()).await;
+        let rooms = listed["payload"]["rooms"].as_array().expect("{listed}");
+        assert_eq!(
+            rooms.len(),
+            1,
+            "carol's membership only, never bob's: {listed}"
+        );
+    }
+
+    /// A caller who may act as several personas is answered without ambiguity where only
+    /// one of them holds the room — and asked to choose where both do.
+    #[tokio::test]
+    async fn one_holder_resolves_and_two_ask_the_caller_to_choose() {
+        let (state, _d, alice, bob) = shared_vta().await;
+        let room = Party::new();
+        let (owner_state, _od, owner) = owner(&room.did).await;
+        let everywhere = crate::test_support::super_admin_claims();
+        join(
+            &state,
+            &alice_caller(),
+            &room,
+            &alice.did,
+            &owner_state,
+            &owner,
+        )
+        .await;
+
+        let from_owner =
+            room_groups::seal_record(&owner_state.room_groups_ks, &owner, "notes/1", 1, b"one")
+                .await
+                .unwrap();
+        let opened = open(&state, &everywhere, &room.did, &from_owner).await;
+        assert_eq!(
+            plaintext(&opened),
+            b"one",
+            "only alice holds the room, so it is hers: {opened}"
+        );
+
+        join(&state, &bob_caller(), &room, &bob.did, &owner_state, &owner).await;
+        let ambiguous = open(&state, &everywhere, &room.did, &from_owner).await;
+        assert!(
+            ambiguous["payload"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("act from the context of the one you mean"),
+            "{ambiguous}"
+        );
+        // Acting from one context resolves it.
+        assert_eq!(
+            plaintext(&open(&state, &alice_caller(), &room.did, &from_owner).await),
+            b"one"
+        );
+    }
+
+    /// **An upgraded store.** A group the per-room build wrote at `room-group:<room>` still
+    /// opens after the upgrade, for the persona its own leaf identifies — and is moved under
+    /// that persona on the first touch. A caller in another context touching the room
+    /// neither opens it nor moves it.
+    #[tokio::test]
+    async fn a_group_from_the_per_room_build_still_opens_and_is_moved() {
+        let (state, _d, alice, _bob) = shared_vta().await;
+        let room = Party::new();
+        let group = RoomGroup::create(&alice.did).unwrap();
+        let record = room_groups::RoomGroupRecord {
+            snapshot: group.snapshot().unwrap(),
+            member_did: alice.did.clone(),
+            links: Vec::new(),
+            updated_at: 0,
+        };
+        let sealed_before = SealedRoom::new(&room.did, group)
+            .seal_record("notes/1", 1, b"from before the upgrade")
+            .unwrap();
+        let groups = &state.room_groups_ks;
+        room_groups::legacy_for_test::store_group(groups, &room.did, &record).await;
+
+        // Bob's caller is not alice's: nothing opens, nothing moves.
+        let refused = open(&state, &bob_caller(), &room.did, &sealed_before).await;
+        assert!(refused["payload"]["plaintext"].is_null(), "{refused}");
+        assert_eq!(
+            room_groups::legacy_rooms(groups).await.unwrap(),
+            vec![room.did.clone()]
+        );
+
+        let opened = open(&state, &alice_caller(), &room.did, &sealed_before).await;
+        assert_eq!(plaintext(&opened), b"from before the upgrade", "{opened}");
+        assert!(room_groups::legacy_rooms(groups).await.unwrap().is_empty());
+        assert!(
+            room_groups::load(groups, &Member::new(&room.did, &alice.did).unwrap())
+                .await
+                .unwrap()
+                .is_some(),
+            "now kept under the persona"
         );
     }
 }

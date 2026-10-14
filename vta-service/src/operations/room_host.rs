@@ -168,13 +168,14 @@ const MUTATING_ROOM_TASKS: &[&str] = &[
 /// would turn a local fault into an accusation.
 pub async fn refuse_if_caught(
     groups: &vti_common::store::KeyspaceHandle,
-    room_id: &str,
+    member: &crate::operations::room_groups::Member,
     task: &str,
 ) -> Result<(), AppError> {
     if !MUTATING_ROOM_TASKS.contains(&task) {
         return Ok(());
     }
-    let history = match crate::operations::room_groups::root_history(groups, room_id).await {
+    let room_id = member.room_id();
+    let history = match crate::operations::room_groups::root_history(groups, member).await {
         Ok(h) => h,
         Err(e) => {
             tracing::error!(
@@ -214,7 +215,7 @@ pub async fn refuse_if_caught(
 pub async fn send_room_task(
     ctx: SigningContext<'_>,
     groups: &vti_common::store::KeyspaceHandle,
-    room_id: &str,
+    member: &crate::operations::room_groups::Member,
     out: &Outbound<'_>,
     host: &str,
     signing_key_id: &str,
@@ -227,7 +228,7 @@ pub async fn send_room_task(
     send_room_task_typed(
         ctx,
         groups,
-        room_id,
+        member,
         out,
         host,
         signing_key_id,
@@ -249,7 +250,7 @@ pub async fn send_room_task(
 pub async fn send_room_task_typed(
     ctx: SigningContext<'_>,
     groups: &vti_common::store::KeyspaceHandle,
-    room_id: &str,
+    member: &crate::operations::room_groups::Member,
     out: &Outbound<'_>,
     host: &str,
     signing_key_id: &str,
@@ -262,7 +263,7 @@ pub async fn send_room_task_typed(
     // Before anything leaves. Threaded through the seam rather than left to each
     // caller: a write task added later inherits the refusal instead of having to
     // remember it, which is the difference between a rule and a convention.
-    refuse_if_caught(groups, room_id, task)
+    refuse_if_caught(groups, member, task)
         .await
         .map_err(RoomTaskError::Unknown)?;
 
@@ -646,6 +647,10 @@ mod write_gate_tests {
     const A: &str = "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR";
     const B: &str = "zQmXo1sV5aJ7bT2kQdF9wRnPzYcH4uMgLtEjV6NrBqWsDpK";
 
+    fn member() -> crate::operations::room_groups::Member {
+        crate::operations::room_groups::Member::new(ROOM, "did:key:zAlice").unwrap()
+    }
+
     async fn open() -> (tempfile::TempDir, vti_common::store::KeyspaceHandle) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&StoreConfig {
@@ -663,10 +668,10 @@ mod write_gate_tests {
     #[tokio::test]
     async fn a_caught_host_is_refused_writes_and_still_serves_reads() {
         let (_d, ks) = open().await;
-        observe_head(&ks, ROOM, 412, A).await.unwrap();
-        observe_head(&ks, ROOM, 412, B).await.unwrap();
+        observe_head(&ks, &member(), 412, A).await.unwrap();
+        observe_head(&ks, &member(), 412, B).await.unwrap();
 
-        let refused = refuse_if_caught(&ks, ROOM, vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE)
+        let refused = refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE)
             .await
             .expect_err("a write to a caught host must be refused");
         let said = refused.to_string();
@@ -675,10 +680,10 @@ mod write_gate_tests {
             "the refusal must name what was observed and what still works: {said}"
         );
 
-        refuse_if_caught(&ks, ROOM, vti_rooms::wire::ROOMS_RECORDS_GET_TYPE)
+        refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_GET_TYPE)
             .await
             .expect("reads are served");
-        refuse_if_caught(&ks, ROOM, vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE)
+        refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE)
             .await
             .expect("listings are served");
     }
@@ -687,9 +692,9 @@ mod write_gate_tests {
     #[tokio::test]
     async fn a_host_that_has_not_been_caught_is_not_refused() {
         let (_d, ks) = open().await;
-        observe_head(&ks, ROOM, 412, A).await.unwrap();
-        observe_head(&ks, ROOM, 413, B).await.unwrap();
-        refuse_if_caught(&ks, ROOM, vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE)
+        observe_head(&ks, &member(), 412, A).await.unwrap();
+        observe_head(&ks, &member(), 413, B).await.unwrap();
+        refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE)
             .await
             .expect("two moments are not a contradiction");
     }
@@ -702,14 +707,14 @@ mod write_gate_tests {
     #[tokio::test]
     async fn being_caught_survives_the_history_being_pruned() {
         let (_d, ks) = open().await;
-        observe_head(&ks, ROOM, 1, A).await.unwrap();
-        observe_head(&ks, ROOM, 1, B).await.unwrap();
+        observe_head(&ks, &member(), 1, A).await.unwrap();
+        observe_head(&ks, &member(), 1, B).await.unwrap();
         // Push the conflicting pair off the end of the bounded map.
         for v in 2..=64u64 {
-            observe_head(&ks, ROOM, v, A).await.unwrap();
+            observe_head(&ks, &member(), v, A).await.unwrap();
         }
         assert!(
-            refuse_if_caught(&ks, ROOM, vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE)
+            refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE)
                 .await
                 .is_err(),
             "reading past a conflict must not clear it"
@@ -720,7 +725,7 @@ mod write_gate_tests {
     #[tokio::test]
     async fn a_room_with_no_history_at_all_is_written_to() {
         let (_d, ks) = open().await;
-        refuse_if_caught(&ks, ROOM, vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE)
+        refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE)
             .await
             .expect("nothing observed is not something caught");
     }

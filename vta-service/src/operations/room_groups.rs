@@ -32,21 +32,103 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use vti_common::error::AppError;
-use vti_common::store::KeyspaceHandle;
+use vti_common::store::{KeyspaceHandle, MoveOutcome};
 use vti_rooms::error::RoomKeyError;
 use vti_rooms::mls::{GroupSnapshot, IdentitySnapshot, RoomGroup};
 use vti_rooms::sealed::SealedRoom;
 use vti_rooms::wire::EpochLink;
 
-/// Prefix for a room's group state, and the scan `list_rooms` walks.
-const GROUP_PREFIX: &str = "room-group:";
+/// One member's place in one room: the key everything here is stored under.
+///
+/// # Per (room, persona), never per room
+///
+/// One VTA serves several principals, and one person may hold several personas, so two
+/// members of one room can share a key holder — a family on one VTA, a team on a company
+/// VTA. Each is a different leaf in the room's MLS group with different secrets, so each
+/// has its own group state, pending KeyPackage, pending advance, epoch chain and root
+/// memory. Keyed by room alone, the second member's Welcome was refused as a second join.
+///
+/// Constructed by [`Member::new`], which refuses identifiers that would make the storage
+/// key ambiguous. *Which* persona a request acts as is not decided here — that is
+/// [`crate::operations::room_member`], where the caller's contexts are known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Member {
+    room_id: String,
+    persona: String,
+}
 
-/// Storage key for a room's group state.
-fn group_key(room_id: &str) -> String {
-    format!("{GROUP_PREFIX}{room_id}")
+impl Member {
+    /// `room_id` and `persona` are DIDs, and a DID has no `/` — which is what makes
+    /// `<kind>/<room>/<persona>` unambiguous, so anything carrying one is refused rather
+    /// than stored under a key another pair could also produce.
+    pub fn new(room_id: &str, persona: &str) -> Result<Self, AppError> {
+        for (what, v) in [("room id", room_id), ("member DID", persona)] {
+            if v.is_empty() || v.contains('/') {
+                return Err(AppError::Validation(format!(
+                    "`{v}` is not a usable {what}: a DID is non-empty and has no `/`"
+                )));
+            }
+        }
+        Ok(Self {
+            room_id: room_id.to_string(),
+            persona: persona.to_string(),
+        })
+    }
+
+    pub fn room_id(&self) -> &str {
+        &self.room_id
+    }
+
+    /// The persona DID: the member's identity in the room, and their MLS leaf.
+    pub fn persona(&self) -> &str {
+        &self.persona
+    }
+
+    fn key(&self, kind: &str) -> String {
+        format!("{kind}/{}/{}", self.room_id, self.persona)
+    }
+}
+
+/// Group state, per member: `room-group/<roomId>/<persona>`.
+const GROUP: &str = "room-group";
+/// A pending KeyPackage, per member: `room-kp/<roomId>/<persona>`.
+const KEY_PACKAGE: &str = "room-kp";
+/// The one pending epoch advance, per member: `room-advance/<roomId>/<persona>`.
+///
+/// **One key, so one slot.** `rooms/owner/group/{add,remove}/0.1` item 3: a key holder
+/// holds at most one pending advance per room — per group it holds, which is per member.
+/// Two would be two candidate successors of the same live group, of which the host can
+/// accept at most one; keeping both under one key makes the second unrepresentable rather
+/// than merely unlikely.
+const ADVANCE: &str = "room-advance";
+/// What hosts have said about the room's tree, per member: `room-roots/<roomId>/<persona>`.
+const ROOTS: &str = "room-roots";
+
+/// The rows a build keyed by room alone wrote, read only to migrate them
+/// ([`migrate_legacy`]). `room-add:` is older still: the admission-only advance slot.
+mod legacy {
+    pub(super) const GROUP_PREFIX: &str = "room-group:";
+    pub(super) fn group(room_id: &str) -> String {
+        format!("{GROUP_PREFIX}{room_id}")
+    }
+    pub(super) fn key_package(room_id: &str) -> String {
+        format!("room-kp:{room_id}")
+    }
+    pub(super) fn advance(room_id: &str) -> String {
+        format!("room-advance:{room_id}")
+    }
+    pub(super) fn add(room_id: &str) -> String {
+        format!("room-add:{room_id}")
+    }
+    pub(super) fn roots(room_id: &str) -> String {
+        format!("room-roots:{room_id}")
+    }
 }
 
 /// Storage key for a consumed invitation.
+///
+/// Keyed by the invitation's credential id, which already names one subject — so it is
+/// per member without saying so, and stays as it was.
 pub(super) fn invitation_key(credential_id: &str) -> String {
     format!("room-vic:{credential_id}")
 }
@@ -96,14 +178,16 @@ pub struct RoomGroupRecord {
 /// the same one offered to two rooms tells anyone who sees both that one party is in both —
 /// the correlation a `private` room exists to deny, arriving through the door rather than
 /// the wall.
+///
+/// The package's leaf identifies `member`'s persona, and the private half is kept under
+/// that member, so two personas on one VTA invited to one room each mint their own.
 pub async fn mint_key_package(
     groups: &KeyspaceHandle,
-    room_id: &str,
-    member_did: &str,
+    member: &Member,
     lifetime_secs: u64,
     now: u64,
 ) -> Result<PendingKeyPackage, AppError> {
-    let (snapshot, package) = IdentitySnapshot::mint(member_did)
+    let (snapshot, package) = IdentitySnapshot::mint(member.persona())
         .map_err(|e| AppError::Internal(format!("mint a key package: {e}")))?;
 
     let pending = PendingKeyPackage {
@@ -112,43 +196,76 @@ pub async fn mint_key_package(
         expires_at: now + lifetime_secs,
     };
     groups
-        .insert(pending_key(room_id), &pending)
+        .insert(member.key(KEY_PACKAGE), &pending)
         .await
         .map_err(|e| AppError::Internal(format!("store the pending key package: {e}")))?;
     Ok(pending)
 }
 
-/// Storage key for a pending key package.
-fn pending_key(room_id: &str) -> String {
-    format!("room-kp:{room_id}")
+/// A KeyPackage the per-room build minted for `member` before an upgrade, moved under
+/// them — so a Welcome arriving after the upgrade still joins. Only when its leaf
+/// identifies `member`: a package minted for anybody else is not theirs to join with.
+async fn legacy_key_package(
+    groups: &KeyspaceHandle,
+    member: &Member,
+) -> Result<Option<PendingKeyPackage>, AppError> {
+    let old = legacy::key_package(member.room_id());
+    let Some(raw) = groups.get_raw(old.clone()).await? else {
+        return Ok(None);
+    };
+    let Ok(kp) = serde_json::from_slice::<PendingKeyPackage>(&raw) else {
+        return Ok(None);
+    };
+    if kp.snapshot.member_did() != member.persona() {
+        return Ok(None);
+    }
+    move_row(groups, old, raw, member.key(KEY_PACKAGE), &kp).await?;
+    Ok(Some(kp))
 }
 
-/// Join `room_id`'s group from a Welcome.
+/// Why a Welcome could not be accepted.
+#[derive(Debug)]
+pub enum JoinError {
+    /// This member already holds group state for the room — `alreadyJoined`.
+    AlreadyJoined,
+    App(AppError),
+}
+
+impl From<AppError> for JoinError {
+    fn from(e: AppError) -> Self {
+        Self::App(e)
+    }
+}
+
+/// Join `member`'s room's group from a Welcome.
 ///
-/// Refuses a second join rather than merging: two group states for one room is a condition
-/// nothing downstream can resolve — [`open`] has no way to choose, and choosing wrong
-/// returns "did not open" for a record the member can plainly see.
+/// Refuses a second join **by the same member** rather than merging: two group states for
+/// one member in one room is a condition nothing downstream can resolve — [`open_record`]
+/// has no way to choose, and choosing wrong returns "did not open" for a record the member
+/// can plainly see. Another persona on this VTA holding the room is a different member with
+/// a different leaf, and is no reason to refuse this one.
 pub async fn join(
     groups: &KeyspaceHandle,
-    room_id: &str,
-    member_did: &str,
+    member: &Member,
     welcome: &[u8],
     now: u64,
-) -> Result<u64, AppError> {
-    if load(groups, room_id).await?.is_some() {
-        return Err(AppError::Conflict(format!(
-            "this VTA already holds group state for room `{room_id}`; leaving and rejoining \
-             is a removal and a fresh invitation, not a second welcome"
-        )));
+) -> Result<u64, JoinError> {
+    let room_id = member.room_id();
+    if load(groups, member).await?.is_some() {
+        return Err(JoinError::AlreadyJoined);
     }
 
     // The KeyPackage the owner added is the one we minted, so the private half is in the
     // pending record — joining with a fresh identity would produce a group whose leaf
     // nobody added.
     let pending: Option<PendingKeyPackage> = groups
-        .get(pending_key(room_id))
+        .get(member.key(KEY_PACKAGE))
         .await
         .map_err(|e| AppError::Internal(format!("read the pending key package: {e}")))?;
+    let pending = match pending {
+        Some(p) => Some(p),
+        None => legacy_key_package(groups, member).await?,
+    };
     let pending = pending.ok_or_else(|| {
         AppError::Validation(format!(
             "no key package was minted for room `{room_id}`; a welcome can only be accepted \
@@ -160,11 +277,11 @@ pub async fn join(
         .map_err(|e| AppError::Validation(format!("the welcome did not process: {e}")))?;
     let epoch = group.epoch();
 
-    store(groups, room_id, member_did, &group, Vec::new(), now).await?;
+    store(groups, member, &group, Vec::new(), now).await?;
     // The package is consumed. MLS consumes it on add, and a retained private half for a
     // used package is key material kept for nothing.
     groups
-        .remove(pending_key(room_id))
+        .remove(member.key(KEY_PACKAGE))
         .await
         .map_err(|e| AppError::Internal(format!("clear the pending key package: {e}")))?;
     Ok(epoch)
@@ -177,16 +294,15 @@ pub async fn join(
 /// we actually hold, so the sender resumes rather than guesses.
 pub async fn apply_commit(
     groups: &KeyspaceHandle,
-    room_id: &str,
+    member: &Member,
     commit: &[u8],
     claimed_epoch: u64,
     now: u64,
 ) -> Result<u64, AppError> {
-    let record = load(groups, room_id).await?.ok_or_else(|| {
-        AppError::NotFound(format!(
-            "this VTA holds no group state for room `{room_id}`"
-        ))
-    })?;
+    let room_id = member.room_id();
+    let record = load(groups, member)
+        .await?
+        .ok_or_else(|| no_group(member))?;
     // A `SealedRoom` rather than a bare group: the epoch link this commit produces is bound
     // to the room, so minting one needs the room's identifier and the group does not carry
     // it. Restoring through the room type is what makes the link mintable at all.
@@ -222,15 +338,7 @@ pub async fn apply_commit(
     if let Some(link) = link {
         links.push(link);
     }
-    store(
-        groups,
-        room_id,
-        &record.member_did,
-        room.group(),
-        links,
-        now,
-    )
-    .await?;
+    store(groups, member, room.group(), links, now).await?;
     Ok(epoch)
 }
 
@@ -248,16 +356,15 @@ pub async fn apply_commit(
 /// room, which is the one thing the design keeps it out of.
 pub async fn seal_record(
     groups: &KeyspaceHandle,
-    room_id: &str,
+    member: &Member,
     key: &str,
     version: u64,
     plaintext: &[u8],
 ) -> Result<vti_rooms::wire::SealedContent, AppError> {
-    let record = load(groups, room_id).await?.ok_or_else(|| {
-        AppError::NotFound(format!(
-            "this VTA holds no group state for room `{room_id}`"
-        ))
-    })?;
+    let room_id = member.room_id();
+    let record = load(groups, member)
+        .await?
+        .ok_or_else(|| no_group(member))?;
     let group = RoomGroup::restore(&record.snapshot)
         .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?;
 
@@ -293,11 +400,12 @@ pub enum FileKeyError {
 /// the room's storage key does not leave, so no sibling can be derived from it.
 pub async fn file_key(
     groups: &KeyspaceHandle,
-    room_id: &str,
+    member: &Member,
     file_id: &vti_rooms::files::FileId,
     open_epoch: Option<u32>,
 ) -> Result<(vti_rooms::files::FileKey, u32), FileKeyError> {
-    let record = load(groups, room_id)
+    let room_id = member.room_id();
+    let record = load(groups, member)
         .await
         .map_err(FileKeyError::App)?
         .ok_or(FileKeyError::NoGroup)?;
@@ -327,7 +435,39 @@ pub async fn file_key(
     }
 }
 
-/// Every room this VTA holds group state for, with how far each one reads.
+/// Every member this VTA holds group state for, by room — keys only, nothing decrypted.
+///
+/// **Not an answer to give a caller.** It names every persona of every principal this VTA
+/// serves; [`crate::operations::room_member`] filters it to the personas the caller may act
+/// as before anything leaves.
+pub async fn held_members(groups: &KeyspaceHandle) -> Result<Vec<Member>, AppError> {
+    members_under(groups, &format!("{GROUP}/")).await
+}
+
+/// The members holding group state for `room_id`.
+pub async fn holders(groups: &KeyspaceHandle, room_id: &str) -> Result<Vec<Member>, AppError> {
+    members_under(groups, &format!("{GROUP}/{room_id}/")).await
+}
+
+async fn members_under(groups: &KeyspaceHandle, prefix: &str) -> Result<Vec<Member>, AppError> {
+    let keys = groups.prefix_keys(prefix.as_bytes().to_vec()).await?;
+    let mut out = Vec::with_capacity(keys.len());
+    for k in keys {
+        let k = String::from_utf8_lossy(&k);
+        let Some(rest) = k.strip_prefix(&format!("{GROUP}/")) else {
+            continue;
+        };
+        // `<room>/<persona>`, neither carrying a `/` (see [`Member::new`]).
+        if let Some((room, persona)) = rest.split_once('/')
+            && let Ok(m) = Member::new(room, persona)
+        {
+            out.push(m);
+        }
+    }
+    Ok(out)
+}
+
+/// How far `member`'s group reads, as `rooms/keys/list` reports it.
 ///
 /// # Custody, not membership
 ///
@@ -337,41 +477,30 @@ pub async fn file_key(
 /// principal has left: it cannot write there, because the host checks credentials that no
 /// longer verify, and it can still open what it already had. That is what removal has always
 /// meant, and a caller MUST NOT read this list as authority to act.
-pub async fn list_rooms(groups: &KeyspaceHandle) -> Result<Vec<HeldRoom>, AppError> {
-    let pairs = groups.prefix_iter_raw(GROUP_PREFIX.to_string()).await?;
-    let mut out = Vec::with_capacity(pairs.len());
+pub async fn held_room(groups: &KeyspaceHandle, member: &Member) -> Result<HeldRoom, AppError> {
+    let room_id = member.room_id();
+    let record = load(groups, member)
+        .await?
+        .ok_or_else(|| no_group(member))?;
 
-    for (k, v) in pairs {
-        let record: RoomGroupRecord = serde_json::from_slice(&v).map_err(|e| {
-            let which = String::from_utf8_lossy(&k).to_string();
-            AppError::Internal(format!("decode group state at `{which}`: {e}"))
-        })?;
-        let room_id = String::from_utf8_lossy(&k)
-            .strip_prefix(GROUP_PREFIX)
-            .unwrap_or_default()
-            .to_string();
+    // Restoring to answer is deliberate. The epoch could be read from the snapshot, but
+    // `earliestReadableEpoch` is only knowable by *walking* the chain — and a number
+    // derived two different ways is a number that will eventually disagree with itself.
+    let group = RoomGroup::restore(&record.snapshot)
+        .map_err(|e| AppError::Internal(format!("restore the group for `{room_id}`: {e}")))?;
+    let mut room = SealedRoom::new(room_id, group);
+    room.add_links(record.links);
 
-        // Restoring to answer is deliberate. The epoch could be read from the snapshot, but
-        // `earliestReadableEpoch` is only knowable by *walking* the chain — and a number
-        // derived two different ways is a number that will eventually disagree with itself.
-        let group = RoomGroup::restore(&record.snapshot)
-            .map_err(|e| AppError::Internal(format!("restore the group for `{room_id}`: {e}")))?;
-        let mut room = SealedRoom::new(&room_id, group);
-        room.add_links(record.links);
+    let epoch = room.room_epoch();
+    let earliest = room
+        .earliest_readable_epoch()
+        .map_err(|e| AppError::Internal(format!("walk the chain for `{room_id}`: {e}")))?;
 
-        let epoch = room.room_epoch();
-        let earliest = room
-            .earliest_readable_epoch()
-            .map_err(|e| AppError::Internal(format!("walk the chain for `{room_id}`: {e}")))?;
-
-        out.push(HeldRoom {
-            room_id,
-            epoch,
-            earliest_readable_epoch: earliest,
-        });
-    }
-    out.sort_by(|a, b| a.room_id.cmp(&b.room_id));
-    Ok(out)
+    Ok(HeldRoom {
+        room_id: room_id.to_string(),
+        epoch,
+        earliest_readable_epoch: earliest,
+    })
 }
 
 /// One room this VTA can open, as `rooms/keys/list` reports it.
@@ -406,15 +535,14 @@ pub struct HeldRoom {
 /// first is the only reading that is safe under both.
 pub async fn store_links(
     groups: &KeyspaceHandle,
-    room_id: &str,
+    member: &Member,
     incoming: Vec<EpochLink>,
     now: u64,
 ) -> Result<(u32, usize), AppError> {
-    let record = load(groups, room_id).await?.ok_or_else(|| {
-        AppError::NotFound(format!(
-            "this VTA holds no group state for room `{room_id}`"
-        ))
-    })?;
+    let room_id = member.room_id();
+    let record = load(groups, member)
+        .await?
+        .ok_or_else(|| no_group(member))?;
 
     let mut links = record.links;
     let mut stored = 0;
@@ -434,15 +562,7 @@ pub async fn store_links(
         .earliest_readable_epoch()
         .map_err(|e| AppError::Internal(format!("walk the chain: {e}")))?;
 
-    store(
-        groups,
-        room_id,
-        &record.member_did,
-        room.group(),
-        links,
-        now,
-    )
-    .await?;
+    store(groups, member, room.group(), links, now).await?;
     Ok((earliest, stored))
 }
 
@@ -453,18 +573,17 @@ pub async fn store_links(
 /// different name.
 pub async fn open_record(
     groups: &KeyspaceHandle,
-    room_id: &str,
+    member: &Member,
     key: &str,
     version: u64,
     ciphertext: &str,
     nonce: &str,
     epoch: u32,
 ) -> Result<Vec<u8>, AppError> {
-    let record = load(groups, room_id).await?.ok_or_else(|| {
-        AppError::NotFound(format!(
-            "this VTA holds no group state for room `{room_id}`"
-        ))
-    })?;
+    let room_id = member.room_id();
+    let record = load(groups, member)
+        .await?
+        .ok_or_else(|| no_group(member))?;
     let group = RoomGroup::restore(&record.snapshot)
         .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?;
 
@@ -529,21 +648,28 @@ pub async fn consume_invitation(
         .map_err(|e| AppError::Internal(format!("record the invitation: {e}")))
 }
 
-/// The group this VTA holds for `room_id`, if any.
+/// The group this VTA holds for `member`, if any.
 pub async fn load(
     groups: &KeyspaceHandle,
-    room_id: &str,
+    member: &Member,
 ) -> Result<Option<RoomGroupRecord>, AppError> {
-    groups
-        .get(group_key(room_id))
-        .await
-        .map_err(|e| AppError::Internal(format!("read group state for `{room_id}`: {e}")))
+    groups.get(member.key(GROUP)).await.map_err(|e| {
+        AppError::Internal(format!("read group state for `{}`: {e}", member.room_id()))
+    })
+}
+
+/// The refusal for a member with no group state. Says nothing about whether another persona
+/// on this VTA holds the room — that is not the caller's to learn.
+fn no_group(member: &Member) -> AppError {
+    AppError::NotFound(format!(
+        "this VTA holds no group state for room `{}`",
+        member.room_id()
+    ))
 }
 
 async fn store(
     groups: &KeyspaceHandle,
-    room_id: &str,
-    member_did: &str,
+    member: &Member,
     group: &RoomGroup,
     links: Vec<EpochLink>,
     now: u64,
@@ -552,14 +678,16 @@ async fn store(
         snapshot: group
             .snapshot()
             .map_err(|e| AppError::Internal(format!("snapshot the group: {e}")))?,
-        member_did: member_did.to_string(),
+        member_did: member.persona().to_string(),
         links,
         updated_at: now,
     };
     groups
-        .insert(group_key(room_id), &record)
+        .insert(member.key(GROUP), &record)
         .await
-        .map_err(|e| AppError::Internal(format!("store group state for `{room_id}`: {e}")))
+        .map_err(|e| {
+            AppError::Internal(format!("store group state for `{}`: {e}", member.room_id()))
+        })
 }
 
 /// Why a group could not be founded.
@@ -585,11 +713,11 @@ pub enum CreateGroupError {
 /// the member's commits unreadable by everyone else.
 pub async fn create_group(
     groups: &KeyspaceHandle,
-    room_id: &str,
-    member_did: &str,
+    member: &Member,
     now: u64,
 ) -> Result<u32, CreateGroupError> {
-    if let Some(existing) = load(groups, room_id).await.map_err(CreateGroupError::App)? {
+    let room_id = member.room_id();
+    if let Some(existing) = load(groups, member).await.map_err(CreateGroupError::App)? {
         let group = RoomGroup::restore(&existing.snapshot).map_err(|e| {
             CreateGroupError::App(AppError::Internal(format!("restore the group: {e}")))
         })?;
@@ -597,38 +725,14 @@ pub async fn create_group(
             epoch: SealedRoom::new(room_id, group).room_epoch(),
         });
     }
-    let group = RoomGroup::create(member_did)
+    let group = RoomGroup::create(member.persona())
         .map_err(|e| CreateGroupError::App(AppError::Internal(format!("found the group: {e}"))))?;
     // The room epoch is the MLS epoch plus one, as `SealedRoom::room_epoch` has it.
     let epoch = u32::try_from(group.epoch() + 1).unwrap_or(u32::MAX);
-    store(groups, room_id, member_did, &group, Vec::new(), now)
+    store(groups, member, &group, Vec::new(), now)
         .await
         .map_err(CreateGroupError::App)?;
     Ok(epoch)
-}
-
-/// Storage key for the one epoch advance a room may have waiting on its host —
-/// an admission or a removal.
-///
-/// **One key, so one slot.** `rooms/owner/group/{add,remove}/0.1` item 3: a key
-/// holder holds at most one pending advance per room. Two would be two candidate
-/// successors of the same live group, of which the host can accept at most one;
-/// keeping both under one key makes the second unrepresentable rather than
-/// merely unlikely.
-fn pending_advance_key(room_id: &str) -> String {
-    format!("room-advance:{room_id}")
-}
-
-/// Where the slot lived while it could only hold an admission
-/// (`rooms/owner/group/add`, before removal existed).
-///
-/// **Read, never written.** A row left here by an earlier build is still a
-/// pending admission the host may have accepted, so it is settled like any
-/// other ([`pending_advance`] reads it as one, with `kind` defaulting to
-/// [`AdvanceKind::Admission`]) and cleared with the slot. Dropping it unread
-/// could strand this agent an epoch behind a room that did advance.
-fn legacy_pending_add_key(room_id: &str) -> String {
-    format!("room-add:{room_id}")
 }
 
 /// Which membership change a pending advance makes.
@@ -719,9 +823,10 @@ pub enum PrepareAddError {
 /// one holds the slot.
 async fn retain(
     groups: &KeyspaceHandle,
-    room_id: &str,
+    owner: &Member,
     pending: &PendingAdvance,
 ) -> Result<(), AppError> {
+    let room_id = owner.room_id();
     let taken = |found: &PendingAdvance| {
         AppError::Conflict(format!(
             "room `{room_id}` already has a pending {} to epoch {} waiting on host `{}`; \
@@ -731,22 +836,14 @@ async fn retain(
             found.host
         ))
     };
-    // A row in the legacy slot is an advance too (item 3 counts it).
-    if let Some(found) = groups
-        .get::<PendingAdvance>(legacy_pending_add_key(room_id))
-        .await
-        .map_err(|e| AppError::Internal(format!("read the pending admission: {e}")))?
-    {
-        return Err(taken(&found));
-    }
     let claimed = groups
-        .insert_if_absent(pending_advance_key(room_id), pending)
+        .insert_if_absent(owner.key(ADVANCE), pending)
         .await
         .map_err(|e| {
             AppError::Internal(format!("store the pending {}: {e}", pending.kind.noun()))
         })?;
     if !claimed {
-        let found = pending_advance(groups, room_id)
+        let found = pending_advance(groups, owner)
             .await?
             .unwrap_or_else(|| pending.clone());
         return Err(taken(&found));
@@ -754,18 +851,19 @@ async fn retain(
     Ok(())
 }
 
-/// Build the admission of `member` from their KeyPackage and retain it,
+/// Build the admission of `member` to `owner`'s group from their KeyPackage and retain it,
 /// durably, as a [`PendingAdvance`] — **before** anything is sent to a host
 /// (items 2 and 3). The live group is unchanged.
 pub async fn prepare_add(
     groups: &KeyspaceHandle,
-    room_id: &str,
+    owner: &Member,
     host: &str,
     member: &str,
     key_package: &[u8],
     now: u64,
 ) -> Result<PendingAdvance, PrepareAddError> {
-    let record = load(groups, room_id)
+    let room_id = owner.room_id();
+    let record = load(groups, owner)
         .await
         .map_err(PrepareAddError::App)?
         .ok_or(PrepareAddError::NoGroup)?;
@@ -806,7 +904,7 @@ pub async fn prepare_add(
         welcome: Some(B64.encode(&welcome)),
         created_at: now,
     };
-    retain(groups, room_id, &pending)
+    retain(groups, owner, &pending)
         .await
         .map_err(PrepareAddError::App)?;
     Ok(pending)
@@ -824,31 +922,25 @@ pub enum PrepareRemoveError {
     App(AppError),
 }
 
-/// Whether `member` is the leaf this agent holds the room's group as —
-/// `rooms/owner/group/remove/0.1`'s `ownLeaf`, answerable before anything else
-/// because the answer never changes while the group exists.
-pub async fn is_own_leaf(
-    groups: &KeyspaceHandle,
-    room_id: &str,
-    member: &str,
-) -> Result<bool, AppError> {
-    Ok(load(groups, room_id)
-        .await?
-        .is_some_and(|r| r.member_did == member))
-}
-
-/// Build the removal of `member`'s leaf and retain it, durably, as a
+/// Build the removal of `member`'s leaf from `owner`'s group and retain it, durably, as a
 /// [`PendingAdvance`] — **before** anything is sent to a host
 /// (`rooms/owner/group/remove/0.1` items 1 to 3). The live group is unchanged:
 /// the commit and the link are made on a copy, which is what is kept.
+///
+/// `ownLeaf` is `owner`'s own persona only. Another persona this VTA holds for somebody
+/// else is a different member of the room, and removable like any other.
 pub async fn prepare_remove(
     groups: &KeyspaceHandle,
-    room_id: &str,
+    owner: &Member,
     host: &str,
     member: &str,
     now: u64,
 ) -> Result<PendingAdvance, PrepareRemoveError> {
-    let record = load(groups, room_id)
+    let room_id = owner.room_id();
+    if owner.persona() == member {
+        return Err(PrepareRemoveError::OwnLeaf);
+    }
+    let record = load(groups, owner)
         .await
         .map_err(PrepareRemoveError::App)?
         .ok_or(PrepareRemoveError::NoGroup)?;
@@ -883,31 +975,24 @@ pub async fn prepare_remove(
         welcome: None,
         created_at: now,
     };
-    retain(groups, room_id, &pending)
+    retain(groups, owner, &pending)
         .await
         .map_err(PrepareRemoveError::App)?;
     Ok(pending)
 }
 
-/// The advance waiting on its host, if any — admission or removal.
+/// The advance `owner`'s group has waiting on its host, if any — admission or removal.
 ///
-/// Falls back to the admission-only slot an earlier build wrote
-/// ([`legacy_pending_add_key`]), so a row left there is settled, not lost.
+/// The admission-only slot an earlier build wrote (`room-add:<room>`) is moved here by
+/// [`migrate_legacy`], so a row left there is settled, not lost.
 pub async fn pending_advance(
     groups: &KeyspaceHandle,
-    room_id: &str,
+    owner: &Member,
 ) -> Result<Option<PendingAdvance>, AppError> {
-    if let Some(found) = groups
-        .get::<PendingAdvance>(pending_advance_key(room_id))
-        .await
-        .map_err(|e| AppError::Internal(format!("read the pending advance: {e}")))?
-    {
-        return Ok(Some(found));
-    }
     groups
-        .get::<PendingAdvance>(legacy_pending_add_key(room_id))
+        .get::<PendingAdvance>(owner.key(ADVANCE))
         .await
-        .map_err(|e| AppError::Internal(format!("read the pending admission: {e}")))
+        .map_err(|e| AppError::Internal(format!("read the pending advance: {e}")))
 }
 
 /// The host accepted the advance: the pending group becomes the live one
@@ -916,46 +1001,27 @@ pub async fn pending_advance(
 /// has, which [`reconcile_pending_advance`] recognises and clears.
 pub async fn promote_pending_advance(
     groups: &KeyspaceHandle,
-    room_id: &str,
+    owner: &Member,
     pending: &PendingAdvance,
     now: u64,
 ) -> Result<(), AppError> {
-    let record = load(groups, room_id).await?.ok_or_else(|| {
-        AppError::NotFound(format!(
-            "this VTA holds no group state for room `{room_id}`"
-        ))
-    })?;
+    load(groups, owner).await?.ok_or_else(|| no_group(owner))?;
     let group = RoomGroup::restore(&pending.snapshot)
         .map_err(|e| AppError::Internal(format!("restore the pending group: {e}")))?;
-    store(
-        groups,
-        room_id,
-        &record.member_did,
-        &group,
-        pending.links.clone(),
-        now,
-    )
-    .await?;
-    discard_pending_advance(groups, room_id).await
+    store(groups, owner, &group, pending.links.clone(), now).await?;
+    discard_pending_advance(groups, owner).await
 }
 
 /// The host refused, or the room has moved past it: forget the advance
-/// (items 5 and 6). The live group never changed. Clears the legacy
-/// admission-only slot too, so nothing settled is found again.
+/// (items 5 and 6). The live group never changed.
 pub async fn discard_pending_advance(
     groups: &KeyspaceHandle,
-    room_id: &str,
+    owner: &Member,
 ) -> Result<(), AppError> {
-    for key in [
-        pending_advance_key(room_id),
-        legacy_pending_add_key(room_id),
-    ] {
-        groups
-            .remove(key)
-            .await
-            .map_err(|e| AppError::Internal(format!("clear the pending advance: {e}")))?;
-    }
-    Ok(())
+    groups
+        .remove(owner.key(ADVANCE))
+        .await
+        .map_err(|e| AppError::Internal(format!("clear the pending advance: {e}")))
 }
 
 /// What a found pending advance turned out to be, given the host's epoch.
@@ -973,14 +1039,14 @@ pub enum Reconciled {
 /// Item 6: settle a pending advance against the epoch the host reports.
 pub async fn reconcile_pending_advance(
     groups: &KeyspaceHandle,
-    room_id: &str,
+    owner: &Member,
     pending: &PendingAdvance,
     host_epoch: u32,
     now: u64,
 ) -> Result<Reconciled, AppError> {
-    let live_epoch = match load(groups, room_id).await? {
+    let live_epoch = match load(groups, owner).await? {
         Some(r) => SealedRoom::new(
-            room_id,
+            owner.room_id(),
             RoomGroup::restore(&r.snapshot)
                 .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?,
         )
@@ -989,14 +1055,14 @@ pub async fn reconcile_pending_advance(
     };
     if live_epoch == pending.epoch {
         // Promoted already; only the pending row survived a crash.
-        discard_pending_advance(groups, room_id).await?;
+        discard_pending_advance(groups, owner).await?;
         return Ok(Reconciled::Applied);
     }
     if host_epoch == pending.epoch {
-        promote_pending_advance(groups, room_id, pending, now).await?;
+        promote_pending_advance(groups, owner, pending, now).await?;
         return Ok(Reconciled::Applied);
     }
-    discard_pending_advance(groups, room_id).await?;
+    discard_pending_advance(groups, owner).await?;
     Ok(if host_epoch == live_epoch {
         Reconciled::Discarded
     } else {
@@ -1004,38 +1070,177 @@ pub async fn reconcile_pending_advance(
     })
 }
 
-/// Write `pending` where the admission-only build kept it, for tests that a row
-/// left there is still settled.
-#[cfg(test)]
-pub(crate) async fn store_legacy_pending_add_for_test(
+// ─── Migration from the per-room keying ──────────────────────────────────
+
+/// Rooms with a group row the per-room build wrote (`room-group:<roomId>`), not yet moved.
+pub async fn legacy_rooms(groups: &KeyspaceHandle) -> Result<Vec<String>, AppError> {
+    let keys = groups
+        .prefix_keys(legacy::GROUP_PREFIX.as_bytes().to_vec())
+        .await?;
+    Ok(keys
+        .into_iter()
+        .filter_map(|k| {
+            String::from_utf8_lossy(&k)
+                .strip_prefix(legacy::GROUP_PREFIX)
+                .map(str::to_string)
+        })
+        .collect())
+}
+
+/// The group row the per-room build wrote for `room_id`, if it is still there.
+pub async fn legacy_group(
     groups: &KeyspaceHandle,
     room_id: &str,
-    pending: &serde_json::Value,
-) -> Result<(), AppError> {
+) -> Result<Option<RoomGroupRecord>, AppError> {
     groups
-        .insert(legacy_pending_add_key(room_id), pending)
+        .get(legacy::group(room_id))
         .await
-        .map_err(|e| AppError::Internal(format!("store a legacy pending admission: {e}")))
+        .map_err(|e| AppError::Internal(format!("read legacy group state for `{room_id}`: {e}")))
+}
+
+/// What [`migrate_legacy`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Migrated {
+    /// Nothing to move.
+    Nothing,
+    /// The room's rows now live under the member.
+    Moved,
+    /// The member already holds group state of its own for the room: the legacy row was
+    /// left where it is, unmerged, rather than chosen between.
+    Kept,
+}
+
+/// Move what a build keyed by room alone holds for `member.room_id()` under `member`.
+///
+/// The caller decides who the rows belong to ([`crate::operations::room_member`] — the
+/// persona the group's own leaf identifies); this only moves them, so it is safe to run on
+/// every touch and from any number of requests at once:
+///
+/// - The pending KeyPackage, advance (either slot) and root memory move first, the group
+///   row last. Each is one atomic [`KeyspaceHandle::move_if_unchanged`], so a crash leaves
+///   the group row in place and the next touch finishes the job.
+/// - A KeyPackage is moved only when its leaf identifies `member`: a package minted for
+///   somebody else is not theirs to join with.
+/// - Nothing already under `member` is overwritten. A target that exists wins, and the
+///   legacy row is left alone rather than merged — two group states are not reconcilable.
+pub async fn migrate_legacy(
+    groups: &KeyspaceHandle,
+    member: &Member,
+) -> Result<Migrated, AppError> {
+    let room_id = member.room_id();
+    let Some(group_raw) = groups.get_raw(legacy::group(room_id)).await? else {
+        return Ok(Migrated::Nothing);
+    };
+
+    // The KeyPackage, only if it is this member's.
+    if let Some(raw) = groups.get_raw(legacy::key_package(room_id)).await?
+        && let Ok(kp) = serde_json::from_slice::<PendingKeyPackage>(&raw)
+        && kp.snapshot.member_did() == member.persona()
+    {
+        move_row(
+            groups,
+            legacy::key_package(room_id),
+            raw,
+            member.key(KEY_PACKAGE),
+            &kp,
+        )
+        .await?;
+    }
+    // The advance — the generalised slot, then the admission-only one. One slot per member,
+    // so whichever arrives second finds it taken and stays put (and is reported below).
+    for old in [legacy::advance(room_id), legacy::add(room_id)] {
+        if let Some(raw) = groups.get_raw(old.clone()).await?
+            && let Ok(advance) = serde_json::from_slice::<PendingAdvance>(&raw)
+        {
+            move_row(groups, old, raw, member.key(ADVANCE), &advance).await?;
+        }
+    }
+    if let Some(raw) = groups.get_raw(legacy::roots(room_id)).await?
+        && let Ok(roots) = serde_json::from_slice::<RootHistory>(&raw)
+    {
+        move_row(
+            groups,
+            legacy::roots(room_id),
+            raw,
+            member.key(ROOTS),
+            &roots,
+        )
+        .await?;
+    }
+
+    let record: RoomGroupRecord = serde_json::from_slice(&group_raw).map_err(|e| {
+        AppError::Internal(format!("decode legacy group state for `{room_id}`: {e}"))
+    })?;
+    Ok(
+        match move_row(
+            groups,
+            legacy::group(room_id),
+            group_raw,
+            member.key(GROUP),
+            &record,
+        )
+        .await?
+        {
+            MoveOutcome::Moved | MoveOutcome::SourceMissing | MoveOutcome::SourceChanged => {
+                Migrated::Moved
+            }
+            MoveOutcome::TargetExists => {
+                tracing::warn!(
+                    room = %room_id,
+                    member = %member.persona(),
+                    "a group row from before per-member keying was left in place: this \
+                     member already holds group state of its own for the room"
+                );
+                Migrated::Kept
+            }
+        },
+    )
+}
+
+async fn move_row<V: serde::Serialize>(
+    groups: &KeyspaceHandle,
+    old: String,
+    expected: Vec<u8>,
+    new: String,
+    value: &V,
+) -> Result<MoveOutcome, AppError> {
+    groups
+        .move_if_unchanged(old, expected, new, value)
+        .await
+        .map_err(|e| AppError::Internal(format!("migrate room state: {e}")))
+}
+
+/// Write rows as the per-room build did, for tests of an upgraded store.
+#[cfg(test)]
+pub(crate) mod legacy_for_test {
+    use super::*;
+
+    pub(crate) async fn store_group(
+        groups: &KeyspaceHandle,
+        room_id: &str,
+        record: &RoomGroupRecord,
+    ) {
+        groups.insert(legacy::group(room_id), record).await.unwrap();
+    }
+
+    pub(crate) async fn store_pending_add(
+        groups: &KeyspaceHandle,
+        room_id: &str,
+        pending: &serde_json::Value,
+    ) {
+        groups.insert(legacy::add(room_id), pending).await.unwrap();
+    }
 }
 
 /// Store a group as `join` would, for tests that need a room held at some epoch.
 #[cfg(test)]
 pub(crate) async fn store_for_test(
     groups: &KeyspaceHandle,
-    room_id: &str,
-    member_did: &str,
+    member: &Member,
     group: &RoomGroup,
     links: Vec<EpochLink>,
 ) -> Result<(), AppError> {
-    store(groups, room_id, member_did, group, links, 0).await
-}
-
-/// Prefix for what a host has told this agent about a room's tree.
-const ROOTS_PREFIX: &str = "room-roots:";
-
-/// Storage key for a room's observed roots.
-fn roots_key(room_id: &str) -> String {
-    format!("{ROOTS_PREFIX}{room_id}")
+    store(groups, member, group, links, 0).await
 }
 
 /// How many `(headVersion, root)` observations to keep per room.
@@ -1053,7 +1258,8 @@ const KEEP_ROOTS: usize = 16;
 
 /// What a host has said about a room's tree, over time.
 ///
-/// **Keyed by room, not by host**, and that is the decision worth not undoing. A
+/// **Keyed by room and member, not by host**, and the host half is the decision worth
+/// not undoing. A
 /// room's tree at version `V` is a fact about the *room*; who served it is not
 /// part of that fact. Keying by `(room, host)` would file two hosts of one room
 /// in two drawers and never compare them — and a room may deliberately have
@@ -1064,6 +1270,10 @@ const KEEP_ROOTS: usize = 16;
 /// `headVersion`** is exactly as damning as one host disagreeing with itself.
 /// That is a comparison the specification's own list does not include, and it
 /// needs no gossip channel, no anchor and no second member.
+///
+/// The member half is context isolation. It is a record of when one member read one room,
+/// and two personas sharing this VTA are two people whose reading is none of each other's
+/// business — so each keeps its own, as each keeps its own group.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RootHistory {
@@ -1116,16 +1326,13 @@ pub enum RootVerdict {
 /// acquired it.
 pub async fn observe_head(
     groups: &KeyspaceHandle,
-    room_id: &str,
+    member: &Member,
     head_version: u64,
     root: &str,
 ) -> Result<RootVerdict, AppError> {
-    let key = roots_key(room_id);
-    let mut history: RootHistory = groups
-        .get(key.clone())
-        .await
-        .map_err(|e| AppError::Internal(format!("read the root history of `{room_id}`: {e}")))?
-        .unwrap_or_default();
+    let room_id = member.room_id();
+    let key = member.key(ROOTS);
+    let mut history = root_history(groups, member).await?;
 
     let verdict = match history.seen.iter().find(|o| o.head_version == head_version) {
         Some(prior) if prior.root == root => RootVerdict::Agree,
@@ -1166,12 +1373,26 @@ pub async fn observe_head(
 
 /// Everything this agent has been told about a room's tree, for a caller that
 /// wants to compare out of band.
-pub async fn root_history(groups: &KeyspaceHandle, room_id: &str) -> Result<RootHistory, AppError> {
-    groups
-        .get(roots_key(room_id))
+///
+/// A member with none of its own reads the one the per-room build kept, if any: that
+/// memory was this VTA's before members were told apart, and dropping it on upgrade would
+/// exonerate a host it had already caught. The member's first observation then writes it
+/// forward under the member.
+pub async fn root_history(
+    groups: &KeyspaceHandle,
+    member: &Member,
+) -> Result<RootHistory, AppError> {
+    let room_id = member.room_id();
+    let read =
+        |e: AppError| AppError::Internal(format!("read the root history of `{room_id}`: {e}"));
+    if let Some(h) = groups.get(member.key(ROOTS)).await.map_err(read)? {
+        return Ok(h);
+    }
+    Ok(groups
+        .get(legacy::roots(room_id))
         .await
-        .map_err(|e| AppError::Internal(format!("read the root history of `{room_id}`: {e}")))
-        .map(Option::unwrap_or_default)
+        .map_err(read)?
+        .unwrap_or_default())
 }
 
 /// Discard everything this VTA holds for a room.
@@ -1179,24 +1400,28 @@ pub async fn root_history(groups: &KeyspaceHandle, room_id: &str) -> Result<Root
 /// Called on removal from the group. A key-holder that kept its state would retain the
 /// ability to open everything sealed up to the epoch it was removed at — which is exactly
 /// what the removal was for.
-pub async fn forget(groups: &KeyspaceHandle, room_id: &str) -> Result<(), AppError> {
+///
+/// One member's, and only theirs: another persona on this VTA in the same room was not
+/// removed.
+pub async fn forget(groups: &KeyspaceHandle, member: &Member) -> Result<(), AppError> {
+    let room_id = member.room_id();
     groups
-        .remove(group_key(room_id))
+        .remove(member.key(GROUP))
         .await
         .map_err(|e| AppError::Internal(format!("discard group state for `{room_id}`: {e}")))?;
     groups
-        .remove(pending_key(room_id))
+        .remove(member.key(KEY_PACKAGE))
         .await
         .map_err(|e| AppError::Internal(format!("discard a pending key package: {e}")))?;
     // An advance this agent built for a group it no longer holds can never be
     // promoted; leaving it would hand whoever rejoins a stale successor to settle.
-    discard_pending_advance(groups, room_id).await?;
+    discard_pending_advance(groups, member).await?;
     // The root history goes with the membership. It carries no record content,
     // but it is a record of when this member read this room, and an agent that
     // kept it afterwards would be keeping a diary of a room its principal can no
     // longer open.
     groups
-        .remove(roots_key(room_id))
+        .remove(member.key(ROOTS))
         .await
         .map_err(|e| AppError::Internal(format!("discard the root history of `{room_id}`: {e}")))
 }
@@ -1208,9 +1433,10 @@ pub async fn forget(groups: &KeyspaceHandle, room_id: &str) -> Result<(), AppErr
 /// own authenticator differs from the anchored one is in a *forked group*.
 pub async fn epoch_authenticator(
     groups: &KeyspaceHandle,
-    room_id: &str,
+    member: &Member,
 ) -> Result<(u64, Vec<u8>), AppError> {
-    let record = load(groups, room_id).await?.ok_or_else(|| {
+    let room_id = member.room_id();
+    let record = load(groups, member).await?.ok_or_else(|| {
         AppError::Validation(format!(
             "this agent holds no group state for `{room_id}`, so it cannot say what epoch the \
              room is at"
@@ -1231,6 +1457,10 @@ mod root_memory_tests {
     use vti_common::store::Store;
 
     const ROOM: &str = "did:webvh:example.com:rooms:northwind";
+
+    fn member() -> Member {
+        Member::new(ROOM, "did:key:zAlice").unwrap()
+    }
     const A: &str = "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR";
     const B: &str = "zQmXo1sV5aJ7bT2kQdF9wRnPzYcH4uMgLtEjV6NrBqWsDpK";
 
@@ -1249,7 +1479,7 @@ mod root_memory_tests {
     async fn a_first_reading_holds_nothing_to_compare() {
         let (_d, ks) = open().await;
         assert_eq!(
-            observe_head(&ks, ROOM, 412, A).await.unwrap(),
+            observe_head(&ks, &member(), 412, A).await.unwrap(),
             RootVerdict::NoneHeld
         );
     }
@@ -1258,13 +1488,13 @@ mod root_memory_tests {
     #[tokio::test]
     async fn two_roots_at_one_version_is_a_host_caught() {
         let (_d, ks) = open().await;
-        observe_head(&ks, ROOM, 412, A).await.unwrap();
+        observe_head(&ks, &member(), 412, A).await.unwrap();
         assert_eq!(
-            observe_head(&ks, ROOM, 412, A).await.unwrap(),
+            observe_head(&ks, &member(), 412, A).await.unwrap(),
             RootVerdict::Agree
         );
         assert_eq!(
-            observe_head(&ks, ROOM, 412, B).await.unwrap(),
+            observe_head(&ks, &member(), 412, B).await.unwrap(),
             RootVerdict::Conflict
         );
     }
@@ -1274,9 +1504,9 @@ mod root_memory_tests {
     #[tokio::test]
     async fn a_different_version_is_a_different_moment() {
         let (_d, ks) = open().await;
-        observe_head(&ks, ROOM, 412, A).await.unwrap();
+        observe_head(&ks, &member(), 412, A).await.unwrap();
         assert_eq!(
-            observe_head(&ks, ROOM, 413, B).await.unwrap(),
+            observe_head(&ks, &member(), 413, B).await.unwrap(),
             RootVerdict::NoneHeld,
             "a write moved the head, so a different root explains itself"
         );
@@ -1290,10 +1520,10 @@ mod root_memory_tests {
     #[tokio::test]
     async fn a_head_that_goes_backwards_is_still_compared() {
         let (_d, ks) = open().await;
-        observe_head(&ks, ROOM, 412, A).await.unwrap();
-        observe_head(&ks, ROOM, 500, B).await.unwrap();
+        observe_head(&ks, &member(), 412, A).await.unwrap();
+        observe_head(&ks, &member(), 500, B).await.unwrap();
         assert_eq!(
-            observe_head(&ks, ROOM, 412, B).await.unwrap(),
+            observe_head(&ks, &member(), 412, B).await.unwrap(),
             RootVerdict::Conflict,
             "the older version is still held, and its root still disagrees"
         );
@@ -1306,9 +1536,9 @@ mod root_memory_tests {
     async fn the_history_is_bounded_and_the_high_water_mark_survives_it() {
         let (_d, ks) = open().await;
         for v in 1..=(KEEP_ROOTS as u64 + 5) {
-            observe_head(&ks, ROOM, v, A).await.unwrap();
+            observe_head(&ks, &member(), v, A).await.unwrap();
         }
-        let history = root_history(&ks, ROOM).await.unwrap();
+        let history = root_history(&ks, &member()).await.unwrap();
         assert_eq!(history.seen.len(), KEEP_ROOTS);
         assert_eq!(history.highest, KEEP_ROOTS as u64 + 5);
         assert_eq!(
@@ -1323,10 +1553,10 @@ mod root_memory_tests {
     #[tokio::test]
     async fn forgetting_a_room_forgets_what_its_host_said() {
         let (_d, ks) = open().await;
-        observe_head(&ks, ROOM, 412, A).await.unwrap();
-        forget(&ks, ROOM).await.unwrap();
+        observe_head(&ks, &member(), 412, A).await.unwrap();
+        forget(&ks, &member()).await.unwrap();
         assert_eq!(
-            observe_head(&ks, ROOM, 412, B).await.unwrap(),
+            observe_head(&ks, &member(), 412, B).await.unwrap(),
             RootVerdict::NoneHeld,
             "nothing survived the removal to compare against"
         );
@@ -1340,6 +1570,10 @@ mod file_key_tests {
     use vti_common::store::Store;
 
     const ROOM: &str = "did:webvh:example.com:rooms:northwind";
+
+    fn member() -> Member {
+        Member::new(ROOM, "did:key:zAlice").unwrap()
+    }
 
     async fn open() -> (tempfile::TempDir, KeyspaceHandle) {
         let dir = tempfile::tempdir().unwrap();
@@ -1357,9 +1591,7 @@ mod file_key_tests {
         let (_bob, kp) = IdentitySnapshot::mint("did:key:zBob").unwrap();
         room.add_member(&kp).unwrap();
         let links = if chained { room.links() } else { Vec::new() };
-        store(ks, ROOM, "did:key:zAlice", room.group(), links, 0)
-            .await
-            .unwrap();
+        store(ks, &member(), room.group(), links, 0).await.unwrap();
         room
     }
 
@@ -1369,11 +1601,11 @@ mod file_key_tests {
         let room = held(&ks, true).await;
         let id = [4u8; 32];
 
-        let (seal_key, epoch) = file_key(&ks, ROOM, &id, None).await.unwrap();
+        let (seal_key, epoch) = file_key(&ks, &member(), &id, None).await.unwrap();
         assert_eq!(epoch, 2, "a sealing key is always the current epoch");
         assert_eq!(seal_key, room.file_key_for_seal(&id).unwrap().0);
 
-        let (open_key, e) = file_key(&ks, ROOM, &id, Some(2)).await.unwrap();
+        let (open_key, e) = file_key(&ks, &member(), &id, Some(2)).await.unwrap();
         assert_eq!((open_key, e), (seal_key, 2));
     }
 
@@ -1381,11 +1613,14 @@ mod file_key_tests {
     async fn an_earlier_epoch_is_reached_through_the_chain() {
         let (_d, ks) = open().await;
         held(&ks, true).await;
-        let (k1, e) = file_key(&ks, ROOM, &[4u8; 32], Some(1)).await.unwrap();
+        let (k1, e) = file_key(&ks, &member(), &[4u8; 32], Some(1)).await.unwrap();
         assert_eq!(e, 1);
         assert_ne!(
             k1,
-            file_key(&ks, ROOM, &[4u8; 32], Some(2)).await.unwrap().0
+            file_key(&ks, &member(), &[4u8; 32], Some(2))
+                .await
+                .unwrap()
+                .0
         );
     }
 
@@ -1394,11 +1629,11 @@ mod file_key_tests {
         let (_d, ks) = open().await;
         held(&ks, false).await;
         assert!(matches!(
-            file_key(&ks, ROOM, &[4u8; 32], Some(3)).await,
+            file_key(&ks, &member(), &[4u8; 32], Some(3)).await,
             Err(FileKeyError::NotDelivered { epoch: 3, held: 2 })
         ));
         assert!(matches!(
-            file_key(&ks, ROOM, &[4u8; 32], Some(1)).await,
+            file_key(&ks, &member(), &[4u8; 32], Some(1)).await,
             Err(FileKeyError::BeyondChain {
                 epoch: 1,
                 earliest: 2
@@ -1410,8 +1645,187 @@ mod file_key_tests {
     async fn no_group_is_not_found() {
         let (_d, ks) = open().await;
         assert!(matches!(
-            file_key(&ks, ROOM, &[4u8; 32], None).await,
+            file_key(&ks, &member(), &[4u8; 32], None).await,
             Err(FileKeyError::NoGroup)
         ));
+    }
+}
+
+#[cfg(test)]
+mod per_member_storage_tests {
+    use super::*;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    const ROOM: &str = "did:webvh:example.com:rooms:northwind";
+    const ALICE: &str = "did:key:zAlice";
+    const BOB: &str = "did:key:zBob";
+
+    async fn open() -> (tempfile::TempDir, KeyspaceHandle) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace(crate::keyspaces::ROOM_GROUPS).unwrap();
+        (dir, ks)
+    }
+
+    fn m(persona: &str) -> Member {
+        Member::new(ROOM, persona).unwrap()
+    }
+
+    /// A key that two different (room, persona) pairs could both produce would put one
+    /// member's secrets under another's name.
+    #[test]
+    fn identifiers_that_would_make_the_key_ambiguous_are_refused() {
+        assert!(Member::new("did:key:zA/b", ALICE).is_err());
+        assert!(Member::new(ROOM, "did:key:zA/b").is_err());
+        assert!(Member::new("", ALICE).is_err());
+    }
+
+    /// Two members of one room on one VTA are two rows, found by room.
+    #[tokio::test]
+    async fn two_members_of_one_room_are_two_groups() {
+        let (_d, ks) = open().await;
+        for who in [ALICE, BOB] {
+            create_group(&ks, &m(who), 0).await.unwrap();
+        }
+        let mut held: Vec<String> = holders(&ks, ROOM)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|m| m.persona().to_string())
+            .collect();
+        held.sort();
+        assert_eq!(held, vec![ALICE.to_string(), BOB.to_string()]);
+        assert!(matches!(
+            create_group(&ks, &m(ALICE), 0).await,
+            Err(CreateGroupError::AlreadyExists { .. })
+        ));
+    }
+
+    /// A host caught by one member's reading is that member's finding. The other member's
+    /// memory is its own — a record of when somebody else read the room is not theirs.
+    #[tokio::test]
+    async fn root_memory_is_the_members_own() {
+        let (_d, ks) = open().await;
+        observe_head(&ks, &m(ALICE), 412, "zA").await.unwrap();
+        assert_eq!(
+            observe_head(&ks, &m(ALICE), 412, "zB").await.unwrap(),
+            RootVerdict::Conflict
+        );
+        assert_eq!(
+            observe_head(&ks, &m(BOB), 412, "zB").await.unwrap(),
+            RootVerdict::NoneHeld,
+            "bob holds no memory of alice's reading"
+        );
+        assert!(
+            root_history(&ks, &m(BOB))
+                .await
+                .unwrap()
+                .caught_at
+                .is_none()
+        );
+    }
+
+    /// Everything the per-room build kept moves with the group, under the member its leaf
+    /// identifies; a package minted for somebody else stays put; and a second run is a
+    /// no-op rather than a second move.
+    #[tokio::test]
+    async fn a_legacy_room_moves_whole_under_its_member() {
+        let (_d, ks) = open().await;
+        let group = RoomGroup::create(ALICE).unwrap();
+        let record = RoomGroupRecord {
+            snapshot: group.snapshot().unwrap(),
+            member_did: ALICE.into(),
+            links: Vec::new(),
+            updated_at: 7,
+        };
+        ks.insert(legacy::group(ROOM), &record).await.unwrap();
+        let (snapshot, kp) = IdentitySnapshot::mint(BOB).unwrap();
+        let bobs_package = PendingKeyPackage {
+            snapshot,
+            key_package: B64.encode(kp),
+            expires_at: 9,
+        };
+        ks.insert(legacy::key_package(ROOM), &bobs_package)
+            .await
+            .unwrap();
+        ks.insert(
+            legacy::roots(ROOM),
+            &RootHistory {
+                caught_at: Some(3),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            migrate_legacy(&ks, &m(ALICE)).await.unwrap(),
+            Migrated::Moved
+        );
+        assert_eq!(load(&ks, &m(ALICE)).await.unwrap().unwrap().updated_at, 7);
+        assert_eq!(
+            root_history(&ks, &m(ALICE)).await.unwrap().caught_at,
+            Some(3),
+            "a host caught before the upgrade stays caught"
+        );
+        assert!(ks.get_raw(legacy::group(ROOM)).await.unwrap().is_none());
+        assert!(ks.get_raw(legacy::roots(ROOM)).await.unwrap().is_none());
+        assert!(
+            ks.get_raw(legacy::key_package(ROOM))
+                .await
+                .unwrap()
+                .is_some(),
+            "bob's package is not alice's to take"
+        );
+        assert!(
+            ks.get_raw(m(ALICE).key(KEY_PACKAGE))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            migrate_legacy(&ks, &m(ALICE)).await.unwrap(),
+            Migrated::Nothing
+        );
+
+        // Bob's package moves when bob's Welcome looks for it.
+        assert_eq!(
+            legacy_key_package(&ks, &m(BOB))
+                .await
+                .unwrap()
+                .map(|p| p.expires_at),
+            Some(9)
+        );
+        assert!(
+            ks.get_raw(legacy::key_package(ROOM))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// A member who already holds a group of their own is not given a second one: the
+    /// legacy row stays where it is, unmerged.
+    #[tokio::test]
+    async fn a_legacy_row_never_overwrites_a_members_own_group() {
+        let (_d, ks) = open().await;
+        create_group(&ks, &m(ALICE), 42).await.unwrap();
+        let record = RoomGroupRecord {
+            snapshot: RoomGroup::create(ALICE).unwrap().snapshot().unwrap(),
+            member_did: ALICE.into(),
+            links: Vec::new(),
+            updated_at: 7,
+        };
+        ks.insert(legacy::group(ROOM), &record).await.unwrap();
+        assert_eq!(
+            migrate_legacy(&ks, &m(ALICE)).await.unwrap(),
+            Migrated::Kept
+        );
+        assert_eq!(load(&ks, &m(ALICE)).await.unwrap().unwrap().updated_at, 42);
+        assert!(ks.get_raw(legacy::group(ROOM)).await.unwrap().is_some());
     }
 }

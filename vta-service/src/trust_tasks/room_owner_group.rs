@@ -32,9 +32,10 @@ use vti_common::error::AppError;
 
 use crate::auth::AuthClaims;
 use crate::operations::room_groups::{
-    self, CreateGroupError, PendingAdvance, PrepareAddError, PrepareRemoveError, Reconciled,
+    self, CreateGroupError, Member, PendingAdvance, PrepareAddError, PrepareRemoveError, Reconciled,
 };
 use crate::operations::room_host::{RoomTaskError, send_room_task_typed};
+use crate::operations::room_member;
 use crate::server::AppState;
 
 use super::TrustTaskOutcome;
@@ -99,7 +100,13 @@ pub(super) async fn handle_create(
         Ok(m) => m,
         Err(e) => return app_error_to_reject(&doc, e),
     };
-    match room_groups::create_group(&state.room_groups_ks, room_id, &member, now()).await {
+    // Founded under that persona. Another persona on this VTA holding a group for the same
+    // room is another member, and its group is not this one's to refuse over.
+    let member = match room_member::member_as(state, auth, room_id, &member).await {
+        Ok(m) => m,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+    match room_groups::create_group(&state.room_groups_ks, &member, now()).await {
         Ok(epoch) => {
             record(state, "rooms.owner.group.create", auth, room_id).await;
             success_response(
@@ -153,7 +160,7 @@ pub(super) async fn handle_add(
     let host = req.host.as_str().to_string();
     let member = req.member.as_str().to_string();
 
-    if let Err(r) = require_group(state, &doc, &room_id, codes::NO_GROUP).await {
+    if let Err(r) = require_group(state, auth, &doc, &room_id, codes::NO_GROUP).await {
         return r;
     }
 
@@ -193,7 +200,7 @@ pub(super) async fn handle_add(
     // Items 2 and 3: built on a copy and retained durably before the host is contacted.
     let pending = match room_groups::prepare_add(
         &state.room_groups_ks,
-        &room_id,
+        &host_call.owner_member,
         &host,
         &member,
         &key_package,
@@ -293,13 +300,12 @@ pub(super) async fn handle_remove(
     // Item 1, the parts that need nobody else: no group, and this agent's own leaf. A key
     // holder never removes itself — an owner leaving hands the room on with
     // rooms/owner/transfer — and that answer does not wait on a host.
-    if let Err(r) = require_group(state, &doc, &room_id, codes::NO_GROUP).await {
-        return r;
-    }
-    match room_groups::is_own_leaf(&state.room_groups_ks, &room_id, &member).await {
-        Ok(true) => return own_leaf(&doc, &room_id, &member),
-        Ok(false) => {}
-        Err(e) => return app_error_to_reject(&doc, e),
+    match require_group(state, auth, &doc, &room_id, codes::NO_GROUP).await {
+        Err(r) => return r,
+        // The leaf of the persona the caller holds the group as — never another persona's
+        // this VTA holds for somebody else, who is a member like any other.
+        Ok(Some(held)) if held.persona() == member => return own_leaf(&doc, &room_id, &member),
+        Ok(_) => {}
     }
 
     let (_, resolver) = match outbound_identity(state, &doc).await {
@@ -325,30 +331,35 @@ pub(super) async fn handle_remove(
 
     // Items 1 to 3: refused, or built on a copy and retained durably before the host is
     // contacted.
-    let pending =
-        match room_groups::prepare_remove(&state.room_groups_ks, &room_id, &host, &member, now())
-            .await
-        {
-            Ok(p) => p,
-            Err(PrepareRemoveError::NoGroup) => {
-                return reject_with_code(
-                    &doc,
-                    declared(codes::NO_GROUP),
-                    format!("this agent holds no group for room `{room_id}`"),
-                    None,
-                );
-            }
-            Err(PrepareRemoveError::NotMember) => {
-                return reject_with_code(
-                    &doc,
-                    declared(codes::NOT_MEMBER),
-                    format!("`{member}` has no leaf in room `{room_id}`'s group"),
-                    None,
-                );
-            }
-            Err(PrepareRemoveError::OwnLeaf) => return own_leaf(&doc, &room_id, &member),
-            Err(PrepareRemoveError::App(e)) => return app_error_to_reject(&doc, e),
-        };
+    let pending = match room_groups::prepare_remove(
+        &state.room_groups_ks,
+        &host_call.owner_member,
+        &host,
+        &member,
+        now(),
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(PrepareRemoveError::NoGroup) => {
+            return reject_with_code(
+                &doc,
+                declared(codes::NO_GROUP),
+                format!("this agent holds no group for room `{room_id}`"),
+                None,
+            );
+        }
+        Err(PrepareRemoveError::NotMember) => {
+            return reject_with_code(
+                &doc,
+                declared(codes::NOT_MEMBER),
+                format!("`{member}` has no leaf in room `{room_id}`'s group"),
+                None,
+            );
+        }
+        Err(PrepareRemoveError::OwnLeaf) => return own_leaf(&doc, &room_id, &member),
+        Err(PrepareRemoveError::App(e)) => return app_error_to_reject(&doc, e),
+    };
 
     // Items 4 and 5.
     if let Err(r) = host_call
@@ -390,15 +401,22 @@ fn own_leaf(doc: &TrustTask<Value>, room_id: &str, member: &str) -> TrustTaskOut
     )
 }
 
-/// `noGroup` unless this agent holds the room's group.
+/// `noGroup` unless this agent holds the room's group for a persona the caller acts as.
+///
+/// The member it is held as, where there is exactly one; `None` where the caller acts as
+/// several holding the room — which persona owns it is then the owner credentials' answer
+/// ([`HostCall::as_owner`]), not a guess here. A persona in another context is not one the
+/// caller acts as, and its group answers `noGroup` like a room nobody here holds.
 async fn require_group(
     state: &AppState,
+    auth: &AuthClaims,
     doc: &TrustTask<Value>,
     room_id: &str,
     no_group: DeclaredErrorCode,
-) -> Result<(), TrustTaskOutcome> {
-    match room_groups::load(&state.room_groups_ks, room_id).await {
-        Ok(Some(_)) => Ok(()),
+) -> Result<Option<Member>, TrustTaskOutcome> {
+    match room_member::acting(state, auth, room_id).await {
+        Ok(Some(m)) => Ok(Some(m)),
+        Err(AppError::Conflict(_)) => Ok(None),
         Ok(None) => Err(reject_with_code(
             doc,
             declared(no_group),
@@ -500,6 +518,9 @@ struct HostCall<'a> {
     state: &'a AppState,
     auth: &'a AuthClaims,
     owner: crate::operations::room_oracle::Principal,
+    /// The owner persona as a member of the room: whose group is advanced, whose one
+    /// pending advance is settled, and whose root memory gates the write.
+    owner_member: Member,
     resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
     room_id: &'a str,
 }
@@ -522,10 +543,15 @@ impl<'a> HostCall<'a> {
             }
             Err(e) => return Err(app_error_to_reject(doc, e)),
         };
+        let owner_member = match room_member::member_as(state, auth, room_id, &owner.did).await {
+            Ok(m) => m,
+            Err(e) => return Err(app_error_to_reject(doc, e)),
+        };
         Ok(Self {
             state,
             auth,
             owner,
+            owner_member,
             resolver,
             room_id,
         })
@@ -535,7 +561,7 @@ impl<'a> HostCall<'a> {
         send_room_task_typed(
             signing_context(self.state, self.auth),
             &self.state.room_groups_ks,
-            self.room_id,
+            &self.owner_member,
             &crate::operations::outbound::Outbound::from_app_state(self.state, self.resolver),
             host,
             &self.owner.key.key_id,
@@ -587,7 +613,11 @@ impl<'a> HostCall<'a> {
         codes: &AdvanceCodes,
     ) -> Result<(), TrustTaskOutcome> {
         let room_id = self.room_id;
-        let pending = match room_groups::pending_advance(&self.state.room_groups_ks, room_id).await
+        let pending = match room_groups::pending_advance(
+            &self.state.room_groups_ks,
+            &self.owner_member,
+        )
+        .await
         {
             Ok(Some(p)) => p,
             Ok(None) => return Ok(()),
@@ -609,7 +639,7 @@ impl<'a> HostCall<'a> {
         })?;
         match room_groups::reconcile_pending_advance(
             &self.state.room_groups_ks,
-            room_id,
+            &self.owner_member,
             &pending,
             host_epoch,
             now(),
@@ -691,7 +721,9 @@ impl<'a> HostCall<'a> {
             // A refusal is the host's answer — the advance did not happen — so the pending
             // advance is discarded and the live group never moved.
             Err(RoomTaskError::Refused { code, reason, .. }) => {
-                if let Err(e) = room_groups::discard_pending_advance(groups, room_id).await {
+                if let Err(e) =
+                    room_groups::discard_pending_advance(groups, &self.owner_member).await
+                {
                     return Err(app_error_to_reject(doc, e));
                 }
                 if code == "rooms/epoch/mint:nonSequential" {
@@ -731,7 +763,7 @@ impl<'a> HostCall<'a> {
             }
         }
 
-        room_groups::promote_pending_advance(groups, room_id, pending, now())
+        room_groups::promote_pending_advance(groups, &self.owner_member, pending, now())
             .await
             // The host advanced and this agent could not record it. The pending row
             // survives, and the next request promotes it (item 6): a delay, not a loss.
@@ -968,6 +1000,11 @@ mod tests {
         }
     }
 
+    /// The owner persona as a member of the owner's room.
+    fn om(o: &Owner) -> Member {
+        Member::new(&o.room.did, &o.member).unwrap()
+    }
+
     async fn vault(state: &AppState, type_tag: &str, issuer: &str, cred: &DTGCredential) {
         use crate::vault::model::{CredentialFormat, CredentialStatus, StoredCredential};
         use vti_common::vault::VaultStatus;
@@ -1061,7 +1098,7 @@ mod tests {
 
     /// The group this agent holds for the owner's room.
     async fn live_group(o: &Owner) -> vti_rooms::mls::RoomGroup {
-        let r = room_groups::load(&o.state.room_groups_ks, &o.room.did)
+        let r = room_groups::load(&o.state.room_groups_ks, &om(o))
             .await
             .unwrap()
             .expect("a group");
@@ -1069,7 +1106,7 @@ mod tests {
     }
 
     async fn pending(o: &Owner) -> Option<room_groups::PendingAdvance> {
-        room_groups::pending_advance(&o.state.room_groups_ks, &o.room.did)
+        room_groups::pending_advance(&o.state.room_groups_ks, &om(o))
             .await
             .unwrap()
     }
@@ -1085,14 +1122,19 @@ mod tests {
                 .decode(out["payload"]["welcome"].as_str().expect("{out}"))
                 .unwrap()
         };
-        room_groups::join(&j_state.room_groups_ks, &o.room.did, &j_did, &welcome, 0)
-            .await
-            .expect("joins from the Welcome");
+        room_groups::join(
+            &j_state.room_groups_ks,
+            &Member::new(&o.room.did, &j_did).unwrap(),
+            &welcome,
+            0,
+        )
+        .await
+        .expect("joins from the Welcome");
         (j_state, j_dir, j_did)
     }
 
     async fn live_epoch(o: &Owner) -> u32 {
-        let r = room_groups::load(&o.state.room_groups_ks, &o.room.did)
+        let r = room_groups::load(&o.state.room_groups_ks, &om(o))
             .await
             .unwrap()
             .expect("a group");
@@ -1107,9 +1149,14 @@ mod tests {
     async fn joiner(room: &str) -> (AppState, tempfile::TempDir, String, String) {
         let (state, dir) = crate::test_support::build_signing_test_app_state().await;
         let did = Party::new().did;
-        let pending = room_groups::mint_key_package(&state.room_groups_ks, room, &did, 3600, 0)
-            .await
-            .unwrap();
+        let pending = room_groups::mint_key_package(
+            &state.room_groups_ks,
+            &Member::new(room, &did).unwrap(),
+            3600,
+            0,
+        )
+        .await
+        .unwrap();
         (state, dir, did, pending.key_package)
     }
 
@@ -1137,7 +1184,7 @@ mod tests {
             "{out}"
         );
         assert!(
-            room_groups::load(&o.state.room_groups_ks, &o.room.did)
+            room_groups::load(&o.state.room_groups_ks, &om(&o))
                 .await
                 .unwrap()
                 .is_none()
@@ -1158,7 +1205,7 @@ mod tests {
         assert_eq!(o.host.state.lock().unwrap().epoch, 2, "the host advanced");
         assert_eq!(live_epoch(&o).await, 2, "and only then the owner's group");
         assert!(
-            room_groups::pending_advance(&o.state.room_groups_ks, &o.room.did)
+            room_groups::pending_advance(&o.state.room_groups_ks, &om(&o))
                 .await
                 .unwrap()
                 .is_none()
@@ -1170,14 +1217,19 @@ mod tests {
                 .decode(out["payload"]["welcome"].as_str().unwrap())
                 .unwrap()
         };
-        let joined = room_groups::join(&j_state.room_groups_ks, &o.room.did, &j_did, &welcome, 0)
-            .await
-            .expect("the newcomer's VTA joins from the Welcome");
+        let joined = room_groups::join(
+            &j_state.room_groups_ks,
+            &Member::new(&o.room.did, &j_did).unwrap(),
+            &welcome,
+            0,
+        )
+        .await
+        .expect("the newcomer's VTA joins from the Welcome");
         assert_eq!(joined + 1, 2, "at the room's new epoch");
 
         let from_owner = room_groups::seal_record(
             &o.state.room_groups_ks,
-            &o.room.did,
+            &om(&o),
             "notes/1",
             1,
             b"from the owner",
@@ -1186,7 +1238,7 @@ mod tests {
         .unwrap();
         let opened = room_groups::open_record(
             &j_state.room_groups_ks,
-            &o.room.did,
+            &Member::new(&o.room.did, &j_did).unwrap(),
             "notes/1",
             1,
             &from_owner.ciphertext,
@@ -1199,7 +1251,7 @@ mod tests {
 
         let from_member = room_groups::seal_record(
             &j_state.room_groups_ks,
-            &o.room.did,
+            &Member::new(&o.room.did, &j_did).unwrap(),
             "notes/2",
             2,
             b"from the member",
@@ -1208,7 +1260,7 @@ mod tests {
         .unwrap();
         let opened = room_groups::open_record(
             &o.state.room_groups_ks,
-            &o.room.did,
+            &om(&o),
             "notes/2",
             2,
             &from_member.ciphertext,
@@ -1245,7 +1297,7 @@ mod tests {
             "nothing reached the host"
         );
         assert!(
-            room_groups::pending_advance(&o.state.room_groups_ks, &o.room.did)
+            room_groups::pending_advance(&o.state.room_groups_ks, &om(&o))
                 .await
                 .unwrap()
                 .is_none()
@@ -1267,7 +1319,7 @@ mod tests {
         );
         assert_eq!(live_epoch(&o).await, 1);
         assert!(
-            room_groups::pending_advance(&o.state.room_groups_ks, &o.room.did)
+            room_groups::pending_advance(&o.state.room_groups_ks, &om(&o))
                 .await
                 .unwrap()
                 .is_none(),
@@ -1315,7 +1367,7 @@ mod tests {
         );
         assert_eq!(live_epoch(&o).await, 1, "this agent does not know that yet");
         assert!(
-            room_groups::pending_advance(&o.state.room_groups_ks, &o.room.did)
+            room_groups::pending_advance(&o.state.room_groups_ks, &om(&o))
                 .await
                 .unwrap()
                 .is_some(),
@@ -1328,7 +1380,7 @@ mod tests {
         let out = add(&o, &did2, &kp2).await;
         assert_eq!(out["payload"]["epoch"], 3, "{out}");
         assert_eq!(live_epoch(&o).await, 3);
-        let group = room_groups::load(&o.state.room_groups_ks, &o.room.did)
+        let group = room_groups::load(&o.state.room_groups_ks, &om(&o))
             .await
             .unwrap()
             .unwrap();
@@ -1355,7 +1407,7 @@ mod tests {
         // As if the process died between storing the pending admission and sending it.
         room_groups::prepare_add(
             &o.state.room_groups_ks,
-            &o.room.did,
+            &om(&o),
             &o.host.did,
             &did,
             &key_package,
@@ -1367,7 +1419,7 @@ mod tests {
         let (_s2, _d2, did2, kp2) = joiner(&o.room.did).await;
         let out = add(&o, &did2, &kp2).await;
         assert_eq!(out["payload"]["epoch"], 2, "{out}");
-        let group = room_groups::load(&o.state.room_groups_ks, &o.room.did)
+        let group = room_groups::load(&o.state.room_groups_ks, &om(&o))
             .await
             .unwrap()
             .unwrap();
@@ -1394,7 +1446,7 @@ mod tests {
             "{out}"
         );
         assert!(
-            room_groups::pending_advance(&o.state.room_groups_ks, &o.room.did)
+            room_groups::pending_advance(&o.state.room_groups_ks, &om(&o))
                 .await
                 .unwrap()
                 .is_none()
@@ -1475,19 +1527,20 @@ mod tests {
 
         // The member who stays applies the second admission, as the host would relay it.
         let commit_3 = commit_of_last_mint(&o);
-        room_groups::apply_commit(&stay_state.room_groups_ks, &o.room.did, &commit_3, 2, 0)
-            .await
-            .expect("the remaining member follows the admission");
-
-        let before = room_groups::seal_record(
-            &o.state.room_groups_ks,
-            &o.room.did,
-            "notes/1",
-            1,
-            b"before",
+        room_groups::apply_commit(
+            &stay_state.room_groups_ks,
+            &Member::new(&o.room.did, &stay_did).unwrap(),
+            &commit_3,
+            2,
+            0,
         )
         .await
-        .unwrap();
+        .expect("the remaining member follows the admission");
+
+        let before =
+            room_groups::seal_record(&o.state.room_groups_ks, &om(&o), "notes/1", 1, b"before")
+                .await
+                .unwrap();
 
         let out = remove(&o, &gone_did).await;
         assert_eq!(out["payload"]["epoch"], 4, "{out}");
@@ -1510,37 +1563,62 @@ mod tests {
         );
 
         let commit_4 = commit_of_last_mint(&o);
-        room_groups::apply_commit(&stay_state.room_groups_ks, &o.room.did, &commit_4, 3, 0)
-            .await
-            .expect("the remaining member follows the removal");
+        room_groups::apply_commit(
+            &stay_state.room_groups_ks,
+            &Member::new(&o.room.did, &stay_did).unwrap(),
+            &commit_4,
+            3,
+            0,
+        )
+        .await
+        .expect("the remaining member follows the removal");
         let after =
-            room_groups::seal_record(&o.state.room_groups_ks, &o.room.did, "notes/2", 1, b"after")
+            room_groups::seal_record(&o.state.room_groups_ks, &om(&o), "notes/2", 1, b"after")
                 .await
                 .unwrap();
         assert_eq!(after.epoch, 4);
-        let open = |state: &AppState, rec: &vti_rooms::wire::SealedContent, key: &'static str| {
+        let open = |state: &AppState,
+                    did: &str,
+                    rec: &vti_rooms::wire::SealedContent,
+                    key: &'static str| {
             let ks = state.room_groups_ks.clone();
-            let room = o.room.did.clone();
+            let member = Member::new(&o.room.did, did).unwrap();
             let rec = rec.clone();
             async move {
-                room_groups::open_record(&ks, &room, key, 1, &rec.ciphertext, &rec.nonce, rec.epoch)
-                    .await
+                room_groups::open_record(
+                    &ks,
+                    &member,
+                    key,
+                    1,
+                    &rec.ciphertext,
+                    &rec.nonce,
+                    rec.epoch,
+                )
+                .await
             }
         };
         assert_eq!(
-            open(&stay_state, &after, "notes/2").await.unwrap(),
+            open(&stay_state, &stay_did, &after, "notes/2")
+                .await
+                .unwrap(),
             b"after"
         );
         assert!(
-            open(&gone_state, &after, "notes/2").await.is_err(),
+            open(&gone_state, &gone_did, &after, "notes/2")
+                .await
+                .is_err(),
             "removal is forward: nothing sealed after it opens for the member removed"
         );
         assert_eq!(
-            open(&stay_state, &before, "notes/1").await.unwrap(),
+            open(&stay_state, &stay_did, &before, "notes/1")
+                .await
+                .unwrap(),
             b"before"
         );
         assert_eq!(
-            open(&gone_state, &before, "notes/1").await.unwrap(),
+            open(&gone_state, &gone_did, &before, "notes/1")
+                .await
+                .unwrap(),
             b"before",
             "and it recalls nothing: what they could read, they still can"
         );
@@ -1657,7 +1735,7 @@ mod tests {
         let (_s1, _d1, first) = admitted(&o).await; // 2
         let (_s2, _d2, second) = admitted(&o).await; // 3
         // As if the process died between storing the pending removal and sending it.
-        room_groups::prepare_remove(&o.state.room_groups_ks, &o.room.did, &o.host.did, &first, 0)
+        room_groups::prepare_remove(&o.state.room_groups_ks, &om(&o), &o.host.did, &first, 0)
             .await
             .unwrap();
 
@@ -1675,7 +1753,7 @@ mod tests {
         let o = owner().await;
         create(&o, &o.room_key).await;
         let (_s1, _d1, first) = admitted(&o).await; // 2
-        room_groups::prepare_remove(&o.state.room_groups_ks, &o.room.did, &o.host.did, &first, 0)
+        room_groups::prepare_remove(&o.state.room_groups_ks, &om(&o), &o.host.did, &first, 0)
             .await
             .unwrap();
         o.host.state.lock().unwrap().epoch = 9;
@@ -1745,7 +1823,7 @@ mod tests {
         let o = owner().await;
         create(&o, &o.room_key).await;
         let (_s, _d, did) = admitted(&o).await;
-        room_groups::prepare_remove(&o.state.room_groups_ks, &o.room.did, &o.host.did, &did, 0)
+        room_groups::prepare_remove(&o.state.room_groups_ks, &om(&o), &o.host.did, &did, 0)
             .await
             .unwrap();
         let (_s2, _d2, other, kp) = joiner(&o.room.did).await;
@@ -1757,7 +1835,7 @@ mod tests {
         };
         let second = room_groups::prepare_add(
             &o.state.room_groups_ks,
-            &o.room.did,
+            &om(&o),
             &o.host.did,
             &other,
             &kp,
@@ -1775,37 +1853,46 @@ mod tests {
         );
     }
 
-    /// A pending admission an earlier build left at `room-add:<room>` — the row's shape
-    /// before removal existed, with no `kind` — is read as an admission and settled, then
-    /// cleared, not left to be found again.
+    /// **An upgraded store.** The group and a pending admission as the per-room build left
+    /// them — `room-group:<room>`, and the admission at `room-add:<room>` in its shape from
+    /// before removal existed, with no `kind` — are moved under the owner persona on first
+    /// touch (the persona the group's own leaf identifies), the admission is read as one and
+    /// settled, and nothing is left at the old keys to be found again.
     #[tokio::test]
-    async fn a_legacy_pending_admission_is_settled_and_cleared() {
+    async fn a_legacy_group_and_pending_admission_are_migrated_and_settled() {
         let o = owner().await;
         create(&o, &o.room_key).await;
         o.host.state.lock().unwrap().mode = Mode::AcceptThenLose;
         let (_s, _d, did, kp) = joiner(&o.room.did).await;
         add(&o, &did, &kp).await; // host at 2, answer lost
-        // Move the row to where, and as, the admission-only build wrote it.
+
+        // Put both rows back where, and as, the per-room build wrote them.
+        let groups = &o.state.room_groups_ks;
+        let record = room_groups::load(groups, &om(&o)).await.unwrap().unwrap();
         let mut legacy = serde_json::to_value(pending(&o).await.unwrap()).unwrap();
         legacy.as_object_mut().unwrap().remove("kind");
-        room_groups::discard_pending_advance(&o.state.room_groups_ks, &o.room.did)
-            .await
-            .unwrap();
-        room_groups::store_legacy_pending_add_for_test(
-            &o.state.room_groups_ks,
-            &o.room.did,
-            &legacy,
-        )
-        .await
-        .unwrap();
-        let found = pending(&o).await.expect("the legacy row is found");
-        assert_eq!(found.kind, room_groups::AdvanceKind::Admission);
-        assert!(found.welcome.is_some());
+        room_groups::forget(groups, &om(&o)).await.unwrap();
+        room_groups::legacy_for_test::store_group(groups, &o.room.did, &record).await;
+        room_groups::legacy_for_test::store_pending_add(groups, &o.room.did, &legacy).await;
+        assert!(pending(&o).await.is_none(), "nothing under the member yet");
 
         o.host.state.lock().unwrap().mode = Mode::Accept;
         let out = remove(&o, &did).await;
         assert_eq!(out["payload"]["epoch"], 3, "{out}");
-        assert!(pending(&o).await.is_none(), "both slots are clear");
+        assert!(pending(&o).await.is_none(), "the slot is clear");
+        assert!(
+            room_groups::legacy_rooms(groups).await.unwrap().is_empty(),
+            "the legacy group row was moved, not copied"
+        );
+        assert!(
+            groups
+                .get_raw(format!("room-add:{}", o.room.did))
+                .await
+                .unwrap()
+                .is_none(),
+            "the legacy admission slot is empty"
+        );
+        assert_eq!(live_epoch(&o).await, 3);
     }
 
     /// Without the owner's `admin` grant nothing is built and nothing is sent.
@@ -1849,7 +1936,7 @@ mod tests {
     }
 
     async fn leaf_of(o: &Owner, did: &str) -> bool {
-        let r = room_groups::load(&o.state.room_groups_ks, &o.room.did)
+        let r = room_groups::load(&o.state.room_groups_ks, &om(o))
             .await
             .unwrap()
             .expect("a group");
@@ -1921,7 +2008,7 @@ mod tests {
             "{to_client}"
         );
         assert!(
-            room_groups::load(&o.state.room_groups_ks, &o.room.did)
+            room_groups::load(&o.state.room_groups_ks, &om(&o))
                 .await
                 .unwrap()
                 .is_none(),
@@ -1952,7 +2039,7 @@ mod tests {
             "{out}"
         );
         assert!(
-            room_groups::load(&o.state.room_groups_ks, &o.room.did)
+            room_groups::load(&o.state.room_groups_ks, &om(&o))
                 .await
                 .unwrap()
                 .is_none()

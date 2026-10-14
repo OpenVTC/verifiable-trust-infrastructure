@@ -110,7 +110,13 @@ pub const ISSUED_CREDENTIALS: &str = "issued_credentials";
 pub const MEMORY: &str = "memory";
 
 /// A member's MLS group state for each data room they belong to
-/// (`rooms/keys/{welcome,commit,open}`), keyed `room-group:<roomId>`.
+/// (`rooms/keys/{welcome,commit,open}`), keyed **per member**:
+/// `room-group/<roomId>/<persona>`, beside the member's pending KeyPackage
+/// (`room-kp/…`), pending epoch advance (`room-advance/…`) and root memory
+/// (`room-roots/…`) under the same `<roomId>/<persona>`. One VTA may hold several
+/// members of one room — several principals, or several personas of one — and
+/// each is a different leaf with different secrets. Rows a per-room build wrote
+/// (`room-group:<roomId>`, …) are moved under their member on first touch.
 ///
 /// **This holds group secrets.** Whoever reads a row can decrypt every record
 /// the group could, up to its epoch — the same class of material as [`KEYS`],
