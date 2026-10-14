@@ -58,9 +58,11 @@ use trust_tasks_rs::specs::vtc::join_requests::manifest;
 use trust_tasks_rs::specs::vtc::members::credentials as member_credentials;
 use trust_tasks_rs::specs::vtc::registry::{records, sync_jobs};
 use trust_tasks_rs::specs::vtc::rooms::{
-    get as rooms_get, limits::set as rooms_limits_set, usage as rooms_usage,
+    get as rooms_get, limits::set as rooms_limits_set, storage::assign as rooms_storage_assign,
+    usage as rooms_usage,
 };
 use trust_tasks_rs::specs::vtc::schemas::accepts;
+use trust_tasks_rs::specs::vtc::storage::configs as storage_configs;
 
 /// Transparent wrappers documenting generated types, one per line.
 macro_rules! spec_types {
@@ -216,6 +218,26 @@ spec_types! {
     RoomsLimitsSet01Payload(rooms_limits_set::v0_1::Payload);
     /// `vtc/rooms/limits/set/0.1#response` — the limits after the change.
     RoomsLimitsSet01Response(rooms_limits_set::v0_1::Response);
+    /// `vtc/rooms/storage/assign/0.1` payload — point a room at another config.
+    RoomsStorageAssign01Payload(rooms_storage_assign::v0_1::Payload);
+    /// `vtc/rooms/storage/assign/0.1#response`.
+    RoomsStorageAssign01Response(rooms_storage_assign::v0_1::Response);
+    /// `vtc/storage/configs/list/0.1#response` — each config and what it holds.
+    StorageConfigsList01Response(storage_configs::list::v0_1::Response);
+    /// `vtc/storage/configs/get/0.1#response` — one config, its facts and rooms.
+    StorageConfigsGet01Response(storage_configs::get::v0_1::Response);
+    /// `vtc/storage/configs/create/0.1` payload. Carries no secret.
+    StorageConfigsCreate01Payload(storage_configs::create::v0_1::Payload);
+    /// `vtc/storage/configs/create/0.1#response`.
+    StorageConfigsCreate01Response(storage_configs::create::v0_1::Response);
+    /// `vtc/storage/configs/update/0.1` payload.
+    StorageConfigsUpdate01Payload(storage_configs::update::v0_1::Payload);
+    /// `vtc/storage/configs/update/0.1#response`.
+    StorageConfigsUpdate01Response(storage_configs::update::v0_1::Response);
+    /// `vtc/storage/configs/retire/0.1#response`.
+    StorageConfigsRetire01Response(storage_configs::retire::v0_1::Response);
+    /// `vtc/storage/configs/probe/0.1#response` — each step of a canary round trip.
+    StorageConfigsProbe01Response(storage_configs::probe::v0_1::Response);
     /// `git-ns/view/0.1#response` — namespaces, repositories and recorded git
     /// rights. Also the body of a VTC's `GET /v1/git-ns/view`, the
     /// administrator's complete view.

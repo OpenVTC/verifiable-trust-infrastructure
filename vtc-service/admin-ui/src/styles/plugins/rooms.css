@@ -110,3 +110,36 @@
   display: grid;
   gap: var(--space-2);
 }
+
+/* The Storage page. */
+.storage-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-3);
+}
+.storage-kind {
+  border: 0;
+  padding: 0;
+  margin: 0 0 var(--space-4);
+  display: grid;
+  gap: var(--space-3);
+}
+.storage-check {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  margin: var(--space-2) 0;
+}
+.storage-rooms {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+}
+/* Configs that store nothing until someone provides a credential. */
+.card.storage-attention {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+}

@@ -807,6 +807,12 @@ impl BlobHost {
         &self.blobs
     }
 
+    /// The limits this host applies to every room it serves, from its configuration:
+    /// the defaults a room's own overrides replace, and the host-wide ceiling.
+    pub fn host_limits(&self) -> &HostLimits {
+        &self.limits
+    }
+
     /// Whether this host accepts uploads at all.
     pub fn files_enabled(&self) -> bool {
         self.limits.files_enabled

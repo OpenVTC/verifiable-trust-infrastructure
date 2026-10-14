@@ -10,12 +10,14 @@
 // no download button and nothing that implies one.
 
 import { useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useParams } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { useConfirm } from "@/components/ConfirmDialog";
 import { CopyButton } from "@/components/CopyButton";
 import { DataTable } from "@/components/DataTable";
 import { NamedDid } from "@/components/NamedDid";
+import { ErrorOrParked } from "@/components/ParkedNotice";
 import { PageHeader } from "@/components/PageHeader";
 import { Tabs } from "@/components/Tabs";
 import type { ApiError } from "@/lib/api";
@@ -32,6 +34,9 @@ import {
   setRoomLimits,
   thresholdOf,
 } from "@/lib/rooms-api";
+import { parkedOf } from "@/lib/parked-action";
+import { gestureFromConfirm } from "@/lib/signed-act";
+import { assignRoomStorage, fetchStorageConfigs } from "@/lib/storage-api";
 import { useToast } from "@/lib/toast";
 import type {
   RoomGetResponse,
@@ -151,7 +156,9 @@ function Storage({ data }: { data: RoomGetResponse }) {
       <dl className="rooms-facts">
         <dt>New uploads go to</dt>
         <dd>
-          <code>{storage.configId}</code>
+          <Link to={`/storage/${encodeURIComponent(storage.configId)}`}>
+            <code>{storage.configId}</code>
+          </Link>
         </dd>
         <dt>Held</dt>
         <dd>
@@ -202,6 +209,8 @@ function Storage({ data }: { data: RoomGetResponse }) {
           </DataTable>
         </>
       )}
+
+      <MoveStorage roomId={data.room.roomId} current={storage.configId} />
 
       {storage.migration && (
         <p className="muted">
@@ -572,5 +581,96 @@ function Activity({ data }: { data: RoomGetResponse }) {
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * Point the room's new uploads at another storage location
+ * (`vtc/rooms/storage/assign/0.1`). Its existing files stay where they are and
+ * keep working, since each remembers its own location. Decides where members'
+ * files go, so it takes the requester's passkey and is parked for another
+ * holder of the room-hosting capability (§7.4).
+ */
+function MoveStorage({ roomId, current }: { roomId: string; current: string }) {
+  const [open, setOpen] = useState(false);
+  const [target, setTarget] = useState("");
+  const [reason, setReason] = useState("");
+  const confirm = useConfirm();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const configs = useQuery({
+    queryKey: ["storage", "list"],
+    queryFn: fetchStorageConfigs,
+    enabled: open,
+  });
+  const choices = (configs.data ?? []).filter(
+    (c) => c.config.state === "active" && c.config.id !== current,
+  );
+  const move = useMutation({
+    mutationFn: () => assignRoomStorage(roomId, target, reason.trim(), gestureFromConfirm(confirm)),
+    onSuccess: () => {
+      toast.push("success", "New uploads now go to " + target + ".");
+      void queryClient.invalidateQueries({ queryKey: ["rooms"] });
+      void queryClient.invalidateQueries({ queryKey: ["storage"] });
+      setOpen(false);
+    },
+  });
+  if (parkedOf(move.error)) return <ErrorOrParked title="Not moved" error={move.error} />;
+  if (!open) {
+    return (
+      <p>
+        <button type="button" className="link" onClick={() => setOpen(true)}>
+          Send new uploads to other storage
+        </button>
+      </p>
+    );
+  }
+  return (
+    <div className="rooms-edit">
+      <h3>Send new uploads to other storage</h3>
+      <p className="muted">
+        Files already stored stay where they are and keep working. This needs your
+        passkey, then another holder of the room-hosting capability to approve it
+        (unless this community runs with a single administrator).
+      </p>
+      {configs.isPending && <p>Reading storage…</p>}
+      {configs.data && choices.length === 0 && (
+        <p className="muted">There is no other active storage location to move to.</p>
+      )}
+      {choices.length > 0 && (
+        <>
+          <label className="field">
+            <span className="field-label">Storage</span>
+            <select value={target} onChange={(e) => setTarget(e.target.value)}>
+              <option value="">Choose…</option>
+              {choices.map((c) => (
+                <option key={c.config.id} value={c.config.id}>
+                  {c.config.id} — {c.config.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span className="field-label">Reason</span>
+            <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
+          </label>
+        </>
+      )}
+      <div className="rooms-form-actions">
+        <button
+          type="button"
+          onClick={() => move.mutate()}
+          disabled={
+            move.isPending || target === "" || reason.trim() === "" || reason.trim().length > 500
+          }
+        >
+          Send for approval
+        </button>
+        <button type="button" className="secondary" onClick={() => setOpen(false)}>
+          Cancel
+        </button>
+      </div>
+      <ErrorOrParked title="Not moved" error={move.error} />
+    </div>
   );
 }

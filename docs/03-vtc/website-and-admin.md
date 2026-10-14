@@ -353,7 +353,7 @@ pill, **Jump to… ⌘K** (below), the live indicator and an account menu holdin
 sidebar groups the screens under **Overview** (Dashboard, Actions, Audit
 trail), **Membership** (Join requests, Members, Invitations, Vetting,
 Relationships), **Governance** (Policies, Roles, Access control, Sessions) and
-**Community** (Profile, Recognition, Data rooms, Room usage, Repos), with third-party
+**Community** (Profile, Recognition, Data rooms, Storage, Room usage, Repos), with third-party
 plugins that name no group under **More**
 ([`admin-ui-plugins.md`](admin-ui-plugins.md)). **Policies** is the screen
 once labelled Ceremonies, and **Profile** the one labelled Community profile;

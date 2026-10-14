@@ -1141,10 +1141,29 @@ async fn handle_rooms_list(
             rooms.sort_by(|a, b| a.room_id.cmp(&b.room_id));
             // Whether this community takes room files, so the console can say how to
             // turn them on (a `[rooms.files]` section) rather than show uploads that
-            // would be refused.
-            let ext = json!({
-                "org.openvtc": { "roomFiles": { "enabled": state.room_files.files_enabled() } }
-            });
+            // would be refused — and, when it does, the defaults its configuration
+            // sets: what every room is held to unless the rooms policy or an override
+            // says otherwise (`data-rooms-files.md` §8.1, Settings ▸ Rooms). Read-only:
+            // they are changed in the configuration file.
+            let host = state.room_files.host_limits();
+            let room_files = if host.files_enabled {
+                let mut on = json!({
+                    "enabled": true,
+                    "defaults": {
+                        "room": host.room.capped(host.max_file_bytes),
+                        "member": host.member.capped(host.max_file_bytes),
+                    },
+                    "maxFileBytes": host.max_file_bytes,
+                    "orphanGraceHours": host.orphan_grace_secs / 3600,
+                });
+                if let Some(capacity) = host.storage_capacity_bytes {
+                    on["storageCapacityBytes"] = json!(capacity);
+                }
+                on
+            } else {
+                json!({ "enabled": false })
+            };
+            let ext = json!({ "org.openvtc": { "roomFiles": room_files } });
             page_with(
                 &doc,
                 rooms

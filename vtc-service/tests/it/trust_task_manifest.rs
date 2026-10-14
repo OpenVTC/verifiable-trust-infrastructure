@@ -926,6 +926,14 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/rooms/get/0.1",
     "https://trusttasks.org/spec/vtc/rooms/usage/0.1",
     "https://trusttasks.org/spec/vtc/rooms/limits/set/0.1",
+    // Storage, and a room's "other storage" (`trust_tasks::storage_tasks`).
+    "https://trusttasks.org/spec/vtc/storage/configs/list/0.1",
+    "https://trusttasks.org/spec/vtc/storage/configs/get/0.1",
+    "https://trusttasks.org/spec/vtc/storage/configs/create/0.1",
+    "https://trusttasks.org/spec/vtc/storage/configs/update/0.1",
+    "https://trusttasks.org/spec/vtc/storage/configs/retire/0.1",
+    "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.1",
     // The console's signing keys (`trust_tasks::signing_key_tasks`).
     "https://trusttasks.org/spec/auth/signing-key/enroll/0.2",
     "https://trusttasks.org/spec/auth/signing-key/list/0.1",

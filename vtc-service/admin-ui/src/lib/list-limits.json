@@ -16,6 +16,7 @@
   "https://trusttasks.org/spec/vtc/rooms/list/0.1": 100,
   "https://trusttasks.org/spec/vtc/rooms/usage/0.1": 100,
   "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.2": 50,
+  "https://trusttasks.org/spec/vtc/storage/configs/list/0.1": 100,
   "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1": 100,
   "https://trusttasks.org/spec/vtc/vetting/vetters/grants/list/0.1": 100,
   "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1": 100

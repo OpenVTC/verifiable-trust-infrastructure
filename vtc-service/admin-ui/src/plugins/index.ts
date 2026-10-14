@@ -17,6 +17,7 @@ import {
   ClipboardList,
   DoorOpen,
   FolderGit2,
+  HardDrive,
   Inbox,
   KeyRound,
   LayoutDashboard,
@@ -53,6 +54,7 @@ import { Roles } from "@/plugins/roles";
 import { RoomUsage } from "@/plugins/roomUsage";
 import { Rooms } from "@/plugins/rooms";
 import { Sessions } from "@/plugins/sessions";
+import { Storage } from "@/plugins/storage";
 import { Vetting } from "@/plugins/vetting";
 
 export function registerBuiltinPlugins(): void {
@@ -208,6 +210,16 @@ export function registerBuiltinPlugins(): void {
     iconComponent: DoorOpen,
     reactComponent: Rooms,
     // The host's authority over rooms (`vtc/rooms/*` admin reads), never a room's.
+    capabilities: ["vtc.rooms.admin"],
+  });
+
+  registerPlugin({
+    id: "storage",
+    group: "community",
+    label: "Storage",
+    path: "/storage",
+    iconComponent: HardDrive,
+    reactComponent: Storage,
     capabilities: ["vtc.rooms.admin"],
   });
 

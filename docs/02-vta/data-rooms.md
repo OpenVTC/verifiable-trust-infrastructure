@@ -617,8 +617,21 @@ community's ACL or a session.
     day, lists rooms and configs past 80 %, 95 % or 100 % of a limit or of
     capacity, and exports what it shows as CSV.
 
-  Both need `vtc.rooms.admin`. Neither shows a record title, a file name or a
-  file's contents: the host has none of them.
+  - **Storage** lists the storage configs with what each holds, its credential
+    state (never a credential) and its last probe; configs that need a
+    credential are listed first. Each config's page probes it, changes its
+    label, capacity or default, and retires it; **New storage** creates a
+    `local` or an `s3` (VTA account) config. A room's page sends its new
+    uploads to another config. Every one of those changes takes the
+    requester's passkey and is parked for another holder of
+    `vtc.rooms.admin`, as above.
+  - **Data rooms** also shows the defaults the `[rooms.files]` section sets —
+    each room's and each member's limits, the largest file, capacity and how
+    long a deleted file is kept — read from `vtc/rooms/list`'s
+    `ext["org.openvtc"].roomFiles` and changed only in the configuration file.
+
+  All of them need `vtc.rooms.admin`. None shows a record title, a file name or
+  a file's contents: the host has none of them.
 - **Audit**: room operations land in the VTC's hash-chained audit keyspace, with
   the same tier rule as above.
 - **Governance**: the `rooms` policy purpose (`vtc.rooms` package) decides who
