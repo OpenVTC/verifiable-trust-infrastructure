@@ -613,7 +613,9 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # account's context (trust-tasks-tf #758), which the VTC sends to its VTA.
 # 0.31.1 is the FLOOR: `vtc/oid4vp/identities/list/0.1` (trust-tasks-tf #761),
 # which the VTC serves to its console's Wallet verifier page.
-trust-tasks-rs = { version = "0.31.1", default-features = false, features = [
+# 0.31.2 is the FLOOR: `rooms/owner/group/{create,add}` (trust-tasks-tf #763,
+# #766), which `trust_tasks::room_owner_group` serves.
+trust-tasks-rs = { version = "0.31.2", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
