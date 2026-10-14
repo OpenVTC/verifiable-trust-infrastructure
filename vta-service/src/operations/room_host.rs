@@ -234,6 +234,15 @@ pub struct OwnerKey {
     pub verification_method: String,
 }
 
+/// The stores [`owner_signing_key`] reads.
+pub struct OwnerKeyStores<'a> {
+    pub keys_ks: &'a vti_common::store::KeyspaceHandle,
+    /// The `did:webvh` logs this agent publishes. A build without `webvh` publishes none,
+    /// so a `did:webvh` owner is one it cannot hold a key for.
+    #[cfg(feature = "webvh")]
+    pub webvh_ks: &'a vti_common::store::KeyspaceHandle,
+}
+
 /// Find the key this agent may sign with as `owner`, for `auth`.
 ///
 /// `rooms/create` is issued by the room's **Owner** (its `parties`), and a host records as
@@ -259,12 +268,12 @@ pub struct OwnerKey {
 /// agent holds for others. The oracle re-checks the key when it signs, so this decides only
 /// *which* key; it confers nothing.
 pub async fn owner_signing_key(
-    keys_ks: &vti_common::store::KeyspaceHandle,
-    webvh_ks: &vti_common::store::KeyspaceHandle,
+    stores: OwnerKeyStores<'_>,
     auth: &crate::auth::AuthClaims,
     owner: &str,
     vta_did: Option<&str>,
 ) -> Result<OwnerKey, AppError> {
+    let keys_ks = stores.keys_ks;
     let not_held = || {
         AppError::Forbidden(format!(
             "this agent holds no signing key for `{owner}` that you may use, so it cannot \
@@ -295,15 +304,31 @@ pub async fn owner_signing_key(
         });
     }
 
-    let record = crate::webvh_store::get_did(webvh_ks, owner)
-        .await?
-        .ok_or_else(not_held)?;
-    if !auth.has_context_access(&record.context_id) {
-        return Err(not_held());
+    #[cfg(feature = "webvh")]
+    if let Some(key) = webvh_owner_key(keys_ks, stores.webvh_ks, auth, owner).await? {
+        return Ok(key);
     }
-    let log = crate::webvh_store::get_did_log(webvh_ks, owner)
-        .await?
-        .ok_or_else(not_held)?;
+    Err(not_held())
+}
+
+/// The `did:webvh` arm of [`owner_signing_key`]: `None` when this agent holds no key it
+/// may sign with as `owner`, for `auth`.
+#[cfg(feature = "webvh")]
+async fn webvh_owner_key(
+    keys_ks: &vti_common::store::KeyspaceHandle,
+    webvh_ks: &vti_common::store::KeyspaceHandle,
+    auth: &crate::auth::AuthClaims,
+    owner: &str,
+) -> Result<Option<OwnerKey>, AppError> {
+    let Some(record) = crate::webvh_store::get_did(webvh_ks, owner).await? else {
+        return Ok(None);
+    };
+    if !auth.has_context_access(&record.context_id) {
+        return Ok(None);
+    }
+    let Some(log) = crate::webvh_store::get_did_log(webvh_ks, owner).await? else {
+        return Ok(None);
+    };
     let document = crate::operations::protocol::document::current_document_from_log(&log)
         .map_err(|e| AppError::Internal(format!("read the current document of {owner}: {e}")))?;
 
@@ -358,13 +383,13 @@ pub async fn owner_signing_key(
         })
         .await?
         {
-            return Ok(OwnerKey {
+            return Ok(Some(OwnerKey {
                 key_id: held.key_id,
                 verification_method: id,
-            });
+            }));
         }
     }
-    Err(not_held())
+    Ok(None)
 }
 
 /// An active Ed25519 key record holding `public_key`, in a context `in_scope` accepts.
@@ -428,6 +453,14 @@ mod tests {
             }
         }
 
+        fn stores(&self) -> OwnerKeyStores<'_> {
+            OwnerKeyStores {
+                keys_ks: &self.ts.keys_ks,
+                #[cfg(feature = "webvh")]
+                webvh_ks: &self.ts.webvh_ks,
+            }
+        }
+
         fn signing<'a>(&'a self, auth: &'a crate::auth::AuthClaims) -> SigningContext<'a> {
             SigningContext {
                 keys_ks: &self.ts.keys_ks,
@@ -468,6 +501,7 @@ mod tests {
             (created.public_key, raw)
         }
 
+        #[cfg(feature = "webvh")]
         async fn owner_in(&self, context: &str) -> Owner {
             use didwebvh_rs::create::{CreateDIDConfig, create_did};
             use didwebvh_rs::parameters::Parameters as WebVHParameters;
@@ -541,6 +575,7 @@ mod tests {
     /// the owner's published key — and the rule every host applies to a registration
     /// (`authorize_create`: the signer is the owner named) holds. Before, the document was
     /// signed by this agent while naming the caller, which that rule refuses.
+    #[cfg(feature = "webvh")]
     #[tokio::test]
     async fn register_signs_rooms_create_as_the_owner() {
         let f = Fixture::new().await;
@@ -548,8 +583,7 @@ mod tests {
         let caller = crate::test_support::admin_claims_for_context("rooms");
 
         let key = owner_signing_key(
-            &f.ts.keys_ks,
-            &f.ts.webvh_ks,
+            f.stores(),
             &caller,
             &owner.did,
             Some("did:webvh:QmAgent:agent.example"),
@@ -591,19 +625,19 @@ mod tests {
 
     /// A DID this agent holds for another context is not the caller's to speak as — and the
     /// refusal does not say that the DID is held at all.
+    #[cfg(feature = "webvh")]
     #[tokio::test]
     async fn an_owner_in_another_context_is_refused() {
         let f = Fixture::new().await;
         let elsewhere = f.owner_in("other").await;
         let caller = crate::test_support::admin_claims_for_context("rooms");
 
-        let err = owner_signing_key(&f.ts.keys_ks, &f.ts.webvh_ks, &caller, &elsewhere.did, None)
+        let err = owner_signing_key(f.stores(), &caller, &elsewhere.did, None)
             .await
             .expect_err("another context's DID");
         assert!(matches!(err, AppError::Forbidden(_)), "{err}");
         let unknown = owner_signing_key(
-            &f.ts.keys_ks,
-            &f.ts.webvh_ks,
+            f.stores(),
             &caller,
             "did:webvh:QmNobody:nowhere.example",
             None,
@@ -626,7 +660,7 @@ mod tests {
     async fn a_caller_whose_key_this_agent_does_not_hold_is_refused() {
         let f = Fixture::new().await;
         let caller = crate::test_support::admin_claims_for_context("rooms");
-        let err = owner_signing_key(&f.ts.keys_ks, &f.ts.webvh_ks, &caller, &caller.did, None)
+        let err = owner_signing_key(f.stores(), &caller, &caller.did, None)
             .await
             .expect_err("a client-held key");
         assert!(matches!(err, AppError::Forbidden(_)), "{err}");
@@ -641,14 +675,14 @@ mod tests {
         let id = vta_sdk::did_key::ed25519_multibase_pubkey(&raw);
         let did = format!("did:key:{id}");
         let caller = crate::test_support::admin_claims_for_context("rooms");
-        let key = owner_signing_key(&f.ts.keys_ks, &f.ts.webvh_ks, &caller, &did, None)
+        let key = owner_signing_key(f.stores(), &caller, &did, None)
             .await
             .expect("a held did:key");
         assert_eq!(key.key_id, "a-did-key-owner");
         assert_eq!(key.verification_method, format!("{did}#{id}"));
 
         let other = crate::test_support::admin_claims_for_context("other");
-        owner_signing_key(&f.ts.keys_ks, &f.ts.webvh_ks, &other, &did, None)
+        owner_signing_key(f.stores(), &other, &did, None)
             .await
             .expect_err("not from another context");
     }
@@ -659,7 +693,7 @@ mod tests {
         let f = Fixture::new().await;
         let caller = crate::test_support::super_admin_claims();
         let vta = "did:webvh:QmAgent:agent.example";
-        let key = owner_signing_key(&f.ts.keys_ks, &f.ts.webvh_ks, &caller, vta, Some(vta))
+        let key = owner_signing_key(f.stores(), &caller, vta, Some(vta))
             .await
             .expect("the agent itself");
         assert_eq!(key.key_id, format!("{vta}#key-0"));

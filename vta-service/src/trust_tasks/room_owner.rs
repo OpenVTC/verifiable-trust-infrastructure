@@ -488,8 +488,11 @@ pub(super) async fn handle_register(
     // host records as owner only the party whose proof is on the request. This is what
     // `rooms/owner/register` means by the key holder speaking "as its principal".
     let owner_key = match crate::operations::room_host::owner_signing_key(
-        &state.keys_ks,
-        &state.webvh_ks,
+        crate::operations::room_host::OwnerKeyStores {
+            keys_ks: &state.keys_ks,
+            #[cfg(feature = "webvh")]
+            webvh_ks: &state.webvh_ks,
+        },
         auth,
         &owner_did,
         vta_did.as_deref(),
