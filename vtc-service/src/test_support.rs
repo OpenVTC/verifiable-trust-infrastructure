@@ -151,6 +151,8 @@ pub struct TestVtcBuilder {
     oid4vp_identities: Vec<crate::oid4vp::VerifierIdentityRecord>,
     vta_link: Option<Arc<dyn crate::oid4vp::VtaJwsSigner>>,
     x509_trust_anchors: vta_sdk::x509_issuer::X509TrustAnchors,
+    /// `[rooms.files] max_file_bytes`: the host-wide ceiling on one file.
+    room_file_ceiling: Option<u64>,
 }
 
 impl Default for TestVtcBuilder {
@@ -172,6 +174,7 @@ impl Default for TestVtcBuilder {
             oid4vp_identities: Vec::new(),
             vta_link: None,
             x509_trust_anchors: Default::default(),
+            room_file_ceiling: None,
         }
     }
 }
@@ -184,6 +187,12 @@ impl TestVtcBuilder {
     }
 
     /// Wire an [`AuditWriter`] so audit-emitting routes don't 503.
+    /// Set `[rooms.files] max_file_bytes`, the ceiling every room limit sits under.
+    pub fn with_room_file_ceiling(mut self, bytes: u64) -> Self {
+        self.room_file_ceiling = Some(bytes);
+        self
+    }
+
     pub fn with_audit(mut self, on: bool) -> Self {
         self.with_audit = on;
         self
@@ -391,6 +400,7 @@ impl TestVtcBuilder {
         // without writing a `[rooms.files]` section.
         let files_config = crate::config::RoomFilesConfig {
             enabled: true,
+            max_file_bytes: self.room_file_ceiling,
             ..Default::default()
         };
         let room_storage = crate::rooms::files::open_room_storage(

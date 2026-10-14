@@ -995,6 +995,84 @@ fn table() -> Vec<Conformance> {
             json!({ "name": "events-team", "reason": "events moved elsewhere" }),
             json!({ "deleted": "events-team" })
         ),
+        // ─── what rooms store and may store (`room_admin_tasks`) ─────
+        checked!(
+            s::rooms::get::v0_1::Payload,
+            s::rooms::get::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom" }),
+            json!({
+                "room": {
+                    "roomId": "did:key:z6MkRoom", "ownerDid": "did:key:zOwner",
+                    "visibility": "attributed", "retentionPolicy": "chained", "epoch": 1,
+                    "lifecycle": "live", "retentionDays": 30, "createdAt": 0, "updatedAt": 0,
+                },
+                "storage": {
+                    "configId": "local",
+                    "earlierConfigs": [{ "configId": "old", "files": 1, "bytes": 10 }],
+                },
+                "limits": {
+                    "limits": {
+                        "filesEnabled": true,
+                        "room": { "maxFiles": 10000, "maxFileBytes": 104857600, "maxBytes": 5368709120u64 },
+                        "member": { "maxFiles": 2000, "maxFileBytes": 104857600, "maxBytes": 1073741824 },
+                    },
+                    "roomSource": "override", "memberSource": "default",
+                    "hostCeilingBytes": 1073741824,
+                },
+                "usage": {
+                    "room": { "files": 3, "bytes": 1800, "reservedBytes": 0, "reservedFiles": 0 },
+                    "orphans": { "files": 1, "bytes": 5, "oldestOrphanedAt": "2026-10-10T10:00:00+00:00" },
+                },
+                "largestBlobs": [{ "size": 900, "configId": "local", "createdAt": "2026-10-10T10:00:00+00:00" }],
+                "membersWithUsage": 1,
+            })
+        ),
+        checked!(
+            s::rooms::usage::v0_1::Payload,
+            s::rooms::usage::v0_1::Response,
+            json!({
+                "groupBy": "room",
+                "filter": { "from": "2026-09-15", "to": "2026-10-14" },
+                "sort": { "by": "bytes", "order": "desc" },
+                "limit": 10,
+            }),
+            json!({
+                "asOf": "2026-10-14T10:00:00+00:00", "from": "2026-09-15", "to": "2026-10-14",
+                "items": [{
+                    "roomId": "did:key:z6MkRoom", "storageConfig": "local",
+                    "files": 2, "bytes": 1500, "reservedBytes": 0,
+                    "uploads": 2, "downloads": 1, "egressBytes": 1000,
+                    "limits": { "maxFiles": 10000, "maxFileBytes": 104857600, "maxBytes": 5368709120u64 },
+                }],
+                "nextCursor": "vtc-rooms-usage:0011223344556677:10",
+            })
+        ),
+        checked!(
+            s::rooms::limits::set::v0_1::Payload,
+            s::rooms::limits::set::v0_1::Response,
+            json!({
+                "roomId": "did:key:z6MkRoom",
+                "target": { "kind": "member", "member": "did:key:zMember" },
+                "limits": { "maxFiles": 1 },
+                "reason": "tidy up first",
+            }),
+            json!({
+                "roomId": "did:key:z6MkRoom",
+                "target": { "kind": "member", "member": "did:key:zMember" },
+                "limits": {
+                    "limits": {
+                        "filesEnabled": true,
+                        "room": { "maxFiles": 10000, "maxFileBytes": 104857600, "maxBytes": 5368709120u64 },
+                        "member": { "maxFiles": 2000, "maxFileBytes": 104857600, "maxBytes": 1073741824 },
+                    },
+                    "roomSource": "default", "memberSource": "default",
+                    "hostCeilingBytes": 1073741824,
+                },
+                "targetLimits": { "maxFiles": 1, "maxFileBytes": 104857600 },
+                "usage": { "files": 2, "bytes": 200, "reservedBytes": 0, "reservedFiles": 0 },
+                "overLimit": true,
+            })
+        ),
         // ─── storage configs (`storage_tasks`) ───────────────────────
         checked!(
             s::storage::configs::list::v0_1::Payload,

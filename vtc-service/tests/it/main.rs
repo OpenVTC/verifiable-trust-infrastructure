@@ -94,6 +94,7 @@ mod removal;
 mod removal_notice_didcomm;
 mod renewal;
 mod room_storage_configs;
+mod room_usage_reports;
 mod rotation;
 mod routing_cors;
 mod routing_modes;

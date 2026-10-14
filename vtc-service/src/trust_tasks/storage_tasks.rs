@@ -87,7 +87,7 @@ pub(super) async fn dispatch(
     })
 }
 
-fn refuse(
+pub(super) fn refuse(
     doc: &TrustTask<Value>,
     code: &str,
     message: impl Into<String>,
@@ -96,7 +96,7 @@ fn refuse(
     reject_with_code(doc, extended_code(code), message, details)
 }
 
-fn malformed(doc: &TrustTask<Value>, reason: impl Into<String>) -> TrustTaskOutcome {
+pub(super) fn malformed(doc: &TrustTask<Value>, reason: impl Into<String>) -> TrustTaskOutcome {
     reject_with(
         doc,
         RejectReason::MalformedRequest {
@@ -105,7 +105,7 @@ fn malformed(doc: &TrustTask<Value>, reason: impl Into<String>) -> TrustTaskOutc
     )
 }
 
-fn respond<R: serde::de::DeserializeOwned + serde::Serialize>(
+pub(super) fn respond<R: serde::de::DeserializeOwned + serde::Serialize>(
     doc: &TrustTask<Value>,
     body: Value,
 ) -> TrustTaskOutcome {
@@ -116,7 +116,7 @@ fn respond<R: serde::de::DeserializeOwned + serde::Serialize>(
 }
 
 /// The signer, held to `vtc.rooms.admin` on its own live entry.
-async fn rooms_admin(
+pub(super) async fn rooms_admin(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,

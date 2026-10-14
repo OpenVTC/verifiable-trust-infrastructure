@@ -139,6 +139,7 @@ pub(crate) mod step_up_approver_tasks;
 // (`vtc-admin-roles.md` §6.2). The records are `crate::acl::roles`'s; this is
 // their only door.
 pub(crate) mod role_tasks;
+pub(crate) mod room_admin_tasks;
 pub(crate) mod storage_tasks;
 // Direct admission: adding a member without a join request, and making an
 // existing ACL entry a membership — decided by the community's `admission`
@@ -1284,6 +1285,13 @@ fn dispatch_typed<'a>(
                 None => unreachable!("storage_tasks::URIS names {uri}, which it does not route"),
             }
         }),
+        uri if room_admin_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match Box::pin(room_admin_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("room_admin_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
         uri if role_tasks::URIS.contains(&uri) => Box::pin(async move {
             match Box::pin(role_tasks::dispatch(state, ctx, doc, uri)).await {
                 Some(outcome) => outcome,
@@ -1974,6 +1982,14 @@ mod spine_proof_tests {
             "probes one storage config; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
+            room_admin_tasks::GET_TYPE,
+            "reads one room's storage, limits and usage; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            room_admin_tasks::USAGE_TYPE,
+            "reads rooms' usage; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
             vetting_wire::VETTING_VETTER_SHOW_TYPE,
             "a public read of the vetter registry",
         ),
@@ -2164,7 +2180,10 @@ mod spine_proof_tests {
             surface_tasks::JOIN_VETTING_SHOW_TYPE,
             "an admin read; the handler's admin ACL check refuses an unsigned caller regardless",
         ),
-        (surface_tasks::ROOMS_LIST_TYPE, "a public read"),
+        (
+            surface_tasks::ROOMS_LIST_TYPE,
+            "lists the hosted rooms; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
         (
             capability_module_tasks::LIST_TYPE,
             "a member read; `acting_party` refuses an unsigned caller as `proofRequired`",
@@ -2902,6 +2921,11 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     storage_tasks::RETIRE_TYPE,
     storage_tasks::PROBE_TYPE,
     storage_tasks::ASSIGN_TYPE,
+    // What the rooms store and may store (`data-rooms-files.md` §6): reads and limit
+    // overrides for a holder of `vtc.rooms.admin`, overrides audited. No REST route.
+    room_admin_tasks::GET_TYPE,
+    room_admin_tasks::USAGE_TYPE,
+    room_admin_tasks::LIMITS_SET_TYPE,
     // A subject rolling its own admin entry to a new key (VTI-CLT-025 – 032).
     ACL_SWAP_KEY_TYPE,
     // Capability modules (`vtc-capability-modules.md`): a member's listing of

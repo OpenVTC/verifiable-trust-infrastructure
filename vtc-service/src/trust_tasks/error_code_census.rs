@@ -99,6 +99,54 @@ fn witnesses() -> Vec<Witness> {
     #[allow(unused_mut)]
     let mut table = vec![
         witness!(
+            s::rooms::get::v0_1::error_codes::NOT_FOUND,
+            crate::rooms::storage_configs::codes::ROOM_GET_NOT_FOUND,
+            "room_usage_reports.rs",
+            "vtc_rooms_get_answers_not_found"
+        ),
+        witness!(
+            s::rooms::usage::v0_1::error_codes::INVALID_RANGE,
+            crate::rooms::storage_configs::codes::USAGE_INVALID_RANGE,
+            "room_usage_reports.rs",
+            "vtc_rooms_usage_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::rooms::usage::v0_1::error_codes::MEMBER_USAGE_UNAVAILABLE,
+            crate::rooms::storage_configs::codes::USAGE_MEMBER_USAGE_UNAVAILABLE,
+            "room_usage_reports.rs",
+            "vtc_rooms_usage_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::rooms::usage::v0_1::error_codes::INVALID_CURSOR,
+            crate::rooms::storage_configs::codes::USAGE_INVALID_CURSOR,
+            "room_usage_reports.rs",
+            "vtc_rooms_usage_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::rooms::limits::set::v0_1::error_codes::NOT_FOUND,
+            crate::rooms::storage_configs::codes::LIMITS_NOT_FOUND,
+            "room_usage_reports.rs",
+            "vtc_rooms_limits_set_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::rooms::limits::set::v0_1::error_codes::ABOVE_CEILING,
+            crate::rooms::storage_configs::codes::LIMITS_ABOVE_CEILING,
+            "room_usage_reports.rs",
+            "vtc_rooms_limits_set_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::rooms::limits::set::v0_1::error_codes::MEMBER_LIMITS_UNAVAILABLE,
+            crate::rooms::storage_configs::codes::LIMITS_MEMBER_LIMITS_UNAVAILABLE,
+            "room_usage_reports.rs",
+            "vtc_rooms_limits_set_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::rooms::limits::set::v0_1::error_codes::INVALID_COMBINATION,
+            crate::rooms::storage_configs::codes::LIMITS_INVALID_COMBINATION,
+            "room_usage_reports.rs",
+            "vtc_rooms_limits_set_refuses_with_its_declared_codes"
+        ),
+        witness!(
             s::storage::configs::list::v0_1::error_codes::INVALID_CURSOR,
             crate::rooms::storage_configs::codes::LIST_INVALID_CURSOR,
             "room_storage_configs.rs",

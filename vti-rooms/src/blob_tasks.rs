@@ -25,9 +25,10 @@ use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
 use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2;
 use trust_tasks_rs::specs::rooms::records::list::v0_2 as list_v2;
 use trust_tasks_rs::specs::rooms::records::put::v0_2 as put_v2;
+use trust_tasks_rs::specs::rooms::usage::v0_1 as rooms_usage;
 use vti_common::error::AppError;
 
-use crate::authz::AuthorizedAction;
+use crate::authz::{Action, AuthorizedAction};
 use crate::blobs::{BlobError, BlobHost, Manifest, ReadSnapshot};
 use crate::{Room, Visibility};
 
@@ -39,8 +40,13 @@ pub use crate::wire::{
     ROOMS_BLOBS_UPLOAD_CHUNK_TYPE as UPLOAD_CHUNK_TYPE,
     ROOMS_BLOBS_UPLOAD_COMMIT_TYPE as UPLOAD_COMMIT_TYPE, ROOMS_INFO_TYPE as INFO_TYPE,
     ROOMS_RECORDS_GET_V2_TYPE as GET_V2_TYPE, ROOMS_RECORDS_LIST_V2_TYPE as LIST_V2_TYPE,
-    ROOMS_RECORDS_PUT_V2_TYPE as PUT_V2_TYPE,
+    ROOMS_RECORDS_PUT_V2_TYPE as PUT_V2_TYPE, ROOMS_USAGE_TYPE as USAGE_TYPE,
 };
+
+/// A `rooms/usage` page when the caller names no `limit`, and the most one holds.
+const USAGE_PAGE: usize = 100;
+/// A `rooms/usage` cursor names the last member returned, after this prefix.
+const USAGE_CURSOR_PREFIX: &str = "rooms-usage:";
 
 /// Why a room-file task was refused, for the host to render as its reply.
 #[derive(Debug)]
@@ -322,6 +328,86 @@ pub async fn info(
     }))
 }
 
+/// `rooms/usage/0.1`, once the chain has been verified for `admin` — the room's owner
+/// asking who is using the space. One entry per member holding or reserving storage, or
+/// holding an override; never a roster, never a file.
+pub async fn usage(
+    files: &BlobHost,
+    room: &Room,
+    authorized: &AuthorizedAction,
+    payload: &Value,
+) -> TaskResult {
+    use rooms_usage::error_codes as codes;
+    let req: rooms_usage::Payload = parse(payload)?;
+    // Item 1: `read`, `write` and `curate` do not suffice. The host verified the chain
+    // for the action it was asked to; this is the check that it was asked for `admin`.
+    if authorized.action() != Action::Admin {
+        return Err(Refusal::Internal(
+            "rooms/usage was dispatched without an admin chain".into(),
+        ));
+    }
+    // Item 2: nothing is attributed on a private room, and nothing is approximated.
+    if room.visibility == Visibility::Private {
+        return Err(declared(
+            codes::NOT_AVAILABLE,
+            "a private room's uploads are not attributed to members, by design",
+            None,
+        ));
+    }
+    let after = match req.cursor.as_ref() {
+        None => None,
+        Some(c) => Some(
+            c.as_str()
+                .strip_prefix(USAGE_CURSOR_PREFIX)
+                .and_then(|b| {
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .decode(b)
+                        .ok()
+                })
+                .and_then(|b| String::from_utf8(b).ok())
+                .ok_or_else(|| Refusal::Malformed("`cursor` is not one this host issued".into()))?,
+        ),
+    };
+    let limit = req
+        .limit
+        .map_or(USAGE_PAGE, |l| (l.get() as usize).min(USAGE_PAGE));
+    // Ordered by member DID, which is what makes the cursor stable.
+    let all = files.members_with_usage(room).await.map_err(Refusal::App)?;
+    let mut rest = all
+        .into_iter()
+        .filter(|m| after.as_deref().is_none_or(|a| m.member.as_str() > a))
+        .peekable();
+    let mut members = Vec::new();
+    while members.len() < limit {
+        let Some(m) = rest.next() else { break };
+        let mut entry = json!({
+            "member": m.member,
+            "usage": m.usage,
+            "limits": m.limits,
+        });
+        if m.overridden {
+            entry["overridden"] = json!(true);
+        }
+        if let Some(at) = m
+            .last_upload_at
+            .and_then(|s| chrono::DateTime::from_timestamp(s as i64, 0))
+        {
+            entry["lastUploadAt"] = json!(at);
+        }
+        members.push(entry);
+    }
+    let mut body = json!({ "roomId": room.room_id, "members": members });
+    if rest.peek().is_some()
+        && let Some(last) = members.last().and_then(|m| m["member"].as_str())
+    {
+        body["nextCursor"] = json!(format!(
+            "{USAGE_CURSOR_PREFIX}{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(last)
+        ));
+    }
+    checked::<rooms_usage::Response>(body)
+}
+
 /// The `blobs` a `rooms/records/put/0.2` names, after checking the payload is that task's.
 pub fn put_v2_blobs(payload: &Value) -> Result<Vec<String>, Refusal> {
     let req: put_v2::Payload = parse(payload)?;
@@ -417,6 +503,7 @@ pub fn is_file_task(type_uri: &str) -> bool {
         BLOB_GET_TYPE,
         DOWNLOAD_CHUNK_TYPE,
         INFO_TYPE,
+        USAGE_TYPE,
     ]
     .contains(&type_uri)
 }

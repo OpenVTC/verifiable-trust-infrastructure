@@ -1111,7 +1111,13 @@ async fn handle_rooms_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = as_admin::<rooms_list::Payload>(state, ctx, &doc).await {
+    // `vtc.rooms.admin`, as every task about hosting rooms is
+    // (`data-rooms-files.md` §6.2): a community can hand room hosting to someone
+    // who is not a full administrator.
+    if let Err(reject) =
+        as_capable::<rooms_list::Payload>(state, ctx, &doc, crate::acl::Capability::RoomsAdmin)
+            .await
+    {
         return reject;
     }
     let lifecycle: Option<String> = match member_of(&doc, "lifecycle") {

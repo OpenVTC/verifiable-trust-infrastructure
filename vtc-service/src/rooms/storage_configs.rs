@@ -83,6 +83,21 @@ pub mod codes {
     pub const UPDATE_UNKNOWN_ACCOUNT: &str = update::error_codes::UNKNOWN_ACCOUNT.code;
     pub const PROBE_CREDENTIAL_REQUIRED: &str = probe::error_codes::CREDENTIAL_REQUIRED.code;
     pub const ASSIGN_CREDENTIAL_REQUIRED: &str = assign::error_codes::CREDENTIAL_REQUIRED.code;
+
+    // What rooms store and may store (`vtc/rooms/{get,usage,limits/set}`).
+    use trust_tasks_rs::specs::vtc::rooms::{
+        get::v0_1 as room_get, limits::set::v0_1 as limits_set, usage::v0_1 as usage,
+    };
+    pub const ROOM_GET_NOT_FOUND: &str = room_get::error_codes::NOT_FOUND.code;
+    pub const USAGE_INVALID_RANGE: &str = usage::error_codes::INVALID_RANGE.code;
+    pub const USAGE_MEMBER_USAGE_UNAVAILABLE: &str =
+        usage::error_codes::MEMBER_USAGE_UNAVAILABLE.code;
+    pub const USAGE_INVALID_CURSOR: &str = usage::error_codes::INVALID_CURSOR.code;
+    pub const LIMITS_NOT_FOUND: &str = limits_set::error_codes::NOT_FOUND.code;
+    pub const LIMITS_ABOVE_CEILING: &str = limits_set::error_codes::ABOVE_CEILING.code;
+    pub const LIMITS_MEMBER_LIMITS_UNAVAILABLE: &str =
+        limits_set::error_codes::MEMBER_LIMITS_UNAVAILABLE.code;
+    pub const LIMITS_INVALID_COMBINATION: &str = limits_set::error_codes::INVALID_COMBINATION.code;
 }
 
 /// The config seeded from `[rooms.files] blob_dir` — the one every blob written before

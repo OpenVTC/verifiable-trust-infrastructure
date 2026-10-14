@@ -23,6 +23,7 @@ use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
 use trust_tasks_rs::specs::rooms::records::{
     get::v0_2 as get_v2, list::v0_2 as list_v2, put::v0_2 as put_v2,
 };
+use trust_tasks_rs::specs::rooms::usage::v0_1 as rooms_usage;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vti_common::error::AppError;
 use vti_common::store::Store;
@@ -388,6 +389,26 @@ pub(crate) async fn handle_download_chunk(
         ),
         Err(o) => o,
     }
+}
+
+/// `rooms/usage/0.1`. Needs `admin`: who is using the room's space is the owner's
+/// question, not a member's.
+pub(crate) async fn handle_usage(
+    doc: TrustTask<rooms_usage::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Admin).await {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    render(
+        &doc,
+        blob_tasks::usage(&ctx.state.room_files, &room, &authorized, &payload).await,
+    )
 }
 
 /// `rooms/info/0.1`. Needs `read`.

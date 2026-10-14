@@ -26,7 +26,7 @@ use super::{Answer, HostState, from_app_error, now, reject, respond};
 
 pub(crate) use vti_rooms::blob_tasks::{
     BLOB_GET_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, INFO_TYPE, LIST_V2_TYPE, PUT_V2_TYPE,
-    UPLOAD_ABORT_TYPE, UPLOAD_BEGIN_TYPE, UPLOAD_CHUNK_TYPE, UPLOAD_COMMIT_TYPE,
+    UPLOAD_ABORT_TYPE, UPLOAD_BEGIN_TYPE, UPLOAD_CHUNK_TYPE, UPLOAD_COMMIT_TYPE, USAGE_TYPE,
 };
 
 /// Refuse with a code the task's specification declares.
@@ -225,6 +225,24 @@ pub(crate) async fn info(state: &HostState, doc: &TrustTask<Value>, payload: Val
     render(
         doc,
         blob_tasks::info(&state.files, &room, &authorized, &payload).await,
+    )
+}
+
+/// `rooms/usage/0.1`: who is using the room's space, for its owner. Needs `admin`.
+pub(crate) async fn usage(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    if let Err(r) =
+        blob_tasks::parse::<trust_tasks_rs::specs::rooms::usage::v0_1::Payload>(&payload)
+    {
+        return refused(doc, r);
+    }
+    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Admin).await
+    {
+        Ok(r) => r,
+        Err(a) => return a,
+    };
+    render(
+        doc,
+        blob_tasks::usage(&state.files, &room, &authorized, &payload).await,
     )
 }
 
@@ -500,6 +518,29 @@ mod tests {
 
     fn code(out: &Value) -> String {
         out["code"].as_str().unwrap_or_default().to_string()
+    }
+
+    /// The owner's read of who is using the room: one entry per member who has
+    /// stored something, under the member at the root of their chain.
+    #[tokio::test]
+    async fn the_owner_sees_usage_by_member() {
+        let h = host(HostLimits::default());
+        let f = room(&h).await;
+        let b = blob(1000, 1);
+        upload(&h, &f, &b).await;
+        let (status, out) = call(
+            &h.app,
+            USAGE_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        let members = out["members"].as_array().expect("members");
+        assert_eq!(members.len(), 1, "{out}");
+        assert_eq!(members[0]["usage"]["files"], 1);
+        assert_eq!(members[0]["usage"]["bytes"], 1000);
+        assert!(members[0]["lastUploadAt"].is_string(), "{out}");
     }
 
     /// The whole life of a file: an interrupted upload resumed, committed,

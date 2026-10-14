@@ -91,6 +91,9 @@ pub const ROOMS_BLOBS_CHUNK_TYPE: &str =
 /// `rooms/info/0.1`.
 pub const ROOMS_INFO_TYPE: &str =
     <trust_tasks_rs::specs::rooms::info::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/usage/0.1`.
+pub const ROOMS_USAGE_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::usage::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// Every `rooms/*` URI this service dispatches.
 pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
@@ -116,6 +119,7 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_BLOBS_GET_TYPE,
     ROOMS_BLOBS_CHUNK_TYPE,
     ROOMS_INFO_TYPE,
+    ROOMS_USAGE_TYPE,
 ];
 
 /// What a party presents to act on a room.

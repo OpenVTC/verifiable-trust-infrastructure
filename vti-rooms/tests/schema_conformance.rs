@@ -978,6 +978,10 @@ fn every_dispatched_uri_is_the_published_one() {
             ROOMS_INFO_TYPE,
             <rooms::info::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
+        (
+            ROOMS_USAGE_TYPE,
+            <rooms::usage::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
     ];
 
     for (ours, registry) in &published {
