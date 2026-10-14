@@ -480,7 +480,7 @@ pub async fn dispatch_trust_task(
     // reaches nothing. A caller who presents a credential has it verified by
     // the extractor, and a bad one is refused there — never downgraded to
     // anonymous. The route sits behind the unauthenticated limiter for exactly
-    // the requests this lets through anonymously (`rate_limit::apply_anonymous`).
+    // the requests this lets through anonymously (`rate_limit::apply_trust_tasks`).
     let auth = match auth {
         Some(auth) => auth,
         None => {
@@ -527,7 +527,7 @@ pub async fn dispatch_trust_task(
 /// unauthenticated routes carry (`routes::UNAUTH_BODY_SIZE`). The route sits on
 /// the authenticated router, whose cap is the global one, so the public path
 /// enforces its own.
-const PUBLIC_TASK_BODY_LIMIT: usize = 64 * 1024;
+pub(crate) const PUBLIC_TASK_BODY_LIMIT: usize = 64 * 1024;
 
 /// Does this Type URI name a task any caller may send with no identity?
 /// See [`vta_sdk::trust_tasks::PUBLIC_URIS`].

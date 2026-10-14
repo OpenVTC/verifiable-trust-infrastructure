@@ -180,9 +180,9 @@ impl AppError {
 /// doc-comments:
 ///
 /// - `Forbidden`, `DidMethodRejected` → 403
-/// - `PendingChallengeLimitReached` → 429 via the Validation arm
-///   (route layer can return a typed 429 if needed; the canonical
-///   variant carries the rate-limit signal in the message).
+/// - `PendingChallengeLimitReached` → 400 via the Validation arm.
+///   Only a store that cannot list a subject's challenges raises it
+///   (`SessionStore::pending_challenges`); the others evict instead.
 /// - `SessionNotFound`, `SessionStateMismatch`, `ChallengeMismatch`,
 ///   `ChallengeExpired`, `SignerMismatch`, `StaleMessage`,
 ///   `RefreshTokenInvalid`, `RefreshTokenExpired` → 401

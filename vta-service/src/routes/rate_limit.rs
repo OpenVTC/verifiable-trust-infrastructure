@@ -1,10 +1,12 @@
 //! Per-client-IP rate limiting for the VTA's unauthenticated REST surface.
 //!
-//! Three independent limiters, each its own per-IP bucket:
+//! Five independent limiters, each its own per-IP bucket:
 //!
 //! | [`Limiter`] | Routes | Quota from `[server]` |
 //! |---|---|---|
-//! | `auth` | auth challenge / authenticate / refresh, passkey login, `/bootstrap/request`, TEE attestation reports | `rate_limit_interval_secs` / `rate_limit_burst` |
+//! | `auth` | auth challenge, passkey login, `/bootstrap/request`, TEE attestation reports | `rate_limit_interval_secs` / `rate_limit_burst` |
+//! | `auth-authenticate` | `auth/authenticate` | same values as `auth`, separate bucket |
+//! | `auth-refresh` | `auth/refresh` | same values as `auth`, separate bucket |
 //! | `did-log` | public `did.jsonl` retrieval (`/.well-known/did.jsonl`, the canonical `/<path>/did.jsonl` catch-all, `/did/{did}/log`, TEE `/attestation/did-log`) | `did_log_rate_limit_interval_secs` / `did_log_rate_limit_burst` |
 //! | `backup-blob` | token-gated `/backup/blob/*` | same values as `auth`, separate bucket |
 //!
@@ -14,7 +16,9 @@
 //! IP, and the mediator and the VTA's own readiness gate fetch the log too.
 //! Sharing one budget made a handful of consecutive commands return 429 even
 //! though serving the log is a store read with no crypto. The auth limiter
-//! stays tight because those endpoints *do* run crypto on caller input.
+//! stays tight because those endpoints *do* run crypto on caller input. The
+//! steps of a login draw on separate buckets for the reason given on
+//! [`apply_trust_tasks`].
 //!
 //! Authenticated (JWT-gated) routes are not rate-limited — the token is the
 //! gate — and neither is DIDComm / TSP traffic, which never reaches this
@@ -51,7 +55,8 @@
 //! - `x-rate-limit-source: vta` — so a client can tell the VTA's own limiter
 //!   from a mediator's, a DID host's, or a reverse proxy's 429. **Clients rely
 //!   on this header name and value; do not rename either.**
-//! - `x-rate-limit-scope: <auth|did-log|backup-blob>` — which limiter tripped.
+//! - `x-rate-limit-scope: <auth|auth-authenticate|auth-refresh|did-log|backup-blob>`
+//!   — which limiter tripped.
 //! - `retry-after: <seconds>` (and the legacy `x-ratelimit-after`, same value).
 //! - an `application/json` body, with no configuration values or other
 //!   internal detail:
@@ -74,6 +79,7 @@ use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, Response, StatusCode, header};
 use axum::middleware::Next;
+use axum::response::IntoResponse;
 use governor::clock::{Clock, DefaultClock};
 use governor::{DefaultKeyedRateLimiter, RateLimiter};
 use ipnetwork::IpNetwork;
@@ -126,9 +132,16 @@ pub const MAX_BURST: u32 = 10_000;
 /// Which limiter a route branch sits behind. Its [`name`](Self::name) is what
 /// a 429 reports in [`RATE_LIMIT_SCOPE_HEADER`] and in the body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Limiter {
     /// Unauthenticated endpoints that run crypto on caller input.
     Auth,
+    /// `auth/authenticate`, at the `auth` quota in a bucket of its own, so
+    /// that issuing challenges cannot spend the budget needed to redeem them.
+    AuthAuthenticate,
+    /// `auth/refresh`, at the `auth` quota in a bucket of its own, so that a
+    /// host's refreshing sessions and its new logins do not starve each other.
+    AuthRefresh,
     /// Public `did.jsonl` retrieval.
     DidLog,
     /// Token-gated backup blob upload / download.
@@ -140,6 +153,8 @@ impl Limiter {
     pub const fn name(self) -> &'static str {
         match self {
             Limiter::Auth => "auth",
+            Limiter::AuthAuthenticate => "auth-authenticate",
+            Limiter::AuthRefresh => "auth-refresh",
             Limiter::DidLog => "did-log",
             Limiter::BackupBlob => "backup-blob",
         }
@@ -211,7 +226,10 @@ impl RateLimits {
     /// The quota a given limiter enforces.
     pub fn quota(self, limiter: Limiter) -> Quota {
         match limiter {
-            Limiter::Auth | Limiter::BackupBlob => self.auth,
+            Limiter::Auth
+            | Limiter::AuthAuthenticate
+            | Limiter::AuthRefresh
+            | Limiter::BackupBlob => self.auth,
             Limiter::DidLog => self.did_log,
         }
     }
@@ -275,6 +293,22 @@ struct LimiterState {
 }
 
 impl LimiterState {
+    fn new(limiter: Limiter, trust_xff_cidrs: &[IpNetwork], source: &QuotaSource) -> Self {
+        // Seed the buckets at the default quota; the first request compares
+        // against the configured quota and swaps if they differ, before any
+        // client has been charged.
+        let initial = match source {
+            QuotaSource::Fixed(limits) => limits.quota(limiter),
+            QuotaSource::Live(_) => RateLimits::default().quota(limiter),
+        };
+        Self {
+            limiter,
+            extractor: TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec()),
+            source: source.clone(),
+            buckets: StdRwLock::new(Buckets::new(initial)),
+        }
+    }
+
     /// The buckets for `quota`, swapping in fresh ones if the quota changed
     /// since they were built. See the module docs: a swap resets bucket state.
     fn buckets_for(&self, quota: Quota) -> Arc<Buckets> {
@@ -316,64 +350,96 @@ pub(super) fn apply<S>(
 where
     S: Clone + Send + Sync + 'static,
 {
-    // Seed the buckets at the default quota; the first request compares
-    // against the configured quota and swaps if they differ, before any
-    // client has been charged.
-    let initial = match source {
-        QuotaSource::Fixed(limits) => limits.quota(limiter),
-        QuotaSource::Live(_) => RateLimits::default().quota(limiter),
-    };
-    let state = Arc::new(LimiterState {
-        limiter,
-        extractor: TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec()),
-        source: source.clone(),
-        buckets: StdRwLock::new(Buckets::new(initial)),
-    });
+    let state = Arc::new(LimiterState::new(limiter, trust_xff_cidrs, source));
     router.layer(axum::middleware::from_fn_with_state(state, enforce))
 }
 
-/// As [`apply`], but charging only requests that present **no** credential
-/// (`vti_common::auth::presents_credential`). For an endpoint that serves both
-/// authenticated callers — whose gate is their credential, and who must stay
-/// off the limiter — and anonymous ones.
+/// The `/trust-tasks` limiter: charges only requests that present **no**
+/// credential (`vti_common::auth::presents_credential`), each to the bucket
+/// for what it asks for — `auth/authenticate` to [`Limiter::AuthAuthenticate`],
+/// `auth/refresh` to [`Limiter::AuthRefresh`], everything else (a challenge,
+/// a public task) to [`Limiter::Auth`]. Authenticated callers stay off the
+/// limiter: their credential is the gate.
 ///
 /// The credential test is the extractor's own, so a request cannot dodge the
 /// limiter with a junk header and still be served anonymously: what this lets
 /// through uncharged is either authenticated or refused by the extractor.
-pub(super) fn apply_anonymous<S>(
+///
+/// Why per step: a login is a challenge then an authenticate, and with one
+/// bucket every token that refilled went to whichever request arrived first.
+/// Behind one IP, new challenges took each token and every authenticate was
+/// refused, so no login finished. The step is read from the document's
+/// `type`, not from the client-chosen `Trust-Task` header, so a bucket bounds
+/// exactly the work it is named for — sending challenges labelled as
+/// authenticates does not buy more of them.
+pub(super) fn apply_trust_tasks<S>(
     router: OpenApiRouter<S>,
-    limiter: Limiter,
     trust_xff_cidrs: &[IpNetwork],
     source: &QuotaSource,
 ) -> OpenApiRouter<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    let initial = match source {
-        QuotaSource::Fixed(limits) => limits.quota(limiter),
-        QuotaSource::Live(_) => RateLimits::default().quota(limiter),
-    };
-    let state = Arc::new(LimiterState {
-        limiter,
-        extractor: TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec()),
-        source: source.clone(),
-        buckets: StdRwLock::new(Buckets::new(initial)),
+    let state = Arc::new(TrustTaskLimiters {
+        auth: LimiterState::new(Limiter::Auth, trust_xff_cidrs, source),
+        authenticate: LimiterState::new(Limiter::AuthAuthenticate, trust_xff_cidrs, source),
+        refresh: LimiterState::new(Limiter::AuthRefresh, trust_xff_cidrs, source),
     });
     router.layer(axum::middleware::from_fn_with_state(
         state,
-        enforce_anonymous,
+        enforce_trust_tasks,
     ))
 }
 
-async fn enforce_anonymous(
-    state: State<Arc<LimiterState>>,
+struct TrustTaskLimiters {
+    auth: LimiterState,
+    authenticate: LimiterState,
+    refresh: LimiterState,
+}
+
+impl TrustTaskLimiters {
+    fn for_type(&self, type_uri: Option<&str>) -> &LimiterState {
+        use vta_sdk::trust_tasks::{
+            TASK_AUTH_AUTHENTICATE_0_2, TASK_AUTH_AUTHENTICATE_0_3, TASK_AUTH_REFRESH_0_2,
+        };
+        match type_uri {
+            Some(t) if t == TASK_AUTH_AUTHENTICATE_0_2 || t == TASK_AUTH_AUTHENTICATE_0_3 => {
+                &self.authenticate
+            }
+            Some(t) if t == TASK_AUTH_REFRESH_0_2 => &self.refresh,
+            _ => &self.auth,
+        }
+    }
+}
+
+async fn enforce_trust_tasks(
+    State(limiters): State<Arc<TrustTaskLimiters>>,
     req: Request,
     next: Next,
 ) -> Response<Body> {
     if vti_common::auth::extractor::presents_credential(req.headers()) {
         return next.run(req).await;
     }
-    enforce(state, req, next).await
+    // Reading the body to find its `type` is bounded by the ceiling the
+    // handler applies to every anonymous request anyway; a larger one is
+    // charged as a challenge would be and refused here instead.
+    let (parts, body) = req.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, crate::trust_tasks::PUBLIC_TASK_BODY_LIMIT).await
+    else {
+        let refused = Request::from_parts(parts, Body::empty());
+        return charge(&limiters.auth, refused, |_| async {
+            vti_common::error::AppError::Validation(format!(
+                "an anonymous request is limited to {} bytes",
+                crate::trust_tasks::PUBLIC_TASK_BODY_LIMIT
+            ))
+            .into_response()
+        })
+        .await;
+    };
+    let type_uri = crate::trust_tasks::ceremony::peek_type_uri(&bytes);
+    let limiter = limiters.for_type(type_uri.as_deref());
+    let req = Request::from_parts(parts, Body::from(bytes));
+    charge(limiter, req, |req| next.run(req)).await
 }
 
 async fn enforce(
@@ -381,6 +447,16 @@ async fn enforce(
     req: Request,
     next: Next,
 ) -> Response<Body> {
+    charge(&state, req, |req| next.run(req)).await
+}
+
+/// Charge `req`'s client one token from `state`'s bucket and run `serve` on
+/// it, or answer 429 without running it.
+async fn charge<F, Fut>(state: &LimiterState, req: Request, serve: F) -> Response<Body>
+where
+    F: FnOnce(Request) -> Fut,
+    Fut: std::future::Future<Output = Response<Body>>,
+{
     let Some(ip) = state.client_ip(&req) else {
         // Same outcome as the tower_governor layer this replaced: no
         // attributable client means no request, not an unlimited one.
@@ -392,7 +468,7 @@ async fn enforce(
     let quota = state.source.current(state.limiter).await;
     let buckets = state.buckets_for(quota);
     match buckets.limiter.check_key(&ip) {
-        Ok(()) => next.run(req).await,
+        Ok(()) => serve(req).await,
         Err(not_until) => {
             let wait = not_until.wait_time_from(DefaultClock::default().now());
             too_many_requests(state.limiter, ceil_secs(wait))
@@ -678,6 +754,8 @@ mod tests {
         assert_eq!(Limiter::Auth.name(), "auth");
         assert_eq!(Limiter::DidLog.name(), "did-log");
         assert_eq!(Limiter::BackupBlob.name(), "backup-blob");
+        assert_eq!(Limiter::AuthAuthenticate.name(), "auth-authenticate");
+        assert_eq!(Limiter::AuthRefresh.name(), "auth-refresh");
     }
 
     #[test]
@@ -715,5 +793,142 @@ mod tests {
             limits.quota(Limiter::BackupBlob),
             limits.quota(Limiter::Auth)
         );
+    }
+
+    #[test]
+    fn the_auth_steps_use_the_auth_quota() {
+        let limits = tight();
+        for step in [Limiter::AuthAuthenticate, Limiter::AuthRefresh] {
+            assert_eq!(limits.quota(step), limits.quota(Limiter::Auth));
+        }
+    }
+
+    // ── /trust-tasks: one bucket per pre-session step ───────────────
+
+    use vta_sdk::trust_tasks::{
+        TASK_AUTH_AUTHENTICATE_0_2, TASK_AUTH_AUTHENTICATE_0_3, TASK_AUTH_CHALLENGE_0_1,
+        TASK_AUTH_REFRESH_0_2,
+    };
+
+    fn trust_tasks_router() -> axum::Router {
+        let (router, _) = apply_trust_tasks(
+            OpenApiRouter::<()>::new().route("/trust-tasks", axum::routing::post(ok)),
+            &trusted_loopback(),
+            &QuotaSource::Fixed(tight()),
+        )
+        .split_for_parts();
+        router.layer(axum::middleware::from_fn(
+            vti_common::rate_limit::insert_default_connect_info_if_missing,
+        ))
+    }
+
+    fn task_request(type_uri: &str, ip: &str) -> HttpRequest<Body> {
+        HttpRequest::builder()
+            .method("POST")
+            .uri("/trust-tasks")
+            .header("x-forwarded-for", ip)
+            .body(Body::from(
+                serde_json::json!({ "type": type_uri, "payload": {} }).to_string(),
+            ))
+            .unwrap()
+    }
+
+    async fn send(app: &axum::Router, req: HttpRequest<Body>) -> Response<Body> {
+        app.clone().oneshot(req).await.unwrap()
+    }
+
+    /// The livelock: with challenges and authenticates in one bucket, behind
+    /// one IP every refilled token went to a new challenge and no login ever
+    /// finished. Spent challenges must leave authenticate and refresh whole.
+    #[tokio::test]
+    async fn spent_challenges_leave_authenticate_and_refresh_budgets_whole() {
+        let app = trust_tasks_router();
+        let ip = "198.51.100.20";
+        for _ in 0..2 {
+            let r = send(&app, task_request(TASK_AUTH_CHALLENGE_0_1, ip)).await;
+            assert_eq!(r.status(), StatusCode::OK);
+        }
+        let refused = send(&app, task_request(TASK_AUTH_CHALLENGE_0_1, ip)).await;
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(refused.headers()[RATE_LIMIT_SCOPE_HEADER], "auth");
+
+        for type_uri in [
+            TASK_AUTH_AUTHENTICATE_0_2,
+            TASK_AUTH_AUTHENTICATE_0_3,
+            TASK_AUTH_REFRESH_0_2,
+        ] {
+            let r = send(&app, task_request(type_uri, ip)).await;
+            assert_eq!(r.status(), StatusCode::OK, "{type_uri} has its own budget");
+        }
+        // Both authenticate versions share one bucket: its burst is now spent.
+        let r = send(&app, task_request(TASK_AUTH_AUTHENTICATE_0_2, ip)).await;
+        assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(r.headers()[RATE_LIMIT_SCOPE_HEADER], "auth-authenticate");
+    }
+
+    /// The bucket follows the document's `type`, not the client-chosen
+    /// `Trust-Task` header — or a caller could label challenges as
+    /// authenticates and draw on both budgets.
+    #[tokio::test]
+    async fn the_step_is_read_from_the_document_not_the_header() {
+        let app = trust_tasks_router();
+        let ip = "198.51.100.21";
+        let mut statuses = Vec::new();
+        for _ in 0..3 {
+            let mut req = task_request(TASK_AUTH_CHALLENGE_0_1, ip);
+            req.headers_mut().insert(
+                "trust-task",
+                HeaderValue::from_static(TASK_AUTH_AUTHENTICATE_0_2),
+            );
+            let r = send(&app, req).await;
+            statuses.push(r.status());
+        }
+        assert_eq!(
+            statuses,
+            [
+                StatusCode::OK,
+                StatusCode::OK,
+                StatusCode::TOO_MANY_REQUESTS
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_anonymous_body_is_charged_and_refused() {
+        let app = trust_tasks_router();
+        let ip = "198.51.100.22";
+        let big = vec![b' '; crate::trust_tasks::PUBLIC_TASK_BODY_LIMIT + 1];
+        let oversized = || {
+            HttpRequest::builder()
+                .method("POST")
+                .uri("/trust-tasks")
+                .header("x-forwarded-for", ip)
+                .body(Body::from(big.clone()))
+                .unwrap()
+        };
+        assert_eq!(
+            send(&app, oversized()).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send(&app, oversized()).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        let r = send(&app, oversized()).await;
+        assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(r.headers()[RATE_LIMIT_SCOPE_HEADER], "auth");
+    }
+
+    #[tokio::test]
+    async fn a_credentialed_request_is_not_charged() {
+        let app = trust_tasks_router();
+        for _ in 0..5 {
+            let mut req = task_request(TASK_AUTH_CHALLENGE_0_1, "198.51.100.23");
+            req.headers_mut().insert(
+                header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer some.jwt.value"),
+            );
+            assert_eq!(send(&app, req).await.status(), StatusCode::OK);
+        }
     }
 }

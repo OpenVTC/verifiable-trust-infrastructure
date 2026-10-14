@@ -1451,7 +1451,10 @@ These are load-bearing — know they exist before adjusting nearby code.
   (`vta-service/src/routes/rate_limit.rs`), in separate buckets: `auth`
   (auth/bootstrap/attestation, `[server] rate_limit_interval_secs` /
   `rate_limit_burst`, defaults 5 / 10), `did-log` (public `did.jsonl`,
-  `did_log_rate_limit_*`, defaults 1 / 60), `backup-blob` (auth quota). Keep
+  `did_log_rate_limit_*`, defaults 1 / 60), `backup-blob` (auth quota), and
+  on `/trust-tasks` `auth-authenticate` / `auth-refresh` (auth quota, chosen
+  from the anonymous document's `type` — a login's challenge must not spend
+  its authenticate's budget). Keep
   JWT-gated routes off the limiter — auth is the gate. **An interval is
   seconds per token, not a rate** — `(5, 10)` is 10 back-to-back requests
   then one every 5 s, so a *bigger* number is a *tighter* limit; zero clamps

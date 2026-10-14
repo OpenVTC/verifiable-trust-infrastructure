@@ -7,12 +7,14 @@ to tell a VTA 429 from one produced by something else in the path.
 
 ## What is limited
 
-There are three limiters. Each keeps its own bucket per client IP, so running
+There are five limiters. Each keeps its own bucket per client IP, so running
 out of one never spends another.
 
 | Limiter (`x-rate-limit-scope`) | Routes | Default |
 |---|---|---|
-| `auth` | `POST /auth/challenge`, `POST /auth/`, `POST /auth/refresh`, passkey login start/finish, `POST /bootstrap/request`, and **anonymous** `POST /trust-tasks` requests — the public Trust Tasks (`vta/attestation/{status,report,config-report}/0.1`), charged only when the request presents no credential; authenticated `/trust-tasks` calls stay off the limiter | burst 10, then 1 token every 5 s |
+| `auth` | **Anonymous** `POST /trust-tasks` requests other than the two below — `auth/challenge/0.1` and the public Trust Tasks (`vta/attestation/{status,report,config-report}/0.1`) — plus passkey login start/finish and `POST /bootstrap/request`. Authenticated `/trust-tasks` calls stay off every limiter | burst 10, then 1 token every 5 s |
+| `auth-authenticate` | Anonymous `POST /trust-tasks` carrying `auth/authenticate/0.2` or `0.3` | same quota as `auth` |
+| `auth-refresh` | Anonymous `POST /trust-tasks` carrying `auth/refresh/0.2` | same quota as `auth` |
 | `did-log` | `GET /.well-known/did.jsonl`, the canonical `GET /<path>/did.jsonl` for a pathful self-hosted DID (and every other unmatched `GET`, which answers 404), `GET /did/{did}/log`, and under TEE `GET /attestation/did-log` | burst 60, then 1 token every 1 s |
 | `backup-blob` | `GET` / `POST /backup/blob/{bundle_id}` (token-gated, not JWT-gated) | same quota as `auth` |
 
@@ -24,6 +26,27 @@ resolving a self-hosted VTA DID is the first step of every client command. A
 same address; the mediator and the VTA's own readiness gate fetch the log too.
 When the log shared the auth budget, a handful of commands in a row returned
 429.
+
+A login is two requests, a challenge and then an authenticate, and they draw
+on separate buckets. With one bucket, every token that refilled went to
+whichever request arrived first, so behind one busy address (a NAT gateway, an
+app host running many agents) new challenges took every token, each
+authenticate was refused, and no login finished. Refresh has its own bucket for
+the same reason: a host's refreshing sessions and its new logins must not
+starve each other. The bucket is chosen from the document's `type`, not the
+client-chosen `Trust-Task` header, so labelling challenges as authenticates
+does not buy more of them. To choose, the VTA reads an anonymous body — at most
+the 64 KiB an anonymous request may carry — before charging it.
+
+The cost of separating them: one address now has three budgets on these steps
+instead of one, so at the defaults its anonymous burst is 30 requests — 10
+challenges or public tasks, 10 authenticates, 10 refreshes — where it was 10
+across all of them. Lower `rate_limit_burst` if that is too generous.
+
+Separately from these per-IP limits, a subject has at most 10 outstanding
+challenges (VTI-SES-005). Asking for another evicts the oldest; an expired
+challenge does not count. A challenge request is never refused for this, so
+the answer does not reveal whether the subject is enrolled (VTI-SES-007).
 
 The public log responses also carry `Cache-Control: public, max-age=60` and a
 strong `ETag`, and answer `If-None-Match` with `304 Not Modified`, so a resolver
@@ -166,7 +189,8 @@ port = 8100
 # for a proxy that rewrites X-Forwarded-For; see "Keying" above.
 # trust_xff_cidrs = ["10.0.0.0/24"]
 
-# auth limiter (also sizes backup-blob): seconds per token, bucket size
+# auth limiter (also sizes auth-authenticate, auth-refresh and backup-blob):
+# seconds per token, bucket size
 rate_limit_interval_secs = 5
 rate_limit_burst = 10
 
@@ -222,7 +246,7 @@ header that the others do not:
 
 | Source | How to recognise it | Limits | Where to change them |
 |---|---|---|---|
-| **This VTA** | `x-rate-limit-source: vta`, plus `x-rate-limit-scope: auth` / `did-log` / `backup-blob`, `Retry-After`, and a JSON body `{"error":"rate_limited","limiter":"…","message":"…","retryAfterSecs":N}` | as configured above | `[server]` keys / `pnm config update` |
+| **This VTA** | `x-rate-limit-source: vta`, plus `x-rate-limit-scope: auth` / `auth-authenticate` / `auth-refresh` / `did-log` / `backup-blob`, `Retry-After`, and a JSON body `{"error":"rate_limited","limiter":"…","message":"…","retryAfterSecs":N}` | as configured above | `[server]` keys / `pnm config update` |
 | **Mediator** (TDK `affinidi-messaging-mediator`) | no `x-rate-limit-source`; appears on the mediator's own host (websocket / inbound HTTP), not the VTA's | per IP: `limits.rate_limit_per_ip` requests per second (default 100), `limits.rate_limit_burst` (default 50); optional per authenticated DID: `limits.did_rate_limit_per_second` (default 0 = off) / `did_rate_limit_burst` | the mediator's `mediator.toml` (`LIMIT_*` env vars) |
 | **did-hosting-control** | no `x-rate-limit-source`; on the DID host's `/api/auth/challenge` | 30 requests per 60 s per IP (fixed window) | the did-hosting service |
 | **A reverse proxy / CDN / API gateway** | no `x-rate-limit-source`; usually a proxy-branded body or `Server` header | whatever the proxy enforces | the proxy |

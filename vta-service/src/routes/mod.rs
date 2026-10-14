@@ -327,8 +327,7 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         "/trust-tasks",
         post(crate::trust_tasks::dispatch_trust_task),
     );
-    let trust_tasks =
-        rate_limit::apply_anonymous(trust_tasks, Limiter::Auth, trust_xff_cidrs, &quotas);
+    let trust_tasks = rate_limit::apply_trust_tasks(trust_tasks, trust_xff_cidrs, &quotas);
 
     let router = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(unauth)
