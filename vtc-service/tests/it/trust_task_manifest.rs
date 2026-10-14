@@ -945,6 +945,8 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/install/claim/start/0.3",
     "https://trusttasks.org/spec/vtc/install/claim/finish/0.3",
     "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1",
+    // The Wallet verifier page (`trust_tasks::oid4vp_tasks`, #1988).
+    "https://trusttasks.org/spec/vtc/oid4vp/identities/list/0.1",
 ];
 
 #[test]

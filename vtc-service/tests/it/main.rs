@@ -111,6 +111,7 @@ mod test_support_smoke;
 mod trust_task_manifest;
 mod trust_task_size;
 mod unrestricted_admin_consent;
+mod verifier_identities;
 mod vetting_journey;
 mod vtc_client_live;
 mod wallet_login_siop;

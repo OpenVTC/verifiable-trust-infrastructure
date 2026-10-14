@@ -995,6 +995,37 @@ fn table() -> Vec<Conformance> {
             json!({ "name": "events-team", "reason": "events moved elsewhere" }),
             json!({ "deleted": "events-team" })
         ),
+        // ─── the OpenID4VP verifier identities (`oid4vp_tasks`) ──────
+        checked!(
+            s::oid4vp::identities::list::v0_1::Payload,
+            s::oid4vp::identities::list::v0_1::Response,
+            json!({}),
+            json!({
+                "identities": [{
+                    "id": "eudi", "kind": "eudi",
+                    "clientId": "x509_hash:Uvo3HtuIxuhC92rShpgqcT3YXwrqRxWEviRiA0OZszk",
+                    "custody": "agent", "usable": true, "isDefault": true,
+                    "certificate": {
+                        "subject": "CN=Example community verifier",
+                        "issuer": "CN=Test Access CA",
+                        "notBefore": "2026-07-01T00:00:00Z",
+                        "notAfter": "2026-10-31T00:00:00Z",
+                        "chainLength": 1,
+                    },
+                    "attestations": [{
+                        "kind": "registrationCertificate",
+                        "expiresAt": "2027-01-01T00:00:00Z",
+                    }],
+                    "problems": [{
+                        "code": "certificateExpiresSoon", "severity": "warning",
+                        "detail": "the access certificate expires 2026-10-31",
+                    }],
+                    "installedAt": "2026-07-01T09:30:00Z",
+                }],
+                "defaultIdentity": null,
+                "problems": [],
+            })
+        ),
         // ─── what rooms store and may store (`room_admin_tasks`) ─────
         checked!(
             s::rooms::get::v0_1::Payload,

@@ -140,6 +140,8 @@ pub(crate) mod step_up_approver_tasks;
 // their only door.
 pub(crate) mod role_tasks;
 pub(crate) mod room_admin_tasks;
+// The administrators' view of the OpenID4VP verifier identities (#1988).
+pub(crate) mod oid4vp_tasks;
 pub(crate) mod storage_tasks;
 // Direct admission: adding a member without a join request, and making an
 // existing ACL entry a membership — decided by the community's `admission`
@@ -1283,6 +1285,13 @@ fn dispatch_typed<'a>(
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("storage_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
+        uri if oid4vp_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match Box::pin(oid4vp_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("oid4vp_tasks::URIS names {uri}, which it does not route"),
             }
         }),
         uri if room_admin_tasks::URIS.contains(&uri) => Box::pin(async move {
@@ -2926,6 +2935,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     room_admin_tasks::GET_TYPE,
     room_admin_tasks::USAGE_TYPE,
     room_admin_tasks::LIMITS_SET_TYPE,
+    // The OpenID4VP verifier identities, as a holder of `vtc.config.admin`
+    // sees them (#1988). A read; no REST route.
+    oid4vp_tasks::IDENTITIES_LIST_TYPE,
     // A subject rolling its own admin entry to a new key (VTI-CLT-025 – 032).
     ACL_SWAP_KEY_TYPE,
     // Capability modules (`vtc-capability-modules.md`): a member's listing of

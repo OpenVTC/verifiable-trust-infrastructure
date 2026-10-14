@@ -1,0 +1,33 @@
+/* Wallet verifier (`plugins/walletVerifier.tsx`). */
+
+.verifier-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-4);
+  margin: var(--space-2) 0 0;
+}
+.verifier-fields dt {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+.verifier-fields dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.verifier-fields ul {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+.verifier-problems {
+  list-style: none;
+  margin: var(--space-2) 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+@media (max-width: 640px) {
+  .verifier-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
