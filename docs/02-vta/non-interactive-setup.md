@@ -364,6 +364,17 @@ starting point is to keep that sum at 40–60% of the container's memory
 replay briefly holds close to `max_journal` in memory, so a limit set
 right at the steady-state sum above can still OOM on a restart.
 
+**The floor none of these settings lower.** fjall (3.1.12, the current
+release) starts a new journal file only once the active one passes about
+64 MB, and on startup it replays the *whole* active journal into memory,
+including writes it had already flushed to disk. A clean shutdown does not
+shorten it. So whatever the three settings say, a restart can briefly need
+up to ~64 MiB for the replay on top of the block cache and the process's
+own baseline, and a quiet store keeps that journal for as long as it takes
+to write 64 MB. Do not give a VTA or VTC less than **256 MiB**. Below that,
+an OOM kill can repeat at every start: each kill happens before anything is
+flushed, so the journal the next start replays is never shorter (#1777).
+
 ## Validation and errors
 
 The wizard validates the file in two phases:
