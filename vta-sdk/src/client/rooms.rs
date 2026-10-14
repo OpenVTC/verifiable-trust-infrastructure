@@ -514,6 +514,35 @@ impl VtaClient {
         parse_response(value, "rooms/keys/commit")
     }
 
+    /// `rooms/keys/backfill/0.1` — have this VTA fetch the room's epoch key chain from its
+    /// host and keep it, so records sealed before it joined open.
+    ///
+    /// The VTA makes the call to the host (named by DID), so the client needs no channel
+    /// to it. `from_epoch` asks for rungs at or below that epoch; a long history is walked
+    /// by calling again below what the last answer reached.
+    pub async fn room_backfill(
+        &self,
+        room_id: &str,
+        host_did: &str,
+        from_epoch: Option<std::num::NonZeroU64>,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::backfill::v0_1::Response, VtaError> {
+        use trust_tasks_rs::specs::rooms::keys::backfill::v0_1::Payload;
+        let payload = Payload::builder()
+            .room_id(room_id)
+            .host(host_did)
+            .from_epoch(from_epoch);
+        let payload = Payload::try_from(payload)
+            .map_err(|e| VtaError::Validation(format!("rooms/keys/backfill request: {e}")))?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1,
+                serde_json::to_value(payload)?,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/backfill")
+    }
+
     /// `rooms/keys/list/0.1` — the rooms this VTA holds a group for, each with the
     /// room epoch it is at and how far back it can read.
     ///

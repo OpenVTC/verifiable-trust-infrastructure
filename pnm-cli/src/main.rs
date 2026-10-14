@@ -976,5 +976,11 @@ mod tests {
                 command: RoomKeysCommands::List
             }
         ));
+        assert!(matches!(
+            rooms(&["keys", "backfill", "--room", "r", "--host-did", "did:web:h"]),
+            RoomCommands::Keys {
+                command: RoomKeysCommands::Backfill { .. }
+            }
+        ));
     }
 }

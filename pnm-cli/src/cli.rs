@@ -1008,6 +1008,21 @@ pub(crate) enum RoomKeysCommands {
         #[arg(long, requires = "host")]
         host_did: Option<String>,
     },
+    /// Fetch the room's history from its host so records sealed before you
+    /// joined open (`rooms/keys/backfill`).
+    ///
+    /// Your VTA asks the host for the epoch key chain and keeps it, walking down
+    /// until it reads the whole retained history or the host has no more. Run it
+    /// once after `keys welcome`, and whenever `rooms get` says a record is older
+    /// than this VTA can reach.
+    Backfill {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// The host's DID. Your VTA resolves it and makes the call itself.
+        #[arg(long)]
+        host_did: String,
+    },
     /// Which rooms your VTA holds a group for, each with its room epoch and how
     /// far back it reads (`rooms/keys/list`). Key custody, not membership.
     List,

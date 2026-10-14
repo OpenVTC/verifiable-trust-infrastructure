@@ -358,6 +358,13 @@ impl RoomGroup {
                 self.group
                     .merge_staged_commit(&self.provider, *staged)
                     .map_err(|e| RoomKeyError::Group(format!("merge staged commit: {e:?}")))?;
+                // A commit removing our own leaf merges cleanly and leaves a group that can
+                // export nothing. Say so here, rather than as the key-export failure the
+                // next step would hit.
+                if !self.group.is_active() {
+                    let epoch = u32::try_from(self.group.epoch().as_u64() + 1).unwrap_or(u32::MAX);
+                    return Err(RoomKeyError::Removed { epoch });
+                }
                 Ok(self.group.epoch().as_u64())
             }
             _ => Err(RoomKeyError::Group(
@@ -522,6 +529,33 @@ mod tests {
             "a member whose authenticator differs from the anchored one has been forked"
         );
         assert!(!alice.epoch_authenticator().is_empty());
+    }
+
+    /// A removed member is told it was removed, not that its group failed to export a key —
+    /// the raw failure read like a fault in the holder (found in a live run).
+    #[test]
+    fn a_member_applying_its_own_removal_is_told_it_was_removed() {
+        let mut alice = RoomGroup::create("did:key:zAlice").expect("alice");
+        let bob_provider = OpenMlsRustCrypto::default();
+        let bob_identity = RoomIdentity::new("did:key:zBob", &bob_provider).expect("bob identity");
+        let bob_kp = bob_identity.key_package(&bob_provider).expect("bob kp");
+        let change = alice.add_member(bob_kp).expect("add bob");
+        let mut bob = RoomGroup::join_with(
+            bob_identity,
+            bob_provider,
+            &change.welcome.expect("welcome"),
+        )
+        .expect("bob joins");
+
+        let leaf = alice.leaf_of("did:key:zBob").expect("bob's leaf");
+        let removal = alice.remove_member(leaf).expect("remove bob");
+
+        match bob.apply_commit(&removal.commit) {
+            Err(RoomKeyError::Removed { epoch }) => {
+                assert_eq!(u64::from(epoch), alice.epoch() + 1, "names the room epoch")
+            }
+            other => panic!("expected Removed, got {other:?}"),
+        }
     }
 
     #[test]

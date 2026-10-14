@@ -216,6 +216,9 @@ pub(crate) async fn run(
                 let epoch = epoch.ok_or("--commit needs --epoch: the room epoch it produces")?;
                 return custody::cmd_rooms_keys_commit_file(client, &room_id, &commit, epoch).await;
             }
+            RoomKeysCommands::Backfill { room_id, host_did } => {
+                return custody::cmd_rooms_keys_backfill(client, &room_id, &host_did).await;
+            }
             RoomKeysCommands::List => return custody::cmd_rooms_keys_list(client).await,
             command @ RoomKeysCommands::Commit { .. } => RoomCommands::Keys { command },
         },

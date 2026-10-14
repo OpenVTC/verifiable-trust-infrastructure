@@ -784,13 +784,22 @@ async fn open_and_verify(
         )
         .await
         .map_err(|e| {
-            // The failure operators will actually hit, named where they will
-            // read it. A record sealed under a later epoch is a missed commit,
-            // and it reads like corruption if nobody says otherwise.
-            format!(
-                "{e}\n\nIf this mentions an epoch, your VTA has not been given the room's \
-                 latest commit — ask the room's owner to deliver it, then retry."
-            )
+            // The failures operators will actually hit, named where they will read
+            // them. Each reads like corruption if nobody says otherwise, and the two
+            // epoch cases have opposite remedies.
+            let text = e.to_string();
+            let hint = if text.contains("cannot reach") {
+                "The record is older than any key this VTA holds — it was written before \
+                 you joined. Fetch the room's history: `pnm rooms keys backfill --room \
+                 <room> --host-did <host>`."
+            } else if text.contains("has not been delivered") {
+                "The record is newer than this VTA's group. Catch up with `pnm rooms keys \
+                 commit --room <room> --host <url> --host-did <host>`; if that says you were \
+                 removed, nothing sealed after your removal will open."
+            } else {
+                "The record did not open with any key this VTA holds."
+            };
+            format!("{e}\n\n{hint}")
         })?;
     let plaintext = opened
         .get("plaintext")
@@ -1096,8 +1105,9 @@ pub async fn cmd_rooms_owner_group_create(
         })?;
     println!("Founded the group of {room_id} at epoch {}.", resp.epoch);
     println!(
-        "  Next: issue yourself the room's membership and authority credentials, then admit \
-         members with `pnm rooms owner group-add`."
+        "  Next: admit members with `pnm rooms owner invite` and `pnm rooms owner group-add`. \
+         Writing needs your own membership and authority credentials in this VTA \
+         (`pnm rooms owner issue-membership` / `issue-authority --store`), if not issued yet."
     );
     Ok(())
 }

@@ -243,17 +243,17 @@ async fn deliver_issued(
     output: &IssuedOutput<'_>,
 ) -> CmdResult {
     let name = match kind {
-        IssuedKind::Membership => "membership credential",
-        IssuedKind::Authority => "authority credential",
+        IssuedKind::Membership => "a membership credential",
+        IssuedKind::Authority => "an authority credential",
     };
     if let Some(out) = output.out {
         write_new(out, credential.as_bytes())?;
         println!(
-            "Issued {subject} a {name} for {room_id}: wrote {} ({credential_id}).",
+            "Issued {subject} {name} for {room_id}: wrote {} ({credential_id}).",
             out.display()
         );
     } else {
-        println!("Issued {subject} a {name} for {room_id} ({credential_id}).");
+        println!("Issued {subject} {name} for {room_id} ({credential_id}).");
     }
     if output.store {
         let body: serde_json::Value = serde_json::from_str(credential)
@@ -509,6 +509,14 @@ pub async fn cmd_rooms_keys_commit_file(
 }
 
 fn commit_hint(e: impl std::fmt::Display) -> String {
+    let text = e.to_string();
+    if text.contains("removed this holder") {
+        return format!(
+            "{text}\n\nYou are no longer a member of this room's group. Nothing written \
+             after your removal will open here; what you could read before still does. \
+             Rejoining takes a fresh invitation from the room's owner."
+        );
+    }
     format!(
         "{e}\n\nCommits apply in order. A refusal naming the epoch to resume from means one is \
          missing: fetch them all from the host with `--host <url> --host-did <did>` instead of a \
@@ -583,6 +591,39 @@ async fn held_epoch(client: &VtaClient, room_id: &str) -> Result<u64, Box<dyn st
             )
             .into()
         })
+}
+
+/// `rooms keys backfill` — have this VTA fetch the room's epoch key chain from the host,
+/// walking down until it reads the whole retained history or the host has no more.
+pub async fn cmd_rooms_keys_backfill(
+    client: &VtaClient,
+    room_id: &str,
+    host_did: &str,
+) -> CmdResult {
+    let mut from: Option<std::num::NonZeroU64> = None;
+    let mut fetched = 0u64;
+    let reach = loop {
+        let resp = client.room_backfill(room_id, host_did, from).await?;
+        let reach = resp.earliest_readable_epoch.get();
+        let served = resp.fetched.unwrap_or(0);
+        fetched += served;
+        // Stop at the whole history, when the host serves nothing more, or when a pass
+        // moved nothing — a gap in the chain the host cannot fill.
+        if reach <= 1 || served == 0 || from.is_some_and(|f| f.get() == reach) {
+            break reach;
+        }
+        from = std::num::NonZeroU64::new(reach);
+    };
+    println!(
+        "{room_id}: fetched {fetched} link(s); this VTA now reads back to room epoch {reach}."
+    );
+    if reach > 1 {
+        println!(
+            "  Records sealed before epoch {reach} will not open here: the host holds no links \
+             below it, or the room's history was deliberately severed there."
+        );
+    }
+    Ok(())
 }
 
 /// `rooms keys list` — the rooms this VTA holds a group for.

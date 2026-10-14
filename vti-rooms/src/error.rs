@@ -11,6 +11,7 @@
 
 /// What can go wrong holding or using a room's keys.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RoomKeyError {
     /// The MLS group could not be created, joined, or advanced.
     #[error("room group: {0}")]
@@ -55,4 +56,16 @@ pub enum RoomKeyError {
          key chain reaches back only to {earliest}"
     )]
     EpochUnreachable { sealed: u32, earliest: u32 },
+
+    /// The commit just processed removed this holder's own leaf.
+    ///
+    /// Distinct from a commit that failed to process: nothing is wrong with it, and no
+    /// retry or later commit will change the outcome. Reported as the group failing to
+    /// export a key it no longer has, it reads like a fault in the holder, when what it
+    /// means is that the holder is no longer a member.
+    #[error(
+        "this commit removed this holder from the group: nothing sealed from epoch {epoch} on \
+         will open here, and nothing earlier is lost"
+    )]
+    Removed { epoch: u32 },
 }

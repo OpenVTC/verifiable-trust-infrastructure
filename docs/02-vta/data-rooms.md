@@ -556,12 +556,24 @@ commits therefore loses twice: they cannot read forward (they are behind) and
 they will not be able to read back across the gap either, because the link that
 bridges it only ever arrives once.
 
-Two error messages distinguish the cases, and they mean different things:
+**A member who has just joined reads the past by fetching it.** Their group starts
+at the epoch they joined, so everything older needs the links the host relays.
+Their VTA fetches and keeps them itself (`rooms/keys/backfill`):
+
+```bash
+pnm rooms keys backfill --room <room-did> --host-did <host-did>
+```
+
+It walks down until it reads the room's whole retained history, or the host has
+no more, and says how far back it now reads. Run it once after `keys welcome`.
+
+Three error messages distinguish the cases, and they mean different things:
 
 | Message | What happened | What to do |
 |---|---|---|
-| *"a commit has not been delivered"* | the record is **newer** than this VTA's epoch | deliver the missing commit |
-| *"cannot reach … the epoch key chain reaches back only to N"* | the record is **older** than any key this VTA can derive | the links for that stretch never arrived, or the history was deliberately severed. Nothing recovers it locally |
+| *"a commit has not been delivered"* | the record is **newer** than this VTA's epoch | `pnm rooms keys commit --host …` |
+| *"cannot reach … the epoch key chain reaches back only to N"* | the record is **older** than any key this VTA can derive | `pnm rooms keys backfill`. If the reach does not move, the links for that stretch never reached the host, or the history was deliberately severed — nothing recovers it |
+| *"this commit removed this holder from the group"* | you were removed | nothing: what you read before still opens, nothing written after does |
 
 ### Remove a member
 
