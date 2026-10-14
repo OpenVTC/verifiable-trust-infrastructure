@@ -637,6 +637,18 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1, RetrySafe),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1, Keyed),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2, Keyed),
+    // Founding converges: a second execution is refused `alreadyExists` and
+    // changes nothing, so a retry after a lost reply reports a refusal over a
+    // group that in fact exists — a worse message, not a worse world.
+    (trust_tasks::TASK_ROOMS_OWNER_GROUP_CREATE_0_1, RetrySafe),
+    // `Keyed`, because the answer is the only copy of something. The Welcome
+    // exists in the response and nowhere else once the admission is applied:
+    // a retry after a lost reply is refused `alreadyMember`, and the member can
+    // then never join without a removal and a fresh admission. Replaying the
+    // cached response is exactly what that caller needs. Not `KeyedSecret`:
+    // the Welcome is sealed to the newcomer's KeyPackage and opens nothing for
+    // anyone else, including whoever holds the cached copy.
+    (trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_1, Keyed),
     (trust_tasks::TASK_VTA_MEMORY_DELETE_0_1, RetrySafe),
     // ── Application state ───────────────────────────────────────────────
     //

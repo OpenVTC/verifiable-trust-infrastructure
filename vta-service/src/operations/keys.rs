@@ -1039,6 +1039,34 @@ pub(crate) async fn load_record_in_caller_scope(
     Ok(record)
 }
 
+/// Whether `auth` may name `key_id` as [`sign_payload`] would let it — the key
+/// is in the caller's scope, active, in a context the caller can act in, and
+/// inside the caller's own key filter — without signing anything.
+///
+/// For an act whose entitlement is *control of a key* but which produces no
+/// signature: founding a room's group (`rooms/owner/group/create`) is the same
+/// gate as issuing the room's credentials, and burning a signature (and a
+/// context's daily quota) only to prove the caller could have signed would be
+/// a side effect with no purpose. The context policy's signing limit is not
+/// consulted for the same reason: nothing is signed.
+pub(crate) async fn require_key_nameable(
+    keys_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    key_id: &str,
+) -> Result<KeyRecord, AppError> {
+    let record = load_record_in_caller_scope(keys_ks, auth, key_id).await?;
+    if record.status != KeyStatus::Active {
+        return Err(AppError::Validation(format!("key `{key_id}` is revoked")));
+    }
+    if let Some(ref ctx) = record.context_id {
+        auth.require_context(ctx)?;
+        let caller = CallerAcl::read(acl_ks, auth).await?;
+        require_key_in_caller_scope(&caller, key_id)?;
+    }
+    Ok(record)
+}
+
 /// How the channel a released private key travels over protects it — stated
 /// by the caller of [`get_key_secret`], because only the transport knows.
 ///

@@ -396,7 +396,7 @@ pub(super) async fn handle_chain(
 ///
 /// A copy of `room_owner`'s rather than a shared one: the two modules sign as
 /// different identities and the struct is the argument list, not the policy.
-fn signing_context<'a>(
+pub(super) fn signing_context<'a>(
     state: &'a AppState,
     auth: &'a AuthClaims,
 ) -> crate::operations::room_issuance::SigningContext<'a> {
@@ -1202,7 +1202,7 @@ pub(super) async fn handle_file_key(
 }
 
 /// A declared code, as the framework's extended form.
-fn declared(code: trust_tasks_rs::DeclaredErrorCode) -> trust_tasks_rs::TrustTaskCode {
+pub(super) fn declared(code: trust_tasks_rs::DeclaredErrorCode) -> trust_tasks_rs::TrustTaskCode {
     trust_tasks_rs::TrustTaskCode::Extended {
         slug: code.namespace().to_string(),
         local: code.local().to_string(),
@@ -1244,7 +1244,7 @@ fn decode_b64(s: &str, what: &str) -> Result<Vec<u8>, vti_common::error::AppErro
         .map_err(|e| vti_common::error::AppError::Validation(format!("decode the {what}: {e}")))
 }
 
-fn now() -> u64 {
+pub(super) fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

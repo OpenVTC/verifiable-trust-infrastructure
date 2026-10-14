@@ -1076,6 +1076,88 @@ pub async fn cmd_rooms_file_get(
     Ok(())
 }
 
+/// `rooms owner group-create` — found a sealed room's group in this VTA, with the owner
+/// as its only member (`rooms/owner/group/create/0.1`).
+pub async fn cmd_rooms_owner_group_create(
+    client: &VtaClient,
+    room_id: &str,
+    signing_key_id: &str,
+    member: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client
+        .room_group_create(room_id, signing_key_id, member)
+        .await
+        .map_err(|e| {
+            format!(
+                "{e}\n\n`noSigningKey` means this VTA will not let you name `{signing_key_id}` — \
+                 check it with `pnm keys list --context <id>`. `alreadyExists` means it already \
+                 holds this room's group, which is never replaced."
+            )
+        })?;
+    println!("Founded the group of {room_id} at epoch {}.", resp.epoch);
+    println!(
+        "  Next: issue yourself the room's membership and authority credentials, then admit \
+         members with `pnm rooms owner group-add`."
+    );
+    Ok(())
+}
+
+/// `rooms owner group-add` — admit a member from their KeyPackage
+/// (`rooms/owner/group/add/0.1`) and write the Welcome to `out` for delivery.
+pub async fn cmd_rooms_owner_group_add(
+    client: &VtaClient,
+    room_id: &str,
+    host_did: &str,
+    member: &str,
+    key_package_src: &str,
+    reason: Option<&str>,
+    out: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if out.exists() {
+        return Err(format!("{} already exists; refusing to overwrite it", out.display()).into());
+    }
+    let key_package = if key_package_src == "-" {
+        let mut s = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut s)?;
+        s
+    } else {
+        std::fs::read_to_string(key_package_src)?
+    };
+    let key_package = key_package.trim().to_string();
+
+    // Under one idempotency key: the answer is the only copy of the Welcome, and a
+    // retry that re-executed would be refused `alreadyMember` with the Welcome lost.
+    let resp = client
+        .idempotent(|| client.room_group_add(room_id, host_did, member, &key_package, reason))
+        .await
+        .map_err(|e| {
+            format!(
+                "{e}\n\n`epochConflict` means another admin advanced the room: catch up and \
+                 retry. `hostUnreachable` leaves the outcome unknown; running this again \
+                 settles it with the host before anything else."
+            )
+        })?;
+
+    let delivery = serde_json::json!({
+        "roomId": room_id,
+        "member": resp.member.as_str(),
+        "epoch": resp.epoch,
+        "welcome": resp.welcome.as_str(),
+        "ratchetTree": resp.ratchet_tree.as_ref().map(|t| t.as_str()),
+    });
+    std::fs::write(out, serde_json::to_vec_pretty(&delivery)?)?;
+    println!(
+        "Admitted {member} to {room_id}; the room is now at epoch {}.",
+        resp.epoch
+    );
+    println!(
+        "  Deliver {} to the member's key holder (rooms/keys/welcome) directly — never \
+         through the host.",
+        out.display()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

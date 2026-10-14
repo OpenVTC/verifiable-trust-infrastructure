@@ -85,7 +85,7 @@ knowing which half you are standing on saves an afternoon.
 | Succession: nomination, transfer, claim | **Work**, including the "renewing defeats a pending claim" property |
 | **A CLI** | **`pnm rooms {create,list,get,put,curate,renew}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key. It carries **no owner verbs**, and `put` still refuses a sealed room even though `rooms/keys/seal/0.1` now seals one |
 | **Credential issuance** | **Works, on the owner's own VTA.** `rooms/owner/{invite,issue-membership,issue-authority}` mint the VIC, VMC and VAC in the *room's* name, signing through the gated key oracle so the room's key never materialises (§5.3). No `pnm` verbs and no `VtaClient` helpers yet: the operator surface is a wallet, or a Trust Task document you build yourself |
-| **The owner's MLS half** | **Library only.** `RoomGroup::{create,add_member}` — forming the group, and turning a joiner's KeyPackage into a Welcome + Commit — has no trust task and no CLI. Every *member*-side step is a task, so admitting someone to a **sealed** room is the one part of §6 that is still Rust |
+| **The owner's MLS half** | **Works, in the owner's VTA.** `rooms/owner/group/create` founds the group with the owner as its only member; `rooms/owner/group/add` admits a member's KeyPackage, advances the room's epoch at its host first, and returns the Welcome to deliver. `pnm rooms owner group-create` / `group-add` drive them (§5.4, §6). Removing a member is still library-only |
 | **A browser as a member** | **Works.** `vti-rooms-wasm` compiles the member half — group custody, sealing, opening, the epoch chain — to WebAssembly; `room-host --allow-origin` is what lets a page reach a host at all. No key ever crosses into JavaScript |
 | **Governance (`rooms.rego`)** | **On a VTC.** A community decides who may create a room on it, in Rego, with the shipped default hosting `open`/`attributed` for its own members. A standalone `room-host` has no policy engine — T1's governance is its owner (§8.4) |
 | **Read mirrors** (T3) | **`room-host --mirror-config`** — a host serves a read-only copy fed by `sinceVersion` pulls and refuses every write, naming the primary. A mirror pulls **as a member**, presenting a room-issued `read` chain |
@@ -318,20 +318,29 @@ ownership.
 
 ### 5.4 On a sealed tier, form the MLS group
 
-```rust
-use vti_rooms::mls::RoomGroup;
-use vti_rooms::sealed::SealedRoom;
+Your VTA founds the group, with you as its only member
+(`rooms/owner/group/create/0.1`):
 
-let group = RoomGroup::create(owner_did)?;      // one leaf: the owner's VTA
-let room  = SealedRoom::new(room_did, group);
+```bash
+pnm rooms owner group-create --room <room-did> --signing-key <key id from §5.1> \
+    [--member <your room DID>]
 ```
 
+The entitlement is the same as issuing the room's credentials: control of its
+signing key. `--member` is the DID your leaf identifies — the subject of your
+room credentials — and defaults to the DID `pnm` authenticates as. A VTA that
+already holds the room's group refuses (`alreadyExists`) rather than replacing
+the key schedule its sealed records depend on.
+
+Register the room first (§5.2): a refused registration then costs nothing to
+retry.
+
 **The room's epoch is the MLS epoch plus one** — MLS counts from 0, a room from
-1 — so a group you have just created is already at the epoch the host recorded
-when it registered the room, and nothing needs minting yet. Read it from
-`SealedRoom::room_epoch()` rather than computing it; an off-by-one here seals
-records under an epoch the host rejects, and the failure reads as a key problem
-rather than an arithmetic one.
+1 — so a group you have just founded is already at the epoch the host recorded
+when it registered the room, and nothing needs minting yet. The task answers
+`epoch: 1`; an off-by-one here would seal records under an epoch the host
+rejects, and the failure would read as a key problem rather than an arithmetic
+one.
 
 After that, every membership change moves the group and the number has to follow
 (§6, §10.1). The host never learns the key — minting an epoch is an `admin`
@@ -349,6 +358,7 @@ enforced, not ceremonial.
 ```mermaid
 sequenceDiagram
     participant O as Owner
+    participant OV as Owner's VTA
     participant M as Member's client
     participant V as Member's VTA
     participant H as Host
@@ -357,11 +367,13 @@ sequenceDiagram
     M->>V: rooms/keys/key-package + invitation
     V-->>M: KeyPackage (private half retained, 7 days)
     M->>O: KeyPackage
-    O->>O: group.add_member(kp) → Welcome + Commit
+    O->>OV: rooms/owner/group/add (kp)
+    OV->>H: rooms/epoch/mint (admin, link, commit)
+    H-->>OV: new epoch
+    OV-->>O: Welcome
     O->>M: Welcome
     M->>V: rooms/keys/welcome + invitation
     V-->>M: epoch (invitation now consumed)
-    O->>H: rooms/epoch/mint (admin)
     O->>M: VMC + VAC for the new member
 ```
 
@@ -376,18 +388,28 @@ Step by step:
    invitation required). Minting retains a private key against a Welcome that
    may never come, which is why it is not offered unconditionally; unused
    packages expire after 7 days.
-3. **The owner adds the leaf** — `RoomGroup::add_member(key_package)` produces a
-   Welcome and a Commit — and sends the Welcome to the joiner. **This step is
-   library-only**: no trust task, no CLI. On a sealed room the owner's half of a
-   join is Rust against `vti-rooms`, even though every step the joiner performs
-   is a task.
+3. **The owner's VTA admits the leaf** (`rooms/owner/group/add/0.1`):
+
+   ```bash
+   pnm rooms owner group-add --room <room-did> --host-did <host-did> \
+       --member <joiner-did> --key-package ./kp.b64 --out ./welcome.json
+   ```
+
+   It builds the commit and the Welcome, **advances the room's epoch at the
+   host first** (`rooms/epoch/mint`, with the epoch link and the commit, under
+   your `admin` grant), and only then moves its own group. A refusal leaves the
+   group where it was. An unanswered advance is kept pending and settled with
+   the host by the next admission, because the host may have taken it and a
+   key holder cannot process its own commit from the wire. Deliver
+   `welcome.json` to the joiner directly — **never through the host**, which
+   on a `private` room must not learn who joined.
 4. **The joiner's VTA processes it** (`rooms/keys/welcome/0.1`, same invitation).
    The invitation is consumed **after** the join succeeds, so a Welcome that
    failed to process does not strand the member with a spent invitation and no
    membership. Single use means single use, and the consumed record outlives
    leaving the room.
-5. **The owner mints the new epoch** on the host and **issues the member's VMC +
-   VAC**, which the member stores in their own VTA (§5.3).
+5. **The owner issues the member's VMC + VAC**, which the member stores in
+   their own VTA (§5.3). The epoch already advanced in step 3.
 
 Five checks stand behind the invitation, and none is optional: it parses as a
 DTG credential and is an invitation; its proof verifies; the issuer is *this*

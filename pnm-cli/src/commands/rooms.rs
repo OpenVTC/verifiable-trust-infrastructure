@@ -17,7 +17,7 @@
 use vta_cli_common::commands::rooms::{self, RoomSigner, RoomTarget};
 use vta_sdk::client::VtaClient;
 
-use crate::cli::{RoomCommands, RoomFileCommands};
+use crate::cli::{RoomCommands, RoomFileCommands, RoomOwnerCommands};
 
 /// The operator's DID and key, from the session this CLI authenticates with.
 fn signer(keyring_key: &str) -> Result<vta_sdk::session::SessionInfo, Box<dyn std::error::Error>> {
@@ -48,6 +48,44 @@ pub(crate) async fn run(
         RoomCommands::File {
             command: RoomFileCommands::Open { dir, room_id, out },
         } => return rooms::cmd_rooms_file_open(client, &room_id, &dir, &out).await,
+        // The owner's group verbs are calls to this VTA alone: it reaches the host
+        // itself, as its principal, so they need no session key of their own.
+        RoomCommands::Owner { command } => {
+            return match command {
+                RoomOwnerCommands::GroupCreate {
+                    room_id,
+                    signing_key,
+                    member,
+                } => {
+                    rooms::cmd_rooms_owner_group_create(
+                        client,
+                        &room_id,
+                        &signing_key,
+                        member.as_deref(),
+                    )
+                    .await
+                }
+                RoomOwnerCommands::GroupAdd {
+                    room_id,
+                    host_did,
+                    member,
+                    key_package,
+                    reason,
+                    out,
+                } => {
+                    rooms::cmd_rooms_owner_group_add(
+                        client,
+                        &room_id,
+                        &host_did,
+                        &member,
+                        &key_package,
+                        reason.as_deref(),
+                        &out,
+                    )
+                    .await
+                }
+            };
+        }
         other => other,
     };
 
@@ -218,6 +256,9 @@ pub(crate) async fn run(
                 reason,
             )
             .await
+        }
+        RoomCommands::Owner { .. } => {
+            unreachable!("the owner's group verbs are answered above, before the session is read")
         }
         RoomCommands::Create {
             room_id,

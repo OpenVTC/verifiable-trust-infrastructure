@@ -562,6 +562,259 @@ async fn store(
         .map_err(|e| AppError::Internal(format!("store group state for `{room_id}`: {e}")))
 }
 
+/// Why a group could not be founded.
+#[derive(Debug)]
+pub enum CreateGroupError {
+    /// This VTA already holds group state for the room, at this room epoch.
+    AlreadyExists {
+        epoch: u32,
+    },
+    App(AppError),
+}
+
+/// Found `room_id`'s group with `member_did` as its only leaf —
+/// `rooms/owner/group/create/0.1`.
+///
+/// Returns the room epoch, 1: MLS counts from 0 and a room from 1, so a group
+/// founded here agrees with the epoch a host records at registration without
+/// anything being minted.
+///
+/// **Never replaces a group.** A group this VTA joined by a Welcome, or founded
+/// earlier, holds the key schedule every sealed record of the room depends on;
+/// founding over it would leave those records unopenable by this member, and
+/// the member's commits unreadable by everyone else.
+pub async fn create_group(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+    member_did: &str,
+    now: u64,
+) -> Result<u32, CreateGroupError> {
+    if let Some(existing) = load(groups, room_id).await.map_err(CreateGroupError::App)? {
+        let group = RoomGroup::restore(&existing.snapshot).map_err(|e| {
+            CreateGroupError::App(AppError::Internal(format!("restore the group: {e}")))
+        })?;
+        return Err(CreateGroupError::AlreadyExists {
+            epoch: SealedRoom::new(room_id, group).room_epoch(),
+        });
+    }
+    let group = RoomGroup::create(member_did)
+        .map_err(|e| CreateGroupError::App(AppError::Internal(format!("found the group: {e}"))))?;
+    // The room epoch is the MLS epoch plus one, as `SealedRoom::room_epoch` has it.
+    let epoch = u32::try_from(group.epoch() + 1).unwrap_or(u32::MAX);
+    store(groups, room_id, member_did, &group, Vec::new(), now)
+        .await
+        .map_err(CreateGroupError::App)?;
+    Ok(epoch)
+}
+
+/// Storage key for an admission waiting on its host.
+fn pending_add_key(room_id: &str) -> String {
+    format!("room-add:{room_id}")
+}
+
+/// An admission the host has not yet confirmed — `rooms/owner/group/add/0.1`
+/// items 3 to 6.
+///
+/// # Why the whole advanced group, and not just the commit
+///
+/// MLS lets a member process other members' commits from the wire, never its
+/// own: the committer's path secrets exist only in the state that produced the
+/// commit. So once the add is built, the *advanced group* is the only way to
+/// reach the next epoch. It is kept here, beside the live group it would
+/// replace, until the host's answer says which of the two is true.
+///
+/// The live group is not touched until then. A record sealed while an admission
+/// is pending is sealed at the epoch the room is still at.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingAdd {
+    /// The group after the add.
+    pub snapshot: GroupSnapshot,
+    /// The live group's links plus the one this advance produced.
+    pub links: Vec<EpochLink>,
+    /// Who is being admitted.
+    pub member: String,
+    /// The host the epoch advance goes to, so a later request can reconcile
+    /// against the same one.
+    pub host: String,
+    /// The room epoch the add produces.
+    pub epoch: u32,
+    /// The rung this advance produced, for `rooms/epoch/mint`.
+    pub link: Option<EpochLink>,
+    /// The commit, base64url, for `rooms/epoch/mint`.
+    pub commit: String,
+    /// The Welcome, base64url, for the newcomer's key holder.
+    pub welcome: String,
+    /// Unix seconds it was built.
+    pub created_at: u64,
+}
+
+/// Why an admission could not be built.
+#[derive(Debug)]
+pub enum PrepareAddError {
+    NoGroup,
+    AlreadyMember,
+    KeyPackageInvalid(String),
+    App(AppError),
+}
+
+/// Build the admission of `member` from their KeyPackage and retain it,
+/// durably, as a [`PendingAdd`] — **before** anything is sent to a host
+/// (items 2 and 3). The live group is unchanged.
+pub async fn prepare_add(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+    host: &str,
+    member: &str,
+    key_package: &[u8],
+    now: u64,
+) -> Result<PendingAdd, PrepareAddError> {
+    let record = load(groups, room_id)
+        .await
+        .map_err(PrepareAddError::App)?
+        .ok_or(PrepareAddError::NoGroup)?;
+    let group = RoomGroup::restore(&record.snapshot)
+        .map_err(|e| PrepareAddError::App(AppError::Internal(format!("restore the group: {e}"))))?;
+    if group.leaf_of(member).is_some() {
+        return Err(PrepareAddError::AlreadyMember);
+    }
+    let mut room = SealedRoom::new(room_id, group);
+    room.add_links(record.links);
+
+    let (change, link) = room
+        .add_member(key_package)
+        .map_err(|e| PrepareAddError::KeyPackageInvalid(e.to_string()))?;
+    // The leaf must be the party the owner named. A KeyPackage is a stranger's
+    // bytes; one carrying another identity would admit somebody the owner
+    // never meant, under the name they did.
+    if room.group().leaf_of(member).is_none() {
+        return Err(PrepareAddError::KeyPackageInvalid(format!(
+            "the KeyPackage's leaf does not identify `{member}`"
+        )));
+    }
+    let welcome = change.welcome.ok_or_else(|| {
+        PrepareAddError::App(AppError::Internal("an add produced no Welcome".into()))
+    })?;
+
+    let pending = PendingAdd {
+        snapshot: room.group().snapshot().map_err(|e| {
+            PrepareAddError::App(AppError::Internal(format!("snapshot the group: {e}")))
+        })?,
+        links: room.links(),
+        member: member.to_string(),
+        host: host.to_string(),
+        epoch: room.room_epoch(),
+        link,
+        commit: B64.encode(&change.commit),
+        welcome: B64.encode(&welcome),
+        created_at: now,
+    };
+    groups
+        .insert(pending_add_key(room_id), &pending)
+        .await
+        .map_err(|e| {
+            PrepareAddError::App(AppError::Internal(format!(
+                "store the pending admission: {e}"
+            )))
+        })?;
+    Ok(pending)
+}
+
+/// The admission waiting on its host, if any.
+pub async fn pending_add(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+) -> Result<Option<PendingAdd>, AppError> {
+    groups
+        .get(pending_add_key(room_id))
+        .await
+        .map_err(|e| AppError::Internal(format!("read the pending admission: {e}")))
+}
+
+/// The host accepted the advance: the pending group becomes the live one
+/// (item 5). One write replaces the group, then the pending row goes; a crash
+/// between the two leaves a pending row whose epoch the live group already
+/// has, which [`reconcile_pending_add`] recognises and clears.
+pub async fn promote_pending_add(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+    pending: &PendingAdd,
+    now: u64,
+) -> Result<(), AppError> {
+    let record = load(groups, room_id).await?.ok_or_else(|| {
+        AppError::NotFound(format!(
+            "this VTA holds no group state for room `{room_id}`"
+        ))
+    })?;
+    let group = RoomGroup::restore(&pending.snapshot)
+        .map_err(|e| AppError::Internal(format!("restore the pending group: {e}")))?;
+    store(
+        groups,
+        room_id,
+        &record.member_did,
+        &group,
+        pending.links.clone(),
+        now,
+    )
+    .await?;
+    discard_pending_add(groups, room_id).await
+}
+
+/// The host refused, or the room has moved past it: forget the admission
+/// (items 5 and 6). The live group never changed.
+pub async fn discard_pending_add(groups: &KeyspaceHandle, room_id: &str) -> Result<(), AppError> {
+    groups
+        .remove(pending_add_key(room_id))
+        .await
+        .map_err(|e| AppError::Internal(format!("clear the pending admission: {e}")))
+}
+
+/// What a found pending admission turned out to be, given the host's epoch.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Reconciled {
+    /// The host is at the pending epoch: it accepted. Applied.
+    Applied,
+    /// The host is at the live group's epoch: it never did. Discarded.
+    Discarded,
+    /// The host is somewhere else — another admin advanced the room. Discarded,
+    /// and the live group is behind the host.
+    Conflict,
+}
+
+/// Item 6: settle a pending admission against the epoch the host reports.
+pub async fn reconcile_pending_add(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+    pending: &PendingAdd,
+    host_epoch: u32,
+    now: u64,
+) -> Result<Reconciled, AppError> {
+    let live_epoch = match load(groups, room_id).await? {
+        Some(r) => SealedRoom::new(
+            room_id,
+            RoomGroup::restore(&r.snapshot)
+                .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?,
+        )
+        .room_epoch(),
+        None => 0,
+    };
+    if live_epoch == pending.epoch {
+        // Promoted already; only the pending row survived a crash.
+        discard_pending_add(groups, room_id).await?;
+        return Ok(Reconciled::Applied);
+    }
+    if host_epoch == pending.epoch {
+        promote_pending_add(groups, room_id, pending, now).await?;
+        return Ok(Reconciled::Applied);
+    }
+    discard_pending_add(groups, room_id).await?;
+    Ok(if host_epoch == live_epoch {
+        Reconciled::Discarded
+    } else {
+        Reconciled::Conflict
+    })
+}
+
 /// Store a group as `join` would, for tests that need a room held at some epoch.
 #[cfg(test)]
 pub(crate) async fn store_for_test(

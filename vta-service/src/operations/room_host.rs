@@ -62,6 +62,43 @@ pub fn build_room_task(task: &str, host: &str, issuer: &str, payload: Value) -> 
 /// declares, and a 502 in their place tells an operator their network is broken
 /// when their room policy declined.
 pub fn read_reply(doc: &Value, expected: &str, host: &str) -> Result<Value, AppError> {
+    read_reply_typed(doc, expected, host).map_err(RoomTaskError::into_app_error)
+}
+
+/// Why a room task sent to a host did not produce its response.
+///
+/// Two outcomes a caller must not confuse. A **refusal** is the host's answer:
+/// the task definitely did not take effect there. **Anything else** — a host
+/// that could not be reached, a reply that could not be read — leaves the
+/// outcome unknown: the host may have acted and the answer been lost. A caller
+/// whose local state must follow the host's (an epoch advance) keeps its
+/// pending change on the second and discards it only on the first.
+#[derive(Debug)]
+pub enum RoomTaskError {
+    /// The host answered with a `trust-task-error`.
+    Refused {
+        host: String,
+        code: String,
+        reason: String,
+    },
+    /// No usable answer: the outcome at the host is unknown.
+    Unknown(AppError),
+}
+
+impl RoomTaskError {
+    /// The error every caller that does not distinguish the two has always seen.
+    pub fn into_app_error(self) -> AppError {
+        match self {
+            Self::Refused { host, code, reason } => {
+                AppError::Forbidden(format!("room host `{host}` refused: {code}: {reason}"))
+            }
+            Self::Unknown(e) => e,
+        }
+    }
+}
+
+/// [`read_reply`], keeping a refusal apart from everything else.
+pub fn read_reply_typed(doc: &Value, expected: &str, host: &str) -> Result<Value, RoomTaskError> {
     let doc_type = doc.get("type").and_then(Value::as_str).unwrap_or_default();
 
     if doc_type == expected {
@@ -79,16 +116,18 @@ pub fn read_reply(doc: &Value, expected: &str, host: &str) -> Result<Value, AppE
             .or_else(|| payload.get("message"))
             .and_then(Value::as_str)
             .unwrap_or("no reason given");
-        return Err(AppError::Forbidden(format!(
-            "room host `{host}` refused: {code}: {reason}"
-        )));
+        return Err(RoomTaskError::Refused {
+            host: host.to_string(),
+            code: code.to_string(),
+            reason: reason.to_string(),
+        });
     }
 
-    Err(AppError::Internal(format!(
+    Err(RoomTaskError::Unknown(AppError::Internal(format!(
         "room host `{host}` answered `{doc_type}` where `{expected}` was expected; a reply that \
          threads to our request but answers a different task is a contract break rather than a \
          task failure"
-    )))
+    ))))
 }
 
 /// Room tasks that CHANGE a room, as opposed to reading one.
@@ -185,10 +224,47 @@ pub async fn send_room_task(
     response_task: &str,
     payload: Value,
 ) -> Result<Value, AppError> {
+    send_room_task_typed(
+        ctx,
+        groups,
+        room_id,
+        out,
+        host,
+        signing_key_id,
+        issuer,
+        verification_method,
+        task,
+        response_task,
+        payload,
+    )
+    .await
+    .map_err(RoomTaskError::into_app_error)
+}
+
+/// [`send_room_task`], keeping the host's refusal apart from an unknown outcome
+/// ([`RoomTaskError`]). Anything that fails before the request leaves is a
+/// definite non-event, and reported as `Unknown` only because it carries no
+/// host code; a caller that must reconcile treats it like any other.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_room_task_typed(
+    ctx: SigningContext<'_>,
+    groups: &vti_common::store::KeyspaceHandle,
+    room_id: &str,
+    out: &Outbound<'_>,
+    host: &str,
+    signing_key_id: &str,
+    issuer: &str,
+    verification_method: &str,
+    task: &str,
+    response_task: &str,
+    payload: Value,
+) -> Result<Value, RoomTaskError> {
     // Before anything leaves. Threaded through the seam rather than left to each
     // caller: a write task added later inherits the refusal instead of having to
     // remember it, which is the difference between a rule and a convention.
-    refuse_if_caught(groups, room_id, task).await?;
+    refuse_if_caught(groups, room_id, task)
+        .await
+        .map_err(RoomTaskError::Unknown)?;
 
     let mut document = build_room_task(task, host, issuer, payload);
     let signer = VtaKeySigner::new(ctx, signing_key_id, verification_method);
@@ -209,19 +285,21 @@ pub async fn send_room_task(
             cause = format!("{cause}: {inner}");
             src = inner.source();
         }
-        AppError::Internal(format!(
+        RoomTaskError::Unknown(AppError::Internal(format!(
             "sign the request to room host `{host}`: {e}{cause}"
-        ))
+        )))
     })?;
-    document["proof"] = serde_json::to_value(proof)
-        .map_err(|e| AppError::Internal(format!("serialise the proof: {e}")))?;
+    document["proof"] = serde_json::to_value(proof).map_err(|e| {
+        RoomTaskError::Unknown(AppError::Internal(format!("serialise the proof: {e}")))
+    })?;
 
     // `SignedByRecipient`, and not because a room host is special: a reply that
     // is acted on has to be evidence, and everything this returns is acted on.
     let reply = out
         .send(host, document, ReplyTrust::SignedByRecipient)
-        .await?;
-    read_reply(&reply, response_task, host)
+        .await
+        .map_err(RoomTaskError::Unknown)?;
+    read_reply_typed(&reply, response_task, host)
 }
 
 /// The key, and the verification method it is published as, that this agent signs

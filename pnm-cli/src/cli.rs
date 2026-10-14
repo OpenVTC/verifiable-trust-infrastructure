@@ -564,6 +564,15 @@ pub(crate) enum RoomCommands {
         command: RoomFileCommands,
     },
 
+    /// The owner's half of a sealed room's group, held by your VTA.
+    ///
+    /// Your VTA founds the group, admits members to it, and advances the room's
+    /// epoch at its host. No group key leaves it.
+    Owner {
+        #[command(subcommand)]
+        command: RoomOwnerCommands,
+    },
+
     /// Register a room with a host.
     ///
     /// The only verb needing no presentation — the room has issued nothing yet,
@@ -728,6 +737,48 @@ pub(crate) enum ExternalCommands {
         object_key: Option<String>,
         #[arg(long, default_value_t = 900)]
         ttl: u32,
+    },
+}
+
+/// `pnm rooms owner …`.
+#[derive(Subcommand)]
+pub(crate) enum RoomOwnerCommands {
+    /// Found the room's group with you as its only member
+    /// (`rooms/owner/group/create`). Needed before anything is written to an
+    /// `attributed` or `private` room. Register the room first.
+    GroupCreate {
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room's signing key id, as printed when its DID was minted.
+        #[arg(long = "signing-key")]
+        signing_key: String,
+        /// The DID your leaf identifies — the subject of your room credentials.
+        /// Defaults to the DID this CLI authenticates as.
+        #[arg(long)]
+        member: Option<String>,
+    },
+    /// Admit a member from the KeyPackage their key holder minted
+    /// (`rooms/owner/group/add`). Your VTA advances the room at its host, then
+    /// writes the Welcome to `--out` for you to deliver to the member's key
+    /// holder (`rooms/keys/welcome`) — never through the host.
+    GroupAdd {
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room host's DID: where the epoch advances.
+        #[arg(long)]
+        host_did: String,
+        /// The DID being admitted.
+        #[arg(long)]
+        member: String,
+        /// The member's KeyPackage, base64url: a file, or `-` for stdin.
+        #[arg(long)]
+        key_package: String,
+        /// Why, carried to the host's epoch advance.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Where to write the Welcome (JSON: `welcome`, `ratchetTree`, `epoch`).
+        #[arg(long)]
+        out: std::path::PathBuf,
     },
 }
 
