@@ -101,6 +101,27 @@ pub enum VtaError {
     #[error("protocol error: {0}")]
     Protocol(String),
 
+    /// The peer refused a Trust Task with a code no more specific variant
+    /// covers — a task's own declared error (`persona/profile/delete:bound`,
+    /// `…:versionConflict`) or a framework code such as `taskFailed` with no
+    /// recognised `details.reason`.
+    ///
+    /// Kept as data rather than folded into [`Self::Protocol`]: `code` is
+    /// what a caller matches on, and `details` is what the peer sent with it
+    /// (the DIDs wearing a bound face, the current version of a record), which
+    /// a caller may need to act on and could not recover from a sentence.
+    /// `Display` is the text this case rendered as when it was a `Protocol`,
+    /// so logs and CLI output are unchanged.
+    #[error("trust task failed [{code}]: {message}")]
+    Rejected {
+        /// The rejection's `code`, as sent.
+        code: String,
+        /// The rejection's `message`, as sent.
+        message: String,
+        /// The rejection's `details`, as sent; `None` when it carried none.
+        details: Option<serde_json::Value>,
+    },
+
     /// The task needs a human approval that has not been given yet.
     ///
     /// Structured rather than folded into [`Self::Protocol`] because a caller
@@ -567,6 +588,24 @@ impl VtaError {
         matches!(self, Self::NotFound(_))
     }
 
+    /// The code of a Trust Task rejection ([`Self::Rejected`]), as sent.
+    #[must_use]
+    pub fn rejection_code(&self) -> Option<&str> {
+        match self {
+            Self::Rejected { code, .. } => Some(code),
+            _ => None,
+        }
+    }
+
+    /// The `details` of a Trust Task rejection ([`Self::Rejected`]), as sent.
+    #[must_use]
+    pub fn rejection_details(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Rejected { details, .. } => details.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Operator-actionable hint matching this error variant.
     ///
     /// `None` for variants where no generic guidance applies (the message
@@ -695,6 +734,7 @@ impl VtaError {
             Self::NotFound(_)
             | Self::DidcommRemote { .. }
             | Self::Protocol(_)
+            | Self::Rejected { .. }
             | Self::Serialization(_)
             | Self::Other(_) => None,
         }

@@ -365,6 +365,9 @@ pub fn print_cli_error(err: &(dyn std::error::Error + 'static)) {
             VtaError::Protocol(msg) => {
                 eprintln!("{RED}\u{2717}{RESET} Protocol error: {msg}");
             }
+            VtaError::Rejected { code, message, .. } => {
+                eprintln!("{RED}\u{2717}{RESET} Refused [{code}]: {message}");
+            }
             // ── Runtime service-management variants (T0.2) ────────
             VtaError::LastServiceRefused => {
                 let bin = bin_name();

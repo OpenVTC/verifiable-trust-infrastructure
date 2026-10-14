@@ -2661,9 +2661,11 @@ impl VtaClient {
             return Some(VtaError::Unavailable { retry_after });
         }
 
-        Some(VtaError::Protocol(format!(
-            "trust task failed [{code}]: {message}"
-        )))
+        Some(VtaError::Rejected {
+            code: code.to_string(),
+            message: message.to_string(),
+            details: payload.get("details").cloned(),
+        })
     }
 
     /// Seal a cleartext `VaultSecret` JSON for `vault/upsert`'s `sealedSecret`
@@ -3257,15 +3259,39 @@ mod tests {
     /// one. That is also the shape an older VTA emits, so this fallback is what
     /// keeps a new client from misreading every pre-upgrade failure as typed.
     #[test]
-    fn an_undiscriminated_task_failure_is_still_a_protocol_error() {
+    fn an_undiscriminated_task_failure_is_a_plain_rejection() {
         let payload = serde_json::json!({
             "code": "taskFailed",
             "message": "task failed: the mediator refused the handshake",
         });
-        assert!(matches!(
-            VtaClient::trust_task_error(&payload),
-            Some(VtaError::Protocol(_))
-        ));
+        let err = VtaClient::trust_task_error(&payload).expect("an error");
+        assert!(
+            matches!(&err, VtaError::Rejected { code, details: None, .. } if code == "taskFailed"),
+            "{err:?}"
+        );
+    }
+
+    /// #1952: a task's declared error keeps its code and `details` as data —
+    /// `persona/profile/delete:bound` names the personas wearing the face,
+    /// which a client needs before it offers to take the face off them.
+    #[test]
+    fn a_declared_rejection_keeps_its_code_and_details() {
+        let payload = serde_json::json!({
+            "code": "persona/profile/delete:bound",
+            "message": "2 persona(s) are bound to this profile",
+            "details": { "personaDids": ["did:key:z6MkA", "did:key:z6MkB"] }
+        });
+        let err = VtaClient::trust_task_error(&payload).expect("an error");
+        assert_eq!(err.rejection_code(), Some("persona/profile/delete:bound"));
+        assert_eq!(
+            err.rejection_details().and_then(|d| d.get("personaDids")),
+            Some(&serde_json::json!(["did:key:z6MkA", "did:key:z6MkB"]))
+        );
+        // The rendering callers and logs already rely on does not change.
+        assert_eq!(
+            err.to_string(),
+            "trust task failed [persona/profile/delete:bound]: 2 persona(s) are bound to this profile"
+        );
     }
 
     // ── unsupportedType / unsupportedVersion ────────────────────────
