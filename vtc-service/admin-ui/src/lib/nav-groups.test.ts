@@ -93,6 +93,7 @@ describe("the grouped sidebar", () => {
       "profile",
       "recognition",
       "rooms",
+      "storage",
       "room-usage",
       "repos",
     ]);

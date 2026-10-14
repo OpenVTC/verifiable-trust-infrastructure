@@ -71,7 +71,8 @@ import { DataTable } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { PageHeader } from "@/components/PageHeader";
 import { useNameBook } from "@/lib/names";
-import type { HostedRoom, PolicyTestResponse } from "@/lib/wire-types";
+import { formatBytes } from "@/lib/rooms-api";
+import type { HostedRoom, PolicyTestResponse, RoomScopeLimits } from "@/lib/wire-types";
 
 import { RoomDetail } from "./rooms/RoomDetail";
 import { LifecyclePill, TIER_BLURB, TIERS, roomPath, type Tier } from "./rooms/shared";
@@ -97,11 +98,44 @@ interface RoomsListing {
   rooms: HostedRoom[];
   /** Whether this community takes room files. `null` from a VTC too old to say. */
   filesEnabled: boolean | null;
+  /** What its configuration holds every room to, when files are on. */
+  defaults: FileDefaults | null;
+}
+
+/** `ext["org.openvtc"].roomFiles` on `vtc/rooms/list`, when files are on: the
+ *  limits the configuration file sets, which a room's override or the rooms
+ *  policy may replace. */
+interface FileDefaults {
+  room: RoomScopeLimits;
+  member: RoomScopeLimits;
+  maxFileBytes: number;
+  storageCapacityBytes?: number;
+  orphanGraceHours?: number;
+}
+
+function defaultsOf(v: unknown): FileDefaults | null {
+  const f = v as {
+    defaults?: { room?: RoomScopeLimits; member?: RoomScopeLimits };
+    maxFileBytes?: unknown;
+    storageCapacityBytes?: unknown;
+    orphanGraceHours?: unknown;
+  } | null;
+  if (!f?.defaults || typeof f.maxFileBytes !== "number") return null;
+  return {
+    room: f.defaults.room ?? {},
+    member: f.defaults.member ?? {},
+    maxFileBytes: f.maxFileBytes,
+    ...(typeof f.storageCapacityBytes === "number"
+      ? { storageCapacityBytes: f.storageCapacityBytes }
+      : {}),
+    ...(typeof f.orphanGraceHours === "number" ? { orphanGraceHours: f.orphanGraceHours } : {}),
+  };
 }
 
 async function fetchRooms(): Promise<RoomsListing> {
   const rooms: HostedRoom[] = [];
   let filesEnabled: boolean | null = null;
+  let defaults: FileDefaults | null = null;
   let cursor: string | null = null;
   for (let page = 0; page < 20; page++) {
     const body: {
@@ -110,12 +144,13 @@ async function fetchRooms(): Promise<RoomsListing> {
       ext?: { "org.openvtc"?: { roomFiles?: { enabled?: unknown } } };
     } = await postSignedRead(TRUST_TASK_ROOMS_LIST, { limit: 100, ...(cursor ? { cursor } : {}) });
     rooms.push(...body.items);
-    const enabled = body.ext?.["org.openvtc"]?.roomFiles?.enabled;
-    if (typeof enabled === "boolean") filesEnabled = enabled;
+    const roomFiles = body.ext?.["org.openvtc"]?.roomFiles;
+    if (typeof roomFiles?.enabled === "boolean") filesEnabled = roomFiles.enabled;
+    defaults ??= defaultsOf(roomFiles);
     cursor = body.nextCursor ?? null;
     if (!cursor) break;
   }
-  return { rooms, filesEnabled };
+  return { rooms, filesEnabled, defaults };
 }
 
 /** What an operator adds to turn room files on. The paths are examples: absolute
@@ -146,6 +181,62 @@ function RoomFilesOff() {
         at. Files are encrypted by members before they arrive, so this host stores
         ciphertext it cannot read. Neither directory is in a VTC backup: back them
         up beside the data directory.
+      </p>
+    </section>
+  );
+}
+
+function limitsText(l: RoomScopeLimits): string {
+  const parts = [
+    l.maxFiles !== undefined ? `${l.maxFiles.toLocaleString()} files` : null,
+    l.maxBytes !== undefined ? `${formatBytes(l.maxBytes)} in all` : null,
+    l.maxFileBytes !== undefined ? `${formatBytes(l.maxFileBytes)} a file` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(", ") : "no limit";
+}
+
+/**
+ * What every room is held to unless the rooms policy or an override on the room
+ * says otherwise — the `[rooms.files]` section of the configuration file. Shown,
+ * not edited: it changes with the file and a restart, and saying where is more
+ * use than a form that could not save it.
+ */
+function FileDefaultsCard({ d }: { d: FileDefaults }) {
+  return (
+    <section className="card">
+      <h3>Defaults</h3>
+      <p className="muted">
+        What each room is held to unless the rooms policy or an override on the room
+        says otherwise. Change a single room from its own page; where its files go is
+        on the <Link to="/storage">Storage</Link> page.
+      </p>
+      <dl className="rooms-facts">
+        <dt>Each room</dt>
+        <dd>{limitsText(d.room)}</dd>
+        <dt>Each member, per room</dt>
+        <dd>
+          {limitsText(d.member)}
+          <div className="muted rooms-sub">Not applied on private rooms, whose members this host cannot tell apart.</div>
+        </dd>
+        <dt>Largest file anywhere</dt>
+        <dd>{formatBytes(d.maxFileBytes)}</dd>
+        {d.storageCapacityBytes !== undefined && (
+          <>
+            <dt>Storage capacity</dt>
+            <dd>{formatBytes(d.storageCapacityBytes)}</dd>
+          </>
+        )}
+        {d.orphanGraceHours !== undefined && (
+          <>
+            <dt>Deleted files kept for</dt>
+            <dd>{d.orphanGraceHours} hours, then removed from storage</dd>
+          </>
+        )}
+      </dl>
+      <p className="muted rooms-sub">
+        To change these, edit <code>[rooms.files]</code>, <code>[rooms.files.room]</code>{" "}
+        and <code>[rooms.files.member]</code> in this VTC&rsquo;s configuration file and
+        restart it.
       </p>
     </section>
   );
@@ -470,6 +561,8 @@ function RoomsList() {
           <RoomsTable rooms={rooms} />
         </section>
       )}
+
+      {roomsQuery.data?.defaults && <FileDefaultsCard d={roomsQuery.data.defaults} />}
 
       <CreationPolicy />
     </section>

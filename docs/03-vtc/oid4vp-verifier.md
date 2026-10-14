@@ -231,6 +231,32 @@ reachable for one to start.
 `vtc oid4vp remove --identity <name>` removes one. Installing again under the
 same name replaces it, certificate included.
 
+### Checking them from the console
+
+The console's **Community → Wallet verifier** page (for holders of
+`vtc.config.admin`, through the signed `vtc/oid4vp/identities/list/0.1`)
+shows each identity's `client_id`, where its key is held, its access
+certificate's validity, and each `verifier_info` attestation with its expiry.
+It also lists what is wrong, with the command that fixes each problem. A wallet
+that refuses a request object tells the community nothing, so this page is the
+place to find out.
+
+| Problem | Severity | Fix |
+|---|---|---|
+| Key record is invalid | error | `vtc oid4vp remove`, then install again |
+| Not loaded | error | the identity was installed after start: restart the VTC |
+| No link to the VTA | error | the VTA keeps the key and the VTC cannot reach it: check messaging, and `sign-jws` at the VTA |
+| No access certificate | error | `vtc oid4vp csr`, then `vtc oid4vp certificate` |
+| Certificate not yet valid / expired | error | `vtc oid4vp csr` for a new one |
+| Certificate expires soon | warning | the same, within 30 days of expiry |
+| No identity trust statement | warning | `vtc oid4vp trust-statement` |
+| Statement expired / expires soon | warning | `vtc oid4vp trust-statement` with a new one; an expired one is already left out of every request |
+| Default identity not installed | error | `[oid4vp] default_identity` names nothing usable; requests that name a prefix still work |
+| No https public URL | error | set `public_url`: wallets reach the VTC over https |
+
+An identity is **ready** when it has no problem, **needs attention** when it
+has only warnings, and **cannot open sessions** when it has an error.
+
 ## Wallet sessions
 
 With an identity installed, an applicant can collect evidence for a join

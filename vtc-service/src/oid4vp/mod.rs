@@ -40,6 +40,7 @@ use vti_common::error::AppError;
 use crate::store::KeyspaceHandle;
 
 pub mod session;
+pub mod status;
 pub mod swiyu_issuer;
 pub mod trust_statement;
 pub mod wallet;
@@ -220,6 +221,12 @@ pub trait VerifierSigner: Send + Sync {
     fn alg(&self) -> &'static str;
     /// The verification method the signature verifies under.
     fn kid(&self) -> &str;
+    /// Whether it could sign now: `false` while a key the VTA keeps has no
+    /// link to sign over. Read by the administrators' status view
+    /// ([`status`]); signing reports the same condition as an error.
+    fn can_sign(&self) -> bool {
+        true
+    }
     /// A compact JWS over `claims`, with the protected `header` members given
     /// and `alg` set by the signer — never by the caller.
     async fn sign_jws(
@@ -397,6 +404,10 @@ impl VerifierSigner for VtaHeldSigner {
 
     fn kid(&self) -> &str {
         &self.kid
+    }
+
+    fn can_sign(&self) -> bool {
+        self.link.get().is_some()
     }
 
     async fn sign_jws(

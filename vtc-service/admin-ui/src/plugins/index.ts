@@ -17,12 +17,14 @@ import {
   ClipboardList,
   DoorOpen,
   FolderGit2,
+  HardDrive,
   Inbox,
   KeyRound,
   LayoutDashboard,
   ListChecks,
   Network,
   PenLine,
+  ScanLine,
   Share2,
   ShieldCheck,
   Smartphone,
@@ -53,7 +55,9 @@ import { Roles } from "@/plugins/roles";
 import { RoomUsage } from "@/plugins/roomUsage";
 import { Rooms } from "@/plugins/rooms";
 import { Sessions } from "@/plugins/sessions";
+import { Storage } from "@/plugins/storage";
 import { Vetting } from "@/plugins/vetting";
+import { WalletVerifier } from "@/plugins/walletVerifier";
 
 export function registerBuiltinPlugins(): void {
   // ── Overview ──
@@ -201,6 +205,16 @@ export function registerBuiltinPlugins(): void {
   });
 
   registerPlugin({
+    id: "wallet-verifier",
+    group: "community",
+    label: "Wallet verifier",
+    path: "/wallet-verifier",
+    iconComponent: ScanLine,
+    reactComponent: WalletVerifier,
+    capabilities: ["vtc.config.admin"],
+  });
+
+  registerPlugin({
     id: "rooms",
     group: "community",
     label: "Data rooms",
@@ -208,6 +222,16 @@ export function registerBuiltinPlugins(): void {
     iconComponent: DoorOpen,
     reactComponent: Rooms,
     // The host's authority over rooms (`vtc/rooms/*` admin reads), never a room's.
+    capabilities: ["vtc.rooms.admin"],
+  });
+
+  registerPlugin({
+    id: "storage",
+    group: "community",
+    label: "Storage",
+    path: "/storage",
+    iconComponent: HardDrive,
+    reactComponent: Storage,
     capabilities: ["vtc.rooms.admin"],
   });
 

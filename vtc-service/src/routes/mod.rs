@@ -119,6 +119,18 @@ use crate::server::AppState;
         vta_sdk::openapi::RoomsUsage01Response,
         vta_sdk::openapi::RoomsLimitsSet01Payload,
         vta_sdk::openapi::RoomsLimitsSet01Response,
+        // Where rooms' files are kept (`trust_tasks::storage_tasks`), signed
+        // documents only.
+        vta_sdk::openapi::RoomsStorageAssign01Payload,
+        vta_sdk::openapi::RoomsStorageAssign01Response,
+        vta_sdk::openapi::StorageConfigsList01Response,
+        vta_sdk::openapi::StorageConfigsGet01Response,
+        vta_sdk::openapi::StorageConfigsCreate01Payload,
+        vta_sdk::openapi::StorageConfigsCreate01Response,
+        vta_sdk::openapi::StorageConfigsUpdate01Payload,
+        vta_sdk::openapi::StorageConfigsUpdate01Response,
+        vta_sdk::openapi::StorageConfigsRetire01Response,
+        vta_sdk::openapi::StorageConfigsProbe01Response,
         audit::AuditListResponse,
         crate::config_store::EffectiveConfig,
         admin::config::PatchResponse,

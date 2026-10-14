@@ -803,6 +803,88 @@ The plugin's manager panes (`manager/panes/rooms*.tsx`) get the same file
 browse, download and upload. A member then has a way to use a room that never
 puts a file key in a web page. It costs little once §3.3's wasm is shared.
 
+### 8.4 Community-owned rooms
+
+§8.2's rooms are a **member's**: they own it, their VTA holds its keys, and the
+community only hosts it. A community also wants rooms of its **own** — the board
+pack, the working group's drafts, the members' library — owned by the community,
+run by its administrators, and outliving any one of them. Settled with the
+product owner on 2026-10-14: both kinds, each run from where its owner is (a
+member's from their VTA through the wallet and portal, the community's from the
+VTC console).
+
+**The community is the owner, and the community's VTA is the key holder.**
+Nothing new is invented for it. A room is owned by whoever controls its DID and
+issues its credentials, and the parts a key holder does — mint the room's DID,
+sign as the room, hold the group — are exactly the `rooms/owner/*` and
+`rooms/keys/*` tasks a member's VTA serves for them. The VTC sends the same tasks
+to **its own** VTA, over the link it already keeps ([`vta_link`], TSP > DIDComm,
+the VTA reached through its mediator and never inbound), as the community's DID:
+
+| Step | Who | Task |
+|---|---|---|
+| Mint the room's DID | the community's VTA, in a context the VTC's entry may act in | `dids/create`, `room` template, `setPrimary: false` |
+| Register it | the VTC, as host and owner at once | stored directly, `ownerDid` = the community's DID. No network: the host is the owner |
+| Found the group (sealed tiers) | the community's VTA | `rooms/owner/group/create`, `member` = the community's DID |
+| The community's own credentials | the community's VTA | `rooms/owner/issue-{membership,authority}` to the community's DID, kept in **its** vault, so `rooms/keys/present` can mint the community's `admin` presentations |
+| Admit a member | VTA, then the member's agent | below |
+
+**The VTC holds no room key and no group secret**, as everywhere else in this
+note. Its administrators act on the room through the VTC, and the VTC acts
+through its VTA, which applies its own gates (the VTC's ACL entry there, the
+context policy's signing limit) to every one of these calls.
+
+**Admission is pull-shaped**, because a member's VTA has no address the VTC can
+reach and the member's browser is not an inbox ([`data-rooms-joining.md`]):
+
+1. An administrator **adds** a member: a DID, the actions (`read`, `write`,
+   `curate`; `admin` stays the community's), and an expiry. The VTC has its VTA
+   issue the invitation, membership and authority credentials and keeps them as
+   an **offer** to that DID.
+2. The member, signed in to the portal or the extension's manager, **lists
+   their offers**. Their wallet stores the credentials in their own VTA's vault
+   and, on a sealed room, asks their VTA for a KeyPackage against the
+   invitation (`rooms/keys/key-package`).
+3. The member **accepts**, sending the KeyPackage, signed by their own DID. The
+   VTC has its VTA run `rooms/owner/group/add` (the VTC itself is the host) and
+   answers the accept with the Welcome, which the wallet hands to the member's
+   VTA (`rooms/keys/welcome`).
+
+An `open` room skips the KeyPackage and the Welcome; steps 1–2 are all of it.
+
+**The offer list is the owner's record, not the host's.** Invariant I5 keeps a
+*host* from consulting membership state; here the same VTC is also the owner,
+and an owner knows whom it admitted — it signed their credentials. So the offers
+live in their own keyspace, read by the owner's tasks only, and nothing on the
+host path ever reads them: a community room's records are authorised by chains
+exactly as a member's room's are, and the room could move to another host
+tomorrow with nothing re-issued. On a `private` room that record is what the
+community, as owner, knows anyway; the host half still learns nothing new.
+
+**Authority on the community's side.** Creating a community room and adding or
+removing its members are acts of the community, so they need a capability —
+`vtc.rooms.manage`, distinct from `vtc.rooms.admin` (hosting: limits, storage,
+usage), because a community may let someone run its board room without letting
+them reassign every room's storage, and the reverse. Each act takes the
+requester's operation-bound step-up and is audited with its reason. They are
+**not** parked for a second administrator by default: a room's membership is
+reversible by removal, and its contents are the community's own. A community
+that wants a second pair of eyes says so in its approvals rules, which the action
+list already serves.
+
+**Removal** is `rooms/owner/group/remove` (a new epoch sealed to everyone else,
+§11) plus letting the removed member's authority credential lapse. The console
+says what removal means: no access to anything written from now on, and no
+recall of what they already read.
+
+**Specifications** (§10, added): `vtc/rooms/community/{create,list,get}/0.1`
+and `vtc/rooms/community/members/{add,remove,list}/0.1` for administrators;
+`vtc/rooms/offers/{list,accept}/0.1` for members, on the member audience. The
+`rooms/owner/*` and `rooms/keys/*` tasks the VTC sends its VTA are unchanged.
+
+[`vta_link`]: ../../vtc-service/src/vta_link.rs
+[`data-rooms-joining.md`]: data-rooms-joining.md
+
 ---
 
 ## 9. What each party learns
@@ -851,6 +933,9 @@ bump, per the workspace rule.
 | `vtc/storage/credentials/set/0.1` | new, VTC-only, for the discouraged `sealed` fallback. The payload is a `sealed_transfer` armor block; the response is the fingerprint. **No get or list task returns a value** |
 | `vtc/rooms/storage/{assign,migrate}/0.1` | new, VTC-only (§7.3) |
 | `vtc/storage/configs/probe/0.1` | new, VTC-only: put, get and delete a canary under a test prefix with the config's credentials |
+| `rooms/owner/group/{create,add,remove}/0.1` | new, on the owner's VTA (§11). `create` and `add` proposed in dtgwg-trust-tasks-tf#763, with `rooms/owner/register` clarified to sign `rooms/create` as the owner |
+| `vtc/rooms/community/{create,list,get}/0.1`, `vtc/rooms/community/members/{add,remove,list}/0.1` | new, VTC-only: community-owned rooms (§8.4), `vtc.rooms.manage` |
+| `vtc/rooms/offers/{list,accept}/0.1` | new, VTC-only, member audience: a member collects and accepts their admission to a community room (§8.4) |
 | the `external/*` family on the VTA | see [`vta-external-accounts.md`](vta-external-accounts.md) §11 |
 | the sealed body's `file` member | documented in the rooms spec's sealed-body section; it is client-to-client, so the host's schemas never see it |
 
@@ -878,7 +963,7 @@ on their own merit:
 
 | # | Phase | Size | Depends on |
 |---|---|---|---|
-| P0 | Owner MLS tasks + `pnm rooms owner …` + sealed `put` (§11) | L | — |
+| P0 | Owner MLS tasks + `pnm rooms owner …` + sealed `put` (§11). **In progress**: `rooms/owner/group/{create,add}` specified (dtgwg-trust-tasks-tf#763); `rooms/owner/register` signing `rooms/create` as the owner, so a community host accepts it | L | — |
 | P1 | Specs (§10) | M | — |
 | P2 | `vti-rooms::files`: KDF, STREAM, manifest; wasm build; test vectors | M | P1 |
 | P3 | `BlobStore` trait in `vti-common`; local, S3 and GCS via `object_store`; conformance suite | M | — |
@@ -892,6 +977,7 @@ on their own merit:
 | P10 | Room storage reassignment and migration (§7.3) | M | P5 |
 | P11 | Walrus backend: upload relay, transactions signed by the VTA's `sui-signer` (E4), epoch extension in the sweeper | L | P3, P4, P5, E4 |
 | P12 | Direct-to-store presigned transfer (§5.2), if measurements ask for it | M | P5 |
+| P13 | Community-owned rooms (§8.4): the community's VTA as key holder over `vta_link`, the offers keyspace, `vtc.rooms.manage`, the console's create / members pages, and the member's offers in the portal and the extension | L | P0, P8 for the portal half |
 
 P0, P2 and P3 run in parallel; P4 follows P3, and P4b follows P4. A member can upload and
 download a file from the CLI after P6, and from the portal after P8.

@@ -46,6 +46,7 @@ const ENDORSEMENTS = `${T}/vtc/endorsements/list/0.1`;
 const ENDORSEMENT_TYPES = `${T}/vtc/endorsement-types/list/0.1`;
 const ROOMS = `${T}/vtc/rooms/list/0.1`;
 const ROOMS_USAGE = `${T}/vtc/rooms/usage/0.1`;
+const STORAGE_CONFIGS = `${T}/vtc/storage/configs/list/0.1`;
 const ACCEPTS = `${T}/vtc/schemas/accepts/list/0.2`;
 const GRANTS = `${T}/vtc/vetting/vetters/grants/list/0.1`;
 const REVOCATIONS = `${T}/vtc/vetting/revocations/list/0.1`;
@@ -96,6 +97,8 @@ const SITES: Site[] = [
   { file: "plugins/rooms.tsx", site: "{ limit: 100, ...(cursor ? { cursor } : {}) }", uri: ROOMS, from: ["100"] },
   // Room usage, every page (room detail, Room usage).
   { file: "lib/rooms-api.ts", site: "limit: USAGE_PAGE", uri: ROOMS_USAGE, from: ["USAGE_PAGE"] },
+  // Storage configs, every page (Storage, a room's "other storage").
+  { file: "lib/storage-api.ts", site: "limit: CONFIGS_PAGE", uri: STORAGE_CONFIGS, uriFile: "lib/storage-api.ts", from: ["CONFIGS_PAGE"] },
   // Git-namespace activity.
   { file: "plugins/repos/api.ts", site: "{ namespace, limit }", uri: ACTIVITY, from: ["limit"] },
   // The vetting listings walked by `allItems(task, pageSize)`.
