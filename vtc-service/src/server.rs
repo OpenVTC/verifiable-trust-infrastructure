@@ -699,6 +699,9 @@ pub async fn run(
         );
     }
     let x509_trust_anchors = Arc::new(load_x509_trust_anchors(&config.oid4vp.x509_trust_anchors)?);
+    if let Some(swiyu) = &config.oid4vp.swiyu_trust {
+        swiyu.check().map_err(AppError::Config)?;
+    }
     let (install_ks, passkey_ks, audit_key_ks) = match storage_key {
         Some(key) => {
             let n_install = install_ks.migrate_to_encrypted(key).await?;

@@ -271,6 +271,40 @@ pub struct Oid4vpConfig {
     /// that does not load stops it. Empty: no such issuer is trusted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub x509_trust_anchors: Vec<std::path::PathBuf>,
+    /// The swiyu trust registry this community takes issuer trust from: an
+    /// issuer it publishes an Identity Trust Statement about counts as one the
+    /// community recognises (`credentialIssuers: recognised`). Unset: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swiyu_trust: Option<SwiyuTrustConfig>,
+}
+
+/// `[oid4vp.swiyu_trust]` — where swiyu issuer trust is read from
+/// ([`crate::oid4vp::swiyu_issuer`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct SwiyuTrustConfig {
+    /// The trust registry's base URL, `https` — the Sandbox's is
+    /// `https://trust-reg.trust-infra.swiyu-int.admin.ch`.
+    pub registry_url: String,
+    /// The DID that signs its identity trust statements (the ecosystem's trust
+    /// anchor). A statement signed by any other key is refused.
+    pub trust_anchor_did: String,
+}
+
+impl SwiyuTrustConfig {
+    /// Refuse, at boot, a registry that is not `https` or an anchor that is
+    /// not a DID — either would admit nobody, silently.
+    pub fn check(&self) -> Result<(), String> {
+        let url = url::Url::parse(&self.registry_url)
+            .map_err(|e| format!("[oid4vp.swiyu_trust] registry_url: {e}"))?;
+        if url.scheme() != "https" {
+            return Err("[oid4vp.swiyu_trust] registry_url must be https".into());
+        }
+        if !self.trust_anchor_did.starts_with("did:") || self.trust_anchor_did.contains('#') {
+            return Err("[oid4vp.swiyu_trust] trust_anchor_did must be a DID".into());
+        }
+        Ok(())
+    }
 }
 
 fn default_oid4vp_session_ttl() -> u64 {
@@ -297,6 +331,7 @@ impl Default for Oid4vpConfig {
             evidence_hold_secs: default_oid4vp_evidence_hold(),
             max_response_bytes: default_oid4vp_max_response_bytes(),
             x509_trust_anchors: Vec::new(),
+            swiyu_trust: None,
             default_identity: None,
             wallet_uri_scheme: None,
         }

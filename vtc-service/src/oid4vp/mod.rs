@@ -40,6 +40,7 @@ use vti_common::error::AppError;
 use crate::store::KeyspaceHandle;
 
 pub mod session;
+pub mod swiyu_issuer;
 pub mod trust_statement;
 pub mod wallet;
 pub mod x509;

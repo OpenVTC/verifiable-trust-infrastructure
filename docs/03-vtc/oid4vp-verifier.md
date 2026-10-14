@@ -332,6 +332,38 @@ for `etsi_tl` or `openid_federation`, or with `trusted_authorities` on another
 format, is refused when registered, not published to the wallet and then
 ignored.
 
+### swiyu issuers
+
+A swiyu credential's issuer is a `did:webvh`, and the swiyu trust registry
+says which issuers are real: it publishes an **Identity Trust Statement**
+about each one it has onboarded. Tell the VTC to take issuer trust from it:
+
+```toml
+[oid4vp.swiyu_trust]
+registry_url = "https://trust-reg.trust-infra.swiyu-int.admin.ch"   # the Sandbox
+trust_anchor_did = "did:webvh:…:identifier-reg.trust-infra.swiyu-int.admin.ch:api:v1:did:…"
+```
+
+`trust_anchor_did` is the DID that signs the registry's trust statements; take
+it from swiyu's trust profile for the environment you join. A registry that
+is not `https`, or an anchor that is not a DID, stops the VTC at boot.
+
+An issuer then counts as one this community **recognises** when the registry
+serves a statement about it (`/api/v2/identity-trust-statement/{did}`) that:
+
+- is an identity trust statement, signed by a key of the trust anchor;
+- names the issuer's DID as its `sub`, and has not expired;
+- names a Token Status List the anchor also signed, whose entry is valid. A
+  statement with no status list is refused: whether it was withdrawn cannot be
+  known.
+
+So a criterion whose `credentialIssuers` is `recognised` admits swiyu
+issuers, and one asking for `community` still does not. The check runs on
+every presentation, as recognition through the community's own trust registry
+does, so a statement the registry withdraws stops counting at once. Any
+failure (unreachable registry, refused statement) is logged and the issuer is
+not recognised.
+
 ### What the evidence does for the join
 
 Wallet evidence counts toward the criterion its session was opened for, and no
@@ -388,8 +420,8 @@ verifier identities. `oid4vp_sessions` is not: a session lasts minutes.
   and the swiyu Profile pairs it with `scope`, where the VTC sends each
   criterion's DCQL query. Statements are installed by hand, not fetched and
   renewed from the trust registry.
-- swiyu issuer trust from the trust registry (an issuer's Identity Trust
-  Statement); a swiyu issuer is trusted as any DID issuer is, through the
-  criterion's `credentialIssuers`.
+- swiyu's finer issuer trust: the protected-issuance and non-compliance trust
+  lists, and which credential types a statement says an issuer may issue. An
+  issuer with a current identity trust statement is recognised for every type.
 - `trusted_authorities` of type `etsi_tl` or `openid_federation`: the VTC does
   not read ETSI trusted lists or resolve OpenID Federation trust chains.

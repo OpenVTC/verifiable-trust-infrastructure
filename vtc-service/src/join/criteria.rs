@@ -268,12 +268,26 @@ pub async fn issuer_admitted(
         CredentialIssuers::Any => true,
         CredentialIssuers::Community => own,
         CredentialIssuers::Recognised => {
-            own || crate::routes::join_requests::present::issuer_trusted(
-                state.registry_client.as_deref(),
-                own_did,
-                issuer,
-            )
-            .await
+            if own
+                || crate::routes::join_requests::present::issuer_trusted(
+                    state.registry_client.as_deref(),
+                    own_did,
+                    issuer,
+                )
+                .await
+            {
+                return true;
+            }
+            // An issuer the swiyu trust registry vouches for, when the
+            // community takes issuer trust from it.
+            let swiyu = state.config.read().await.oid4vp.swiyu_trust.clone();
+            match swiyu {
+                Some(swiyu) => {
+                    crate::oid4vp::swiyu_issuer::trusted(state, &swiyu, issuer, chrono::Utc::now())
+                        .await
+                }
+                None => false,
+            }
         }
     }
 }
