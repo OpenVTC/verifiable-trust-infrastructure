@@ -1067,6 +1067,16 @@ pub(crate) async fn accept_from_proven_sender(
             tracing::debug!(sender = %sender_vid, "inbound response delivered to a waiting request");
             silent()
         }
+        // A reply by its *type* that no waiter took (it outlived its waiter)
+        // is not a request either: dispatching it answers a peer that asked
+        // for nothing with an `unsupportedType` error (#1949).
+        Inbound::Response
+            if serde_json::from_slice::<Value>(body)
+                .is_ok_and(|v| vta_sdk::inbound::names_a_reply(&v)) =>
+        {
+            tracing::debug!(sender = %sender_vid, "inbound response had no waiter — dropped");
+            silent()
+        }
         Inbound::Response | Inbound::Request => {
             // The transport's sender is treated as a claim, never as proof of
             // who composed the document (VTI-OPS-021/093: a transport that
@@ -6373,6 +6383,33 @@ mod didcomm_sender_binding {
 
     fn code(reply: &Value) -> Option<&str> {
         reply.pointer("/payload/code").and_then(Value::as_str)
+    }
+
+    /// #1949: a `#response` no waiter claimed is dropped in silence — it is a
+    /// reply by its type, so dispatching it answered a peer that asked for
+    /// nothing with an error.
+    #[tokio::test]
+    async fn a_response_with_no_waiter_is_dropped_not_answered() {
+        let (state, _dir, victim, _attacker, _vta_did) = setup().await;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "id": "urn:uuid:stray",
+            "type": "https://trusttasks.org/spec/messaging/message/status/0.1#response",
+            "threadId": "urn:uuid:long-gone",
+            "payload": {},
+        }))
+        .unwrap();
+        let outcome = accept_from_proven_sender(
+            &state,
+            &victim.did,
+            &body,
+            transport::TransportConfidentiality::EndToEnd,
+        )
+        .await;
+        assert!(
+            outcome.body.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&outcome.body)
+        );
     }
 
     #[tokio::test]

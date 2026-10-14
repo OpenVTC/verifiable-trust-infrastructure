@@ -1333,6 +1333,25 @@ async fn dispatch(inbound: Inbound, state: &AppState) -> Option<Reply> {
         return None;
     }
 
+    // A reply by its type that no waiter took — typically one that arrived
+    // after its waiter was failed by a websocket reconnect — has nothing to be
+    // dispatched to. Routing it as a request answered it with an
+    // `unsupportedType` error the mediator then refused to deliver (#1949).
+    if msg.typ == vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE
+        && vta_sdk::inbound::names_a_reply(&msg.body)
+    {
+        debug!(
+            task = msg.body.get("type").and_then(|t| t.as_str()).unwrap_or("-"),
+            thid = msg
+                .body
+                .get("threadId")
+                .and_then(|t| t.as_str())
+                .unwrap_or("-"),
+            "DIDComm reply had no waiter — dropping"
+        );
+        return None;
+    }
+
     let auth_sender = inbound
         .message
         .sender
@@ -1976,6 +1995,29 @@ mod tests {
         assert_eq!(code, "<none>");
         assert_eq!(comment, "<none>");
         assert_eq!(args, "<none>");
+    }
+
+    /// #1949: a `#response` whose waiter is gone — failed by the messaging
+    /// SDK's websocket reconnect — is dropped, not dispatched. Dispatched, it
+    /// was answered with an `unsupportedType` error every 12 minutes, which
+    /// the mediator then refused to deliver.
+    #[tokio::test]
+    async fn an_enveloped_reply_with_no_waiter_is_dropped_not_answered() {
+        let vtc = crate::test_support::build_test_vtc().await;
+        let msg = Message::build(
+            "urn:uuid:stray".to_string(),
+            vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE.to_string(),
+            json!({
+                "id": "urn:uuid:stray-doc",
+                "type": "https://trusttasks.org/spec/messaging/message/status/0.1#response",
+                "threadId": "urn:uuid:long-gone",
+                "payload": {}
+            }),
+        )
+        .finalize();
+        let mut inbound = frame("stray", "did:webvh:mediator", Protocol::DIDComm);
+        inbound.message.payload = serde_json::to_vec(&msg).unwrap();
+        assert!(dispatch(inbound, &vtc.state).await.is_none());
     }
 
     /// The request log names the task an envelope carries, so a member's
