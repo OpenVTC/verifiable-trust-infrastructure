@@ -152,6 +152,37 @@ On the sealed tiers, **record keys must be opaque**. A key reading
 
 Four steps. Steps 1 and 3 are the owner's own work; only step 2 touches a host.
 
+### Who the member is: a persona, never the client
+
+**In a room, every member — the owner included — is one persona DID**: a DID
+your VTA holds for you in one of your trust contexts, typically a `did:webvh` it
+minted there (or a `did:key` whose key it derived). That one DID is the
+invitation's subject, the identity on your MLS leaf, the subject of your VMC and
+VAC, the owner a host records, and the signer of every leaf your VTA narrows
+your authority into. One persona per member per room.
+
+**The interface you happen to be using never appears.** A `pnm` session, a
+wallet extension or an agent authenticates to your VTA with a `did:key` whose
+key lives in that client. Your VTA cannot sign as it, it changes when the client
+is reinstalled, and a person with two clients would be two members — so no room
+path accepts it as a member. What a client must be able to do is **act in the
+context that holds the persona**; that is the whole of the check, and it is
+applied the same way everywhere (`vta_service::operations::persona`):
+
+- a `did:webvh` your VTA minted: you act in its context, and its key is the
+  first `assertionMethod` key of its own published log held in that context;
+- a `did:key`: your VTA holds its key, in a context you act in.
+
+A persona held in a context you cannot act in is refused in exactly the words
+used for a DID your VTA does not hold at all, so a refusal never tells you whose
+personas live there. The VTA's own DID is **not** a persona: it is shared by
+everyone the VTA serves, and a room that named it would link all of their rooms.
+
+The one place a client DID does appear is as a *presenter* (§7): an agent your
+VTA equips with a four-hour, one-action leaf narrowed **from** your persona's
+grant. That leaf is a delegation, signed by your persona; the agent is never a
+member of the room.
+
 ### 5.1 Mint the room's identity
 
 The room's DID is its identifier and its credential issuer, so it must be
@@ -239,12 +270,12 @@ is not the `ownerDid` they name is refused (§8.4).
 can reach its own agent and no host (a wallet extension, a phone): the VTA sends
 `rooms/create` for you, and **signs it as the owner**, which is what "the key
 holder speaks to the host as its principal" means. The owner (`ownerDid`, or you
-when it is absent) must be a DID the VTA holds the signing key for, in a context
-you act in: a `did:webvh` it minted for you (its key is found from the DID's own
-log, under `assertionMethod`), a `did:key` whose key it holds, or the VTA's own
-DID. Anything else is refused with `permissionDenied` and a message saying to
-name an `ownerDid` the VTA holds — a `pnm` session's `did:key`, whose key lives
-in your client, is not one. On a **VTC** the owner must also be a member of the
+when it is absent) must be your **persona** for the room (above): a `did:webvh`
+the VTA minted for you or a `did:key` whose key it holds, in a context you act
+in. (The VTA's own DID is still accepted here, and only here, for registrations
+that predate personas.) Anything else is refused with `permissionDenied` and a
+message saying to name an `ownerDid` the VTA holds — a `pnm` session's
+`did:key`, whose key lives in your client, is not one. On a **VTC** the owner must also be a member of the
 community: its `rooms` policy decides creation against the party that signed.
 
 ### 5.3 Issue the owner's own credentials
@@ -261,17 +292,21 @@ two an owner uses for every later member (§6):
 ```jsonc
 // rooms/owner/issue-membership/0.1
 { "roomId": "did:webvh:…", "signingKeyId": "<from §5.1>",
-  "subject": "did:key:zOwner", "validUntil": "2027-01-01T00:00:00Z" }
+  "subject": "did:webvh:…:alice", "validUntil": "2027-01-01T00:00:00Z" }
 
 // rooms/owner/issue-authority/0.1
 { "roomId": "did:webvh:…", "signingKeyId": "<from §5.1>",
-  "subject": "did:key:zOwner",
+  "subject": "did:webvh:…:alice",
   "actions": ["read", "write", "curate", "admin"],
   "validUntil": "2026-10-09T00:00:00Z" }
 ```
 
 Each returns `{ credential, credentialId }` — the signed credential, and the id
 bound into its proof, which is what tells a re-send from a renewal.
+
+`subject` is the member's **persona** — for the owner, the same DID registered as
+`ownerDid` in §5.2. A credential naming a client's `did:key` is one nobody can
+present: the member's VTA holds no key to narrow it with.
 
 Three things about that pair are load-bearing:
 
@@ -308,8 +343,13 @@ pnm cred-vault receive --credential-file ./vac.json
 
 This matters for more than tidiness: the presentation oracle (§7) finds a
 member's room credentials **by issuer** — `issuer == roomId`, type
-`MembershipCredential` / `AuthorityCredential` — and refuses if it holds none,
-or if it holds two of the same kind for one room.
+`MembershipCredential` / `AuthorityCredential` — and then keeps only those whose
+**subject is a persona you may act as**. That second filter is the privilege
+boundary: a credential stored without a context is visible from every context,
+and its subject being someone else's persona is what keeps it theirs. It refuses
+if no persona of yours holds one, if one persona holds two of a kind for one
+room, or if you act in several contexts each holding a persona in the room (act
+from the one you mean).
 
 The four actions are a ladder with one deliberate break: **`curate` is not
 implied by `write`.** Deciding what a room's shared knowledge is worth is a
@@ -327,10 +367,13 @@ pnm rooms owner group-create --room <room-did> --signing-key <key id from §5.1>
 ```
 
 The entitlement is the same as issuing the room's credentials: control of its
-signing key. `--member` is the DID your leaf identifies — the subject of your
-room credentials — and defaults to the DID `pnm` authenticates as. A VTA that
-already holds the room's group refuses (`alreadyExists`) rather than replacing
-the key schedule its sealed records depend on.
+signing key. `--member` is the DID your leaf identifies — your **persona**, the
+subject of your room credentials — and must be one you may act as. Absent, the
+VTA uses the persona its credentials from this room name (§5.3), and if it holds
+none it asks you to name `--member` rather than founding the group on the
+`did:key` `pnm` authenticates as. A VTA that already holds the room's group
+refuses (`alreadyExists`) rather than replacing the key schedule its sealed
+records depend on.
 
 Register the room first (§5.2): a refused registration then costs nothing to
 retry.
@@ -379,13 +422,16 @@ sequenceDiagram
 
 Step by step:
 
-1. **The owner issues a VIC** naming the joiner, from the room's key
+1. **The owner issues a VIC** naming the joiner's **persona** — the DID the
+   joiner's VTA holds for them, never the client they use — from the room's key
    (`rooms/owner/invite/0.1` — `roomId`, `signingKeyId`, `subject`,
    `validUntil`), and delivers it — DIDComm on a sealed room, because a
    server-side invitation store would hand the host the membership at invite
    time.
 2. **The joiner's VTA mints a KeyPackage** (`rooms/keys/key-package/0.1`,
-   invitation required). Minting retains a private key against a Welcome that
+   invitation required) whose leaf identifies the persona the invitation names.
+   Whoever delivers the invitation must act in that persona's context; who they
+   are does not otherwise matter, and their DID is not the member's. Minting retains a private key against a Welcome that
    may never come, which is why it is not offered unconditionally; unused
    packages expire after 7 days.
 3. **The owner's VTA admits the leaf** (`rooms/owner/group/add/0.1`):
@@ -395,9 +441,12 @@ Step by step:
        --member <joiner-did> --key-package ./kp.b64 --out ./welcome.json
    ```
 
-   It builds the commit and the Welcome, **advances the room's epoch at the
+   `--member` is the joiner's persona — the DID their invitation names. The
+   VTA builds the commit and the Welcome, **advances the room's epoch at the
    host first** (`rooms/epoch/mint`, with the epoch link and the commit, under
-   your `admin` grant), and only then moves its own group. A refusal leaves the
+   your `admin` grant — signed as your owner persona, presenting a leaf your
+   persona narrowed to itself, never as the VTA), and only then moves its own
+   group. A refusal leaves the
    group where it was. An unanswered advance is kept pending and settled with
    the host by the next admission or removal, because the host may have taken
    it and a key holder cannot process its own commit from the wire. Deliver
@@ -413,7 +462,9 @@ Step by step:
 
 Five checks stand behind the invitation, and none is optional: it parses as a
 DTG credential and is an invitation; its proof verifies; the issuer is *this*
-room; the subject is *us*; it is in its window and unconsumed.
+room; the subject is *us* — a persona the caller may act as, refused in the same
+words whether it is unknown here or held in another context; it is in its window
+and unconsumed (keyed on the invitation, not on whoever delivers it).
 
 ### Commits are not optional, and their absence is silent
 
@@ -456,13 +507,17 @@ pnm rooms owner group-remove --room <room-did> --host-did <host-did> \
     --member <member-did> [--reason "left the deal team"]
 ```
 
-It is the mirror of `group-add`, on the same machinery:
+`--member` is the departing member's **persona** — the DID their leaf carries,
+which is the DID their invitation named, never a client of theirs. It is the
+mirror of `group-add`, on the same machinery, and like it speaks to the host as
+your owner persona:
 
 - **Refused before anything is built** when the VTA holds no group
   (`noGroup`), when `--member` has no leaf in it (`notMember`), and when
   `--member` is the VTA's own leaf (`ownLeaf`) — a key holder does not remove
   itself; an owner leaving hands the room on with `rooms/owner/transfer`.
-  Without your `admin` grant in the vault it is `noAuthority`.
+  Without an `admin` grant in the vault naming a persona you act as it is
+  `noAuthority`.
 - **Host first.** The commit dropping the leaf, and the epoch link that keeps
   the remaining members reading the past, are built on a copy and kept as the
   room's pending advance; `rooms/epoch/mint` goes to the host; only an accepted
@@ -501,16 +556,15 @@ The member's VTA does both halves:
 
 | Task | What it does | Gate |
 |---|---|---|
-| `rooms/keys/present/0.1` | Attenuates the principal's VAC into a one-action, audience-bound leaf and returns a presentation | `roomPresent` capability + context access |
+| `rooms/keys/present/0.2` | Attenuates the principal persona's VAC into a one-action leaf granted to the caller, signed as the persona, and returns a presentation | `roomPresent` capability + acting in the persona's context |
 | `rooms/keys/open/0.1` | Takes ciphertext, returns plaintext | `roomOpen` capability |
 
 ```jsonc
-// rooms/keys/present/0.1 payload
+// rooms/keys/present/0.2 payload — no audience, no nonce: the leaf is bound to
+// the caller that asked, and freshness is the carrying request's own `id`/`issuedAt`
 {
   "roomId":  "did:webvh:…",
-  "action":  "read",              // exactly one; required
-  "audience": "did:web:rooms.example.org",   // bind it to the host you will call
-  "nonce":   "…"                   // optional
+  "action":  "read"               // exactly one; required
 }
 ```
 
@@ -526,6 +580,10 @@ have become the credential hand-off it exists to replace:
   worthless to B.
 - **A long-lived leaf** — the lifetime is a constant (4 hours), not a request
   parameter.
+- **Somebody else's standing** — the credentials narrowed are those the room
+  issued to a persona the caller may act as (§5), and the leaf is signed as that
+  persona. A caller acting in one context never presents a credential whose
+  subject is a persona in another, wherever the vault stores it.
 
 > **How to grant it.** The role is the ceiling: `application` (what an agent
 > integration is normally granted), `initiator` and `admin` carry both room
@@ -1024,7 +1082,10 @@ chain working rather than failing.
 
 ### 10.3 Losing a member, and losing everyone
 
-A member who loses their VTA lost their MLS leaf. The design's answer is
+A member who loses their VTA lost their MLS leaf. Their persona is what the room
+knows them by, so a re-admission is of that **same persona** — restored with the
+VTA's backup, or re-minted and re-credentialed — never of whatever client they
+reconnect from. The design's answer is
 **k-of-n re-admission** — some members attest the returning party and the owner
 commits an add for their new leaf; not secret sharing, because what needs
 distributing is the *authority to re-admit*, not shards of a key. No quorum
@@ -1049,11 +1110,15 @@ recover but a fresh invitation from every owner.
 | `a private room must not be served without a ZK profile` | The tier is not servable yet (§2). Use `attributed` |
 | the chain "does not confer this on room …" | Wrong action for the chain (agent with `read` writing), or a chain rooted somewhere other than this room |
 | a valid-looking presentation refused on a *different* signer | Presentations are bound to the presenter. A captured one is worthless — this is working as intended |
-| `this VTA holds no AuthorityCredential issued by room …` | The member's VMC/VAC are not in the credential vault (§5.3) |
 | `this VTA holds N AuthorityCredentials issued by room …` | Two credentials of one kind for one room; the oracle will not guess which to attenuate |
 | record "does not open", VTA reports an older epoch | A missed commit (§6). Deliver it |
 | `an authority credential must name \`validUntil\`` | `rooms/owner/issue-authority` with no expiry. There is no default and no revocation — pick a window (§5.3) |
-| `no invitation presented for room …` | `key-package`/`welcome` without the VIC, or the VIC names someone else |
+| `no invitation presented for room …` | `key-package`/`welcome` without the VIC |
+| `the invitation names …, which is not a persona you may act as here` | The VIC names a DID this VTA does not hold for you — another context's persona, a DID it holds nothing for (the two read alike), or your client's own `did:key`. Invite the persona, and call from its context |
+| `this VTA holds no … issued by room … to a persona you may act as` | The member's VMC/VAC are not in the vault, or they name a persona you cannot act as (§5.3) |
+| `you may act as N personas holding a … issued by room …` | You act in several contexts, each with a persona in this room. Act from the context of the one you mean |
+| `… is not a persona you may act as, so it cannot be the owner's leaf` | `group/create --member` named a DID that is not your persona (§5.4) |
+| `name the owner's persona as \`member\`` | `group/create` with no `--member`, and no credential from the room names a persona of yours (§5.4) |
 | `invitation … has already been used` | Single use. Issue a fresh one |
 | a room "is live" / "not claimable" | The owner renewed. The claim is correctly dead |
 | `unsupportedType` | The host does not implement that task — check you are talking to a room host and not something else on the same port |
@@ -1084,7 +1149,7 @@ and `vtc-service`:
 
 | URI | Authorized by |
 |---|---|
-| `rooms/keys/key-package/0.1` | an invitation |
+| `rooms/keys/key-package/0.1` | an invitation naming a persona the caller may act as |
 | `rooms/keys/welcome/0.1` | that invitation, consumed |
 | `rooms/keys/commit/0.1` | the MLS group itself |
 | `rooms/keys/open/0.1` | `roomOpen` capability |
@@ -1092,7 +1157,7 @@ and `vtc-service`:
 | `rooms/keys/list/0.1` | `roomOpen` capability |
 | `rooms/keys/chain/0.1` | `roomOpen` capability |
 | `rooms/keys/backfill/0.1` | `roomOpen` capability |
-| `rooms/keys/present/0.1` | `roomPresent` capability + context access |
+| `rooms/keys/present/0.2` | `roomPresent` capability + acting in the persona's context |
 
 **Owner tasks** (`https://trusttasks.org/spec/rooms/owner/…`), served by
 `vta-service` — the room's own key, used without it leaving the VTA. The family
@@ -1105,7 +1170,7 @@ holds the room's key:
 | `rooms/owner/invite/0.1` | a VIC — single-use consent to join | `credentialWrite` + control of the room's key |
 | `rooms/owner/issue-membership/0.1` | a VMC — the room's statement that a DID is a member | same |
 | `rooms/owner/issue-authority/0.1` | a VAC chain root; `validUntil` required | same |
-| `rooms/owner/register/0.1` | nothing — asks this VTA to call `rooms/create` on a host, signing **as the owner** (a DID it holds the key for, in a context you act in), not as the room or the agent | same, plus a resolver |
+| `rooms/owner/register/0.1` | nothing — asks this VTA to call `rooms/create` on a host, signing **as the owner** (your persona: a DID it holds the key for, in a context you act in), not as the room or the agent | same, plus a resolver |
 
 **Constants**
 

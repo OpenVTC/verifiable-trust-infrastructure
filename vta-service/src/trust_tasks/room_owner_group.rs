@@ -86,11 +86,19 @@ pub(super) async fn handle_create(
         );
     }
 
-    let member = req
-        .member
-        .as_ref()
-        .map(|m| m.as_str().to_string())
-        .unwrap_or_else(|| auth.did.clone());
+    // Item 3: the leaf identifies the owner's **persona** — the subject of their membership
+    // and authority credentials — and never the interface client that sent this.
+    let member = match founding_member(
+        state,
+        auth,
+        room_id,
+        req.member.as_ref().map(|m| m.as_str()),
+    )
+    .await
+    {
+        Ok(m) => m,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
     match room_groups::create_group(&state.room_groups_ks, room_id, &member, now()).await {
         Ok(epoch) => {
             record(state, "rooms.owner.group.create", auth, room_id).await;
@@ -149,16 +157,14 @@ pub(super) async fn handle_add(
         return r;
     }
 
-    let (vta_did, resolver) = match outbound_identity(state, &doc).await {
+    let (_, resolver) = match outbound_identity(state, &doc).await {
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let host_call = HostCall {
-        state,
-        auth,
-        vta_did: &vta_did,
-        resolver: &resolver,
-        room_id: &room_id,
+    let host_call = match HostCall::as_owner(state, auth, &resolver, &room_id, &doc, &ADVANCE).await
+    {
+        Ok(h) => h,
+        Err(r) => return r,
     };
 
     // Item 6: an advance left pending by an earlier request is settled first.
@@ -296,16 +302,14 @@ pub(super) async fn handle_remove(
         Err(e) => return app_error_to_reject(&doc, e),
     }
 
-    let (vta_did, resolver) = match outbound_identity(state, &doc).await {
+    let (_, resolver) = match outbound_identity(state, &doc).await {
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let host_call = HostCall {
-        state,
-        auth,
-        vta_did: &vta_did,
-        resolver: &resolver,
-        room_id: &room_id,
+    let host_call = match HostCall::as_owner(state, auth, &resolver, &room_id, &doc, &ADVANCE).await
+    {
+        Ok(h) => h,
+        Err(r) => return r,
     };
 
     // Item 3/6: a pending advance — an admission as readily as a removal — is settled
@@ -417,27 +421,126 @@ struct AdvanceCodes {
     host_refused: DeclaredErrorCode,
 }
 
-/// What `add` and `remove` need to speak to a host as this agent.
+/// `noAuthority`: the caller acts as no persona holding the room's `admin` authority.
+fn no_authority(
+    doc: &TrustTask<Value>,
+    codes: &AdvanceCodes,
+    room_id: &str,
+    e: AppError,
+) -> TrustTaskOutcome {
+    reject_with_code(
+        doc,
+        declared(codes.no_authority),
+        format!(
+            "this agent holds no authority credential conferring `admin` on room `{room_id}` \
+             for a persona you act as, so it cannot advance the room's epoch: {e}"
+        ),
+        None,
+    )
+}
+
+/// The DID `create`'s one leaf identifies.
+///
+/// The specification: `member`, "absent means the caller", and "the subject of the owner's
+/// membership and authority credentials". The caller here is the owner acting through an
+/// interface client, so "the caller" is read as the owner's **persona** — never the client's
+/// own `did:key`, which this agent holds no key for and which would make the owner a
+/// different member from every other client they use:
+///
+/// - `member` named: it must be a persona the caller may act as. Refused otherwise, the same
+///   way whether it is unknown or held in another context.
+/// - absent: the persona the room's credentials name, where this agent holds them for a
+///   persona the caller acts as; else the caller's own DID only if it *is* a persona (a
+///   `did:key` this agent holds in a context the caller acts in); else a refusal asking for
+///   `member`, rather than a leaf carrying a client key.
+async fn founding_member(
+    state: &AppState,
+    auth: &AuthClaims,
+    room_id: &str,
+    named: Option<&str>,
+) -> Result<String, AppError> {
+    let stores = crate::operations::persona::PersonaStores::from_state(state);
+    if let Some(member) = named {
+        return match crate::operations::persona::persona_signing_key(stores, auth, member).await? {
+            Some(_) => Ok(member.to_string()),
+            None => Err(AppError::Forbidden(format!(
+                "`{member}` is not a persona you may act as, so it cannot be the owner's leaf \
+                 in room `{room_id}`. Name a DID this agent minted for you in a context you \
+                 act in"
+            ))),
+        };
+    }
+    match crate::operations::room_oracle::principal(state, auth, room_id).await {
+        Ok(p) => return Ok(p.did),
+        Err(AppError::NotFound(_)) => {}
+        Err(e) => return Err(e),
+    }
+    if crate::operations::persona::persona_signing_key(stores, auth, &auth.did)
+        .await?
+        .is_some()
+    {
+        return Ok(auth.did.clone());
+    }
+    Err(AppError::Validation(format!(
+        "name the owner's persona as `member`: this agent holds no credential from room \
+         `{room_id}` naming one you act as, and your own DID is a client key it does not hold, \
+         which cannot be a member's identity"
+    )))
+}
+
+/// What `add` and `remove` need to speak to a host **as the owner's persona**.
+///
+/// `rooms/owner/group/{add,remove}` have the key holder speak "to the host as its
+/// principal", presenting the owner's `admin` authority; `rooms/epoch/mint`'s producer is
+/// the owner (or a holder of `admin`). So every request is signed as the persona the room's
+/// credentials name — the same identity `rooms/owner/register` registered — and never as
+/// this agent, whose DID is shared by every principal it serves and would attribute the
+/// advance to none of them.
 struct HostCall<'a> {
     state: &'a AppState,
     auth: &'a AuthClaims,
-    vta_did: &'a str,
+    owner: crate::operations::room_oracle::Principal,
     resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
     room_id: &'a str,
 }
 
-impl HostCall<'_> {
+impl<'a> HostCall<'a> {
+    /// Resolve the owner persona the caller acts as in `room_id`, or `noAuthority` — before
+    /// anything is settled or built, so a caller without it leaves nothing behind.
+    async fn as_owner(
+        state: &'a AppState,
+        auth: &'a AuthClaims,
+        resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
+        room_id: &'a str,
+        doc: &TrustTask<Value>,
+        codes: &AdvanceCodes,
+    ) -> Result<Self, TrustTaskOutcome> {
+        let owner = match crate::operations::room_oracle::principal(state, auth, room_id).await {
+            Ok(p) => p,
+            Err(e @ (AppError::NotFound(_) | AppError::Forbidden(_) | AppError::Validation(_))) => {
+                return Err(no_authority(doc, codes, room_id, e));
+            }
+            Err(e) => return Err(app_error_to_reject(doc, e)),
+        };
+        Ok(Self {
+            state,
+            auth,
+            owner,
+            resolver,
+            room_id,
+        })
+    }
+
     async fn send(&self, host: &str, task: &str, payload: Value) -> Result<Value, RoomTaskError> {
-        let key = format!("{}#key-0", self.vta_did);
         send_room_task_typed(
             signing_context(self.state, self.auth),
             &self.state.room_groups_ks,
             self.room_id,
             &crate::operations::outbound::Outbound::from_app_state(self.state, self.resolver),
             host,
-            &key,
-            self.vta_did,
-            &crate::operations::credentials::vta_signing_vm(self.vta_did),
+            &self.owner.key.key_id,
+            &self.owner.did,
+            &self.owner.key.verification_method,
             task,
             &format!("{task}#response"),
             payload,
@@ -447,10 +550,11 @@ impl HostCall<'_> {
 
     /// The room's epoch at `host`, from `rooms/info` under the owner's `read` grant.
     async fn epoch(&self, host: &str) -> Result<u32, RoomTaskError> {
-        let minted = crate::operations::room_oracle::present(
+        let minted = crate::operations::room_oracle::present_as(
             self.state,
             self.auth,
-            self.vta_did,
+            &self.owner,
+            &self.owner.did,
             self.room_id,
             "read",
         )
@@ -526,17 +630,20 @@ impl HostCall<'_> {
         }
     }
 
-    /// The caller's `admin` presentation for the room, or `noAuthority`.
+    /// The owner persona's `admin` presentation for the room, or `noAuthority` — minted as
+    /// `rooms/keys/present` mints it, the leaf granted to the party that signs the request
+    /// carrying it, which is the owner persona itself.
     async fn admin_presentation(
         &self,
         doc: &TrustTask<Value>,
         codes: &AdvanceCodes,
     ) -> Result<Value, TrustTaskOutcome> {
         let room_id = self.room_id;
-        match crate::operations::room_oracle::present(
+        match crate::operations::room_oracle::present_as(
             self.state,
             self.auth,
-            self.vta_did,
+            &self.owner,
+            &self.owner.did,
             room_id,
             "admin",
         )
@@ -544,15 +651,7 @@ impl HostCall<'_> {
         {
             Ok(m) => Ok(m.presentation),
             Err(e @ (AppError::NotFound(_) | AppError::Forbidden(_) | AppError::Validation(_))) => {
-                Err(reject_with_code(
-                    doc,
-                    declared(codes.no_authority),
-                    format!(
-                        "this agent holds no authority credential conferring `admin` on room \
-                         `{room_id}` for its caller, so it cannot advance the room's epoch: {e}"
-                    ),
-                    None,
-                ))
+                Err(no_authority(doc, codes, room_id, e))
             }
             Err(e) => Err(app_error_to_reject(doc, e)),
         }
@@ -681,6 +780,8 @@ mod tests {
         /// The last `rooms/epoch/mint` payload the host took, so a test can relay its
         /// commit to the members who remain.
         last_mint: Option<Value>,
+        /// Who signed the last `rooms/epoch/mint` the host received.
+        last_mint_issuer: Option<String>,
     }
 
     struct StubHost {
@@ -694,6 +795,7 @@ mod tests {
             epoch: 1,
             mode: Mode::Accept,
             last_mint: None,
+            last_mint_issuer: None,
         }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -718,6 +820,7 @@ mod tests {
                                 "retentionPolicy": "chained", "epoch": h.epoch,
                             }))
                         } else if task == vti_rooms::wire::ROOMS_EPOCH_MINT_TYPE {
+                            h.last_mint_issuer = req["issuer"].as_str().map(str::to_string);
                             let asked = req["payload"]["epoch"].as_u64().unwrap_or(0) as u32;
                             match h.mode {
                                 Mode::Refuse => Err(("permissionDenied", "not today")),
@@ -1724,5 +1827,172 @@ mod tests {
         );
         assert!(pending(&o).await.is_none());
         assert!(live_group(&o).await.leaf_of(&did).is_some());
+    }
+    // ─── Personas ────────────────────────────────────────────────────────────
+
+    async fn create_as(o: &Owner, auth: &AuthClaims, member: Option<&str>) -> Value {
+        let mut payload = serde_json::json!({ "roomId": o.room.did, "signingKeyId": o.room_key });
+        if let Some(m) = member {
+            payload["member"] = serde_json::json!(m);
+        }
+        body(
+            handle_create(
+                &o.state,
+                auth,
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_CREATE_0_1,
+                    payload,
+                ),
+            )
+            .await,
+        )
+    }
+
+    async fn leaf_of(o: &Owner, did: &str) -> bool {
+        let r = room_groups::load(&o.state.room_groups_ks, &o.room.did)
+            .await
+            .unwrap()
+            .expect("a group");
+        vti_rooms::mls::RoomGroup::restore(&r.snapshot)
+            .unwrap()
+            .leaf_of(did)
+            .is_some()
+    }
+
+    /// With no `member`, the owner's leaf is the persona the room's credentials name — not
+    /// the caller, whose DID is a client key.
+    #[tokio::test]
+    async fn create_without_a_member_founds_on_the_owners_persona() {
+        let o = owner().await;
+        let caller = crate::test_support::super_admin_claims();
+        let out = create_as(&o, &caller, None).await;
+        assert_eq!(out["payload"]["epoch"], 1, "{out}");
+        assert!(leaf_of(&o, &o.member).await, "the persona's leaf");
+        assert!(!leaf_of(&o, &caller.did).await, "never the client's");
+    }
+
+    /// A `member` that is not a persona the caller may act as is refused — another
+    /// context's persona and the caller's own client key alike — and nothing is founded.
+    #[tokio::test]
+    async fn create_refuses_a_member_that_is_not_the_callers_persona() {
+        let o = owner().await;
+        crate::contexts::create_context(&o.state.contexts_ks, "bob", "Bob")
+            .await
+            .unwrap();
+        let bob = crate::operations::persona::test_fixture::did_key_persona(
+            &o.state.keys_ks,
+            &o.state.internal_ks,
+            &o.state.contexts_ks,
+            &o.state.acl_ks,
+            &o.state.seed_store,
+            &o.state.audit_sink,
+            "bob",
+            "bob-persona",
+        )
+        .await;
+        let caller = crate::test_support::super_admin_claims();
+        let nobody = Party::new().did;
+
+        // A super-admin acts everywhere, so bob's persona is theirs to name; a caller
+        // scoped elsewhere is not, and is told so as for a DID nobody holds. (Asked of the
+        // rule directly: such a caller could not name the room's key either.)
+        let scoped = crate::test_support::admin_claims_for_context("carol");
+        let to_bob = founding_member(&o.state, &scoped, &o.room.did, Some(&bob.did))
+            .await
+            .expect_err("bob's persona is not carol's caller's");
+        let to_nobody = founding_member(&o.state, &scoped, &o.room.did, Some(&nobody))
+            .await
+            .expect_err("nobody's");
+        assert!(matches!(to_bob, AppError::Forbidden(_)), "{to_bob}");
+        assert_eq!(
+            to_bob.to_string(),
+            to_nobody.to_string().replace(&nobody, &bob.did)
+        );
+        let msg = |d: &Value| {
+            d["payload"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+
+        let to_client = create_as(&o, &caller, Some(&caller.did)).await;
+        assert!(
+            msg(&to_client).contains("not a persona you may act as"),
+            "{to_client}"
+        );
+        assert!(
+            room_groups::load(&o.state.room_groups_ks, &o.room.did)
+                .await
+                .unwrap()
+                .is_none(),
+            "nothing founded"
+        );
+
+        // Named explicitly, a persona the caller acts as is accepted.
+        let ok = create_as(&o, &caller, Some(&o.member)).await;
+        assert_eq!(ok["payload"]["epoch"], 1, "{ok}");
+    }
+
+    /// No `member`, no credentials naming a persona, and a caller whose DID is a client key:
+    /// asked for `member`, never founded on the client key.
+    #[tokio::test]
+    async fn create_with_nothing_to_name_the_owner_asks_for_member() {
+        let o = owner().await;
+        for tag in [AUTHORITY_TYPE, MEMBERSHIP_TYPE] {
+            crate::vault::storage::delete(&o.state.vault_ks, &format!("{tag}-{}", o.room.did))
+                .await
+                .unwrap();
+        }
+        let out = create_as(&o, &crate::test_support::super_admin_claims(), None).await;
+        assert!(
+            out["payload"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("`member`"),
+            "{out}"
+        );
+        assert!(
+            room_groups::load(&o.state.room_groups_ks, &o.room.did)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// `rooms/epoch/mint` goes to the host signed as the owner's persona, with the `admin`
+    /// leaf granted to that same persona — the presenter the host authenticates — and not
+    /// as this agent, whose DID every principal it serves shares. Admission and removal
+    /// alike.
+    #[tokio::test]
+    async fn add_and_remove_speak_to_the_host_as_the_owners_persona() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let vta_did = o.state.config.read().await.vta_did.clone().unwrap();
+        let check = |what: &str| {
+            let h = o.host.state.lock().unwrap();
+            let issuer = h.last_mint_issuer.clone().expect("a mint was signed");
+            assert_eq!(issuer, o.member, "{what}: signed as the owner persona");
+            assert_ne!(issuer, vta_did, "{what}");
+            let leaf: Value = serde_json::from_str(
+                h.last_mint.as_ref().expect("a mint")["presentation"]["authority"][0]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(leaf["credentialSubject"]["id"], o.member, "{what}: {leaf}");
+            assert_eq!(
+                leaf["issuer"], o.member,
+                "{what}: narrowed by the persona: {leaf}"
+            );
+        };
+
+        let (_s, _d, did, kp) = joiner(&o.room.did).await;
+        let out = add(&o, &did, &kp).await;
+        assert_eq!(out["payload"]["epoch"], 2, "{out}");
+        check("add");
+
+        let out = remove(&o, &did).await;
+        assert_eq!(out["payload"]["epoch"], 3, "{out}");
+        check("remove");
     }
 }

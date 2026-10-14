@@ -9,10 +9,14 @@
 //!
 //! | | authorized by |
 //! |---|---|
-//! | `key-package` | an invitation — minting retains a private key, so a VTA that minted for anyone is one anyone can fill |
+//! | `key-package` | an invitation naming a persona the caller may act as — minting retains a private key, so a VTA that minted for anyone is one anyone can fill |
 //! | `welcome` | that same invitation, **consumed** |
 //! | `commit` | the group itself — MLS authenticates the committer as a member of the group we already hold |
 //! | `open` | [`Capability::RoomOpen`] |
+//!
+//! The member a group admits is the **persona** the invitation names — a DID this VTA
+//! holds for the person ([`crate::operations::persona`]) — and their MLS leaf carries it.
+//! The caller is whoever delivers the invitation, and is never the member's identity.
 //!
 //! Only the last is a capability, and that asymmetry is the point. The first three are
 //! *inbound* — a room's owner reaching this VTA — and an ACL of ours has no opinion about
@@ -89,16 +93,19 @@ pub(super) async fn handle_key_package(
 
     // Minting retains a private key against a Welcome that may never come, so it is not
     // free and is not offered unconditionally.
-    if let Err(e) =
-        require_invitation(state, req.invitation.as_deref(), &req.room_id, &auth.did).await
-    {
-        return app_error_to_reject(&doc, e);
-    }
+    //
+    // The leaf the KeyPackage carries identifies the persona the invitation names — the
+    // member's identity in the room — never the client that asked for it.
+    let invitation =
+        match require_invitation(state, req.invitation.as_deref(), &req.room_id, auth).await {
+            Ok(i) => i,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
 
     let minted = match room_groups::mint_key_package(
         &state.room_groups_ks,
         &req.room_id,
-        &auth.did,
+        invitation.subject(),
         KEY_PACKAGE_LIFETIME_SECS,
         now(),
     )
@@ -133,7 +140,7 @@ pub(super) async fn handle_welcome(
     // The load-bearing gate. A Welcome carries a group's secrets; without a matching
     // invitation this VTA would be accepting key material for a room nobody agreed to join.
     let invitation =
-        match require_invitation(state, req.invitation.as_deref(), &req.room_id, &auth.did).await {
+        match require_invitation(state, req.invitation.as_deref(), &req.room_id, auth).await {
             Ok(i) => i,
             Err(e) => return app_error_to_reject(&doc, e),
         };
@@ -1212,11 +1219,17 @@ pub(super) fn declared(code: trust_tasks_rs::DeclaredErrorCode) -> trust_tasks_r
 // ─── Shared ──────────────────────────────────────────────────────────────
 
 /// Verify the invitation, and refuse if it is missing, bad, or already spent.
+///
+/// The subject must be a **persona** the caller may act as
+/// ([`crate::operations::persona::persona_signing_key`]) — the DID this agent holds for the
+/// member, in a context the caller acts in. Never the caller's own DID merely because it is
+/// the caller: an interface client's key lives in the client, and a member is the same
+/// member whichever client they joined from.
 async fn require_invitation(
     state: &AppState,
     encoded: Option<&str>,
     room_id: &str,
-    member_did: &str,
+    auth: &AuthClaims,
 ) -> Result<room_invitation::VerifiedInvitation, vti_common::error::AppError> {
     let encoded = encoded.ok_or_else(|| {
         vti_common::error::AppError::Validation(format!(
@@ -1226,7 +1239,20 @@ async fn require_invitation(
     })?;
 
     let keys = vti_rooms_dtg::DataIntegrityKeys(state.trust_task_vm_resolver());
-    let invitation = room_invitation::verify(encoded, room_id, member_did, &keys).await?;
+    let stores = crate::operations::persona::PersonaStores::from_state(state);
+    let invitation = room_invitation::verify(
+        encoded,
+        room_id,
+        async |subject: &str| {
+            Ok(
+                crate::operations::persona::persona_signing_key(stores, auth, subject)
+                    .await?
+                    .is_some(),
+            )
+        },
+        &keys,
+    )
+    .await?;
 
     if room_invitation::is_consumed(&state.room_invitations_ks, invitation.credential_id()).await? {
         return Err(vti_common::error::AppError::Conflict(format!(
@@ -1487,5 +1513,307 @@ mod file_key_refusal_tests {
             let doc = ask(&state, payload).await;
             assert_eq!(doc["payload"]["code"], "malformedRequest", "{doc}");
         }
+    }
+}
+
+/// `rooms/keys/{key-package,welcome}`: the member is the persona the invitation names.
+///
+/// The invitation names its subject, and the subject is the member's identity in the room —
+/// the DID their leaf carries and their credentials name. So it is a persona this VTA holds
+/// for the person, and the caller must be able to act as it. The caller's own DID — an
+/// interface client's key — is never the member merely because it is the caller.
+#[cfg(test)]
+mod persona_invitation_tests {
+    use super::*;
+    use crate::operations::persona::test_fixture::{self as personas, Persona};
+    use chrono::{Duration as Span, Utc};
+    use dtg_credentials::DTGCredential;
+    use trust_tasks_rs::TypeUri;
+    use vti_rooms_dtg::test_support::Party;
+
+    const HOST: &str = "did:webvh:QmHost:host.example";
+
+    fn request(uri: &str, payload: Value) -> TrustTask<Value> {
+        let uri: TypeUri = uri.parse().unwrap();
+        TrustTask::new(format!("urn:uuid:{}", uuid::Uuid::new_v4()), uri, payload)
+    }
+
+    fn body(outcome: TrustTaskOutcome) -> Value {
+        serde_json::from_slice(&outcome.body).expect("the outcome is a document")
+    }
+
+    async fn state_with_two_contexts() -> (AppState, tempfile::TempDir) {
+        let (state, dir) = crate::test_support::build_signing_test_app_state().await;
+        for (id, name) in [("alice", "Alice"), ("bob", "Bob")] {
+            crate::contexts::create_context(&state.contexts_ks, id, name)
+                .await
+                .expect("create context");
+        }
+        (state, dir)
+    }
+
+    async fn did_key_persona(state: &AppState, context: &str, key_id: &str) -> Persona {
+        personas::did_key_persona(
+            &state.keys_ks,
+            &state.internal_ks,
+            &state.contexts_ks,
+            &state.acl_ks,
+            &state.seed_store,
+            &state.audit_sink,
+            context,
+            key_id,
+        )
+        .await
+    }
+
+    #[cfg(feature = "webvh")]
+    async fn webvh_persona(state: &AppState, context: &str, key_id: &str) -> Persona {
+        personas::webvh_persona(
+            &state.keys_ks,
+            &state.internal_ks,
+            &state.contexts_ks,
+            &state.acl_ks,
+            &state.webvh_ks,
+            &state.seed_store,
+            &state.audit_sink,
+            context,
+            key_id,
+        )
+        .await
+    }
+
+    /// The room's invitation to `subject`, as JSON text.
+    async fn invitation(room: &Party, subject: &str) -> String {
+        let now = Utc::now();
+        let mut vic = DTGCredential::new_vic(
+            room.did.clone(),
+            dtg_credentials::IssuerScope::Public,
+            subject.to_string(),
+            now - Span::minutes(1),
+            Some(now + Span::hours(1)),
+        )
+        .with_id(format!("urn:uuid:{}", uuid::Uuid::new_v4()));
+        vic.sign(&room.secret, None)
+            .await
+            .expect("sign the invitation");
+        serde_json::to_string(vic.credential()).expect("serialise")
+    }
+
+    async fn key_package(state: &AppState, auth: &AuthClaims, room: &str, vic: &str) -> Value {
+        body(
+            handle_key_package(
+                state,
+                auth,
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
+                    serde_json::json!({ "roomId": room, "invitation": vic }),
+                ),
+            )
+            .await,
+        )
+    }
+
+    fn reason(doc: &Value) -> String {
+        doc["payload"]["message"]
+            .as_str()
+            .or_else(|| doc["payload"]["reason"].as_str())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// An owner's group for `room`, to test what a KeyPackage's leaf identifies the way an
+    /// owner's key holder does: it admits the KeyPackage only for the member its leaf names.
+    async fn owner_group(room: &str) -> (AppState, tempfile::TempDir) {
+        let (owner, dir) = crate::test_support::build_signing_test_app_state().await;
+        room_groups::create_group(&owner.room_groups_ks, room, "did:key:zOwner", 0)
+            .await
+            .expect("an owner's group");
+        (owner, dir)
+    }
+
+    fn decode(kp: &Value) -> Vec<u8> {
+        use base64::Engine as _;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(kp.as_str().expect("a KeyPackage"))
+            .expect("base64url")
+    }
+
+    /// **A `did:webvh` persona joins, end to end.** The invitation names alice's persona,
+    /// a caller acting in alice's context asks, and the KeyPackage's leaf identifies the
+    /// persona — an owner admits it as the persona and refuses it as the caller. Then the
+    /// Welcome lands, the invitation is spent, and the group this VTA holds is the persona's.
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn a_persona_named_by_the_invitation_joins_as_itself() {
+        let (state, _dir) = state_with_two_contexts().await;
+        let alice = webvh_persona(&state, "alice", "alice-persona").await;
+        let room = Party::new();
+        let caller = crate::test_support::admin_claims_for_context("alice");
+        let vic = invitation(&room, &alice.did).await;
+
+        let minted = key_package(&state, &caller, &room.did, &vic).await;
+        let kp = decode(&minted["payload"]["keyPackage"]);
+
+        let (owner, _odir) = owner_group(&room.did).await;
+        assert!(
+            matches!(
+                room_groups::prepare_add(
+                    &owner.room_groups_ks,
+                    &room.did,
+                    HOST,
+                    &caller.did,
+                    &kp,
+                    0
+                )
+                .await,
+                Err(room_groups::PrepareAddError::KeyPackageInvalid(_))
+            ),
+            "the leaf must not identify the client that asked"
+        );
+        let pending =
+            room_groups::prepare_add(&owner.room_groups_ks, &room.did, HOST, &alice.did, &kp, 0)
+                .await
+                .unwrap_or_else(|_| panic!("the leaf identifies the persona"));
+
+        let joined = body(
+            handle_welcome(
+                &state,
+                &caller,
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WELCOME_0_1,
+                    serde_json::json!({
+                        "roomId": room.did, "welcome": pending.welcome, "invitation": vic,
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert!(joined["payload"]["epoch"].is_u64(), "{joined}");
+        let held = room_groups::load(&state.room_groups_ks, &room.did)
+            .await
+            .unwrap()
+            .expect("the group");
+        let group = vti_rooms::mls::RoomGroup::restore(&held.snapshot).unwrap();
+        assert!(group.leaf_of(&alice.did).is_some(), "the persona's leaf");
+
+        // Spent: keyed on the invitation, whoever delivers it next.
+        let again = key_package(&state, &caller, &room.did, &vic).await;
+        assert!(reason(&again).contains("already been used"), "{again}");
+    }
+
+    /// A held `did:key` persona in the caller's context is a member like any other.
+    #[tokio::test]
+    async fn a_held_did_key_persona_is_invited() {
+        let (state, _dir) = state_with_two_contexts().await;
+        let alice = did_key_persona(&state, "alice", "alice-key").await;
+        let room = Party::new();
+        let vic = invitation(&room, &alice.did).await;
+        let minted = key_package(
+            &state,
+            &crate::test_support::admin_claims_for_context("alice"),
+            &room.did,
+            &vic,
+        )
+        .await;
+        let kp = decode(&minted["payload"]["keyPackage"]);
+        let (owner, _odir) = owner_group(&room.did).await;
+        room_groups::prepare_add(&owner.room_groups_ks, &room.did, HOST, &alice.did, &kp, 0)
+            .await
+            .unwrap_or_else(|_| panic!("the leaf identifies the persona"));
+    }
+
+    /// **The privilege boundary.** An invitation naming bob's persona, delivered by a caller
+    /// acting in alice's context, is refused — in the same words as an invitation naming a
+    /// DID this VTA holds nothing for, so the refusal does not tell alice's caller that bob's
+    /// persona is held here.
+    #[tokio::test]
+    async fn another_contexts_persona_is_refused_like_an_unknown_one() {
+        let (state, _dir) = state_with_two_contexts().await;
+        let bob = did_key_persona(&state, "bob", "bob-key").await;
+        let nobody = Party::new().did;
+        let room = Party::new();
+        let caller = crate::test_support::admin_claims_for_context("alice");
+
+        let to_bob = key_package(
+            &state,
+            &caller,
+            &room.did,
+            &invitation(&room, &bob.did).await,
+        )
+        .await;
+        let to_nobody = key_package(
+            &state,
+            &caller,
+            &room.did,
+            &invitation(&room, &nobody).await,
+        )
+        .await;
+        assert!(to_bob["payload"]["keyPackage"].is_null(), "{to_bob}");
+        assert!(
+            reason(&to_bob).contains("not a persona you may act as"),
+            "{to_bob}"
+        );
+        assert_eq!(
+            reason(&to_bob),
+            reason(&to_nobody).replace(&nobody, &bob.did),
+            "held-for-someone-else and held-for-nobody read the same"
+        );
+
+        // Bob's own caller is served.
+        let ok = key_package(
+            &state,
+            &crate::test_support::admin_claims_for_context("bob"),
+            &room.did,
+            &invitation(&room, &bob.did).await,
+        )
+        .await;
+        assert!(ok["payload"]["keyPackage"].is_string(), "{ok}");
+    }
+
+    /// An invitation naming the caller's own client key — which is what every invitation had
+    /// to name before — is refused: a key that lives in the client cannot be a member.
+    #[tokio::test]
+    async fn an_invitation_to_the_client_key_is_refused() {
+        let (state, _dir) = state_with_two_contexts().await;
+        let room = Party::new();
+        let caller = crate::test_support::admin_claims_for_context("alice");
+        let out = key_package(
+            &state,
+            &caller,
+            &room.did,
+            &invitation(&room, &caller.did).await,
+        )
+        .await;
+        assert!(out["payload"]["keyPackage"].is_null(), "{out}");
+        assert!(
+            reason(&out).contains("not a persona you may act as"),
+            "{out}"
+        );
+
+        // Nor a Welcome under one: nothing joins.
+        let welcome = body(
+            handle_welcome(
+                &state,
+                &caller,
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WELCOME_0_1,
+                    serde_json::json!({
+                        "roomId": room.did, "welcome": "AAAA",
+                        "invitation": invitation(&room, &caller.did).await,
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert!(
+            reason(&welcome).contains("not a persona you may act as"),
+            "{welcome}"
+        );
+        assert!(
+            room_groups::load(&state.room_groups_ks, &room.did)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

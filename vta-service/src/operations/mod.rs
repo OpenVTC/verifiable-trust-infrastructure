@@ -57,6 +57,8 @@ pub mod passkey_login;
 #[cfg(feature = "webvh")]
 pub mod passkey_vms;
 pub mod pcs;
+/// Personas: the DIDs this agent holds for a person, and the key it signs with as each.
+pub mod persona;
 pub mod policy;
 /// DIDComm protocol management: enable/disable/migrate operations that
 /// patch the VTA's own DID document service array. See
