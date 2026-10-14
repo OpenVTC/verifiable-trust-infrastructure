@@ -3157,23 +3157,26 @@ mod tests {
         });
         assert!(matches!(
             VtaClient::trust_task_error(&payload),
-            Some(VtaError::Protocol(_))
+            Some(VtaError::Rejected { code, .. }) if code == "vta/contexts/create:parentNotFound"
         ));
     }
 
-    /// Every other failure keeps its existing shape — the new variant must not
-    /// swallow unrelated rejections that merely carry a `details` object.
+    /// Every other failure stays a plain rejection — the consent variant must
+    /// not swallow unrelated rejections that merely carry a `details` object,
+    /// and that object reaches the caller as sent.
     #[test]
-    fn a_non_consent_failure_is_still_a_protocol_error() {
+    fn a_non_consent_failure_is_a_plain_rejection() {
         let payload = serde_json::json!({
             "code": "malformedRequest",
             "message": "payload does not conform",
             "details": { "reason": "schema:invalid" }
         });
-        assert!(matches!(
-            VtaClient::trust_task_error(&payload),
-            Some(VtaError::Protocol(_))
-        ));
+        let err = VtaClient::trust_task_error(&payload).expect("an error");
+        assert_eq!(err.rejection_code(), Some("malformedRequest"));
+        assert_eq!(
+            err.rejection_details(),
+            Some(&serde_json::json!({ "reason": "schema:invalid" }))
+        );
     }
 
     // ── outcome typing across the Trust-Task boundary ───────────────
