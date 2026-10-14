@@ -304,11 +304,28 @@ fn pending_challenge_key(did: &str, session_id: &str) -> String {
     format!("{}{session_id}", pending_challenge_prefix(did))
 }
 
+/// The value of a pending-challenge index entry: when the challenge was
+/// issued, for ordering and for the sweep's expiry check.
+///
+/// `created_at` has one-second resolution, so `seq` orders challenges issued
+/// in the same second — otherwise "evict the oldest" would pick among them by
+/// session id, which is random.
+#[derive(Debug, Serialize, Deserialize)]
+struct PendingChallengeEntry {
+    created_at: u64,
+    seq: u64,
+}
+
+/// Issue order within this process. Across a restart only `created_at`
+/// orders, which is enough: a challenge outlives a restart only by its TTL.
+static PENDING_CHALLENGE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Index a `ChallengeSent` row being written. Nothing is written for any
 /// other row: authenticated sessions are rewritten on every DIDComm/TSP
 /// message, and a challenge leaves the index when it is redeemed
-/// ([`take_session`]) — an entry whose row has moved on some other way is
-/// dropped by [`list_pending_challenges`].
+/// ([`take_session`]) or deleted. An entry whose row has moved on some other
+/// way is skipped by [`list_pending_challenges`] and removed by the sweep once
+/// it is past the challenge TTL.
 async fn index_pending_challenge(
     sessions: &KeyspaceHandle,
     session: &Session,
@@ -316,10 +333,14 @@ async fn index_pending_challenge(
     if session.state != SessionState::ChallengeSent {
         return Ok(());
     }
+    let entry = PendingChallengeEntry {
+        created_at: session.created_at,
+        seq: PENDING_CHALLENGE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    };
     sessions
         .insert(
             pending_challenge_key(&session.did, &session.session_id),
-            &session.created_at,
+            &entry,
         )
         .await
 }
@@ -390,8 +411,9 @@ pub async fn update_session(sessions: &KeyspaceHandle, session: &Session) -> Res
 /// included: whether one is still *outstanding* is the caller's call, against
 /// its own `challenge_ttl`.
 ///
-/// An index entry whose row is gone or has moved on (written before the index
-/// existed, or left by a crash between the two writes) is dropped here.
+/// Read-only. An index entry whose row is gone or has moved on (left by a
+/// crash between the two writes, or a row rewritten in another state) is
+/// skipped, and the sweep removes it once it is past the challenge TTL.
 pub async fn list_pending_challenges(
     sessions: &KeyspaceHandle,
     did: &str,
@@ -399,21 +421,25 @@ pub async fn list_pending_challenges(
     let prefix = pending_challenge_prefix(did);
     let entries = sessions.prefix_iter_raw(prefix.as_bytes()).await?;
     let mut pending = Vec::with_capacity(entries.len());
-    for (key, _) in entries {
-        let session_id = key
+    for (key, value) in entries {
+        let Some(session_id) = key
             .strip_prefix(prefix.as_bytes())
-            .and_then(|id| std::str::from_utf8(id).ok());
-        let row = match session_id {
-            Some(id) => get_session(sessions, id).await?,
-            None => None,
+            .and_then(|id| std::str::from_utf8(id).ok())
+        else {
+            continue;
         };
-        match row {
-            Some(s) if s.did == did && s.state == SessionState::ChallengeSent => pending.push(s),
-            _ => sessions.remove(key).await?,
+        let seq = serde_json::from_slice::<PendingChallengeEntry>(&value)
+            .map(|e| e.seq)
+            .unwrap_or(0);
+        if let Some(s) = get_session(sessions, session_id).await?
+            && s.did == did
+            && s.state == SessionState::ChallengeSent
+        {
+            pending.push((seq, s));
         }
     }
-    pending.sort_by_key(|s| s.created_at);
-    Ok(pending)
+    pending.sort_by_key(|(seq, s)| (s.created_at, *seq));
+    Ok(pending.into_iter().map(|(_, s)| s).collect())
 }
 
 /// Idle lifetime for an intrinsic-sender (DIDComm/TSP) session. Such a session
@@ -833,16 +859,6 @@ pub async fn cleanup_expired_sessions(
                 .await?;
             removed += 1;
         } else {
-            // A live challenge with no index entry was written before the
-            // index existed: index it, so the per-DID cap sees it.
-            if session.state == SessionState::ChallengeSent {
-                sessions
-                    .insert_if_absent(
-                        pending_challenge_key(&session.did, &session.session_id),
-                        &session.created_at,
-                    )
-                    .await?;
-            }
             live_sessions.insert(session.session_id);
         }
     }
@@ -919,11 +935,13 @@ pub async fn cleanup_expired_sessions(
 
     // GC `pending-challenge:` entries past the challenge TTL. The pass above
     // removed each expired row's entry with it; this catches entries whose
-    // row was removed some other way, which `list_pending_challenges` would
-    // otherwise only drop when that DID next asks for a challenge.
+    // row was removed or rewritten some other way, which
+    // `list_pending_challenges` skips but never removes.
     let pending_entries = sessions.prefix_iter_raw("pending-challenge:").await?;
     for (key, value) in pending_entries {
-        let created_at = serde_json::from_slice::<u64>(&value).unwrap_or(0);
+        let created_at = serde_json::from_slice::<PendingChallengeEntry>(&value)
+            .map(|e| e.created_at)
+            .unwrap_or(0);
         if now.saturating_sub(created_at) > challenge_ttl {
             sessions.remove(key).await?;
         }
@@ -1970,7 +1988,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_challenge_leaves_the_index_when_its_row_is_taken_moved_on_or_deleted() {
+    async fn a_challenge_leaves_the_index_when_its_row_is_taken_or_deleted() {
         let (ks, _dir) = temp_sessions_ks();
         for id in ["taken", "authed", "deleted"] {
             store_session(
@@ -1994,17 +2012,29 @@ mod tests {
             list_pending_challenges(&ks, "did:key:zA")
                 .await
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            "a row that moved on is no longer a pending challenge"
         );
-        let left = ks
+        let left: Vec<Vec<u8>> = ks
             .prefix_iter_raw(pending_challenge_prefix("did:key:zA"))
             .await
-            .unwrap();
-        assert!(left.is_empty(), "no index entry may outlive its challenge");
+            .unwrap()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(
+            left,
+            [pending_challenge_key("did:key:zA", "authed").into_bytes()],
+            "taken and deleted challenges leave the index; the moved-on row's \
+             entry waits for the sweep"
+        );
     }
 
+    /// Listing is read-only: an entry whose row is gone is skipped, not
+    /// removed, so a lister outside the cap lock cannot race a challenge
+    /// being written (index first, then row).
     #[tokio::test]
-    async fn an_index_entry_without_its_row_is_dropped_when_listed() {
+    async fn listing_skips_an_index_entry_without_its_row_and_leaves_it() {
         let (ks, _dir) = temp_sessions_ks();
         store_session(
             &ks,
@@ -2025,28 +2055,24 @@ mod tests {
             ks.get_raw(pending_challenge_key("did:key:zA", "orphaned"))
                 .await
                 .unwrap()
-                .is_none()
+                .is_some()
         );
     }
 
-    /// A challenge row written before the index existed is invisible to the
-    /// cap until the sweep indexes it.
+    /// `created_at` has one-second resolution; challenges issued in the same
+    /// second are listed in the order they were issued, not by session id.
     #[tokio::test]
-    async fn cleanup_indexes_a_live_challenge_written_before_the_index() {
+    async fn challenges_issued_in_the_same_second_are_listed_in_issue_order() {
         let (ks, _dir) = temp_sessions_ks();
-        let row = sample_session("pre-upgrade", "did:key:zA", SessionState::ChallengeSent);
-        ks.insert(session_key("pre-upgrade"), &row).await.unwrap();
-        assert!(
-            list_pending_challenges(&ks, "did:key:zA")
-                .await
-                .unwrap()
-                .is_empty()
-        );
-
-        cleanup_expired_sessions(&ks, 300).await.unwrap();
-
+        // Session ids in reverse lexical order, so key order is not issue order.
+        let ids = ["c-9", "c-5", "c-1"];
+        for id in ids {
+            let mut row = sample_session(id, "did:key:zA", SessionState::ChallengeSent);
+            row.created_at = 1_000;
+            store_session(&ks, &row).await.unwrap();
+        }
         let pending = list_pending_challenges(&ks, "did:key:zA").await.unwrap();
-        assert_eq!(pending_ids(&pending), ["pre-upgrade"]);
+        assert_eq!(pending_ids(&pending), ids);
     }
 
     #[tokio::test]

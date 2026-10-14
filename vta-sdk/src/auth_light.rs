@@ -103,59 +103,29 @@ pub async fn challenge_response_light(
         return Err(VtaError::from_response(challenge_resp).await);
     }
 
+    let server_date = response_date(challenge_resp.headers());
     let challenge = auth_di::parse_challenge_response(&challenge_resp.text().await?)
         .map_err(|e| VtaError::Validation(e.to_string()))?;
 
-    // Steps 2–3, repeated while the authenticate step is rate limited. The
-    // challenge stays redeemable until it expires, so wait and redeem *it*: a
-    // caller that starts over spends the next token on a new challenge, and
-    // behind one busy IP no login ever finishes. Bounded by the expiry and by
-    // a window of our own, so a server that kept refusing cannot hold the
-    // caller indefinitely.
-    let deadline = authenticate_deadline(&challenge.expires_at, chrono::Utc::now());
-    let auth_resp = loop {
-        // Step 2: Build + sign the authenticate Trust Task — afresh on every
-        // attempt, so each is a new document. Signing is local (no DID
-        // resolution, no I/O): the holder's key is right here, and the VTA
-        // resolves the proof's `did:key` verification method itself.
-        let body = auth_di::sign_authenticate_doc(
-            client_did,
-            private_key_multibase,
-            vta_did,
-            &challenge.challenge,
-            &challenge.session_id,
-        )
-        .await
-        .map_err(|e| VtaError::Validation(e.to_string()))?;
+    // Steps 2–3: sign and send the authenticate Trust Task, waiting out the
+    // VTA's rate limit with the same challenge.
+    let deadline = authenticate_deadline(
+        &challenge.expires_at,
+        server_date.as_deref(),
+        chrono::Utc::now(),
+    );
+    let auth_text = redeem_challenge(
+        http,
+        &trust_tasks_url,
+        client_did,
+        private_key_multibase,
+        vta_did,
+        &challenge,
+        deadline,
+    )
+    .await?;
 
-        // Step 3: Send the signed document
-        let resp = http
-            .post(&trust_tasks_url)
-            .header("content-type", "application/json")
-            .header(
-                TRUST_TASK_HEADER,
-                crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
-            )
-            .body(body)
-            .send()
-            .await?;
-        if resp.status().is_success() {
-            break resp;
-        }
-        let err = VtaError::from_response(resp).await;
-        match authenticate_retry_wait(&err, deadline, chrono::Utc::now(), retry_jitter()) {
-            Some(wait) => {
-                tracing::info!(
-                    wait_ms = wait.as_millis() as u64,
-                    "authenticate rate limited; redeeming the same challenge again"
-                );
-                tokio::time::sleep(wait).await;
-            }
-            None => return Err(err),
-        }
-    };
-
-    let auth_data = auth_di::parse_auth_response(&auth_resp.text().await?)
+    let auth_data = auth_di::parse_auth_response(&auth_text)
         .map_err(|e| VtaError::Validation(e.to_string()))?;
 
     let access_expires_at = auth_data.access_expires_at_epoch().ok_or_else(|| {
@@ -173,6 +143,75 @@ pub async fn challenge_response_light(
     })
 }
 
+/// Redeem `challenge`: sign and send the `auth/authenticate/0.2` Trust Task,
+/// and return the body of the response that accepted it.
+///
+/// Repeated while the authenticate step is rate limited. The challenge stays
+/// redeemable until it expires, so wait and redeem *it*: a caller that starts
+/// over spends the next token on a new challenge, and behind one busy IP no
+/// login ever finishes. Bounded by `deadline` ([`authenticate_deadline`]), so
+/// a server that kept refusing cannot hold the caller indefinitely. Shared by
+/// every REST login in the SDK ([`challenge_response_light`] and
+/// [`crate::provision_client::challenge_response_di`]).
+pub(crate) async fn redeem_challenge(
+    http: &Client,
+    trust_tasks_url: &str,
+    client_did: &str,
+    private_key_multibase: &str,
+    vta_did: &str,
+    challenge: &crate::protocols::auth::ChallengeResponse,
+    deadline: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<String, VtaError> {
+    loop {
+        // Signed afresh on every attempt, so each is a new document. Signing
+        // is local (no DID resolution, no I/O): the holder's key is right
+        // here, and the VTA resolves the proof's `did:key` verification
+        // method itself.
+        let body = auth_di::sign_authenticate_doc(
+            client_did,
+            private_key_multibase,
+            vta_did,
+            &challenge.challenge,
+            &challenge.session_id,
+        )
+        .await
+        .map_err(|e| VtaError::Validation(e.to_string()))?;
+
+        let resp = http
+            .post(trust_tasks_url)
+            .header("content-type", "application/json")
+            .header(
+                TRUST_TASK_HEADER,
+                crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            )
+            .body(body)
+            .send()
+            .await?;
+        if resp.status().is_success() {
+            return Ok(resp.text().await?);
+        }
+        let err = VtaError::from_response(resp).await;
+        match authenticate_retry_wait(&err, deadline, chrono::Utc::now(), retry_jitter()) {
+            Some(wait) => {
+                tracing::info!(
+                    wait_ms = wait.as_millis() as u64,
+                    "authenticate rate limited; redeeming the same challenge again"
+                );
+                tokio::time::sleep(wait).await;
+            }
+            None => return Err(err),
+        }
+    }
+}
+
+/// The `Date` of a response, as sent: the server's clock when it answered.
+pub(crate) fn response_date(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    headers
+        .get(reqwest::header::DATE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+}
+
 /// Longest a login keeps redeeming one challenge, whatever its expiry says.
 /// Well past the VTA's default challenge TTL (300 s), so it binds only on a
 /// server that states a longer one and keeps refusing.
@@ -185,18 +224,33 @@ const MAX_AUTHENTICATE_RETRY_JITTER_MS: u64 = 1_000;
 /// `Retry-After` of zero, or one already past, must not become a busy loop.
 const MIN_AUTHENTICATE_RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// When to stop redeeming a challenge: its expiry (`expires_at`, RFC 3339), or
-/// [`MAX_AUTHENTICATE_RETRY_WINDOW`] from `now` if that comes first. `None` for
-/// an expiry that does not parse — not retried.
-fn authenticate_deadline(
+/// When to stop redeeming a challenge, on the local clock: when it expires,
+/// or [`MAX_AUTHENTICATE_RETRY_WINDOW`] from `now` if that comes first.
+///
+/// `expires_at` (RFC 3339) is on the server's clock, so it is read against
+/// `server_date` — the challenge response's `Date` header — and the lifetime
+/// that leaves is counted from `now`. Comparing it with the local clock
+/// instead would let skew decide: a client ahead of the server by more than
+/// the TTL would never retry, and one behind would keep retrying a challenge
+/// the server had already expired. A second comes off, because `Date` is
+/// truncated to the second. Without a `Date`, `expires_at` is read against
+/// `now`. `None` for an expiry that does not parse — not retried.
+pub(crate) fn authenticate_deadline(
     expires_at: &str,
+    server_date: Option<&str>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
     let expiry = chrono::DateTime::parse_from_rfc3339(expires_at)
         .ok()?
         .with_timezone(&chrono::Utc);
     let window = chrono::Duration::from_std(MAX_AUTHENTICATE_RETRY_WINDOW).ok()?;
-    Some(expiry.min(now + window))
+    let lifetime = match server_date.and_then(|d| chrono::DateTime::parse_from_rfc2822(d).ok()) {
+        Some(answered) => {
+            expiry - answered.with_timezone(&chrono::Utc) - chrono::Duration::seconds(1)
+        }
+        None => expiry - now,
+    };
+    Some(now + lifetime.min(window))
 }
 
 /// Up to [`MAX_AUTHENTICATE_RETRY_JITTER_MS`] of spread, so clients behind one
@@ -448,15 +502,37 @@ mod tests {
     fn the_deadline_is_the_expiry_capped_by_the_retry_window() {
         let soon = (now() + Duration::seconds(300)).to_rfc3339();
         assert_eq!(
-            authenticate_deadline(&soon, now()),
+            authenticate_deadline(&soon, None, now()),
             Some(now() + Duration::seconds(300))
         );
         let late = (now() + Duration::hours(1)).to_rfc3339();
         assert_eq!(
-            authenticate_deadline(&late, now()),
+            authenticate_deadline(&late, None, now()),
             Some(now() + Duration::seconds(600))
         );
-        assert_eq!(authenticate_deadline("not a time", now()), None);
+        assert_eq!(authenticate_deadline("not a time", None, now()), None);
+    }
+
+    /// The expiry is on the server's clock: what counts is the lifetime it
+    /// leaves from the server's `Date`, whichever way the clocks disagree.
+    #[test]
+    fn the_deadline_follows_the_servers_clock_not_ours() {
+        for skew in [Duration::hours(1), Duration::hours(-1)] {
+            let server_now = now() + skew;
+            let expires = (server_now + Duration::seconds(300)).to_rfc3339();
+            let date = server_now.to_rfc2822();
+            assert_eq!(
+                authenticate_deadline(&expires, Some(&date), now()),
+                Some(now() + Duration::seconds(299)),
+                "server clock {skew} from ours"
+            );
+        }
+        let expires = (now() + Duration::hours(2)).to_rfc3339();
+        assert_eq!(
+            authenticate_deadline(&expires, Some(&now().to_rfc2822()), now()),
+            Some(now() + Duration::seconds(600)),
+            "still capped by the retry window"
+        );
     }
 
     #[test]

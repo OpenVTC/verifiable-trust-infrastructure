@@ -19,7 +19,6 @@
 
 use crate::auth_di;
 use crate::session::TokenResult;
-use crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2;
 
 /// Authenticate over plain REST using a DI-signed `auth/authenticate/0.2`
 /// Trust Task, returning the same [`TokenResult`] as
@@ -71,6 +70,7 @@ pub async fn challenge_response_di(
         }
         return Err(format!("challenge request failed ({status}): {body}").into());
     }
+    let server_date = crate::auth_light::response_date(challenge_resp.headers());
     let challenge_text = challenge_resp
         .text()
         .await
@@ -79,47 +79,27 @@ pub async fn challenge_response_di(
         format!("unexpected challenge response from VTA at {trust_tasks_url} (is this a VTA?): {e}")
     })?;
 
-    // Step 2 — build + sign the `auth/authenticate/0.2` Trust Task with the
-    // holder key (payload `{ challenge, sessionId }`, `eddsa-jcs-2022` proof
-    // over the proof-less document).
-    let body = auth_di::sign_authenticate_doc(
+    // Steps 2–3 — sign the `auth/authenticate/0.2` Trust Task with the holder
+    // key (payload `{ challenge, sessionId }`, `eddsa-jcs-2022` proof over the
+    // proof-less document) and POST it. A rate-limited authenticate is retried
+    // with this same challenge while it is valid, never by starting over —
+    // see `auth_light::redeem_challenge`. A rate limit that outlasts it stays
+    // typed: as a string it reads as an auth failure.
+    let deadline = crate::auth_light::authenticate_deadline(
+        &challenge.expires_at,
+        server_date.as_deref(),
+        chrono::Utc::now(),
+    );
+    let auth_text = crate::auth_light::redeem_challenge(
+        &http,
+        &trust_tasks_url,
         client_did,
         private_key_multibase,
         vta_did,
-        &challenge.challenge,
-        &challenge.session_id,
+        &challenge,
+        deadline,
     )
     .await?;
-
-    // Step 3 — POST the signed document. A Trust Task request yields a TT
-    // `#response` document whose payload is the `{ session, tokens }`
-    // `AuthenticateResponse`.
-    let auth_resp = http
-        .post(&trust_tasks_url)
-        .header("content-type", "application/json")
-        .header("Trust-Task", TASK_AUTH_AUTHENTICATE_0_2)
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| format!("could not connect to VTA at {trust_tasks_url}: {e}"))?;
-    let status = auth_resp.status();
-    if !status.is_success() {
-        let headers = auth_resp.headers().clone();
-        let body = auth_resp.text().await.unwrap_or_default();
-        if let Some(e) = crate::error::VtaError::rate_limited_from_http(
-            status,
-            &headers,
-            &body,
-            &trust_tasks_url,
-        ) {
-            return Err(e.into());
-        }
-        return Err(format!("authentication failed ({status}): {body}").into());
-    }
-    let auth_text = auth_resp
-        .text()
-        .await
-        .map_err(|e| format!("failed to read auth response from VTA: {e}"))?;
     // A Trust-Task request yields a TT `#response` document whose payload is the
     // `{ session, tokens }` body; some clients/mocks return that body flat.
     let auth_data = auth_di::parse_auth_response(&auth_text)

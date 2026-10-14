@@ -350,9 +350,10 @@ pub trait SessionStore: Send + Sync + 'static {
     /// **Default: `Ok(None)`.** [`crate::auth::session::list_pending_challenges`]
     /// implements it for a [`crate::store::KeyspaceHandle`] whose rows were
     /// written through [`crate::auth::session`]. Rows written before that index
-    /// existed are not listed until `cleanup_expired_sessions` indexes them, so
-    /// after an upgrade a subject can briefly hold up to twice the cap — at
-    /// most for one `challenge_ttl`, since those rows then expire.
+    /// existed are not listed, so for one `challenge_ttl` after an upgrade a
+    /// subject can hold up to twice the cap; those rows then expire.
+    ///
+    /// Must not write: a caller outside the handler's lock may list too.
     async fn pending_challenges(&self, _did: &str) -> Result<Option<Vec<Session>>, Self::Error> {
         Ok(None)
     }

@@ -372,6 +372,12 @@ where
 /// `type`, not from the client-chosen `Trust-Task` header, so a bucket bounds
 /// exactly the work it is named for — sending challenges labelled as
 /// authenticates does not buy more of them.
+///
+/// The header still matters for cost: a labelled request is charged to the
+/// step it names *before* its body is read, so a client over budget is refused
+/// without the server reading up to 64 KiB of it. If the document turns out to
+/// be another step, that step's bucket is charged too. An unlabelled request
+/// is read (within the anonymous ceiling) and then charged.
 pub(super) fn apply_trust_tasks<S>(
     router: OpenApiRouter<S>,
     trust_xff_cidrs: &[IpNetwork],
@@ -420,27 +426,69 @@ async fn enforce_trust_tasks(
     if vti_common::auth::extractor::presents_credential(req.headers()) {
         return next.run(req).await;
     }
+    let limit = crate::trust_tasks::PUBLIC_TASK_BODY_LIMIT;
+
+    // A request that names its step in the `Trust-Task` header is charged for
+    // that step before its body is read, so a client already over budget is
+    // turned away for the price of a header, not a body read. The label is
+    // only the client's claim: the document's `type` decides below.
+    let labelled = req
+        .headers()
+        .get(TRUST_TASK_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|t| limiters.for_type(Some(t)));
+    if let Some(state) = labelled
+        && let Some(refused) = refusal(state, state.client_ip(&req)).await
+    {
+        return refused;
+    }
+
     // Reading the body to find its `type` is bounded by the ceiling the
-    // handler applies to every anonymous request anyway; a larger one is
-    // charged as a challenge would be and refused here instead.
+    // handler applies to every anonymous request anyway. A larger one —
+    // declared, or found while reading — is charged as a challenge would be
+    // (unless its label already paid) and refused here.
+    let declared_too_large = req
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .is_some_and(|n| n > limit as u64);
     let (parts, body) = req.into_parts();
-    let Ok(bytes) = axum::body::to_bytes(body, crate::trust_tasks::PUBLIC_TASK_BODY_LIMIT).await
-    else {
-        let refused = Request::from_parts(parts, Body::empty());
-        return charge(&limiters.auth, refused, |_| async {
-            vti_common::error::AppError::Validation(format!(
-                "an anonymous request is limited to {} bytes",
-                crate::trust_tasks::PUBLIC_TASK_BODY_LIMIT
-            ))
-            .into_response()
-        })
-        .await;
+    let bytes = if declared_too_large {
+        None
+    } else {
+        axum::body::to_bytes(body, limit).await.ok()
     };
+    let Some(bytes) = bytes else {
+        let refused = Request::from_parts(parts, Body::empty());
+        if labelled.is_none()
+            && let Some(limited) = refusal(&limiters.auth, limiters.auth.client_ip(&refused)).await
+        {
+            return limited;
+        }
+        return vti_common::error::AppError::Validation(format!(
+            "an anonymous request is limited to {limit} bytes"
+        ))
+        .into_response();
+    };
+
     let type_uri = crate::trust_tasks::ceremony::peek_type_uri(&bytes);
-    let limiter = limiters.for_type(type_uri.as_deref());
+    let actual = limiters.for_type(type_uri.as_deref());
     let req = Request::from_parts(parts, Body::from(bytes));
-    charge(limiter, req, |req| next.run(req)).await
+    // A label that named another step paid for the wrong bucket: the request
+    // pays for the step it really is as well, so mislabelling buys nothing.
+    if labelled.map(|l| l.limiter) != Some(actual.limiter)
+        && let Some(limited) = refusal(actual, actual.client_ip(&req)).await
+    {
+        return limited;
+    }
+    next.run(req).await
 }
+
+/// The Trust Task URI header (`Trust-Task`) a client may send beside the
+/// document. The VTA dispatches on the document's `type`; this limiter reads
+/// the header only to charge a labelled request before reading its body.
+const TRUST_TASK_HEADER: &str = "trust-task";
 
 async fn enforce(
     State(state): State<Arc<LimiterState>>,
@@ -457,23 +505,32 @@ where
     F: FnOnce(Request) -> Fut,
     Fut: std::future::Future<Output = Response<Body>>,
 {
-    let Some(ip) = state.client_ip(&req) else {
+    match refusal(state, state.client_ip(&req)).await {
+        None => serve(req).await,
+        Some(refused) => refused,
+    }
+}
+
+/// Charge client `ip` (from [`LimiterState::client_ip`]) one token from
+/// `state`'s bucket: `None` if it was charged, or the response that refuses
+/// it. Takes the address rather than the request, which is not `Sync` and so
+/// cannot be borrowed across the quota lookup's await.
+async fn refusal(state: &LimiterState, ip: Option<IpAddr>) -> Option<Response<Body>> {
+    let Some(ip) = ip else {
         // Same outcome as the tower_governor layer this replaced: no
         // attributable client means no request, not an unlimited one.
-        return Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(Body::from("Unable To Extract Key!"))
-            .expect("static response always builds");
+        return Some(
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from("Unable To Extract Key!"))
+                .expect("static response always builds"),
+        );
     };
     let quota = state.source.current(state.limiter).await;
     let buckets = state.buckets_for(quota);
-    match buckets.limiter.check_key(&ip) {
-        Ok(()) => serve(req).await,
-        Err(not_until) => {
-            let wait = not_until.wait_time_from(DefaultClock::default().now());
-            too_many_requests(state.limiter, ceil_secs(wait))
-        }
-    }
+    let not_until = buckets.limiter.check_key(&ip).err()?;
+    let wait = not_until.wait_time_from(DefaultClock::default().now());
+    Some(too_many_requests(state.limiter, ceil_secs(wait)))
 }
 
 /// Whole seconds, rounded up: a client honouring `retry-after` must never be
@@ -917,6 +974,59 @@ mod tests {
         let r = send(&app, oversized()).await;
         assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(r.headers()[RATE_LIMIT_SCOPE_HEADER], "auth");
+    }
+
+    /// A labelled request over its step's budget is refused before its body
+    /// is read: the body here fails if polled, which would answer 400.
+    #[tokio::test]
+    async fn a_labelled_request_over_budget_is_refused_without_reading_its_body() {
+        let app = trust_tasks_router();
+        let ip = "198.51.100.24";
+        for _ in 0..2 {
+            let mut req = task_request(TASK_AUTH_AUTHENTICATE_0_2, ip);
+            req.headers_mut().insert(
+                "trust-task",
+                HeaderValue::from_static(TASK_AUTH_AUTHENTICATE_0_2),
+            );
+            assert_eq!(send(&app, req).await.status(), StatusCode::OK);
+        }
+        let unreadable = Body::from_stream(futures_util::stream::once(async {
+            Err::<axum::body::Bytes, _>(std::io::Error::other("body must not be read"))
+        }));
+        let req = HttpRequest::builder()
+            .method("POST")
+            .uri("/trust-tasks")
+            .header("x-forwarded-for", ip)
+            .header("trust-task", TASK_AUTH_AUTHENTICATE_0_2)
+            .body(unreadable)
+            .unwrap();
+        let r = send(&app, req).await;
+        assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(r.headers()[RATE_LIMIT_SCOPE_HEADER], "auth-authenticate");
+    }
+
+    /// A body that declares itself over the anonymous ceiling is refused
+    /// without being read: this one never ends, so reading it would hang.
+    #[tokio::test]
+    async fn a_declared_oversized_body_is_refused_without_reading_it() {
+        let app = trust_tasks_router();
+        let endless = Body::from_stream(futures_util::stream::pending::<
+            Result<axum::body::Bytes, std::io::Error>,
+        >());
+        let req = HttpRequest::builder()
+            .method("POST")
+            .uri("/trust-tasks")
+            .header("x-forwarded-for", "198.51.100.25")
+            .header(
+                header::CONTENT_LENGTH,
+                (crate::trust_tasks::PUBLIC_TASK_BODY_LIMIT + 1).to_string(),
+            )
+            .body(endless)
+            .unwrap();
+        let r = tokio::time::timeout(Duration::from_secs(5), send(&app, req))
+            .await
+            .expect("refused without reading the body");
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

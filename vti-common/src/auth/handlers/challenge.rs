@@ -47,6 +47,9 @@
 //! Implements VTI-SES-006 and VTI-SES-007 of the VTI
 //! specification (<https://trustoverip.github.io/dtgwg-vti-spec/>).
 
+use std::collections::HashMap;
+use std::sync::{Arc, PoisonError, Weak};
+
 use uuid::Uuid;
 use vta_sdk::protocols::auth::{ChallengeResponse, epoch_to_rfc3339};
 
@@ -105,7 +108,14 @@ pub async fn handle_challenge<B: AuthBackend>(
         // two concurrent requests cannot both see room for one more
         // (VTI-SES-005).
         let limit = backend.max_pending_challenges_per_did();
-        let _cap = cap_lock(&session.did).lock().await;
+        let cap = cap_lock(&session.did);
+        let _cap = tokio::time::timeout(CAP_LOCK_WAIT, cap.lock())
+            .await
+            .map_err(|_| {
+                AuthError::Internal(format!(
+                    "the per-DID challenge cap stayed busy for {CAP_LOCK_WAIT:?}"
+                ))
+            })?;
         if limit > 0 {
             make_room_for_challenge(backend, &session.did, limit).await?;
         }
@@ -139,20 +149,37 @@ pub async fn handle_challenge<B: AuthBackend>(
     })
 }
 
-/// Locks serialising the per-DID cap, striped by DID so memory stays fixed —
-/// two subjects that share a stripe only wait on each other briefly.
+/// Locks serialising the per-DID cap, one per subject while it is in use.
+///
+/// One per DID, not striped, so a slow store call for one subject never holds
+/// up another's challenge. The map keeps only weak references: a subject's
+/// lock is dropped with its last holder, and the dead entries are cleared
+/// whenever a new one is made, so the map stays the size of the challenges in
+/// flight.
 ///
 /// In-process, so the cap is exact for a session store one process owns, as
 /// VTA and VTC stores are (embedded fjall, or the enclave's vsock store). A
 /// store shared by several processes would need the cap held by the store
 /// itself.
-static CAP_LOCKS: [tokio::sync::Mutex<()>; 64] = [const { tokio::sync::Mutex::const_new(()) }; 64];
+static CAP_LOCKS: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
+> = std::sync::LazyLock::new(Default::default);
 
-fn cap_lock(did: &str) -> &'static tokio::sync::Mutex<()> {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::hash::DefaultHasher::new();
-    did.hash(&mut h);
-    &CAP_LOCKS[(h.finish() % CAP_LOCKS.len() as u64) as usize]
+/// Longest a challenge request waits for the subject's cap lock. The lock is
+/// held across store calls (list, evict, store) — local, but in an enclave a
+/// vsock round trip each — so a waiter gives up rather than queueing behind a
+/// wedged store indefinitely (R1.3).
+const CAP_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn cap_lock(did: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let mut locks = CAP_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(lock) = locks.get(did).and_then(Weak::upgrade) {
+        return lock;
+    }
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(did.to_owned(), Arc::downgrade(&lock));
+    lock
 }
 
 /// Hold the per-DID cap on outstanding challenges (VTI-SES-005) so that one
@@ -161,10 +188,17 @@ fn cap_lock(did: &str) -> &'static tokio::sync::Mutex<()> {
 ///
 /// Evicting rather than refusing is deliberate. Only an enrolled subject has
 /// pending challenges, so refusing at the cap told anyone who asked for
-/// `limit + 1` challenges that the subject is enrolled (VTI-SES-007); and a
-/// client retrying a login it could not finish locked its own DID out until
-/// the rows were swept. Eviction can at worst cancel a login in flight, and
-/// only by spending the caller's own rate-limit budget.
+/// `limit + 1` challenges that the subject is enrolled (VTI-SES-007); and
+/// anyone — the subject retrying a login it could not finish, or a stranger
+/// naming its DID — could lock the DID out of logging in until the rows were
+/// swept.
+///
+/// Eviction has a cost of its own. A challenge request names its subject
+/// without proving anything, so a stranger who asks for `limit` challenges
+/// for someone else's DID evicts that subject's oldest outstanding one, and a
+/// login waiting to redeem it fails and has to start over. That is a cancelled
+/// login, not a lockout: the subject's next challenge is issued at once, and
+/// the stranger pays for every eviction from their own address's budget.
 ///
 /// A store that cannot list a subject's challenges keeps the old behaviour:
 /// count them and refuse at the cap.
