@@ -609,7 +609,8 @@ pub async fn run(
     }
 
     // M2.10 + M2.11: provision the two BitstringStatusLists.
-    // Idempotent — only seeds decoys when the row is brand new.
+    // Idempotent — only seeds decoys when the row is brand new; an
+    // existing row is re-pointed if `public_url` has since changed.
     // Skipped when `public_url` is unset (pre-setup deployment) —
     // the status-list `list_credential_id` is baked into every
     // VMC's `credentialStatus.statusListCredential`, so we can't
