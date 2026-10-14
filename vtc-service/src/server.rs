@@ -547,14 +547,14 @@ pub async fn run(
     let room_storage = crate::rooms::files::open_room_storage(
         &store,
         &config.store.data_dir,
-        &config.rooms.files,
+        config.rooms.files.as_ref(),
         config.vtc_did.as_deref(),
     )
     .await?;
     let room_files = Arc::new(crate::rooms::files::open_blob_host(
         &store,
         &config.store.data_dir,
-        &config.rooms.files,
+        config.rooms.files.as_ref(),
         room_storage.clone(),
     )?);
     let audit_ks = store.keyspace(keyspaces::AUDIT)?;
@@ -1512,7 +1512,10 @@ pub async fn run(
     crate::rooms::files::spawn_sweeper(
         state.room_files.clone(),
         state.room_storage.clone(),
-        boot_cfg.rooms.files.sweep_interval_secs,
+        boot_cfg.rooms.files.as_ref().map_or_else(
+            || crate::config::RoomFilesConfig::default().sweep_interval_secs,
+            |f| f.sweep_interval_secs,
+        ),
         shutdown_rx.clone(),
     );
     crate::join::retention::RetentionSweeper::spawn(

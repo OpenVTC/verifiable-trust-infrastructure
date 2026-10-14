@@ -46,12 +46,26 @@ use crate::trust_tasks::helpers::{
 /// seeded from `blob_dir` (default `<data_dir>/room-blobs`) on first start, and a
 /// `local` root may be placed only beneath `local_storage_bases` (default
 /// `<data_dir>/room-storage`).
+///
+/// With no `[rooms.files]` section (`None`) nothing is created or seeded: the registry
+/// is opened over whatever configs are already stored, and room files stay off. That is
+/// every configuration written before room files existed, and it must keep starting.
 pub async fn open_room_storage(
     store: &Store,
     data_dir: &Path,
-    config: &RoomFilesConfig,
+    config: Option<&RoomFilesConfig>,
     community_did: Option<&str>,
 ) -> Result<Arc<RoomStorage>, AppError> {
+    let Some(config) = config else {
+        return RoomStorage::open(
+            store.keyspace(keyspaces::STORAGE_CONFIGS)?,
+            &store.keyspace(keyspaces::ROOMS)?,
+            None,
+            Vec::new(),
+            community_did,
+        )
+        .await;
+    };
     // A storage config's `root` is absolute (`vtc/_shared/0.1/room-storage`), and a
     // relative `[store] data_dir` is ordinary, so a root derived from it, or a
     // `blob_dir` given relative, is resolved against the directory the store itself
@@ -75,7 +89,7 @@ pub async fn open_room_storage(
     RoomStorage::open(
         store.keyspace(keyspaces::STORAGE_CONFIGS)?,
         &store.keyspace(keyspaces::ROOMS)?,
-        seed_root,
+        Some(seed_root),
         bases,
         community_did,
     )
@@ -97,18 +111,26 @@ async fn absolute_dir(path: PathBuf, cwd: &Path) -> Result<PathBuf, AppError> {
 
 /// Open the room-file host over this service's store, from `[rooms.files]`, storing
 /// committed blobs in the configs `storage` holds. Staging sits under the data directory.
+/// With no section, uploads are refused; files already stored are still served.
 pub fn open_blob_host(
     store: &Store,
     data_dir: &Path,
-    config: &RoomFilesConfig,
+    config: Option<&RoomFilesConfig>,
     storage: Arc<RoomStorage>,
 ) -> Result<BlobHost, AppError> {
+    let limits = match config {
+        Some(c) => c.limits(),
+        None => vti_rooms::blobs::HostLimits {
+            files_enabled: false,
+            ..RoomFilesConfig::default().limits()
+        },
+    };
     Ok(BlobHost::new(
         store.keyspace(keyspaces::ROOM_BLOBS)?,
         store.keyspace(keyspaces::ROOM_BLOB_TRANSFERS)?,
         data_dir.join("room-blob-staging"),
         storage,
-        config.limits(),
+        limits,
     ))
 }
 
@@ -434,6 +456,30 @@ pub(crate) async fn handle_info(
 mod tests {
     use super::*;
 
+    /// No `[rooms.files]` section — every configuration written before room files
+    /// existed — opens without touching the disk: no directory, no seeded config, and
+    /// uploads refused. Such a VTC must keep starting after an upgrade.
+    #[tokio::test]
+    async fn without_the_section_nothing_is_created_and_files_are_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&vti_common::config::StoreConfig {
+            data_dir: dir.path().join("store"),
+        })
+        .unwrap();
+        // A data directory that does not exist and cannot be created: anything that
+        // tried to make a directory beneath it would fail the open.
+        let unwritable = Path::new("/nonexistent/vtc-data");
+        let storage = open_room_storage(&store, unwritable, None, Some("did:key:zCommunity"))
+            .await
+            .expect("opens with room files off");
+        assert!(
+            storage.configs().await.unwrap().is_empty(),
+            "nothing seeded"
+        );
+        let host = open_blob_host(&store, unwritable, None, storage).unwrap();
+        assert!(!host.files_enabled());
+    }
+
     /// A relative `[store] data_dir` is ordinary; the `local` config seeded from it
     /// must still carry the absolute `root` the specification requires.
     #[tokio::test]
@@ -490,7 +536,7 @@ mod tests {
         let storage = open_room_storage(
             &store,
             &rel,
-            &RoomFilesConfig::default(),
+            Some(&RoomFilesConfig::default()),
             Some("did:key:zCommunity"),
         )
         .await;

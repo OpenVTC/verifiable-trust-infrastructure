@@ -117,22 +117,36 @@ pub struct AppConfig {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct RoomsConfig {
     /// Room files (`[rooms.files]`): the `rooms/blobs/*` tasks and `rooms/records/put/0.2`.
-    #[serde(default)]
-    pub files: RoomFilesConfig,
+    ///
+    /// **Absent means off**, and absent is what every configuration written before room
+    /// files existed has. Such a VTC starts exactly as before: no directory is created,
+    /// no storage config is seeded, uploads are refused and the console says how to turn
+    /// files on. Writing the section is what turns them on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<RoomFilesConfig>,
+}
+
+impl RoomsConfig {
+    /// Whether this community accepts room files: a `[rooms.files]` section, not
+    /// switched off inside it.
+    pub fn files_enabled(&self) -> bool {
+        self.files.as_ref().is_some_and(|f| f.enabled)
+    }
 }
 
 /// Room files (`[rooms.files]`), `docs/05-design-notes/data-rooms-files.md` §5–§6.
 ///
-/// **Off by default.** Until storage configs exist (§7), a file goes to a directory on
-/// this host, under limits that apply to every room alike. An operator turns uploads on
-/// knowing that. Reads of stored files and records without files are served either way.
+/// **Off unless the section is present.** Writing `[rooms.files]` turns uploads on; an
+/// operator does that knowing files will be stored under the directories it names.
+/// Reads of stored files and records without files are served either way.
 /// The limits are the same measures `room-host` takes on its command line. An absent one
 /// keeps the shipped default of §6.2.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct RoomFilesConfig {
-    /// Accept uploads. Default `false`.
-    #[serde(default)]
+    /// Accept uploads. Default `true` once the section is present; `false` keeps the
+    /// section's settings and refuses uploads.
+    #[serde(default = "default_files_enabled")]
     pub enabled: bool,
     /// The root of the `local` storage config seeded on first start. Default
     /// `<store.data_dir>/room-blobs`. Once seeded the stored config wins, and is changed
@@ -179,6 +193,10 @@ pub struct RoomFileLimits {
     pub max_bytes: Option<u64>,
 }
 
+fn default_files_enabled() -> bool {
+    true
+}
+
 fn default_orphan_grace_hours() -> u64 {
     vti_rooms::blobs::DEFAULT_ORPHAN_GRACE_SECS / 3600
 }
@@ -190,7 +208,7 @@ fn default_blob_sweep_interval_secs() -> u64 {
 impl Default for RoomFilesConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_files_enabled(),
             blob_dir: None,
             local_storage_bases: Vec::new(),
             max_file_bytes: None,
@@ -1746,20 +1764,36 @@ fn unknown_key_message(config_path: &std::path::Path, key: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Room files are off unless a config turns them on, and the documented
-    /// section parses into the limits it says.
+    /// Room files are off with no `[rooms.files]` section — every configuration
+    /// written before they existed — and on once the section is written. The
+    /// documented section parses into the limits it says.
     #[test]
-    fn room_files_are_off_by_default_and_configurable() {
+    fn room_files_are_off_without_the_section_and_on_with_it() {
         let empty: AppConfig = toml::from_str("").expect("empty config");
-        assert!(!empty.rooms.files.enabled);
-        assert!(!empty.rooms.files.limits().files_enabled);
+        assert!(empty.rooms.files.is_none());
+        assert!(!empty.rooms.files_enabled());
+        // And a saved config does not grow a section the operator never wrote.
+        assert!(!toml::to_string(&empty).unwrap().contains("[rooms.files]"));
+
+        let paths: AppConfig = toml::from_str(
+            "[rooms.files]\nlocal_storage_bases = [\"/srv/vtc/room-storage\"]\n\
+             blob_dir = \"/srv/vtc/room-blobs\"\n",
+        )
+        .expect("the section the console suggests");
+        assert!(
+            paths.rooms.files_enabled(),
+            "writing the section turns files on"
+        );
+
+        let off: AppConfig = toml::from_str("[rooms.files]\nenabled = false\n").unwrap();
+        assert!(!off.rooms.files_enabled());
 
         let cfg: AppConfig = toml::from_str(
-            "[rooms.files]\nenabled = true\nmax_file_bytes = 1048576\norphan_grace_hours = 24\n\
+            "[rooms.files]\nmax_file_bytes = 1048576\norphan_grace_hours = 24\n\
              [rooms.files.room]\nmax_files = 50\n[rooms.files.member]\nmax_bytes = 2048\n",
         )
         .expect("a [rooms.files] section");
-        let limits = cfg.rooms.files.limits();
+        let limits = cfg.rooms.files.as_ref().unwrap().limits();
         assert!(limits.files_enabled);
         assert_eq!(limits.max_file_bytes, 1_048_576);
         assert_eq!(limits.orphan_grace_secs, 24 * 3600);

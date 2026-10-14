@@ -9,3 +9,10 @@
 .rooms-policy-note {
   margin-top: var(--space-4);
 }
+
+/* The `[rooms.files]` section an operator copies into their configuration. */
+.rooms-config-snippet {
+  overflow-x: auto;
+  font-size: var(--text-sm);
+  margin: var(--space-3) 0;
+}

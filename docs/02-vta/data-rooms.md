@@ -518,17 +518,21 @@ community's ACL or a session.
   (where files are stored, below) are in `BACKED_UP`, so a community backup
   captures them. `room_blob_transfers` (uploads and downloads in flight) is
   not; a client resumes from `begin`.
-- **Room files are off until you turn them on.** A VTC accepts no uploads
-  unless its config says so:
+- **Room files are off until you add a `[rooms.files]` section.** A VTC with
+  no such section — every configuration written before room files existed —
+  starts as it always did: it creates no directory, seeds no storage config,
+  accepts no upload, and the console's Data rooms page shows the section to
+  add. Writing the section turns files on (`enabled = false` inside it keeps
+  the settings and refuses uploads):
 
   ```toml
   [rooms.files]
-  enabled = true
-  # blob_dir = "/var/lib/vtc/room-blobs"   # the seeded `local` config's root;
-  #                                        # default <store.data_dir>/room-blobs
-  # local_storage_bases = ["/srv/vtc-rooms"]  # where an administrator may place
-  #                                        # another local config; default
+  local_storage_bases = ["/var/lib/vtc/room-storage"]  # where an administrator
+  #                                        # may place a local config; default
   #                                        # <store.data_dir>/room-storage
+  blob_dir = "/var/lib/vtc/room-blobs"     # the seeded `local` config's root;
+  #                                        # default <store.data_dir>/room-blobs
+  # enabled = true                         # the default once the section exists
   # max_file_bytes = 104857600             # at most 1 GiB
   # storage_capacity_bytes = 107374182400
   # orphan_grace_hours = 168               # a released file is deleted after this
@@ -540,7 +544,8 @@ community's ACL or a session.
   # max_bytes = 1073741824                 #   defaults: 2 000 files, 1 GiB
   ```
 
-  With it off, a stored file is still served and records without files are
+  Prefer absolute paths; a relative one is resolved against the directory the
+  VTC runs in. With files off, a stored file is still served and records without files are
   unaffected; `begin` answers `filesDisabled`. **A VTC backup carries the index
   and never the bytes**: back up every local config's root beside the data
   directory.
@@ -739,7 +744,7 @@ author named, each chunk against the manifest, and the plaintext against the
 author's digest. A file's name comes from another member, so `get` writes it
 in the current directory under its last path component, never over an
 existing file. Files need a host that serves `rooms/records/put` 0.2:
-`room-host` does, and so does a VTC with `[rooms.files] enabled = true` (§8.2).
+`room-host` does, and so does a VTC with a `[rooms.files]` section (§8.2).
 
 One thing it cannot do: **issue credentials**. The owner's verbs (§5.3) are
 served by a VTA but reached from a wallet; the CLI has no `rooms owner …`

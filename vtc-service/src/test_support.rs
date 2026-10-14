@@ -153,6 +153,9 @@ pub struct TestVtcBuilder {
     x509_trust_anchors: vta_sdk::x509_issuer::X509TrustAnchors,
     /// `[rooms.files] max_file_bytes`: the host-wide ceiling on one file.
     room_file_ceiling: Option<u64>,
+    /// Build with no `[rooms.files]` section, as a configuration written before room
+    /// files existed.
+    without_room_files: bool,
 }
 
 impl Default for TestVtcBuilder {
@@ -175,6 +178,7 @@ impl Default for TestVtcBuilder {
             vta_link: None,
             x509_trust_anchors: Default::default(),
             room_file_ceiling: None,
+            without_room_files: false,
         }
     }
 }
@@ -186,13 +190,20 @@ impl TestVtcBuilder {
         self
     }
 
-    /// Wire an [`AuditWriter`] so audit-emitting routes don't 503.
     /// Set `[rooms.files] max_file_bytes`, the ceiling every room limit sits under.
     pub fn with_room_file_ceiling(mut self, bytes: u64) -> Self {
         self.room_file_ceiling = Some(bytes);
         self
     }
 
+    /// No `[rooms.files]` section: room files off, as on every VTC configured before
+    /// they existed.
+    pub fn without_room_files(mut self) -> Self {
+        self.without_room_files = true;
+        self
+    }
+
+    /// Wire an [`AuditWriter`] so audit-emitting routes don't 503.
     pub fn with_audit(mut self, on: bool) -> Self {
         self.with_audit = on;
         self
@@ -396,8 +407,8 @@ impl TestVtcBuilder {
         let room_epoch_links_ks = store
             .keyspace("room_epoch_links")
             .expect("room_epoch_links ks");
-        // Uploads on, unlike a deployment's default: tests exercise room files
-        // without writing a `[rooms.files]` section.
+        // Room files on, as a `[rooms.files]` section would make them, unless the
+        // test asked for a configuration without one.
         let files_config = crate::config::RoomFilesConfig {
             enabled: true,
             max_file_bytes: self.room_file_ceiling,
@@ -406,7 +417,7 @@ impl TestVtcBuilder {
         let room_storage = crate::rooms::files::open_room_storage(
             &store,
             dir.path(),
-            &files_config,
+            (!self.without_room_files).then_some(&files_config),
             Some(&self.vtc_did),
         )
         .await
@@ -415,7 +426,7 @@ impl TestVtcBuilder {
             crate::rooms::files::open_blob_host(
                 &store,
                 dir.path(),
-                &files_config,
+                (!self.without_room_files).then_some(&files_config),
                 room_storage.clone(),
             )
             .expect("room files"),

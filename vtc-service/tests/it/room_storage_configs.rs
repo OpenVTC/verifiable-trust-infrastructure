@@ -993,3 +993,37 @@ mod vta_account {
         );
     }
 }
+
+/// The console learns from `vtc/rooms/list` whether this community takes room files,
+/// so it can say how to turn them on rather than offer uploads that would be refused.
+#[tokio::test]
+async fn the_room_list_says_whether_room_files_are_on() {
+    const ROOMS_LIST: &str = "https://trusttasks.org/spec/vtc/rooms/list/0.1";
+    let on = fixture().await;
+    let a = seed(&on, AdminAuthority::community_admin()).await;
+    let reply = send(&on, &a, ROOMS_LIST, json!({})).await;
+    assert_eq!(
+        reply["payload"]["ext"]["org.openvtc"]["roomFiles"]["enabled"], true,
+        "{reply}"
+    );
+
+    let vtc = TestVtc::builder()
+        .vtc_did(TEST_VTC_DID)
+        .with_signers(true)
+        .without_room_files()
+        .build()
+        .await;
+    let off = Fixture {
+        vtc,
+        gesturer: Gesturer::new(),
+    };
+    let a = seed(&off, AdminAuthority::community_admin()).await;
+    let reply = send(&off, &a, ROOMS_LIST, json!({})).await;
+    assert_eq!(
+        reply["payload"]["ext"]["org.openvtc"]["roomFiles"]["enabled"], false,
+        "{reply}"
+    );
+    // And nothing was seeded: no storage config to describe.
+    let listed = send(&off, &a, LIST, json!({})).await;
+    assert_eq!(listed["payload"]["items"], json!([]), "{listed}");
+}

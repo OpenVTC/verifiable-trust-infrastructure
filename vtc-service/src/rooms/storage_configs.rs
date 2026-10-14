@@ -246,7 +246,7 @@ impl RoomStorage {
     pub async fn open(
         ks: KeyspaceHandle,
         rooms_ks: &KeyspaceHandle,
-        seed_root: PathBuf,
+        seed_root: Option<PathBuf>,
         local_bases: Vec<PathBuf>,
         community_did: Option<&str>,
     ) -> Result<Arc<Self>, AppError> {
@@ -275,22 +275,27 @@ impl RoomStorage {
             write_lock: tokio::sync::Mutex::new(()),
         });
 
-        if this.configs().await?.is_empty() {
-            match community_did {
-                Some(did) => this.seed(&seed_root, did).await?,
+        match &seed_root {
+            // Room files are off: nothing to seed, and nothing to warn about.
+            None => {}
+            Some(seed_root) if this.configs().await?.is_empty() => match community_did {
+                Some(did) => this.seed(seed_root, did).await?,
                 None => tracing::warn!(
                     "no community DID yet: the `local` storage config is seeded once there is one"
                 ),
+            },
+            Some(seed_root) => {
+                if let Some(local) = this.config(SEED_CONFIG_ID).await?
+                    && local["settings"]["root"].as_str() != seed_root.to_str()
+                {
+                    tracing::warn!(
+                        stored = %local["settings"]["root"],
+                        configured = %seed_root.display(),
+                        "[rooms.files] blob_dir differs from the stored `local` config; the stored \
+                         config wins (it is changed with vtc/storage/configs/update)"
+                    );
+                }
             }
-        } else if let Some(local) = this.config(SEED_CONFIG_ID).await?
-            && local["settings"]["root"].as_str() != seed_root.to_str()
-        {
-            tracing::warn!(
-                stored = %local["settings"]["root"],
-                configured = %seed_root.display(),
-                "[rooms.files] blob_dir differs from the stored `local` config; the stored \
-                 config wins (it is changed with vtc/storage/configs/update)"
-            );
         }
 
         for record in this.configs().await? {
@@ -879,7 +884,7 @@ mod tests {
         RoomStorage::open(
             store.keyspace("storage_configs").unwrap(),
             &store.keyspace("rooms").unwrap(),
-            dir.join("room-blobs"),
+            Some(dir.join("room-blobs")),
             vec![dir.join("room-storage")],
             Some("did:key:zCommunity"),
         )

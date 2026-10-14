@@ -98,19 +98,62 @@ const TIER_BLURB: Record<Tier, string> = {
  * the opposite question — what is this *operator* storing — from the host's
  * admin authority.
  */
-async function fetchRooms(): Promise<HostedRoom[]> {
+interface RoomsListing {
+  rooms: HostedRoom[];
+  /** Whether this community takes room files. `null` from a VTC too old to say. */
+  filesEnabled: boolean | null;
+}
+
+async function fetchRooms(): Promise<RoomsListing> {
   const rooms: HostedRoom[] = [];
+  let filesEnabled: boolean | null = null;
   let cursor: string | null = null;
   for (let page = 0; page < 20; page++) {
-    const body: { items: HostedRoom[]; nextCursor?: string | null } = await postSignedRead(
-      TRUST_TASK_ROOMS_LIST,
-      { limit: 100, ...(cursor ? { cursor } : {}) },
-    );
+    const body: {
+      items: HostedRoom[];
+      nextCursor?: string | null;
+      ext?: { "org.openvtc"?: { roomFiles?: { enabled?: unknown } } };
+    } = await postSignedRead(TRUST_TASK_ROOMS_LIST, { limit: 100, ...(cursor ? { cursor } : {}) });
     rooms.push(...body.items);
+    const enabled = body.ext?.["org.openvtc"]?.roomFiles?.enabled;
+    if (typeof enabled === "boolean") filesEnabled = enabled;
     cursor = body.nextCursor ?? null;
     if (!cursor) break;
   }
-  return rooms;
+  return { rooms, filesEnabled };
+}
+
+/** What an operator adds to turn room files on. The paths are examples: absolute
+ *  directories on this host, writable by the VTC. */
+const ROOM_FILES_SNIPPET = `[rooms.files]
+local_storage_bases = ["/var/lib/vtc/room-storage"]
+blob_dir = "/var/lib/vtc/room-blobs"`;
+
+/**
+ * Room files are off: the configuration has no `[rooms.files]` section, which is
+ * every configuration written before files existed. Said here, with the section
+ * to add, rather than discovered as a refused upload.
+ */
+function RoomFilesOff() {
+  return (
+    <section className="card">
+      <h2>Room files are off</h2>
+      <p className="muted">
+        Rooms work without them — records are stored and served as before — but
+        members cannot add files. To let them, add a <code>[rooms.files]</code>{" "}
+        section to this VTC&rsquo;s configuration file and restart it:
+      </p>
+      <pre className="rooms-config-snippet">{ROOM_FILES_SNIPPET}</pre>
+      <p className="muted rooms-sub">
+        Use absolute paths on this host that the VTC can write to.{" "}
+        <code>blob_dir</code> is where files go at first; <code>local_storage_bases</code>{" "}
+        are the directories an administrator may later point a storage location
+        at. Files are encrypted by members before they arrive, so this host stores
+        ciphertext it cannot read. Neither directory is in a VTC backup: back them
+        up beside the data directory.
+      </p>
+    </section>
+  );
 }
 
 /**
@@ -367,7 +410,8 @@ function CreationPolicy() {
 
 export function Rooms() {
   const roomsQuery = useQuery({ queryKey: ["rooms"], queryFn: fetchRooms });
-  const rooms = roomsQuery.data ?? [];
+  const rooms = roomsQuery.data?.rooms ?? [];
+  const filesOff = roomsQuery.data?.filesEnabled === false;
 
   // Worth surfacing above the table: these two are the states that ask the
   // operator to do something, and they are invisible in a long list.
@@ -393,6 +437,8 @@ export function Rooms() {
           </>
         }
       />
+
+      {filesOff && <RoomFilesOff />}
 
       {roomsQuery.isPending && (
         <section className="card">

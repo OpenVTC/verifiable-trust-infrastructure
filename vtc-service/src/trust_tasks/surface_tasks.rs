@@ -258,6 +258,15 @@ const MAX_PAGE: usize = 100;
 /// prefixed so that a cursor from another listing's scheme is refused rather
 /// than read as an offset.
 fn page<T: Serialize>(doc: &TrustTask<Value>, items: Vec<T>) -> TrustTaskOutcome {
+    page_with(doc, items, None)
+}
+
+/// [`page`], with an `ext` member on the response.
+fn page_with<T: Serialize>(
+    doc: &TrustTask<Value>,
+    items: Vec<T>,
+    ext: Option<Value>,
+) -> TrustTaskOutcome {
     let start = match doc.payload.get("cursor").and_then(Value::as_str) {
         None => 0,
         Some(c) => match c.strip_prefix("o").and_then(|n| n.parse::<usize>().ok()) {
@@ -283,6 +292,9 @@ fn page<T: Serialize>(doc: &TrustTask<Value>, items: Vec<T>) -> TrustTaskOutcome
     let mut body = json!({ "items": slice });
     if let Some(next) = next {
         body["nextCursor"] = Value::String(next);
+    }
+    if let Some(ext) = ext {
+        body["ext"] = ext;
     }
     success_response(doc, body)
 }
@@ -1127,12 +1139,19 @@ async fn handle_rooms_list(
     match crate::routes::rooms::hosted_rooms(state).await {
         Ok(mut rooms) => {
             rooms.sort_by(|a, b| a.room_id.cmp(&b.room_id));
-            page(
+            // Whether this community takes room files, so the console can say how to
+            // turn them on (a `[rooms.files]` section) rather than show uploads that
+            // would be refused.
+            let ext = json!({
+                "org.openvtc": { "roomFiles": { "enabled": state.room_files.files_enabled() } }
+            });
+            page_with(
                 &doc,
                 rooms
                     .into_iter()
                     .filter(|r| lifecycle.as_deref().is_none_or(|l| r.lifecycle == l))
                     .collect(),
+                Some(ext),
             )
         }
         Err(e) => app_error_to_reject(&doc, &e),
