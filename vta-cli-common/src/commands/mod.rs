@@ -17,6 +17,8 @@ pub mod memory;
 pub mod persona;
 pub mod policy;
 pub mod rooms;
+/// The room's credentials (`rooms owner …`) and the joiner's key holder (`rooms keys …`).
+pub mod rooms_custody;
 pub mod services;
 pub mod vault;
 pub mod webvh;

@@ -15,9 +15,10 @@
 //! credential problem rather than a wiring one.
 
 use vta_cli_common::commands::rooms::{self, RoomSigner, RoomTarget};
+use vta_cli_common::commands::rooms_custody as custody;
 use vta_sdk::client::VtaClient;
 
-use crate::cli::{RoomCommands, RoomFileCommands, RoomOwnerCommands};
+use crate::cli::{RoomCommands, RoomFileCommands, RoomKeysCommands, RoomOwnerCommands};
 
 /// The operator's DID and key, from the session this CLI authenticates with.
 fn signer(keyring_key: &str) -> Result<vta_sdk::session::SessionInfo, Box<dyn std::error::Error>> {
@@ -52,6 +53,92 @@ pub(crate) async fn run(
         // itself, as its principal, so they need no session key of their own.
         RoomCommands::Owner { command } => {
             return match command {
+                RoomOwnerCommands::Register {
+                    room_id,
+                    host_did,
+                    owner,
+                    visibility,
+                    retention_days,
+                    retention_policy,
+                } => {
+                    custody::cmd_rooms_owner_register(
+                        client,
+                        &room_id,
+                        &host_did,
+                        &owner,
+                        &visibility,
+                        retention_days,
+                        retention_policy.as_deref(),
+                    )
+                    .await
+                }
+                RoomOwnerCommands::Invite {
+                    room_id,
+                    signing_key,
+                    subject,
+                    valid_until,
+                    valid_for,
+                    out,
+                } => {
+                    let until = custody::validity(valid_until.as_deref(), valid_for.as_deref())?;
+                    custody::cmd_rooms_owner_invite(
+                        client,
+                        &room_id,
+                        &signing_key,
+                        &subject,
+                        until,
+                        &out,
+                    )
+                    .await
+                }
+                RoomOwnerCommands::IssueMembership {
+                    room_id,
+                    signing_key,
+                    subject,
+                    valid_until,
+                    valid_for,
+                    out,
+                    store,
+                } => {
+                    let until = custody::validity(valid_until.as_deref(), valid_for.as_deref())?;
+                    custody::cmd_rooms_owner_issue_membership(
+                        client,
+                        &room_id,
+                        &signing_key,
+                        &subject,
+                        until,
+                        custody::IssuedOutput {
+                            out: out.as_deref(),
+                            store,
+                        },
+                    )
+                    .await
+                }
+                RoomOwnerCommands::IssueAuthority {
+                    room_id,
+                    signing_key,
+                    subject,
+                    actions,
+                    valid_until,
+                    valid_for,
+                    out,
+                    store,
+                } => {
+                    let until = custody::validity(valid_until.as_deref(), valid_for.as_deref())?;
+                    custody::cmd_rooms_owner_issue_authority(
+                        client,
+                        &room_id,
+                        &signing_key,
+                        &subject,
+                        &actions,
+                        until,
+                        custody::IssuedOutput {
+                            out: out.as_deref(),
+                            store,
+                        },
+                    )
+                    .await
+                }
                 RoomOwnerCommands::GroupCreate {
                     room_id,
                     signing_key,
@@ -61,7 +148,7 @@ pub(crate) async fn run(
                         client,
                         &room_id,
                         &signing_key,
-                        member.as_deref(),
+                        Some(&member),
                     )
                     .await
                 }
@@ -101,6 +188,37 @@ pub(crate) async fn run(
                 }
             };
         }
+        // The key holder's verbs are calls to this VTA alone, all but one: fetching
+        // commits from a host signs a request there, so it needs the session below.
+        RoomCommands::Keys { command } => match command {
+            RoomKeysCommands::KeyPackage {
+                room_id,
+                invitation,
+                out,
+            } => {
+                return custody::cmd_rooms_keys_key_package(client, &room_id, &invitation, &out)
+                    .await;
+            }
+            RoomKeysCommands::Welcome {
+                room_id,
+                invitation,
+                welcome,
+            } => {
+                return custody::cmd_rooms_keys_welcome(client, &room_id, &invitation, &welcome)
+                    .await;
+            }
+            RoomKeysCommands::Commit {
+                room_id,
+                commit: Some(commit),
+                epoch,
+                ..
+            } => {
+                let epoch = epoch.ok_or("--commit needs --epoch: the room epoch it produces")?;
+                return custody::cmd_rooms_keys_commit_file(client, &room_id, &commit, epoch).await;
+            }
+            RoomKeysCommands::List => return custody::cmd_rooms_keys_list(client).await,
+            command @ RoomKeysCommands::Commit { .. } => RoomCommands::Keys { command },
+        },
         other => other,
     };
 
@@ -272,6 +390,29 @@ pub(crate) async fn run(
             )
             .await
         }
+        RoomCommands::Keys { command } => match command {
+            RoomKeysCommands::Commit {
+                room_id,
+                host: Some(host),
+                host_did,
+                ..
+            } => {
+                custody::cmd_rooms_keys_commit_from_host(
+                    client,
+                    RoomTarget {
+                        host_url: &host,
+                        host_did: host_did.as_deref(),
+                        room_id: &room_id,
+                    },
+                    signer,
+                )
+                .await
+            }
+            RoomKeysCommands::Commit { .. } => {
+                Err("pass --host <url> to fetch the commits, or --commit <file> --epoch <n>".into())
+            }
+            _ => unreachable!("the key holder's local verbs are answered above"),
+        },
         RoomCommands::Owner { .. } => {
             unreachable!("the owner's group verbs are answered above, before the session is read")
         }

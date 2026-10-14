@@ -48,11 +48,12 @@ use crate::{VtcClient, VtcError};
 pub use vti_rooms::Visibility;
 pub use vti_rooms::authz::MAX_CHAIN_DEPTH;
 pub use vti_rooms::wire::{
-    AuthorityPresentation, ChainResponse, CleartextContent, CurateRecordResponse, EpochLink,
-    ListRecordsResponse, MintEpochResponse, OwnerResponse, PutRecordResponse, ROOMS_CREATE_TYPE,
-    ROOMS_EPOCH_CHAIN_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_OWNER_CLAIM_TYPE,
-    ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_TYPE,
-    ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE, SealedContent,
+    AuthorityPresentation, ChainResponse, CleartextContent, CommitsResponse, CurateRecordResponse,
+    EpochLink, ListRecordsResponse, MintEpochResponse, OwnerResponse, PutRecordResponse,
+    ROOMS_CREATE_TYPE, ROOMS_EPOCH_CHAIN_TYPE, ROOMS_EPOCH_COMMITS_TYPE, ROOMS_EPOCH_MINT_TYPE,
+    ROOMS_OWNER_CLAIM_TYPE, ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE,
+    ROOMS_RECORDS_GET_TYPE, ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE, RelayedCommit,
+    SealedContent,
 };
 
 /// A caller's standing in one room.
@@ -384,6 +385,47 @@ impl VtcClient {
         serde_json::from_value(value).map_err(|e| VtcError::Http {
             status: 200,
             body: format!("chain response is not a ChainResponse: {e}"),
+        })
+    }
+
+    /// Fetch the commits a member missed, from the host's relay.
+    ///
+    /// `since_epoch` is the **room** epoch this member's key holder is at; the host
+    /// returns the commits above it, in ascending order and with no gaps, each
+    /// tagged with the room epoch it produced. Apply them in order to the key
+    /// holder's group (`rooms/keys/commit`, whose `epoch` is the MLS epoch — one
+    /// less). The response's `room_epoch` is where the room is now: a member who
+    /// applies everything served and is still behind knows a delivery is missing.
+    ///
+    /// Gated on `read` at the host. Relaying commits is safe on every tier: a
+    /// commit opens nothing for a party outside the group.
+    pub async fn epoch_commits(
+        &self,
+        session: &RoomSession,
+        since_epoch: u32,
+        limit: Option<u32>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<CommitsResponse, VtcError> {
+        let mut payload = serde_json::json!({
+            "roomId": session.room_id,
+            "sinceEpoch": since_epoch,
+            "presentation": session.presentation,
+        });
+        if let Some(l) = limit {
+            payload["limit"] = serde_json::json!(l);
+        }
+        let value = self
+            .room_task(
+                ROOMS_EPOCH_COMMITS_TYPE,
+                payload,
+                signer_did,
+                private_key_multibase,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("commits response is not a CommitsResponse: {e}"),
         })
     }
 

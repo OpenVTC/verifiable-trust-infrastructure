@@ -25,8 +25,8 @@
 //!
 //! **Issue credentials.** Minting a VIC, VMC or VAC needs the *room's* signing
 //! key, which is the owner's, not a member's — a different party with different
-//! custody. It belongs in an owner surface and is deliberately absent here
-//! rather than half-present.
+//! custody. The owner's surface is [`super::rooms_custody`], whose verbs are
+//! calls to the VTA holding that key.
 
 use serde_json::Value;
 use vta_sdk::prelude::*;

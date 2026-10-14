@@ -486,8 +486,9 @@ pub(crate) enum RoomCommands {
         host_did: Option<String>,
     },
 
-    /// Write a record. `open` rooms only — sealing needs the room's group key,
-    /// which lives in your VTA and has no task that seals for a caller.
+    /// Write a record. On an `attributed` or `private` room the record is a
+    /// body you sign, sealed by your VTA (`rooms/keys/seal`) under the room's
+    /// current epoch; on `open` it goes in the clear.
     Put {
         /// Record key. On a sealed tier keys must be opaque; on `open` they may
         /// be descriptive.
@@ -564,26 +565,43 @@ pub(crate) enum RoomCommands {
         command: RoomFileCommands,
     },
 
-    /// The owner's half of a sealed room's group, held by your VTA.
+    /// Your VTA as a room's key holder: join a room's group from an
+    /// invitation, apply its commits, and see which rooms it holds.
     ///
-    /// Your VTA founds the group, admits members to it, and advances the room's
-    /// epoch at its host. No group key leaves it.
+    /// Every verb is a call to your own VTA, which holds the group key; none
+    /// leaves it.
+    Keys {
+        #[command(subcommand)]
+        command: RoomKeysCommands,
+    },
+
+    /// The owner's verbs, run by your VTA: register the room with a host, issue
+    /// its credentials in the room's name, and hold the owner's half of its
+    /// group. Neither the room's signing key nor any group key leaves it.
     Owner {
         #[command(subcommand)]
         command: RoomOwnerCommands,
     },
 
-    /// Register a room with a host.
+    /// Register a room with a host, signed with this CLI's own key — for a
+    /// standalone `room-host` or testing.
+    ///
+    /// This names this CLI's session `did:key` as the room's owner, so the owner
+    /// is the client rather than a persona your VTA holds. On a community (VTC)
+    /// host use `pnm rooms owner register` instead: a VTC creates rooms only for
+    /// its members, and your VTA signs that request as your persona.
     ///
     /// The only verb needing no presentation — the room has issued nothing yet,
-    /// so the host checks this request's own proof instead. Sign it as the
-    /// owner it names, which this does.
+    /// so the host checks this request's own proof instead.
     Create {
         /// The room's DID, which you minted before this call.
         #[arg(long = "room")]
         room_id: String,
+        /// Base URL of the host. A VTC's includes its `/v1` mount.
         #[arg(long)]
         host: String,
+        /// The host's DID. A VTC refuses a document not addressed to it, so give
+        /// it for a VTC.
         #[arg(long)]
         host_did: Option<String>,
         /// `open`, `attributed` or `private`. Fixed for the life of the room.
@@ -746,6 +764,129 @@ pub(crate) enum ExternalCommands {
 #[allow(clippy::enum_variant_names)]
 #[derive(Subcommand)]
 pub(crate) enum RoomOwnerCommands {
+    /// Register the room with its host (`rooms/owner/register`). Your VTA sends
+    /// `rooms/create` itself, signed as `--owner`.
+    ///
+    /// The owner must be a persona DID your VTA holds the signing key for, in a
+    /// context you act in — typically a `did:webvh` minted there — never this
+    /// CLI's key. On a community (VTC) host the owner must also be a member of
+    /// that community. Mint the room's own DID first (`pnm did-mgmt dids create
+    /// --template room`).
+    Register {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// The host's DID — your VTA resolves it to reach the host.
+        #[arg(long)]
+        host_did: String,
+        /// The owner's persona DID: the accountable party, whose key signs the
+        /// registration. A DID your VTA holds, not your CLI's key.
+        #[arg(long)]
+        owner: String,
+        /// `open`, `attributed` or `private`. Fixed for the life of the room.
+        #[arg(long)]
+        visibility: String,
+        /// How long the host holds the room after it lapses (the host's default
+        /// when absent, 90 days on a VTC or `room-host`).
+        #[arg(long)]
+        retention_days: Option<u64>,
+        /// `chained` (history stays readable across membership changes) or
+        /// `fromJoin`. Immutable; absent takes the host's default for good.
+        #[arg(long)]
+        retention_policy: Option<String>,
+    },
+    /// Invite a party to the room (`rooms/owner/invite`): mint a Verifiable
+    /// Invitation Credential in the room's name and write it to `--out`.
+    ///
+    /// Deliver it to the joiner directly. Their VTA requires it to mint a
+    /// KeyPackage (`pnm rooms keys key-package`) and consumes it on joining
+    /// (`pnm rooms keys welcome`).
+    Invite {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room's signing key id, as printed when its DID was minted.
+        #[arg(long = "signing-key")]
+        signing_key: String,
+        /// The joiner's persona DID — a DID their VTA holds for them, not their
+        /// CLI's key.
+        #[arg(long)]
+        subject: String,
+        /// When the invitation expires, RFC 3339 (`2027-01-01T00:00:00Z`).
+        #[arg(long, conflicts_with = "valid_for")]
+        valid_until: Option<String>,
+        /// When the invitation expires, from now: `N[s|m|h|d|w]` (e.g. `7d`).
+        #[arg(long)]
+        valid_for: Option<String>,
+        /// Where to write the invitation (the credential's JSON).
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Issue a member the room's membership credential
+    /// (`rooms/owner/issue-membership`) — the room's statement that the subject
+    /// is a member.
+    ///
+    /// `--out` writes it for delivery; `--store` also keeps it in this VTA's
+    /// credential vault, for when the subject is your own persona.
+    IssueMembership {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room's signing key id, as printed when its DID was minted.
+        #[arg(long = "signing-key")]
+        signing_key: String,
+        /// The member's persona DID — a DID their VTA holds, not a CLI's key.
+        #[arg(long)]
+        subject: String,
+        /// When it expires, RFC 3339. Absent: no expiry of its own.
+        #[arg(long, conflicts_with = "valid_for")]
+        valid_until: Option<String>,
+        /// When it expires, from now: `N[s|m|h|d|w]`.
+        #[arg(long)]
+        valid_for: Option<String>,
+        /// Where to write the credential (JSON).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Also store it in this VTA's credential vault (`cred-vault receive`).
+        #[arg(long)]
+        store: bool,
+    },
+    /// Grant authority in the room (`rooms/owner/issue-authority`): mint an
+    /// authority credential conferring `--action`s on the subject.
+    ///
+    /// An expiry is required — a chain root is withdrawn by nothing else.
+    /// `curate` is not implied by `write`; `admin` advances epochs and admits
+    /// members.
+    IssueAuthority {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room's signing key id, as printed when its DID was minted.
+        #[arg(long = "signing-key")]
+        signing_key: String,
+        /// The member's persona DID — a DID their VTA holds, not a CLI's key.
+        #[arg(long)]
+        subject: String,
+        /// `read`, `write`, `curate` or `admin`. Repeat, or separate with commas.
+        #[arg(long = "action", value_delimiter = ',', required = true)]
+        actions: Vec<String>,
+        /// When it expires, RFC 3339. One of this or `--valid-for` is required.
+        #[arg(
+            long,
+            conflicts_with = "valid_for",
+            required_unless_present = "valid_for"
+        )]
+        valid_until: Option<String>,
+        /// When it expires, from now: `N[s|m|h|d|w]` (e.g. `90d`).
+        #[arg(long)]
+        valid_for: Option<String>,
+        /// Where to write the credential (JSON).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Also store it in this VTA's credential vault (`cred-vault receive`).
+        #[arg(long)]
+        store: bool,
+    },
     /// Found the room's group with you as its only member
     /// (`rooms/owner/group/create`). Needed before anything is written to an
     /// `attributed` or `private` room. Register the room first.
@@ -755,10 +896,10 @@ pub(crate) enum RoomOwnerCommands {
         /// The room's signing key id, as printed when its DID was minted.
         #[arg(long = "signing-key")]
         signing_key: String,
-        /// The DID your leaf identifies — the subject of your room credentials.
-        /// Defaults to the DID this CLI authenticates as.
+        /// Your persona DID — the subject of your room credentials, which your
+        /// leaf identifies. A DID your VTA holds, not this CLI's key.
         #[arg(long)]
-        member: Option<String>,
+        member: String,
     },
     /// Admit a member from the KeyPackage their key holder minted
     /// (`rooms/owner/group/add`). Your VTA advances the room at its host, then
@@ -770,7 +911,7 @@ pub(crate) enum RoomOwnerCommands {
         /// The room host's DID: where the epoch advances.
         #[arg(long)]
         host_did: String,
-        /// The DID being admitted.
+        /// The persona DID being admitted — the subject of their invitation.
         #[arg(long)]
         member: String,
         /// The member's KeyPackage, base64url: a file, or `-` for stdin.
@@ -793,13 +934,83 @@ pub(crate) enum RoomOwnerCommands {
         /// The room host's DID: where the epoch advances.
         #[arg(long)]
         host_did: String,
-        /// The DID being removed.
+        /// The persona DID being removed — the one its leaf was admitted as.
         #[arg(long)]
         member: String,
         /// Why, carried to the host's epoch advance.
         #[arg(long)]
         reason: Option<String>,
     },
+}
+
+/// `pnm rooms keys …` — your VTA as a room's key holder.
+#[derive(Subcommand)]
+pub(crate) enum RoomKeysCommands {
+    /// Mint a KeyPackage for a room you were invited to
+    /// (`rooms/keys/key-package`) and write it, base64url, to `--out`.
+    ///
+    /// Send that file to the room's owner, who admits it with
+    /// `pnm rooms owner group-add --key-package`. Its private half stays in your
+    /// VTA for seven days.
+    KeyPackage {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// The invitation the owner sent (`rooms owner invite --out`): a file, or
+        /// `-` for stdin.
+        #[arg(long)]
+        invitation: String,
+        /// Where to write the KeyPackage.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Join the room's group from the Welcome the owner sent
+    /// (`rooms/keys/welcome`). Consumes the invitation.
+    Welcome {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// The same invitation the KeyPackage was minted against.
+        #[arg(long)]
+        invitation: String,
+        /// The Welcome file `pnm rooms owner group-add --out` wrote, or `-`.
+        #[arg(long)]
+        welcome: String,
+    },
+    /// Apply the commits that move the room's group on (`rooms/keys/commit`).
+    ///
+    /// Every membership change after you joined produces one, and a missed one
+    /// leaves records sealed since unopenable. With `--host`, fetch every commit
+    /// this VTA lacks from the host's relay (`rooms/epoch/commits`, needs `read`)
+    /// and apply them in order — the usual way. With `--commit`, apply one
+    /// delivered to you as a file.
+    Commit {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// One commit, base64url: a file, or `-` for stdin.
+        #[arg(
+            long,
+            conflicts_with = "host",
+            requires = "epoch",
+            required_unless_present = "host"
+        )]
+        commit: Option<String>,
+        /// The room epoch the commit produces — as the host relays it and as
+        /// `group-add` printed it.
+        #[arg(long)]
+        epoch: Option<u64>,
+        /// Base URL of the room's host. A VTC's includes its `/v1` mount.
+        #[arg(long)]
+        host: Option<String>,
+        /// The host's DID. A VTC refuses a document not addressed to it, so give
+        /// it for a VTC.
+        #[arg(long, requires = "host")]
+        host_did: Option<String>,
+    },
+    /// Which rooms your VTA holds a group for, each with its room epoch and how
+    /// far back it reads (`rooms/keys/list`). Key custody, not membership.
+    List,
 }
 
 /// `pnm rooms file …`.

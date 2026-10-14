@@ -83,8 +83,8 @@ knowing which half you are standing on saves an afternoon.
 | VTA custody: `rooms/keys/{key-package,welcome,commit,open,seal,chain,backfill,list}` | **Work.** A member's VTA holds the group, seals and opens records for their agents, and can fetch a room's epoch chain from the host itself |
 | The presentation oracle: `rooms/keys/present` | **Works.** Attenuates the member's own VAC for an agent |
 | Succession: nomination, transfer, claim | **Work**, including the "renewing defeats a pending claim" property |
-| **A CLI** | **`pnm rooms {create,list,get,put,curate,renew}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key. It carries **no owner verbs**, and `put` still refuses a sealed room even though `rooms/keys/seal/0.1` now seals one |
-| **Credential issuance** | **Works, on the owner's own VTA.** `rooms/owner/{invite,issue-membership,issue-authority}` mint the VIC, VMC and VAC in the *room's* name, signing through the gated key oracle so the room's key never materialises (§5.3). No `pnm` verbs and no `VtaClient` helpers yet: the operator surface is a wallet, or a Trust Task document you build yourself |
+| **A CLI** | **`pnm rooms {list,get,put,curate,renew,file}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key; `put` seals on `attributed` and `private` (§9). **`pnm rooms owner {register,invite,issue-membership,issue-authority,group-create,group-add,group-remove}`** — the owner's, run by the owner's VTA. **`pnm rooms keys {key-package,welcome,commit,list}`** — the joiner's key holder. A sealed room can be run end to end from the CLI (§5, §6) |
+| **Credential issuance** | **Works, on the owner's own VTA.** `rooms/owner/{invite,issue-membership,issue-authority}` mint the VIC, VMC and VAC in the *room's* name, signing through the gated key oracle so the room's key never materialises (§5.3). `pnm rooms owner {invite,issue-membership,issue-authority}` drive them, over `VtaClient::room_owner_*` |
 | **The owner's MLS half** | **Works, in the owner's VTA.** `rooms/owner/group/create` founds the group with the owner as its only member; `rooms/owner/group/add` admits a member's KeyPackage, advances the room's epoch at its host first, and returns the Welcome to deliver; `rooms/owner/group/remove` drops a member's leaf the same way, host first. `pnm rooms owner group-create` / `group-add` / `group-remove` drive them (§5.4, §6) |
 | **A browser as a member** | **Works.** `vti-rooms-wasm` compiles the member half — group custody, sealing, opening, the epoch chain — to WebAssembly; `room-host --allow-origin` is what lets a page reach a host at all. No key ever crosses into JavaScript |
 | **Governance (`rooms.rego`)** | **On a VTC.** A community decides who may create a room on it, in Rego, with the shipped default hosting `open`/`attributed` for its own members. A standalone `room-host` has no policy engine — T1's governance is its owner (§8.4) |
@@ -266,17 +266,33 @@ version counter. **Sign this one as the owner**: creation is the single verb no
 chain can authorize, so the request's own proof is the check, and a signer who
 is not the `ownerDid` they name is refused (§8.4).
 
-**Through your VTA instead** — `rooms/owner/register/0.1`, for a surface that
-can reach its own agent and no host (a wallet extension, a phone): the VTA sends
-`rooms/create` for you, and **signs it as the owner**, which is what "the key
+**Through your VTA instead** — `rooms/owner/register/0.1`, the way to register
+on a community (VTC), and for any surface that can reach its own agent and no
+host (a wallet extension, a phone):
+
+```bash
+pnm rooms owner register --room <room-did> --host-did <host-did> \
+    --owner <your persona DID> --visibility attributed \
+    [--retention-days 365] [--retention-policy chained]
+```
+
+The VTA sends `rooms/create` for you, and **signs it as the owner**, which is what "the key
 holder speaks to the host as its principal" means. The owner (`ownerDid`, or you
 when it is absent) must be your **persona** for the room (above): a `did:webvh`
 the VTA minted for you or a `did:key` whose key it holds, in a context you act
 in. (The VTA's own DID is still accepted here, and only here, for registrations
 that predate personas.) Anything else is refused with `permissionDenied` and a
 message saying to name an `ownerDid` the VTA holds — a `pnm` session's
-`did:key`, whose key lives in your client, is not one. On a **VTC** the owner must also be a member of the
+`did:key`, whose key lives in your client, is not one. `pnm rooms owner register --owner` has no default.
+On a **VTC** the owner must also be a member of the
 community: its `rooms` policy decides creation against the party that signed.
+
+`pnm rooms create` is the other path: it signs `rooms/create` with the CLI's own
+session key, which makes that client key the owner. It is for a standalone
+`room-host` and for testing; a VTC creates rooms only for its members, so use
+`owner register` there. Against a VTC, either way, `--host` includes the `/v1`
+mount and `--host-did` is needed — a VTC refuses a document not addressed to
+its own DID.
 
 ### 5.3 Issue the owner's own credentials
 
@@ -289,20 +305,24 @@ Authority comes from credentials the room issued, so mint two in the room's name
 **The VTA holding the room's key mints both**, over two Trust Tasks — the same
 two an owner uses for every later member (§6):
 
-```jsonc
-// rooms/owner/issue-membership/0.1
-{ "roomId": "did:webvh:…", "signingKeyId": "<from §5.1>",
-  "subject": "did:webvh:…:alice", "validUntil": "2027-01-01T00:00:00Z" }
+```bash
+# rooms/owner/issue-membership/0.1
+pnm rooms owner issue-membership --room <room-did> --signing-key <from §5.1> \
+    --subject <your persona DID> [--valid-for 365d] --out ./vmc.json --store
 
-// rooms/owner/issue-authority/0.1
-{ "roomId": "did:webvh:…", "signingKeyId": "<from §5.1>",
-  "subject": "did:webvh:…:alice",
-  "actions": ["read", "write", "curate", "admin"],
-  "validUntil": "2026-10-09T00:00:00Z" }
+# rooms/owner/issue-authority/0.2
+pnm rooms owner issue-authority --room <room-did> --signing-key <from §5.1> \
+    --subject <your persona DID> --action read,write,curate,admin \
+    --valid-for 90d --out ./vac.json --store
 ```
 
-Each returns `{ credential, credentialId }` — the signed credential, and the id
-bound into its proof, which is what tells a re-send from a renewal.
+Each task returns `{ credential, credentialId }` — the signed credential, and
+the id bound into its proof, which is what tells a re-send from a renewal. The
+CLI writes the credential to `--out` (it never overwrites a file) and, with
+`--store`, also puts it in this VTA's credential vault — the right thing when
+the subject is your own persona, as here. For another member, leave `--store`
+off and deliver the file. The subject is always a **persona DID** — one the
+member's VTA holds for them, never a CLI's key — and has no default.
 
 `subject` is the member's **persona** — for the owner, the same DID registered as
 `ownerDid` in §5.2. A credential naming a client's `did:key` is one nobody can
@@ -328,13 +348,13 @@ Three things about that pair are load-bearing:
   key oracle's own gates — the key's context, the entry's key scope, and the
   context policy's signing limit — not the capability.
 
-No `pnm` verb reaches these yet and `VtaClient` has no helper — a wallet drives
-them, or you build the Trust Task document yourself with
-`vta_sdk::trust_task_sign::build_signed`. The library path
+From Rust the same calls are `VtaClient::room_owner_issue_membership` and
+`room_owner_issue_authority`; a wallet drives the same tasks. The library path
 (`DTGCredential::new_vmc` / `new_vac`, signed with a key you hold) still works
 and is what `RoomFixture` and the `data_room` example do.
 
-Then store both in the member's VTA credential vault:
+A member who was sent the files stores both in their own VTA's credential vault
+(`--store` did this for you above):
 
 ```bash
 pnm cred-vault receive --credential-file ./vmc.json
@@ -363,11 +383,12 @@ Your VTA founds the group, with you as its only member
 
 ```bash
 pnm rooms owner group-create --room <room-did> --signing-key <key id from §5.1> \
-    [--member <your room DID>]
+    --member <your persona DID>
 ```
 
 The entitlement is the same as issuing the room's credentials: control of its
-signing key. `--member` is the DID your leaf identifies — your **persona**, the
+signing key. `pnm` requires `--member`; over the Trust Task it may be omitted.
+`member` is the DID your leaf identifies — your **persona**, the
 subject of your room credentials — and must be one you may act as. Absent, the
 VTA uses the persona its credentials from this room name (§5.3), and if it holds
 none it asks you to name `--member` rather than founding the group on the
@@ -427,13 +448,23 @@ Step by step:
    (`rooms/owner/invite/0.1` — `roomId`, `signingKeyId`, `subject`,
    `validUntil`), and delivers it — DIDComm on a sealed room, because a
    server-side invitation store would hand the host the membership at invite
-   time.
+   time:
+
+   ```bash
+   pnm rooms owner invite --room <room-did> --signing-key <key id> \
+       --subject <joiner's persona DID> --valid-for 7d --out ./invite.json
+   ```
+
 2. **The joiner's VTA mints a KeyPackage** (`rooms/keys/key-package/0.1`,
    invitation required) whose leaf identifies the persona the invitation names.
    Whoever delivers the invitation must act in that persona's context; who they
    are does not otherwise matter, and their DID is not the member's. Minting retains a private key against a Welcome that
    may never come, which is why it is not offered unconditionally; unused
-   packages expire after 7 days.
+   packages expire after 7 days. The joiner sends `kp.b64` to the owner:
+
+   ```bash
+   pnm rooms keys key-package --room <room-did> --invitation ./invite.json --out ./kp.b64
+   ```
 3. **The owner's VTA admits the leaf** (`rooms/owner/group/add/0.1`):
 
    ```bash
@@ -452,13 +483,23 @@ Step by step:
    it and a key holder cannot process its own commit from the wire. Deliver
    `welcome.json` to the joiner directly — **never through the host**, which
    on a `private` room must not learn who joined.
-4. **The joiner's VTA processes it** (`rooms/keys/welcome/0.1`, same invitation).
+4. **The joiner's VTA processes it** (`rooms/keys/welcome/0.1`, same invitation):
+
+   ```bash
+   pnm rooms keys welcome --room <room-did> --invitation ./invite.json --welcome ./welcome.json
+   ```
+
+   It prints the room epoch joined at. (The task itself answers in MLS epochs,
+   one less; the CLI converts, so every number it shows is a room epoch.)
    The invitation is consumed **after** the join succeeds, so a Welcome that
    failed to process does not strand the member with a spent invitation and no
    membership. Single use means single use, and the consumed record outlives
    leaving the room.
-5. **The owner issues the member's VMC + VAC**, which the member stores in
-   their own VTA (§5.3). The epoch already advanced in step 3.
+5. **The owner issues the member's VMC + VAC** (`pnm rooms owner
+   issue-membership` / `issue-authority --subject <their persona DID> --out …`),
+   which the member stores in their own VTA with `pnm cred-vault receive`
+   (§5.3). The epoch already advanced in step 3. `pnm rooms keys list` shows
+   which rooms a VTA holds a group for, at which epoch.
 
 Five checks stand behind the invitation, and none is optional: it parses as a
 DTG credential and is an invitation; its proof verifies; the issuer is *this*
@@ -469,7 +510,19 @@ and unconsumed (keyed on the invitation, not on whoever delivers it).
 ### Commits are not optional, and their absence is silent
 
 Every membership change after the first produces a Commit, and **every existing
-member's VTA must apply it** (`rooms/keys/commit/0.1`). A member who misses one
+member's VTA must apply it** (`rooms/keys/commit/0.1`). The owner's VTA hands
+each one to the host when it advances the epoch, and the host relays them
+(`rooms/epoch/commits`, under a `read` grant), so an existing member catches up
+with:
+
+```bash
+pnm rooms keys commit --room <room-did> --host <host-url> --host-did <host-did>
+```
+
+which asks the host for every commit above the epoch this VTA holds and applies
+them in order, then says whether the host is still ahead. A commit delivered
+some other way is applied with `--commit <file> --epoch <room epoch it
+produces>`. A member who misses one
 is stuck at their last epoch and can open nothing sealed after it. The symptom
 is "this record does not open", which reads like corruption — so
 `rooms/keys/open` reports *which epoch the VTA holds* when a record is sealed
@@ -504,7 +557,7 @@ whose key they do not have. The owner's VTA does it
 
 ```bash
 pnm rooms owner group-remove --room <room-did> --host-did <host-did> \
-    --member <member-did> [--reason "left the deal team"]
+    --member <member's persona DID> [--reason "left the deal team"]
 ```
 
 `--member` is the departing member's **persona** — the DID their leaf carries,
@@ -535,7 +588,9 @@ your owner persona:
   took, then removes them.
 
 Every remaining member's VTA applies the commit (`rooms/keys/commit/0.1`) as
-for any other change; the host relays it (`rooms/epoch/commits`).
+for any other change; the host relays it (`rooms/epoch/commits`), and
+`pnm rooms keys commit --room <room-did> --host <host-url> --host-did <host-did>`
+fetches and applies it.
 
 **What removal does not do — say so wherever you offer it.** It recalls nothing
 the member already read, and on a `chained` room they keep reading the epochs
@@ -917,9 +972,12 @@ in the current directory under its last path component, never over an
 existing file. Files need a host that serves `rooms/records/put` 0.2:
 `room-host` does, and so does a VTC with a `[rooms.files]` section (§8.2).
 
-One thing it cannot do: **issue credentials**. The owner's verbs (§5.3) are
-served by a VTA but reached from a wallet; the CLI has no `rooms owner …`
-surface.
+**The owner's and the key holder's verbs are here too.** `pnm rooms owner
+{register,invite,issue-membership,issue-authority,group-create,group-add,group-remove}`
+(§5, §6) and `pnm rooms keys {key-package,welcome,commit,list}` (§6) are calls
+to your own VTA, which holds the room's signing key and the group; the CLI never
+holds either. Every party they name — owner, subject, member — is a persona
+DID.
 
 ### From Rust
 
@@ -1169,7 +1227,7 @@ holds the room's key:
 |---|---|---|
 | `rooms/owner/invite/0.1` | a VIC — single-use consent to join | `credentialWrite` + control of the room's key |
 | `rooms/owner/issue-membership/0.1` | a VMC — the room's statement that a DID is a member | same |
-| `rooms/owner/issue-authority/0.1` | a VAC chain root; `validUntil` required | same |
+| `rooms/owner/issue-authority/0.2` | a VAC chain root; `validUntil` required | same |
 | `rooms/owner/register/0.1` | nothing — asks this VTA to call `rooms/create` on a host, signing **as the owner** (your persona: a DID it holds the key for, in a context you act in), not as the room or the agent | same, plus a resolver |
 
 **Constants**

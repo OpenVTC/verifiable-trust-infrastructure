@@ -297,4 +297,393 @@ impl VtaClient {
             ))
         })
     }
+
+    // ── The owner's credential tasks (`rooms/owner/{register,invite,issue-*}`) ──
+    //
+    // Each payload is built through its generated type, so a value the
+    // specification refuses (an empty action list, an over-long key id) is
+    // refused here rather than by the VTA.
+
+    /// `rooms/owner/register/0.1` — ask this VTA to register a room with a host
+    /// (`rooms/create`), signed **as the owner**.
+    ///
+    /// `owner_did` must be a DID this VTA holds the signing key for, in a context
+    /// the caller acts in — a `did:webvh` it minted, a `did:key` whose key it
+    /// holds, or its own DID. `None` means the caller, which works only when the
+    /// caller's DID is one of those (a CLI session's `did:key` is not: its key
+    /// lives in the client). On a VTC the owner must also be a member of the
+    /// community, whose `rooms` policy decides creation against the signer.
+    pub async fn room_owner_register(
+        &self,
+        request: RoomRegistration<'_>,
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::register::v0_1::Response, VtaError> {
+        let payload = room_register_payload(&request)?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1,
+                serde_json::to_value(payload)?,
+                // One host round trip, over whatever transport the host speaks.
+                ROOM_TT_TIMEOUT * 2,
+            )
+            .await?;
+        parse_response(value, "rooms/owner/register")
+    }
+
+    /// `rooms/owner/invite/0.1` — mint a Verifiable Invitation Credential (VIC) in
+    /// the room's name, naming `subject`.
+    ///
+    /// `subject` is the DID that will redeem it at its own key holder
+    /// (`rooms/keys/key-package`, then `rooms/keys/welcome`): the key holder checks
+    /// the invitation names the party asking. The answer is the only copy of the
+    /// credential, so call this inside [`VtaClient::idempotent`] (the task is
+    /// `Keyed`).
+    pub async fn room_owner_invite(
+        &self,
+        room_id: &str,
+        signing_key_id: &str,
+        subject: &str,
+        valid_until: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::invite::v0_1::Response, VtaError> {
+        use trust_tasks_rs::specs::rooms::owner::invite::v0_1::Payload;
+        let payload = Payload::builder()
+            .room_id(room_id)
+            .signing_key_id(signing_key_id)
+            .subject(subject)
+            .valid_until(valid_until);
+        let payload = Payload::try_from(payload)
+            .map_err(|e| VtaError::Validation(format!("rooms/owner/invite request: {e}")))?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_OWNER_INVITE_0_1,
+                serde_json::to_value(payload)?,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/owner/invite")
+    }
+
+    /// `rooms/owner/issue-membership/0.1` — mint the Verifiable Membership
+    /// Credential (VMC) `subject` presents on every room operation. Call it inside
+    /// [`VtaClient::idempotent`] (the task is `Keyed`).
+    pub async fn room_owner_issue_membership(
+        &self,
+        room_id: &str,
+        signing_key_id: &str,
+        subject: &str,
+        valid_until: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::issue_membership::v0_1::Response, VtaError>
+    {
+        use trust_tasks_rs::specs::rooms::owner::issue_membership::v0_1::Payload;
+        let payload = Payload::builder()
+            .room_id(room_id)
+            .signing_key_id(signing_key_id)
+            .subject(subject)
+            .valid_until(valid_until);
+        let payload = Payload::try_from(payload).map_err(|e| {
+            VtaError::Validation(format!("rooms/owner/issue-membership request: {e}"))
+        })?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
+                serde_json::to_value(payload)?,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/owner/issue-membership")
+    }
+
+    /// `rooms/owner/issue-authority/0.2` — mint a Verifiable Authority Credential
+    /// (VAC): a chain root at the room's scope conferring `actions`.
+    ///
+    /// `valid_until` is required by the specification, not defaulted: a root is
+    /// the grant nothing else withdraws, so expiry is how it ends. An empty
+    /// `actions` is refused rather than read as "everything". Call it inside
+    /// [`VtaClient::idempotent`] (the task is `Keyed`).
+    pub async fn room_owner_issue_authority(
+        &self,
+        room_id: &str,
+        signing_key_id: &str,
+        subject: &str,
+        actions: Vec<RoomAction>,
+        valid_until: chrono::DateTime<chrono::Utc>,
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::issue_authority::v0_2::Response, VtaError>
+    {
+        let payload =
+            room_issue_authority_payload(room_id, signing_key_id, subject, actions, valid_until)?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,
+                serde_json::to_value(payload)?,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/owner/issue-authority")
+    }
+
+    // ── The joiner's key-holder tasks (`rooms/keys/{key-package,welcome,commit,list}`) ──
+
+    /// `rooms/keys/key-package/0.1` — mint an MLS KeyPackage for a room this
+    /// caller has been invited to, for the owner to admit with
+    /// `rooms/owner/group/add`.
+    ///
+    /// `invitation` is the VIC as the room issued it (JSON or base64url); it must
+    /// name the caller. The private half stays in this VTA, for seven days. The
+    /// answer is the only copy of the package, so call this inside
+    /// [`VtaClient::idempotent`] (the task is `Keyed`).
+    pub async fn room_key_package(
+        &self,
+        room_id: &str,
+        invitation: &str,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::key_package::v0_1::Response, VtaError> {
+        use trust_tasks_rs::specs::rooms::keys::key_package::v0_1::Payload;
+        let payload = Payload::builder()
+            .room_id(room_id)
+            .invitation(Some(invitation.to_string()));
+        let payload = Payload::try_from(payload)
+            .map_err(|e| VtaError::Validation(format!("rooms/keys/key-package request: {e}")))?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
+                serde_json::to_value(payload)?,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/key-package")
+    }
+
+    /// `rooms/keys/welcome/0.1` — join a room's group from the Welcome its owner
+    /// delivered, consuming the invitation.
+    ///
+    /// The reply's `epoch` is the **MLS** epoch joined at, per the specification —
+    /// one less than the room epoch a host and `rooms/keys/list` report. Call it
+    /// inside [`VtaClient::idempotent`] (the task is `Keyed`): a retry that
+    /// re-executed would find the group already held and the invitation spent.
+    pub async fn room_welcome(
+        &self,
+        room_id: &str,
+        invitation: &str,
+        welcome: &str,
+        ratchet_tree: Option<&str>,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::welcome::v0_1::Response, VtaError> {
+        use trust_tasks_rs::specs::rooms::keys::welcome::v0_1::Payload;
+        let payload = Payload::builder()
+            .room_id(room_id)
+            .invitation(Some(invitation.to_string()))
+            .welcome(welcome)
+            .ratchet_tree(ratchet_tree.map(str::to_string));
+        let payload = Payload::try_from(payload)
+            .map_err(|e| VtaError::Validation(format!("rooms/keys/welcome request: {e}")))?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_WELCOME_0_1,
+                serde_json::to_value(payload)?,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/welcome")
+    }
+
+    /// `rooms/keys/commit/0.1` — apply one MLS Commit to the room's group this VTA
+    /// holds, advancing one epoch.
+    ///
+    /// `mls_epoch` is the **MLS** epoch the commit produces, per the
+    /// specification: a commit a host relays at room epoch `n`
+    /// (`rooms/epoch/commits`) produces MLS epoch `n - 1`. Delivering one already
+    /// applied answers with the unchanged epoch; one that skips ahead is refused
+    /// with the epoch to resume from.
+    pub async fn room_commit(
+        &self,
+        room_id: &str,
+        commit: &str,
+        mls_epoch: std::num::NonZeroU64,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::commit::v0_1::Response, VtaError> {
+        use trust_tasks_rs::specs::rooms::keys::commit::v0_1::Payload;
+        let payload = Payload::builder()
+            .room_id(room_id)
+            .commit(commit)
+            .epoch(mls_epoch);
+        let payload = Payload::try_from(payload)
+            .map_err(|e| VtaError::Validation(format!("rooms/keys/commit request: {e}")))?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_COMMIT_0_1,
+                serde_json::to_value(payload)?,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/commit")
+    }
+
+    /// `rooms/keys/list/0.1` — the rooms this VTA holds a group for, each with the
+    /// room epoch it is at and how far back it can read.
+    ///
+    /// Key custody, never membership: a room whose Welcome never arrived is absent
+    /// even where a good membership credential is held.
+    pub async fn room_keys_list(
+        &self,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::list::v0_1::Response, VtaError> {
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_LIST_0_1,
+                json!({}),
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/list")
+    }
+}
+
+/// One room action a VAC confers — the generated `rooms/owner/issue-authority/0.2`
+/// item type (`read`, `write`, `curate`, `admin`; parse one with `str::parse`).
+pub type RoomAction =
+    trust_tasks_rs::specs::rooms::owner::issue_authority::v0_2::PayloadActionsItem;
+
+/// A room's visibility tier, as `rooms/owner/register/0.1` names it (`open`,
+/// `attributed`, `private`; parse one with `str::parse`).
+pub type RoomVisibility = trust_tasks_rs::specs::rooms::owner::register::v0_1::Visibility;
+
+/// Whether a room keeps its history readable across a membership change
+/// (`chained`, `fromJoin`; parse one with `str::parse`).
+pub type RoomRetentionPolicy = trust_tasks_rs::specs::rooms::owner::register::v0_1::RetentionPolicy;
+
+/// What [`VtaClient::room_owner_register`] asks for.
+#[derive(Debug, Clone)]
+pub struct RoomRegistration<'a> {
+    /// The room's DID — its identity exists already; this asks a host to store it.
+    pub room_id: &'a str,
+    /// The host to register with, as a DID.
+    pub host_did: &'a str,
+    /// Fixed for the life of the room.
+    pub visibility: RoomVisibility,
+    /// The accountable party, whose key signs `rooms/create`. `None` is the caller.
+    pub owner_did: Option<&'a str>,
+    /// How long the host is asked to hold the room after it lapses.
+    pub retention_days: Option<std::num::NonZeroU64>,
+    /// Immutable once set; `None` takes the host's default for the life of the room.
+    pub retention_policy: Option<RoomRetentionPolicy>,
+}
+
+fn room_register_payload(
+    r: &RoomRegistration<'_>,
+) -> Result<trust_tasks_rs::specs::rooms::owner::register::v0_1::Payload, VtaError> {
+    use trust_tasks_rs::specs::rooms::owner::register::v0_1::Payload;
+    let payload = Payload::builder()
+        .room_id(r.room_id)
+        .host(r.host_did)
+        .visibility(r.visibility)
+        .owner_did(r.owner_did.map(str::to_string))
+        .retention_days(r.retention_days)
+        .retention_policy(r.retention_policy);
+    Payload::try_from(payload)
+        .map_err(|e| VtaError::Validation(format!("rooms/owner/register request: {e}")))
+}
+
+fn room_issue_authority_payload(
+    room_id: &str,
+    signing_key_id: &str,
+    subject: &str,
+    actions: Vec<RoomAction>,
+    valid_until: chrono::DateTime<chrono::Utc>,
+) -> Result<trust_tasks_rs::specs::rooms::owner::issue_authority::v0_2::Payload, VtaError> {
+    use trust_tasks_rs::specs::rooms::owner::issue_authority::v0_2::Payload;
+    // The schema requires at least one action; say so here, in words, rather than
+    // letting "confers nothing" travel to the VTA to be refused.
+    if actions.is_empty() {
+        return Err(VtaError::Validation(
+            "rooms/owner/issue-authority needs at least one action (read, write, curate, admin)"
+                .into(),
+        ));
+    }
+    let payload = Payload::builder()
+        .room_id(room_id)
+        .signing_key_id(signing_key_id)
+        .subject(subject)
+        .actions(actions)
+        .valid_until(valid_until);
+    Payload::try_from(payload)
+        .map_err(|e| VtaError::Validation(format!("rooms/owner/issue-authority request: {e}")))
+}
+
+/// Read a reply through the task's generated response type.
+fn parse_response<T: serde::de::DeserializeOwned>(value: Value, task: &str) -> Result<T, VtaError> {
+    serde_json::from_value(value)
+        .map_err(|e| VtaError::Protocol(format!("{task} response does not match its schema: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registration() -> RoomRegistration<'static> {
+        RoomRegistration {
+            room_id: "did:webvh:Qm:rooms.example.org:deal",
+            host_did: "did:web:vtc.example.org",
+            visibility: "attributed".parse().unwrap(),
+            owner_did: Some("did:webvh:Qm:example.org:alice"),
+            retention_days: std::num::NonZeroU64::new(30),
+            retention_policy: Some("chained".parse().unwrap()),
+        }
+    }
+
+    /// The register payload goes out in the specification's own member names, and
+    /// an absent owner stays absent — the VTA reads absence as "the caller".
+    #[test]
+    fn a_registration_is_built_through_the_generated_payload() {
+        let v = serde_json::to_value(room_register_payload(&registration()).unwrap()).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "roomId": "did:webvh:Qm:rooms.example.org:deal",
+                "host": "did:web:vtc.example.org",
+                "visibility": "attributed",
+                "ownerDid": "did:webvh:Qm:example.org:alice",
+                "retentionDays": 30,
+                "retentionPolicy": "chained",
+            })
+        );
+
+        let mut r = registration();
+        r.owner_did = None;
+        r.retention_days = None;
+        r.retention_policy = None;
+        let v = serde_json::to_value(room_register_payload(&r).unwrap()).unwrap();
+        assert!(v.get("ownerDid").is_none(), "{v}");
+        assert!(v.get("retentionPolicy").is_none(), "{v}");
+    }
+
+    /// "Confers nothing" and "confers everything" are the two readings of an empty
+    /// action list a careless consumer chooses between. Neither is sent.
+    #[test]
+    fn an_authority_grant_with_no_action_is_refused_before_it_is_sent() {
+        let until = chrono::Utc::now() + chrono::Duration::days(30);
+        let err =
+            room_issue_authority_payload("did:key:zRoom", "key-1", "did:key:zA", vec![], until)
+                .expect_err("an empty action list is refused");
+        assert!(err.to_string().contains("at least one action"), "{err}");
+
+        let ok = room_issue_authority_payload(
+            "did:key:zRoom",
+            "key-1",
+            "did:key:zA",
+            vec!["read".parse().unwrap(), "admin".parse().unwrap()],
+            until,
+        )
+        .unwrap();
+        let v = serde_json::to_value(ok).unwrap();
+        assert_eq!(v["actions"], json!(["read", "admin"]));
+        assert!(
+            v["validUntil"].is_string(),
+            "validUntil is always sent: {v}"
+        );
+    }
+
+    /// An action outside the ladder does not parse, so no CLI flag can smuggle one.
+    #[test]
+    fn only_the_four_room_actions_parse() {
+        for a in ["read", "write", "curate", "admin"] {
+            assert!(a.parse::<RoomAction>().is_ok(), "{a}");
+        }
+        assert!("all".parse::<RoomAction>().is_err());
+        assert!("Admin".parse::<RoomAction>().is_err());
+    }
 }
