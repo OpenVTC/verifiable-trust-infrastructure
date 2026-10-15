@@ -27,19 +27,32 @@ use crate::keys::seed_store::SeedStore;
 use crate::store::KeyspaceHandle;
 use vti_common::error::AppError;
 
-/// A production Ed25519 SD-JWT [`JwtSigner`](affinidi_sd_jwt::signer::JwtSigner)
+/// A production SD-JWT [`JwtSigner`](affinidi_sd_jwt::signer::JwtSigner)
 /// wrapping a derived holder key — used to sign the presentation `kb-jwt`.
 ///
-/// `Debug` is derived; `ed25519_dalek::SigningKey`'s own `Debug` redacts the key.
+/// EdDSA for an Ed25519 holder, ES256 for a P-256 one (#1988: a credential
+/// bound to a P-256 `cnf.jwk`, as swiyu and EUDI issue them). The algorithm is
+/// the key's, never a caller's choice.
+///
+/// `Debug` is derived; both signing keys' own `Debug` redacts the secret.
 #[derive(Debug)]
 pub struct HolderSdJwtSigner {
-    key: SigningKey,
+    key: HolderSigningKey,
     kid: String,
+}
+
+#[derive(Debug)]
+enum HolderSigningKey {
+    Ed25519(SigningKey),
+    P256(p256::ecdsa::SigningKey),
 }
 
 impl affinidi_sd_jwt::signer::JwtSigner for HolderSdJwtSigner {
     fn algorithm(&self) -> &str {
-        "EdDSA"
+        match self.key {
+            HolderSigningKey::Ed25519(_) => "EdDSA",
+            HolderSigningKey::P256(_) => "ES256",
+        }
     }
     fn key_id(&self) -> Option<&str> {
         Some(&self.kid)
@@ -52,11 +65,20 @@ impl affinidi_sd_jwt::signer::JwtSigner for HolderSdJwtSigner {
             serde_json::to_vec(payload).map_err(|e| SdJwtError::Verification(e.to_string()))?,
         );
         let input = format!("{h}.{p}");
-        let sig: Signature = self.key.sign(input.as_bytes());
-        Ok(format!(
-            "{input}.{}",
-            URL_SAFE_NO_PAD.encode(sig.to_bytes())
-        ))
+        // JWS ES256 is the fixed-width `r || s` (RFC 7518 §3.4), which is what
+        // `p256::ecdsa::Signature::to_bytes` gives — not DER.
+        let signature = match &self.key {
+            HolderSigningKey::Ed25519(key) => {
+                let sig: Signature = key.sign(input.as_bytes());
+                sig.to_bytes().to_vec()
+            }
+            HolderSigningKey::P256(key) => {
+                use p256::ecdsa::signature::Signer as _;
+                let sig: p256::ecdsa::Signature = key.sign(input.as_bytes());
+                sig.to_bytes().to_vec()
+            }
+        };
+        Ok(format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature)))
     }
 }
 
@@ -74,8 +96,9 @@ pub struct HolderKeys {
 /// Resolve the VTA-managed holder key for `subject_did`, **gated by the caller's
 /// ACL** for the key's context.
 ///
-/// - The subject must be a `did:key` whose (derived, active, Ed25519) key the
-///   VTA manages — else `NotFound` / `Validation`.
+/// - The subject must be a `did:key` whose (derived, active, Ed25519 or P-256)
+///   key the VTA manages — else `NotFound` / `Validation`. A P-256 holder
+///   signs its `kb-jwt` ES256 and its consent record `ecdsa-jcs-2019`.
 /// - The caller must have ACL access to the key's `context_id` (or be
 ///   super-admin for a context-less key) — else `Forbidden`. **This is the
 ///   privilege boundary**: it stops a caller minting presentations from keys
@@ -105,9 +128,10 @@ pub async fn resolve_holder_keys(
             ))
         })?;
 
-    if record.key_type != KeyType::Ed25519 {
+    if !matches!(record.key_type, KeyType::Ed25519 | KeyType::P256) {
         return Err(AppError::Validation(format!(
-            "holder key `{key_id}` is not an Ed25519 key"
+            "holder key `{key_id}` is {:?}; a holder key is Ed25519 or P-256",
+            record.key_type
         )));
     }
     if record.status != KeyStatus::Active {
@@ -139,11 +163,29 @@ pub async fn resolve_holder_keys(
         "holder-keys",
     )
     .await?;
+    if record.key_type == KeyType::P256 {
+        let p256_secret = key.p256_secret()?;
+        let private = Zeroizing::new(p256_secret.secret_key.to_bytes().to_vec());
+        let signing_key = p256::ecdsa::SigningKey::from(&p256_secret.secret_key);
+        let consent_secret = Secret::from_multibase(
+            &vta_keys::encode_private_multibase(&KeyType::P256, &private),
+            Some(&key_id),
+        )
+        .map_err(|e| AppError::Internal(format!("build P-256 consent secret: {e}")))?;
+        return Ok(HolderKeys {
+            signer: HolderSdJwtSigner {
+                key: HolderSigningKey::P256(signing_key),
+                kid: key_id,
+            },
+            consent_secret,
+        });
+    }
+
     let derived_bytes = key.ed25519_signing_key_bytes()?;
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&derived_bytes);
 
     let signer = HolderSdJwtSigner {
-        key: signing_key.clone(),
+        key: HolderSigningKey::Ed25519(signing_key.clone()),
         kid: key_id.clone(),
     };
     let mut consent_secret = Secret::generate_ed25519(Some(&key_id), Some(signing_key.as_bytes()));
@@ -187,6 +229,12 @@ mod tests {
     /// The key's context is created with base `context_base`. Pass a base that
     /// does not contain the key's path to model a planted record.
     async fn setup_with_base(context: Option<&str>, context_base: &str) -> Fixture {
+        setup_key(context, context_base, KeyType::Ed25519).await
+    }
+
+    /// As [`setup_with_base`], for a holder key of `key_type` (Ed25519 or
+    /// P-256), with the record's public key derived exactly as the VTA mints it.
+    async fn setup_key(context: Option<&str>, context_base: &str, key_type: KeyType) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&StoreConfig {
             data_dir: dir.path().to_path_buf(),
@@ -222,12 +270,24 @@ mod tests {
 
         let path = "m/26'/2'/0'/0'";
         let bip32 = ExtendedSigningKey::from_seed(&seed).unwrap();
-        let derived = bip32
-            .derive(&path.parse::<DerivationPath>().unwrap())
-            .unwrap();
-        let subject_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(
-            derived.signing_key.verifying_key().as_bytes(),
-        );
+        let subject_did = if key_type == KeyType::P256 {
+            use p256::elliptic_curve::sec1::ToSec1Point;
+            use vta_keys::derivation::Bip32Extension;
+            let point = bip32
+                .derive_p256(path)
+                .unwrap()
+                .secret_key
+                .public_key()
+                .to_sec1_point(true);
+            vta_sdk::jws::JwsKey::P256(point.as_bytes().to_vec()).did_key()
+        } else {
+            let derived = bip32
+                .derive(&path.parse::<DerivationPath>().unwrap())
+                .unwrap();
+            affinidi_crypto::did_key::ed25519_pub_to_did_key(
+                derived.signing_key.verifying_key().as_bytes(),
+            )
+        };
         let multibase = subject_did.strip_prefix("did:key:").unwrap();
         let key_id = format!("{subject_did}#{multibase}");
 
@@ -235,7 +295,7 @@ mod tests {
             exportable: None,
             key_id: key_id.clone(),
             derivation_path: path.to_string(),
-            key_type: KeyType::Ed25519,
+            key_type: key_type.clone(),
             status: KeyStatus::Active,
             public_key: multibase.to_string(),
             label: None,
@@ -302,6 +362,40 @@ mod tests {
         let key_id = format!("{subject_did}#{multibase}");
         assert_eq!(keys.signer.key_id(), Some(key_id.as_str()));
         assert_eq!(keys.consent_secret.id, key_id);
+    }
+
+    /// #1988: a P-256 holder (a credential bound to a P-256 `cnf.jwk`) signs
+    /// its `kb-jwt` ES256, and the JWS verifies under the holder's own
+    /// `did:key`; its consent secret is P-256 too (`ecdsa-jcs-2019`).
+    #[tokio::test]
+    async fn a_p256_holder_signs_its_kb_jwt_es256() {
+        let f = setup_key(Some("acme"), "m/26'/2'/0'", KeyType::P256).await;
+        assert!(
+            f.subject_did.starts_with("did:key:zDn"),
+            "{}",
+            f.subject_did
+        );
+        let keys = resolve(&f, &admin_of("acme"), &f.subject_did)
+            .await
+            .expect("a P-256 holder key resolves");
+        assert_eq!(keys.signer.algorithm(), "ES256");
+
+        let jws = keys
+            .signer
+            .sign_jwt(
+                &serde_json::json!({ "alg": "ES256", "typ": "kb+jwt" }),
+                &serde_json::json!({ "aud": "did:web:verifier.example", "nonce": "n-1" }),
+            )
+            .unwrap();
+        let payload = vta_sdk::jws::JwsKey::from_did_key(&f.subject_did)
+            .unwrap()
+            .verify_compact(&jws)
+            .expect("the kb-jwt verifies under the holder's did:key");
+        assert_eq!(payload["nonce"], "n-1");
+        assert_eq!(
+            vta_vault::consent::holder_suite(&keys.consent_secret).unwrap(),
+            affinidi_data_integrity::crypto_suites::CryptoSuite::EcdsaJcs2019
+        );
     }
 
     #[tokio::test]

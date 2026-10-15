@@ -158,15 +158,25 @@ own `did:key` (`zDn…` / `zQ3s…`):
   the hex holder signatures (member rotation, join's REST binding) and the
   OID4VCI key-binding proof may be any of the three.
 
-What the workspace mints stays Ed25519 / X25519, with one exception: a
-**foreign-protocol identity** — an identity whose wire another protocol fixes,
-such as a swiyu or EUDI OpenID4VP verifier (`swiyu-verifier` template), whose
-request objects those wallets accept only as ES256 — may hold P-256 (or
-secp256k1) keys. The VTA still mints and custodies them, from the seed like any
-other key; such a key is published only in that identity's own DID (or, for an
-EUDI verifier, which has no DID, certified only in its own X.509 access
-certificate), never on a community's or the VTA's own. Every key `sealed_transfer` seals **to** stays
-X25519 (from an Ed25519 `did:key`).
+What the workspace mints stays Ed25519 / X25519, with two exceptions:
+
+- A **foreign-protocol identity** — an identity whose wire another protocol
+  fixes, such as a swiyu or EUDI OpenID4VP verifier (`swiyu-verifier`
+  template), whose request objects those wallets accept only as ES256 — may hold
+  P-256 (or secp256k1) keys. Such a key is published only in that identity's own
+  DID (or, for an EUDI verifier, which has no DID, certified only in its own
+  X.509 access certificate), never on a community's or the VTA's own.
+- A **holder key a foreign credential binds to** — the P-256 `cnf.jwk` of an
+  SD-JWT-VC as swiyu and EUDI issue them, or an ISO mdoc's device key — may be
+  P-256 (#1988). Its holder is that key's own `did:key` (`zDn…`). It signs only
+  what holding that credential needs: the ES256 `kb-jwt`, an mdoc `DeviceAuth`,
+  and the `ecdsa-jcs-2019` consent receipt and presentation proof
+  (`vta_vault::consent::holder_suite` fixes the suite by the key, never by the
+  caller).
+
+In both cases the VTA still mints and custodies the key, from the seed like any
+other key. Every key `sealed_transfer` seals **to** stays X25519 (from an
+Ed25519 `did:key`).
 
 ## Prefer TSP, then DIDComm, then REST
 
