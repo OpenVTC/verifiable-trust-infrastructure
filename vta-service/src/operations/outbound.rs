@@ -57,6 +57,13 @@
 //! is forbidden, and being honest that this agent cannot yet *initiate* on a
 //! protocol is a different statement. The error says which it is.
 //!
+//! "This VTA's half" is what it can use **for this document, now**: a
+//! transport compiled but not wired (no mediator session) is not in it, and
+//! neither is a messaging transport whose authenticated sender is not the
+//! document's `issuer` — TSP and DIDComm authenticate this VTA's own DID, so a
+//! document signed by a member's persona can travel only on the HTTPS binding,
+//! where its proof is the authentication. See `initiable_for`.
+//!
 //! # Fire-and-forget, and what correlation actually is
 //!
 //! A Trust Task is a document. Correlation is a document concern — SPEC §4.9's
@@ -789,37 +796,109 @@ pub fn pick_transport(
     )))
 }
 
-/// The pure core of [`Outbound::initiable_protocols`]: [`OUTBOUND_SUPPORTED`]
-/// with TSP dropped unless this sender has a live [`TspSender`] (`has_tsp`).
+/// Who this agent is authenticated as on each messaging transport that is
+/// **wired** on this instance right now — `None` for one that is not.
 ///
-/// Factored out from the method so the runtime gate can be tested without
-/// standing up an `Outbound` (which needs a resolver and a bridge). In a build
-/// without the `tsp` feature `OUTBOUND_SUPPORTED` names no TSP, so `has_tsp` is
-/// moot and the set is returned unchanged.
-fn initiable_from(has_tsp: bool) -> Vec<Protocol> {
+/// The DID matters as much as the wiring. TSP and DIDComm both authenticate
+/// the sender in the transport (the TSP `VID_sndr`; the authcrypt
+/// `sender_kid`), and both bindings make a document's in-band `issuer` a
+/// cross-check against that sender: a mismatch is `identityMismatch`
+/// (framework SPEC §4.8.1 and §7.2 item 6; `bindings/tsp/0.1` §3,
+/// `bindings/didcomm/0.2` §3). So a messaging transport can carry a document
+/// only when the party it authenticates this agent as **is** the document's
+/// issuer.
+#[derive(Debug, Clone, Copy, Default)]
+struct WiredSenders<'s> {
+    /// This agent's TSP VID, when a live [`TspSender`] is present.
+    tsp: Option<&'s str>,
+    /// This agent's DIDComm sender DID, when the bridge holds a live mediator
+    /// session (`[messaging] kind = "skip"` never publishes one).
+    didcomm: Option<&'s str>,
+}
+
+/// The pure core of [`Outbound::initiable_protocols`]: the protocols in
+/// [`OUTBOUND_SUPPORTED`] this agent can start **for a document issued by
+/// `issuer`**.
+///
+/// - **REST** is always in the set. The Trust-Task HTTPS binding takes its
+///   transport-authenticated sender from an `Authorization` bearer, and
+///   `send_rest` sends none — so there is no transport identity to contradict
+///   the document's, and its `proof` (required on every binding, VTI-OPS-020 /
+///   VTI-OPS-021) is the whole of the authentication. That is why it is the one
+///   binding that can carry a document this agent signs *as another DID* — a
+///   member's persona, in a data room.
+/// - **TSP** and **DIDComm** only when wired ([`WiredSenders`]) **and** their
+///   authenticated sender is `issuer`. A document with no in-band `issuer` takes
+///   its issuer from the transport, so any wired messaging transport carries it.
+///
+/// A transport this agent cannot use for this document is not in its set, so
+/// [`pick_transport`] chooses the best one **both** sides can actually use, and
+/// an empty intersection is the typed refusal rather than an error at send
+/// time ("DIDComm messaging not initialized") or an `identityMismatch` from the
+/// peer.
+///
+/// Factored out so the gate can be tested without standing up an `Outbound`
+/// (which needs a resolver and a bridge).
+fn initiable_for(wired: WiredSenders<'_>, issuer: Option<&str>) -> Vec<Protocol> {
+    // Exact equality: the TSP binding compares VIDs as exact strings, and the
+    // DIDComm binding normalises the sender to its bare DID — which is what
+    // `wired.didcomm` already is. An `issuer` that is not the bare DID can only
+    // make this stricter, never let a mismatch through.
+    let carries = |sender: Option<&str>| sender.is_some_and(|s| issuer.is_none_or(|i| i == s));
     OUTBOUND_SUPPORTED
         .iter()
         .copied()
-        .filter(|p| *p != Protocol::Tsp || has_tsp)
+        .filter(|p| match p {
+            Protocol::Rest => true,
+            Protocol::Tsp => carries(wired.tsp),
+            Protocol::Didcomm => carries(wired.didcomm),
+        })
         .collect()
 }
 
 impl Outbound<'_> {
-    /// The protocols this `Outbound` can **initiate** right now.
-    ///
-    /// Narrower than [`OUTBOUND_SUPPORTED`] exactly when a compiled transport is
-    /// not wired on this instance. TSP is the live case: `WebvhDeps::
-    /// from_vta_state` (the DIDComm handler's state) holds no TSP socket and so
-    /// constructs the seam with `tsp: None`, yet a `tsp`-feature build still
-    /// names TSP in `OUTBOUND_SUPPORTED`. Consulting this before selecting means
-    /// a TSP-advertising peer reached from such a sender falls to the next
-    /// shared transport instead of erroring in [`Outbound::send_tsp`].
-    fn initiable_protocols(&self) -> Vec<Protocol> {
+    /// The DIDs this `Outbound` is authenticated as on each wired messaging
+    /// transport — see [`WiredSenders`]. Owned, because both are read off live
+    /// wiring that a reconnect can replace.
+    fn wired_senders(&self) -> (Option<String>, Option<String>) {
         #[cfg(feature = "tsp")]
-        let has_tsp = self.tsp.is_some();
+        let tsp = self.tsp.as_ref().and_then(|t| t.transport.our_vid());
         #[cfg(not(feature = "tsp"))]
-        let has_tsp = false;
-        initiable_from(has_tsp)
+        let tsp = None;
+        #[cfg(feature = "didcomm")]
+        let didcomm = self.bridge.vta_did();
+        #[cfg(not(feature = "didcomm"))]
+        let didcomm = None;
+        (tsp, didcomm)
+    }
+
+    /// The protocols this `Outbound` can **initiate** right now, for a document
+    /// issued by `issuer` — see [`initiable_for`].
+    ///
+    /// Narrower than [`OUTBOUND_SUPPORTED`] when a compiled transport is not
+    /// wired on this instance, or is wired under a DID other than the
+    /// document's issuer.
+    ///
+    /// - **TSP not wired**: `WebvhDeps::from_vta_state` (the DIDComm handler's
+    ///   state) holds no TSP socket and constructs the seam with `tsp: None`,
+    ///   yet a `tsp`-feature build names TSP in `OUTBOUND_SUPPORTED` (#1483).
+    /// - **DIDComm not wired**: a REST-only VTA (`[messaging] kind = "skip"`)
+    ///   compiles DIDComm but never publishes a mediator session, so a peer
+    ///   advertising DIDComm and REST was selected over DIDComm and the send
+    ///   failed with "DIDComm messaging not initialized".
+    /// - **Wired as someone else**: a data-room document is signed by the
+    ///   member's persona, while TSP and DIDComm authenticate this VTA's own
+    ///   DID — the peer refuses that as `identityMismatch`, as both bindings
+    ///   require it to.
+    pub(crate) fn initiable_protocols(&self, issuer: Option<&str>) -> Vec<Protocol> {
+        let (tsp, didcomm) = self.wired_senders();
+        initiable_for(
+            WiredSenders {
+                tsp: tsp.as_deref(),
+                didcomm: didcomm.as_deref(),
+            },
+            issuer,
+        )
     }
 
     /// Send an already-signed Trust-Task `document` to `recipient` and return
@@ -874,7 +953,27 @@ impl Outbound<'_> {
         if caps.rest.is_none() {
             caps.rest.clone_from(&self.https_base);
         }
-        let (protocol, endpoint) = pick_transport(&caps, &self.initiable_protocols(), recipient)?;
+        // The document's own issuer decides which messaging transport can carry
+        // it — see `initiable_for`. Read from the document as it will be sent.
+        let issuer = document.get("issuer").and_then(Value::as_str);
+        let initiable = self.initiable_protocols(issuer);
+        let (protocol, endpoint) =
+            pick_transport(&caps, &initiable, recipient).map_err(|e| match (e, issuer) {
+                // Say why a messaging transport this agent has wired was left
+                // out, or an operator reads "can initiate [rest]" on a VTA with
+                // a live mediator session and goes looking for a fault in it.
+                (AppError::Validation(m), Some(issuer))
+                    if initiable.len() < self.initiable_protocols(None).len() =>
+                {
+                    AppError::Validation(format!(
+                        "{m} The document is issued by `{issuer}`, and TSP and DIDComm authenticate \
+                         this agent as its own DID, so the peer would refuse it as \
+                         `identityMismatch`; only a Trust-Task HTTPS endpoint, where the \
+                         document's proof is the authentication, can carry it."
+                    ))
+                }
+                (e, _) => e,
+            })?;
 
         let reply = match protocol {
             Protocol::Rest => self.send_rest(recipient, &endpoint, &document).await?,
@@ -1444,25 +1543,157 @@ mod tests {
         );
     }
 
+    const VTA: &str = "did:example:vta";
+    const PERSONA: &str = "did:example:persona";
+
+    /// Every messaging transport this build compiles, wired as this VTA.
+    fn all_wired() -> WiredSenders<'static> {
+        WiredSenders {
+            tsp: Some(VTA),
+            didcomm: Some(VTA),
+        }
+    }
+
+    /// TSP wiring removed — a sender whose state holds no TSP socket.
+    fn without_tsp() -> WiredSenders<'static> {
+        WiredSenders {
+            tsp: None,
+            ..all_wired()
+        }
+    }
+
+    /// A VTC: DIDComm through its mediator and the Trust-Task HTTPS door.
+    fn didcomm_and_rest_peer() -> ServiceCapabilities {
+        caps_from(serde_json::json!([
+            { "id": "#didcomm", "type": "DIDCommMessaging",
+              "serviceEndpoint": [{ "uri": "did:example:mediator", "accept": ["didcomm/v2"] }] },
+            { "id": "#trust-tasks", "type": "TrustTaskHTTPS",
+              "serviceEndpoint": "https://vtc.example/v1" }
+        ]))
+    }
+
     /// The runtime gate. A `tsp`-feature build names TSP in
     /// [`OUTBOUND_SUPPORTED`], but a sender with no live [`TspSender`] cannot
-    /// start one, so [`initiable_from`] must drop it — and keep it once a sender
+    /// start one, so [`initiable_for`] must drop it — and keep it once a sender
     /// is present.
     #[cfg(feature = "tsp")]
     #[test]
     fn initiable_drops_tsp_without_a_live_sender_and_keeps_it_with_one() {
+        let without = initiable_for(without_tsp(), Some(VTA));
         assert!(
-            !initiable_from(false).contains(&Protocol::Tsp),
+            !without.contains(&Protocol::Tsp),
             "TSP must not be initiable without a live sender"
         );
         assert!(
-            initiable_from(false).contains(&Protocol::Didcomm)
-                && initiable_from(false).contains(&Protocol::Rest),
+            without.contains(&Protocol::Didcomm) && without.contains(&Protocol::Rest),
             "dropping TSP must not disturb the transports that remain"
         );
         assert!(
-            initiable_from(true).contains(&Protocol::Tsp),
+            initiable_for(all_wired(), Some(VTA)).contains(&Protocol::Tsp),
             "TSP is initiable once a sender is wired"
+        );
+    }
+
+    /// Bug 1, at the gate: a REST-only VTA (`[messaging] kind = "skip"`)
+    /// compiles DIDComm but holds no mediator session, so DIDComm is not in
+    /// its set — any more than TSP is.
+    #[test]
+    fn a_rest_only_vta_can_initiate_rest_alone() {
+        assert_eq!(
+            initiable_for(WiredSenders::default(), Some(VTA)),
+            vec![Protocol::Rest],
+            "with no messaging wired, REST is the only thing this agent can start"
+        );
+    }
+
+    /// Bug 1, at the selector: the live failure. A REST-only VTA sending to a VTC
+    /// that advertises DIDComm and REST picked DIDComm — the higher preference —
+    /// and failed with "DIDComm messaging not initialized". It must pick the
+    /// REST both sides can actually use.
+    #[test]
+    fn a_rest_only_vta_reaches_a_didcomm_and_rest_peer_over_rest() {
+        let (protocol, endpoint) = pick_transport(
+            &didcomm_and_rest_peer(),
+            &initiable_for(WiredSenders::default(), Some(VTA)),
+            "did:example:vtc",
+        )
+        .expect("REST is shared");
+        assert_eq!(protocol, Protocol::Rest);
+        assert_eq!(endpoint, "https://vtc.example/v1");
+    }
+
+    /// And where the peer offers nothing this agent can start, the typed refusal
+    /// names both sets — never the send-time "not initialized".
+    #[test]
+    fn a_rest_only_vta_is_refused_by_a_didcomm_only_peer_naming_both_sides() {
+        let caps = caps_from(serde_json::json!([
+            { "id": "#didcomm", "type": "DIDCommMessaging",
+              "serviceEndpoint": [{ "uri": "did:example:mediator", "accept": ["didcomm/v2"] }] }
+        ]));
+        let err = pick_transport(
+            &caps,
+            &initiable_for(WiredSenders::default(), Some(VTA)),
+            "did:example:vtc",
+        )
+        .expect_err("nothing in common");
+        let msg = err.to_string();
+        assert!(matches!(err, AppError::Validation(_)), "{msg}");
+        assert!(
+            msg.contains("advertises [didcomm]") && msg.contains("initiate [rest]"),
+            "must name what each side has: {msg}"
+        );
+    }
+
+    /// Bug 2, at the gate. TSP and DIDComm authenticate this VTA's own DID; the
+    /// bindings make the in-band `issuer` a cross-check against that sender
+    /// (`identityMismatch` on a mismatch). A document signed by a persona is
+    /// therefore not something either can carry, however wired — only REST,
+    /// where the proof is the authentication.
+    #[test]
+    fn a_document_issued_by_another_did_rides_only_rest() {
+        assert_eq!(
+            initiable_for(all_wired(), Some(PERSONA)),
+            vec![Protocol::Rest],
+            "a persona-signed document must not ride a transport authenticated as the VTA"
+        );
+    }
+
+    /// The other half: the VTA's own documents keep every wired transport, and
+    /// a document with no in-band issuer takes it from the transport.
+    #[test]
+    fn the_vtas_own_documents_keep_every_wired_transport() {
+        for issuer in [Some(VTA), None] {
+            let set = initiable_for(all_wired(), issuer);
+            assert_eq!(
+                set,
+                OUTBOUND_SUPPORTED.to_vec(),
+                "issuer {issuer:?}: nothing wired as the issuer may be dropped"
+            );
+        }
+    }
+
+    /// Bug 2, at the selector: the live failure. A VTA with its mediator session
+    /// up sends a persona-signed document to a VTC advertising DIDComm and REST.
+    /// It went over DIDComm, authenticated as the VTA, and the VTC refused it
+    /// `identityMismatch`. It must go over REST.
+    #[cfg(feature = "didcomm")]
+    #[test]
+    fn a_persona_signed_document_goes_to_a_didcomm_and_rest_peer_over_rest() {
+        let caps = didcomm_and_rest_peer();
+        let (own, _) =
+            pick_transport(&caps, &initiable_for(all_wired(), Some(VTA)), "vtc").expect("shared");
+        assert_eq!(
+            own,
+            Protocol::Didcomm,
+            "this VTA's own document still prefers DIDComm"
+        );
+        let (persona, _) = pick_transport(&caps, &initiable_for(all_wired(), Some(PERSONA)), "vtc")
+            .expect("REST is shared");
+        assert_eq!(
+            persona,
+            Protocol::Rest,
+            "a persona-signed document must use the binding whose authenticated sender can be its \
+             issuer"
         );
     }
 
@@ -1480,8 +1711,12 @@ mod tests {
             { "id": "#didcomm", "type": "DIDCommMessaging",
               "serviceEndpoint": [{ "uri": "did:example:mediator", "accept": ["didcomm/v2"] }] }
         ]));
-        let (protocol, _) = pick_transport(&caps, &initiable_from(false), "did:example:peer")
-            .expect("DIDComm is shared, so the peer is reachable");
+        let (protocol, _) = pick_transport(
+            &caps,
+            &initiable_for(without_tsp(), Some(VTA)),
+            "did:example:peer",
+        )
+        .expect("DIDComm is shared, so the peer is reachable");
         assert_eq!(
             protocol,
             Protocol::Didcomm,
@@ -1494,8 +1729,12 @@ mod tests {
     #[cfg(feature = "tsp")]
     #[test]
     fn a_tsp_only_peer_is_refused_not_errored_when_this_sender_has_no_tsp() {
-        let err = pick_transport(&tsp_only_peer(), &initiable_from(false), "did:example:peer")
-            .expect_err("TSP is the only shared transport and this sender cannot start it");
+        let err = pick_transport(
+            &tsp_only_peer(),
+            &initiable_for(without_tsp(), Some(VTA)),
+            "did:example:peer",
+        )
+        .expect_err("TSP is the only shared transport and this sender cannot start it");
         let msg = err.to_string();
         assert!(
             matches!(err, AppError::Validation(_)),

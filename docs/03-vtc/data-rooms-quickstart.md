@@ -27,9 +27,15 @@ them in one of their contexts. The `pnm` you type into is only a client: its
 own key never appears in a room.
 
 The community runs on a VTA of its own. It could share Alice's, but the VTA
-that presigns the community's storage must be connected to a mediator, and a
-member's VTA that speaks DIDComm to the VTC cannot yet send room requests as
-the member (see *What does not work yet*).
+that presigns the community's storage must be connected to a mediator.
+
+A member's VTA always sends the room requests it signs *as the member*
+(`pnm rooms owner register`, `group-add`, `group-remove`, `group-renew`,
+`keys backfill`) over the VTC's Trust-Task HTTPS endpoint, whether or not
+either side is on a mediator. TSP and DIDComm would authenticate the VTA's own
+DID rather than the member's, and the VTC refuses a document whose signer is
+not its sender (`identityMismatch`). So a VTC must keep advertising its HTTPS
+endpoint (`TrustTaskHTTPS`) for members' VTAs to reach it.
 
 Local endpoints need one switch, set in every shell below:
 
@@ -153,7 +159,7 @@ setup_key_file    = "/tmp/vdr/vtc/setup-key.json"
 context           = "vtc"
 single_admin_mode = true                        # one administrator, for a test
 
-# Only for §10, and only with the fix described under "What does not work yet":
+# Only for §10:
 # [messaging]
 # mediator_did = "<MEDIATOR DID>"
 # transports   = ["didcomm"]
@@ -387,8 +393,8 @@ storage credential: for every object it asks the community's VTA (C) for a
 presigned request, over messaging
 ([§8.2 of the guide](../02-vta/data-rooms.md#82-t2--a-community-vtc),
 [external accounts](../02-vta/external-accounts.md)). That needs the VTC and VTA
-C on a mediator, and today two fixes this run applied locally (*What does not
-work yet*); without them, stop at §9.
+C on a mediator, and today a fix this run applied locally (the private-address
+probe under *What does not work yet*); without it, stop at §9.
 
 ### 10.1 A local mediator
 
@@ -546,14 +552,6 @@ write is not retried:
 
 Found in this run; each is being fixed.
 
-- **A VTC that speaks DIDComm cannot be reached by members' VTAs.** A VTA
-  sends room requests the member signed (`pnm rooms owner register`,
-  `group-add`, `group-remove`, `group-renew`, `keys backfill`) over the best
-  transport both sides advertise. One with no mediator still picks DIDComm and
-  fails *"DIDComm messaging not initialized"*; one with a mediator sends it
-  authenticated as the VTA, and the VTC refuses a document signed by someone
-  other than its sender (`identityMismatch`). This is why §1–§9 keep the VTC
-  off messaging, and why §10 needs a fix.
 - **A VTA cannot probe a bucket on a private address.** The probe uses the
   public-only HTTP client whatever `VTA_ALLOW_PRIVATE_ENDPOINTS` says, so an
   account at LocalStack, or a MinIO on your network, never passes a complete

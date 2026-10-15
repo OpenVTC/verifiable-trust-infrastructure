@@ -124,6 +124,12 @@ pub struct DIDCommBridge {
     /// current primary regardless.
     #[allow(dead_code)]
     listener_id: String,
+    /// Test seam: report a live session authenticated as this DID without one
+    /// ([`Self::pretend_live_as`]). Sends still fail "not initialized", which
+    /// is the point — a test using it shows what transport selection does when
+    /// DIDComm is wired, without a mediator.
+    #[cfg(test)]
+    pretend_sender: RwLock<Option<String>>,
 }
 
 impl DIDCommBridge {
@@ -134,6 +140,8 @@ impl DIDCommBridge {
             inner: RwLock::new(None),
             signer: RwLock::new(None),
             listener_id: listener_id.into(),
+            #[cfg(test)]
+            pretend_sender: RwLock::new(None),
         }
     }
 
@@ -277,7 +285,28 @@ impl DIDCommBridge {
 
     /// The VTA's own DID, or `None` before the service is published.
     pub fn vta_did(&self) -> Option<String> {
+        #[cfg(test)]
+        if let Some(did) = self
+            .pretend_sender
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        {
+            return Some(did);
+        }
         self.snapshot().map(|i| i.vta_did.clone())
+    }
+
+    /// Test-only: make [`Self::vta_did`] report a live session authenticated
+    /// as `did`, as `server::MessagingConnect` would after connecting. Nothing
+    /// is wired, so a DIDComm send still fails — a test that selects DIDComm
+    /// sees that failure instead of the peer.
+    #[cfg(all(test, feature = "didcomm"))]
+    pub(crate) fn pretend_live_as(&self, did: &str) {
+        *self
+            .pretend_sender
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = Some(did.to_string());
     }
 
     /// The live, **non-latched** messaging status (R6.2), or `None` before the

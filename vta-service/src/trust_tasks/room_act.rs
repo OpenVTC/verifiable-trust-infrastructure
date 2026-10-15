@@ -1601,4 +1601,123 @@ mod tests {
             );
         }
     }
+
+    // ─── transport: the binding whose authenticated sender can be the signer ───
+
+    /// The recording host's document, also advertising DIDComm through a mediator —
+    /// a VTC on messaging, which serves its Trust-Task HTTPS door as well. DIDComm is
+    /// listed first, as the canonical service order puts it.
+    fn advertising_didcomm_too(mut doc: Value) -> Value {
+        let did = doc["id"].as_str().unwrap().to_string();
+        doc["service"].as_array_mut().unwrap().insert(
+            0,
+            json!({
+                "id": format!("{did}#didcomm"),
+                "type": "DIDCommMessaging",
+                "serviceEndpoint": [{ "uri": "did:example:mediator", "accept": ["didcomm/v2"] }],
+            }),
+        );
+        doc
+    }
+
+    /// `keys backfill` as alice's client asks it, against `host`.
+    async fn backfill_as_alice(f: &Fx, host: &str) -> Value {
+        body(
+            super::super::room_group::handle_backfill(
+                &f.state,
+                &alice_client(),
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1,
+                    json!({ "roomId": f.room.did, "host": host }),
+                ),
+            )
+            .await,
+        )
+    }
+
+    async fn resolver_with(
+        did: &str,
+        doc: Value,
+    ) -> affinidi_did_resolver_cache_sdk::DIDCacheClient {
+        let mut resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+        )
+        .await
+        .unwrap();
+        resolver
+            .add_did_document(did, serde_json::from_value(doc).unwrap())
+            .await;
+        resolver
+    }
+
+    /// **Found live**: a REST-only VTA (`[messaging] kind = "skip"`) sending a member's
+    /// room request to a VTC that advertises DIDComm and HTTPS picked DIDComm — the
+    /// higher preference — and failed *"DIDComm messaging not initialized"*. A transport
+    /// this VTA cannot start is not in its set, so the request goes over the HTTPS both
+    /// sides can use, and the host answers it.
+    #[tokio::test]
+    async fn a_rest_only_vta_reaches_a_host_advertising_didcomm_over_https() {
+        let mut f = fixture(&["read", "write"]).await;
+        found_group(&f, &f.alice.did).await;
+        let (host, host_doc, seen) = recording_host().await;
+        f.state.did_resolver =
+            Some(resolver_with(&host.did, advertising_didcomm_too(host_doc)).await);
+        assert!(
+            f.state.didcomm_bridge.vta_did().is_none(),
+            "the fixture is the REST-only VTA: no mediator session"
+        );
+
+        let reply = backfill_as_alice(&f, &host.did).await;
+        assert!(
+            reply["type"].as_str().unwrap().ends_with("#response"),
+            "the host must be reached and answer: {reply}"
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1, "one request, over HTTPS");
+    }
+
+    /// **Found live**: a VTA on a mediator sent the persona-signed request over DIDComm,
+    /// authenticated as **itself**, and the VTC refused it `identityMismatch` — the
+    /// DIDComm and TSP bindings make the in-band `issuer` a cross-check against the
+    /// transport's authenticated sender. It must go over HTTPS, where no bearer is sent
+    /// and the persona's proof is the authentication, and be accepted.
+    ///
+    /// The bridge reports a live session as the VTA without a mediator, so a DIDComm
+    /// selection would fail here *"not initialized"* rather than reach the host.
+    #[cfg(feature = "didcomm")]
+    #[tokio::test]
+    async fn a_persona_signed_request_from_a_vta_on_a_mediator_goes_over_https() {
+        let mut f = fixture(&["read", "write"]).await;
+        found_group(&f, &f.alice.did).await;
+        let (host, host_doc, seen) = recording_host().await;
+        let resolver = resolver_with(&host.did, advertising_didcomm_too(host_doc)).await;
+        f.state.did_resolver = Some(resolver.clone());
+        let vta_did = f.state.config.read().await.vta_did.clone().unwrap();
+        f.state.didcomm_bridge.pretend_live_as(&vta_did);
+
+        // DIDComm is wired: this VTA's own documents would still take it.
+        let out = crate::operations::outbound::Outbound::from_app_state(&f.state, &resolver);
+        assert!(
+            out.initiable_protocols(Some(&vta_did))
+                .contains(&vta_sdk::protocol::matching::Protocol::Didcomm),
+            "the VTA's own documents keep DIDComm"
+        );
+        assert_eq!(
+            out.initiable_protocols(Some(&f.alice.did)),
+            vec![vta_sdk::protocol::matching::Protocol::Rest],
+            "a persona's document rides only the binding whose sender can be the persona"
+        );
+
+        let reply = backfill_as_alice(&f, &host.did).await;
+        assert!(
+            reply["type"].as_str().unwrap().ends_with("#response"),
+            "the persona-signed request must reach the host and be answered: {reply}"
+        );
+        let received = seen.lock().unwrap().clone();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0]["issuer"], f.alice.did);
+        assert!(
+            !received[0].to_string().contains(&vta_did),
+            "the VTA's DID must not reach the host"
+        );
+    }
 }
