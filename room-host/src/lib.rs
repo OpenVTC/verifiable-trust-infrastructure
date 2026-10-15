@@ -670,6 +670,12 @@ async fn put_with_blobs(
         Ok(a) => a,
         Err(e) => return from_app_error(doc, &e),
     };
+    // The declared `epochMismatch`, so a writer can tell "you missed a commit" from the code.
+    if let Some(refusal) =
+        vti_rooms::blob_tasks::record_epoch_refused(&room, req.sealed.as_ref().map(|s| s.epoch))
+    {
+        return files::record_refused(doc, refusal);
+    }
 
     let blobs = blobs.unwrap_or_default();
     // Held across the write: the blobs it names cannot be collected, and their
@@ -2619,6 +2625,45 @@ mod tests {
             body["epoch"].as_u64(),
             Some(u64::from(f.room.epoch + 1)),
             "an unlinked advance must still work: {body}"
+        );
+    }
+
+    /// A record sealed under an epoch the room has moved past is the declared
+    /// `epochMismatch` — the code a writer's client turns into "apply the commit you
+    /// missed" — and is not stored.
+    #[tokio::test]
+    async fn a_record_sealed_under_a_superseded_epoch_is_epoch_mismatch() {
+        let (_d, st) = state();
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Attributed).await;
+        register(&app, &f).await;
+        let current = storage::get_room(&st.rooms, &f.room.room_id)
+            .await
+            .unwrap()
+            .epoch;
+
+        let (status, body) = call(
+            &app,
+            ROOMS_RECORDS_PUT_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "k",
+                "presentation": f.as_owner(),
+                "sealed": {
+                    "ciphertext": "9jK2_QhV1sVvR0m5xAqZ7A",
+                    "nonce": "b0Zt8Qm2Yq1sVvR0",
+                    "epoch": current + 1
+                }
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["code"], "rooms/records/put:epochMismatch", "{body}");
+        assert!(
+            storage::get_record(&st.records, &f.room.room_id, "k")
+                .await
+                .is_err()
         );
     }
 

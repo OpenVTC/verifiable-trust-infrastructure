@@ -448,6 +448,14 @@ pub(super) async fn put_record<P>(
     if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
         return o;
     }
+    // A record sealed under a superseded epoch is the declared `epochMismatch`, not a
+    // generic validation failure: the writer's remedy (apply the commit it missed) follows
+    // from the code alone.
+    if let Some(refusal) =
+        vti_rooms::blob_tasks::record_epoch_refused(&room, req.sealed.as_ref().map(|s| s.epoch))
+    {
+        return super::files::refused(doc, refusal);
+    }
 
     // Held across the write: the blobs it names cannot be collected, and their limits
     // cannot change, between this check and the references it records.
@@ -1832,6 +1840,49 @@ mod tests {
         assert_eq!(
             got["author"], f.owner.did,
             "the author is the subject the chain established, not the room's owner field"
+        );
+    }
+
+    /// A record sealed under an epoch the room has moved past is the declared
+    /// `epochMismatch`, the code a writer's client turns into "apply the commit you
+    /// missed" — never a bare validation failure only its message explains.
+    #[tokio::test]
+    async fn a_record_sealed_under_a_superseded_epoch_is_epoch_mismatch() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Attributed).await;
+        let out = create(state, &f).await;
+        assert!(out.status.is_success(), "create: {}", payload_of(&out));
+        let current = storage::get_room(&state.rooms_ks, &f.room.room_id)
+            .await
+            .unwrap()
+            .epoch;
+
+        let out = handle_put_record(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                json!({
+                    "roomId": f.room.room_id, "key": "k1", "presentation": f.as_owner(),
+                    "sealed": {
+                        "ciphertext": "9jK2_QhV1sVvR0m5xAqZ7A",
+                        "nonce": "b0Zt8Qm2Yq1sVvR0",
+                        "epoch": current + 1
+                    }
+                }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+        assert!(!out.status.is_success(), "{}", payload_of(&out));
+        assert_eq!(
+            payload_of(&out)["code"],
+            "rooms/records/put:epochMismatch",
+            "{}",
+            payload_of(&out)
         );
     }
 

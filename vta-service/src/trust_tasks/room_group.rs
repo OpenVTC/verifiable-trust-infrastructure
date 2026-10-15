@@ -1132,7 +1132,7 @@ pub(super) async fn handle_open(
         Ok(m) => m,
         Err(e) => return app_error_to_reject(&doc, e),
     };
-    let plaintext = match room_groups::open_record(
+    let plaintext = match room_groups::open_record_detailed(
         &state.room_groups_ks,
         &member,
         &req.key,
@@ -1144,7 +1144,7 @@ pub(super) async fn handle_open(
     .await
     {
         Ok(p) => p,
-        Err(e) => return app_error_to_reject(&doc, e),
+        Err(e) => return open_refused(&doc, e),
     };
 
     record(state, "rooms.keys.open", auth, &req.room_id).await;
@@ -1319,6 +1319,32 @@ pub(super) async fn handle_file_key(
             "epoch": epoch,
         }),
     )
+}
+
+/// `rooms/keys/open`'s refusal for a record that did not open.
+///
+/// The two epoch cases are the declared `unknownEpoch` with `details.reason` saying which,
+/// as `rooms/keys/file-key` answers them: `notDelivered` (catch up with the commits) and
+/// `removed` (nothing will — this member was removed). A client tells them apart by
+/// reason, never by message.
+fn open_refused(doc: &TrustTask<Value>, e: room_groups::OpenError) -> TrustTaskOutcome {
+    use trust_tasks_rs::specs::rooms::keys::open::v0_1::error_codes::UNKNOWN_EPOCH;
+    let message = e.to_string();
+    match e {
+        room_groups::OpenError::NotDelivered { held, .. } => super::helpers::reject_with_code(
+            doc,
+            declared(UNKNOWN_EPOCH),
+            message,
+            Some(serde_json::json!({ "reason": "notDelivered", "heldEpoch": held })),
+        ),
+        room_groups::OpenError::Removed { removed_at, .. } => super::helpers::reject_with_code(
+            doc,
+            declared(UNKNOWN_EPOCH),
+            message,
+            Some(serde_json::json!({ "reason": "removed", "removedAtEpoch": removed_at })),
+        ),
+        room_groups::OpenError::App(e) => app_error_to_reject(doc, e),
+    }
 }
 
 /// A declared code, as the framework's extended form.

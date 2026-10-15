@@ -385,6 +385,11 @@ pub(crate) fn record_blobs_refused(doc: &TrustTask<Value>, e: BlobError) -> Answ
     refused(doc, blob_tasks::record_blobs_refused(e))
 }
 
+/// Render a `rooms/records/put` refusal the shared tasks produced.
+pub(crate) fn record_refused(doc: &TrustTask<Value>, refusal: blob_tasks::Refusal) -> Answer {
+    refused(doc, refusal)
+}
+
 #[cfg(test)]
 mod tests {
     use base64::Engine as _;

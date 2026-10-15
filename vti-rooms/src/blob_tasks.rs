@@ -691,6 +691,33 @@ pub fn record_blobs_refused(e: BlobError) -> Refusal {
     }
 }
 
+/// `rooms/records/put` (0.1 and 0.2) refusing a sealed record whose epoch is not the room's
+/// current one, as the task's declared `epochMismatch` — or `None` when the epoch is not the
+/// reason to refuse it.
+///
+/// The usual cause is a writer whose key holder missed the commit that moved the room on
+/// (a renewal, a removal); the remedy is to apply it and write again. Declared so the writer
+/// can say that from the code, never from this message. Both versions declare the code with
+/// the same string. The store re-checks the epoch under its own read of the room
+/// ([`crate::storage::put_record`]), which is the backstop for a room that moves between
+/// this check and the write.
+pub fn record_epoch_refused(room: &Room, sealed_epoch: Option<u32>) -> Option<Refusal> {
+    if room.visibility.stores_cleartext() {
+        return None;
+    }
+    let sealed = sealed_epoch?;
+    (sealed != room.epoch).then(|| {
+        declared(
+            put_v2::error_codes::EPOCH_MISMATCH,
+            format!(
+                "record is sealed under epoch {sealed}, room `{}` is at {}",
+                room.room_id, room.epoch
+            ),
+            None,
+        )
+    })
+}
+
 /// A 0.1 get response with `blobs` added, as `rooms/records/get/0.2` answers.
 ///
 /// `blobs` is exactly what the stored version names: absent when it names none, which

@@ -112,8 +112,9 @@ pub const MEMORY: &str = "memory";
 /// A member's MLS group state for each data room they belong to
 /// (`rooms/keys/{welcome,commit,open}`), keyed **per member**:
 /// `room-group/<roomId>/<persona>`, beside the member's pending KeyPackage
-/// (`room-kp/…`), pending epoch advance (`room-advance/…`) and root memory
-/// (`room-roots/…`) under the same `<roomId>/<persona>`. One VTA may hold several
+/// (`room-kp/…`), pending epoch advance (`room-advance/…`), root memory
+/// (`room-roots/…`) and the epoch a commit removed the member at
+/// (`room-removed/…`) under the same `<roomId>/<persona>`. One VTA may hold several
 /// members of one room — several principals, or several personas of one — and
 /// each is a different leaf with different secrets. Rows a per-room build wrote
 /// (`room-group:<roomId>`, …) are moved under their member on first touch.

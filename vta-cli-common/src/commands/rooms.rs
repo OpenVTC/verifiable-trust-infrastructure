@@ -855,7 +855,9 @@ async fn write_sealed_naming(
             }
             None => vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
         };
-        let (_, reply) = act_and_send(client, target, put_type, payload).await?;
+        let (_, reply) = act_and_send(client, target, put_type, payload)
+            .await
+            .map_err(|e| put_refused(e, target))?;
         let put: vti_rooms::wire::PutRecordResponse = parse_reply("rooms/records/put", reply)?;
         landed = put.version;
         if landed == intended {
@@ -872,6 +874,109 @@ async fn write_sealed_naming(
          with --expected-version {landed}."
     )
     .into())
+}
+
+/// The `pnm rooms keys commit` that brings this VTA's group up to the room's epoch,
+/// with the target's own values. `--host-did` only when the operator gave one: a VTC
+/// needs it, another host may not have one to give.
+fn keys_commit_command(target: &RoomTarget<'_>) -> String {
+    let mut cmd = format!(
+        "pnm rooms keys commit --room {} --host {}",
+        target.room_id, target.host_url
+    );
+    if let Some(did) = target.host_did {
+        cmd.push_str(&format!(" --host-did {did}"));
+    }
+    cmd
+}
+
+/// `rooms/records/put` refused `e`: when the host says the record was sealed under an
+/// epoch the room has moved past (the declared `epochMismatch`), say what happened and
+/// print the command that catches up. Anything else is returned as it was.
+fn put_refused(
+    e: Box<dyn std::error::Error>,
+    target: &RoomTarget<'_>,
+) -> Box<dyn std::error::Error> {
+    let refusal = e
+        .downcast_ref::<vtc_client::VtcError>()
+        .and_then(vtc_client::git_ns::task_error);
+    match refusal {
+        Some((code, message)) => match put_refusal_hint(&code, &message, target) {
+            Some(hint) => hint.into(),
+            None => e,
+        },
+        None => e,
+    }
+}
+
+/// The operator-facing text for a `rooms/records/put` refusal `code`, when there is one.
+fn put_refusal_hint(code: &str, message: &str, target: &RoomTarget<'_>) -> Option<String> {
+    use trust_tasks_rs::specs::rooms::records::put;
+    let epoch_mismatch = [
+        put::v0_1::error_codes::EPOCH_MISMATCH.code,
+        put::v0_2::error_codes::EPOCH_MISMATCH.code,
+    ];
+    if !epoch_mismatch.contains(&code) {
+        return None;
+    }
+    Some(format!(
+        "the host refused the record: {message}\n\n\
+         The room has moved on to a newer epoch — it was renewed, or its membership changed — \
+         and this VTA has not applied the commit that moved it, so it sealed the record under \
+         the old epoch. Nothing was written. Catch up, then write again:\n\n  {}",
+        keys_commit_command(target)
+    ))
+}
+
+/// The operator-facing text for a `rooms/keys/open` refusal.
+///
+/// The two epoch cases have opposite remedies, so they are told apart by the declared
+/// `unknownEpoch` and its `details.reason` — `notDelivered` (catch up) and `removed` (no
+/// commit will help) — never by the message. The text checks are for a VTA that predates
+/// those reasons.
+fn open_refusal_hint(e: &VtaError, target: &RoomTarget<'_>) -> String {
+    use trust_tasks_rs::specs::rooms::keys::open::v0_1::error_codes::UNKNOWN_EPOCH;
+    let reason = (e.rejection_code() == Some(UNKNOWN_EPOCH.code))
+        .then(|| e.rejection_details())
+        .flatten()
+        .and_then(|d| d.get("reason"))
+        .and_then(Value::as_str);
+    let text = e.to_string();
+    let hint = match reason {
+        Some("removed") => {
+            let at = e
+                .rejection_details()
+                .and_then(|d| d.get("removedAtEpoch"))
+                .and_then(Value::as_u64)
+                .map(|n| format!(" at epoch {n}"))
+                .unwrap_or_default();
+            format!(
+                "You were removed from this room's group{at}. Records sealed since then will \
+                 never open for you, and no commit will change that; what was sealed before \
+                 your removal still opens. Rejoining takes a fresh invitation from the room's \
+                 owner."
+            )
+        }
+        Some("notDelivered") => format!(
+            "The record is newer than this VTA's group: a commit has not been applied here. \
+             Catch up, then read it again:\n\n  {}",
+            keys_commit_command(target)
+        ),
+        _ if text.contains("cannot reach") => format!(
+            "The record is older than any key this VTA holds — it was written before you \
+             joined. Fetch the room's history: `pnm rooms keys backfill --room {} --host-did \
+             {}`.",
+            target.room_id,
+            target.host_did.unwrap_or("<host-did>")
+        ),
+        _ if text.contains("has not been delivered") => format!(
+            "The record is newer than this VTA's group. Catch up with `{}`; if that says you \
+             were removed, nothing sealed after your removal will open.",
+            keys_commit_command(target)
+        ),
+        _ => "The record did not open with any key this VTA holds.".to_string(),
+    };
+    format!("{e}\n\n{hint}")
 }
 
 /// Open a sealed record through the VTA and check its body before anything in it is used.
@@ -893,24 +998,9 @@ async fn open_and_verify(
             sealed.epoch,
         )
         .await
-        .map_err(|e| {
-            // The failures operators will actually hit, named where they will read
-            // them. Each reads like corruption if nobody says otherwise, and the two
-            // epoch cases have opposite remedies.
-            let text = e.to_string();
-            let hint = if text.contains("cannot reach") {
-                "The record is older than any key this VTA holds — it was written before \
-                 you joined. Fetch the room's history: `pnm rooms keys backfill --room \
-                 <room> --host-did <host>`."
-            } else if text.contains("has not been delivered") {
-                "The record is newer than this VTA's group. Catch up with `pnm rooms keys \
-                 commit --room <room> --host <url> --host-did <host>`; if that says you were \
-                 removed, nothing sealed after your removal will open."
-            } else {
-                "The record did not open with any key this VTA holds."
-            };
-            format!("{e}\n\n{hint}")
-        })?;
+        // The failures operators will actually hit, named where they will read them. Each
+        // reads like corruption if nobody says otherwise.
+        .map_err(|e| open_refusal_hint(&e, target))?;
     let plaintext = opened
         .get("plaintext")
         .and_then(Value::as_str)
@@ -1501,6 +1591,103 @@ mod tests {
             },
             "expiresAt": "2026-09-07T16:00:00Z",
         })
+    }
+
+    fn vtc_target() -> RoomTarget<'static> {
+        RoomTarget {
+            host_url: "https://community.example/v1",
+            host_did: Some("did:webvh:community.example"),
+            room_id: "did:webvh:example.com:rooms:northwind",
+        }
+    }
+
+    const CATCH_UP: &str = "pnm rooms keys commit --room did:webvh:example.com:rooms:northwind \
+                            --host https://community.example/v1 --host-did did:webvh:community.example";
+
+    /// A put sealed under a superseded epoch (`epochMismatch`, read off the host's
+    /// `trust-task-error` document) names the catch-up command with the real values, not
+    /// the raw HTTP body.
+    #[test]
+    fn a_superseded_epoch_put_prints_keys_commit_with_the_real_values() {
+        let body = json!({
+            "type": "https://trusttasks.org/spec/rooms/records/put/0.1#error",
+            "payload": {
+                "code": "rooms/records/put:epochMismatch",
+                "message": "record is sealed under epoch 2, room `r` is at 3",
+            },
+        });
+        let err: Box<dyn std::error::Error> = Box::new(vtc_client::VtcError::Http {
+            status: 400,
+            body: body.to_string(),
+        });
+        let text = put_refused(err, &vtc_target()).to_string();
+        assert!(text.contains(CATCH_UP), "{text}");
+        assert!(text.contains("sealed under epoch 2"), "{text}");
+        assert!(!text.contains("HTTP 400"), "{text}");
+    }
+
+    /// Any other refusal passes through untouched, and no `--host-did` is invented for a
+    /// host the operator named none for.
+    #[test]
+    fn other_put_refusals_pass_through_and_no_host_did_is_invented() {
+        let t = vtc_target();
+        assert!(put_refusal_hint("rooms/records/put:recordTooLarge", "", &t).is_none());
+        let err: Box<dyn std::error::Error> = Box::new(vtc_client::VtcError::Http {
+            status: 500,
+            body: "not a document".into(),
+        });
+        assert_eq!(
+            put_refused(err, &t).to_string(),
+            "VTC returned HTTP 500: not a document"
+        );
+
+        let bare = RoomTarget {
+            host_did: None,
+            ..vtc_target()
+        };
+        assert_eq!(
+            keys_commit_command(&bare),
+            "pnm rooms keys commit --room did:webvh:example.com:rooms:northwind \
+             --host https://community.example/v1"
+        );
+    }
+
+    fn open_rejected(reason: &str, extra: Value) -> VtaError {
+        let mut details = json!({ "reason": reason });
+        details
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        VtaError::Rejected {
+            code: "rooms/keys/open:unknownEpoch".into(),
+            message: "record is sealed under epoch 4".into(),
+            details: Some(details),
+        }
+    }
+
+    /// A member removed from the group is told so, and is not sent to `keys commit`,
+    /// which can never open what was sealed after the removal.
+    #[test]
+    fn a_removed_member_is_told_it_was_removed_not_to_catch_up() {
+        let text = open_refusal_hint(
+            &open_rejected("removed", json!({ "removedAtEpoch": 3 })),
+            &vtc_target(),
+        );
+        assert!(
+            text.contains("You were removed from this room's group at epoch 3"),
+            "{text}"
+        );
+        assert!(!text.contains("keys commit"), "{text}");
+    }
+
+    /// A member who is only behind gets the catch-up command with the real values.
+    #[test]
+    fn a_member_behind_is_told_to_catch_up() {
+        let text = open_refusal_hint(
+            &open_rejected("notDelivered", json!({ "heldEpoch": 2 })),
+            &vtc_target(),
+        );
+        assert!(text.contains(CATCH_UP), "{text}");
     }
 
     /// `pnm rooms renew` refuses a sealed room and names the command that renews it

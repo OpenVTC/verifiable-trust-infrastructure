@@ -195,17 +195,8 @@ async fn start_non_tee_setup_interactive(
         &did,
         &private_key_multibase,
     )?;
-    finalize_session(
-        config,
-        &slug,
-        &name,
-        vta_did_input,
-        &did,
-        vta_url.as_deref(),
-        false,
-    )?;
-
-    Ok(())
+    finalize_session(config, &slug, &name, vta_did_input, vta_url.as_deref())?;
+    confirm_grant(&slug, vta_did_input, &did, vta_url.as_deref(), None, false).await
 }
 
 // ── Non-TEE phase 1: non-interactive ───────────────────────────────
@@ -298,16 +289,16 @@ pub async fn continue_non_tee_setup_interactive(
         None
     };
 
-    finalize_session(
-        config,
+    finalize_session(config, slug, &name, vta_did, vta_url.as_deref())?;
+    confirm_grant(
         slug,
-        &name,
         vta_did,
         &existing_did,
         vta_url.as_deref(),
+        None,
         false,
-    )?;
-    Ok(())
+    )
+    .await
 }
 
 // ── Non-TEE phase 2: non-interactive ───────────────────────────────
@@ -341,7 +332,7 @@ pub async fn continue_non_tee_setup_non_interactive(
         vta_url
     };
 
-    finalize_session(config, slug, &name, vta_did, &existing_did, vta_url, true)?;
+    finalize_session(config, slug, &name, vta_did, vta_url)?;
 
     // Persist mediator_did if provided
     if let Some(med_did) = mediator_did {
@@ -351,7 +342,7 @@ pub async fn continue_non_tee_setup_non_interactive(
         save_config(config)?;
     }
 
-    Ok(())
+    confirm_grant(slug, vta_did, &existing_did, vta_url, mediator_did, true).await
 }
 
 // ── Shared helpers ─────────────────────────────────────────────────
@@ -391,9 +382,7 @@ fn finalize_session(
     slug: &str,
     name: &str,
     vta_did: &str,
-    did: &str,
     vta_url: Option<&str>,
-    non_interactive: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let keyring_key = vta_keyring_key(slug);
     auth::bind_vta_did(&keyring_key, vta_did)?;
@@ -411,31 +400,157 @@ fn finalize_session(
         config.default_vta = Some(slug.to_string());
     }
     save_config(config)?;
-
-    if non_interactive {
-        eprintln!("Bound VTA DID for '{slug}': {vta_did}");
-        eprintln!("Ask the VTA admin to grant admin access:");
-        eprintln!("  vta import-did --did {did} --role admin");
-        emit_json(slug, did, "complete")?;
-    } else {
-        eprintln!();
-        eprintln!("\x1b[1;32mSession stored for '{slug}'.\x1b[0m");
-        eprintln!();
-        eprintln!("  VTA slug: {slug}");
-        eprintln!("  VTA DID:  {vta_did}");
-        eprintln!("  Temp DID: {did}");
-        eprintln!();
-        eprintln!("Ask your VTA admin to grant this identity admin access:");
-        eprintln!();
-        eprintln!("  \x1b[1mvta import-did --did {did} --role admin\x1b[0m");
-        eprintln!();
-        eprintln!("Once the grant is in place, run any PNM command (e.g. `pnm health`). PNM will");
-        eprintln!("rotate to a fresh long-lived did:key on first connect and drop the temp");
-        eprintln!("from the ACL.");
-        eprintln!();
-    }
-
     Ok(())
+}
+
+/// Whether the VTA already accepts the phase-1 identity, found by authenticating as it.
+#[derive(Debug)]
+enum GrantCheck {
+    /// It does. Authenticating rotated to a fresh long-lived `did:key`, this one.
+    Granted { rotated: String },
+    /// The VTA answered, and refused it: the grant is not in place yet.
+    NotGranted,
+    /// The VTA could not be asked.
+    Unchecked(String),
+}
+
+impl GrantCheck {
+    fn from_connect(
+        result: Result<vta_sdk::client::VtaClient, Box<dyn std::error::Error>>,
+        rotated: impl FnOnce() -> Option<String>,
+    ) -> (Self, Option<vta_sdk::client::VtaClient>) {
+        match result {
+            Ok(client) => match rotated() {
+                Some(rotated) => (Self::Granted { rotated }, Some(client)),
+                None => (
+                    Self::Unchecked("the session vanished during authentication".into()),
+                    Some(client),
+                ),
+            },
+            Err(e) if e.downcast_ref::<VtaError>().is_some_and(VtaError::is_auth) => {
+                (Self::NotGranted, None)
+            }
+            Err(e) => (Self::Unchecked(e.to_string()), None),
+        }
+    }
+}
+
+/// Finish phase 2 by authenticating as the phase-1 identity, and say what is left to do.
+///
+/// The grant may already be in place — a deferred setup bakes the DID into the VTA's
+/// `admin_did`, and an operator may have run `vta import-did` before `continue` — so the
+/// `vta import-did` advice is printed only when the VTA refused the identity, or could
+/// not be asked. Authenticating is also the cold start's rotation: on success the temp
+/// DID has already been swapped for a fresh one.
+async fn confirm_grant(
+    slug: &str,
+    vta_did: &str,
+    did: &str,
+    vta_url: Option<&str>,
+    mediator_did: Option<&str>,
+    non_interactive: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let keyring_key = vta_keyring_key(slug);
+    eprintln!("Checking whether {vta_did} accepts {did}...");
+    let connected = auth::connect(
+        vta_url,
+        mediator_did,
+        vta_sdk::session::TransportChoice::Auto,
+        &keyring_key,
+    )
+    .await;
+    let (check, client) = GrantCheck::from_connect(connected, || {
+        auth::loaded_session(&keyring_key).map(|s| s.client_did)
+    });
+    if let Some(client) = client {
+        client.shutdown().await;
+    }
+    for line in grant_report(&check, slug, vta_did, did, non_interactive) {
+        eprintln!("{line}");
+    }
+    if non_interactive {
+        let admin_did = match &check {
+            GrantCheck::Granted { rotated } => rotated.as_str(),
+            _ => did,
+        };
+        emit_json(slug, admin_did, "complete")?;
+    }
+    Ok(())
+}
+
+/// What [`confirm_grant`] prints for `check`. The `vta import-did` command appears only when
+/// the grant is missing, or could not be checked.
+fn grant_report(
+    check: &GrantCheck,
+    slug: &str,
+    vta_did: &str,
+    did: &str,
+    non_interactive: bool,
+) -> Vec<String> {
+    let (bold, reset) = if non_interactive {
+        ("", "")
+    } else {
+        ("\x1b[1m", "\x1b[0m")
+    };
+    let grant = format!("  {bold}vta import-did --did {did} --role admin{reset}");
+    let mut out = Vec::new();
+    if !non_interactive {
+        out.push(String::new());
+        out.push(format!("\x1b[1;32mSession stored for '{slug}'.\x1b[0m"));
+        out.push(String::new());
+        out.push(format!("  VTA slug: {slug}"));
+        out.push(format!("  VTA DID:  {vta_did}"));
+        out.push(format!("  Temp DID: {did}"));
+        out.push(String::new());
+    } else {
+        out.push(format!("Bound VTA DID for '{slug}': {vta_did}"));
+    }
+    match check {
+        GrantCheck::Granted { rotated } => {
+            out.push(format!(
+                "{vta_did} accepted {did}: admin access is in place. PNM rotated to a fresh \
+                 long-lived did:key ({rotated}) and dropped the temp DID from the ACL."
+            ));
+            out.push("Ready: try `pnm health`.".into());
+        }
+        GrantCheck::NotGranted => {
+            out.push(format!(
+                "{vta_did} does not accept {did} yet. Ask your VTA admin to grant it admin \
+                 access:"
+            ));
+            out.push(String::new());
+            out.push(grant);
+            out.push(String::new());
+            out.push(
+                "Once the grant is in place, run any PNM command (e.g. `pnm health`). PNM will \
+                 rotate to a fresh long-lived did:key on first connect and drop the temp DID \
+                 from the ACL."
+                    .into(),
+            );
+        }
+        GrantCheck::Unchecked(why) => {
+            out.push(format!(
+                "Could not reach {vta_did} to check whether it accepts {did}: {why}"
+            ));
+            out.push(
+                "If the VTA has not granted this identity admin access yet, ask your VTA admin \
+                 to run:"
+                    .into(),
+            );
+            out.push(String::new());
+            out.push(grant);
+            out.push(String::new());
+            out.push(
+                "Then run any PNM command (e.g. `pnm health`): PNM rotates to a fresh \
+                 long-lived did:key on first connect and drops the temp DID from the ACL."
+                    .into(),
+            );
+        }
+    }
+    if !non_interactive {
+        out.push(String::new());
+    }
+    out
 }
 
 enum ExistingState {
@@ -624,6 +739,70 @@ mod tests {
         );
         config.vtas = vtas;
         config
+    }
+
+    const TEMP: &str = "did:key:z6MkTemp";
+
+    fn report(check: &GrantCheck, non_interactive: bool) -> String {
+        grant_report(
+            check,
+            "my-vta",
+            "did:webvh:vta.example",
+            TEMP,
+            non_interactive,
+        )
+        .join("\n")
+    }
+
+    /// Once the VTA accepts the phase-1 identity (a deferred setup baked it into
+    /// `admin_did`, or the import already ran), `continue` does not tell the operator to
+    /// import it again.
+    #[test]
+    fn a_granted_identity_is_not_told_to_import_did() {
+        let check = GrantCheck::Granted {
+            rotated: "did:key:z6MkRotated".into(),
+        };
+        for non_interactive in [false, true] {
+            let text = report(&check, non_interactive);
+            assert!(!text.contains("import-did"), "{text}");
+            assert!(text.contains("did:key:z6MkRotated"), "{text}");
+        }
+    }
+
+    /// A refused identity, or a VTA that could not be asked, gets the grant command.
+    #[test]
+    fn a_missing_or_unchecked_grant_prints_import_did() {
+        let grant = format!("vta import-did --did {TEMP} --role admin");
+        for check in [
+            GrantCheck::NotGranted,
+            GrantCheck::Unchecked("connection refused".into()),
+        ] {
+            for non_interactive in [false, true] {
+                let text = report(&check, non_interactive);
+                assert!(text.contains(&grant), "{check:?}: {text}");
+            }
+        }
+        assert!(
+            report(&GrantCheck::Unchecked("connection refused".into()), true)
+                .contains("connection refused")
+        );
+    }
+
+    /// An authentication refusal is "not granted"; anything else is "could not check".
+    #[test]
+    fn a_connect_error_is_classified_by_type() {
+        let refused: Result<VtaClient, Box<dyn std::error::Error>> =
+            Err(Box::new(VtaError::Auth("unknown DID".into())));
+        assert!(matches!(
+            GrantCheck::from_connect(refused, || None).0,
+            GrantCheck::NotGranted
+        ));
+        let down: Result<VtaClient, Box<dyn std::error::Error>> =
+            Err("could not resolve the VTA DID".into());
+        assert!(matches!(
+            GrantCheck::from_connect(down, || None).0,
+            GrantCheck::Unchecked(_)
+        ));
     }
 
     #[test]

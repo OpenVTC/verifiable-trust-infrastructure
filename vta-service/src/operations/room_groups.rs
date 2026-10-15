@@ -103,6 +103,24 @@ const KEY_PACKAGE: &str = "room-kp";
 const ADVANCE: &str = "room-advance";
 /// What hosts have said about the room's tree, per member: `room-roots/<roomId>/<persona>`.
 const ROOTS: &str = "room-roots";
+/// That a commit removed this member, per member: `room-removed/<roomId>/<persona>`.
+///
+/// Written when [`apply_commit`] processes the commit that removes the member's own leaf.
+/// The group state stays as it was (what was readable before the removal still is), so
+/// without this row the group alone says only "behind", and every record sealed after the
+/// removal read as a commit somebody had not delivered — whose remedy, applying commits,
+/// can never work.
+const REMOVED: &str = "room-removed";
+
+/// The [`REMOVED`] row.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemovalRecord {
+    /// The first room epoch this member cannot open.
+    epoch: u32,
+    /// Unix seconds when the removing commit was processed here.
+    removed_at: u64,
+}
 
 /// The rows a build keyed by room alone wrote, read only to migrate them
 /// ([`migrate_legacy`]). `room-add:` is older still: the admission-only advance slot.
@@ -278,6 +296,12 @@ pub async fn join(
     let epoch = group.epoch();
 
     store(groups, member, &group, Vec::new(), now).await?;
+    // A member admitted again is a member again: an earlier removal no longer describes
+    // the group this VTA now holds.
+    groups
+        .remove(member.key(REMOVED))
+        .await
+        .map_err(|e| AppError::Internal(format!("clear an earlier removal record: {e}")))?;
     // The package is consumed. MLS consumes it on add, and a retained private half for a
     // used package is key material kept for nothing.
     groups
@@ -329,9 +353,20 @@ pub async fn apply_commit(
     // The link is what keeps everything already in the room readable across this commit.
     // Dropping it here would advance the epoch and silently sever the history — the defect
     // the chain exists to fix, so it is retained in the same write that advances the group.
-    let (_, link) = room
-        .apply_commit(commit)
-        .map_err(|e| AppError::Validation(format!("the commit did not process: {e}")))?;
+    let (_, link) = match room.apply_commit(commit) {
+        Ok(applied) => applied,
+        Err(e) => {
+            // Remembered, so a later open of a record sealed after the removal says
+            // "removed" rather than "a commit has not been delivered". Replaying the same
+            // commit lands here again and rewrites the same row.
+            if let RoomKeyError::Removed { epoch } = e {
+                record_removal(groups, member, epoch, now).await?;
+            }
+            return Err(AppError::Validation(format!(
+                "the commit did not process: {e}"
+            )));
+        }
+    };
     let epoch = room.group().epoch();
 
     let mut links = record.links;
@@ -580,6 +615,72 @@ pub async fn open_record(
     nonce: &str,
     epoch: u32,
 ) -> Result<Vec<u8>, AppError> {
+    open_record_detailed(groups, member, key, version, ciphertext, nonce, epoch)
+        .await
+        .map_err(AppError::from)
+}
+
+/// Why [`open_record_detailed`] did not open a record.
+///
+/// The two epoch cases are apart from [`Self::App`] because their remedies are opposite:
+/// a member who is behind applies the commits it missed, and a member who was removed
+/// can apply nothing that will ever open the record.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum OpenError {
+    /// The record is sealed under a later epoch than this VTA's group: a commit has not
+    /// been delivered. `held` is the room epoch the group is at.
+    NotDelivered { epoch: u32, held: u64 },
+    /// A commit this VTA applied removed the member from the group at `removed_at`, and
+    /// the record is sealed under `epoch`, at or after it: it will never open here.
+    Removed { epoch: u32, removed_at: u32 },
+    /// Anything else: no group, a group that does not restore, a record that did not open.
+    App(AppError),
+}
+
+impl From<AppError> for OpenError {
+    fn from(e: AppError) -> Self {
+        Self::App(e)
+    }
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotDelivered { epoch, held } => write!(
+                f,
+                "record is sealed under epoch {epoch} and this VTA holds the room at epoch \
+                 {held}; a commit has not been delivered"
+            ),
+            Self::Removed { epoch, removed_at } => write!(
+                f,
+                "record is sealed under epoch {epoch}, and this member was removed from the \
+                 room's group at epoch {removed_at}: nothing sealed from then on opens here"
+            ),
+            Self::App(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl From<OpenError> for AppError {
+    fn from(e: OpenError) -> Self {
+        match e {
+            OpenError::App(e) => e,
+            other => AppError::Validation(other.to_string()),
+        }
+    }
+}
+
+/// [`open_record`], saying which epoch case refused it.
+pub async fn open_record_detailed(
+    groups: &KeyspaceHandle,
+    member: &Member,
+    key: &str,
+    version: u64,
+    ciphertext: &str,
+    nonce: &str,
+    epoch: u32,
+) -> Result<Vec<u8>, OpenError> {
     let room_id = member.room_id();
     let record = load(groups, member)
         .await?
@@ -589,12 +690,16 @@ pub async fn open_record(
 
     let held = group.epoch() + 1;
     if u64::from(epoch) > held {
+        // A removal leaves the group where it was, so "ahead of the group" is also what a
+        // record sealed after it looks like. The row says which.
+        if let Some(removed_at) = removed_at(groups, member).await?
+            && epoch >= removed_at
+        {
+            return Err(OpenError::Removed { epoch, removed_at });
+        }
         // Saying which epoch we hold turns "it does not open" — which reads like corruption
         // — into "you are behind", which an operator can act on.
-        return Err(AppError::Validation(format!(
-            "record is sealed under epoch {epoch} and this VTA holds room `{room_id}` at \
-             epoch {held}; a commit has not been delivered"
-        )));
+        return Err(OpenError::NotDelivered { epoch, held });
     }
 
     // A record older than the current epoch is opened with *its own* epoch's key, walked out
@@ -613,7 +718,41 @@ pub async fn open_record(
             epoch,
         },
     )
-    .map_err(|e| AppError::Validation(e.to_string()))
+    .map_err(|e| OpenError::App(AppError::Validation(e.to_string())))
+}
+
+/// The first room epoch `member` cannot open because a commit removed them, if one did.
+pub async fn removed_at(groups: &KeyspaceHandle, member: &Member) -> Result<Option<u32>, AppError> {
+    let row: Option<RemovalRecord> = groups.get(member.key(REMOVED)).await.map_err(|e| {
+        AppError::Internal(format!(
+            "read the removal record for `{}`: {e}",
+            member.room_id()
+        ))
+    })?;
+    Ok(row.map(|r| r.epoch))
+}
+
+async fn record_removal(
+    groups: &KeyspaceHandle,
+    member: &Member,
+    epoch: u32,
+    now: u64,
+) -> Result<(), AppError> {
+    groups
+        .insert(
+            member.key(REMOVED),
+            &RemovalRecord {
+                epoch,
+                removed_at: now,
+            },
+        )
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!(
+                "record the removal from `{}`: {e}",
+                member.room_id()
+            ))
+        })
 }
 
 /// Record an invitation as consumed, refusing a second use.
@@ -1879,5 +2018,93 @@ mod per_member_storage_tests {
         );
         assert_eq!(load(&ks, &m(ALICE)).await.unwrap().unwrap().updated_at, 42);
         assert!(ks.get_raw(legacy::group(ROOM)).await.unwrap().is_some());
+    }
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use super::*;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    const ROOM: &str = "did:webvh:example.com:rooms:northwind";
+    const BOB: &str = "did:key:zBob";
+
+    /// After the commit that removes this VTA's member is applied, a record sealed after
+    /// the removal says "removed" — not "a commit has not been delivered", whose remedy
+    /// (apply the commits) can never open it — and what was sealed before still opens.
+    #[tokio::test]
+    async fn a_record_sealed_after_the_members_removal_says_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace(crate::keyspaces::ROOM_GROUPS).unwrap();
+        let bob = Member::new(ROOM, BOB).unwrap();
+
+        let pending = mint_key_package(&ks, &bob, 3600, 0).await.unwrap();
+        let mut alice = SealedRoom::new(ROOM, RoomGroup::create("did:key:zAlice").unwrap());
+        let (added, _) = alice
+            .add_member(&B64.decode(&pending.key_package).unwrap())
+            .unwrap();
+        join(&ks, &bob, &added.welcome.unwrap(), 0).await.unwrap();
+
+        let before = alice.seal_record("k", 1, b"before").unwrap();
+        let leaf = alice.group().leaf_of(BOB).unwrap();
+        let (removal, _) = alice.remove_member(leaf).unwrap();
+        let after = alice.seal_record("k", 2, b"after").unwrap();
+
+        // Before the removal is applied, this VTA cannot know: it is only behind.
+        assert!(matches!(
+            open_record_detailed(
+                &ks,
+                &bob,
+                "k",
+                2,
+                &after.ciphertext,
+                &after.nonce,
+                after.epoch
+            )
+            .await,
+            Err(OpenError::NotDelivered { .. })
+        ));
+
+        let err = apply_commit(&ks, &bob, &removal.commit, removal.epoch, 5)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("removed this holder"), "{err}");
+        assert_eq!(removed_at(&ks, &bob).await.unwrap(), Some(after.epoch));
+
+        match open_record_detailed(
+            &ks,
+            &bob,
+            "k",
+            2,
+            &after.ciphertext,
+            &after.nonce,
+            after.epoch,
+        )
+        .await
+        {
+            Err(OpenError::Removed { epoch, removed_at }) => {
+                assert_eq!((epoch, removed_at), (after.epoch, after.epoch))
+            }
+            other => panic!("expected Removed, got {other:?}"),
+        }
+        assert_eq!(
+            open_record(
+                &ks,
+                &bob,
+                "k",
+                1,
+                &before.ciphertext,
+                &before.nonce,
+                before.epoch
+            )
+            .await
+            .unwrap(),
+            b"before"
+        );
     }
 }
