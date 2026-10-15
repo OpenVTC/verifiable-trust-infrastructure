@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use super::class::IdempotencyClass;
 use crate::error::AppError;
-use crate::store::KeyspaceHandle;
+use crate::store::{Batch, KeyspaceHandle};
 
 /// Identifier scoping the idempotency cache. **Never plaintext on
 /// disk** — the principal bytes are hashed and the hash becomes part
@@ -166,6 +166,11 @@ impl CacheEntry {
 // IdempotencyStore
 // ---------------------------------------------------------------------------
 
+/// How many times a conditional write re-reads a record another attempt
+/// changed between the read and the write. Each lost attempt is another
+/// attempt's applied write; the bound only stops a pathological stream.
+const WRITE_ATTEMPTS: usize = 64;
+
 /// Wraps an `idempotency` keyspace. Cheap to clone — the underlying
 /// keyspace handle is `Arc`-shared.
 #[derive(Clone)]
@@ -237,40 +242,55 @@ impl IdempotencyStore {
         };
         let sk = storage_key(principal_hash, key);
 
-        if self.ks.insert_if_absent(sk.clone(), &pending).await? {
-            return Ok(ClaimOutcome::Claimed);
-        }
-
-        let Some(existing): Option<CacheEntry> = self.ks.get(sk.clone()).await? else {
-            // Raced the sweeper, or another attempt completing and being
-            // reclaimed. Nothing holds the key now.
-            self.ks.insert(sk, &pending).await?;
-            return Ok(ClaimOutcome::Claimed);
-        };
-
-        if existing.is_expired(now) {
-            self.ks.insert(sk, &pending).await?;
-            return Ok(ClaimOutcome::Claimed);
-        }
-
-        // Checked before the in-flight branch: a mismatched body is a caller
-        // error whichever stage the first attempt is in, and reporting "wait
-        // and try again" to a request that will never be accepted would send
-        // the caller round a loop it cannot exit.
-        if existing.request_hash != request_hash {
-            return Ok(ClaimOutcome::Conflict);
-        }
-
-        if existing.is_in_flight() {
-            if now - existing.created_at > in_flight_grace {
-                // The claiming attempt cannot still be running; it died.
-                self.ks.insert(sk, &pending).await?;
+        // Every write below is conditional on the row as read — absent, or
+        // exactly the expired / stale record the decision was made on — so of
+        // any number of attempts reclaiming one key exactly one wins. Writing
+        // the reclaim unconditionally after the read let every attempt that
+        // read the same stale record take it, and each run the operation.
+        for _ in 0..WRITE_ATTEMPTS {
+            if self.ks.insert_if_absent(sk.clone(), &pending).await? {
                 return Ok(ClaimOutcome::Claimed);
             }
-            return Ok(ClaimOutcome::InFlight);
-        }
 
-        Ok(ClaimOutcome::Completed(Box::new(existing)))
+            let Some(raw) = self.ks.get_raw(sk.clone()).await? else {
+                // Raced the sweeper, or a release. Nothing holds the key now;
+                // claim it through `insert_if_absent` like anyone else.
+                continue;
+            };
+            let existing: CacheEntry = serde_json::from_slice(&raw)?;
+
+            // Checked before the in-flight branch: a mismatched body is a
+            // caller error whichever stage the first attempt is in, and
+            // reporting "wait and try again" to a request that will never be
+            // accepted would send the caller round a loop it cannot exit.
+            let reclaim = existing.is_expired(now)
+                || (existing.request_hash == request_hash
+                    && existing.is_in_flight()
+                    // The claiming attempt cannot still be running; it died.
+                    && now - existing.created_at > in_flight_grace);
+            if !reclaim {
+                if existing.request_hash != request_hash {
+                    return Ok(ClaimOutcome::Conflict);
+                }
+                if existing.is_in_flight() {
+                    return Ok(ClaimOutcome::InFlight);
+                }
+                return Ok(ClaimOutcome::Completed(Box::new(existing)));
+            }
+
+            let mut batch = Batch::new();
+            batch
+                .require_unchanged(sk.clone(), raw)
+                .insert(sk.clone(), &pending)?;
+            if self.ks.apply_batch(batch).await?.is_applied() {
+                return Ok(ClaimOutcome::Claimed);
+            }
+            // Another attempt reclaimed (or completed) it first: decide again
+            // against what it wrote.
+        }
+        Err(AppError::Conflict(
+            "idempotency key kept changing while it was being claimed".into(),
+        ))
     }
 
     /// Record the outcome of a claimed key.
@@ -280,6 +300,10 @@ impl IdempotencyStore {
     /// operation done, so the duplicate effect is still prevented; only the
     /// replay is given up, and [`EntryState::CompletedNotRetained`] says so
     /// explicitly rather than leaving an empty body to be misread as one.
+    ///
+    /// Written only while the in-flight claim is still the row read: a claim
+    /// released (or swept) meanwhile is not resurrected, and an outcome
+    /// another attempt already recorded is not overwritten.
     pub async fn complete(
         &self,
         principal_hash: &[u8; 32],
@@ -287,27 +311,42 @@ impl IdempotencyStore {
         response: Option<CompletedResponse>,
     ) -> Result<(), AppError> {
         let sk = storage_key(principal_hash, key);
-        let Some(mut entry): Option<CacheEntry> = self.ks.get(sk.clone()).await? else {
-            // The claim went away underneath us. Nothing to complete, and
-            // writing a fresh record here would resurrect a key the sweeper
-            // (or a reclaim) deliberately dropped.
-            return Ok(());
-        };
-        match response {
-            Some(r) => {
-                entry.state = EntryState::Completed;
-                entry.response_status = r.status;
-                entry.response_headers = r.headers;
-                entry.response_body = r.body;
+        for _ in 0..WRITE_ATTEMPTS {
+            let Some(raw) = self.ks.get_raw(sk.clone()).await? else {
+                // The claim went away underneath us. Nothing to complete, and
+                // writing a fresh record here would resurrect a key the sweeper
+                // (or a reclaim) deliberately dropped.
+                return Ok(());
+            };
+            let mut entry: CacheEntry = serde_json::from_slice(&raw)?;
+            if !entry.is_in_flight() {
+                return Ok(());
             }
-            None => {
-                entry.state = EntryState::CompletedNotRetained;
-                entry.response_status = 0;
-                entry.response_headers = Vec::new();
-                entry.response_body = Vec::new();
+            match response.clone() {
+                Some(r) => {
+                    entry.state = EntryState::Completed;
+                    entry.response_status = r.status;
+                    entry.response_headers = r.headers;
+                    entry.response_body = r.body;
+                }
+                None => {
+                    entry.state = EntryState::CompletedNotRetained;
+                    entry.response_status = 0;
+                    entry.response_headers = Vec::new();
+                    entry.response_body = Vec::new();
+                }
+            }
+            let mut batch = Batch::new();
+            batch
+                .require_unchanged(sk.clone(), raw)
+                .insert(sk.clone(), &entry)?;
+            if self.ks.apply_batch(batch).await?.is_applied() {
+                return Ok(());
             }
         }
-        self.ks.insert(sk, &entry).await
+        Err(AppError::Conflict(
+            "idempotency key kept changing while its outcome was recorded".into(),
+        ))
     }
 
     /// Drop a claim without recording an outcome.
@@ -316,8 +355,16 @@ impl IdempotencyStore {
     /// so a retry should be allowed to actually run rather than be answered
     /// with the failure. Caching failures would turn one transient error into
     /// a sticky one for the lifetime of the record.
+    ///
+    /// A store batch rather than a plain remove, so it is ordered against
+    /// [`Self::complete`]'s conditional write: that either lands first (and is
+    /// released here) or finds the claim gone. A plain remove could land
+    /// between the completion's check and its commit and be undone by it.
     pub async fn release(&self, principal_hash: &[u8; 32], key: &str) -> Result<(), AppError> {
-        self.ks.remove(storage_key(principal_hash, key)).await
+        let mut batch = Batch::new();
+        batch.remove(storage_key(principal_hash, key));
+        self.ks.apply_batch(batch).await?;
+        Ok(())
     }
 }
 
@@ -460,6 +507,79 @@ mod tests {
             matches!(second, ClaimOutcome::InFlight),
             "a concurrent attempt must be told to wait, got {second:?}"
         );
+    }
+
+    /// Attempts racing to reclaim one stale record: exactly one wins. An
+    /// unconditional write after the read let every one of them reclaim it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn racing_reclaims_of_a_stale_claim_have_one_winner() {
+        let (store, _d) = temp_store();
+        let p = Principal::Did("did:web:alice".into()).hash();
+        for round in 0..40 {
+            let key = format!("k{round}");
+            let mut stale = sample_entry();
+            stale.idempotency_key = key.clone();
+            stale.state = EntryState::InFlight;
+            stale.request_hash = [1u8; 32];
+            stale.created_at = Utc::now() - Duration::hours(1);
+            store.put(&p, &stale).await.unwrap();
+
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(16));
+            let mut tasks = Vec::new();
+            for _ in 0..16 {
+                let (store, barrier, key) = (store.clone(), barrier.clone(), key.clone());
+                tasks.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    matches!(
+                        store
+                            .claim(&p, &key, [1u8; 32], IdempotencyClass::NonDestructive, GRACE)
+                            .await
+                            .unwrap(),
+                        ClaimOutcome::Claimed
+                    )
+                }));
+            }
+            let mut won = 0;
+            for t in tasks {
+                won += t.await.unwrap() as usize;
+            }
+            assert_eq!(won, 1, "{won} attempts reclaimed one stale claim");
+        }
+    }
+
+    /// A completion racing a release must not write the released claim back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn a_completion_never_resurrects_a_released_claim() {
+        let (store, _d) = temp_store();
+        let p = Principal::Did("did:web:alice".into()).hash();
+        for round in 0..100 {
+            let key = format!("k{round}");
+            store
+                .claim(&p, &key, [1u8; 32], IdempotencyClass::NonDestructive, GRACE)
+                .await
+                .unwrap();
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+            let complete = {
+                let (store, barrier, key) = (store.clone(), barrier.clone(), key.clone());
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    store.complete(&p, &key, None).await.unwrap();
+                })
+            };
+            let release = {
+                let (store, barrier, key) = (store.clone(), barrier.clone(), key.clone());
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    store.release(&p, &key).await.unwrap();
+                })
+            };
+            complete.await.unwrap();
+            release.await.unwrap();
+            assert!(
+                store.get(&p, &key).await.unwrap().is_none(),
+                "a released claim came back"
+            );
+        }
     }
 
     #[tokio::test]
