@@ -8,11 +8,29 @@ use vta_sdk::trust_task_sign::{HolderKey, build_signed};
 
 use super::*;
 
+/// Witnessing state over a throwaway store, witnessing anyone.
+fn witnessing() -> crate::witness::Witnessing {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = vti_common::store::test_fixture::open_with_keyspaces(dir.path(), crate::store::ALL)
+        .expect("store");
+    // The store outlives the test; the directory is reclaimed with $TMPDIR.
+    std::mem::forget(dir);
+    crate::witness::Witnessing::new(
+        crate::witness::WitnessPolicy::new(
+            vec![crate::config::ANY_COMMUNITY.to_string()],
+            None,
+            Vec::new(),
+            crate::config::SessionLimits::default(),
+        ),
+        crate::store::WitnessStore::from_store(&store).expect("keyspaces"),
+    )
+}
+
 /// A witness identity on a `did:key`, so its replies verify with no network.
 fn witness() -> IdentityContext {
     let key = EphemeralSetupKey::generate().expect("key");
     let holder = HolderKey::from_did_key(&key.did, key.private_key_multibase()).expect("holder");
-    IdentityContext::new("w1", key.did.clone(), holder).expect("identity")
+    IdentityContext::new("w1", key.did.clone(), holder, witnessing()).expect("identity")
 }
 
 /// A party writing to the witness: its DID and private key.
@@ -96,10 +114,10 @@ async fn discovery_is_answered_with_this_identitys_task_list_and_signed_by_it() 
     let mut expected: Vec<&str> = SERVED.to_vec();
     expected.sort_unstable();
     assert_eq!(listed, expected, "exactly what this identity routes");
-    for unserved in NOT_YET_SERVED {
+    for witness_task in [WITNESS_SESSION_V0_1, WITNESS_SESSION_SUBMIT_V0_1] {
         assert!(
-            !listed.contains(unserved),
-            "{unserved} is refused in P1, so discovery must not list it"
+            listed.contains(&witness_task),
+            "{witness_task} is served, so discovery lists it"
         );
     }
     assert!(
@@ -187,31 +205,6 @@ async fn another_discovery_version_is_refused_as_unsupported_version() {
     );
     let reply = signed_reply(&identity, &party.did, &doc).await;
     assert_eq!(error_code(&reply), "unsupportedVersion", "{reply:#}");
-}
-
-/// The P1 choice: the witness tasks are refused as `unsupportedType` — not
-/// listed in discovery, so the code is honest — with a message saying
-/// witnessing is not enabled yet.
-#[tokio::test]
-async fn the_witness_tasks_are_refused_until_witnessing_is_enabled() {
-    let identity = witness();
-    let party = party();
-    for (type_uri, payload) in [
-        (
-            WITNESS_SESSION_V0_1,
-            json!({ "parties": ["did:example:a", "did:example:b"] }),
-        ),
-        (WITNESS_SESSION_SUBMIT_V0_1, json!({})),
-    ] {
-        let doc = request(type_uri, &party.did, identity.did(), payload);
-        let reply = signed_reply(&identity, &party.did, &doc).await;
-        assert_eq!(error_code(&reply), "unsupportedType", "{reply:#}");
-        let message = reply["payload"]["message"].as_str().unwrap_or_default();
-        assert!(
-            message.contains("witnessing is not enabled"),
-            "{type_uri}: {message}"
-        );
-    }
 }
 
 /// A document addressed to another DID — another witness of this service,
@@ -331,19 +324,24 @@ async fn bytes_that_are_not_a_trust_task_are_dropped() {
 fn an_identity_refuses_a_signing_key_of_another_did() {
     let key = EphemeralSetupKey::generate().unwrap();
     let holder = HolderKey::from_did_key(&key.did, key.private_key_multibase()).unwrap();
-    let err = IdentityContext::new("w1", "did:webvh:QmOther:example.com:w1", holder).unwrap_err();
+    let err = IdentityContext::new(
+        "w1",
+        "did:webvh:QmOther:example.com:w1",
+        holder,
+        witnessing(),
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("not a verification method"),
         "{err}"
     );
 }
 
-/// The served table and the declared witness tasks are disjoint, and the
-/// witness tasks are the generated types' own URIs.
+/// The witness tasks are the generated types' own URIs, and served.
 #[test]
-fn the_served_and_not_yet_served_tables_are_disjoint() {
-    for uri in NOT_YET_SERVED {
-        assert!(!SERVED.contains(uri), "{uri}");
+fn the_witness_tasks_are_the_generated_uris_and_are_served() {
+    for uri in [WITNESS_SESSION_V0_1, WITNESS_SESSION_SUBMIT_V0_1] {
+        assert!(SERVED.contains(&uri), "{uri}");
         assert!(uri.starts_with("https://trusttasks.org/spec/witness/session/"));
     }
 }

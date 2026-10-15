@@ -1,10 +1,14 @@
 //! `config.toml`: the witness service's runtime configuration.
 //!
 //! The witness has no administrator surface on the wire (design note §3.1):
-//! its policy is this file. P1 carries only what the skeleton needs — which
-//! identities exist, where each is reached, and whether it serves — and the
-//! witnessing policy of §3.2–§3.3 (independence, communities, caps) arrives
-//! with P2.
+//! its policy is this file — which identities exist, where each is reached,
+//! whether it serves, and what it will witness (§3.2–§3.3): the communities
+//! whose members it witnesses, an optional allow-list, the DIDs excluded for
+//! independence, and the session caps.
+//!
+//! Every policy default is the most restrictive reading (CLAUDE.md R5.1): an
+//! identity is off, an identity with no `communities` witnesses nobody, and
+//! "anyone" is only ever the explicit `communities = ["*"]`.
 //!
 //! Keys are snake_case, as in the VTC's `config.toml`, and every table this
 //! crate defines refuses an unknown key (`deny_unknown_fields`). The
@@ -50,10 +54,84 @@ pub struct WitnessConfig {
     /// would put key material in this file.
     pub secrets: SecretsConfig,
 
+    /// DIDs no identity of this service witnesses (§3.2), on top of each
+    /// identity's own `[witness.independence]`. The service's own witness DIDs
+    /// and `operator_vta_did` are always excluded and need not be listed.
+    #[serde(default, skip_serializing_if = "Independence::is_empty")]
+    pub independence: Independence,
+
     /// The witness identities, at most [`MAX_WITNESS_IDENTITIES`]. Written
     /// as `[[witness]]` tables.
     #[serde(default, rename = "witness", skip_serializing_if = "Vec::is_empty")]
     pub witnesses: Vec<WitnessIdentity>,
+}
+
+/// `[independence]`: DIDs excluded from being witnessed (design note §3.2) —
+/// typically the operator's community DIDs and its own relationship DIDs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Independence {
+    /// Exact DIDs. A session naming one in `parties` is refused, and a
+    /// presentation carrying a credential issued by one is not witnessed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+}
+
+impl Independence {
+    fn is_empty(&self) -> bool {
+        self.exclude.is_empty()
+    }
+}
+
+/// The value of `communities` that means "witness anyone who passes the
+/// cheap checks" (design note §3.3, §6 item 2). Never a default.
+pub const ANY_COMMUNITY: &str = "*";
+
+/// Default session time-to-live: ten minutes, the same as the acceptance
+/// window a party's `submit` must arrive in anyway.
+pub const DEFAULT_SESSION_TTL_SECS: u64 = 600;
+/// Default cap on one identity's open sessions.
+pub const DEFAULT_MAX_OPEN_SESSIONS: usize = 1000;
+/// Default cap on one opener's open sessions at one identity.
+pub const DEFAULT_MAX_OPEN_SESSIONS_PER_PARTY: usize = 4;
+/// The longest session time-to-live a configuration may set: a session is
+/// one occasion, not a standing grant.
+pub const MAX_SESSION_TTL_SECS: u64 = 24 * 60 * 60;
+
+/// `[witness.sessions]`: one identity's session caps and lifetime (§3.3).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionLimits {
+    /// Seconds an open session stays submittable. The spec leaves the expiry
+    /// to the witness's own policy (`witness/session` Retention).
+    #[serde(default = "default_ttl")]
+    pub ttl_secs: u64,
+    /// The most sessions this identity holds open at once.
+    #[serde(default = "default_max_open")]
+    pub max_open: usize,
+    /// The most sessions one opener holds open at this identity at once.
+    #[serde(default = "default_max_open_per_party")]
+    pub max_open_per_party: usize,
+}
+
+fn default_ttl() -> u64 {
+    DEFAULT_SESSION_TTL_SECS
+}
+fn default_max_open() -> usize {
+    DEFAULT_MAX_OPEN_SESSIONS
+}
+fn default_max_open_per_party() -> usize {
+    DEFAULT_MAX_OPEN_SESSIONS_PER_PARTY
+}
+
+impl Default for SessionLimits {
+    fn default() -> Self {
+        Self {
+            ttl_secs: DEFAULT_SESSION_TTL_SECS,
+            max_open: DEFAULT_MAX_OPEN_SESSIONS,
+            max_open_per_party: DEFAULT_MAX_OPEN_SESSIONS_PER_PARTY,
+        }
+    }
 }
 
 /// One `[[witness]]` table: a witness identity this service runs.
@@ -73,6 +151,43 @@ pub struct WitnessIdentity {
     /// unless the operator turns it on.
     #[serde(default)]
     pub enabled: bool,
+    /// The VTC DIDs whose members this identity witnesses (§3.3): a submit
+    /// must carry a valid membership credential issued by one of them to the
+    /// submitter. `["*"]` witnesses anyone who passes the cheap checks, with no
+    /// membership evidence asked for. **Empty witnesses nobody.**
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub communities: Vec<String>,
+    /// An optional exact-DID allow-list of openers, for a closed deployment.
+    /// Unset admits any opener the other rules admit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_parties: Option<Vec<String>>,
+    /// DIDs this identity alone excludes, on top of the service-wide list.
+    #[serde(default, skip_serializing_if = "Independence::is_empty")]
+    pub independence: Independence,
+    /// Session caps and lifetime.
+    #[serde(default)]
+    pub sessions: SessionLimits,
+}
+
+impl WitnessIdentity {
+    /// A newly provisioned identity: off, witnessing nobody, default caps.
+    pub fn provisioned(name: String, did: String, mediator_did: String, enabled: bool) -> Self {
+        Self {
+            name,
+            did,
+            mediator_did,
+            enabled,
+            communities: Vec::new(),
+            allowed_parties: None,
+            independence: Independence::default(),
+            sessions: SessionLimits::default(),
+        }
+    }
+
+    /// Whether `communities` is the explicit "anyone".
+    pub fn witnesses_anyone(&self) -> bool {
+        self.communities.iter().any(|c| c == ANY_COMMUNITY)
+    }
 }
 
 /// A configuration that cannot be served.
@@ -133,6 +248,13 @@ impl WitnessConfig {
                     .to_string(),
             );
         }
+        errors.extend(did_list_errors(
+            "independence.exclude",
+            &self.independence.exclude,
+        ));
+        for w in &self.witnesses {
+            errors.extend(policy_errors(w));
+        }
         errors.extend(identity_errors(
             self.witnesses.iter().map(|w| {
                 (
@@ -164,6 +286,77 @@ impl WitnessConfig {
     pub fn to_toml_string(&self) -> Result<String, ConfigError> {
         toml::to_string_pretty(self).map_err(|e| ConfigError(e.to_string()))
     }
+}
+
+/// Every entry of a DID list is a DID, and none repeats.
+fn did_list_errors(what: &str, dids: &[String]) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut seen = BTreeSet::new();
+    for did in dids {
+        if !did.starts_with("did:") {
+            errors.push(format!("{what}: {did:?} is not a DID"));
+        } else if !seen.insert(did.as_str()) {
+            errors.push(format!("{what}: {did} is listed twice"));
+        }
+    }
+    errors
+}
+
+/// One identity's witnessing policy (§3.2–§3.3).
+fn policy_errors(w: &WitnessIdentity) -> Vec<String> {
+    let name = &w.name;
+    let mut errors = Vec::new();
+
+    // `*` is the explicit "anyone", and means nothing beside a DID: a list
+    // naming both would read as a restriction an operator thinks they set.
+    let wildcard = w.witnesses_anyone();
+    if wildcard && w.communities.len() > 1 {
+        errors.push(format!(
+            "witness {name:?}: communities = [\"*\"] means anyone and cannot be combined \
+             with community DIDs"
+        ));
+    } else if !wildcard {
+        errors.extend(did_list_errors(
+            &format!("witness {name:?}: communities"),
+            &w.communities,
+        ));
+    }
+    if let Some(allowed) = &w.allowed_parties {
+        if allowed.is_empty() {
+            errors.push(format!(
+                "witness {name:?}: allowed_parties is empty, which admits nobody; remove the \
+                 key to admit any party, or set enabled = false"
+            ));
+        }
+        errors.extend(did_list_errors(
+            &format!("witness {name:?}: allowed_parties"),
+            allowed,
+        ));
+    }
+    errors.extend(did_list_errors(
+        &format!("witness {name:?}: independence.exclude"),
+        &w.independence.exclude,
+    ));
+
+    let s = &w.sessions;
+    if s.ttl_secs == 0 || s.ttl_secs > MAX_SESSION_TTL_SECS {
+        errors.push(format!(
+            "witness {name:?}: sessions.ttl_secs must be 1..={MAX_SESSION_TTL_SECS} (got {})",
+            s.ttl_secs
+        ));
+    }
+    if s.max_open == 0 {
+        errors.push(format!(
+            "witness {name:?}: sessions.max_open must be at least 1"
+        ));
+    }
+    if s.max_open_per_party == 0 || s.max_open_per_party > s.max_open {
+        errors.push(format!(
+            "witness {name:?}: sessions.max_open_per_party must be 1..=sessions.max_open (got {})",
+            s.max_open_per_party
+        ));
+    }
+    errors
 }
 
 /// The rules every set of witness identities meets, shared by `config.toml`
@@ -351,5 +544,120 @@ keyring_service = "vti-witness"
             .expect("what setup writes, run reads");
         assert_eq!(config.witnesses, again.witnesses);
         assert_eq!(config.operator_vta_did, again.operator_vta_did);
+    }
+
+    /// R5.1: every witnessing default is the restrictive one.
+    #[test]
+    fn witnessing_defaults_are_the_most_restrictive() {
+        let config = WitnessConfig::from_toml_str(&config_with(1)).unwrap();
+        let w = &config.witnesses[0];
+        assert!(!w.enabled);
+        assert!(w.communities.is_empty(), "empty witnesses nobody");
+        assert!(!w.witnesses_anyone());
+        assert_eq!(w.allowed_parties, None);
+        assert!(config.independence.exclude.is_empty());
+        assert_eq!(w.sessions, SessionLimits::default());
+        assert_eq!(w.sessions.ttl_secs, 600);
+    }
+
+    #[test]
+    fn a_full_witnessing_policy_parses() {
+        let raw = format!(
+            r#"{}
+[independence]
+exclude = ["did:webvh:QmC:community.operator.example"]
+
+[[witness]]
+name = "p"
+did = "did:webvh:QmP:witness.example.net:p"
+mediator_did = "did:webvh:QmMED:mediator.example.org"
+enabled = true
+communities = ["did:webvh:QmV:vtc.example.org"]
+allowed_parties = ["did:key:z6MkA"]
+
+[witness.independence]
+exclude = ["did:key:z6MkB"]
+
+[witness.sessions]
+ttl_secs = 120
+max_open = 10
+max_open_per_party = 2
+"#,
+            config_with(0)
+        );
+        let config = WitnessConfig::from_toml_str(&raw).expect("parses");
+        let w = &config.witnesses[0];
+        assert_eq!(w.communities, vec!["did:webvh:QmV:vtc.example.org"]);
+        assert_eq!(
+            w.allowed_parties.as_deref(),
+            Some(&["did:key:z6MkA".to_string()][..])
+        );
+        assert_eq!(w.independence.exclude, vec!["did:key:z6MkB"]);
+        assert_eq!(w.sessions.max_open_per_party, 2);
+        assert_eq!(config.independence.exclude.len(), 1);
+        let again = WitnessConfig::from_toml_str(&config.to_toml_string().unwrap()).unwrap();
+        assert_eq!(again.witnesses, config.witnesses);
+    }
+
+    fn one_witness_with(extra: &str) -> String {
+        format!(
+            "{}\n[[witness]]\nname = \"w\"\ndid = \"did:webvh:QmW:w.example\"\n\
+             mediator_did = \"did:webvh:QmM:m.example\"\n{extra}\n",
+            config_with(0)
+        )
+    }
+
+    #[test]
+    fn the_wildcard_is_explicit_and_alone() {
+        let ok = WitnessConfig::from_toml_str(&one_witness_with("communities = [\"*\"]")).unwrap();
+        assert!(ok.witnesses[0].witnesses_anyone());
+
+        let err = WitnessConfig::from_toml_str(&one_witness_with(
+            "communities = [\"*\", \"did:webvh:QmV:vtc.example\"]",
+        ))
+        .unwrap_err();
+        assert!(err.0.contains("cannot be combined"), "{err}");
+    }
+
+    #[test]
+    fn policy_lists_must_hold_dids() {
+        for extra in [
+            "communities = [\"vtc.example\"]",
+            "allowed_parties = [\"alice\"]",
+            "[witness.independence]\nexclude = [\"bob\"]",
+        ] {
+            let err = WitnessConfig::from_toml_str(&one_witness_with(extra)).unwrap_err();
+            assert!(err.0.contains("is not a DID"), "{extra}: {err}");
+        }
+        let err = WitnessConfig::from_toml_str(&format!(
+            "{}\n[independence]\nexclude = [\"x\"]\n",
+            config_with(0)
+        ))
+        .unwrap_err();
+        assert!(err.0.contains("independence.exclude"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_allow_list_is_refused_rather_than_admitting_nobody_quietly() {
+        let err =
+            WitnessConfig::from_toml_str(&one_witness_with("allowed_parties = []")).unwrap_err();
+        assert!(err.0.contains("admits nobody"), "{err}");
+    }
+
+    #[test]
+    fn session_limits_are_validated() {
+        for (extra, expect) in [
+            ("[witness.sessions]\nttl_secs = 0", "ttl_secs"),
+            ("[witness.sessions]\nttl_secs = 100000", "ttl_secs"),
+            ("[witness.sessions]\nmax_open = 0", "max_open must"),
+            (
+                "[witness.sessions]\nmax_open = 2\nmax_open_per_party = 3",
+                "max_open_per_party",
+            ),
+            ("[witness.sessions]\nmax_opn = 3", "max_opn"),
+        ] {
+            let err = WitnessConfig::from_toml_str(&one_witness_with(extra)).unwrap_err();
+            assert!(err.0.contains(expect), "{extra}: {err}");
+        }
     }
 }

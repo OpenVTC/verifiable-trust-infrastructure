@@ -17,6 +17,8 @@ use crate::correlation::{self, OperatorFootprint};
 use crate::dispatch::IdentityContext;
 use crate::keys::WitnessKeyring;
 use crate::messaging::{IdentitySession, Shared, supervise};
+use crate::store::WitnessStore;
+use crate::witness::{WitnessPolicy, Witnessing};
 
 /// How long a stop waits for every session to close its socket.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(15);
@@ -41,6 +43,7 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
     let store = vti_secrets::create_seed_store(&config.secrets, &config.data_dir)
         .map_err(|e| anyhow::anyhow!("open the secret store: {e}"))?;
     let keyring = WitnessKeyring::load(&*store).await?;
+    let witness_store = WitnessStore::open(&config.data_dir)?;
     let mut sessions = Vec::with_capacity(enabled.len());
     for witness in &enabled {
         let bundle = keyring.get(&witness.did).ok_or_else(|| {
@@ -55,7 +58,19 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
         })?;
         let holder = HolderKey::new(&signing.key_id, &signing.private_key_multibase)
             .map_err(|e| anyhow::anyhow!("witness {:?}: {e}", witness.name))?;
-        let identity = IdentityContext::new(&witness.name, &witness.did, holder)?;
+        if witness.communities.is_empty() {
+            warn!(
+                identity = %witness.name,
+                "enabled, but `communities` is empty, so this identity witnesses nobody: every \
+                 witness/session is refused. Name the VTC DIDs whose members it witnesses, or \
+                 `[\"*\"]` for anyone"
+            );
+        }
+        let witnessing = Witnessing::new(
+            WitnessPolicy::from_config(&config, witness),
+            witness_store.clone(),
+        );
+        let identity = IdentityContext::new(&witness.name, &witness.did, holder, witnessing)?;
         let secrets = vta_sdk::did_key::secrets_from_bundle(bundle)
             .map_err(|e| anyhow::anyhow!("witness {:?}: {e}", witness.name))?;
         sessions.push(IdentitySession::new(
@@ -97,6 +112,7 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
     for session in sessions {
         tasks.spawn(supervise(session, shared.clone(), stopped.clone()));
     }
+    tasks.spawn(sweep(witness_store, stopped.clone()));
     info!(
         identities = enabled.len(),
         "vti-witness started — one mediator session per enabled identity"
@@ -116,6 +132,31 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
     }
     did_resolver.stop();
     Ok(())
+}
+
+/// How often expired sessions and duplicate records are reaped.
+const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Reap expired sessions and duplicate-execution records until told to stop.
+/// An expired session is already unsubmittable (every read checks its
+/// expiry); the sweep only keeps it from lingering on disk.
+async fn sweep(store: WitnessStore, mut stopped: watch::Receiver<bool>) {
+    let mut tick = tokio::time::interval(SWEEP_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {}
+            _ = stopped.changed() => return,
+        }
+        if *stopped.borrow() {
+            return;
+        }
+        match store.sweep(chrono::Utc::now()).await {
+            Ok(0) => {}
+            Ok(n) => tracing::debug!(removed = n, "swept expired witness sessions and records"),
+            Err(e) => warn!(error = %e, "the witness sweep failed; retrying next interval"),
+        }
+    }
 }
 
 /// SIGINT, or SIGTERM where there is one.

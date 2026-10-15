@@ -313,12 +313,12 @@ pub async fn run_from_file(path: &Path) -> anyhow::Result<()> {
         };
         keyring.insert(bundle_from_material(material));
         provisioned.push(Provisioned {
-            identity: WitnessIdentity {
-                name: witness.name.clone(),
-                did: did.to_string(),
-                mediator_did: witness.mediator_did.clone(),
-                enabled: witness.enabled,
-            },
+            identity: WitnessIdentity::provisioned(
+                witness.name.clone(),
+                did.to_string(),
+                witness.mediator_did.clone(),
+                witness.enabled,
+            ),
             did_log: result.webvh_log().map(str::to_string),
         });
     }
@@ -346,6 +346,7 @@ pub async fn run_from_file(path: &Path) -> anyhow::Result<()> {
         operator_vta_did: inputs.vta_did.clone(),
         resolver_url: inputs.resolver_url.clone(),
         secrets: inputs.secrets.clone(),
+        independence: Default::default(),
         witnesses: provisioned.iter().map(|p| p.identity.clone()).collect(),
     };
     config.validate()?;

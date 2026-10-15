@@ -7,10 +7,11 @@
 //! is a `did:webvh` minted by the operator's VTA from the `dtg-witness` template,
 //! and each holds one mediator socket carrying TSP and DIDComm.
 //!
-//! This is phase P1, the skeleton: setup, configuration, one supervised
-//! mediator session per identity, and a dispatcher that answers
-//! `trust-task-discovery` and refuses everything else. The witnessing itself —
-//! `witness/session/0.1` and `witness/session/submit/0.1` — is P2.
+//! P1 built the skeleton: setup, configuration, one supervised mediator
+//! session per identity, and the dispatcher. P2 adds the witnessing itself —
+//! `witness/session/0.1` and `witness/session/submit/0.1` ([`witness`]), the
+//! presentation checks ([`presentation`]), session and attestation storage
+//! ([`store`]) and the duplicate-execution record ([`replay`]).
 //!
 //! The library target exists for tests; the binary is the product.
 
@@ -19,5 +20,9 @@ pub mod correlation;
 pub mod dispatch;
 pub mod keys;
 pub mod messaging;
+pub mod presentation;
+pub mod replay;
 pub mod run;
 pub mod setup;
+pub mod store;
+pub mod witness;

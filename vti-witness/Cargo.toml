@@ -77,5 +77,26 @@ uuid = { workspace = true }
 rand = { workspace = true }
 anyhow = "1"
 
+# The witnessing itself (P2). `dtg-credentials` builds the VWC
+# (`new_witnessed_vsc`, `with_task_citation`) and parses the presented
+# relationship and membership credentials; the verifier side (`vtc-service`)
+# uses the same crate, so both read one definition of every digest.
+dtg-credentials = { workspace = true }
+# `vwcDigestMultibase`: RFC 8785 over the delivered VWC *with* its proof, a
+# sha2-256 multihash, base58btc — the one digest `dtg-credentials` does not
+# offer (its digests all exclude the top-level proof).
+serde_json_canonicalizer = { workspace = true }
+sha2 = { workspace = true }
+multibase = { workspace = true }
+# `trust_tasks_rs::ReplayGuard` is an `async_trait` trait.
+async-trait = "0.1"
+# The session challenge: 32 bytes straight from the OS RNG.
+getrandom = "0.4"
+
 [dev-dependencies]
 tempfile = "3"
+# `store::test_fixture`: test stores copied from a pre-built template rather than
+# created keyspace by keyspace (macOS fsyncs every creation).
+vti-common = { path = "../vti-common", features = ["test-support"] }
+# Signing the presentations the tests submit (`authentication` proofs).
+affinidi-data-integrity = { workspace = true }
