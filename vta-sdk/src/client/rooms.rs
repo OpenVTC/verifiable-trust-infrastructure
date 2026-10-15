@@ -369,6 +369,43 @@ impl VtaClient {
         })
     }
 
+    /// `rooms/owner/group/renew/0.1` — renew a sealed room: advance its group with a
+    /// commit that adds and removes nobody, and the room's epoch at `host_did` with it.
+    ///
+    /// The only correct renewal of an `attributed` or `private` room — a bare
+    /// `rooms/epoch/mint` moves the host without the group and leaves every member unable
+    /// to write. The VTA advances the host first, and only then its own group. Every
+    /// remaining member's key holder must then apply the commit (`rooms/keys/commit`, or
+    /// from the host's relay). Call this inside [`VtaClient::idempotent`]: the task is
+    /// `Keyed`, and a retry after a lost reply would otherwise renew a second time.
+    pub async fn room_group_renew(
+        &self,
+        room_id: &str,
+        host_did: &str,
+        reason: Option<&str>,
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::renew::v0_1::Response, VtaError> {
+        let mut payload = json!({
+            "roomId": room_id,
+            "host": host_did,
+        });
+        if let Some(r) = reason {
+            payload["reason"] = json!(r);
+        }
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_1,
+                payload,
+                // As for add: an earlier advance settled, then this one.
+                ROOM_TT_TIMEOUT * 4,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| {
+            VtaError::Protocol(format!(
+                "rooms/owner/group/renew response does not match its schema: {e}"
+            ))
+        })
+    }
+
     // ── The owner's credential tasks (`rooms/owner/{register,invite,issue-*}`) ──
     //
     // Each payload is built through its generated type, so a value the

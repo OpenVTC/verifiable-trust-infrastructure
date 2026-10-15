@@ -666,6 +666,12 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // was named. Replaying the first answer reports what was done. Nothing in
     // the answer is secret.
     (trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1, Keyed),
+    // `Keyed`, like add and remove. A second execution after a lost reply is not
+    // refused — it renews again, advancing the room a second epoch the caller
+    // asked for once, and every member's key holder then has two commits to
+    // apply instead of one. Replaying the first answer reports the one renewal
+    // that happened. Nothing in the answer is secret.
+    (trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_1, Keyed),
     (trust_tasks::TASK_VTA_MEMORY_DELETE_0_1, RetrySafe),
     // ── Application state ───────────────────────────────────────────────
     //

@@ -2703,6 +2703,9 @@ dispatch_table! {
     // The mirror of add: same host, same authority, the other direction.
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1 => room_owner_group::handle_remove
         [ Mutating Metadata true ],
+    // And renewal: same host, same authority, no membership change.
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_1 => room_owner_group::handle_renew
+        [ Mutating Metadata true ],
     // ─── Application-state slice (spec/vta/app-state/*) ──────────
     // Versioned, namespaced per-context JSON the VTA stores but never
     // interprets. Gated on context access (require_context), NOT operator

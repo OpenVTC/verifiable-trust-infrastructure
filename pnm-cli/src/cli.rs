@@ -536,11 +536,12 @@ pub(crate) enum RoomCommands {
         reason: Option<String>,
     },
 
-    /// Renew the room by minting its next epoch. Needs `admin`.
+    /// Renew an open room by minting its next epoch. Needs `admin`.
     ///
     /// This is what keeps a room live, and it is the whole defence against a
     /// hostile succession claim: an owner who renews is safe without thinking
-    /// about it.
+    /// about it. A sealed room (`attributed` / `private`) is refused: renew it
+    /// with `pnm rooms owner group-renew`, which advances its group with it.
     Renew {
         /// The epoch to mint — your group's epoch plus one.
         epoch: u32,
@@ -937,6 +938,22 @@ pub(crate) enum RoomOwnerCommands {
         /// The persona DID being removed — the one its leaf was admitted as.
         #[arg(long)]
         member: String,
+        /// Why, carried to the host's epoch advance.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Renew a sealed room (`rooms/owner/group/renew`): your VTA advances the
+    /// room's group with a commit that changes no membership, and the room at
+    /// its host with it — host first. The only correct renewal of an
+    /// `attributed` or `private` room; `pnm rooms renew` is for open rooms.
+    /// Every remaining member then applies the commit with
+    /// `pnm rooms keys commit --host`.
+    GroupRenew {
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room host's DID: where the epoch advances.
+        #[arg(long)]
+        host_did: String,
         /// Why, carried to the host's epoch advance.
         #[arg(long)]
         reason: Option<String>,

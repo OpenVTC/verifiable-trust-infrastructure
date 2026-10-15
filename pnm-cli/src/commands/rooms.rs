@@ -186,6 +186,19 @@ pub(crate) async fn run(
                     )
                     .await
                 }
+                RoomOwnerCommands::GroupRenew {
+                    room_id,
+                    host_did,
+                    reason,
+                } => {
+                    rooms::cmd_rooms_owner_group_renew(
+                        client,
+                        &room_id,
+                        &host_did,
+                        reason.as_deref(),
+                    )
+                    .await
+                }
             };
         }
         // The key holder's verbs are calls to this VTA alone, all but one: fetching

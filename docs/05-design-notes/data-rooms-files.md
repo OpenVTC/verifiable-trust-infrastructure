@@ -1001,7 +1001,7 @@ on their own merit:
 
 | # | Phase | Size | Depends on |
 |---|---|---|---|
-| P0 | Owner MLS tasks + `pnm rooms owner …` + sealed `put` (§11). **In progress**: `rooms/owner/group/{create,add,remove}` served on the owner's VTA (`add` and `remove` share one pending-advance slot per room, settled through `rooms/info`), with `pnm rooms owner group-{create,add,remove}`; `rooms/owner/register` signing `rooms/create` as the owner, so a community host accepts it. Sealed `put` follows | L | — |
+| P0 | Owner MLS tasks + `pnm rooms owner …` + sealed `put` (§11). **In progress**: `rooms/owner/group/{create,add,remove,renew}` served on the owner's VTA (`add`, `remove` and `renew` share one pending-advance slot per room, settled through `rooms/info`), with `pnm rooms owner group-{create,add,remove,renew}` — `pnm rooms renew` refuses a sealed room; `rooms/owner/register` signing `rooms/create` as the owner, so a community host accepts it. Sealed `put` follows | L | — |
 | P1 | Specs (§10) | M | — |
 | P2 | `vti-rooms::files`: KDF, STREAM, manifest; wasm build; test vectors | M | P1 |
 | P3 | `BlobStore` trait in `vti-common`; local, S3 and GCS via `object_store`; conformance suite | M | — |

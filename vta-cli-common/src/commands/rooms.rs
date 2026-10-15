@@ -479,11 +479,15 @@ pub async fn cmd_rooms_curate(
     Ok(())
 }
 
-/// `rooms renew` — mint the next epoch, which is what keeps a room live.
+/// `rooms renew` — mint the next epoch, which is what keeps an **open** room live.
 ///
 /// Needs `admin`. It is the same act as ordinary use, and it is the whole
 /// defence against a hostile succession claim: an owner who renews is
 /// structurally safe without thinking about it.
+///
+/// Refuses an `attributed` or `private` room ([`refuse_sealed_renew`]): there the room's
+/// epoch is its MLS group's plus one, and a mint without a commit moves the host and no
+/// member — every write is then refused as sealed under a superseded epoch.
 pub async fn cmd_rooms_renew(
     client: &VtaClient,
     target: RoomTarget<'_>,
@@ -491,6 +495,16 @@ pub async fn cmd_rooms_renew(
     epoch: u32,
     reason: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // The tier first, under `read`, before anything is minted: rooms/keys/act/0.1
+    // producer item 4 — a client never asks to mint a sealed room's epoch.
+    let read = present(client, &target, "read").await?;
+    let info = target
+        .client()
+        .room_info(&read, signer.did, signer.key_multibase)
+        .await
+        .map_err(|e| format!("could not read the room's tier (rooms/info): {e}"))?;
+    refuse_sealed_renew(&wire_str(&info.visibility), &target)?;
+
     let session = present(client, &target, "admin").await?;
     let minted = target
         .client()
@@ -504,6 +518,24 @@ pub async fn cmd_rooms_renew(
         .await?;
     println!("Room {} is at epoch {}", minted.room_id, minted.epoch);
     Ok(())
+}
+
+/// `pnm rooms renew` is an open room's renewal only. A sealed room (`attributed` or
+/// `private`) renews through the owner's key holder, which advances the group with a commit
+/// and the host with it (`rooms/owner/group/renew/0.1`); a bare mint would brick the room
+/// for writing while looking like success.
+fn refuse_sealed_renew(visibility: &str, target: &RoomTarget<'_>) -> Result<(), String> {
+    if visibility == "open" {
+        return Ok(());
+    }
+    Err(format!(
+        "room {room} is `{visibility}`: its epoch advances only with a commit of its group, \
+         which this client cannot make, and a bare mint would leave every member unable to \
+         write. Renew it from the owner's VTA instead:\n\n  pnm rooms owner group-renew \
+         --room {room} --host-did {host_did}",
+        room = target.room_id,
+        host_did = target.host_did.unwrap_or("<the host's DID>"),
+    ))
 }
 
 /// `rooms create` — register a room with a host.
@@ -1298,6 +1330,40 @@ pub async fn cmd_rooms_owner_group_remove(
     Ok(())
 }
 
+/// `rooms owner group-renew` — renew a sealed room (`rooms/owner/group/renew/0.1`):
+/// advance its group with a commit that changes no membership, and the room at its host
+/// with that commit.
+pub async fn cmd_rooms_owner_group_renew(
+    client: &VtaClient,
+    room_id: &str,
+    host_did: &str,
+    reason: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Under one idempotency key, so a retry after a lost reply reports the renewal that
+    // happened instead of renewing a second time.
+    let resp = client
+        .idempotent(|| client.room_group_renew(room_id, host_did, reason))
+        .await
+        .map_err(|e| {
+            format!(
+                "{e}\n\n`noGroup` means this VTA holds no group for {room_id}: an `open` room \
+                 renews with `pnm rooms renew`. `epochConflict` means another admin advanced \
+                 the room: catch up and retry. `hostUnreachable` leaves the outcome unknown; \
+                 running this again settles it with the host before anything else."
+            )
+        })?;
+    println!(
+        "Renewed {room_id}; the room is now at epoch {}.",
+        resp.epoch
+    );
+    println!(
+        "  Nobody joined or left. Every remaining member's VTA must apply the commit before \
+         it can write again: each runs `pnm rooms keys commit --room {room_id} --host <url> \
+         --host-did {host_did}`."
+    );
+    Ok(())
+}
+
 /// `rooms owner group-add` — admit a member from their KeyPackage
 /// (`rooms/owner/group/add/0.1`) and write the Welcome to `out` for delivery.
 pub async fn cmd_rooms_owner_group_add(
@@ -1367,6 +1433,35 @@ mod tests {
             },
             "expiresAt": "2026-09-07T16:00:00Z",
         })
+    }
+
+    /// `pnm rooms renew` refuses a sealed room and names the command that renews it
+    /// (rooms/keys/act/0.1 producer item 4); an open room renews as before.
+    #[test]
+    fn renew_refuses_a_sealed_room_and_names_group_renew() {
+        let target = RoomTarget {
+            host_url: "https://community.example/v1",
+            host_did: Some("did:webvh:community.example"),
+            room_id: "did:webvh:example.com:rooms:northwind",
+        };
+        assert!(refuse_sealed_renew("open", &target).is_ok());
+        for tier in ["attributed", "private"] {
+            let e = refuse_sealed_renew(tier, &target).expect_err(tier);
+            assert!(
+                e.contains(
+                    "pnm rooms owner group-renew --room did:webvh:example.com:rooms:northwind \
+                     --host-did did:webvh:community.example"
+                ),
+                "{e}"
+            );
+            assert!(e.contains(tier), "{e}");
+        }
+        let no_did = RoomTarget {
+            host_did: None,
+            ..target
+        };
+        let e = refuse_sealed_renew("private", &no_did).unwrap_err();
+        assert!(e.contains("--host-did <the host's DID>"), "{e}");
     }
 
     #[test]

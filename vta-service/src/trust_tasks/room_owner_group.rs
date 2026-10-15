@@ -1,5 +1,6 @@
 //! The owner's half of a sealed room's MLS group — `rooms/owner/group/create/0.1`,
-//! `rooms/owner/group/add/0.1` and `rooms/owner/group/remove/0.1`.
+//! `rooms/owner/group/add/0.1`, `rooms/owner/group/remove/0.1` and
+//! `rooms/owner/group/renew/0.1`.
 //!
 //! Every member reaches a room's group by a Welcome (`rooms/keys/welcome`), except the
 //! owner, whom nobody can welcome: `create` founds the group with the owner as its only
@@ -7,24 +8,28 @@
 //! epoch at its host, and returns the Welcome for the caller to deliver. `remove` is its
 //! mirror: it drops a member's leaf and advances the room, so nothing sealed from then on
 //! is readable to them. It recalls nothing they already read, and on a `chained` room they
-//! keep the epochs they were in.
+//! keep the epochs they were in. `renew` advances the room with a commit that changes no
+//! membership — the only correct renewal of a sealed room, whose epoch is its group's epoch
+//! plus one, so a bare `rooms/epoch/mint` would move the host and leave every member behind.
 //!
-//! # Remote first (items 2–6 of `add` and `remove`)
+//! # Remote first (items 2–6 of `add`, `remove` and `renew`)
 //!
 //! The host is advanced **before** this agent's own group, never after. The change is
 //! built on a copy and kept durably as the room's one pending advance
-//! ([`room_groups::PendingAdvance`], an admission or a removal) while the live group stays
+//! ([`room_groups::PendingAdvance`], an admission, a removal or a renewal) while the live
+//! group stays
 //! where it is; `rooms/epoch/mint` goes to the host; only an accepted advance replaces the
 //! live group. A refusal discards the pending advance. An unknown outcome — a host that
 //! could not be reached, or an answer that could not be read — keeps it: the host may have
 //! accepted, and a key holder cannot process its own commit from the wire, so the pending
-//! group is the only way to follow it there. The next `add` or `remove` for the room asks
+//! group is the only way to follow it there. The next `add`, `remove` or `renew` for the
+//! room asks
 //! the host which epoch it is at and settles the pending advance first, whichever kind it
 //! is: a room holds at most one.
 
 use serde_json::Value;
 use trust_tasks_rs::specs::rooms::owner::group::{
-    add as spec_add, create as spec_create, remove as spec_remove,
+    add as spec_add, create as spec_create, remove as spec_remove, renew as spec_renew,
 };
 use trust_tasks_rs::{DeclaredErrorCode, TrustTask};
 use vti_common::acl::Capability;
@@ -389,6 +394,109 @@ pub(super) async fn handle_remove(
     )
 }
 
+/// `rooms/owner/group/renew/0.1` — advance a sealed room's group with a commit that adds
+/// and removes nobody, advancing the room at its host first. The third advance beside
+/// [`handle_add`] and [`handle_remove`], on the same machinery.
+pub(super) async fn handle_renew(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec_renew::v0_1::error_codes as codes;
+    const ADVANCE: AdvanceCodes = AdvanceCodes {
+        no_authority: codes::NO_AUTHORITY,
+        epoch_conflict: codes::EPOCH_CONFLICT,
+        host_unreachable: codes::HOST_UNREACHABLE,
+        host_refused: codes::HOST_REFUSED,
+    };
+    if let Err(r) = super::helpers::require_capability(
+        state,
+        auth,
+        &doc,
+        Capability::CredentialWrite,
+        "renewing a room's group",
+    )
+    .await
+    {
+        return r;
+    }
+    let req: spec_renew::v0_1::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let room_id = req.room_id.as_str().to_string();
+    let host = req.host.as_str().to_string();
+
+    // Item 1: `noGroup` — an `open` room has none and renews with rooms/epoch/mint.
+    if let Err(r) = require_group(state, auth, &doc, &room_id, codes::NO_GROUP).await {
+        return r;
+    }
+
+    let (_, resolver) = match outbound_identity(state, &doc).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    // Item 1: `noAuthority`, before anything is settled or built.
+    let host_call = match HostCall::as_owner(state, auth, &resolver, &room_id, &doc, &ADVANCE).await
+    {
+        Ok(h) => h,
+        Err(r) => return r,
+    };
+
+    // Items 3 and 6: one pending advance per room — an admission or a removal as readily
+    // as a renewal — settled before this one is built.
+    if let Err(r) = host_call.settle_pending(&doc, &ADVANCE).await {
+        return r;
+    }
+    let presentation = match host_call.admin_presentation(&doc, &ADVANCE).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // Items 2, 3 and 7: a commit that adds and removes nobody, and its link, built on a
+    // copy and retained durably before the host is contacted.
+    let pending = match room_groups::prepare_renew(
+        &state.room_groups_ks,
+        &host_call.owner_member,
+        &host,
+        now(),
+    )
+    .await
+    {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return reject_with_code(
+                &doc,
+                declared(codes::NO_GROUP),
+                format!("this agent holds no group for room `{room_id}`"),
+                None,
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    // Items 4 and 5.
+    if let Err(r) = host_call
+        .advance(
+            &doc,
+            &ADVANCE,
+            &host,
+            &pending,
+            presentation,
+            req.reason.as_ref().map(|r| r.as_str()),
+        )
+        .await
+    {
+        return r;
+    }
+
+    record(state, "rooms.owner.group.renew", auth, &room_id).await;
+    success_response(
+        &doc,
+        serde_json::json!({ "roomId": room_id, "epoch": pending.epoch }),
+    )
+}
+
 fn own_leaf(doc: &TrustTask<Value>, room_id: &str, member: &str) -> TrustTaskOutcome {
     reject_with_code(
         doc,
@@ -431,7 +539,7 @@ async fn require_group(
 }
 
 /// The codes an epoch advance answers with, in the namespace of the task that asked for
-/// it. `add` and `remove` declare the same four, each under its own slug.
+/// it. `add`, `remove` and `renew` declare the same four, each under its own slug.
 struct AdvanceCodes {
     no_authority: DeclaredErrorCode,
     epoch_conflict: DeclaredErrorCode,
@@ -506,9 +614,9 @@ async fn founding_member(
     )))
 }
 
-/// What `add` and `remove` need to speak to a host **as the owner's persona**.
+/// What `add`, `remove` and `renew` need to speak to a host **as the owner's persona**.
 ///
-/// `rooms/owner/group/{add,remove}` have the key holder speak "to the host as its
+/// `rooms/owner/group/{add,remove,renew}` have the key holder speak "to the host as its
 /// principal", presenting the owner's `admin` authority; `rooms/epoch/mint`'s producer is
 /// the owner (or a holder of `admin`). So every request is signed as the persona the room's
 /// credentials name — the same identity `rooms/owner/register` registered — and never as
@@ -755,8 +863,8 @@ impl<'a> HostCall<'a> {
                     declared(codes.host_unreachable),
                     format!(
                         "the epoch advance for room `{room_id}` did not get an answer from host \
-                         `{host}`: {e}. Whether it took effect is unknown; the next admission or \
-                         removal in this room settles it with the host first."
+                         `{host}`: {e}. Whether it took effect is unknown; the next admission, \
+                         removal or renewal in this room settles it with the host first."
                     ),
                     None,
                 ));
@@ -1089,6 +1197,22 @@ mod tests {
                     serde_json::json!({
                         "roomId": o.room.did, "host": o.host.did, "member": member,
                         "reason": "left the deal team",
+                    }),
+                ),
+            )
+            .await,
+        )
+    }
+
+    async fn renew(o: &Owner) -> Value {
+        body(
+            handle_renew(
+                &o.state,
+                &crate::test_support::super_admin_claims(),
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_1,
+                    serde_json::json!({
+                        "roomId": o.room.did, "host": o.host.did, "reason": "quarterly renewal",
                     }),
                 ),
             )
@@ -2048,10 +2172,10 @@ mod tests {
 
     /// `rooms/epoch/mint` goes to the host signed as the owner's persona, with the `admin`
     /// leaf granted to that same persona — the presenter the host authenticates — and not
-    /// as this agent, whose DID every principal it serves shares. Admission and removal
-    /// alike.
+    /// as this agent, whose DID every principal it serves shares. Admission, removal and
+    /// renewal alike.
     #[tokio::test]
-    async fn add_and_remove_speak_to_the_host_as_the_owners_persona() {
+    async fn add_remove_and_renew_speak_to_the_host_as_the_owners_persona() {
         let o = owner().await;
         create(&o, &o.room_key).await;
         let vta_did = o.state.config.read().await.vta_did.clone().unwrap();
@@ -2081,5 +2205,366 @@ mod tests {
         let out = remove(&o, &did).await;
         assert_eq!(out["payload"]["epoch"], 3, "{out}");
         check("remove");
+
+        let out = renew(&o).await;
+        assert_eq!(out["payload"]["epoch"], 4, "{out}");
+        check("renew");
+    }
+
+    // ─── rooms/owner/group/renew/0.1 ─────────────────────────────────────────────────
+
+    /// Item 1: no group — an `open` room renews with rooms/epoch/mint, not here.
+    #[tokio::test]
+    async fn renew_without_a_group_is_no_group() {
+        let o = owner().await;
+        let out = renew(&o).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/renew:noGroup",
+            "{out}"
+        );
+        assert!(o.host.state.lock().unwrap().last_mint.is_none());
+    }
+
+    /// Item 1: without the owner's `admin` grant nothing is built and nothing is sent.
+    #[tokio::test]
+    async fn renew_without_admin_authority_is_refused_before_anything_is_built() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        crate::vault::storage::delete(
+            &o.state.vault_ks,
+            &format!("{AUTHORITY_TYPE}-{}", o.room.did),
+        )
+        .await
+        .unwrap();
+        let out = renew(&o).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/renew:noAuthority",
+            "{out}"
+        );
+        assert!(pending(&o).await.is_none());
+        assert!(o.host.state.lock().unwrap().last_mint.is_none());
+        assert_eq!(live_epoch(&o).await, 1);
+    }
+
+    /// Items 2, 4, 5 and 7 end to end: the host advances first and only then the owner's
+    /// group; nobody joins or leaves; the member who remains follows from the commit the
+    /// host took and reads what the owner seals next; and what was sealed before still
+    /// opens, through the link.
+    #[tokio::test]
+    async fn a_renewal_advances_the_host_then_the_group_and_members_follow() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (m_state, _m_dir, m_did) = admitted(&o).await; // epoch 2
+        let member = Member::new(&o.room.did, &m_did).unwrap();
+
+        let before =
+            room_groups::seal_record(&o.state.room_groups_ks, &om(&o), "notes/1", 1, b"before")
+                .await
+                .unwrap();
+        assert_eq!(before.epoch, 2);
+
+        let out = renew(&o).await;
+        assert_eq!(out["payload"]["epoch"], 3, "{out}");
+        assert_eq!(out["payload"]["roomId"], o.room.did, "{out}");
+        assert_eq!(o.host.state.lock().unwrap().epoch, 3, "the host advanced");
+        assert_eq!(live_epoch(&o).await, 3, "and only then the owner's group");
+        assert!(pending(&o).await.is_none());
+        let group = live_group(&o).await;
+        assert_eq!(group.member_count(), 2, "nobody joined or left");
+        assert!(group.leaf_of(&o.member).is_some());
+        assert!(group.leaf_of(&m_did).is_some());
+        let mint = o.host.state.lock().unwrap().last_mint.clone().unwrap();
+        assert!(
+            mint.get("link").is_some(),
+            "the advance carries its link: {mint}"
+        );
+        assert!(mint.get("commit").is_some(), "and its commit: {mint}");
+        assert_eq!(mint["reason"], "quarterly renewal");
+
+        // The remaining member's key holder applies the commit the host relays.
+        let commit = commit_of_last_mint(&o);
+        room_groups::apply_commit(&m_state.room_groups_ks, &member, &commit, 2, 0)
+            .await
+            .expect("the remaining member follows the renewal");
+
+        let after =
+            room_groups::seal_record(&o.state.room_groups_ks, &om(&o), "notes/2", 1, b"after")
+                .await
+                .unwrap();
+        assert_eq!(after.epoch, 3);
+        let open = |rec: &vti_rooms::wire::SealedContent, key: &'static str| {
+            let ks = m_state.room_groups_ks.clone();
+            let member = member.clone();
+            let rec = rec.clone();
+            async move {
+                room_groups::open_record(
+                    &ks,
+                    &member,
+                    key,
+                    1,
+                    &rec.ciphertext,
+                    &rec.nonce,
+                    rec.epoch,
+                )
+                .await
+            }
+        };
+        assert_eq!(open(&after, "notes/2").await.unwrap(), b"after");
+        assert_eq!(
+            open(&before, "notes/1").await.unwrap(),
+            b"before",
+            "an earlier epoch still opens through the link"
+        );
+        // And the member's writes reach the owner at the new epoch.
+        let from_member =
+            room_groups::seal_record(&m_state.room_groups_ks, &member, "notes/3", 1, b"reply")
+                .await
+                .unwrap();
+        assert_eq!(from_member.epoch, 3);
+        let opened = room_groups::open_record(
+            &o.state.room_groups_ks,
+            &om(&o),
+            "notes/3",
+            1,
+            &from_member.ciphertext,
+            &from_member.nonce,
+            from_member.epoch,
+        )
+        .await
+        .unwrap();
+        assert_eq!(opened, b"reply");
+    }
+
+    /// Item 5: a refusal is the host's answer — `hostRefused`, the pending renewal is
+    /// discarded and the group does not move.
+    #[tokio::test]
+    async fn a_refused_renewal_leaves_the_group_unchanged() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let before = live_group(&o).await.epoch_authenticator();
+        o.host.state.lock().unwrap().mode = Mode::Refuse;
+
+        let out = renew(&o).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/renew:hostRefused",
+            "{out}"
+        );
+        assert_eq!(
+            out["payload"]["details"]["code"], "permissionDenied",
+            "{out}"
+        );
+        assert_eq!(live_epoch(&o).await, 1);
+        assert_eq!(
+            live_group(&o).await.epoch_authenticator(),
+            before,
+            "the very same group state"
+        );
+        assert!(
+            pending(&o).await.is_none(),
+            "a refused renewal leaves nothing pending"
+        );
+    }
+
+    /// Another admin advanced the room: `epochConflict` carrying `hostEpoch`, and nothing
+    /// changes here.
+    #[tokio::test]
+    async fn a_renewal_in_a_room_advanced_elsewhere_is_an_epoch_conflict() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        o.host.state.lock().unwrap().epoch = 6;
+
+        let out = renew(&o).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/renew:epochConflict",
+            "{out}"
+        );
+        assert_eq!(out["payload"]["details"]["hostEpoch"], 6, "{out}");
+        assert_eq!(live_epoch(&o).await, 1);
+        assert!(pending(&o).await.is_none());
+    }
+
+    /// Items 3, 5 and 6: the host takes the renewal and the answer is lost —
+    /// `hostUnreachable`, the pending renewal is KEPT, and the next renewal finds the host
+    /// at its epoch, applies it, and renews again from there.
+    #[tokio::test]
+    async fn a_renewal_whose_answer_was_lost_is_kept_and_settled() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        o.host.state.lock().unwrap().mode = Mode::AcceptThenLose;
+
+        let out = renew(&o).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/renew:hostUnreachable",
+            "{out}"
+        );
+        assert_eq!(
+            o.host.state.lock().unwrap().epoch,
+            2,
+            "the host did advance"
+        );
+        assert_eq!(live_epoch(&o).await, 1, "this agent does not know that yet");
+        let kept = pending(&o)
+            .await
+            .expect("an unknown outcome keeps the pending renewal");
+        assert_eq!(kept.kind, room_groups::AdvanceKind::Renewal);
+        assert_eq!(kept.epoch, 2);
+        assert_eq!(kept.member, o.member, "the committer, not anybody changed");
+        assert!(kept.welcome.is_none());
+
+        o.host.state.lock().unwrap().mode = Mode::Accept;
+        let out = renew(&o).await;
+        assert_eq!(out["payload"]["epoch"], 3, "{out}");
+        assert_eq!(live_epoch(&o).await, 3);
+        assert!(pending(&o).await.is_none());
+    }
+
+    /// Item 6: a pending renewal the host never took is discarded, and the request carries
+    /// on from the live group.
+    #[tokio::test]
+    async fn a_pending_renewal_the_host_never_took_is_discarded() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        // As if the process died between storing the pending renewal and sending it.
+        room_groups::prepare_renew(&o.state.room_groups_ks, &om(&o), &o.host.did, 0)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let out = renew(&o).await;
+        assert_eq!(out["payload"]["epoch"], 2, "{out}");
+        assert_eq!(live_epoch(&o).await, 2);
+        assert!(pending(&o).await.is_none());
+    }
+
+    /// Item 3: one pending advance per room across admission, removal and renewal. A lost
+    /// admission is settled by a renewal, a lost renewal by a removal and by an admission,
+    /// and a second advance cannot be retained over a pending renewal.
+    #[tokio::test]
+    async fn one_pending_advance_per_room_across_add_remove_and_renew() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+
+        // A lost admission, settled by a renewal.
+        o.host.state.lock().unwrap().mode = Mode::AcceptThenLose;
+        let (_s, _d, did, kp) = joiner(&o.room.did).await;
+        add(&o, &did, &kp).await; // host at 2
+        assert_eq!(
+            pending(&o).await.unwrap().kind,
+            room_groups::AdvanceKind::Admission
+        );
+        o.host.state.lock().unwrap().mode = Mode::Accept;
+        let out = renew(&o).await;
+        assert_eq!(out["payload"]["epoch"], 3, "{out}");
+        assert!(
+            live_group(&o).await.leaf_of(&did).is_some(),
+            "the admission applied first"
+        );
+
+        // A lost renewal, settled by a removal.
+        o.host.state.lock().unwrap().mode = Mode::AcceptThenLose;
+        renew(&o).await; // host at 4
+        assert_eq!(
+            pending(&o).await.unwrap().kind,
+            room_groups::AdvanceKind::Renewal
+        );
+        o.host.state.lock().unwrap().mode = Mode::Accept;
+        let out = remove(&o, &did).await;
+        assert_eq!(out["payload"]["epoch"], 5, "{out}");
+        assert!(live_group(&o).await.leaf_of(&did).is_none());
+
+        // A lost renewal, settled by an admission.
+        o.host.state.lock().unwrap().mode = Mode::AcceptThenLose;
+        renew(&o).await; // host at 6
+        o.host.state.lock().unwrap().mode = Mode::Accept;
+        let (_s2, _d2, did2, kp2) = joiner(&o.room.did).await;
+        let out = add(&o, &did2, &kp2).await;
+        assert_eq!(out["payload"]["epoch"], 7, "{out}");
+        assert_eq!(live_epoch(&o).await, 7);
+
+        // The slot holds one: nothing is retained over a pending renewal.
+        room_groups::prepare_renew(&o.state.room_groups_ks, &om(&o), &o.host.did, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        let second =
+            room_groups::prepare_remove(&o.state.room_groups_ks, &om(&o), &o.host.did, &did2, 0)
+                .await;
+        assert!(
+            matches!(second, Err(PrepareRemoveError::App(AppError::Conflict(_)))),
+            "{second:?}"
+        );
+        let third =
+            room_groups::prepare_renew(&o.state.room_groups_ks, &om(&o), &o.host.did, 0).await;
+        assert!(matches!(third, Err(AppError::Conflict(_))), "{third:?}");
+        assert_eq!(
+            pending(&o).await.unwrap().kind,
+            room_groups::AdvanceKind::Renewal,
+            "the first is untouched"
+        );
+    }
+
+    /// Per-persona state: another persona on this same VTA, a member of the owner's room,
+    /// holds its own group. The owner's renewal advances the owner's group and leaves the
+    /// other persona's alone — it follows by applying the commit, like any member.
+    #[tokio::test]
+    async fn a_renewal_advances_only_the_owner_personas_group() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        // A second persona on the owner's own VTA, admitted to the room.
+        let other_did = Party::new().did;
+        let other = Member::new(&o.room.did, &other_did).unwrap();
+        let kp = room_groups::mint_key_package(&o.state.room_groups_ks, &other, 3600, 0)
+            .await
+            .unwrap()
+            .key_package;
+        let out = add(&o, &other_did, &kp).await;
+        let welcome = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(out["payload"]["welcome"].as_str().expect("{out}"))
+                .unwrap()
+        };
+        room_groups::join(&o.state.room_groups_ks, &other, &welcome, 0)
+            .await
+            .unwrap();
+        let other_epoch = |state: &AppState| {
+            let ks = state.room_groups_ks.clone();
+            let other = other.clone();
+            let room = o.room.did.clone();
+            async move {
+                let r = room_groups::load(&ks, &other).await.unwrap().unwrap();
+                vti_rooms::sealed::SealedRoom::new(
+                    room,
+                    vti_rooms::mls::RoomGroup::restore(&r.snapshot).unwrap(),
+                )
+                .room_epoch()
+            }
+        };
+        assert_eq!(other_epoch(&o.state).await, 2);
+
+        let out = renew(&o).await;
+        assert_eq!(out["payload"]["epoch"], 3, "{out}");
+        assert_eq!(live_epoch(&o).await, 3);
+        assert_eq!(
+            other_epoch(&o.state).await,
+            2,
+            "the other persona's group is its own"
+        );
+        assert!(
+            room_groups::pending_advance(&o.state.room_groups_ks, &other)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        room_groups::apply_commit(
+            &o.state.room_groups_ks,
+            &other,
+            &commit_of_last_mint(&o),
+            2,
+            0,
+        )
+        .await
+        .expect("and follows the renewal like any member");
+        assert_eq!(other_epoch(&o.state).await, 3);
     }
 }

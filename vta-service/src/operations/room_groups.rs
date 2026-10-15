@@ -735,7 +735,7 @@ pub async fn create_group(
     Ok(epoch)
 }
 
-/// Which membership change a pending advance makes.
+/// Which epoch advance a pending advance makes — a membership change, or none.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AdvanceKind {
@@ -745,6 +745,8 @@ pub enum AdvanceKind {
     Admission,
     /// `rooms/owner/group/remove`.
     Removal,
+    /// `rooms/owner/group/renew`: a commit that adds and removes nobody.
+    Renewal,
 }
 
 impl AdvanceKind {
@@ -753,12 +755,14 @@ impl AdvanceKind {
         match self {
             Self::Admission => "admission",
             Self::Removal => "removal",
+            Self::Renewal => "renewal",
         }
     }
 }
 
 /// An epoch advance the host has not yet confirmed — items 3 to 6 of
-/// `rooms/owner/group/add/0.1` and `rooms/owner/group/remove/0.1`.
+/// `rooms/owner/group/add/0.1`, `rooms/owner/group/remove/0.1` and
+/// `rooms/owner/group/renew/0.1`.
 ///
 /// # Why the whole advanced group, and not just the commit
 ///
@@ -778,14 +782,15 @@ impl AdvanceKind {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingAdvance {
-    /// Admission or removal.
+    /// Admission, removal or renewal.
     #[serde(default)]
     pub kind: AdvanceKind,
     /// The group after the change.
     pub snapshot: GroupSnapshot,
     /// The live group's links plus the one this advance produced.
     pub links: Vec<EpochLink>,
-    /// Who is being admitted or removed.
+    /// Who is being admitted or removed. A renewal changes nobody's membership, and
+    /// names the committer — the owner persona whose leaf it updates.
     pub member: String,
     /// The host the epoch advance goes to, so a later request can reconcile
     /// against the same one.
@@ -981,7 +986,54 @@ pub async fn prepare_remove(
     Ok(pending)
 }
 
-/// The advance `owner`'s group has waiting on its host, if any — admission or removal.
+/// Build the renewal of `owner`'s group — a commit that adds and removes nobody, updating
+/// the owner's own leaf — and retain it, durably, as a [`PendingAdvance`] **before**
+/// anything is sent to a host (`rooms/owner/group/renew/0.1` items 2 and 3). The live
+/// group is unchanged: the commit and the link are made on a copy, which is what is kept.
+///
+/// `None` when this agent holds no group for the room (item 1, `noGroup`).
+pub async fn prepare_renew(
+    groups: &KeyspaceHandle,
+    owner: &Member,
+    host: &str,
+    now: u64,
+) -> Result<Option<PendingAdvance>, AppError> {
+    let Some(record) = load(groups, owner).await? else {
+        return Ok(None);
+    };
+    let group = RoomGroup::restore(&record.snapshot)
+        .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?;
+    let mut room = SealedRoom::new(owner.room_id(), group);
+    room.add_links(record.links);
+
+    // Item 2 (and item 7): an update of the committer's own leaf, carrying no proposal
+    // that adds or removes anybody, and the link sealing the outgoing epoch's key under
+    // the incoming one so every member who applies it keeps reading what came before.
+    let (change, link) = room
+        .renew()
+        .map_err(|e| AppError::Internal(format!("build the renewal: {e}")))?;
+
+    let pending = PendingAdvance {
+        kind: AdvanceKind::Renewal,
+        snapshot: room
+            .group()
+            .snapshot()
+            .map_err(|e| AppError::Internal(format!("snapshot the group: {e}")))?,
+        links: room.links(),
+        member: owner.persona().to_string(),
+        host: host.to_string(),
+        epoch: room.room_epoch(),
+        link,
+        commit: B64.encode(&change.commit),
+        welcome: None,
+        created_at: now,
+    };
+    retain(groups, owner, &pending).await?;
+    Ok(Some(pending))
+}
+
+/// The advance `owner`'s group has waiting on its host, if any — admission, removal or
+/// renewal.
 ///
 /// The admission-only slot an earlier build wrote (`room-add:<room>`) is moved here by
 /// [`migrate_legacy`], so a row left there is settled, not lost.

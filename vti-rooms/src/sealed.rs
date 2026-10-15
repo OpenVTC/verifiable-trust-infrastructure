@@ -162,6 +162,24 @@ impl SealedRoom {
         Ok((change, link))
     }
 
+    /// Renew the room — advance its epoch with a commit that changes no membership — keeping
+    /// the chain intact.
+    ///
+    /// `rooms/owner/group/renew/0.1` item 2: the committer updates its own leaf
+    /// ([`RoomGroup::self_update`]), and the outgoing epoch's storage key is sealed under the
+    /// incoming one, so every member who applies the commit still reads everything sealed
+    /// before it. Nobody joins and nobody leaves; the Welcome is always `None`.
+    ///
+    /// Like its two siblings this advances `self`. A caller that must not move its live
+    /// group until a host accepts (remote first) renews a copy restored from a snapshot.
+    pub fn renew(&mut self) -> Result<(MembershipChange, Option<EpochLink>), RoomKeyError> {
+        let outgoing = self.group.storage_key()?;
+        let change = self.group.self_update()?;
+        let link = self.mint_link(outgoing)?;
+        self.chain.add_links(link.clone());
+        Ok((change, link))
+    }
+
     /// Apply a commit another member produced, keeping the chain intact.
     ///
     /// Returns the room epoch after the commit.
@@ -479,6 +497,36 @@ mod tests {
             r.file_key_for_open(&id, 3),
             Err(RoomKeyError::EpochAhead { .. })
         ));
+    }
+
+    /// A renewal advances the epoch without changing who is in the room: a member who
+    /// applies its commit reads what is sealed after it, and what was sealed before still
+    /// opens through the link.
+    #[test]
+    fn a_renewal_advances_the_epoch_and_keeps_history_and_membership() {
+        let mut owner = room("did:webvh:zRoom");
+        let (bob_id, kp) = crate::mls::IdentitySnapshot::mint("did:key:zBob").unwrap();
+        let (change, _) = owner.add_member(&kp).unwrap();
+        let mut bob = SealedRoom::new(
+            "did:webvh:zRoom",
+            RoomGroup::join_from_identity(&bob_id, &change.welcome.unwrap()).unwrap(),
+        );
+        assert_eq!(bob.room_epoch(), 2);
+        let before = owner.seal_record("k1", 1, b"before").unwrap();
+
+        let (renewal, link) = owner.renew().unwrap();
+        assert!(renewal.welcome.is_none(), "nobody to welcome");
+        assert!(link.is_some(), "the outgoing key is linked");
+        assert_eq!(owner.room_epoch(), 3);
+        assert_eq!(owner.group().member_count(), 2, "membership unchanged");
+
+        let (epoch, _) = bob.apply_commit(&renewal.commit).unwrap();
+        assert_eq!(epoch, 3);
+        let after = owner.seal_record("k2", 1, b"after").unwrap();
+        assert_eq!(after.epoch, 3);
+        assert_eq!(bob.open_record("k2", 1, &after).unwrap(), b"after");
+        assert_eq!(bob.open_record("k1", 1, &before).unwrap(), b"before");
+        assert_eq!(owner.open_record("k1", 1, &before).unwrap(), b"before");
     }
 
     /// Sealing twice must not reuse a nonce, or the AEAD's guarantee is gone.

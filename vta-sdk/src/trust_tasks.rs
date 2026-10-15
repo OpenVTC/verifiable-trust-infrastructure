@@ -1118,6 +1118,15 @@ pub const TASK_ROOMS_OWNER_GROUP_ADD_0_1: &str =
 pub const TASK_ROOMS_OWNER_GROUP_REMOVE_0_1: &str =
     "https://trusttasks.org/spec/rooms/owner/group/remove/0.1";
 
+/// `spec/rooms/owner/group/renew/0.1` — renew a sealed room: advance its group with a
+/// commit that adds and removes nobody, and the room's epoch at its host with that commit
+/// (host first, then this agent's group). The only correct renewal of an `attributed` or
+/// `private` room; an `open` room renews with `rooms/epoch/mint` directly.
+/// Auth: `credentialWrite` capability, plus the caller's `admin` authority credential for
+/// the room in this agent's vault.
+pub const TASK_ROOMS_OWNER_GROUP_RENEW_0_1: &str =
+    "https://trusttasks.org/spec/rooms/owner/group/renew/0.1";
+
 /// `spec/vta/memory/delete/0.1` — remove one entry by key (`not_found` if
 /// absent). Auth: context access. Payload:
 /// [`crate::protocols::memory::MemoryDeleteBody`].
@@ -2580,6 +2589,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_OWNER_GROUP_CREATE_0_1,
     TASK_ROOMS_OWNER_GROUP_ADD_0_1,
     TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
+    TASK_ROOMS_OWNER_GROUP_RENEW_0_1,
     TASK_VTA_MEMORY_DELETE_0_1,
     // External accounts (`external/*`)
     TASK_EXTERNAL_ACCOUNTS_LIST_0_1,

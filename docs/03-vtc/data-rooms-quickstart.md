@@ -304,5 +304,15 @@ Found in this run; each is being fixed.
 - **Making a member needs the console.** No CLI until `vtc/members/admit` is
   specified.
 - **`private` rooms are not served yet** — use `attributed`.
-- **Don't `pnm rooms renew` a sealed room**: it advances the host's epoch
-  without a group commit.
+- **Renew a sealed room from the owner's VTA**, which advances the group and
+  the host's epoch together:
+
+  ```bash
+  PNM_HOME=/tmp/vdr/pnm-alice pnm rooms owner group-renew --room "$ROOM" \
+      --host-did "$VTC" --reason "quarterly renewal"
+  ```
+
+  Every other member then catches up with `pnm rooms keys commit --room "$ROOM"
+  --host http://localhost:8200/v1 --host-did "$VTC"`. `pnm rooms renew` is for
+  `open` rooms only and refuses a sealed one: a bare mint would advance the
+  host's epoch without a group commit.

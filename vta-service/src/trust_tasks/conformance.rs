@@ -3032,6 +3032,17 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_OWNER_GROUP_RENEW_0_1,
+            checked!(
+                specs::rooms::owner::group::renew::v0_1::Payload,
+                specs::rooms::owner::group::renew::v0_1::Response,
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "reason": "Quarterly renewal" }),
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind", "epoch": 5 })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
             checked!(
                 specs::rooms::owner::issue_membership::v0_1::Payload,
