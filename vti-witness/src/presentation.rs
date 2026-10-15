@@ -24,6 +24,31 @@
 //! 5. **Independence at submit** (§3.2): no credential in the presentation is
 //!    issued by an excluded DID, and neither party is one.
 //!
+//! # The member link
+//!
+//! A party submits from its pairwise relationship DID, but a community's
+//! membership credential names the member's own DID, so step 4 cannot be met
+//! from the relationship presentation alone. The submit payload may carry a
+//! **member presentation** in `ext["org.openvtc.witness"].memberPresentation`
+//! ([`MEMBER_LINK_EXT`]):
+//!
+//! - a `VerifiablePresentation` whose `holder` is the member DID, signed for
+//!   `authentication` by that DID;
+//! - bound to the **same session** — its `nonce` (or `challenge`) is the
+//!   session's challenge and its `domain` the session's domain — which only the
+//!   party that opened the session was told, so the member key signed for this
+//!   one session and nothing else;
+//! - carrying a membership credential from one of the identity's communities
+//!   naming the member DID, every credential in it checked as in step 2.
+//!
+//! The member DID may not be the session's other party (the counterparty's
+//! membership does not make the submitter eligible) or an excluded DID. The
+//! link proves that whoever holds the relationship key also holds a member key
+//! **in this session**; it cannot prove they are one person, so a member who
+//! signs for somebody else lends them their eligibility. The witness learns the
+//! member DID, keeps it nowhere, and logs it nowhere. Design note §3.3a has the
+//! risks and the options left for later.
+//!
 //! Proofs are verified through `vta_sdk::trust_task_proof::verify_proof_set`,
 //! the one proof-set verifier the vault, the vetting client and the VTC share;
 //! credentials are classified with `dtg_credentials::DTGCredential`. Nothing
@@ -45,18 +70,29 @@ pub struct VerifiedPresentation {
     pub relationship_credential: Value,
 }
 
-/// The parties a presentation is checked against.
+/// The `ext` namespace a member presentation is carried in.
+pub const MEMBER_LINK_EXT: &str = "org.openvtc.witness";
+
+/// The member of [`MEMBER_LINK_EXT`] holding the member presentation.
+pub const MEMBER_PRESENTATION: &str = "memberPresentation";
+
+/// The parties and session a presentation is checked against.
 pub struct Expected<'a> {
     /// The party submitting — the session's opener.
     pub submitter: &'a str,
     /// The session's other party.
     pub counterparty: &'a str,
+    /// The session's challenge, which a member presentation binds to.
+    pub challenge: &'a str,
+    /// The session's domain, which a member presentation binds to.
+    pub domain: &'a str,
 }
 
 /// Verify `vp` (see the module docs). The error is a short reason for the
 /// `presentationInvalid` message; it never echoes the presentation.
 pub async fn verify(
     vp: &Value,
+    member_presentation: Option<&Value>,
     expected: &Expected<'_>,
     policy: &WitnessPolicy,
     resolver: &TrustTaskVmResolver,
@@ -84,39 +120,9 @@ pub async fn verify(
     }
 
     // 2. Every credential.
-    let credentials: Vec<&Value> = match vp.get("verifiableCredential") {
-        Some(Value::Array(items)) => items.iter().collect(),
-        Some(one @ Value::Object(_)) => vec![one],
-        _ => Vec::new(),
-    };
-    if credentials.is_empty() {
-        return Err("the presentation carries no credential".into());
-    }
-
     let mut relationship: Option<&Value> = None;
     let mut member_of_a_community = false;
-    for (index, vc) in credentials.into_iter().enumerate() {
-        let issuer = issuer_of(vc).ok_or_else(|| format!("credential {index} has no `issuer`"))?;
-        if policy.is_excluded(issuer) {
-            return Err(format!(
-                "credential {index} is issued by a party this witness does not witness"
-            ));
-        }
-        let signed = verify_proof_set(vc, ProofPurpose::AssertionMethod, resolver)
-            .await
-            .map_err(|e| format!("credential {index}'s issuer proof did not verify: {e}"))?;
-        if signed.signer() != issuer {
-            return Err(format!("credential {index} is not signed by its `issuer`"));
-        }
-
-        // Only DTG credentials mean anything here; anything else the party
-        // chose to present has been verified and is otherwise ignored.
-        let Ok(dtg) = DTGCredential::try_from(vc.clone()) else {
-            continue;
-        };
-        if !in_window(&dtg, now) {
-            return Err(format!("credential {index} is not valid now"));
-        }
+    for (vc, dtg) in verified_credentials(vp, policy, resolver, now).await? {
         match dtg.type_() {
             DTGCredentialType::Relationship if dtg.issuer() == submitter => {
                 if relationship.is_some() {
@@ -134,17 +140,15 @@ pub async fn verify(
                 }
                 relationship = Some(vc);
             }
-            DTGCredentialType::Membership
-                if policy.accepts_community(dtg.issuer())
-                    && dtg.subject() == submitter
-                    // A community-issued grant; an acknowledgement (member →
-                    // community) carries a digest and names the community.
-                    && dtg.subject_digest().is_none() =>
-            {
-                member_of_a_community = true;
-            }
+            _ if grants_membership(&dtg, submitter, policy) => member_of_a_community = true,
             _ => {}
         }
+    }
+
+    // The member link, checked whole whenever it is carried.
+    if let Some(member_vp) = member_presentation {
+        verify_member_link(member_vp, expected, policy, resolver, now).await?;
+        member_of_a_community = true;
     }
 
     // 3. The relationship credential.
@@ -157,7 +161,7 @@ pub async fn verify(
     if !policy.witnesses_anyone() && !member_of_a_community {
         return Err(
             "the presentation carries no valid membership credential from a community this \
-             witness serves, naming the submitting party"
+             witness serves, naming the submitting party, and no member presentation"
                 .into(),
         );
     }
@@ -165,6 +169,124 @@ pub async fn verify(
     Ok(VerifiedPresentation {
         relationship_credential: relationship.clone(),
     })
+}
+
+/// Every credential in `presentation`, each issuer proof verified for
+/// `assertionMethod` under its `issuer`, none issued by an excluded DID, every
+/// DTG credential in its validity window. The DTG ones are returned; anything
+/// else is verified and otherwise ignored.
+async fn verified_credentials<'v>(
+    presentation: &'v Value,
+    policy: &WitnessPolicy,
+    resolver: &TrustTaskVmResolver,
+    now: DateTime<Utc>,
+) -> Result<Vec<(&'v Value, DTGCredential)>, String> {
+    let credentials: Vec<&Value> = match presentation.get("verifiableCredential") {
+        Some(Value::Array(items)) => items.iter().collect(),
+        Some(one @ Value::Object(_)) => vec![one],
+        _ => Vec::new(),
+    };
+    if credentials.is_empty() {
+        return Err("the presentation carries no credential".into());
+    }
+    let mut out = Vec::new();
+    for (index, vc) in credentials.into_iter().enumerate() {
+        let issuer = issuer_of(vc).ok_or_else(|| format!("credential {index} has no `issuer`"))?;
+        if policy.is_excluded(issuer) {
+            return Err(format!(
+                "credential {index} is issued by a party this witness does not witness"
+            ));
+        }
+        let signed = verify_proof_set(vc, ProofPurpose::AssertionMethod, resolver)
+            .await
+            .map_err(|e| format!("credential {index}'s issuer proof did not verify: {e}"))?;
+        if signed.signer() != issuer {
+            return Err(format!("credential {index} is not signed by its `issuer`"));
+        }
+        // Only DTG credentials mean anything here.
+        let Ok(dtg) = DTGCredential::try_from(vc.clone()) else {
+            continue;
+        };
+        if !in_window(&dtg, now) {
+            return Err(format!("credential {index} is not valid now"));
+        }
+        out.push((vc, dtg));
+    }
+    Ok(out)
+}
+
+/// A community-issued membership grant from an accepted community naming
+/// `member`. An acknowledgement (member → community) carries a digest and
+/// names the community, so it never counts.
+fn grants_membership(dtg: &DTGCredential, member: &str, policy: &WitnessPolicy) -> bool {
+    matches!(dtg.type_(), DTGCredentialType::Membership)
+        && policy.accepts_community(dtg.issuer())
+        && dtg.subject() == member
+        && dtg.subject_digest().is_none()
+}
+
+/// The member link (module docs): a presentation by a member DID, bound to
+/// this session, carrying that DID's membership of an accepted community.
+async fn verify_member_link(
+    member_vp: &Value,
+    expected: &Expected<'_>,
+    policy: &WitnessPolicy,
+    resolver: &TrustTaskVmResolver,
+    now: DateTime<Utc>,
+) -> Result<(), String> {
+    if !has_type(member_vp, "VerifiablePresentation") {
+        return Err("the member presentation is not a VerifiablePresentation".into());
+    }
+    let member = member_vp
+        .get("holder")
+        .and_then(Value::as_str)
+        .filter(|h| h.starts_with("did:"))
+        .ok_or("the member presentation names no `holder` DID")?;
+    if member == expected.counterparty {
+        return Err(
+            "the member presentation is the other party's: its membership does not make the \
+             submitting party eligible"
+                .into(),
+        );
+    }
+    if policy.is_excluded(member) {
+        return Err("this witness does not witness this exchange".into());
+    }
+
+    // Bound to this session, as the relationship presentation is.
+    let carried: Vec<&str> = ["nonce", "challenge"]
+        .iter()
+        .filter_map(|m| member_vp.get(*m).and_then(Value::as_str))
+        .collect();
+    if carried.is_empty() || carried.iter().any(|c| *c != expected.challenge) {
+        return Err("the member presentation is not bound to this session's challenge".into());
+    }
+    if member_vp.get("domain").and_then(Value::as_str) != Some(expected.domain) {
+        return Err("the member presentation is not bound to this session's domain".into());
+    }
+
+    let holder = verify_proof_set(member_vp, ProofPurpose::Authentication, resolver)
+        .await
+        .map_err(|e| format!("the member presentation's proof did not verify: {e}"))?;
+    if holder.signer() != member {
+        return Err("the member presentation is not signed by its `holder`".into());
+    }
+
+    let credentials = verified_credentials(member_vp, policy, resolver, now)
+        .await
+        .map_err(|e| format!("member presentation: {e}"))?;
+    if credentials
+        .iter()
+        .any(|(_, dtg)| grants_membership(dtg, member, policy))
+    {
+        Ok(())
+    } else {
+        Err(
+            "the member presentation carries no valid membership credential from a community \
+             this witness serves, naming its holder"
+                .into(),
+        )
+    }
 }
 
 fn has_type(doc: &Value, wanted: &str) -> bool {

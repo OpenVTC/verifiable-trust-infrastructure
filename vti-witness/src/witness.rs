@@ -32,7 +32,10 @@
 //! `challenge`) and `domain` are the session's. Any failure is
 //! `challengeMismatch`, before the presentation is examined at all.
 //!
-//! **Then the presentation** ([`crate::presentation`]): `presentationInvalid`.
+//! **Then the presentation** ([`crate::presentation`]), and the member
+//! presentation if `ext["org.openvtc.witness"]` carries one (the member link,
+//! for a party whose membership credential names its member DID rather than its
+//! relationship DID): `presentationInvalid`.
 //!
 //! **Then the session is taken** — an atomic get-and-delete, so of two
 //! submissions racing on one session exactly one goes on to mint; the other
@@ -338,6 +341,7 @@ pub(crate) async fn submit(
     let payload: session::submit::v0_1::Payload = serde_json::from_value(doc.payload.clone())
         .map_err(|e| malformed(format!("payload: {e}")))?;
     let vp = Value::Object(payload.vp);
+    let member_presentation = member_presentation(&doc.payload)?;
     let store = witness.state.store();
 
     // ── Binding first (items 2–3) ──────────────────────────────────────
@@ -366,9 +370,12 @@ pub(crate) async fn submit(
         .unwrap_or_default();
     let verified = presentation::verify(
         &vp,
+        member_presentation.as_ref(),
         &Expected {
             submitter: sender,
             counterparty: &counterparty,
+            challenge: &session.challenge,
+            domain: &session.domain,
         },
         witness.state.policy(),
         resolver,
@@ -377,6 +384,7 @@ pub(crate) async fn submit(
     .await
     .map_err(|why| presentation_invalid(&why))?;
     drop(vp);
+    drop(member_presentation);
 
     // ── Take the session: single use ───────────────────────────────────
     let taken = store
@@ -400,6 +408,39 @@ pub(crate) async fn submit(
             }
             Err(e)
         }
+    }
+}
+
+/// The member presentation, if the payload carries one in
+/// `ext["org.openvtc.witness"]` ([`presentation::MEMBER_LINK_EXT`]). Any other
+/// member of that namespace is refused, as an unknown field would be.
+fn member_presentation(payload: &Value) -> Result<Option<Value>, Refusal> {
+    let Some(ns) = payload
+        .get("ext")
+        .and_then(|e| e.get(presentation::MEMBER_LINK_EXT))
+    else {
+        return Ok(None);
+    };
+    let Some(ns) = ns.as_object() else {
+        return Err(malformed(format!(
+            "ext.{}: must be an object",
+            presentation::MEMBER_LINK_EXT
+        )));
+    };
+    if let Some(unknown) = ns.keys().find(|k| *k != presentation::MEMBER_PRESENTATION) {
+        return Err(malformed(format!(
+            "ext.{}: unknown member `{unknown}`",
+            presentation::MEMBER_LINK_EXT
+        )));
+    }
+    match ns.get(presentation::MEMBER_PRESENTATION) {
+        None => Ok(None),
+        Some(mp @ Value::Object(_)) => Ok(Some(mp.clone())),
+        Some(_) => Err(malformed(format!(
+            "ext.{}.{}: must be an object",
+            presentation::MEMBER_LINK_EXT,
+            presentation::MEMBER_PRESENTATION
+        ))),
     }
 }
 

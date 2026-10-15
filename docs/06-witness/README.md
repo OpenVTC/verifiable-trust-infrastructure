@@ -269,9 +269,52 @@ one, not as a broken presentation.
 - exactly one `RelationshipCredential` is issued by the submitter, and its
   subject is the session's other party — this is the credential the VWC names;
 - unless `communities = ["*"]`, a community-issued `MembershipCredential` from
-  one of `communities` names the submitter as its subject;
+  one of `communities` names the submitter as its subject, **or** the payload
+  carries a member presentation (the *member link*, below);
 - independence again: no credential is issued by an excluded DID (an excluded
   community counts for nothing even when listed), and neither party is excluded.
+
+#### The member link
+
+A party submits from its pairwise relationship DID, but its community's
+membership credential names its member DID. To bridge the two, the payload may
+carry a second presentation in the vendor extension:
+
+```json
+{
+  "vp": { "...": "the relationship presentation, holder = the relationship DID" },
+  "ext": {
+    "org.openvtc.witness": {
+      "memberPresentation": {
+        "type": ["VerifiablePresentation"],
+        "holder": "did:…member",
+        "verifiableCredential": [ { "...": "the community's MembershipCredential naming did:…member" } ],
+        "nonce": "<this session's challenge>",
+        "domain": "<this session's domain>",
+        "proof": { "proofPurpose": "authentication", "...": "signed by did:…member" }
+      }
+    }
+  }
+}
+```
+
+It counts when it is a presentation by the member DID, signed for
+`authentication`, bound to **this** session's challenge and domain, and carries a
+valid membership credential from one of `communities` naming its holder. The
+member DID may not be the other party or an excluded DID. A failure is
+`presentationInvalid`; any other member of `org.openvtc.witness` is
+`malformedRequest`. The VWC names the relationship DID, never the member DID,
+which is kept and logged nowhere.
+
+**Know what it does and does not prove.** It proves the submitter also held a
+member key in this session. It does not prove they are the same person: a member
+who signs for somebody else lends them eligibility, and the witness cannot see
+that happen. The witness also learns *which member* is behind the relationship
+DID, not only which community. The link is an `ext` extension that other witness
+implementations ignore, and VWC verifiers cannot see that it was used. The design
+note (§3.3a) covers the risks and the options for later: an upstream spec member,
+a pairwise membership credential, a zero-knowledge membership proof, and
+recording the evidence in the VWC.
 
 **Then the session is spent.** It is removed atomically, so of two submissions
 racing on one session exactly one mints; the other is `challengeMismatch`.
@@ -315,6 +358,7 @@ service **warns** — it never refuses — about the two it can detect:
 | Its DID-log host | Anyone resolving the witness | Host the log apart from the operator's own domains. Warned about when they share one |
 | The `parties` pair | The witness, at session open | Inherent: it is how two sessions are known to observe one exchange. A witness accumulates a graph of who transacts with whom |
 | Community membership | The witness, at submit | Inherent to community-keyed eligibility; `["*"]` asks for none |
+| The member DID, under the member link | The witness, at submit | Links the pairwise DID to the member's community identity. Seen, never stored or logged; avoid by `["*"]` |
 | Credential identifiers in the presentation | The witness, at submit | Inherent: credential `id`s, issuers and status entries are read in full and could link a pairwise DID to a wider identity. Nothing is stored |
 | Attestation records | The witness operator | Kept only for revocation; no presentation is kept |
 | The VWC's `taskContext` / digests | Every verifier shown the VWC | Intended: they bind it to one session and one credential, so two verifiers shown it can tell it is the same |

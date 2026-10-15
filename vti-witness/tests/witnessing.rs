@@ -182,6 +182,31 @@ fn session_doc(opener: &str, witness: &str, parties: [&str; 2]) -> Value {
 
 /// A signed `witness/session/submit/0.1` on `thread`.
 async fn submit_doc(by: &Key, witness: &str, thread: &str, vp: Value) -> Value {
+    submit_doc_with(by, witness, thread, json!({ "vp": vp })).await
+}
+
+/// A signed `witness/session/submit/0.1` on `thread` carrying `vp` and the
+/// member presentation `member_vp` (the member link).
+async fn submit_linked(
+    by: &Key,
+    witness: &str,
+    thread: &str,
+    vp: Value,
+    member_vp: Value,
+) -> Value {
+    submit_doc_with(
+        by,
+        witness,
+        thread,
+        json!({
+            "vp": vp,
+            "ext": { "org.openvtc.witness": { "memberPresentation": member_vp } },
+        }),
+    )
+    .await
+}
+
+async fn submit_doc_with(by: &Key, witness: &str, thread: &str, payload: Value) -> Value {
     let mut doc: TrustTask<Value> = serde_json::from_value(json!({
         "id": urn(),
         "threadId": thread,
@@ -189,7 +214,7 @@ async fn submit_doc(by: &Key, witness: &str, thread: &str, vp: Value) -> Value {
         "issuer": by.did,
         "recipient": witness,
         "issuedAt": Utc::now().to_rfc3339(),
-        "payload": { "vp": vp },
+        "payload": payload,
     }))
     .unwrap();
     sign_in_place_with(&mut doc, &by.holder()).await.unwrap();
@@ -861,6 +886,191 @@ async fn independence_at_submit_refuses_evidence_from_an_excluded_issuer() {
         "witness/session/submit:presentationInvalid",
         "{out:#}"
     );
+}
+
+// ── The member link ─────────────────────────────────────────────────────
+
+/// Alice submits from her relationship DID; her membership credential names
+/// her member DID, presented beside it by that DID and bound to the session.
+#[tokio::test]
+async fn a_member_presentation_links_a_relationship_did_to_its_membership() {
+    let w = World::new();
+    let member = Key::new();
+    let (doc, reply) = w.open().await;
+    let rel = vp(
+        &w.alice,
+        vec![vrc(&w.alice, &w.bob.did).await],
+        challenge(&reply),
+        domain(&reply),
+    )
+    .await;
+    let link = vp(
+        &member,
+        vec![vmc(&w.community, &member.did, None).await],
+        challenge(&reply),
+        domain(&reply),
+    )
+    .await;
+    let sub = submit_linked(&w.alice, w.witness_did(), id(&doc), rel, link).await;
+    let out = w.h.send(&w.alice.did, &sub).await;
+    assert_eq!(
+        out["type"],
+        format!("{WITNESS_SESSION_SUBMIT_V0_1}#response"),
+        "{out:#}"
+    );
+    let vwc = DTGCredential::try_from(out["payload"]["vwc"].clone()).unwrap();
+    assert_eq!(
+        vwc.subject(),
+        w.alice.did,
+        "the VWC names the relationship DID"
+    );
+    assert!(
+        !out["payload"].to_string().contains(&member.did),
+        "the member DID is not in the VWC"
+    );
+    assert!(
+        !w.h.everything_stored().await.contains(&member.did),
+        "the member DID is kept nowhere"
+    );
+}
+
+#[tokio::test]
+async fn a_member_presentation_that_does_not_hold_is_presentation_invalid() {
+    let other_community = Key::new();
+    let mallory = Key::new();
+    let excluded = Key::new();
+
+    enum Case {
+        OtherChallenge,
+        OtherDomain,
+        SignedBySomeoneElse,
+        TheCounterparty,
+        VmcNamesAnotherDid,
+        VmcFromAnotherCommunity,
+        ExcludedMember,
+    }
+    for case in [
+        Case::OtherChallenge,
+        Case::OtherDomain,
+        Case::SignedBySomeoneElse,
+        Case::TheCounterparty,
+        Case::VmcNamesAnotherDid,
+        Case::VmcFromAnotherCommunity,
+        Case::ExcludedMember,
+    ] {
+        let w = World::with_policy(|_, p| p.excluded.push(excluded.did.clone()));
+        let member = Key::new();
+        let (doc, reply) = w.open().await;
+        let (c, d) = (challenge(&reply).to_string(), domain(&reply).to_string());
+        let rel = vp(&w.alice, vec![vrc(&w.alice, &w.bob.did).await], &c, &d).await;
+        let (what, link) = match case {
+            Case::OtherChallenge => (
+                "bound to another challenge",
+                vp(
+                    &member,
+                    vec![vmc(&w.community, &member.did, None).await],
+                    &"0".repeat(64),
+                    &d,
+                )
+                .await,
+            ),
+            Case::OtherDomain => (
+                "bound to another domain",
+                vp(
+                    &member,
+                    vec![vmc(&w.community, &member.did, None).await],
+                    &c,
+                    "did:example:elsewhere",
+                )
+                .await,
+            ),
+            Case::SignedBySomeoneElse => ("signed by someone else", {
+                let mut p = vp(
+                    &mallory,
+                    vec![vmc(&w.community, &member.did, None).await],
+                    &c,
+                    &d,
+                )
+                .await;
+                p["holder"] = json!(member.did);
+                p
+            }),
+            Case::TheCounterparty => (
+                "the other party's membership",
+                vp(
+                    &w.bob,
+                    vec![vmc(&w.community, &w.bob.did, None).await],
+                    &c,
+                    &d,
+                )
+                .await,
+            ),
+            Case::VmcNamesAnotherDid => (
+                "a membership naming another DID",
+                vp(
+                    &member,
+                    vec![vmc(&w.community, &mallory.did, None).await],
+                    &c,
+                    &d,
+                )
+                .await,
+            ),
+            Case::VmcFromAnotherCommunity => (
+                "membership of another community",
+                vp(
+                    &member,
+                    vec![vmc(&other_community, &member.did, None).await],
+                    &c,
+                    &d,
+                )
+                .await,
+            ),
+            Case::ExcludedMember => (
+                "an excluded member DID",
+                vp(
+                    &excluded,
+                    vec![vmc(&w.community, &excluded.did, None).await],
+                    &c,
+                    &d,
+                )
+                .await,
+            ),
+        };
+        let sub = submit_linked(&w.alice, w.witness_did(), id(&doc), rel, link).await;
+        let out = w.h.send(&w.alice.did, &sub).await;
+        assert_eq!(
+            error_code(&out),
+            "witness/session/submit:presentationInvalid",
+            "{what}: {out:#}"
+        );
+        assert!(
+            w.h.store()
+                .session(w.witness_did(), id(&doc))
+                .await
+                .unwrap()
+                .is_some(),
+            "{what}: the session is not spent"
+        );
+    }
+}
+
+/// The namespace holds the member presentation and nothing else.
+#[tokio::test]
+async fn an_unknown_member_of_the_witness_ext_is_malformed() {
+    let w = World::new();
+    let (doc, reply) = w.open().await;
+    let sub = submit_doc_with(
+        &w.alice,
+        w.witness_did(),
+        id(&doc),
+        json!({
+            "vp": w.alice_vp(&reply).await,
+            "ext": { "org.openvtc.witness": { "memberLink": {} } },
+        }),
+    )
+    .await;
+    let out = w.h.send(&w.alice.did, &sub).await;
+    assert_eq!(error_code(&out), "malformedRequest", "{out:#}");
 }
 
 // ── End to end, checked as the VTC checks a VWC ─────────────────────────

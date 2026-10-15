@@ -157,8 +157,9 @@ places:
   **communities whose members it witnesses**, as VTC DIDs. The submitter's
   presentation must carry, beside the relationship credential, a valid
   membership credential (VMC) from one of those communities, whose subject is
-  the submitter. Without one the submit is `presentationInvalid`, and no VWC is
-  minted.
+  the submitter, or the member link of §3.3a, which bridges a VMC naming the
+  member DID to the pairwise submitter. Without either the submit is
+  `presentationInvalid`, and no VWC is minted.
 
 That keys eligibility to something an operator can name in advance, the
 communities it serves. It costs the parties a disclosure: the witness learns
@@ -166,6 +167,80 @@ which community the party belongs to. The operator documentation says so. A
 witness configured with no communities witnesses anyone who passes the cheap
 checks; that is an explicit `communities = ["*"]` in configuration, never the
 default.
+
+### 3.3a The member link: relationship DID to member DID
+
+**The problem.** §3.3 asks for a VMC "whose subject is the submitter", but the
+submitter is a **pairwise relationship DID** (VTI-KEY-005) and a community's VMC
+names the **member's own DID**. They coincide only when a party relates from its
+member DID, which VTI-KEY-007 discourages. Read literally, §3.3 would make
+ordinary members unwitnessable.
+
+**What is built (decided 2026-10-15: option 1).** The submit payload may carry a
+second presentation, the **member presentation**, in the payload's vendor
+extension `ext["org.openvtc.witness"].memberPresentation`
+(`vti_witness::presentation::MEMBER_LINK_EXT`):
+
+- a `VerifiablePresentation` whose `holder` is the member DID, signed for
+  `authentication` by that DID;
+- bound to the **same session**: its `nonce` (or `challenge`) is the session's
+  challenge and its `domain` the session's domain. Only the party that opened the
+  session received that challenge, so the member key has signed for this one
+  session and cannot be replayed into another;
+- carrying a VMC from one of the identity's communities that names the member
+  DID. Every credential in it is checked as the relationship presentation's are:
+  issuer proof, validity window, no excluded issuer.
+
+The member DID may not be the session's other party (the counterparty's
+membership does not make the submitter eligible) or an excluded DID. A failure is
+`presentationInvalid` and leaves the session open. Any other member of the
+`org.openvtc.witness` namespace is `malformedRequest`. A VMC naming the
+relationship DID directly, in the relationship presentation, still counts. The
+VWC names the relationship DID only; the member DID appears in no VWC, record or
+log.
+
+**Limitations and risks.**
+
+| | What it means | Mitigation now |
+|---|---|---|
+| **Possession, not personhood** | The link proves that whoever holds the relationship key also held a member key *in this session*. It cannot prove they are one person: a member who signs a member presentation for someone else lends them their eligibility, and one member can lend it to many relationship DIDs. | None in the protocol. The witness does not count how often a member DID is used. A count would need the member DID stored, which would build the correlation table the link must not create. |
+| **The witness learns the member DID** | The witness can link the pairwise relationship DID to the member's durable community identity, so it sees more than §3.3 alone discloses: *which member*, not just *which community*. | It is not stored or logged. The correlators table (§3.6) names it, and a deployment that will not disclose it uses `communities = ["*"]` or a witness it trusts with it. |
+| **A vendor extension, not the spec** | `witness/session/submit/0.1` has no member for this, so the link rides `ext`. Another witness implementation will ignore it and refuse the submit for lack of membership. A verifier of the VWC cannot tell that eligibility rested on a link. | The namespace is closed (unknown members are refused), so it can be replaced cleanly. Standardising it is the first future option below. |
+| **No revocation check** | A VMC revoked since issue still counts, as in §3.3 (P2 does not read `credentialStatus`). | Short VMC validity. Status checking is follow-up work. |
+| **The VWC does not record eligibility** | A verifier sees *that* the witness attested the edge, not on what evidence it judged the party eligible. | Open question 4 to the credentials task force. |
+
+**Options left for later.** Any of these can replace or sit beside the link.
+None is built.
+
+1. **Standardise the link upstream.** Add an optional `memberPresentation` (or a
+   general `eligibility` presentation) to `witness/session/submit` in
+   dtgwg-trust-tasks-tf, so any witness reads it and the `ext` carriage retires.
+   This is the natural next step for the link itself.
+2. **A pairwise membership credential.** The community issues the member a VMC,
+   or a derived credential, naming the relationship DID, on request from the
+   member's VTA. The witness then needs no link and never learns the member DID.
+   This is the most private option, but needs a VTC issuance task (a spec first)
+   and costs the community one issuance per relationship. That issuance shows the
+   community the member's relationship DIDs, which moves the correlation from the
+   witness to the community.
+3. **A zero-knowledge membership proof.** The member proves "I hold a valid VMC
+   from community C" without revealing the VMC or the member DID: a BBS+ derived
+   proof, an anonymous credential, or the PCS hidden-vetting credentials
+   (`docs/02-vta/pcs-engine.md`), which already give members unlinkable
+   predicate proofs. This is the strongest privacy option, and the long-term
+   answer to "no ZKP in v1".
+4. **A DID-linkage assertion.** A standing credential, signed by the member DID,
+   asserting control of the relationship DID, such as an `alsoKnownAs`-style
+   link credential. It is reusable across sessions, so a party presents it
+   without the member key being online. But a standing, replayable link is a
+   durable correlator wherever it is shown, which the session-bound link avoids.
+5. **Eligibility recorded in the VWC.** Record in `witnessContext` the kind of
+   evidence checked (`membership`, `membership-linked`, `none`), so a verifier
+   can weigh the attestation. This depends on the profile (question 4).
+6. **Rate limits per member.** Bound how many relationship DIDs one member DID
+   may link in a period, to blunt lending. This needs the member DID kept, at
+   least as a keyed hash per witness, so it trades privacy against the lending
+   risk and should be an operator choice, off by default.
 
 ### 3.4 The protocol
 
@@ -213,6 +288,7 @@ They are **parties**, never witnesses:
 | Its mediator | The mediator sees the witness's sessions | Use a mediator other than the operator VTA's. Setup **warns** when they share one, naming it a possible correlation source; the operator may accept the risk |
 | Its DID-log host | Anyone resolving the witness | Host the log apart from the operator's own domains (setup warns otherwise, as above) |
 | Community membership | The witness, at submit (§3.3) | Inherent to community-keyed eligibility; documented |
+| The member DID, under the member link | The witness, at submit (§3.3a) | Seen in full, linking the pairwise DID to the member's community identity; never stored or logged. Removed by options 2–3 of §3.3a |
 | The attestation records | The witness operator | Kept only for revocation; no VP is kept |
 
 ## 4. Phasing
