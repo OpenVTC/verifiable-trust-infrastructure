@@ -1,0 +1,41 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/did/v1",
+    "https://www.w3.org/ns/cid/v1"
+  ],
+  "id": "did:webvh:QmWIT:witness.example.net:w1",
+  "verificationMethod": [
+    {
+      "id": "did:webvh:QmWIT:witness.example.net:w1#key-0",
+      "type": "Multikey",
+      "controller": "did:webvh:QmWIT:witness.example.net:w1",
+      "publicKeyMultibase": "z6MkWITsigning"
+    },
+    {
+      "id": "did:webvh:QmWIT:witness.example.net:w1#key-1",
+      "type": "Multikey",
+      "controller": "did:webvh:QmWIT:witness.example.net:w1",
+      "publicKeyMultibase": "z6LSWITka"
+    }
+  ],
+  "authentication": ["did:webvh:QmWIT:witness.example.net:w1#key-0"],
+  "assertionMethod": ["did:webvh:QmWIT:witness.example.net:w1#key-0"],
+  "keyAgreement": ["did:webvh:QmWIT:witness.example.net:w1#key-1"],
+  "service": [
+    {
+      "id": "did:webvh:QmWIT:witness.example.net:w1#tsp",
+      "type": "TSPTransport",
+      "serviceEndpoint": "did:webvh:QmMED:mediator.example.org:mediator"
+    },
+    {
+      "id": "did:webvh:QmWIT:witness.example.net:w1#didcomm",
+      "type": "DIDCommMessaging",
+      "serviceEndpoint": [
+        {
+          "accept": ["didcomm/v2"],
+          "uri": "did:webvh:QmMED:mediator.example.org:mediator"
+        }
+      ]
+    }
+  ]
+}

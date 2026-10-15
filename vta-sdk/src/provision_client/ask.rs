@@ -34,6 +34,9 @@ pub const BUILTIN_DID_HOST_HTTP_TEMPLATE: &str = "did-host-http";
 pub const BUILTIN_DID_HOST_DIDCOMM_TEMPLATE: &str = "did-host-didcomm";
 pub const BUILTIN_DID_HOST_HTTP_TSP_TEMPLATE: &str = "did-host-http-tsp";
 pub const BUILTIN_DID_HOST_TSP_TEMPLATE: &str = "did-host-tsp";
+/// The built-in `witness` template: a `vti-witness` identity, reachable over
+/// TSP and DIDComm through a mediator and over nothing else.
+pub const BUILTIN_WITNESS_TEMPLATE: &str = "witness";
 
 /// Default validity on a wizard-issued VP for the online path — chosen to
 /// comfortably cover the round-trip with the verifier's ±5min skew margin
@@ -186,6 +189,20 @@ impl ProvisionAsk {
         Self::for_template(BUILTIN_DID_HOST_TSP_TEMPLATE, vars, context)
     }
 
+    /// Curated builder for the built-in `witness` template. Mints one
+    /// `vti-witness` identity: an Ed25519 key for `authentication` and
+    /// `assertionMethod`, an X25519 key-agreement key, and `TSPTransport` +
+    /// `DIDCommMessaging` services that both name `mediator_did`. No HTTP
+    /// endpoint of any kind.
+    pub fn witness(context: impl Into<String>, mediator_did: impl Into<String>) -> Self {
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "MEDIATOR_DID".to_string(),
+            Value::String(mediator_did.into()),
+        );
+        Self::for_template(BUILTIN_WITNESS_TEMPLATE, vars, context)
+    }
+
     /// Curated builder for the built-in `vta-admin` template — mint a
     /// standalone long-term admin DID without an associated integration.
     /// The admin-rollover path is disabled (the integration template *is*
@@ -313,6 +330,9 @@ mod tests {
             BUILTIN_DID_HOST_HTTP_DIDCOMM_TEMPLATE,
             BUILTIN_DID_HOST_HTTP_TEMPLATE,
             BUILTIN_DID_HOST_DIDCOMM_TEMPLATE,
+            BUILTIN_DID_HOST_HTTP_TSP_TEMPLATE,
+            BUILTIN_DID_HOST_TSP_TEMPLATE,
+            BUILTIN_WITNESS_TEMPLATE,
         ] {
             load_embedded(name).unwrap_or_else(|e| {
                 panic!("built-in template {name} not in vta-sdk registry: {e}")
@@ -479,6 +499,20 @@ mod tests {
             Value::String("did:webvh:m.example.com".into()),
         );
         let generic = ProvisionAsk::for_template(BUILTIN_DID_HOST_DIDCOMM_TEMPLATE, vars, "ctx");
+
+        assert_signed_vps_have_equivalent_ask(&curated, &generic).await;
+    }
+
+    #[tokio::test]
+    async fn curated_witness_equivalent_to_for_template() {
+        let curated = ProvisionAsk::witness("ctx", "did:webvh:m.example.com");
+
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "MEDIATOR_DID".to_string(),
+            Value::String("did:webvh:m.example.com".into()),
+        );
+        let generic = ProvisionAsk::for_template(BUILTIN_WITNESS_TEMPLATE, vars, "ctx");
 
         assert_signed_vps_have_equivalent_ask(&curated, &generic).await;
     }

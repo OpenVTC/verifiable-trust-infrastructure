@@ -14,7 +14,7 @@ consumer gets the new shape on the next create. No redeploy.
 
 - **Data, not code.** An operator can ship a new agent kind by dropping a JSON
   file, no recompile. The built-ins (`ai-agent`, `didcomm-mediator`,
-  `push-gateway`, `vta-admin`, `vtc-host`, `did-host-http-didcomm`,
+  `push-gateway`, `vta-admin`, `vtc-host`, `witness`, `did-host-http-didcomm`,
   `did-host-http`, `did-host-didcomm`, `did-host-http-tsp`, `did-host-tsp`)
   are baseline shapes, not the only shapes.
 - **Method-agnostic.** Same format works for `did:webvh`, `did:web`, or
@@ -303,6 +303,18 @@ template without explicit scope is **context → global → builtin**:
     `didcomm` = a `DIDCommMessaging` endpoint, `tsp` = a `TSPTransport`
     endpoint — not the service that uses it. `didcomm` and `tsp` both route
     through the shared mediator.
+  - `witness` — a `vti-witness` identity (integration kind `witness`; see
+    [the witness host service](../06-witness/README.md)). An Ed25519 key
+    (`#key-0`) under both `authentication` and `assertionMethod` — it answers
+    Trust Tasks and signs the Verifiable Witness Credentials it issues — and an
+    X25519 `keyAgreement` key (`#key-1`). Advertises `#tsp` (`TSPTransport`) and
+    `#didcomm` (`DIDCommMessaging`), both naming `MEDIATOR_DID` (required), TSP
+    first, and **no** `VTARest` or other HTTP endpoint: a witness has no HTTPS
+    door in v1. As with `did-host-didcomm`, `URL` or `WEBVH_SERVER` tells the VTA
+    where to publish the log but appears nowhere in the document. Not the
+    did:webvh log witness the `did-host-*` descriptions mention — this is the
+    witness of `witness/session/0.1`. Curated builder:
+    `ProvisionAsk::witness(context, mediator_did)`.
   - `did-host-http-didcomm` — node whose DID exposes both a `WebVHHosting`
     service (URL-based) **and** a `DIDCommMessaging` service routed through
     a mediator. Use for nodes that publish DID logs over HTTP and accept

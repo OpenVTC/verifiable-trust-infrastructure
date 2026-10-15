@@ -33,6 +33,10 @@ members = [
   "vti-rooms-wasm",
   "vti-secrets",
   "vti-webauthn",
+  # The witness host service (docs/05-design-notes/witness-host-service.md):
+  # `publish = false`, not a default member — a bare `cargo build` of the
+  # VTA/VTC need not compile it, and CI's `--workspace` runs still do.
+  "vti-witness",
   # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: `publish = false`,
   # reached only from `vtc-service`'s off-by-default `vetting-pcs` feature.
   "vti-vetting-pcs",

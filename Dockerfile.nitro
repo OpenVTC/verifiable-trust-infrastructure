@@ -158,6 +158,7 @@ COPY vti-rooms-wasm/ vti-rooms-wasm/
 COPY vti-secrets/ vti-secrets/
 COPY vti-vetting-pcs/ vti-vetting-pcs/
 COPY vti-webauthn/ vti-webauthn/
+COPY vti-witness/ vti-witness/
 
 # Build the VTA enclave binary with selected feature flags. `--locked` so the
 # image cannot silently resolve a dependency set other than the one CI tested.

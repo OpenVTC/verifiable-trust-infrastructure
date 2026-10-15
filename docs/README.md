@@ -67,6 +67,7 @@ VTA via the `vtc-host` DID template.
 | Update a custom Rego policy for the DTG Credentials v1 shapes | [Custom policies after the DTG v1 upgrade](03-vtc/policy-upgrade-dtg-v1.md) |
 | Host a public community website | [VTC website + admin UX](03-vtc/website-and-admin.md) |
 | Deploy a trust registry and wire a VTC to it | [Trust-registry deployment](03-vtc/trust-registry-deployment.md) |
+| Run a witness (issue Verifiable Witness Credentials) | [The witness host service](06-witness/README.md) |
 | Look up a BIP-32 path | [BIP-32 paths](04-reference/bip32-paths.md) |
 | Read the threat model | [Security model](01-concepts/security-model.md) |
 
@@ -304,6 +305,15 @@ are implementer-facing rather than operator-facing.
 - **[ACL scope semantics](05-design-notes/acl-scope-semantics.md)** —
   the *act* vs *confer* axis on an ACL entry.
 
+### Part VI — Host services
+
+Services a node depends on but does not embody, run apart from any VTA or VTC.
+
+- **[The witness host service](06-witness/README.md)** — `vti-witness`: up to
+  ten witness identities, provisioned from the operator's VTA with the
+  `witness` template and served over TSP and DIDComm; setup, configuration,
+  the correlators it warns about, and what a witness sees.
+
 ## Conventions
 
 - Cross-references use relative links so the docs work both on
@@ -328,6 +338,7 @@ If you're adding a new document:
 - **Pure reference (tables, paths, formats)?** Add to
   `04-reference/`.
 - **Implementation-detail design brief?** Add to `05-design-notes/`.
+- **A host service's operator guide (the witness)?** Add to `06-witness/`.
 
 Update this index when you add or rename a chapter.
 Cross-references in the workspace `README.md` and `CLAUDE.md` may
