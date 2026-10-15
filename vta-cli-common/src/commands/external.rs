@@ -280,8 +280,13 @@ pub async fn cmd_issue(
 }
 
 /// `issue --presign`: a batch of presigned requests on one object of an
-/// `s3-static-presign` account (`external/credentials/issue/0.2`). `batch` is the
-/// `PresignBatch` JSON, or `@path` to read it. Printed still sealed, like `issue`.
+/// `s3-static-presign` account (`external/credentials/issue/0.3`, 0.2 from a VTA
+/// that does not serve it). `batch` is the `PresignBatch` JSON, or `@path` to
+/// read it; at most 64 operations. Printed still sealed, like `issue`.
+///
+/// A batch whose sealed answer would not fit is refused `responseTooLarge`, at
+/// no cost to the binding's rate, and asked for again in parts (consumer item
+/// 5); the answers are then printed as a JSON array, one per part, in order.
 pub async fn cmd_issue_presign(
     client: &VtaClient,
     context: &str,
@@ -296,9 +301,19 @@ pub async fn cmd_issue_presign(
     };
     let presign: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| format!("the presign batch is not JSON: {e}"))?;
-    let req = payload::<ext::credentials::issue::v0_2::Payload>(
+    let req = payload::<ext::credentials::issue::v0_3::Payload>(
         "external/credentials/issue",
         json!({ "context": context, "account": account, "presign": presign, "ttlSeconds": ttl_seconds }),
     )?;
-    show(&client.external_credentials_issue_v2(&req).await?)
+    let answers = client.external_credentials_issue_presign(&req).await?;
+    match answers.as_slice() {
+        [one] => show(one),
+        parts => {
+            eprintln!(
+                "the VTA could not seal this batch in one answer; it was issued in {} parts",
+                parts.len()
+            );
+            show(&parts)
+        }
+    }
 }

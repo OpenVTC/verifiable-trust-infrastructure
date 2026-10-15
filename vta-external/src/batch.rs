@@ -1,5 +1,5 @@
-//! A presign batch (`external/credentials/issue/0.2`, `PresignBatch`): up to 128
-//! operations on one object and at most one multipart upload of it, each
+//! A presign batch (`external/credentials/issue/0.2` and `0.3`, `PresignBatch`):
+//! up to 128 operations (64 at 0.3) on one object and at most one multipart upload of it, each
 //! presigned with exactly the method, query and headers the specification's
 //! table names.
 //!
@@ -16,8 +16,13 @@ pub use trust_tasks_rs::specs::external::credentials::issue::v0_2::{PresignBatch
 use crate::model::{Binding, ScopeCeiling};
 use crate::scope::{validate_object_key, validate_prefix};
 
-/// The most operations one batch holds.
+/// The most operations one batch holds at `issue/0.2`.
 pub const MAX_OPERATIONS: usize = 128;
+
+/// The most operations one batch holds at `issue/0.3`, whose schema narrows the
+/// batch to 64. A 0.3 batch is checked as the 0.2 type it is a subset of, with
+/// this bound applied as well.
+pub const MAX_OPERATIONS_0_3: usize = 64;
 
 /// The `PresignOperation` name of `op`.
 pub fn operation_name(op: &PresignRequest) -> &'static str {

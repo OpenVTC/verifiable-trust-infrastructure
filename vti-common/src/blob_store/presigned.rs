@@ -97,7 +97,7 @@ pub trait Presigner: Send + Sync {
     ) -> Result<PresignedRequest, AppError>;
 
     /// Whether [`presign_ops`](Self::presign_ops) works: writes bound to their
-    /// length and checksum, multipart, head (`external/credentials/issue/0.2`).
+    /// length and checksum, multipart, head (`external/credentials/issue/0.2`+).
     fn presigns_ops(&self) -> bool {
         false
     }
@@ -118,9 +118,10 @@ pub trait Presigner: Send + Sync {
     }
 }
 
-/// The most operations asked of a presigner at once. Below the specification's
-/// 128: a set of presigned requests sealed by the VTA is about 2.9 KiB a request,
-/// and the answer is bounded at 256 KiB.
+/// The most operations asked of a presigner at once: `external/credentials/issue/0.3`'s
+/// batch bound. A presigner whose answer for that many would not fit splits the
+/// batch itself (the VTA refuses it `responseTooLarge`), so a caller never sees
+/// fewer requests than it asked for.
 pub const MAX_OPS: usize = 64;
 
 /// The method each [`StorageOp`] is presigned for.

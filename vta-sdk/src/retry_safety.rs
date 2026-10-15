@@ -566,6 +566,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // The same for a presign batch: a second set of presigned requests is
     // harmless and expires (`issue/0.2`, Retries).
     (trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2, RetrySafe),
+    // And at 0.3. A `responseTooLarge` refusal is answered by splitting the
+    // batch into new, smaller requests (consumer item 5) — not by sending this
+    // one again — and spent none of the binding's rate.
+    (trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3, RetrySafe),
     // The room oracle mints a presentation and **stores nothing** — the spec's
     // own `sideEffects: none`. A second execution leaves this VTA's state
     // byte-identical, which is what `RetrySafe` means; it does not mean the

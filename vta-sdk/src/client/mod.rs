@@ -414,6 +414,7 @@ mod keys;
 // census lives downstream rather than in this crate's own tests.
 mod app_state;
 mod external;
+pub use external::presign_split_at;
 #[cfg(feature = "sealed-transfer")]
 pub use external::{open_external_credential, seal_external_secret};
 #[cfg(feature = "test-loopback")]

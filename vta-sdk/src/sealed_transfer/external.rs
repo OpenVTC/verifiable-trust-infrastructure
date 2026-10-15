@@ -107,7 +107,7 @@ pub enum ExternalCredentialPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_request_id: Option<String>,
     },
-    /// `PresignedRequestSet` (`s3-static-presign`, `external/credentials/issue/0.2`):
+    /// `PresignedRequestSet` (`s3-static-presign`, `external/credentials/issue/0.2`+):
     /// one presigned request per requested operation, all on one object, in the
     /// order requested. Each is a bearer credential for its one request until it
     /// expires; `expires_at` is the earliest of them.

@@ -518,10 +518,12 @@ aws --endpoint-url http://localhost:4566 s3api head-object --bucket vdr-rooms \
 
 `pnm` sends a file of up to 16 MiB of ciphertext as one `PUT` and cuts a larger
 one into 8 MiB parts, so it takes more than 16 MiB to see a multipart upload.
-The VTC asks VTA C for each upload's requests in `external/credentials/issue/0.2`
-batches of at most 64 (the specification allows 128; the VTA's 256 KiB response
-cap fits about 90), and VTA C's log shows those batches and a
-`issue/0.1` per read. The VTC's own `room-storage` directory gains nothing.
+The VTC asks VTA C for each upload's requests in `external/credentials/issue/0.3`
+batches of at most 64 (falling back to `0.2` against a VTA that does not serve
+0.3). A batch whose sealed answer would exceed the response's 256 KiB — only with
+long object keys or upload ids — is refused `responseTooLarge` at no cost to the
+binding's rate, and the VTC asks again in parts. VTA C's log shows those batches
+and a `issue/0.1` per read. The VTC's own `room-storage` directory gains nothing.
 
 **For a real S3 bucket**, drop `endpoint` and `pathStyle` from both the account
 and the config (virtual-hosted AWS addressing), use the real region, create an
@@ -562,4 +564,3 @@ Found in this run; each is being fixed.
 - **`rooms/keys/act` sets no `subjectPath`** for a document without a `roomId`
   (a download chunk, a direct upload's commit or abort); those are completed
   only for a member named as `issuer`.
-- **Presign batches are 64 requests**, not the specification's 128 (above).

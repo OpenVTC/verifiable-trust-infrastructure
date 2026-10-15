@@ -2273,6 +2273,15 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({ "sealedCredential": SEALED_ARMOR, "expiresAt": TS, "presign": { "prefix": "rooms/3f9a/", "objectKey": "blob", "requests": [{ "operation": "create-multipart" }] } })
             ),
         ),
+        (
+            uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3,
+            checked!(
+                specs::external::credentials::issue::v0_3::Payload,
+                specs::external::credentials::issue::v0_3::Response,
+                json!({ "context": "community", "account": "r2-main", "presign": { "prefix": "rooms/3f9a/", "objectKey": "blob", "requests": [{ "operation": "create-multipart" }] }, "ttlSeconds": 300 }),
+                json!({ "sealedCredential": SEALED_ARMOR, "expiresAt": TS, "presign": { "prefix": "rooms/3f9a/", "objectKey": "blob", "requests": [{ "operation": "create-multipart" }] } })
+            ),
+        ),
         // ─── vta/pcs — the hidden-vetting engine ─────────────────
         (
             uris::TASK_VTA_PCS_APPLICATIONS_CREATE_0_1,

@@ -293,8 +293,9 @@ moves a site in chunked Trust Tasks over `vti_common::backup_transfer`.
   **Direct uploads** need what `begin/0.2` item 17 and `commit/0.2` item 3
   require: each part's target bound by its signature to the part's exact length
   and SHA-256, and the object verified at storage before anything is recorded.
-  The community's VTA presigns them through `external/credentials/issue/0.2`
-  (trust-tasks-tf #775): batches of up to 128 operations on one object — `put`,
+  The community's VTA presigns them through `external/credentials/issue/0.3`
+  (trust-tasks-tf #775, #781; `0.2` from a VTA without 0.3): batches of up to 64
+  operations on one object, split on `responseTooLarge` — `put`,
   `create-multipart`, `upload-part` (with `Content-Length` and
   `x-amz-checksum-sha256` signed), `list-parts`, `complete-multipart` (with
   `x-amz-mp-object-size` signed), `head` (with `x-amz-checksum-mode`), `delete`
@@ -315,7 +316,7 @@ moves a site in chunked Trust Tasks over `vti_common::backup_transfer`.
     digests, `-N`). Any difference deletes what storage holds and answers
     `digestMismatch`; a part not yet held answers `incomplete` and keeps the
     upload open. A store that ignores a signed checksum is caught here, which is
-    why the check is not left to storage alone (issue/0.2 consumer item 3).
+    why the check is not left to storage alone (issue/0.3 consumer item 3).
   - **abort** and the **sweep** (a slot idle for 30 minutes, or 24 hours in all)
     abort the multipart upload and delete the object; the bucket's
     `AbortIncompleteMultipartUpload` rule is the backstop for an upload the VTC

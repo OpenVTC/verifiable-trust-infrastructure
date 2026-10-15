@@ -2286,6 +2286,10 @@ pub const TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1: &str =
 pub const TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2: &str =
     <trust_tasks_rs::specs::external::credentials::issue::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `external/credentials/issue/0.3` — as 0.2, with at most 64 presigned requests in a batch, and `responseTooLarge` (counted against no rate) for a batch whose sealed answer would not fit.
+pub const TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3: &str =
+    <trust_tasks_rs::specs::external::credentials::issue::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 // ─── Hidden-vetting PCS engine (`vta/pcs/*`, trust-tasks-tf #756) ──────────
 // The VTA holds its principal's PCS keys and runs every member-side
 // hidden-vetting operation; the client carries messages and never holds a key.
@@ -2631,6 +2635,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_EXTERNAL_ACCOUNTS_DELETE_0_1,
     TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1,
     TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2,
+    TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3,
     // Hidden-vetting PCS engine (`vta/pcs/*`)
     TASK_VTA_PCS_APPLICATIONS_CREATE_0_1,
     TASK_VTA_PCS_APPLICATIONS_SHOW_0_1,

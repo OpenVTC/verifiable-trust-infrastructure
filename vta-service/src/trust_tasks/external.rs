@@ -1373,7 +1373,7 @@ pub(super) async fn handle_issue(
 
     let scope_json = serde_json::to_value(&requested).unwrap_or(Value::Null);
     let expires_at = rfc3339(issued.expires_at);
-    let sealed = match seal_credential(state, &recipient, issued).await {
+    let sealed = match seal_credential(state, &recipient, &sealed_payload(issued)).await {
         Ok(s) => s,
         Err(e) => return app_error_to_reject(&doc, e),
     };
@@ -1395,8 +1395,96 @@ pub(super) async fn handle_issue(
     )
 }
 
-/// `sealedCredential`'s bound in `external/credentials/issue/0.2`'s response.
+/// `sealedCredential`'s bound in `external/credentials/issue/0.2`'s and `0.3`'s
+/// response.
 const MAX_SEALED_CREDENTIAL: usize = 262_144;
+
+/// Which version of `external/credentials/issue` a `scope`-or-`presign` request
+/// arrived at. They share every check but two: 0.3 holds a batch to 64
+/// operations, and it sizes a batch's sealed answer **before** the binding's
+/// rate, refusing one that would not fit with `responseTooLarge` (items 7 and
+/// 8). 0.2 keeps its own order — the rate, then the key, then the answer, an
+/// oversized one refused as `invalidBatch` — because `responseTooLarge` is not
+/// one of 0.2's codes and no standard code says it; a VTC still on 0.2 gets
+/// exactly what it got before.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IssueVersion {
+    V0_2,
+    V0_3,
+}
+
+/// The binding's rate, counted once for this issuance.
+fn take_rate(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    context: &str,
+    id: &str,
+    consumer: &str,
+    per_minute: u32,
+) -> Result<(), TrustTaskOutcome> {
+    if state
+        .external_rate
+        .try_acquire(context, id, consumer, per_minute)
+    {
+        return Ok(());
+    }
+    Err(reject_declared_with(
+        doc,
+        ext::credentials::issue::v0_2::error_codes::RATE_LIMITED,
+        format!("the binding's rate of {per_minute} per minute is exhausted"),
+        json!({ "retryAfterSeconds": 60 }),
+    ))
+}
+
+/// How many of a presigned set's requests, taken in order, are certain to fit
+/// `sealedCredential`'s bound once sealed (`issue/0.3` item 7's
+/// `details.maxOperations`), or `None` when not even one is.
+///
+/// Computed from [`sealed_armor_len_bound`](vta_sdk::sealed_transfer::sealed_armor_len_bound),
+/// which takes every byte the sealed encoding's length depends on at its widest:
+/// a sealed bundle's length varies with the randomness of its ciphertext, so a
+/// count read off one trial seal could be one too many when the caller asks
+/// again. The answer is therefore never more than fits, and at most a little
+/// less. Nothing is sealed, signed or recorded to find it.
+fn max_operations_that_fit(
+    payload: &vta_sdk::sealed_transfer::SealedPayloadV1,
+    producer: &vta_sdk::sealed_transfer::ProducerAssertion,
+) -> Option<usize> {
+    use vta_sdk::sealed_transfer::{
+        ExternalCredentialPayload, SealedPayloadV1, sealed_armor_len_bound,
+    };
+    let SealedPayloadV1::ExternalCredential(c) = payload else {
+        return None;
+    };
+    let ExternalCredentialPayload::PresignedRequests {
+        requests,
+        expires_at,
+    } = c.as_ref()
+    else {
+        return None;
+    };
+    let fits = |k: usize| {
+        let prefix = SealedPayloadV1::ExternalCredential(Box::new(
+            ExternalCredentialPayload::PresignedRequests {
+                requests: requests[..k].to_vec(),
+                expires_at: expires_at.clone(),
+            },
+        ));
+        sealed_armor_len_bound(&prefix, producer).is_ok_and(|len| len <= MAX_SEALED_CREDENTIAL)
+    };
+    // The bound grows with every request added, so the largest count that fits
+    // is found by bisection: `lo` fits (or is 0), `hi` does not.
+    let (mut lo, mut hi) = (0usize, requests.len());
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if fits(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    (lo > 0).then_some(lo)
+}
 
 /// `issue/0.2` item 5 refused: alerted and audited, as the specification asks.
 async fn refuse_outside(
@@ -1459,8 +1547,58 @@ pub(super) async fn handle_issue_v2(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
+    issue_scope_or_presign(state, auth, doc, IssueVersion::V0_2).await
+}
+
+/// `external/credentials/issue/0.3`: 0.2's checks and signing, a batch of at
+/// most 64, and — for `presign` — the sealed answer sized before the rate is
+/// counted (items 7 and 8). The custodian resolves the caller's key-agreement
+/// key, presigns and seals (none of which contacts the provider), and refuses a
+/// set whose armor would exceed `sealedCredential`'s bound with
+/// `responseTooLarge`, naming in `details.maxOperations` how many of the batch's
+/// operations, in order, would fit. Only a batch that fits counts against the
+/// binding's rate; one refused anywhere before that, `responseTooLarge`
+/// included, has obtained nothing and spent nothing. A refused set is dropped
+/// unreturned and never logged (each entry zeroizes its URL).
+pub(super) async fn handle_issue_v3(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    issue_scope_or_presign(state, auth, doc, IssueVersion::V0_3).await
+}
+
+/// The handler `issue/0.2` and `0.3` share; [`IssueVersion`] says where they
+/// differ.
+async fn issue_scope_or_presign(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    version: IssueVersion,
+) -> TrustTaskOutcome {
     use ext::credentials::issue::v0_2 as t;
     use vta_external::batch::{self, BatchRefusal};
+    // A 0.3 payload is read against 0.3's own type first; it is then a 0.2
+    // payload (0.3 only narrows the batch), which the domain checks take.
+    if version == IssueVersion::V0_3 {
+        if let Err(resp) = parse_payload::<ext::credentials::issue::v0_3::Payload>(&doc) {
+            return resp;
+        }
+        let ops = doc.payload["presign"]["requests"]
+            .as_array()
+            .map_or(0, Vec::len);
+        if ops > batch::MAX_OPERATIONS_0_3 {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: format!(
+                        "a batch holds at most {} operations, not {ops}",
+                        batch::MAX_OPERATIONS_0_3
+                    ),
+                },
+            );
+        }
+    }
     let req: t::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -1668,23 +1806,26 @@ pub(super) async fn handle_issue_v2(
         }
     }
 
-    // 7. The binding's rate: one issuance, whatever the size of the batch.
-    if !state
-        .external_rate
-        .try_acquire(&context, &id, &auth.did, binding.rate_per_minute)
-    {
-        return reject_declared_with(
+    // The binding's rate: one issuance, whatever the size of the batch. At 0.2
+    // (item 7) and for a 0.3 `scope`, here, before the provider is asked. A 0.3
+    // batch counts only once its sealed answer is known to fit (items 7 and 8),
+    // below.
+    let rate_after_sizing = version == IssueVersion::V0_3 && batch_req.is_some();
+    if !rate_after_sizing
+        && let Err(refused) = take_rate(
+            state,
             &doc,
-            t::error_codes::RATE_LIMITED,
-            format!(
-                "the binding's rate of {} per minute is exhausted",
-                binding.rate_per_minute
-            ),
-            json!({ "retryAfterSeconds": 60 }),
-        );
+            &context,
+            &id,
+            &auth.did,
+            binding.rate_per_minute,
+        )
+    {
+        return refused;
     }
 
-    // The key to seal to, before anything is presigned.
+    // The key to seal to, before anything is presigned (item 13): at 0.3 a
+    // caller with none is refused before the answer is sized (item 7).
     let recipient = match sealing_key(&auth.did).await {
         Ok(k) => k,
         Err(why) => return reject_declared(&doc, t::error_codes::NO_KEY_AGREEMENT, why),
@@ -1774,25 +1915,60 @@ pub(super) async fn handle_issue_v2(
         }
         (None, None) => unreachable!(),
     };
-    let sealed = match seal_credential(state, &recipient, issued).await {
+    let payload = sealed_payload(issued);
+    let sealed = match seal_credential(state, &recipient, &payload).await {
         Ok(s) => s,
         Err(e) => return app_error_to_reject(&doc, e),
     };
     // The response bounds `sealedCredential` at 256 KiB. The sealed-transfer
     // encoding carries each byte field as a CBOR array, which makes a presigned
-    // request about 2.9 KiB once sealed and armored, so a batch near 128
-    // operations does not fit; it is refused rather than answered out of
-    // schema, and the consumer asks in smaller batches.
+    // request about 2.9 KiB once sealed and armored — more with a long object
+    // key or upload id — so a batch can exceed it. It is refused rather than
+    // truncated or answered out of schema, and the consumer asks in smaller
+    // batches.
     if sealed.len() > MAX_SEALED_CREDENTIAL {
-        return reject_declared(
-            &doc,
-            t::error_codes::INVALID_BATCH,
-            format!(
-                "the batch's presigned requests, sealed, are {} bytes, over the response's \
-                 {MAX_SEALED_CREDENTIAL}; ask for fewer operations at once",
-                sealed.len()
+        let len = sealed.len();
+        drop(sealed);
+        return match version {
+            IssueVersion::V0_2 => reject_declared(
+                &doc,
+                t::error_codes::INVALID_BATCH,
+                format!(
+                    "the batch's presigned requests, sealed, are {len} bytes, over the \
+                     response's {MAX_SEALED_CREDENTIAL}; ask for fewer operations at once"
+                ),
             ),
-        );
+            // Item 7: refused before the rate (item 8), so it costs nothing.
+            IssueVersion::V0_3 => {
+                let fits = max_operations_that_fit(&payload, &producer_assertion(state).await);
+                drop(payload);
+                let message = format!(
+                    "the sealed answer to this batch would be {len} characters, over the \
+                     {MAX_SEALED_CREDENTIAL} `sealedCredential` allows; split the batch"
+                );
+                let code = ext::credentials::issue::v0_3::error_codes::RESPONSE_TOO_LARGE;
+                match fits {
+                    Some(n) => {
+                        reject_declared_with(&doc, code, message, json!({ "maxOperations": n }))
+                    }
+                    None => reject_declared(&doc, code, message),
+                }
+            }
+        };
+    }
+    drop(payload);
+    // Item 8, for a 0.3 batch: it fits, so now it counts.
+    if rate_after_sizing
+        && let Err(refused) = take_rate(
+            state,
+            &doc,
+            &context,
+            &id,
+            &auth.did,
+            binding.rate_per_minute,
+        )
+    {
+        return refused;
     }
     audit_detail(
         state,
@@ -1804,10 +1980,11 @@ pub(super) async fn handle_issue_v2(
         &format!("{audited} expiresAt:{expires_at}"),
     )
     .await;
-    respond::<t::Response>(
-        &doc,
-        json!({ "sealedCredential": sealed, "expiresAt": expires_at, echo_key: echo }),
-    )
+    let answer = json!({ "sealedCredential": sealed, "expiresAt": expires_at, echo_key: echo });
+    match version {
+        IssueVersion::V0_2 => respond::<t::Response>(&doc, answer),
+        IssueVersion::V0_3 => respond::<ext::credentials::issue::v0_3::Response>(&doc, answer),
+    }
 }
 
 /// The consumer's key-agreement key: for a `did:key`, the X25519 derivation of
@@ -1820,6 +1997,26 @@ async fn sealing_key(consumer: &str) -> Result<[u8; 32], String> {
         .map_err(|e| format!("no X25519 key-agreement key for {consumer}: {e}"))
 }
 
+/// What an issued credential is sealed as.
+fn sealed_payload(issued: driver::Issued) -> vta_sdk::sealed_transfer::SealedPayloadV1 {
+    vta_sdk::sealed_transfer::SealedPayloadV1::ExternalCredential(Box::new(issued.credential))
+}
+
+/// The producer assertion every issued credential carries: `PinnedOnly`, from
+/// this VTA's DID.
+async fn producer_assertion(state: &AppState) -> vta_sdk::sealed_transfer::ProducerAssertion {
+    vta_sdk::sealed_transfer::ProducerAssertion {
+        producer_did: state
+            .config
+            .read()
+            .await
+            .vta_did
+            .clone()
+            .unwrap_or_default(),
+        proof: vta_sdk::sealed_transfer::AssertionProof::PinnedOnly,
+    }
+}
+
 /// Seal an issued credential to the consumer's key-agreement key.
 ///
 /// The producer assertion is `PinnedOnly`, as the specification requires: the
@@ -1829,31 +2026,18 @@ async fn sealing_key(consumer: &str) -> Result<[u8; 32], String> {
 async fn seal_credential(
     state: &AppState,
     recipient: &[u8; 32],
-    issued: driver::Issued,
+    payload: &vta_sdk::sealed_transfer::SealedPayloadV1,
 ) -> Result<String, AppError> {
-    use vta_sdk::sealed_transfer::{
-        AssertionProof, ProducerAssertion, SealedPayloadV1, armor, seal_payload,
-    };
-    let vta_did = state
-        .config
-        .read()
-        .await
-        .vta_did
-        .clone()
-        .unwrap_or_default();
+    use vta_sdk::sealed_transfer::{armor, seal_payload};
     let mut bundle_id = [0u8; 16];
     rand::fill(&mut bundle_id);
-    let payload = SealedPayloadV1::ExternalCredential(Box::new(issued.credential));
     let nonce_store =
         crate::sealed_nonce_store::PersistentNonceStore::new(state.sealed_nonces_ks.clone());
     let bundle = seal_payload(
         recipient,
         bundle_id,
-        ProducerAssertion {
-            producer_did: vta_did,
-            proof: AssertionProof::PinnedOnly,
-        },
-        &payload,
+        producer_assertion(state).await,
+        payload,
         &nonce_store,
     )
     .await
@@ -2286,6 +2470,218 @@ mod tests {
             "requests": [{ "operation": "put", "contentLength": 3, "checksumSha256": SUM }] });
         let out = handle_issue_v2(&state, &consumer(), batch_doc("r2-order2", put, 60)).await;
         assert_eq!(code(&out), "<success>", "{}", body(&out));
+    }
+
+    fn batch_doc_v3(id: &str, presign: Value, ttl: u32) -> TrustTask<Value> {
+        doc(
+            uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3,
+            json!({ "context": CTX, "account": id, "presign": presign, "ttlSeconds": ttl }),
+        )
+    }
+
+    /// `n` part writes on an object whose key and upload id are as long as the
+    /// schema allows, numbered from `first`: every URL as long as it can be.
+    fn longest_parts(first: u64, n: u64) -> Value {
+        let parts: Vec<Value> = (first..first + n)
+            .map(|p| json!({ "operation": "upload-part", "partNumber": p, "contentLength": 5_242_880, "checksumSha256": SUM }))
+            .collect();
+        // `+`, `/` and `=` percent-encode to three characters each, so this id
+        // is longer still once in a URL.
+        let upload_id = "+/=".repeat(341) + "u";
+        json!({ "prefix": "rooms/a/", "objectKey": "k".repeat(1024), "uploadId": upload_id, "requests": parts })
+    }
+
+    fn opened_count(out: &TrustTaskOutcome) -> usize {
+        let armored = body(out)["sealedCredential"].as_str().unwrap().to_string();
+        assert!(armored.len() <= MAX_SEALED_CREDENTIAL);
+        let x_secret = ed25519_seed_to_x25519_secret(&[CONSUMER_SEED; 32]);
+        let c = vta_sdk::client::open_external_credential(&armored, &x_secret).unwrap();
+        match &c {
+            ExternalCredentialPayload::PresignedRequests { requests, .. } => requests.len(),
+            _ => panic!("expected a presigned request set"),
+        }
+    }
+
+    /// `issue/0.3` item 7: 64 operations at the longest key and upload id do not
+    /// fit `sealedCredential`; the batch is refused `responseTooLarge`, naming
+    /// how many operations fit, and nothing of the set is returned. Split as
+    /// consumer item 5 says — parts of `maxOperations` — every part is issued,
+    /// one presigned request per operation. With the binding's rate set to
+    /// exactly the number of parts, the last part still succeeds and the next
+    /// request is rate-limited: the refusal counted nothing (item 8).
+    #[tokio::test]
+    async fn issue_0_3_refuses_a_set_too_large_to_seal_and_counts_nothing() {
+        let refused = |out: &TrustTaskOutcome| {
+            assert_eq!(
+                code(out),
+                "external/credentials/issue:responseTooLarge",
+                "{}",
+                body(out)
+            );
+            assert!(!body(out).to_string().contains("X-Amz-Signature"));
+            let details = body(out)["details"].clone();
+            ext::credentials::issue::v0_3::error_codes::RESPONSE_TOO_LARGE
+                .check_details(&details)
+                .expect("details conform to the declared schema (1..=63)");
+            details["maxOperations"].as_u64().expect("maxOperations")
+        };
+
+        // Learn the split.
+        let (probe, _d) = ready("r2-large", 60).await;
+        let max = refused(
+            &handle_issue_v3(
+                &probe,
+                &consumer(),
+                batch_doc_v3("r2-large", longest_parts(1, 64), 300),
+            )
+            .await,
+        );
+        assert!((1..64).contains(&max));
+        let parts = 64u64.div_ceil(max) as u32;
+
+        let (state, _dir) = ready("r2-large", parts).await;
+        assert_eq!(
+            refused(
+                &handle_issue_v3(
+                    &state,
+                    &consumer(),
+                    batch_doc_v3("r2-large", longest_parts(1, 64), 300),
+                )
+                .await
+            ),
+            max,
+            "maxOperations is computed, not guessed"
+        );
+        let mut first = 1u64;
+        let mut issued = 0usize;
+        while first <= 64 {
+            let n = max.min(65 - first);
+            let out = handle_issue_v3(
+                &state,
+                &consumer(),
+                batch_doc_v3("r2-large", longest_parts(first, n), 300),
+            )
+            .await;
+            assert_eq!(code(&out), "<success>", "part at {first}: {}", body(&out));
+            issued += opened_count(&out);
+            first += n;
+        }
+        assert_eq!(issued, 64);
+        let next = handle_issue_v3(
+            &state,
+            &consumer(),
+            batch_doc_v3("r2-large", longest_parts(1, 1), 300),
+        )
+        .await;
+        assert_eq!(code(&next), "external:rateLimited");
+    }
+
+    /// `issue/0.3` item 8: a request refused at any earlier item — wrong shape,
+    /// broken batch, outside the ceiling, too long a lifetime, too large an
+    /// answer — counts nothing against the binding's rate. With a rate of one,
+    /// the one issuance that follows them all still succeeds.
+    #[tokio::test]
+    async fn issue_0_3_refusals_spend_none_of_the_rate() {
+        let (state, _dir) = ready("r2-rate3", 1).await;
+        let refusals = [
+            (
+                doc(
+                    uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3,
+                    json!({ "context": CTX, "account": "r2-rate3",
+                            "scope": { "prefix": "rooms/a/", "actions": ["get"] }, "ttlSeconds": 60 }),
+                ),
+                "external/credentials/issue:requestShapeMismatch",
+            ),
+            (
+                batch_doc_v3(
+                    "r2-rate3",
+                    json!({ "prefix": "rooms/a/", "objectKey": "o", "requests": [{ "operation": "list-parts" }] }),
+                    60,
+                ),
+                "external/credentials/issue:invalidBatch",
+            ),
+            (
+                batch_doc_v3(
+                    "r2-rate3",
+                    json!({ "prefix": "rooms/a/", "objectKey": "o", "uploadId": "u", "requests": [{ "operation": "abort-multipart" }] }),
+                    60,
+                ),
+                "external/credentials/issue:scopeOutsideCeiling",
+            ),
+            (
+                batch_doc_v3(
+                    "r2-rate3",
+                    json!({ "prefix": "rooms/a/", "objectKey": "o", "requests": [{ "operation": "head" }] }),
+                    901,
+                ),
+                "external/credentials/issue:ttlTooLong",
+            ),
+            (
+                batch_doc_v3("r2-rate3", longest_parts(1, 64), 300),
+                "external/credentials/issue:responseTooLarge",
+            ),
+        ];
+        for (d, expected) in refusals {
+            let out = handle_issue_v3(&state, &consumer(), d).await;
+            assert_eq!(code(&out), expected, "{}", body(&out));
+        }
+        let ok = handle_issue_v3(
+            &state,
+            &consumer(),
+            batch_doc_v3(
+                "r2-rate3",
+                json!({ "prefix": "rooms/a/", "objectKey": "o", "requests": [{ "operation": "head" }] }),
+                60,
+            ),
+        )
+        .await;
+        assert_eq!(code(&ok), "<success>", "{}", body(&ok));
+        let payload = body(&ok);
+        assert_eq!(payload["presign"]["requests"][0]["operation"], "head");
+        let again = handle_issue_v3(
+            &state,
+            &consumer(),
+            batch_doc_v3(
+                "r2-rate3",
+                json!({ "prefix": "rooms/a/", "objectKey": "o", "requests": [{ "operation": "head" }] }),
+                60,
+            ),
+        )
+        .await;
+        assert_eq!(code(&again), "external:rateLimited");
+    }
+
+    /// `issue/0.3` holds a batch to 64 operations: a 65th is refused by the
+    /// schema at the dispatch spine, and by the handler should one reach it.
+    #[tokio::test]
+    async fn issue_0_3_refuses_a_65_operation_batch_by_schema() {
+        let (state, _dir) = ready("r2-65", 60).await;
+        let parts: Vec<Value> = (1..=65)
+            .map(|n| json!({ "operation": "upload-part", "partNumber": n, "contentLength": 5_242_880, "checksumSha256": SUM }))
+            .collect();
+        let presign =
+            json!({ "prefix": "rooms/a/", "objectKey": "o", "uploadId": "u", "requests": parts });
+        let d = batch_doc_v3("r2-65", presign.clone(), 300);
+        let reject = crate::trust_tasks::validate_payload(
+            &state,
+            uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3,
+            &d,
+        )
+        .await
+        .expect("65 operations do not conform to issue/0.3");
+        assert_eq!(code(&reject), "malformedRequest");
+        let out = handle_issue_v3(&state, &consumer(), d).await;
+        assert_eq!(code(&out), "malformedRequest", "{}", body(&out));
+        // 0.2 still takes it (up to 128).
+        assert!(
+            crate::trust_tasks::validate_payload(
+                &state,
+                uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2,
+                &batch_doc("r2-65", presign, 300),
+            )
+            .await
+            .is_none()
+        );
     }
 
     #[tokio::test]

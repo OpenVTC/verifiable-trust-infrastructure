@@ -754,8 +754,8 @@ pub(crate) enum ExternalCommands {
         actions: Vec<String>,
         #[arg(long)]
         object_key: Option<String>,
-        /// A presign batch (`external/credentials/issue/0.2`, `PresignBatch`) as
-        /// JSON, or `@file` to read it: up to 128 operations on one object of an
+        /// A presign batch (`external/credentials/issue/0.3`, `PresignBatch`) as
+        /// JSON, or `@file` to read it: up to 64 operations on one object of an
         /// `s3-static-presign` account. Replaces `--prefix`/`--action`/`--object-key`.
         #[arg(long, conflicts_with_all = ["prefix", "actions", "object_key"])]
         presign: Option<String>,
