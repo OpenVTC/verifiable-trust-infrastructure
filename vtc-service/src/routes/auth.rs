@@ -1123,19 +1123,25 @@ async fn step_up_finish(
     // 4. Elevate. Read-modify-write on the live row so we inherit whatever the
     //    session already carries (tokens, pubkey, tee flag) rather than
     //    rebuilding it and dropping a field.
-    let mut session = get_session(&state.sessions_ks, &binding.session_id)
-        .await?
-        .ok_or_else(|| AppError::Unauthorized("session not found".into()))?;
+    //    Conditional on the row as stored: a session signed out while the
+    //    ceremony ran stays signed out instead of being written back elevated.
     let now = now_epoch();
     let expires_at = now.saturating_add(STEP_UP_ELEVATION_TTL_SECS);
-
-    if !session.amr.iter().any(|m| m == "passkey") {
-        session.amr.push("passkey".to_string());
-    }
-    session.acr = "aal2".to_string();
-    session.acr_expires_at = Some(expires_at);
-    session.last_seen = now;
-    crate::auth::session::update_session(&state.sessions_ks, &session).await?;
+    let session = crate::auth::session::update_session_with(
+        &state.sessions_ks,
+        &binding.session_id,
+        |session| {
+            if !session.amr.iter().any(|m| m == "passkey") {
+                session.amr.push("passkey".to_string());
+            }
+            session.acr = "aal2".to_string();
+            session.acr_expires_at = Some(expires_at);
+            session.last_seen = now;
+            true
+        },
+    )
+    .await?
+    .ok_or_else(|| AppError::Unauthorized("session not found".into()))?;
 
     // The user-verification gesture is the authority for whatever privileged
     // operation follows inside the window — and since the promote-to-admin

@@ -56,7 +56,7 @@ use uuid::Uuid;
 
 use crate::audit::audit;
 use crate::auth::AuthClaims;
-use crate::auth::session::{get_session, now_epoch, update_session};
+use crate::auth::session::{now_epoch, update_session_with};
 use crate::operations::passkey_login::{VtaVmResolver, verify_passkey_login};
 use crate::server::AppState;
 use vti_common::acl::{delegated_any_approver_covers, get_acl_entry};
@@ -557,8 +557,28 @@ pub(super) async fn handle_approve_response(
         }
     }
 
-    // 7. Load + elevate the session.
-    let mut session = match get_session(&state.sessions_ks, &session_id).await {
+    // 7. Elevate the session, conditional on the row as stored: one signed out
+    //    while the approval was pending stays signed out rather than being
+    //    written back elevated, and a concurrent change to it is not reverted.
+    //
+    // Bound the elevation. The window is what stops a single approval from
+    // granting permanent aal2, on both transports:
+    // - intrinsic-sender (DIDComm/TSP) reads `acr` straight off this row on
+    //   every subsequent message, so `resolve_did_session` downgrades it back
+    //   to aal1 once the deadline passes;
+    // - REST's `StepUpAuth` reads this deadline directly, so a lapsed window
+    //   fails the gate without the row needing to be rewritten.
+    let acr_expires_at = now_epoch().saturating_add(STEP_UP_ELEVATION_TTL_SECS);
+    let session = match update_session_with(&state.sessions_ks, &session_id, |session| {
+        if !session.amr.iter().any(|m| m == factor) {
+            session.amr.push(factor.to_string());
+        }
+        session.acr = target.to_string(); // ≤ granted, enforced above
+        session.acr_expires_at = Some(acr_expires_at);
+        true
+    })
+    .await
+    {
         Ok(Some(s)) => s,
         Ok(None) => {
             return reject_with(
@@ -570,31 +590,11 @@ pub(super) async fn handle_approve_response(
             return reject_with(
                 &doc,
                 RejectReason::InternalError {
-                    reason: format!("session lookup: {e}"),
+                    reason: format!("session update: {e}"),
                 },
             );
         }
     };
-    if !session.amr.iter().any(|m| m == factor) {
-        session.amr.push(factor.to_string());
-    }
-    session.acr = target.to_string(); // ≤ granted, enforced above
-    // Bound the elevation. The window is what stops a single approval from
-    // granting permanent aal2, on both transports:
-    // - intrinsic-sender (DIDComm/TSP) reads `acr` straight off this row on
-    //   every subsequent message, so `resolve_did_session` downgrades it back
-    //   to aal1 once the deadline passes;
-    // - REST's `StepUpAuth` reads this deadline directly, so a lapsed window
-    //   fails the gate without the row needing to be rewritten.
-    session.acr_expires_at = Some(now_epoch().saturating_add(STEP_UP_ELEVATION_TTL_SECS));
-    if let Err(e) = update_session(&state.sessions_ks, &session).await {
-        return reject_with(
-            &doc,
-            RejectReason::InternalError {
-                reason: format!("session update: {e}"),
-            },
-        );
-    }
     audit!(
         "auth.step_up",
         actor = &subject,
