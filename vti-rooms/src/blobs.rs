@@ -838,6 +838,24 @@ impl BlobHost {
         }
     }
 
+    /// The room of the open upload (`rooms/blobs/upload/chunk`) or unexpired download
+    /// (`rooms/blobs/chunk`) `transfer_id` names, when `opener` is the party that opened
+    /// it. `None` for anyone else's transfer, a closed one, or an id that names nothing.
+    ///
+    /// What a host needs to charge a chunk to the room and party it belongs to before
+    /// doing the work: the same ownership check [`Self::put_chunk`] and
+    /// [`Self::read_chunk`] make, without the work. A failed read answers `None`.
+    pub async fn transfer_room(&self, opener: &str, transfer_id: &str) -> Option<String> {
+        if let Ok(rec) = self.owned_open_upload(opener, transfer_id).await {
+            return Some(rec.room_id);
+        }
+        let id = Uuid::parse_str(transfer_id).ok()?;
+        match self.blobs.get::<DownloadRecord>(download_key(&id)).await {
+            Ok(Some(r)) if r.opener == opener && r.expires_at > Utc::now() => Some(r.room_id),
+            _ => None,
+        }
+    }
+
     /// The room's usage, reservations included.
     pub async fn room_usage(&self, room_id: &str) -> Result<Usage, AppError> {
         Ok(self

@@ -124,6 +124,114 @@ pub struct RoomsConfig {
     /// files on. Writing the section is what turns them on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files: Option<RoomFilesConfig>,
+    /// How much `rooms/*` traffic `POST /v1/trust-tasks` admits (`[rooms.rate_limits]`,
+    /// [`crate::routing::trust_task_admission`]). **Absent means the defaults**, which is
+    /// what every configuration written before this section existed has.
+    #[serde(default, skip_serializing_if = "RoomRateLimitsConfig::is_unset")]
+    pub rate_limits: RoomRateLimitsConfig,
+}
+
+/// The budgets room traffic is charged to on the HTTPS Trust Task door
+/// (`[rooms.rate_limits]`). Every measure is optional; an absent one keeps its default.
+///
+/// Each budget is a token bucket: `*_burst` documents back to back, then one every
+/// `*_interval_ms` **milliseconds per document** — an interval, not a rate, so a
+/// *larger* interval is a *tighter* limit. Zero is read as 1.
+///
+/// Read when the first room document arrives; a change takes a restart.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RoomRateLimitsConfig {
+    /// Every `rooms/*` document from one address, charged **before** anything in it is
+    /// verified. Default burst 400, then one every 10 ms. A document that does not go on
+    /// to verify and be authorized by its room costs this budget more (see
+    /// [`crate::routing::trust_task_admission`]), so a flood of unverifiable documents
+    /// stops here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address_burst: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address_interval_ms: Option<u64>,
+    /// One presenter's operations in one room, charged **after** the room has
+    /// authorized them. Default burst 120, then one every 100 ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presenter_burst: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presenter_interval_ms: Option<u64>,
+    /// One presenter's file chunks in one room (`rooms/blobs/upload/chunk`,
+    /// `rooms/blobs/chunk`), charged once the presenter is shown to hold the transfer.
+    /// Default burst 200, then one every 20 ms — a 100 MB file at the default 256 KiB
+    /// chunk is 400 chunks, about four seconds of waiting past the burst.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_burst: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_interval_ms: Option<u64>,
+}
+
+/// One budget: a burst, then one document every `interval`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoomBudget {
+    pub burst: u32,
+    pub interval: std::time::Duration,
+}
+
+impl RoomBudget {
+    fn from(burst: Option<u32>, interval_ms: Option<u64>, default: RoomBudget) -> Self {
+        Self {
+            burst: burst.map_or(default.burst, |b| b.max(1)),
+            interval: interval_ms.map_or(default.interval, |ms| {
+                std::time::Duration::from_millis(ms.max(1))
+            }),
+        }
+    }
+}
+
+/// The shipped room budgets: the per-address pre-verification ceiling.
+pub const ROOM_ADDRESS_DEFAULT: RoomBudget = RoomBudget {
+    burst: 400,
+    interval: std::time::Duration::from_millis(10),
+};
+/// The shipped per-(room, presenter) budget for ordinary room operations.
+pub const ROOM_PRESENTER_DEFAULT: RoomBudget = RoomBudget {
+    burst: 120,
+    interval: std::time::Duration::from_millis(100),
+};
+/// The shipped per-(room, presenter) budget for file chunks.
+pub const ROOM_TRANSFER_DEFAULT: RoomBudget = RoomBudget {
+    burst: 200,
+    interval: std::time::Duration::from_millis(20),
+};
+
+impl RoomRateLimitsConfig {
+    fn is_unset(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The per-address ceiling every room document is charged before verification.
+    pub fn address(&self) -> RoomBudget {
+        RoomBudget::from(
+            self.address_burst,
+            self.address_interval_ms,
+            ROOM_ADDRESS_DEFAULT,
+        )
+    }
+
+    /// The per-(room, presenter) budget for authorized room operations.
+    pub fn presenter(&self) -> RoomBudget {
+        RoomBudget::from(
+            self.presenter_burst,
+            self.presenter_interval_ms,
+            ROOM_PRESENTER_DEFAULT,
+        )
+    }
+
+    /// The per-(room, presenter) budget for file chunks.
+    pub fn transfer(&self) -> RoomBudget {
+        RoomBudget::from(
+            self.transfer_burst,
+            self.transfer_interval_ms,
+            ROOM_TRANSFER_DEFAULT,
+        )
+    }
 }
 
 impl RoomsConfig {
@@ -2213,5 +2321,35 @@ mod tests {
         let written = toml::to_string_pretty(&config).expect("serialize ok");
         let ((_, unknown_keys), _dir) = load(&written);
         assert!(unknown_keys.is_empty(), "{:?}", unknown_keys);
+    }
+}
+
+#[cfg(test)]
+mod room_rate_limit_tests {
+    use super::*;
+
+    /// No `[rooms.rate_limits]` — every configuration written before it existed —
+    /// is the shipped defaults, and is not written back out.
+    #[test]
+    fn an_absent_section_is_the_defaults() {
+        let rooms: RoomsConfig = toml::from_str("").unwrap();
+        assert_eq!(rooms.rate_limits, RoomRateLimitsConfig::default());
+        assert_eq!(rooms.rate_limits.address(), ROOM_ADDRESS_DEFAULT);
+        assert_eq!(rooms.rate_limits.presenter(), ROOM_PRESENTER_DEFAULT);
+        assert_eq!(rooms.rate_limits.transfer(), ROOM_TRANSFER_DEFAULT);
+        assert!(!toml::to_string(&rooms).unwrap().contains("rate_limits"));
+    }
+
+    #[test]
+    fn a_partial_section_keeps_the_rest_and_zero_is_one() {
+        let rooms: RoomsConfig =
+            toml::from_str("[rate_limits]\npresenter_burst = 30\ntransfer_interval_ms = 0\n")
+                .unwrap();
+        let l = &rooms.rate_limits;
+        assert_eq!(l.presenter().burst, 30);
+        assert_eq!(l.presenter().interval, ROOM_PRESENTER_DEFAULT.interval);
+        assert_eq!(l.transfer().interval, std::time::Duration::from_millis(1));
+        assert_eq!(l.address(), ROOM_ADDRESS_DEFAULT);
+        assert!(toml::from_str::<RoomsConfig>("[rate_limits]\nburst = 1\n").is_err());
     }
 }

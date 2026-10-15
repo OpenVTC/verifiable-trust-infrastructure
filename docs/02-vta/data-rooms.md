@@ -780,8 +780,47 @@ community's ACL or a session.
   host ever holds one. Upload chunks are larger than the 64 KiB a document from
   a party with no ACL entry may be, so a chunk is admitted at its declared size
   only from the party holding the open upload it belongs to, and a `begin` only
-  when it names a room this VTC hosts, both under the same per-address budget as
-  any other large document.
+  when it names a room this VTC hosts. A `begin` is under the same per-address
+  budget as any other large document; a chunk arriving at `POST /v1/trust-tasks`
+  is under the room budgets below instead (over DIDComm or TSP it still takes the
+  large-document budget).
+- **Rate limits** (`[rooms.rate_limits]`). Room traffic is not held to the
+  anonymous per-address governor the join and sign-in surface shares (a burst of
+  10, then one request every 5 s), which a member reading a room or fetching a
+  file of a few chunks used to exhaust, for everyone behind the same address. A
+  `rooms/*` document is charged on what it proves:
+  1. **Before anything is verified**, to its address's room ceiling
+     (limiter `room-address`). A document that then fails to verify, or that its
+     room does not authorize, costs that ceiling 25 more, so an address sending
+     documents nothing authorizes is held to about four a second once its burst
+     is spent.
+  2. **Once the room has authorized it**, before the work, to the presenter's
+     budget in that room (`room-presenter`) — or, for an upload or download
+     chunk, once the presenter is shown to hold that transfer, to its transfer
+     budget (`room-transfer`). Two members behind one NAT have a budget each,
+     and nobody drains a member's by naming them: it is charged only after that
+     member's chain verifies.
+
+  Every refusal is the ecosystem's `429` (`x-rate-limit-source: vtc`,
+  `Retry-After`, a JSON body naming the limiter). `vtc-client` (and so `pnm
+  rooms`) waits out a `Retry-After` of up to 30 s on a read — `records get` /
+  `list`, `info`, `epoch chain` / `commits`, `blobs get` and download chunks —
+  and never retries a write. The section is optional; absent, every measure
+  keeps its default. A budget is a burst, then one document every
+  `*_interval_ms` **milliseconds** — an interval, not a rate, so a larger number
+  is a tighter limit. Read when the first room document arrives; change it with
+  a restart.
+
+  ```toml
+  [rooms.rate_limits]
+  # address_burst = 400          # every room document from one address,
+  # address_interval_ms = 10     #   before verification (100/s sustained)
+  # presenter_burst = 120        # one presenter's operations in one room,
+  # presenter_interval_ms = 100  #   after authorization (10/s sustained)
+  # transfer_burst = 200         # one presenter's file chunks in one room
+  # transfer_interval_ms = 20    #   (50/s: a 100 MB file, 400 chunks of
+  #                              #   256 KiB, waits about 4 s past the burst)
+  ```
 - **S3 through the community's VTA** (`auth: vta-account`). The VTC holds no
   storage credential. For every object operation it asks its VTA, over the
   messaging channel it already keeps, for one presigned request
@@ -1198,6 +1237,8 @@ recover but a fresh invitation from every owner.
 | `name the owner's persona as \`member\`` | `group/create` with no `--member`, and no credential from the room names a persona of yours (§5.4) |
 | `invitation … has already been used` | Single use. Issue a fresh one |
 | a room "is live" / "not claimable" | The owner renewed. The claim is correctly dead |
+| `429`, limiter `room-presenter` / `room-transfer` | One presenter is sending more to one room than its budget (§8.2). Wait out `Retry-After`; reads are retried for you |
+| `429`, limiter `room-address` | Everything from your address together, or documents the room did not authorize costing extra (§8.2) |
 | `unsupportedType` | The host does not implement that task — check you are talking to a room host and not something else on the same port |
 | `this registration was signed by …, which is not the owner it names` | `rooms/create` signed by anyone but the `ownerDid` in the payload. Sign as the owner (§5.2) |
 | Every call fails on `missing field 'id'` | You are posting a bare JSON body. Room calls are Trust Task **documents** — build them with `vta_sdk::trust_task_sign::build_signed` |

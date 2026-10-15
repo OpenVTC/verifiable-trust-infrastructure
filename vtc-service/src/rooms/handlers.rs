@@ -23,6 +23,7 @@ use serde_json::Value;
 use trust_tasks_rs::{AsyncDispatcher, TrustTask};
 
 use super::policy as room_policy;
+use crate::routing::trust_task_admission::{RoomTraffic, admit_room};
 use crate::server::AppState;
 use crate::trust_tasks::helpers::{TrustTaskOutcome, app_error_to_reject, success_response};
 use vti_common::audit::{AuditEvent, RoomOperationData};
@@ -146,6 +147,25 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
         .on_async(super::files::handle_download_chunk)
         .on_async(super::files::handle_info)
         .on_async(super::files::handle_usage)
+}
+
+/// Charge an operation the room has just authorized to the presenter's budget in that
+/// room ([`crate::routing::trust_task_admission::admit_room`]), before any of its work
+/// is done. A refusal is a `429` with no body, which the HTTPS door replaces with the
+/// refusal it recorded; off that door nothing is charged.
+pub(super) fn charged(
+    room_id: &str,
+    presenter: &str,
+    traffic: RoomTraffic,
+) -> Result<(), TrustTaskOutcome> {
+    if admit_room(room_id, presenter, traffic) {
+        Ok(())
+    } else {
+        Err(TrustTaskOutcome {
+            status: axum::http::StatusCode::TOO_MANY_REQUESTS,
+            body: Vec::new(),
+        })
+    }
 }
 
 pub(super) fn presenter_and_verifier(
@@ -320,6 +340,9 @@ pub(crate) async fn handle_create(
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Err(o) = charged(authorized.room_id(), presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     // …and the one room operation this community governs. Registering a room is
     // asking a host for its disk, which is the host's to refuse; every operation
@@ -417,6 +440,9 @@ pub(super) async fn put_record<P>(
         Ok(a) => a,
         Err(e) => return app_error_to_reject(doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     // Held across the write: the blobs it names cannot be collected, and their limits
     // cannot change, between this check and the references it records.
@@ -536,6 +562,9 @@ pub(super) async fn get_record<P>(
         Ok(a) => a,
         Err(e) => return app_error_to_reject(doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     // A 0.2 read names the blobs of the version it returns: the record and its
     // references are read under the lock every record write holds.
@@ -610,6 +639,9 @@ pub(super) async fn list_records<P>(
         Ok(a) => a,
         Err(e) => return app_error_to_reject(doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     let snapshot = match v2 {
         true => Some(state.room_files.read_snapshot().await),
@@ -745,6 +777,9 @@ pub(crate) async fn handle_mint_epoch(
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     // The room's policy governs whether it has a chain at all, so a rung for a room that
     // does not chain is refused rather than dropped. Storing it would give the room a chain
@@ -847,6 +882,9 @@ pub(crate) async fn handle_epoch_prune(
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     // Refused rather than performed. `beforeEpoch: currentEpoch` reads like
     // "keep from here" and would drop every rung, leaving a member who restarts
@@ -917,6 +955,9 @@ pub(crate) async fn handle_epoch_commits(
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     let commits = match storage::commits_since(
         &state.room_epoch_links_ks,
@@ -986,6 +1027,9 @@ pub(crate) async fn handle_epoch_chain(
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     let mut links = match storage::list_epoch_links(&state.room_epoch_links_ks, &req.room_id).await
     {
@@ -1059,6 +1103,9 @@ pub(crate) async fn handle_transfer_owner(
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     match storage::set_owner(&state.rooms_ks, &req.room_id, &req.new_owner_did, now()).await {
         Ok(updated) => {
@@ -1153,6 +1200,9 @@ pub(crate) async fn handle_claim_owner(
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     match storage::set_owner(&state.rooms_ks, &req.room_id, &presenter, now()).await {
         Ok(updated) => {
@@ -1209,6 +1259,9 @@ pub(crate) async fn handle_curate_record(
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     // Held across the curation, so a 0.2 read never sees a retracted record still
     // naming the blobs the retraction released.

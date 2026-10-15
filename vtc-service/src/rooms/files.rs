@@ -33,9 +33,10 @@ use vti_rooms::blobs::BlobHost;
 use vti_rooms::wire::{AuthorityPresentation, GetRecordBody, ListRecordsBody, PutRecordBody};
 use vti_rooms::{Room, storage};
 
-use super::handlers::{RoomCtx, now, presenter_and_verifier};
+use super::handlers::{RoomCtx, charged, now, presenter_and_verifier};
 use super::storage_configs::RoomStorage;
 use crate::config::RoomFilesConfig;
+use crate::routing::trust_task_admission::RoomTraffic;
 use crate::store::keyspaces;
 use crate::trust_tasks::helpers::{
     TrustTaskOutcome, app_error_to_reject, declared_code, reject_with, reject_with_code,
@@ -243,7 +244,29 @@ async fn authorize<P>(
     let authorized = authz::authorize(&room, &presentation, action, &presenter, now(), &verifier)
         .await
         .map_err(|e| app_error_to_reject(doc, &e))?;
+    charged(&room.room_id, &presenter, RoomTraffic::Operation)?;
     Ok((room, authorized))
+}
+
+/// Charge a task authorized by owning a transfer (`uploadId` / `downloadId`) to the room
+/// that transfer belongs to, once the presenter is shown to be the party that opened it.
+///
+/// Someone else's transfer, or one that is closed, is not charged here and goes on to be
+/// refused `notFound` by the task itself — and, never authorized, is paid for out of the
+/// address's room ceiling ([`crate::routing::trust_task_admission`]).
+async fn charge_transfer(
+    ctx: &RoomCtx,
+    payload: &Value,
+    id_member: &str,
+    traffic: RoomTraffic,
+) -> Result<(), TrustTaskOutcome> {
+    let Some(id) = payload[id_member].as_str() else {
+        return Ok(());
+    };
+    match ctx.state.room_files.transfer_room(&ctx.presenter, id).await {
+        Some(room_id) => charged(&room_id, &ctx.presenter, traffic),
+        None => Ok(()),
+    }
 }
 
 /// The 0.1 request a 0.2 one carries, read as the 0.1 body type.
@@ -336,13 +359,17 @@ pub(crate) async fn handle_upload_chunk(
     doc: TrustTask<upload_chunk::Payload>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
-    match payload_json(&doc) {
-        Ok(p) => render(
-            &doc,
-            blob_tasks::upload_chunk(&ctx.state.room_files, &ctx.presenter, &p).await,
-        ),
-        Err(o) => o,
+    let p = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    if let Err(o) = charge_transfer(&ctx, &p, "uploadId", RoomTraffic::Transfer).await {
+        return o;
     }
+    render(
+        &doc,
+        blob_tasks::upload_chunk(&ctx.state.room_files, &ctx.presenter, &p).await,
+    )
 }
 
 /// `rooms/blobs/upload/commit/0.1`. Authorized by owning the upload.
@@ -350,13 +377,17 @@ pub(crate) async fn handle_upload_commit(
     doc: TrustTask<upload_commit::Payload>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
-    match payload_json(&doc) {
-        Ok(p) => render(
-            &doc,
-            blob_tasks::commit(&ctx.state.room_files, &ctx.presenter, &p).await,
-        ),
-        Err(o) => o,
+    let p = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    if let Err(o) = charge_transfer(&ctx, &p, "uploadId", RoomTraffic::Operation).await {
+        return o;
     }
+    render(
+        &doc,
+        blob_tasks::commit(&ctx.state.room_files, &ctx.presenter, &p).await,
+    )
 }
 
 /// `rooms/blobs/upload/abort/0.1`. Authorized by owning the upload.
@@ -364,13 +395,17 @@ pub(crate) async fn handle_upload_abort(
     doc: TrustTask<upload_abort::Payload>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
-    match payload_json(&doc) {
-        Ok(p) => render(
-            &doc,
-            blob_tasks::abort(&ctx.state.room_files, &ctx.presenter, &p).await,
-        ),
-        Err(o) => o,
+    let p = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    if let Err(o) = charge_transfer(&ctx, &p, "uploadId", RoomTraffic::Operation).await {
+        return o;
     }
+    render(
+        &doc,
+        blob_tasks::abort(&ctx.state.room_files, &ctx.presenter, &p).await,
+    )
 }
 
 /// `rooms/blobs/get/0.1`. Needs `read`.
@@ -404,13 +439,17 @@ pub(crate) async fn handle_download_chunk(
     doc: TrustTask<download_chunk::Payload>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
-    match payload_json(&doc) {
-        Ok(p) => render(
-            &doc,
-            blob_tasks::download_chunk(&ctx.state.room_files, &ctx.presenter, &p).await,
-        ),
-        Err(o) => o,
+    let p = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    if let Err(o) = charge_transfer(&ctx, &p, "downloadId", RoomTraffic::Transfer).await {
+        return o;
     }
+    render(
+        &doc,
+        blob_tasks::download_chunk(&ctx.state.room_files, &ctx.presenter, &p).await,
+    )
 }
 
 /// `rooms/usage/0.1`. Needs `admin`: who is using the room's space is the owner's

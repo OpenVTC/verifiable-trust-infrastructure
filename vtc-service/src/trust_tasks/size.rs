@@ -338,13 +338,46 @@ pub(crate) struct LargeDocumentCharge {
 ///
 /// Returns the charge to settle once verification concludes
 /// ([`settle_large_document_charge`]), or `None` when no charge was made.
+#[cfg(test)]
 pub(crate) async fn check_for_known_issuer(
     state: &AppState,
     body: &[u8],
     address: &str,
     now: u64,
 ) -> Result<Option<LargeDocumentCharge>, TrustTaskOutcome> {
+    check_for_known_issuer_with(state, body, address, now, false).await
+}
+
+/// [`check_for_known_issuer`], told whether the transport has already charged this
+/// document to a room budget sized for file transfer
+/// ([`crate::routing::trust_task_admission`]'s per-address room ceiling, which a
+/// document that never verifies and is never authorized by its room pays extra).
+///
+/// When it has, an upload chunk from the party holding the open upload is admitted at
+/// the chunk's size without the [`LargeDocumentBudget`]: five raised-limit documents a
+/// minute per address, sixty across the node, would make a 100 MB file (400 chunks at
+/// the default chunk size) take an hour and a half. Every other large document, and a
+/// chunk arriving on a transport that charged no room budget, is held to the budget as
+/// before.
+pub(crate) async fn check_for_known_issuer_with(
+    state: &AppState,
+    body: &[u8],
+    address: &str,
+    now: u64,
+    room_precharged: bool,
+) -> Result<Option<LargeDocumentCharge>, TrustTaskOutcome> {
     if body.len() <= DEFAULT_MAX_DOCUMENT_BYTES {
+        return Ok(None);
+    }
+    if room_precharged
+        && peek_type(body).as_deref() == Some(vti_rooms::blob_tasks::UPLOAD_CHUNK_TYPE)
+        && let Some(issuer) = peek_issuer(body)
+        && state
+            .room_files
+            .holds_open_upload(issuer.split('#').next().unwrap_or(&issuer))
+            .await
+    {
+        check_with(body, max_document_bytes)?;
         return Ok(None);
     }
     let claimed_issuer = match peek_issuer(body) {

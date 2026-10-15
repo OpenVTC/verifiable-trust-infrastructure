@@ -369,6 +369,14 @@ pub(crate) trait VerifiedAdmission: Sync {
     /// `429` outcome, which the transport replaces with its own refusal; the
     /// admission is expected to have recorded why.
     fn admit_verified(&self, signer: &str) -> bool;
+
+    /// The transport has charged this document to a room budget sized for file
+    /// transfer before anything in it was verified, and settles that charge
+    /// itself — so the size check need not also charge an upload chunk to the
+    /// large-document budget ([`size::check_for_known_issuer_with`]).
+    fn room_precharged(&self) -> bool {
+        false
+    }
 }
 
 /// [`dispatch_trust_task_core`], with `admit` consulted once the proof has
@@ -403,12 +411,14 @@ async fn dispatch_trust_task_validated(
     //    budget first — see `size`'s module docs for why an unverified claim
     //    alone would otherwise be a DoS amplifier. Settled below, once this
     //    document's own proof verification concludes (or does not run at
-    //    all).
-    let large_doc_charge = match size::check_for_known_issuer(
+    //    all). An upload chunk a transport has already charged to its room
+    //    budget is not charged again here (`size::check_for_known_issuer_with`).
+    let large_doc_charge = match size::check_for_known_issuer_with(
         state,
         body,
         budget_address,
         crate::auth::session::now_epoch(),
+        admit.is_some_and(|a| a.room_precharged()),
     )
     .await
     {

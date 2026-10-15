@@ -582,23 +582,42 @@ impl VtcClient {
         signer_did: &str,
         private_key_multibase: &str,
     ) -> Result<serde_json::Value, VtcError> {
-        let doc = vta_sdk::trust_task_sign::build_signed(
-            type_uri,
-            payload,
-            signer_did,
-            private_key_multibase,
-            &self.vtc_did,
-        )
-        .await
-        .map_err(|e| VtcError::Signing(e.to_string()))?;
+        let retries = if is_room_read(type_uri) {
+            READ_RATE_LIMIT_ATTEMPTS - 1
+        } else {
+            0
+        };
+        let mut attempt = 0;
+        let resp = loop {
+            // Signed afresh for every attempt: a document's `id` is spent once it runs, and
+            // a read is only ever retried because the host refused it before it ran.
+            let doc = vta_sdk::trust_task_sign::build_signed(
+                type_uri,
+                payload.clone(),
+                signer_did,
+                private_key_multibase,
+                &self.vtc_did,
+            )
+            .await
+            .map_err(|e| VtcError::Signing(e.to_string()))?;
 
-        let resp = self
-            .http
-            .post(format!("{}/trust-tasks", self.base_url))
-            .header("content-type", "application/json")
-            .body(doc)
-            .send()
-            .await?;
+            let resp = self
+                .http
+                .post(format!("{}/trust-tasks", self.base_url))
+                .header("content-type", "application/json")
+                .body(doc)
+                .send()
+                .await?;
+            if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+                && attempt < retries
+                && let Some(wait) = rate_limit_wait(resp.headers())
+            {
+                attempt += 1;
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+            break resp;
+        };
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
@@ -615,9 +634,86 @@ impl VtcClient {
     }
 }
 
+/// Attempts a room read makes, the first included, when the host answers `429`.
+const READ_RATE_LIMIT_ATTEMPTS: usize = 5;
+
+/// The longest `Retry-After` a room read waits out. A longer one is returned to the
+/// caller as the `429` it is, rather than turned into a stall the host chooses.
+const MAX_READ_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether `type_uri` is a room task that only reads, so repeating it after a `429` cannot
+/// do anything twice. Writes are never retried here: retry has one owner per failure
+/// domain, and a write's is the caller.
+///
+/// `rooms/blobs/get` is here although it opens a download: repeating it opens a second,
+/// which expires unused, and a refused attempt opened nothing.
+fn is_room_read(type_uri: &str) -> bool {
+    use trust_tasks_rs::Payload as _;
+    use trust_tasks_rs::specs::rooms;
+    [
+        ROOMS_RECORDS_GET_TYPE,
+        ROOMS_RECORDS_LIST_TYPE,
+        ROOMS_EPOCH_CHAIN_TYPE,
+        ROOMS_EPOCH_COMMITS_TYPE,
+        rooms::records::get::v0_2::Payload::TYPE_URI,
+        rooms::records::list::v0_2::Payload::TYPE_URI,
+        rooms::blobs::get::v0_1::Payload::TYPE_URI,
+        rooms::blobs::chunk::v0_1::Payload::TYPE_URI,
+        rooms::info::v0_1::Payload::TYPE_URI,
+    ]
+    .contains(&type_uri)
+}
+
+/// How long a `429` asks to be waited out, when that is short enough to wait: its
+/// `Retry-After` (`vta_sdk::rate_limit`'s parse, so both forms are read), at least a
+/// second when it names none. `None` past [`MAX_READ_RETRY_AFTER`].
+fn rate_limit_wait(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
+    let now = chrono::Utc::now();
+    let wait = headers
+        .get(vta_sdk::rate_limit::RETRY_AFTER_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| vta_sdk::rate_limit::parse_retry_after(v, now))
+        .map_or(std::time::Duration::from_secs(1), |at| {
+            (at - now).to_std().unwrap_or_default()
+        });
+    (wait <= MAX_READ_RETRY_AFTER).then_some(wait)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_room_reads_are_retried() {
+        use trust_tasks_rs::Payload as _;
+        use trust_tasks_rs::specs::rooms;
+        assert!(is_room_read(ROOMS_RECORDS_GET_TYPE));
+        assert!(is_room_read(rooms::blobs::chunk::v0_1::Payload::TYPE_URI));
+        for write in [
+            ROOMS_CREATE_TYPE,
+            ROOMS_RECORDS_PUT_TYPE,
+            ROOMS_EPOCH_MINT_TYPE,
+            ROOMS_RECORDS_CURATE_TYPE,
+            rooms::blobs::upload::chunk::v0_1::Payload::TYPE_URI,
+            rooms::blobs::upload::commit::v0_1::Payload::TYPE_URI,
+        ] {
+            assert!(!is_room_read(write), "{write} is a write");
+        }
+    }
+
+    #[test]
+    fn a_short_retry_after_is_waited_and_a_long_one_is_not() {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert("retry-after", "3".parse().unwrap());
+        let wait = rate_limit_wait(&h).unwrap();
+        assert!((2..=3).contains(&wait.as_secs()), "{wait:?}");
+        h.insert("retry-after", "3600".parse().unwrap());
+        assert_eq!(rate_limit_wait(&h), None);
+        assert_eq!(
+            rate_limit_wait(&reqwest::header::HeaderMap::new()),
+            Some(std::time::Duration::from_secs(1))
+        );
+    }
 
     #[test]
     fn a_session_requires_a_chain() {

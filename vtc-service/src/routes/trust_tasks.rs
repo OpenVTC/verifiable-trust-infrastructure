@@ -13,7 +13,9 @@
 //! This mirrors the VTA's `POST /api/trust-tasks`. It sits on the unauth
 //! chain but not behind its tower governor: a document is charged to the
 //! per-address anonymous budget, or — when it claims a signer the community
-//! knows — to that signer's own bucket once its proof verifies
+//! knows — to that signer's own bucket once its proof verifies, or — a
+//! `rooms/*` document — to the address's room ceiling and then, once its room
+//! has authorized it, to its (room, presenter) budget
 //! ([`crate::routing::trust_task_admission`]). Each document type has its own size limit,
 //! checked before the document is parsed
 //! ([`crate::trust_tasks::size`]).
@@ -136,12 +138,14 @@ pub async fn dispatch(
         slot
             // Boxed: see `StreamSlot::scope` — inline, the task-local wrapper
             // would add the spine's whole future to this handler's poll frame.
-            .scope(Box::pin(dispatch_trust_task_core_admitted(
-                &state,
-                &JoinAuthCtx::rest(),
-                &body,
-                &admission,
-                address,
+            .scope(Box::pin(admission.scope(
+                dispatch_trust_task_core_admitted(
+                    &state,
+                    &JoinAuthCtx::rest(),
+                    &body,
+                    &admission,
+                    address,
+                ),
             ))),
     )
     .await;

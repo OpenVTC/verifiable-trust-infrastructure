@@ -156,6 +156,8 @@ pub struct TestVtcBuilder {
     /// Build with no `[rooms.files]` section, as a configuration written before room
     /// files existed.
     without_room_files: bool,
+    /// `[rooms.rate_limits]`.
+    room_rate_limits: Option<crate::config::RoomRateLimitsConfig>,
 }
 
 impl Default for TestVtcBuilder {
@@ -179,6 +181,7 @@ impl Default for TestVtcBuilder {
             x509_trust_anchors: Default::default(),
             room_file_ceiling: None,
             without_room_files: false,
+            room_rate_limits: None,
         }
     }
 }
@@ -187,6 +190,12 @@ impl TestVtcBuilder {
     /// Override the configured `vtc_did`.
     pub fn vtc_did(mut self, did: impl Into<String>) -> Self {
         self.vtc_did = did.into();
+        self
+    }
+
+    /// Set `[rooms.rate_limits]`.
+    pub fn with_room_rate_limits(mut self, limits: crate::config::RoomRateLimitsConfig) -> Self {
+        self.room_rate_limits = Some(limits);
         self
     }
 
@@ -497,6 +506,9 @@ impl TestVtcBuilder {
         }
         if let Some(git_ns) = &self.git_ns_config {
             config.git_ns = git_ns.clone();
+        }
+        if let Some(limits) = &self.room_rate_limits {
+            config.rooms.rate_limits = limits.clone();
         }
         if let Some(mediator_did) = &self.messaging_mediator {
             config.messaging = Some(vti_common::config::MessagingConfig {

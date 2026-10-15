@@ -1106,6 +1106,17 @@ host = "www.example.com"                     # dedicated host (distinct)
 
 [cors]
 allowed_origins = []                       # add SPA origin for external mode
+
+# Optional. How much `rooms/*` traffic POST /v1/trust-tasks admits; absent,
+# these defaults. Each is a burst, then one document every *_interval_ms
+# milliseconds (larger = tighter). See docs/02-vta/data-rooms.md §8.2.
+[rooms.rate_limits]
+address_burst = 400                        # per address, before verification
+address_interval_ms = 10
+presenter_burst = 120                      # per (room, presenter), once authorized
+presenter_interval_ms = 100
+transfer_burst = 200                       # per (room, presenter), file chunks
+transfer_interval_ms = 20
 ```
 
 In pure **path mode** (omit every `host`), all three surfaces share

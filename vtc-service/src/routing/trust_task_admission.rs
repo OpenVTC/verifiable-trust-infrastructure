@@ -40,11 +40,50 @@
 //! The same per-address governor state backs the other unauthenticated routes
 //! ([`crate::routes`]), so moving this door off the tower layer does not give
 //! an address a second anonymous budget.
+//!
+//! # Room traffic
+//!
+//! A `rooms/*` document is neither anonymous nor a known signer's: its presenter
+//! holds no ACL entry here, by design (`docs/02-vta/data-rooms.md` §8.2), and is
+//! authorized by the credentials the room issued. Held to the anonymous governor,
+//! one member reading a room or fetching a file of a few chunks was refused
+//! within seconds, and so was everyone else behind the same address. So the
+//! closed set of room task types ([`crate::rooms::handlers::serves`]) is charged
+//! on what it proves, in two steps:
+//!
+//! | the document | charged, and when |
+//! |---|---|
+//! | any `rooms/*` document | the address's room ceiling ([`ROOM_ADDRESS_LIMITER`]), **before** anything is verified |
+//! | one the room has authorized | its (room, presenter) budget ([`ROOM_PRESENTER_LIMITER`]), or for a file chunk the transfer budget ([`ROOM_TRANSFER_LIMITER`]), **after** the authorization and before the work |
+//! | one that never verifies, or that its room never authorizes | the address's room ceiling again, [`ROOM_FAILURE_COST`] times |
+//!
+//! The (room, presenter) budget is what lets two members behind one NAT work
+//! side by side: neither's burst is the other's. It is charged only once the
+//! room's own chain has authorized the presenter, so its keys are bounded by
+//! the rooms' memberships, not by how many `did:key`s a caller can mint — and
+//! nobody can drain a member's budget by naming them. Its key is a hash under
+//! a per-process secret, so this map holds no list of who is in which room.
+//!
+//! The address ceiling bounds the verification work one address can cause: it
+//! is charged before the proof and the chain are checked, and a document that
+//! fails either pays [`ROOM_FAILURE_COST`] more, so an address sending
+//! documents nothing authorizes is held to a few a second once its burst is
+//! spent. Room documents never touch the anonymous governor, so a room flood
+//! does not cost an address its join or sign-in budget, nor the reverse.
+//!
+//! A file chunk is charged to the transfer budget once the presenter is shown to
+//! hold the upload or download it names (`BlobHost::transfer_room`), and an upload
+//! chunk admitted under the address ceiling skips the large-document budget
+//! (`crate::trust_tasks::size::check_for_known_issuer_with`): those two together
+//! are what lets a whole file move.
+//!
+//! The budgets are `[rooms.rate_limits]` ([`crate::config::RoomRateLimitsConfig`]),
+//! read when the first room document arrives.
 
 use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use axum::extract::Request;
@@ -55,7 +94,11 @@ use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
 use tower_governor::key_extractor::KeyExtractor;
 use vti_common::rate_limit::TrustedProxyKeyExtractor;
 
-use super::rate_limit::{RateLimited, SIGNED_ADDRESS_LIMITER, SIGNER_LIMITER, UNAUTH_LIMITER};
+use super::rate_limit::{
+    ROOM_ADDRESS_LIMITER, ROOM_PRESENTER_LIMITER, ROOM_TRANSFER_LIMITER, RateLimited,
+    SIGNED_ADDRESS_LIMITER, SIGNER_LIMITER, UNAUTH_LIMITER,
+};
+use crate::config::{RoomBudget, RoomRateLimitsConfig};
 use crate::server::AppState;
 use crate::trust_tasks::VerifiedAdmission;
 
@@ -76,6 +119,9 @@ pub struct TrustTaskLimits {
     address: Arc<DefaultKeyedRateLimiter<IpAddr>>,
     signed_address: Arc<DefaultKeyedRateLimiter<IpAddr>>,
     signer: Arc<DefaultKeyedRateLimiter<String>>,
+    /// The room budgets, built from `[rooms.rate_limits]` when the first room
+    /// document arrives (the router is built before the configuration is read).
+    rooms: Arc<OnceLock<Arc<RoomLimiters>>>,
     key_extractor: TrustedProxyKeyExtractor,
 }
 
@@ -104,9 +150,168 @@ impl TrustTaskLimits {
             address,
             signed_address: Arc::new(RateLimiter::keyed(signed_address)),
             signer: Arc::new(RateLimiter::keyed(signer)),
+            rooms: Arc::new(OnceLock::new()),
             key_extractor,
         }
     }
+
+    /// The room budgets, built from the configuration on first use.
+    async fn rooms(&self, state: &AppState) -> Arc<RoomLimiters> {
+        if let Some(rooms) = self.rooms.get() {
+            return rooms.clone();
+        }
+        let config = state.config.read().await.rooms.rate_limits.clone();
+        self.rooms
+            .get_or_init(|| Arc::new(RoomLimiters::new(&config)))
+            .clone()
+    }
+}
+
+/// What a document that never verifies, or that its room never authorizes,
+/// costs the address's room ceiling on top of the one it paid on arrival.
+/// With the default ceiling (one every 10 ms) such documents are held to about
+/// four a second once the burst is spent — the known-signer ceiling's rate.
+pub const ROOM_FAILURE_COST: u32 = 25;
+
+/// Past this many tracked keys, a room limiter forgets the ones that have
+/// refilled completely, so its map does not grow with every address that ever
+/// sent a room document.
+const ROOM_TRACKED_KEYS: usize = 10_000;
+
+/// The room budgets (see the module docs).
+pub(crate) struct RoomLimiters {
+    address: DefaultKeyedRateLimiter<IpAddr>,
+    presenter: DefaultKeyedRateLimiter<[u8; 16]>,
+    transfer: DefaultKeyedRateLimiter<[u8; 16]>,
+    /// Keys the (room, presenter) hash, so the maps name nobody.
+    secret: [u8; 32],
+}
+
+impl RoomLimiters {
+    fn new(config: &RoomRateLimitsConfig) -> Self {
+        Self::with_budgets(config.address(), config.presenter(), config.transfer())
+    }
+
+    fn with_budgets(address: RoomBudget, presenter: RoomBudget, transfer: RoomBudget) -> Self {
+        let q = |b: RoomBudget| quota(b.interval, b.burst);
+        let mut secret = [0u8; 32];
+        rand::fill(&mut secret);
+        Self {
+            address: RateLimiter::keyed(q(address)),
+            presenter: RateLimiter::keyed(q(presenter)),
+            transfer: RateLimiter::keyed(q(transfer)),
+            secret,
+        }
+    }
+
+    fn member_key(&self, room_id: &str, presenter: &str) -> [u8; 16] {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(self.secret);
+        h.update(room_id.as_bytes());
+        h.update([0u8]);
+        h.update(presenter.as_bytes());
+        let digest = h.finalize();
+        let mut key = [0u8; 16];
+        key.copy_from_slice(&digest[..16]);
+        key
+    }
+
+    fn charge_address(&self, address: &IpAddr) -> Result<(), RateLimited> {
+        if self.address.len() > ROOM_TRACKED_KEYS {
+            self.address.retain_recent();
+        }
+        charge(&self.address, address).map_err(|wait| {
+            RateLimited::new(
+                ROOM_ADDRESS_LIMITER,
+                wait,
+                "too many room documents from this address; wait for the \
+                 Retry-After period before retrying",
+            )
+        })
+    }
+
+    /// Spend up to [`ROOM_FAILURE_COST`] of the address's room ceiling.
+    fn penalize(&self, address: &IpAddr) {
+        for _ in 0..ROOM_FAILURE_COST {
+            if self.address.check_key(address).is_err() {
+                break;
+            }
+        }
+    }
+
+    fn charge_member(
+        &self,
+        room_id: &str,
+        presenter: &str,
+        traffic: RoomTraffic,
+    ) -> Result<(), RateLimited> {
+        let (limiter, name, what) = match traffic {
+            RoomTraffic::Operation => (&self.presenter, ROOM_PRESENTER_LIMITER, "room operations"),
+            RoomTraffic::Transfer => (&self.transfer, ROOM_TRANSFER_LIMITER, "file chunks"),
+        };
+        if limiter.len() > ROOM_TRACKED_KEYS {
+            limiter.retain_recent();
+        }
+        charge(limiter, &self.member_key(room_id, presenter)).map_err(|wait| {
+            RateLimited::new(
+                name,
+                wait,
+                format!(
+                    "too many {what} from this presenter in this room; wait for the \
+                     Retry-After period before retrying"
+                ),
+            )
+        })
+    }
+}
+
+/// Which budget an operation a room has authorized is charged to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RoomTraffic {
+    /// Every room task but a file chunk.
+    Operation,
+    /// `rooms/blobs/upload/chunk` and `rooms/blobs/chunk`.
+    Transfer,
+}
+
+/// One room document's admission, reachable from the room handlers while the
+/// spine runs it ([`admit_room`]).
+pub(crate) struct RoomAdmission {
+    limiters: Arc<RoomLimiters>,
+    address: IpAddr,
+    /// The room authorized the operation, and its budget was charged.
+    authorized: AtomicBool,
+    refusal: Mutex<Option<RateLimited>>,
+}
+
+tokio::task_local! {
+    static ROOM_ADMISSION: Arc<RoomAdmission>;
+}
+
+/// Charge an operation the room has just authorized to `presenter`'s budget in
+/// `room_id`. Called by the room handlers after the authorization and before
+/// the work; `false` means refused, and the handler answers with
+/// [`crate::trust_tasks::helpers::TrustTaskOutcome`] status `429` and no body,
+/// which the HTTPS door replaces with the refusal recorded here.
+///
+/// Off the HTTPS door — DIDComm, TSP, a test calling a handler directly — no
+/// admission is in scope and every operation is admitted.
+pub(crate) fn admit_room(room_id: &str, presenter: &str, traffic: RoomTraffic) -> bool {
+    ROOM_ADMISSION
+        .try_with(|room| {
+            room.authorized.store(true, Ordering::SeqCst);
+            match room.limiters.charge_member(room_id, presenter, traffic) {
+                Ok(()) => true,
+                Err(limited) => {
+                    if let Ok(mut slot) = room.refusal.lock() {
+                        *slot = Some(limited);
+                    }
+                    false
+                }
+            }
+        })
+        .unwrap_or(true)
 }
 
 fn quota(period: Duration, burst: u32) -> Quota {
@@ -174,6 +379,8 @@ pub struct Admission {
     /// The strict governor has been charged for this document.
     address_charged: AtomicBool,
     refusal: Mutex<Option<RateLimited>>,
+    /// Set for a `rooms/*` document, which none of the above is charged for.
+    room: Option<Arc<RoomAdmission>>,
 }
 
 impl Admission {
@@ -185,7 +392,30 @@ impl Admission {
         address: IpAddr,
         body: &[u8],
     ) -> Result<Self, RateLimited> {
-        let claimed = match claimed_signer(body) {
+        let claim = read_claim(body);
+        if claim
+            .type_uri
+            .as_deref()
+            .is_some_and(crate::rooms::handlers::serves)
+        {
+            let limiters = limits.rooms(state).await;
+            limiters.charge_address(&address)?;
+            return Ok(Self {
+                limits: limits.clone(),
+                address,
+                claimed: None,
+                verified: AtomicBool::new(false),
+                address_charged: AtomicBool::new(false),
+                refusal: Mutex::new(None),
+                room: Some(Arc::new(RoomAdmission {
+                    limiters,
+                    address,
+                    authorized: AtomicBool::new(false),
+                    refusal: Mutex::new(None),
+                })),
+            });
+        }
+        let claimed = match claim.signer() {
             Some(did) => known_principal(state, &did).await.map(|principal| Claimed {
                 signer: did,
                 principal,
@@ -199,6 +429,7 @@ impl Admission {
             verified: AtomicBool::new(false),
             address_charged: AtomicBool::new(false),
             refusal: Mutex::new(None),
+            room: None,
         };
         if admission.claimed.is_some() {
             charge(&limits.signed_address, &address).map_err(|wait| {
@@ -242,6 +473,17 @@ impl Admission {
     /// never verified as it — the strict governor's charge, which may itself
     /// refuse.
     pub fn finish(self) -> Result<(), RateLimited> {
+        if let Some(room) = &self.room {
+            if let Some(limited) = room.refusal.lock().ok().and_then(|mut slot| slot.take()) {
+                return Err(limited);
+            }
+            // Never verified, or verified and never authorized by its room: the
+            // verification it cost is paid for out of the address's ceiling.
+            if !room.authorized.load(Ordering::SeqCst) {
+                room.limiters.penalize(&room.address);
+            }
+            return Ok(());
+        }
         if let Some(limited) = self.refusal.lock().ok().and_then(|mut slot| slot.take()) {
             return Err(limited);
         }
@@ -255,8 +497,27 @@ impl Admission {
     }
 }
 
+impl Admission {
+    /// Run the spine for this document with its room admission in scope, so the
+    /// room handlers can charge what the room authorizes ([`admit_room`]).
+    pub async fn scope<F: std::future::Future>(&self, fut: F) -> F::Output {
+        match &self.room {
+            Some(room) => ROOM_ADMISSION.scope(room.clone(), fut).await,
+            None => fut.await,
+        }
+    }
+}
+
 impl VerifiedAdmission for Admission {
+    fn room_precharged(&self) -> bool {
+        self.room.is_some()
+    }
+
     fn admit_verified(&self, signer: &str) -> bool {
+        // A room document is charged when its room authorizes it, not here.
+        if self.room.is_some() {
+            return true;
+        }
         match &self.claimed {
             // Charged to the address before verification.
             None => true,
@@ -287,15 +548,30 @@ impl VerifiedAdmission for Admission {
 /// The DID a signed document names as its `issuer` — the only DID the spine
 /// accepts a proof from. `None` for an unsigned document or one that does not
 /// parse; the spine refuses the latter, and the strict governor pays for it.
+#[cfg(test)]
 fn claimed_signer(body: &[u8]) -> Option<String> {
-    #[derive(serde::Deserialize)]
-    struct Claim {
-        issuer: Option<String>,
-        proof: Option<serde::de::IgnoredAny>,
+    read_claim(body).signer()
+}
+
+/// What admission reads off a document before anything is verified: its
+/// `type`, and the signer it claims.
+#[derive(Default, serde::Deserialize)]
+struct Claim {
+    #[serde(rename = "type")]
+    type_uri: Option<String>,
+    issuer: Option<String>,
+    proof: Option<serde::de::IgnoredAny>,
+}
+
+impl Claim {
+    fn signer(self) -> Option<String> {
+        self.proof?;
+        self.issuer.filter(|did| did.starts_with("did:"))
     }
-    let claim: Claim = serde_json::from_slice(body).ok()?;
-    claim.proof?;
-    claim.issuer.filter(|did| did.starts_with("did:"))
+}
+
+fn read_claim(body: &[u8]) -> Claim {
+    serde_json::from_slice(body).unwrap_or_default()
 }
 
 /// The principal `did`'s documents are charged to, when the community knows
@@ -345,6 +621,7 @@ mod tests {
             verified: AtomicBool::new(false),
             address_charged: AtomicBool::new(false),
             refusal: Mutex::new(None),
+            room: None,
         }
     }
 
@@ -423,5 +700,84 @@ mod tests {
             charge(&limits.address, &IpAddr::from([192, 0, 2, 1])).is_err(),
             "the mismatched document spent one of the address's two"
         );
+    }
+
+    fn rooms(address: u32, presenter: u32, transfer: u32) -> Arc<RoomLimiters> {
+        let slow = Duration::from_secs(3600);
+        let b = |burst| RoomBudget {
+            burst,
+            interval: slow,
+        };
+        Arc::new(RoomLimiters::with_budgets(
+            b(address),
+            b(presenter),
+            b(transfer),
+        ))
+    }
+
+    fn room_admission(limiters: &Arc<RoomLimiters>) -> Arc<RoomAdmission> {
+        Arc::new(RoomAdmission {
+            limiters: limiters.clone(),
+            address: IpAddr::from([192, 0, 2, 9]),
+            authorized: AtomicBool::new(false),
+            refusal: Mutex::new(None),
+        })
+    }
+
+    #[test]
+    fn a_room_document_off_the_https_door_is_admitted() {
+        assert!(admit_room(
+            "did:key:zRoom",
+            "did:key:zMember",
+            RoomTraffic::Operation
+        ));
+    }
+
+    #[tokio::test]
+    async fn presenters_and_rooms_are_charged_apart() {
+        let limiters = rooms(100, 2, 1);
+        let room = room_admission(&limiters);
+        ROOM_ADMISSION
+            .scope(room.clone(), async {
+                for _ in 0..2 {
+                    assert!(admit_room("r1", "alice", RoomTraffic::Operation));
+                }
+                assert!(!admit_room("r1", "alice", RoomTraffic::Operation));
+                // Another presenter, the same presenter in another room, and the
+                // transfer budget are all their own.
+                assert!(admit_room("r1", "bob", RoomTraffic::Operation));
+                assert!(admit_room("r2", "alice", RoomTraffic::Operation));
+                assert!(admit_room("r1", "alice", RoomTraffic::Transfer));
+                assert!(!admit_room("r1", "alice", RoomTraffic::Transfer));
+            })
+            .await;
+        let refused = room.refusal.lock().unwrap().take().expect("recorded");
+        assert_eq!(
+            refused.limiter(),
+            super::super::rate_limit::ROOM_TRANSFER_LIMITER
+        );
+        assert!(room.authorized.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_room_document_never_authorized_costs_the_address_extra() {
+        let limiters = rooms(ROOM_FAILURE_COST + 2, 10, 10);
+        let address = IpAddr::from([192, 0, 2, 9]);
+        limiters.charge_address(&address).expect("first");
+        limiters.penalize(&address);
+        // One left of the burst after the arrival and the penalty.
+        limiters.charge_address(&address).expect("the last token");
+        assert_eq!(
+            limiters.charge_address(&address).unwrap_err().limiter(),
+            super::super::rate_limit::ROOM_ADDRESS_LIMITER
+        );
+    }
+
+    #[test]
+    fn the_member_key_names_nobody_and_separates_room_from_presenter() {
+        let limiters = rooms(1, 1, 1);
+        let k = limiters.member_key("ab", "c");
+        assert_ne!(k, limiters.member_key("a", "bc"));
+        assert_ne!(k, rooms(1, 1, 1).member_key("ab", "c"), "keyed per process");
     }
 }

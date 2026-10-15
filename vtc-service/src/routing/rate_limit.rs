@@ -25,6 +25,9 @@
 //! | per-member publish window ([`crate::relationships::rate_limit`]) | [`RELATIONSHIPS_LIMITER`] | HMAC of the signer DID |
 //! | known-signer documents on `POST /v1/trust-tasks` ([`crate::routing::trust_task_admission`]) | [`SIGNED_ADDRESS_LIMITER`] | source IP |
 //! | a verified known signer on `POST /v1/trust-tasks` ([`crate::routing::trust_task_admission`]) | [`SIGNER_LIMITER`] | the signer's principal (a console key's admin) |
+//! | `rooms/*` documents on `POST /v1/trust-tasks`, before verification ([`crate::routing::trust_task_admission`]) | [`ROOM_ADDRESS_LIMITER`] | source IP |
+//! | room operations the room has authorized ([`crate::routing::trust_task_admission`]) | [`ROOM_PRESENTER_LIMITER`] | (room, presenter) |
+//! | room file chunks, once the presenter holds the transfer ([`crate::routing::trust_task_admission`]) | [`ROOM_TRANSFER_LIMITER`] | (room, presenter) |
 //!
 //! All are HTTP-only: the Trust Task framework (`trust_tasks_rs::StandardCode`)
 //! defines no rate-limit error code, and neither limiter sits on the DIDComm or
@@ -61,6 +64,17 @@ pub const SIGNED_ADDRESS_LIMITER: &str = "signed-address";
 /// A verified known signer's own bucket on `POST /v1/trust-tasks`, keyed by
 /// the principal it acts for.
 pub const SIGNER_LIMITER: &str = "signer";
+
+/// The per-address ceiling on `rooms/*` documents, charged before anything in
+/// them is verified (`[rooms.rate_limits] address_*`).
+pub const ROOM_ADDRESS_LIMITER: &str = "room-address";
+
+/// One presenter's operations in one room, charged once the room has
+/// authorized them (`[rooms.rate_limits] presenter_*`).
+pub const ROOM_PRESENTER_LIMITER: &str = "room-presenter";
+
+/// One presenter's file chunks in one room (`[rooms.rate_limits] transfer_*`).
+pub const ROOM_TRANSFER_LIMITER: &str = "room-transfer";
 
 /// The JSON body of a rate-limit refusal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
