@@ -2,6 +2,47 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.21.0...vta-keys-v0.22.0) — 2026-10-15
+
+
+### Added
+
+- **secrets**: Encrypted-at-rest file backend ([#1820](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1820)) ([#2101](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2101))
+
+* feat(secrets)!: encrypted-at-rest file backend ([#1820](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1820))
+
+  Add `encrypted_file` to vti-secrets: the secret is kept in one file under
+  AES-256-GCM, keyed from an explicitly configured key-encryption key, so a
+  headless host with no OS keychain has a secure local option instead of
+  `plaintext`.
+
+  KEK sources (`[secrets.encrypted_file] kek = { source = ... }`):
+  - `passphrase`: Argon2id (m = 64 MiB, t = 3, p = 4; salt and parameters in
+    the header, floors enforced on read), passphrase from a file or a systemd
+    credential, never from the config or an environment variable;
+  - `systemd_creds`: a 32-byte KEK from $CREDENTIALS_DIRECTORY, HKDF-SHA256;
+  - `tpm` (feature `tpm`, Linux, tss-esapi 7.7): a random KEK sealed under the
+    owner-hierarchy SRK, optionally bound to SHA-256 PCRs, stored sealed in the
+    header, HKDF-SHA256.
+
+  Envelope v1: magic, version, AEAD id, KEK source id, salt, nonce and a
+  length-prefixed descriptor, all of it the AEAD's associated data. Fresh salt
+  and nonce per write. Writes are atomic (0600 temp file via
+  `secure_file::write_secret_file`, fsync, rename, directory fsync). Fails
+  closed: only a missing file is "no secret"; a wrong key, any modified byte,
+  an unknown version, a malformed header or a header from another KEK source
+  is an error. Key material and passphrases are zeroized; no derived Debug
+  holds a secret.
+
+  Selection is explicit only, in both the VTA factory and the VTC's
+  `create_secret_store` (`encrypted-file`): implicit resolution never picks it,
+  and a `[secrets.encrypted_file]` table without the selector is a config
+  error. The VTA setup TOML and interactive wizard offer it; vta-keys
+  re-exports the store; vta-service, vta-keys and vtc-service gain a `tpm`
+  feature.
+
+
+
 ## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.20.0...vta-keys-v0.21.0) — 2026-10-13
 
 

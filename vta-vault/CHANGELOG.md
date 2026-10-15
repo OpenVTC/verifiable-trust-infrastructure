@@ -2,6 +2,34 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.19.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.19.0...vta-vault-v0.19.1) — 2026-10-15
+
+
+### Added
+
+- **store**: Conditional atomic batches across local and vsock backends ([#2106](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2106))
+- **vault**: Present P-256-bound SD-JWT-VCs with an ES256 kb-jwt ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2099](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2099))
+
+A credential bound to a P-256 `cnf.jwk` (swiyu, EUDI) can now be presented
+  from the VTA's vault. Its holder is the key's own `did:key` (`zDn…`), a
+  derived P-256 key the VTA custodies.
+
+  - `resolve_holder_keys` accepts a P-256 holder key: the `kb-jwt` signer is
+    ES256 (raw r||s), the consent secret P-256.
+  - `vta_vault::consent::holder_suite` fixes the Data Integrity suite by the
+    holder key: `eddsa-jcs-2022` for Ed25519, `ecdsa-jcs-2019` for P-256. Consent
+    receipts and DI presentations sign under it; `verify_proof` requires the
+    suite the subject `did:key`'s type takes, never the one the proof names.
+
+  This also fixes mdoc presentation, which signs its consent receipt with the
+  P-256 device key: `consent::create` asked that key to sign `eddsa-jcs-2022`,
+  which affinidi-data-integrity refuses, so no mdoc could be presented.
+
+  CLAUDE.md's key policy names the holder-key exception alongside the
+  foreign-protocol identity one.
+
+
+
 ## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.18.0...vta-vault-v0.19.0) — 2026-10-13
 
 

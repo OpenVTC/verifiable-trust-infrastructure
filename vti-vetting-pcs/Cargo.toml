@@ -2,7 +2,7 @@
 name = "vti-vetting-pcs"
 description = "Hidden-vetter admission (ZKP) on the Predicate Credential System: the community's issuer and verifier, and the member-side vetter and applicant engines a VTA runs"
 readme = "README.md"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 # Published, because `vta-service` is: the VTA runs the member-side engines as
 # its principal's PCS engine (the `vta/pcs/*` Trust Tasks), and a crate cannot
@@ -41,7 +41,7 @@ hex.workspace = true
 thiserror.workspace = true
 # The counting rule the VTC already uses: `requirements::evaluate` and
 # `StatementFacts`, unchanged.
-vta-sdk = { path = "../vta-sdk", version = "0.68", features = ["vetting"] }
+vta-sdk = { path = "../vta-sdk", version = "0.69", features = ["vetting"] }
 
 [dev-dependencies]
 rand = { version = "0.8", features = ["std", "std_rng"] }

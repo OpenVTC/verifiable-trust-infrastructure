@@ -2,6 +2,211 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.45.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.44.0...vti-common-v0.45.0) — 2026-10-15
+
+
+### Added
+
+- **vta**: External/credentials/issue 0.3 — responseTooLarge, sized before the rate, and the VTC splits ([#2127](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2127))
+
+* build(deps): trust-tasks-rs 0.31.8 — external/credentials/issue 0.3 (trust-tasks-tf #781)
+
+- **vta**: Vta/witness/{open,present,accept} — the VTA is its principal's witnessed party, the client carries the documents ([#1068](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1068)) ([#2123](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2123))
+
+The VTA side of witnessing (P3), per trustoverip/dtgwg-trust-tasks-tf#779
+  (rules in vta/_shared/0.5/CONVENTIONS.md). A witness checks that each
+  document's transport-proven sender is its issuer and replies to that sender,
+  and the relationship DID's one mediator socket belongs to the client holding
+  the relationship, so the VTA builds, signs and verifies while the client
+  carries every document. The VTA never contacts the witness and never signs as
+  itself. vta/witness/request/0.1 is retired upstream and not implemented.
+
+  - open: key custody for the relationship DID (and the member DID) in the
+    caller's contexts, distinct DIDs, the VRC/VMC by vault handle, the
+    member-link carriage and witness resolution, all checked before anything is
+    disclosed. Returns the witness/session document signed as the relationship
+    DID and opens a session record.
+  - present: checks the handed-back session #response against the record (type,
+    issuer = witness, recipient = relationship DID, thread, witness proof)
+    through VerifiedWitnessAnswer, re-reads the bound credentials, and returns
+    the signed witness/session/submit. Under the member link that carries a
+    member presentation in ext["org.openvtc.witness"].memberPresentation.
+  - accept: checks the submit #response the same way, then verifies the VWC as
+    a VerifiedWitnessOutcome: witness issuer and assertionMethod proof,
+    taskContext and task digest over the session document, subject and object
+    digest, vwcDigestMultibase. Stores the VWC in the relationship key's context
+    with both evidence documents (vault tags witness:session / witness:outcome).
+    A repeated accept of the same outcome is answered again and stores nothing.
+
+  The session record lives in a new keyspace, witness_sessions: encrypted,
+  excluded from backup, cascades on DID delete, swept by the storage thread. It
+  moves opened -> presented -> accepted with compare-and-set transitions.
+  sessionUnknown is one answer for unknown, expired, out-of-scope and
+  wrong-state sessions.
+
+  Supporting changes:
+
+  - Capability::WitnessRequest (witness-request) is derived by admin and
+    initiator, never by application, and is not satisfied by sign.
+  - persona_key_for gains a did:peer arm: the document is derived with no I/O,
+    and its methods are matched against key records in the caller's contexts.
+  - New [witness] config: session_ttl_secs and member_link_witnesses.
+  - retry_safety: all three RetrySafe.
+  - vta-mcp guard: open and present are Sensitive, accept is Mutating.
+  - SDK: VtaClient::witness_{open,present,accept}.
+  - trust-tasks-rs floor raised to 0.31.7.
+
+- **rooms**: Direct uploads — rooms/blobs 0.2 straight to storage, presigned by the VTA (trust-tasks-tf #775) ([#2121](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2121))
+
+* build(deps): trust-tasks-rs 0.31.5 floor — external/credentials/issue 0.2 (trust-tasks-tf #775)
+
+- **rooms**: Rooms/blobs 0.2 — the single-use upload key, and reads straight from storage (trust-tasks-tf #771) ([#2108](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2108))
+
+* build(deps): trust-tasks-rs 0.31.4 floor — rooms/blobs 0.2 and rooms/keys/act (trust-tasks-tf #771)
+
+- **store**: Conditional atomic batches across local and vsock backends ([#2106](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2106))
+- **vtc**: Room usage, room detail and limit overrides — vtc/rooms/{get,usage,limits/set} and rooms/usage ([#2077](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2077))
+
+P9 part 2 (docs/05-design-notes/data-rooms-files.md §6.2–6.3, §8.1): the host
+  tasks the console's room detail and Usage pages read, over the history and
+  overrides #2073 put in vti-rooms.
+
+  vtc/rooms/get (vtc.rooms.admin): one room's host record, assigned config and
+  every earlier config still holding its blobs, effective limits with each scope's
+  source and the host ceiling, usage and orphans, the ten largest blobs by size
+  only, and on rooms that are not private a count of members with files — never
+  their DIDs (item 5).
+
+  vtc/rooms/usage (vtc.rooms.admin): rows grouped by room, member, storage config
+  or day, filtered by room, member, config and an inclusive date range (default
+  the last 30 days; invalidRange past 400 days, inverted, or before the oldest
+  kept day), sorted, and paged by a cursor bound to its query (invalidCursor
+  otherwise). Member figures only on rooms that are not private
+  (memberUsageUnavailable when one is named). Activity by config is attributed to
+  each room's current assignment.
+
+  vtc/rooms/limits/set (vtc.rooms.admin): an override for the room, its members by
+  default, or one member; refuses aboveCeiling, memberLimitsUnavailable and
+  invalidCombination as declared, answers the effective limits, the target scope's
+  usage and overLimit, and is audited (new RoomLimitsChanged event: room, target,
+  previous, current, reason). Not parked, as the specification says: an allowance
+  is reversible and loses nothing.
+
+  rooms/usage (the room owner's read, an admin chain) on both hosts, through
+  vti_rooms::blob_tasks::usage: one entry per member holding storage or an
+  override, paged; notAvailable on a private room.
+
+  vtc/rooms/list moves to vtc.rooms.admin, as §6.2 says it should: a community can
+  hand room hosting to someone who is not a full administrator.
+
+  Both censuses carry the new tasks: conformance witnesses for the three, and
+  error-code witnesses for every code they declare.
+
+- **vtc**: Room files in S3 through the community's VTA — one presigned request per object, no storage credential held ([#2063](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2063))
+
+A storage config of kind `s3` with `auth: {mode: vta-account, context,
+  account}` (vtc/_shared/0.1 room-storage, dtgwg-trust-tasks-tf#758) keeps
+  room files in a bucket whose credential only the community's VTA holds.
+  For each object operation the VTC asks its VTA for one presigned request
+  (`external/credentials/issue/0.1` against an `s3-static-presign` account):
+  one action on one object, prefix `<config prefix>rooms/<hash>/`, for 300
+  seconds. The VTA checks the binding, `external-auth-use`, the account's
+  state, the scope against its ceiling, the TTL and the rate, audits the
+  issuance, and seals the request to this community's X25519 key inside a
+  `#response` whose proof is verified as the VTA's before it is read.
+
+  The VTA is reached over the VTC's existing messaging socket (TSP >
+  DIDComm, by the VTA's advertised services), so the VTA needs no inbound
+  address for this, and the community holds no storage secret at rest.
+
+  - vti-common: `blob_store::presigned` (feature `blob-presigned`) — a
+    `BlobStore` over a `Presigner`. Each request is checked before use
+    (https, the asked method, a path ending in the object's key); no
+    redirects; GETs are reused until shortly before they expire; a put
+    streams with Content-Length; a ranged get checks the length returned.
+  - vtc-service: one link to the VTA. `vta_link::VtaLink` (#2060's
+    `keys/sign-jws` link) now runs on `outbound::PeerTasks`, the
+    sign/send/await-verified-reply exchange the git bridge also uses, and
+    `rooms::vta_storage::VtaStorage` issues storage credentials over it.
+  - storage configs: create/update ask the VTA about the account (a canary
+    read under `<prefix>probe/`) and refuse `unknownAccount`, or name the
+    member at fault for a scope or TTL the binding cannot cover; the probe
+    authenticates through the store's own health check; `credentialState`
+    carries the context.
+  - Docs: `docs/02-vta/data-rooms.md` setup at the VTA;
+    `data-rooms-files.md` P4b.
+
+
+
+### Fixed
+
+- **store**: Make VTA/VTC multi-step store writes atomic ([#2109](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2109))
+
+* test(store): expose the local journal sequence number to atomicity tests
+
+- **store**: Order plain writes against batches, read lock-free through snapshots ([#2113](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2113))
+
+Two gaps under `apply_batch`'s guarantee ([#2106](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2106)), on the local store and
+  the enclave's vsock store:
+
+  - Plain `insert` / `insert_raw` / `remove` did not take the keyspace
+    write lock (local) or the key's lock (vsock), while every multi-step
+    operation did. A plain write could therefore land between a batch's
+    precondition check and its commit: a `require_unchanged` passes, a
+    sign-out removes the row, and the batch writes it back. Plain writes now
+    take the same lock; the vsock fallbacks that already hold a key's lock
+    use unlocked `put_stored` / `delete_stored`.
+
+  - fjall 3.1's plain reads (`Keyspace::get`, `prefix`, `range`) read at
+    `SeqNo::MAX`, and a batch is applied to the memtables item by item before
+    its sequence number is published, so a lock-free read could see part of
+    a batch: both rows of a move, an index entry without its record. Every
+    lock-free read on `LocalKeyspaceHandle` (`get`, `get_raw`,
+    `prefix_iter_raw`, `range_from_raw`, `prefix_keys`) now reads through
+    `db.snapshot()`, which sees each batch whole or not at all and every
+    write that has returned. Reads under the write lock are unchanged: no
+    batch on the keyspace can be in flight while it is held.
+
+  Tests, each mutation-checked (3/3 runs fail with the old code):
+  - `a_plain_remove_never_lands_inside_a_conditional_batch`
+  - `a_reader_never_sees_a_batch_half_applied`
+  - `plain_writes_wait_for_the_keyspace_write_lock` (local) and
+    `plain_writes_wait_for_the_keys_lock` (vsock).
+
+- **store**: Commit swap and move_if_unchanged as one journal record ([#2104](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2104))
+- **auth**: Logins complete behind a shared IP — per-step auth buckets, serialized challenge cap that evicts instead of refusing ([#2083](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2083))
+
+* fix(auth)!: logins complete behind a shared IP — per-step auth buckets, serialized challenge cap that evicts instead of refusing
+
+  Behind one address (a NAT gateway, an app host running many agents) logins
+  could stop completing. A login is a challenge then an authenticate, both
+  charged to one per-IP bucket: every token that refilled went to a new
+  challenge, every authenticate was refused, and a client that started over
+  added another pending challenge. At ten pending challenges the DID was
+  refused until the cleanup sweep removed them, up to challenge_ttl plus
+  session_cleanup_interval later, with a 400 a caller could not tell from a
+  validation error.
+
+  - vta-service: anonymous POST /trust-tasks is charged per step, chosen from
+    the document's `type` (not the client-chosen header): auth/authenticate
+    and auth/refresh each get their own per-IP bucket at the auth quota.
+    `Limiter` gains `AuthAuthenticate` and `AuthRefresh` and becomes
+    #[non_exhaustive] (breaking); 429s carry the new scopes
+    `auth-authenticate` and `auth-refresh`.
+  - vti-common: the per-DID cap counts only unexpired challenges
+    (VTI-SES-003/005) and, at the cap, evicts the oldest outstanding challenge
+    instead of refusing — the refusal only ever reached enrolled subjects, so
+    it disclosed enrolment (VTI-SES-007). Listing, evicting and storing are
+    serialized per DID. Pending challenges are indexed per DID instead of
+    scanning every session. New `SessionStore::pending_challenges` (default
+    `None`: a store that does not implement it keeps the count-and-refuse
+    behaviour).
+  - vta-sdk: auth_light retries a rate-limited authenticate with the challenge
+    it already holds, until that challenge expires (at most 10 minutes), with
+    jitter. Only the VTA's or VTC's own 429 is retried.
+
+
+
 ## [0.44.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.43.0...vti-common-v0.44.0) — 2026-10-13
 
 
