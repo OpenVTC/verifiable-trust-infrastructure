@@ -455,6 +455,22 @@ impl KeyspaceHandle {
         }
     }
 
+    /// The local database's journal sequence number — one per journal
+    /// record, shared by every keyspace of the database — or `None` on the
+    /// vsock store.
+    ///
+    /// For tests: whether a multi-key write is one journal record (all or none
+    /// after a crash) or several is otherwise invisible until a crash lands
+    /// between them.
+    #[doc(hidden)]
+    pub fn journal_seqno(&self) -> Option<u64> {
+        match self {
+            KeyspaceHandle::Local(h) => Some(h.db.seqno()),
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(_) => None,
+        }
+    }
+
     /// Apply `batch`'s writes only if every one of its preconditions holds,
     /// as one operation.
     ///
