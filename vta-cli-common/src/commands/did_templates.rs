@@ -66,13 +66,8 @@ pub fn cmd_validate(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// Role aliases map onto the canonical *shape* names, where `http` = a
 /// WebVHHosting endpoint and `didcomm` = a DIDCommMessaging endpoint: a control
-/// node serves both, a daemon publishes DID logs only, and a watcher is
+/// node serves both, a daemon publishes DID logs only, and a witness/watcher is
 /// reached over DIDComm only.
-///
-/// `witness` is not an alias: it is the canonical name of the built-in
-/// `witness` template (a `vti-witness` identity), and a canonical name always
-/// resolves to itself. A did:webvh log witness node takes `did-host-didcomm`
-/// by name (or the `watcher` / `server` aliases).
 ///
 /// The legacy `webvh-*` names were retired after their one-release deprecation
 /// window, matching the builtin loader — see
@@ -83,7 +78,7 @@ fn resolve_builtin_kind(kind: &str) -> Option<&'static str> {
         "agent" => "ai-agent",
         "did-hosting" | "hosting" | "daemon" => "did-host-http",
         "control" => "did-host-http-didcomm",
-        "watcher" | "server" => "did-host-didcomm",
+        "witness" | "watcher" | "server" => "did-host-didcomm",
         other => *BUILTIN_NAMES.iter().find(|n| **n == other)?,
     };
     Some(name)
@@ -558,6 +553,7 @@ mod tests {
             "hosting",
             "daemon",
             "control",
+            "witness",
             "watcher",
             "server",
         ] {
@@ -575,15 +571,6 @@ mod tests {
     }
 
     /// Every canonical name is accepted verbatim, not just via an alias.
-    #[test]
-    fn witness_names_the_witness_template_not_a_did_hosting_shape() {
-        // `witness` was an alias for `did-host-didcomm` until the `witness`
-        // built-in (a `vti-witness` identity) took the name; a canonical name
-        // always resolves to itself.
-        assert_eq!(resolve_builtin_kind("witness"), Some("witness"));
-        assert_eq!(resolve_builtin_kind("watcher"), Some("did-host-didcomm"));
-    }
-
     #[test]
     fn canonical_builtin_names_pass_through() {
         for name in BUILTIN_NAMES {

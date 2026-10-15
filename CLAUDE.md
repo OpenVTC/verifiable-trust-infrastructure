@@ -102,7 +102,7 @@ Layer 4 (the spine + consumers):
 | `pnm-cli` | Personal Network Manager (single-VTA operator) |
 | `cnm-cli` | Community Network Manager (multi-community operator) |
 | `vta-mcp` | Model Context Protocol server bridging a VTA's agent capabilities (signing oracle, vault, device, discovery) to MCP tools over stdio, so any MCP host (Claude Desktop, agent frameworks) can use a VTA with no custom code. Carries a **local per-operation guard** (`guard.rs`) because an MCP host approves a *tool*, not a call — once `vta_call` is approved every Trust Task URI rides that approval — plus stderr/JSONL call logging (`observability.rs`). Docs: `docs/02-vta/vta-mcp.md`. `publish = false` |
-| `vti-witness` | **Witness host service** (`publish = false`): up to 10 witness identities, each a `did:webvh` the operator's VTA mints from the `witness` template, each on its own mediator session (TSP + DIDComm, one socket per DID). P1 serves `trust-task-discovery` only; `witness/session*` (VWC issuance) is P2. Design: `docs/05-design-notes/witness-host-service.md`; docs: `docs/06-witness/README.md` |
+| `vti-witness` | **Witness host service** (`publish = false`): up to 10 witness identities, each a `did:webvh` the operator's VTA mints from the `dtg-witness` template, each on its own mediator session (TSP + DIDComm, one socket per DID). P1 serves `trust-task-discovery` only; `witness/session*` (VWC issuance) is P2. Design: `docs/05-design-notes/witness-host-service.md`; docs: `docs/06-witness/README.md` |
 | `didcomm-test` | Standalone DIDComm connectivity harness (test tool, `publish = false`) |
 
 Hot spots to know about (file size in source lines, sorted descending):
@@ -1126,14 +1126,12 @@ new flow, update both this section and the relevant `docs/*.md`.
   the SDK, always available): `ai-agent`, `ai-agent-peer`,
   `did-host-didcomm`, `did-host-http`, `did-host-http-didcomm`,
   `did-host-http-tsp`, `did-host-tsp`, `didcomm-mediator`,
-  `push-gateway`, `swiyu-verifier`, `vta-admin`, `vtc-host`, `witness`. The `did-host-*` names encode
+  `dtg-witness`, `push-gateway`, `swiyu-verifier`, `vta-admin`, `vtc-host`. The `did-host-*` names encode
   the DID-document **shape** (`http` = WebVHHosting, `didcomm` =
   DIDCommMessaging, `tsp` = TSPTransport), so a deployment role maps onto
   a shape: control = `did-host-http-didcomm`, hosting daemon =
-  `did-host-http`, watcher = `did-host-didcomm`. `pnm
-  did-templates init` accepts those role words as aliases; `witness` is no
-  longer one — it names the built-in `witness` template (a `vti-witness`
-  identity), so a did:webvh log witness takes `did-host-didcomm` by name. The earlier
+  `did-host-http`, witness/watcher = `did-host-didcomm`. `pnm
+  did-templates init` accepts those role words as aliases. The earlier
   `webvh-*` **and** `did-hosting-*` template names have been removed —
   a stale name now fails instead of resolving. (`did-hosting-*` remains
   valid as an *integration kind* and as a service/binary name; it is only
@@ -1150,7 +1148,7 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Setup**: two-phase and VTA-provisioned like the VTC —
   `vti-witness setup --setup-key-out <path>` (`run_phase1_init`) → `pnm` grant →
   `vti-witness setup --from <toml>`, one `provision-integration` per identity
-  with the built-in `witness` template (Ed25519 auth + assertion, X25519 KA,
+  with the built-in `dtg-witness` template (Ed25519 auth + assertion, X25519 KA,
   `#tsp` + `#didcomm` at the mediator, **no `VTARest`**). No admin-DID
   hand-off: a witness holds no VTA credential. Keys go to the `[secrets]` store
   (`vti_secrets::create_seed_store`), never `config.toml`.
@@ -1168,7 +1166,8 @@ new flow, update both this section and the relevant `docs/*.md`.
   `dispatch::SERVED` only when P2 serves them. Shared-mediator / shared-domain
   correlators (§3.6) are **warnings**, never refusals.
 - **Code**: `vti-witness/src/{config,dispatch,messaging,setup,run,correlation,keys}.rs`,
-  `vta-sdk/templates/witness.json`, `ProvisionAsk::witness`.
+  `vta-sdk/templates/dtg-witness.json`, `ProvisionAsk::dtg_witness`. (Not the
+  did:webvh log witness: `init witness` stays an alias for `did-host-didcomm`.)
 - **Docs**: `docs/06-witness/README.md`,
   `docs/05-design-notes/witness-host-service.md`.
 

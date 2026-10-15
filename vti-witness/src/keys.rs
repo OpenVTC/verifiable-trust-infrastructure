@@ -113,7 +113,7 @@ impl WitnessKeyring {
 /// bundle's key material: the primary signing key and the key-agreement key,
 /// each under the verification-method id the DID document publishes.
 ///
-/// Extra signing keys are carried too, though the `witness` template declares
+/// Extra signing keys are carried too, though the `dtg-witness` template declares
 /// none — dropping a key the VTA minted and published would be a silent
 /// divergence from the document.
 pub fn bundle_from_material(material: &DidKeyMaterialV2) -> DidSecretsBundle {

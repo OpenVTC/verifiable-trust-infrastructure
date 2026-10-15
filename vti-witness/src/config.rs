@@ -64,7 +64,7 @@ pub struct WitnessIdentity {
     /// and nowhere on the wire.
     pub name: String,
     /// The identity's own `did:webvh`, minted by the operator's VTA from the
-    /// `witness` template.
+    /// `dtg-witness` template.
     pub did: String,
     /// The mediator this identity's DID document names for `#tsp` and
     /// `#didcomm`, and the one its socket connects to.

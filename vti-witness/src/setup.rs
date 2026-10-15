@@ -8,7 +8,7 @@
 //! 2. *(out of band)* the operator grants that DID admin of the witness
 //!    context. The witness never holds a VTA admin credential of its own.
 //! 3. `vti-witness setup --from <toml>` provisions each witness identity from
-//!    the operator's VTA with the `witness` template, opens each sealed
+//!    the operator's VTA with the `dtg-witness` template, opens each sealed
 //!    bundle, keeps the keys in the `[secrets]` store and writes
 //!    `config.toml` ([`run_from_file`]).
 //!
@@ -215,10 +215,10 @@ impl SetupInputs {
     }
 }
 
-/// The provisioning ask for one identity: the `witness` template at its
+/// The provisioning ask for one identity: the `dtg-witness` template at its
 /// mediator, where its log is published, and no admin hand-off.
 pub fn witness_ask(context: &str, witness: &SetupWitness) -> ProvisionAsk {
-    let mut ask = ProvisionAsk::witness(context, &witness.mediator_did)
+    let mut ask = ProvisionAsk::dtg_witness(context, &witness.mediator_did)
         .with_label(format!("vti-witness {}", witness.name));
     let vars: &mut BTreeMap<String, Value> = &mut ask.integration_template_vars;
     for (key, value) in [
@@ -423,7 +423,7 @@ async fn provision(
     match reply {
         VtaReply::Full(result) => Ok(*result),
         VtaReply::AdminOnly(_) => Err(anyhow::anyhow!(
-            "the VTA answered with an admin credential only; the witness template needs a full \
+            "the VTA answered with an admin credential only; the dtg-witness template needs a full \
              provisioning reply"
         )),
     }
@@ -582,13 +582,13 @@ webvh_server = "prod"
         assert!(err.to_string().contains("webvh_server"), "{err}");
     }
 
-    /// Each identity is the `witness` template at its own mediator, its log
+    /// Each identity is the `dtg-witness` template at its own mediator, its log
     /// target passed through, and no admin hand-off.
     #[test]
-    fn the_ask_is_the_witness_template_with_no_admin_hand_off() {
+    fn the_ask_is_the_dtg_witness_template_with_no_admin_hand_off() {
         let inputs = SetupInputs::from_toml_str(&setup_toml(ONE)).unwrap();
         let ask = witness_ask(&inputs.context, &inputs.witnesses[0]);
-        assert_eq!(ask.integration_template.as_deref(), Some("witness"));
+        assert_eq!(ask.integration_template.as_deref(), Some("dtg-witness"));
         assert_eq!(ask.context, "witness");
         assert_eq!(
             ask.integration_template_vars["MEDIATOR_DID"],

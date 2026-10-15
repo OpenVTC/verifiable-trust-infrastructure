@@ -55,10 +55,12 @@ anyone it witnesses.
 - **Its identity is provisioned, not self-minted.** It is set up like every other
   integration, with the two-phase `--setup-key-out` flow and a VTA grant (as for
   the VTC, mediator and did-hosting). Its DID and keys come from **its operator's**
-  VTA through `provision-integration` and a new built-in **`witness`** DID
+  VTA through `provision-integration` and a new built-in **`dtg-witness`** DID
   template. That template produces `did:webvh` with an Ed25519
   `authentication` + `assertionMethod` key, an X25519 `keyAgreement` key, and
   `#tsp` / `#didcomm` services pointing at a mediator DID. It has no `VTARest`.
+  It is named `dtg-witness`, not `witness`: `pnm did-templates init witness`
+  is an existing alias for the did:webvh log witness's shape, `did-host-didcomm`.
   The operator's VTA is the key custodian. It is not a party to anything
   witnessed, and the witness never acts as it.
 - **Up to 10 witness identities per service.** Each has its own DID, its own
@@ -152,7 +154,7 @@ They are **parties**, never witnesses:
   surface.
 - **The VTC** already verifies VWCs. It gains a configured list of witness DIDs
   it trusts, for its criteria to reference.
-- **The `witness` DID template** ships with the other built-ins, so any operator
+- **The `dtg-witness` DID template** ships with the other built-ins, so any operator
   can provision a witness from their VTA.
 
 ### 3.6 The correlators that remain (VTI-CMP-062)
@@ -167,7 +169,7 @@ They are **parties**, never witnesses:
 
 ## 4. Phasing
 
-1. **P1 — the service skeleton.** The `witness` template; `vti-witness` setup
+1. **P1 — the service skeleton.** The `dtg-witness` template; `vti-witness` setup
    (two-phase, VTA-provisioned, up to 10 identities); a mediator session per
    identity; the three-task dispatcher with discovery; the shared-mediator and
    shared-domain warnings.

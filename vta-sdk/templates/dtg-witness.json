@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "dtg-witness",
+  "kind": "dtg-witness",
+  "description": "A DTG witness identity for vti-witness, the host service that witnesses exchanges between other parties and issues Verifiable Witness Credentials (witness/session/0.1, witness/session/submit/0.1). The witness is public by design: its DID is the session's recipient and the VWC's issuer, so it is its own did:webvh and never its operator VTA's (VTI-KEY-007). Declares an Ed25519 key (#key-0) that is both authentication (it answers Trust Tasks) and assertionMethod (it signs the VWCs it issues), and an X25519 key-agreement key (#key-1). Reachable over TSP and DIDComm through the mediator named by MEDIATOR_DID: both services name the same mediator, TSP first (canonical order), and the transport URL lives in that mediator's own document. Deliberately no VTARest and no other HTTP endpoint: v1 of the witness has no HTTPS door, because one would need a hostname of its own to avoid a naming correlator. URL or WEBVH_SERVER is still required at provision time so the VTA knows where to publish the did:webvh log itself, but neither appears in the rendered document. Host that log apart from the operator's own domains, and pick a mediator other than the operator VTA's: both are correlators `vti-witness setup` warns about.",
+  "methods": ["webvh"],
+  "requiredVars": ["MEDIATOR_DID"],
+  "optionalVars": {
+    "ACCEPT": ["didcomm/v2"],
+    "URL": null,
+    "WEBVH_SERVER": null
+  },
+  "defaults": {
+    "preRotationCount": 2,
+    "portable": true
+  },
+  "document": {
+    "@context": [
+      "https://www.w3.org/ns/did/v1",
+      "https://www.w3.org/ns/cid/v1"
+    ],
+    "id": "{DID}",
+    "verificationMethod": [
+      {
+        "id": "{DID}#key-0",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{SIGNING_KEY_MB}"
+      },
+      {
+        "id": "{DID}#key-1",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{KA_KEY_MB}"
+      }
+    ],
+    "authentication": ["{DID}#key-0"],
+    "assertionMethod": ["{DID}#key-0"],
+    "keyAgreement": ["{DID}#key-1"],
+    "service": [
+      {
+        "id": "{DID}#tsp",
+        "type": "TSPTransport",
+        "serviceEndpoint": "{MEDIATOR_DID}"
+      },
+      {
+        "id": "{DID}#didcomm",
+        "type": "DIDCommMessaging",
+        "serviceEndpoint": [
+          { "accept": "{ACCEPT}", "uri": "{MEDIATOR_DID}" }
+        ]
+      }
+    ]
+  }
+}

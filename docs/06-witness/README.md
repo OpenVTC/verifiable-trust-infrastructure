@@ -24,9 +24,11 @@ never be a node's own (VTI-KEY-007). The reasoning is in the design note,
   deployment can run a separate witness per community or per purpose. An
   eleventh is a configuration error.
 - **Provisioned, not self-minted.** Every identity is minted by the
-  **operator's** VTA from the built-in [`witness` DID template](../02-vta/did-templates.md),
+  **operator's** VTA from the built-in [`dtg-witness` DID template](../02-vta/did-templates.md),
   through the same two-phase, VTA-granted setup as the VTC, the mediator and
-  did-hosting. The VTA is the key custodian. It is never a party to anything
+  did-hosting. (`dtg-witness`, not `witness`: `pnm did-templates init witness`
+  stays an alias for the did:webvh log witness's shape, `did-host-didcomm`.)
+  The VTA is the key custodian. It is never a party to anything
   witnessed, and the witness never acts as it.
 - **TSP, then DIDComm. No HTTPS.** Each identity's DID document advertises
   `TSPTransport` and `DIDCommMessaging`, both naming its mediator, and nothing
@@ -84,7 +86,7 @@ enabled      = false            # default
 vti-witness setup --from witness-setup.toml
 ```
 
-For each `[[witness]]`, setup asks the VTA to render the `witness` template at
+For each `[[witness]]`, setup asks the VTA to render the `dtg-witness` template at
 that mediator, opens the sealed bundle, and keeps the identity's keys in the
 `[secrets]` store — never in `config.toml`. It then writes `config.toml`
 (owner-only) naming each identity, and, for a serverless identity, the
@@ -224,7 +226,7 @@ wanting stronger independence runs its witness under a separate operator.
 
 ## Roadmap
 
-1. **P1 — the skeleton** (this release): the `witness` template, setup, up to
+1. **P1 — the skeleton** (this release): the `dtg-witness` template, setup, up to
    ten identities, one mediator session each, discovery, the correlator warnings.
 2. **P2 — witnessing**: independence (§3.2), community eligibility (§3.3), the
    session and submit protocol and VWC issuance (§3.4), session storage (excluded

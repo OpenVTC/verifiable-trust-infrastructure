@@ -2301,14 +2301,17 @@ fn an_undeclared_or_shadowed_jwk_placeholder_is_refused() {
     assert!(err.to_string().contains("optionalVars"), "{err}");
 }
 
-// ─── witness built-in ────────────────────────────────────────────────
+// ─── dtg-witness built-in ──────────────────────────────────────────────
 //
-// A `vti-witness` identity (docs/05-design-notes/witness-host-service.md
-// §3.1): one Ed25519 key that both authenticates and asserts (it answers
+// A `vti-witness` identity — the witness of `witness/session/0.1`, named
+// `dtg-witness` so it cannot be confused with the did:webvh log witness
+// (`did-host-didcomm`, which `did-templates init witness` still resolves to).
+// Design: docs/05-design-notes/witness-host-service.md §3.1. One Ed25519 key that both authenticates and asserts (it answers
 // Trust Tasks and signs the VWCs it issues), one X25519 key-agreement key,
 // and TSP + DIDComm through a mediator — and no HTTP endpoint of any kind.
 
-const WITNESS_RENDERED_FIXTURE: &str = include_str!("../../tests/fixtures/witness.rendered.json");
+const WITNESS_RENDERED_FIXTURE: &str =
+    include_str!("../../tests/fixtures/dtg-witness.rendered.json");
 const WITNESS_DID: &str = "did:webvh:QmWIT:witness.example.net:w1";
 const WITNESS_MEDIATOR: &str = "did:webvh:QmMED:mediator.example.org:mediator";
 
@@ -2322,24 +2325,27 @@ fn witness_fixture_vars() -> TemplateVars {
 }
 
 #[test]
-fn witness_builtin_loads_and_validates() {
-    let tpl = load_embedded("witness").expect("load_embedded");
-    assert_eq!(tpl.name, "witness");
-    assert_eq!(tpl.kind, "witness", "the integration kind is `witness`");
+fn dtg_witness_builtin_loads_and_validates() {
+    let tpl = load_embedded("dtg-witness").expect("load_embedded");
+    assert_eq!(tpl.name, "dtg-witness");
+    assert_eq!(
+        tpl.kind, "dtg-witness",
+        "the integration kind is `dtg-witness`"
+    );
     assert_eq!(tpl.methods, vec!["webvh"]);
     assert_eq!(tpl.required_vars, vec!["MEDIATOR_DID"]);
     tpl.validate().expect("validate after load");
 }
 
 #[test]
-fn witness_builtin_renders_exact_document_shape() {
-    let tpl = load_embedded("witness").unwrap();
+fn dtg_witness_builtin_renders_exact_document_shape() {
+    let tpl = load_embedded("dtg-witness").unwrap();
     let out = tpl.render(&witness_fixture_vars()).unwrap();
     let expected: Value =
         serde_json::from_str(WITNESS_RENDERED_FIXTURE).expect("fixture parses as JSON");
     assert_eq!(
         out, expected,
-        "rendered document diverged from fixture — if intentional, update tests/fixtures/witness.rendered.json"
+        "rendered document diverged from fixture — if intentional, update tests/fixtures/dtg-witness.rendered.json"
     );
 }
 
@@ -2349,8 +2355,8 @@ fn witness_builtin_renders_exact_document_shape() {
 /// item 2), so a `VTARest` entry would advertise a transport this service
 /// cannot serve.
 #[test]
-fn witness_builtin_advertises_tsp_and_didcomm_at_the_mediator_and_no_rest() {
-    let doc = load_embedded("witness")
+fn dtg_witness_builtin_advertises_tsp_and_didcomm_at_the_mediator_and_no_rest() {
+    let doc = load_embedded("dtg-witness")
         .unwrap()
         .render(&witness_fixture_vars())
         .unwrap();
@@ -2390,8 +2396,8 @@ fn witness_builtin_advertises_tsp_and_didcomm_at_the_mediator_and_no_rest() {
 /// both `authentication` and `assertionMethod`; `#key-1` (X25519) is key
 /// agreement only and never signs.
 #[test]
-fn witness_builtin_puts_the_keys_in_the_right_relationships() {
-    let doc = load_embedded("witness")
+fn dtg_witness_builtin_puts_the_keys_in_the_right_relationships() {
+    let doc = load_embedded("dtg-witness")
         .unwrap()
         .render(&witness_fixture_vars())
         .unwrap();
@@ -2410,15 +2416,15 @@ fn witness_builtin_puts_the_keys_in_the_right_relationships() {
     );
 
     // The historical pair, nothing more: Ed25519 signs, X25519 agrees.
-    let slots = load_embedded("witness").unwrap().key_slots();
+    let slots = load_embedded("dtg-witness").unwrap().key_slots();
     assert_eq!(slots.len(), 2, "{slots:?}");
     assert_eq!(slots[SLOT_SIGNING].algorithms, vec!["ed25519".to_string()]);
     assert_eq!(slots[SLOT_KA].algorithms, vec!["x25519".to_string()]);
 }
 
 #[test]
-fn witness_builtin_missing_mediator_did_errors() {
-    let tpl = load_embedded("witness").unwrap();
+fn dtg_witness_builtin_missing_mediator_did_errors() {
+    let tpl = load_embedded("dtg-witness").unwrap();
     let mut vars = TemplateVars::new();
     vars.insert_string("DID", WITNESS_DID);
     vars.insert_string("SIGNING_KEY_MB", "z6MkWITsigning");

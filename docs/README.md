@@ -311,7 +311,7 @@ Services a node depends on but does not embody, run apart from any VTA or VTC.
 
 - **[The witness host service](06-witness/README.md)** — `vti-witness`: up to
   ten witness identities, provisioned from the operator's VTA with the
-  `witness` template and served over TSP and DIDComm; setup, configuration,
+  `dtg-witness` template and served over TSP and DIDComm; setup, configuration,
   the correlators it warns about, and what a witness sees.
 
 ## Conventions

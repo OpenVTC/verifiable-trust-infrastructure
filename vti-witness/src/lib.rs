@@ -4,7 +4,7 @@
 //! A witness attests that an exchange between *other* parties happened, so it
 //! runs apart from any node it might witness: its own binary, its own
 //! identities, possibly its own operator. Each of up to ten witness identities
-//! is a `did:webvh` minted by the operator's VTA from the `witness` template,
+//! is a `did:webvh` minted by the operator's VTA from the `dtg-witness` template,
 //! and each holds one mediator socket carrying TSP and DIDComm.
 //!
 //! This is phase P1, the skeleton: setup, configuration, one supervised
