@@ -122,8 +122,10 @@ struct StorageState {
 /// the blocking pool (see [`critical_section`]). A plain mutex rather than
 /// fjall's transactional database: the critical sections are a few fjall
 /// calls with no await inside, and switching the database type would touch
-/// every operation for no gain. Plain get/insert/delete do not take it,
-/// matching the enclave's local store.
+/// every operation for no gain. Plain get/insert/delete do not take it: the
+/// enclave is the only writer, and it holds its own lock on a key across
+/// every operation that touches it, plain or atomic, so a plain write to a
+/// key never arrives while an atomic operation on that key is in flight.
 #[derive(Clone)]
 struct KeyspaceEntry {
     ks: Keyspace,

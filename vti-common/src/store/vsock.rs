@@ -373,12 +373,8 @@ impl VsockKeyspaceHandle {
         let key = key.into();
         let bytes = serde_json::to_vec(value)?;
         let bytes = self.maybe_encrypt(&key, bytes)?;
-        let mut payload = vec![OP_INSERT];
-        encode_keyspace(&mut payload, &self.keyspace);
-        encode_bytes(&mut payload, &key);
-        encode_bytes(&mut payload, &bytes);
-        let resp = self.send(&payload).await?;
-        decode_ok(&resp)
+        let _guard = self.locks.lock(&self.keyspace, &[&key]).await;
+        self.put_stored(&key, &bytes).await
     }
 
     pub async fn get<V: DeserializeOwned + Send + 'static>(
@@ -399,13 +395,13 @@ impl VsockKeyspaceHandle {
         }
     }
 
+    /// Delete `key`. Takes the key's lock, as [`Self::insert`] does, so a
+    /// plain write is ordered against every multi-step operation on that key
+    /// — it cannot land between a batch's precondition check and its commit.
     pub async fn remove(&self, key: impl Into<Vec<u8>>) -> Result<(), AppError> {
         let key = key.into();
-        let mut payload = vec![OP_DELETE];
-        encode_keyspace(&mut payload, &self.keyspace);
-        encode_bytes(&mut payload, &key);
-        let resp = self.send(&payload).await?;
-        decode_ok(&resp)
+        let _guard = self.locks.lock(&self.keyspace, &[&key]).await;
+        self.delete_stored(&key).await
     }
 
     pub async fn insert_raw(
@@ -415,12 +411,8 @@ impl VsockKeyspaceHandle {
     ) -> Result<(), AppError> {
         let key = key.into();
         let value = self.maybe_encrypt(&key, value.into())?;
-        let mut payload = vec![OP_INSERT];
-        encode_keyspace(&mut payload, &self.keyspace);
-        encode_bytes(&mut payload, &key);
-        encode_bytes(&mut payload, &value);
-        let resp = self.send(&payload).await?;
-        decode_ok(&resp)
+        let _guard = self.locks.lock(&self.keyspace, &[&key]).await;
+        self.put_stored(&key, &value).await
     }
 
     pub async fn get_raw(&self, key: impl Into<Vec<u8>>) -> Result<Option<Vec<u8>>, AppError> {
@@ -574,7 +566,7 @@ impl VsockKeyspaceHandle {
         }
         let val = self.get_raw(key.clone()).await?;
         if val.is_some() {
-            self.remove(key).await?;
+            self.delete_stored(&key).await?;
         }
         Ok(val)
     }
@@ -617,7 +609,7 @@ impl VsockKeyspaceHandle {
             return Ok(false);
         }
         self.put_stored(new_key, stored).await?;
-        self.remove(old_key.to_vec()).await?;
+        self.delete_stored(old_key).await?;
         Ok(true)
     }
 
@@ -785,7 +777,7 @@ impl VsockKeyspaceHandle {
         for write in &writes {
             match write {
                 Write::Put(k, v) => self.put_stored(k, v).await?,
-                Write::Delete(k) => self.remove(k.clone()).await?,
+                Write::Delete(k) => self.delete_stored(k).await?,
             }
         }
         Ok(BatchOutcome::Applied)
@@ -898,7 +890,17 @@ impl VsockKeyspaceHandle {
         Ok(Some(resp))
     }
 
-    /// Write already-encrypted bytes at `key`.
+    /// Delete `key`. The caller holds the key's lock.
+    async fn delete_stored(&self, key: &[u8]) -> Result<(), AppError> {
+        let mut payload = vec![OP_DELETE];
+        encode_keyspace(&mut payload, &self.keyspace);
+        encode_bytes(&mut payload, key);
+        let resp = self.send(&payload).await?;
+        decode_ok(&resp)
+    }
+
+    /// Write already-encrypted bytes at `key`. The caller holds the key's
+    /// lock.
     async fn put_stored(&self, key: &[u8], stored: &[u8]) -> Result<(), AppError> {
         let mut payload = vec![OP_INSERT];
         encode_keyspace(&mut payload, &self.keyspace);
@@ -2142,6 +2144,27 @@ mod atomicity_tests {
                 Some("secret-v2")
             );
         }
+    }
+
+    /// A plain write takes its key's lock, so it waits for a multi-step
+    /// operation on that key to finish instead of landing inside it.
+    #[tokio::test]
+    async fn plain_writes_wait_for_the_keys_lock() {
+        let h = FakeParent::new(true).handle().await;
+        let held = h.locks.lock(&h.keyspace, &[b"k".as_slice()]).await;
+
+        let writer = h.clone();
+        let insert =
+            tokio::spawn(async move { writer.insert_raw(b"k".to_vec(), b"v".to_vec()).await });
+        let remover = h.clone();
+        let remove = tokio::spawn(async move { remover.remove(b"k".to_vec()).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!insert.is_finished(), "insert ran under a held key lock");
+        assert!(!remove.is_finished(), "remove ran under a held key lock");
+
+        drop(held);
+        insert.await.unwrap().unwrap();
+        remove.await.unwrap().unwrap();
     }
 
     /// Round trips each multi-step operation costs, older proxy vs current.

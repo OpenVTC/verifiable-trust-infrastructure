@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::config::{FjallTuning, StoreConfig};
 use crate::error::AppError;
-use fjall::{KeyspaceCreateOptions, PersistMode};
+use fjall::{KeyspaceCreateOptions, PersistMode, Readable};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tracing::info;
@@ -653,10 +653,13 @@ pub enum MoveOutcome {
 /// threads interleave freely. The multi-op methods that promise
 /// atomicity ([`LocalKeyspaceHandle::take_raw`],
 /// [`LocalKeyspaceHandle::swap`],
-/// [`LocalKeyspaceHandle::insert_if_absent`]) therefore serialise
-/// through this lock. It is keyed by keyspace *name* and owned by the
-/// store, so handles obtained from separate `keyspace(name)` calls
-/// still exclude each other.
+/// [`LocalKeyspaceHandle::insert_if_absent`],
+/// [`LocalKeyspaceHandle::apply_batch`]) therefore serialise through this
+/// lock. Plain inserts and removes take it too, so none can land between a
+/// multi-step operation's check and its write (see
+/// [`LocalKeyspaceHandle::locked_write`]). It is keyed by keyspace *name*
+/// and owned by the store, so handles obtained from separate
+/// `keyspace(name)` calls still exclude each other.
 type WriteLocks =
     std::sync::Arc<std::sync::Mutex<HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>>;
 
@@ -704,6 +707,21 @@ pub struct LocalKeyspaceHandle {
 fn lock_writes(lock: &std::sync::Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
     lock.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A consistent point-in-time view for a read that does not hold the
+/// keyspace write lock.
+///
+/// fjall's plain reads (`Keyspace::get`, `prefix`, `range`) read at the
+/// newest sequence number, and a write batch is applied to the memtables one
+/// item at a time before its sequence number is published. A lock-free plain
+/// read can therefore see part of a batch: both rows of a move, an index
+/// entry without its record. A snapshot reads at the last *published*
+/// sequence number, so it sees every batch whole or not at all, and every
+/// write that has returned. Reads under the write lock need none of this: no
+/// batch on that keyspace can be in flight while it is held.
+fn read_snapshot(db: &fjall::Database) -> fjall::Snapshot {
+    db.snapshot()
 }
 
 /// Write `value` at `new` and delete `old` as one fjall write batch.
@@ -848,13 +866,8 @@ impl LocalKeyspaceHandle {
         let key = key.into();
         let bytes = serde_json::to_vec(value)?;
         let bytes = self.maybe_encrypt(&key, bytes)?;
-        let ks = self.keyspace.clone();
-        let write = self.writes.begin().known_on_drop();
-        blocking_with_timeout(move || {
-            let _write = write;
-            Ok(ks.insert(key, bytes)?)
-        })
-        .await
+        self.locked_write(move |ks| Ok(ks.insert(key, bytes)?))
+            .await
     }
 
     pub async fn get<V: DeserializeOwned + Send + 'static>(
@@ -867,7 +880,9 @@ impl LocalKeyspaceHandle {
         let enc_key = self.encryption_key.clone();
         #[cfg(feature = "encryption")]
         let name = self.name.clone();
-        blocking_with_timeout(move || match ks.get(&key)? {
+        let db = self.db.clone();
+        // A snapshot read, never a half-applied batch — see `read_snapshot`.
+        blocking_with_timeout(move || match read_snapshot(&db).get(&ks, &key)? {
             Some(bytes) => {
                 #[cfg(feature = "encryption")]
                 let bytes = {
@@ -885,11 +900,28 @@ impl LocalKeyspaceHandle {
 
     pub async fn remove(&self, key: impl Into<Vec<u8>>) -> Result<(), AppError> {
         let key = key.into();
+        self.locked_write(move |ks| Ok(ks.remove(key)?)).await
+    }
+
+    /// A single write under the per-keyspace write lock (see [`WriteLocks`]).
+    ///
+    /// fjall makes the write itself atomic, so the lock is not for the write:
+    /// it orders the write against every multi-step operation on the
+    /// keyspace. Without it a plain insert or remove could land between an
+    /// [`Self::apply_batch`] precondition check and its commit — a sign-out
+    /// slipping in after a `require_unchanged` passed — and the batch would
+    /// commit over a row that no longer matched its precondition.
+    async fn locked_write<F>(&self, f: F) -> Result<(), AppError>
+    where
+        F: FnOnce(&fjall::Keyspace) -> Result<(), AppError> + Send + 'static,
+    {
         let ks = self.keyspace.clone();
+        let lock = self.write_lock.clone();
         let write = self.writes.begin().known_on_drop();
         blocking_with_timeout(move || {
+            let _guard = lock_writes(&lock);
             let _write = write;
-            Ok(ks.remove(key)?)
+            f(&ks)
         })
         .await
     }
@@ -945,13 +977,8 @@ impl LocalKeyspaceHandle {
     ) -> Result<(), AppError> {
         let key = key.into();
         let value = self.maybe_encrypt(&key, value.into())?;
-        let ks = self.keyspace.clone();
-        let write = self.writes.begin().known_on_drop();
-        blocking_with_timeout(move || {
-            let _write = write;
-            Ok(ks.insert(key, value)?)
-        })
-        .await
+        self.locked_write(move |ks| Ok(ks.insert(key, value)?))
+            .await
     }
 
     pub async fn get_raw(&self, key: impl Into<Vec<u8>>) -> Result<Option<Vec<u8>>, AppError> {
@@ -961,7 +988,9 @@ impl LocalKeyspaceHandle {
         let enc_key = self.encryption_key.clone();
         #[cfg(feature = "encryption")]
         let name = self.name.clone();
-        blocking_with_timeout(move || match ks.get(&key)? {
+        let db = self.db.clone();
+        // A snapshot read, never a half-applied batch — see `read_snapshot`.
+        blocking_with_timeout(move || match read_snapshot(&db).get(&ks, &key)? {
             Some(bytes) => {
                 #[cfg(feature = "encryption")]
                 let bytes = {
@@ -983,13 +1012,14 @@ impl LocalKeyspaceHandle {
     ) -> Result<Vec<RawKvPair>, AppError> {
         let prefix = prefix.into();
         let ks = self.keyspace.clone();
+        let db = self.db.clone();
         #[cfg(feature = "encryption")]
         let enc_key = self.encryption_key.clone();
         #[cfg(feature = "encryption")]
         let name = self.name.clone();
         blocking_with_timeout(move || {
             let mut results = Vec::new();
-            for guard in ks.prefix(&prefix) {
+            for guard in read_snapshot(&db).prefix(&ks, &prefix) {
                 let (key, value) = guard.into_inner()?;
                 #[cfg(feature = "encryption")]
                 let value = {
@@ -1013,13 +1043,14 @@ impl LocalKeyspaceHandle {
     ) -> Result<Vec<RawKvPair>, AppError> {
         let from = from.into();
         let ks = self.keyspace.clone();
+        let db = self.db.clone();
         #[cfg(feature = "encryption")]
         let enc_key = self.encryption_key.clone();
         #[cfg(feature = "encryption")]
         let name = self.name.clone();
         blocking_with_timeout(move || {
             let mut results = Vec::new();
-            for guard in ks.range(from..) {
+            for guard in read_snapshot(&db).range(&ks, from..) {
                 let (key, value) = guard.into_inner()?;
                 #[cfg(feature = "encryption")]
                 let value = {
@@ -1038,9 +1069,10 @@ impl LocalKeyspaceHandle {
     pub async fn prefix_keys(&self, prefix: impl Into<Vec<u8>>) -> Result<Vec<Vec<u8>>, AppError> {
         let prefix = prefix.into();
         let ks = self.keyspace.clone();
+        let db = self.db.clone();
         blocking_with_timeout(move || {
             let mut results = Vec::new();
-            for guard in ks.prefix(&prefix) {
+            for guard in read_snapshot(&db).prefix(&ks, &prefix) {
                 let (key, _value) = guard.into_inner()?;
                 results.push(key.to_vec());
             }
@@ -1599,6 +1631,110 @@ mod tests {
             ks.get::<String>("a").await.unwrap().as_deref(),
             Some("secret-2")
         );
+    }
+
+    /// A plain write waits for the keyspace write lock, so it cannot land
+    /// inside a multi-step operation holding it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plain_writes_wait_for_the_keyspace_write_lock() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("test").unwrap();
+        let lock = match &ks {
+            KeyspaceHandle::Local(h) => h.write_lock.clone(),
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(_) => unreachable!("local store"),
+        };
+        // Held on its own thread (a std guard must not cross an await) until
+        // `release` is sent.
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _guard = lock_writes(&lock);
+            held_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        held_rx.recv().unwrap();
+
+        let writer = ks.clone();
+        let insert = tokio::spawn(async move { writer.insert_raw("k", "v").await });
+        let remover = ks.clone();
+        let remove = tokio::spawn(async move { remover.remove("other").await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!insert.is_finished(), "insert ran under a held write lock");
+        assert!(!remove.is_finished(), "remove ran under a held write lock");
+
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        insert.await.unwrap().unwrap();
+        remove.await.unwrap().unwrap();
+        assert!(ks.get_raw("k").await.unwrap().is_some());
+    }
+
+    /// A conditional rewrite racing a plain remove of the same row: in every
+    /// serial order the row ends up gone (removed after the rewrite, or the
+    /// rewrite refused because the row it required had been removed). It can
+    /// only survive if the remove landed between the rewrite's check and its
+    /// commit — a signed-out session written back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_plain_remove_never_lands_inside_a_conditional_batch() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("test").unwrap();
+        for i in 0..500 {
+            ks.insert_raw("row", "v1").await.unwrap();
+            let writer = ks.clone();
+            let rewrite = tokio::spawn(async move {
+                let mut b = Batch::new();
+                b.require_unchanged("row", "v1").insert_raw("row", "v2");
+                writer.apply_batch(b).await.unwrap()
+            });
+            let remover = ks.clone();
+            let remove = tokio::spawn(async move { remover.remove("row").await.unwrap() });
+            rewrite.await.unwrap();
+            remove.await.unwrap();
+            assert!(
+                ks.get_raw("row").await.unwrap().is_none(),
+                "iteration {i}: a removed row was written back"
+            );
+        }
+    }
+
+    /// A lock-free read never sees half of a batch. One writer moves a row
+    /// between two keys with batches; a reader scanning both keys in one call
+    /// while it does must always find exactly one of them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_reader_never_sees_a_batch_half_applied() {
+        const MOVES: usize = 2_000;
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("test").unwrap();
+        ks.insert_raw("mv:a", "row").await.unwrap();
+
+        let writer = {
+            let ks = ks.clone();
+            tokio::spawn(async move {
+                for n in 0..MOVES {
+                    let (from, to) = if n % 2 == 0 {
+                        ("mv:a", "mv:b")
+                    } else {
+                        ("mv:b", "mv:a")
+                    };
+                    let mut b = Batch::new();
+                    b.require_present(from).remove(from).insert_raw(to, "row");
+                    assert!(ks.apply_batch(b).await.unwrap().is_applied());
+                }
+            })
+        };
+        let mut reads = 0usize;
+        while !writer.is_finished() {
+            let rows = ks.prefix_iter_raw("mv:").await.unwrap();
+            assert_eq!(
+                rows.len(),
+                1,
+                "read {reads} saw a half-applied move: {rows:?}"
+            );
+            reads += 1;
+        }
+        writer.await.unwrap();
+        assert!(reads > 0, "the reader never overlapped the writer");
     }
 
     #[tokio::test]

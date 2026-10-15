@@ -14,8 +14,9 @@
 //! local fjall call and a keyspace-wide lock would serialise unrelated claims.
 //!
 //! What it guarantees is what the local store guarantees: two multi-step
-//! operations on the same key never interleave. Plain `insert`/`remove` do not
-//! take it, on either store.
+//! operations on the same key never interleave, and a plain `insert`/`remove`
+//! (which takes it too, on both stores) never lands inside one — in
+//! particular not between an `apply_batch` precondition check and its commit.
 //!
 //! These locks are held across awaits on purpose — that is what makes the
 //! steps one operation — which CLAUDE.md's R1.3 otherwise forbids. What R1.3
