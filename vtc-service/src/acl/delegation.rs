@@ -196,14 +196,19 @@ pub async fn repoint(state: &AppState, old: &str, new: &str) -> Result<u32, AppE
     drop(_git);
     for mut review in list(state).await? {
         let moved = review.subject == old;
-        if moved {
-            state.admin_actions_ks.remove(key(old)).await?;
-            review.subject = new.to_string();
-        }
         if review.granter == old {
             review.granter = new.to_string();
         }
-        if moved || review.granter == new {
+        if moved {
+            // The review moves to its subject's new key as one store batch: a
+            // crash between the removal and the insert lost the review.
+            review.subject = new.to_string();
+            let mut batch = vti_common::store::Batch::new();
+            batch
+                .remove(key(old))
+                .insert(key(&review.subject), &review)?;
+            state.admin_actions_ks.apply_batch(batch).await?;
+        } else if review.granter == new {
             state
                 .admin_actions_ks
                 .insert(key(&review.subject), &review)

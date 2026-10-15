@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::extractor::AuthClaims;
 use crate::auth::step_up::StepUpMode;
 use crate::error::AppError;
-use crate::store::KeyspaceHandle;
+use crate::store::{Batch, KeyspaceHandle};
 
 /// Roles that determine endpoint access permissions.
 ///
@@ -1117,7 +1117,12 @@ pub async fn move_acl_entry_if_unchanged(
 /// paths (admin import, initial seed, sweeper) where there's no
 /// concurrent-edit risk.
 pub async fn store_acl_entry(acl: &KeyspaceHandle, entry: &AclEntry) -> Result<(), AppError> {
-    acl.insert(acl_key(&entry.did), entry).await?;
+    // A batch rather than a plain insert, so it is ordered against
+    // `update_acl_entry_versioned`'s conditional write: a plain insert could
+    // land between that write's check and its commit and be overwritten.
+    let mut batch = Batch::new();
+    batch.insert(acl_key(&entry.did), entry)?;
+    acl.apply_batch(batch).await?;
     // Re-seal the TEE integrity manifest so this ACL change is reflected in the
     // sealed snapshot (P0.2a). No-op unless running in a TEE.
     crate::integrity::reseal_if_active().await
@@ -1134,33 +1139,55 @@ pub async fn store_acl_entry(acl: &KeyspaceHandle, entry: &AclEntry) -> Result<(
 /// on a stale write (the caller should re-read, re-apply their
 /// edits to the fresh row, and retry).
 ///
-/// Atomicity: implemented as a read-modify-write inside a
-/// keyspace-level `swap`-style sequence. Single-process fjall
-/// serialises within the closure; cross-replica deployments rely
-/// on the underlying store's `swap` semantics.
+/// Atomicity: the check and the write are one conditional store batch — the
+/// write applies only while the row is still exactly the one whose version was
+/// checked (or still absent, for version 0) — so of concurrent writers that
+/// observed the same version exactly one succeeds and every other gets
+/// `Conflict`. A plain read-check-write let two of them both pass the check,
+/// and the later write silently discarded the earlier one's edits.
 pub async fn update_acl_entry_versioned(
     acl: &KeyspaceHandle,
     mut new_entry: AclEntry,
     expected_version: u32,
 ) -> Result<u32, AppError> {
     let key = acl_key(&new_entry.did);
-    let current: Option<AclEntry> = acl.get(key.clone()).await?;
+    let current_raw = acl.get_raw(key.clone()).await?;
+    let current: Option<AclEntry> = current_raw
+        .as_deref()
+        .map(serde_json::from_slice)
+        .transpose()?;
     let stored_version = current.as_ref().map(|e| e.version).unwrap_or(0);
-    if stored_version != expected_version {
-        return Err(AppError::Conflict(format!(
+    let conflict = || {
+        AppError::Conflict(format!(
             "ACL entry for {} has moved ahead (expected v{}, found v{}); re-read and retry",
             new_entry.did, expected_version, stored_version,
-        )));
+        ))
+    };
+    if stored_version != expected_version {
+        return Err(conflict());
     }
-    new_entry.version = expected_version + 1;
-    acl.insert(key, &new_entry).await?;
+    let mut batch = Batch::new();
+    match current_raw {
+        Some(raw) => batch.require_unchanged(key.clone(), raw),
+        None => batch.require_absent(key.clone()),
+    };
+    let new_version = expected_version + 1;
+    new_entry.version = new_version;
+    batch.insert(key, &new_entry)?;
+    if !acl.apply_batch(batch).await?.is_applied() {
+        return Err(conflict());
+    }
     crate::integrity::reseal_if_active().await?; // P0.2a
-    Ok(new_entry.version)
+    Ok(new_version)
 }
 
 /// Delete an ACL entry by DID.
 pub async fn delete_acl_entry(acl: &KeyspaceHandle, did: &str) -> Result<(), AppError> {
-    acl.remove(acl_key(did)).await?;
+    // A batch, for the same ordering as `store_acl_entry`: a versioned update
+    // racing this delete either lands first (and is deleted) or finds no row.
+    let mut batch = Batch::new();
+    batch.remove(acl_key(did));
+    acl.apply_batch(batch).await?;
     // Re-seal so the deletion is reflected in the manifest (P0.2a). No-op
     // outside a TEE.
     crate::integrity::reseal_if_active().await
@@ -2090,6 +2117,43 @@ mod tests {
 
     fn sample_entry(did: &str, role: Role) -> AclEntry {
         AclEntry::new(did, role, "did:key:zSetup").with_label(Some(format!("test-{did}")))
+    }
+
+    /// Optimistic concurrency under contention: of writers that all observed
+    /// the same version, exactly one wins. A read-check-write let several pass
+    /// the check, and the last silently discarded the others' edits.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_versioned_updates_admit_exactly_one_writer() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("acl").unwrap();
+        let did = "did:key:zVersioned";
+        store_acl_entry(&ks, &sample_entry(did, Role::Reader))
+            .await
+            .unwrap();
+        for _ in 0..40 {
+            let observed = get_acl_entry(&ks, did).await.unwrap().unwrap().version;
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(16));
+            let mut tasks = Vec::new();
+            for i in 0..16 {
+                let (ks, barrier) = (ks.clone(), barrier.clone());
+                tasks.push(tokio::spawn(async move {
+                    let entry = sample_entry(did, Role::Reader).with_label(Some(format!("w{i}")));
+                    barrier.wait().await;
+                    update_acl_entry_versioned(&ks, entry, observed)
+                        .await
+                        .is_ok()
+                }));
+            }
+            let mut won = 0;
+            for t in tasks {
+                won += t.await.unwrap() as usize;
+            }
+            assert_eq!(won, 1, "exactly one writer may win a version");
+            assert_eq!(
+                get_acl_entry(&ks, did).await.unwrap().unwrap().version,
+                observed + 1
+            );
+        }
     }
 
     #[tokio::test]

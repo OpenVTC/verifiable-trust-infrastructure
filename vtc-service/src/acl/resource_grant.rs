@@ -295,6 +295,16 @@ const HOLDER_PREFIX: &str = "git-holder:";
 /// (**VTI-ACL-037**).
 const DEPARTED_PREFIX: &str = "git-departed:";
 
+/// The holder-index key for `did`.
+pub(crate) fn holder_key(did: &str) -> String {
+    format!("{HOLDER_PREFIX}{did}")
+}
+
+/// The key `did`'s departed resource grants are kept under.
+pub(crate) fn departed_key(did: &str) -> String {
+    format!("{DEPARTED_PREFIX}{did}")
+}
+
 /// Mark `did` as holding resource grants, or not.
 pub async fn index_holder(
     ks: &vti_common::store::KeyspaceHandle,
