@@ -653,6 +653,76 @@ mod retention_tests {
         assert_eq!(ext.pruned_entries, removed as usize);
     }
 
+    /// Each chunk's deletions and its watermark advance are one journal
+    /// record, so a crash mid-sweep never leaves a removed entry the watermark
+    /// does not account for.
+    #[tokio::test]
+    async fn a_sweep_commits_each_chunk_with_its_watermark() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks);
+        for i in 0..300 {
+            sink.record(&entry(&format!("op.{i}")))
+                .await
+                .expect("record");
+        }
+        let rows = audit_ks.prefix_keys("log:").await.unwrap().len() as u64;
+        let before = audit_ks.journal_seqno().unwrap();
+        let removed = vta_audit::cleanup_logs_before(&audit_ks, now_secs() + 1)
+            .await
+            .expect("sweep");
+        assert_eq!(removed, rows);
+        assert_eq!(
+            audit_ks.journal_seqno().unwrap() - before,
+            rows.div_ceil(256),
+            "{rows} entries in chunks of 256, each chunk one journal record"
+        );
+    }
+
+    /// Sweeps racing over one backlog must account for every removed entry
+    /// exactly once — each chunk's deletions and its watermark advance are one
+    /// batch — so the remainder still verifies and the count is the truth.
+    /// Deleting one by one and writing the watermark at the end let two sweeps
+    /// both count the entries they both removed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn racing_sweeps_count_each_pruned_entry_once() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks);
+        const WRITTEN: usize = 300;
+        for i in 0..WRITTEN {
+            sink.record(&entry(&format!("op.{i}")))
+                .await
+                .expect("record");
+        }
+        let rows = audit_ks.prefix_keys("log:").await.unwrap().len();
+        let cutoff = now_secs() + 1;
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(4));
+        let mut sweeps = Vec::new();
+        for _ in 0..4 {
+            let (ks, barrier) = (audit_ks.clone(), barrier.clone());
+            sweeps.push(tokio::spawn(async move {
+                barrier.wait().await;
+                vta_audit::cleanup_logs_before(&ks, cutoff)
+                    .await
+                    .expect("sweep")
+            }));
+        }
+        let mut removed = 0;
+        for s in sweeps {
+            removed += s.await.unwrap();
+        }
+        assert!(rows >= WRITTEN);
+        assert_eq!(removed as usize, rows, "each entry is removed once");
+
+        sink.record(&entry("op.after-the-sweep"))
+            .await
+            .expect("record after sweep");
+        let report = verify_audit_chain(&audit_ks).await.expect("verify");
+        assert!(report.verified, "{:?}", report.chain_break);
+        let ext: vta_sdk::protocols::audit_management::verify::VtaVerifyExt =
+            serde_json::from_value(report.ext.clone().unwrap()[VTA_EXT_KEY].clone()).unwrap();
+        assert_eq!(ext.pruned_entries, rows);
+    }
+
     /// The watermark must not become a way to hide a removal. An entry taken
     /// out *after* the sweep still breaks the chain.
     #[tokio::test]

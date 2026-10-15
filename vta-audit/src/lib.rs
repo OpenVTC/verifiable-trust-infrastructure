@@ -433,47 +433,90 @@ pub async fn cleanup_expired_logs(
 /// Separate so the sweep can be exercised against a known boundary: derived
 /// from `now`, the only reachable boundaries in a test are "everything
 /// written a whole day ago", which nothing in a test was, and "nothing".
+///
+/// The sweep removes entries in chunks, oldest first, and each chunk is one
+/// store batch carrying its deletions *and* the watermark advanced past them.
+/// Deleting entry by entry and writing the watermark at the end left, after a
+/// crash (or alongside a concurrent sweep), a log whose oldest survivor points
+/// at a removed entry the watermark does not account for — indistinguishable
+/// from tampering. Each batch applies only while the watermark is still the one
+/// it advanced and every entry it removes is still there, so two sweeps racing
+/// never count a removal twice; the loser re-reads and carries on.
 pub async fn cleanup_logs_before(audit_ks: &KeyspaceHandle, cutoff: u64) -> Result<u64, AppError> {
     let cutoff_key = format!("log:{cutoff:020}:");
-    let keys = audit_ks.prefix_keys("log:").await?;
+    let mut keys: Vec<Vec<u8>> = audit_ks
+        .prefix_keys("log:")
+        .await?
+        .into_iter()
+        .filter(|k| k.as_slice() < cutoff_key.as_bytes())
+        .collect();
+    keys.sort();
 
     let mut removed = 0u64;
-    let mut pruned_chained = 0usize;
-    let mut last_chained_hash: Option<String> = None;
+    for chunk in keys.chunks(PRUNE_CHUNK) {
+        removed += prune_chunk(audit_ks, chunk).await?;
+    }
+    Ok(removed)
+}
 
-    for key in keys {
-        let key_str = String::from_utf8_lossy(&key).into_owned();
-        if key_str.as_str() < cutoff_key.as_str() {
+/// How many entries one retention batch removes. Bounds the batch (and the
+/// keyspace write lock it holds) while keeping a sweep of a large backlog to a
+/// handful of journal records.
+const PRUNE_CHUNK: usize = 256;
+
+/// How many times a chunk is re-read after a concurrent sweep changed the
+/// watermark or removed one of its entries first.
+const PRUNE_ATTEMPTS: usize = 64;
+
+/// Remove one chunk of entries (those still present) and advance the
+/// watermark past its chained ones, as one conditional batch.
+async fn prune_chunk(audit_ks: &KeyspaceHandle, chunk: &[Vec<u8>]) -> Result<u64, AppError> {
+    for _ in 0..PRUNE_ATTEMPTS {
+        let mut batch = vti_common::store::Batch::new();
+        let mut removing = 0u64;
+        let mut pruned_chained = 0usize;
+        let mut last_chained_hash: Option<String> = None;
+        for key in chunk {
             // Read before deleting: a chained entry carries the hash the
             // survivors will point back at, and once it is gone so is the
             // only copy of it.
-            if let Ok(Some(raw)) = audit_ks.get_raw(key.clone()).await
-                && let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&raw)
-            {
+            let Some(raw) = audit_ks.get_raw(key.clone()).await? else {
+                continue; // a concurrent sweep removed it
+            };
+            if let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&raw) {
                 last_chained_hash = Some(hex::encode(env.entry_hash));
                 pruned_chained += 1;
             }
-            audit_ks.remove(key).await?;
-            removed += 1;
-        } else {
-            // Keys are sorted — once we pass the cutoff, stop
-            break;
+            batch.require_present(key.clone()).remove(key.clone());
+            removing += 1;
+        }
+        if removing == 0 {
+            return Ok(0);
+        }
+        if let Some(head) = last_chained_hash {
+            let previous_raw = audit_ks.get_raw(PRUNE_WATERMARK_KEY).await?;
+            let previous: Option<PruneWatermark> = previous_raw
+                .as_deref()
+                .map(serde_json::from_slice)
+                .transpose()?;
+            match previous_raw {
+                Some(raw) => batch.require_unchanged(PRUNE_WATERMARK_KEY, raw),
+                None => batch.require_absent(PRUNE_WATERMARK_KEY),
+            };
+            let watermark = PruneWatermark {
+                head,
+                pruned_entries: previous.map_or(0, |w| w.pruned_entries) + pruned_chained,
+                pruned_at: chrono::Utc::now().to_rfc3339(),
+            };
+            batch.insert(PRUNE_WATERMARK_KEY, &watermark)?;
+        }
+        if audit_ks.apply_batch(batch).await?.is_applied() {
+            return Ok(removing);
         }
     }
-
-    if let Some(head) = last_chained_hash {
-        let previous = prune_watermark(audit_ks).await?;
-        let watermark = PruneWatermark {
-            head,
-            pruned_entries: previous.map_or(0, |w| w.pruned_entries) + pruned_chained,
-            pruned_at: chrono::Utc::now().to_rfc3339(),
-        };
-        audit_ks
-            .insert(PRUNE_WATERMARK_KEY.to_string(), &watermark)
-            .await?;
-    }
-
-    Ok(removed)
+    Err(AppError::Conflict(
+        "audit retention: the log kept changing while a chunk was being pruned".into(),
+    ))
 }
 
 #[cfg(test)]
