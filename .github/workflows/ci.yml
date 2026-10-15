@@ -1256,14 +1256,18 @@ jobs:
         with:
           persist-credentials: false
 
+      # libtss2-dev: `--all-features` turns on vti-secrets' `tpm` feature
+      # (#1820), whose `tss-esapi-sys` links the system tss2 libraries. This is
+      # the one job that builds it, so the TPM backend is compiled on Linux in
+      # the real workspace graph here and nowhere else.
       - name: Install system dependencies
         run: |
           pkgs=""
-          for p in libdbus-1-dev pkg-config; do
+          for p in libdbus-1-dev pkg-config libtss2-dev; do
             dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
           done
           if [ -z "$pkgs" ]; then
-            echo "libdbus-1-dev and pkg-config already present; nothing to do"
+            echo "libdbus-1-dev, pkg-config and libtss2-dev already present; nothing to do"
             exit 0
           fi
           echo "missing:$pkgs"
