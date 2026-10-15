@@ -53,6 +53,7 @@ pub mod session;
 pub mod stepup;
 pub mod task;
 pub mod tsp;
+pub mod witness;
 
 pub use api::*;
 pub use error::FfiError;

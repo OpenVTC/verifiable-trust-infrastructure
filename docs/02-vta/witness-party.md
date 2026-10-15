@@ -71,7 +71,29 @@ let stored = vta.witness_accept(&accept::v0_1::Payload::builder()
 
 There is no `pnm` command: `pnm` holds no relationship DID's connection, so it has
 nothing to carry the documents on. The carrier is the client that holds the
-relationship — a wallet or agent, through the SDK.
+relationship — a wallet or agent.
+
+## Clients
+
+- **Rust**: `VtaClient::witness_{open,present,accept}` (`vta_sdk::client`), taking
+  and returning the generated `trust_tasks_rs::specs::vta::witness` types, as above.
+- **Mobile**: `vta_mobile_core::witness`. The wallet's round:
+
+  | Step | Engine call |
+  |---|---|
+  | open | `build_witness_task(env, WitnessTask::Open, payload, signer)` → the VTA; `parse_witness_response` → `{sessionId, document, expiresAt}` |
+  | route | `resolve_witness_route(relationship_did, witness_did)` — TSP, else DIDComm, by service `type` in both DID documents; never REST |
+  | carry | `check_witness_document(document, WitnessDocument::Session, sessionId, relationship_did, witness_did)`, then send it on the relationship DID's session (`TspMediatorSession` to the witness through its mediator, or a `MediatorSession` whose peer is the witness) |
+  | answer | `classify_witness_reply(document, reply, witness_did)` — verified as the witness's, then `Answered { response_json }` or `Refused { refusal, code, … }` |
+  | present | `WitnessTask::Present` with `{sessionId, response}` → the submit `document`; check it (`WitnessDocument::Submit`), carry it, classify the answer, **discard the submit document** |
+  | accept | `WitnessTask::Accept` with `{sessionId, response}` → `{credentialId, witness, vwcDigestMultibase, evidence}` |
+
+  `Refused` carries the witness's code — `SessionRefused` (`witness/session:refused`:
+  this witness will not witness the exchange), `ChallengeMismatch` (the session is
+  spent or gone: open a new one), `PresentationInvalid` (the witness did not accept
+  the credentials), `Other`. A refusal is never handed back to the VTA. The whole
+  round is exercised against the real tasks and the real witness core in
+  `vta-mobile-core/tests/witness_e2e.rs`.
 
 ## What the VTA checks
 

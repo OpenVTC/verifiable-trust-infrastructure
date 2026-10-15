@@ -282,6 +282,30 @@ enum PushPlatform { Apns, Fcm, WebPush }
 | `build_set_device_info(registration) -> Result<String>` |
 | `build_delete_device_info(platform) -> Result<String>` |
 
+### 3.11 Witnessing through the VTA (`witness`)
+
+The wallet runs a witnessed session for one of its principal's relationships
+(`vta/witness/{open,present,accept}/0.1`, [the VTA as a witnessed
+party](../02-vta/witness-party.md)). The VTA builds and signs every document as
+the relationship DID; the wallet **carries** each one to the witness from the
+relationship DID and hands the witness's answer back. Pure functions, except the
+two that verify or resolve.
+
+| Function | Signature | Purpose |
+|---|---|---|
+| `build_witness_task` | `(env: AuthEnvelope, task: WitnessTask {Open,Present,Accept}, payload_json, signer) -> String` | Holder-signed request to the VTA; the payload is checked against the task's generated type before anything is signed. |
+| `parse_witness_response` | `(task, json) -> String /*payload JSON*/` | Schema-checked `#response` payload: `{sessionId, document, expiresAt}`, `{sessionId, document}`, `{sessionId, credentialId, witness, vwcDigestMultibase, evidence}`. A VTA `trust-task-error` is `Decode`. |
+| `check_witness_document` | `(document_json, kind: WitnessDocument {Session,Submit}, session_id, relationship_did, witness_did)` | Before carrying: the expected type, bound to the session (`id` / `threadId`), signed, issued by the relationship DID, addressed to the witness. |
+| `classify_witness_reply` | `async (request_json, reply_json, witness_did) -> WitnessReply` | Verifies the answer as the witness's (as `verify_trust_task_reply`), then `Answered{response_json}` — hand back unaltered — or `Refused{refusal: SessionRefused\|ChallengeMismatch\|PresentationInvalid\|Other, code, message, retryable}` — the session ends; do not hand it back. |
+| `resolve_witness_route` | `async (relationship_did, witness_did) -> WitnessRoute` | TSP, else DIDComm — the best transport both DID documents advertise, by service `type`; never REST. Carries both mediators. |
+
+The carriage itself is the relationship DID's own session: a
+`TspMediatorSession` (send to the witness DID through `witness_mediator_did`,
+correlate the answer off the inbox by `threadId`) or a `MediatorSession` whose
+peer is the witness. Both refuse a document not issued by their holder or not
+addressed to the peer. Discard the submit document once the witness answers — it
+carries the principal's presentations.
+
 ### 3.10 Error union (`FfiError`)
 
 Coarse and stable; switch on the **variant** for control flow, treat the string
@@ -737,6 +761,8 @@ engine was built:
 | DID resolution | `src/resolver.rs` |
 | Mediator session | `src/mediator.rs` |
 | Push registration | `src/push.rs` |
+| Hidden vetting through the VTA | `src/pcs.rs` |
+| Witnessing through the VTA | `src/witness.rs` |
 | Error union | `src/error.rs` |
 | Build / packaging | `src/lib.rs`, `uniffi.toml`, `scripts/build-mobile.sh`, `scripts/package-ios.sh` |
 

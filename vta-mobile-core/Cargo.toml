@@ -93,6 +93,21 @@ sha2 = { workspace = true }
 # Test-only `Secret::generate_ed25519` — mints the executor keys the request
 # verification tests sign with (the same sign path the VTA uses in production).
 affinidi-secrets-resolver = { workspace = true }
+# `tests/witness_e2e.rs`: a witnessed session driven through this crate's API
+# against the real VTA tasks (`MockVta`, over HTTPS) and the real witness core
+# (`vti_witness::dispatch::answer`), carried by the test as a wallet would.
+# Path-only (no version): neither this crate nor `vti-witness` is published,
+# and nothing here reaches the mobile artifacts, which build no dev-deps.
+vta-service = { path = "../vta-service", features = ["test-support"] }
+vti-witness = { path = "../vti-witness" }
+vti-common = { path = "../vti-common", features = ["test-support"] }
+# `client` (`trust_task_sign`) and `proof-verify` (`trust_task_proof`) for the
+# witness's key and resolver.
+vta-sdk = { path = "../vta-sdk", features = ["client", "proof-verify"] }
+dtg-credentials = { workspace = true }
+reqwest = { workspace = true }
+tempfile = "3"
+uuid = { workspace = true }
 
 [[bin]]
 # `cargo run -p vta-mobile-core --bin uniffi-bindgen -- generate ...`
