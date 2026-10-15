@@ -2,6 +2,54 @@
 
 Status: **accepted** (2026-10-15). Tracks #1068.
 
+## 0. The need
+
+A **relationship credential** (VRC) records that two parties formed a
+relationship: each issues one to the other. It is bilateral and self-asserted.
+Anyone evaluating it later has only the two parties' word that the exchange
+happened, when it happened, and that the parties are who they claim to be.
+
+That word is not enough wherever the relationship itself is the evidence:
+
+- **Personhood and Sybil resistance.** One person can mint any number of
+  pairwise DIDs and issue relationship credentials between them, building a
+  convincing trust graph out of nothing. A community deciding whether an
+  applicant is a real, distinct person cannot tell a genuine relationship from a
+  manufactured one by looking at the credentials alone.
+  `vtc-service/policies/default/personhood.rego` already accepts a witness
+  statement as personhood evidence for exactly this reason.
+- **Admission and reputation.** A community that admits members on the strength
+  of existing relationships ("vouched for by two members") needs to know that
+  those vouches came from real exchanges, not from credentials a party issued to
+  itself.
+- **Disputes after the fact.** If a party later denies a relationship, or claims
+  one that never happened, the two parties' own records are the only evidence,
+  and they disagree.
+
+A **witness** closes the gap: an **independent third party** observes the
+exchange and attests that it took place, in a Verifiable Witness Credential
+(VWC). The attestation is bound to the exact relationship credential it saw
+(by digest) and to the exact session in which it saw it (by task context and
+task digest). A verifier who trusts the witness then holds evidence that the
+relationship was formed in a witnessed exchange, not merely asserted by the two
+parties.
+
+The value rests on two properties, which shape every decision below:
+
+1. **Independence.** A witness that is one of the parties, or acts for one,
+   attests nothing a verifier can rely on.
+2. **Verifiability.** A verifier must be able to check that one recognisable
+   witness attested this specific edge in this specific session.
+
+### The gap this note closes
+
+The verification side already exists. `dtg-credentials` 0.13 builds and binds a
+VWC, `vtc-service/src/credentials/witness.rs` verifies one against the edges a
+community holds, and the personhood policy reasons over the result. **Nothing in
+the workspace can act as a witness**, so no VWC is ever issued, and every
+policy that accepts one is waiting on evidence that cannot yet exist (#1068,
+audit finding F8).
+
 ## 1. What is being decided
 
 `witness/session/0.1` and `witness/session/submit/0.1` define a **witness**. It
