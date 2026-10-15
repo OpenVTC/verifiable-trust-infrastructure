@@ -31,6 +31,7 @@ pub use vti_secrets::seed_store::AwsSeedStore as AwsSecretStore;
 pub use vti_secrets::seed_store::AzureSeedStore as AzureSecretStore;
 #[cfg(feature = "config-secret")]
 pub use vti_secrets::seed_store::ConfigSeedStore as ConfigSecretStore;
+pub use vti_secrets::seed_store::EncryptedFileSeedStore as EncryptedFileSecretStore;
 #[cfg(feature = "gcp-secrets")]
 pub use vti_secrets::seed_store::GcpSeedStore as GcpSecretStore;
 #[cfg(feature = "k8s-secrets")]
@@ -48,6 +49,10 @@ pub use vti_common::seed_store::SeedStore as SecretStore;
 /// deployments keep finding their secret.
 const VTC_PLAINTEXT_FILENAME: &str = "secret.plaintext";
 
+/// Default `encrypted-file` location under the data dir (the VTA's is
+/// `seed.enc`).
+const VTC_ENCRYPTED_FILENAME: &str = "secret.enc";
+
 /// Create a secret store backend based on compiled features and configuration.
 ///
 /// **Selection.** If `secrets.backend` is set it wins outright — the named
@@ -64,6 +69,10 @@ const VTC_PLAINTEXT_FILENAME: &str = "secret.plaintext";
 /// 6. Config file secret (if `config-secret` compiled + `secrets.secret` set)
 /// 7. OS keyring (if `keyring` compiled — the default)
 /// 8. Plaintext file (always available — NOT secure)
+///
+/// `encrypted-file` is never in that chain: it is built only for an explicit
+/// `backend = "encrypted-file"`, and a `[secrets.encrypted_file]` table without
+/// the selector is a `Config` error rather than silently ignored.
 ///
 /// Either way, a backend requested on a binary built without its feature is a
 /// hard `Config` error — never a silent fall-through to keyring/plaintext
@@ -223,6 +232,32 @@ pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, A
         return Err(AppError::Config(
             "secrets backend 'config' selected but this binary was built without the \
              'config-secret' feature"
+                .into(),
+        ));
+    }
+
+    // Encrypted file — explicit only (see the doc comment above).
+    if matches!(explicit, Some(SecretBackend::EncryptedFile)) {
+        let cfg = config.secrets.encrypted_file.as_ref().ok_or_else(|| {
+            AppError::Config(
+                "secrets.backend = encrypted-file requires a [secrets.encrypted_file] table \
+                 naming the key-encryption key source (kek = { source = \"passphrase\" | \
+                 \"systemd_creds\" | \"tpm\", ... })"
+                    .into(),
+            )
+        })?;
+        let store = EncryptedFileSecretStore::from_config(
+            cfg,
+            &config.store.data_dir,
+            VTC_ENCRYPTED_FILENAME,
+        )?;
+        return Ok(Box::new(store));
+    }
+    if explicit.is_none() && config.secrets.encrypted_file.is_some() {
+        return Err(AppError::Config(
+            "[secrets.encrypted_file] is set but secrets.backend is not; the encrypted-file \
+             backend is only ever selected explicitly. Add `backend = \"encrypted-file\"` to \
+             [secrets]."
                 .into(),
         ));
     }
@@ -421,5 +456,41 @@ mod tests {
         config.secrets.backend = Some(SecretBackend::Vault);
         // vault_addr deliberately left None.
         assert_config_err_mentions(&config, "requires secrets.vault_addr");
+    }
+
+    // ---- encrypted-file (#1820) --------------------------------------------
+
+    #[test]
+    fn explicit_encrypted_file_needs_its_table() {
+        let mut config = base_config();
+        config.secrets.backend = Some(SecretBackend::EncryptedFile);
+        assert_config_err_mentions(&config, "[secrets.encrypted_file]");
+    }
+
+    #[test]
+    fn an_encrypted_file_table_alone_never_selects_it() {
+        let config: AppConfig = toml::from_str(
+            "[secrets.encrypted_file]\nkek = { source = \"systemd_creds\", credential = \"vtc-kek\" }\n",
+        )
+        .expect("parses");
+        assert_config_err_mentions(&config, "only ever selected explicitly");
+    }
+
+    #[tokio::test]
+    async fn explicit_encrypted_file_round_trips_under_the_vtc_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let pass = dir.path().join("pass");
+        std::fs::write(&pass, b"vtc passphrase").unwrap();
+        let mut config: AppConfig = toml::from_str(&format!(
+            "[secrets]\nbackend = \"encrypted-file\"\n[secrets.encrypted_file]\n\
+             kek = {{ source = \"passphrase\", file = {:?} }}\n",
+            pass.display().to_string()
+        ))
+        .expect("parses");
+        config.store.data_dir = dir.path().to_path_buf();
+        let store = create_secret_store(&config).expect("builds");
+        store.set(&[9u8; 64]).await.unwrap();
+        assert_eq!(store.get().await.unwrap().unwrap(), vec![9u8; 64]);
+        assert!(dir.path().join(VTC_ENCRYPTED_FILENAME).is_file());
     }
 }

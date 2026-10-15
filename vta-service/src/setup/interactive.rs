@@ -412,6 +412,8 @@ async fn configure_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynE
         labels.push("OS keyring");
         tags.push("keyring");
     }
+    labels.push("Encrypted file (passphrase, systemd-creds or TPM key)");
+    tags.push("encrypted-file");
     labels.push("Plaintext file (NOT recommended)");
     tags.push("plaintext");
 
@@ -457,6 +459,9 @@ async fn configure_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynE
         )?;
         return Ok(SecretsBackendInput::Keyring { service });
     }
+    if tag == "encrypted-file" {
+        return prompt_encrypted_file_secrets(p);
+    }
     if tag == "plaintext" {
         eprintln!();
         eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════╗");
@@ -469,6 +474,77 @@ async fn configure_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynE
     }
 
     unreachable!("selected backend tag does not match any compiled feature")
+}
+
+/// The `encrypted_file` backend's key-encryption key source and location.
+/// The KEK has to be readable now: setup writes the seed with it.
+fn prompt_encrypted_file_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynErr> {
+    use vti_secrets::KekSource;
+
+    #[allow(unused_mut)]
+    let mut labels = vec![
+        "Passphrase in a file",
+        "Passphrase in a systemd credential",
+        "32-byte key in a systemd credential (systemd-creds)",
+    ];
+    #[cfg(all(feature = "tpm", target_os = "linux"))]
+    labels.push("Key sealed to this host's TPM 2.0");
+    let choice = p.select("Key-encryption key source", &labels, 0)?;
+    let credential = |prompt: &str| p.text(prompt, None, false, None);
+    let kek = match choice {
+        0 => KekSource::Passphrase {
+            file: Some(PathBuf::from(p.text(
+                "Passphrase file (readable by the VTA user only; never put the passphrase in config)",
+                None,
+                false,
+                None,
+            )?)),
+            credential: None,
+        },
+        1 => KekSource::Passphrase {
+            file: None,
+            credential: Some(credential(
+                "systemd credential name (LoadCredential=/LoadCredentialEncrypted=)",
+            )?),
+        },
+        2 => KekSource::SystemdCreds {
+            credential: credential("systemd credential name holding the key")?,
+        },
+        _ => {
+            let pcrs = p.text(
+                "Bind to SHA-256 PCRs (comma-separated, e.g. 7; empty for none)",
+                None,
+                true,
+                Some(&|s: &str| parse_pcr_list(s).map(|_| ())),
+            )?;
+            KekSource::Tpm {
+                pcrs: parse_pcr_list(&pcrs)?,
+                tcti: None,
+            }
+        }
+    };
+    let path = p.text(
+        "Encrypted file path (empty for <data_dir>/seed.enc)",
+        None,
+        true,
+        None,
+    )?;
+    Ok(SecretsBackendInput::EncryptedFile {
+        path: (!path.trim().is_empty()).then(|| PathBuf::from(path.trim())),
+        kek,
+    })
+}
+
+#[cfg_attr(not(all(feature = "tpm", target_os = "linux")), allow(dead_code))]
+fn parse_pcr_list(s: &str) -> Result<Vec<u8>, String> {
+    s.split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| match t.parse::<u8>() {
+            Ok(n) if n <= 23 => Ok(n),
+            _ => Err(format!("'{t}' is not a PCR index (0-23)")),
+        })
+        .collect()
 }
 
 #[cfg(feature = "aws-secrets")]

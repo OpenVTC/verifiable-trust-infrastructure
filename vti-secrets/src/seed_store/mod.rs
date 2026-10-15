@@ -5,6 +5,7 @@ mod azure;
 mod caching;
 #[cfg(feature = "config-seed")]
 mod config;
+mod encrypted_file;
 #[cfg(feature = "gcp-secrets")]
 mod gcp;
 #[cfg(feature = "k8s-secrets")]
@@ -24,6 +25,7 @@ pub use azure::AzureSeedStore;
 pub use caching::CachingSeedStore;
 #[cfg(feature = "config-seed")]
 pub use config::ConfigSeedStore;
+pub use encrypted_file::EncryptedFileSeedStore;
 #[cfg(feature = "gcp-secrets")]
 pub use gcp::GcpSeedStore;
 #[cfg(feature = "k8s-secrets")]
@@ -59,8 +61,8 @@ pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// Create a seed store backend based on compiled features and configuration.
 ///
 /// `secrets` is the resolved [`SecretsConfig`] (which backend + its
-/// connection parameters); `data_dir` is only consulted by the plaintext
-/// backend for the `seed.plaintext` location.
+/// connection parameters); `data_dir` is only consulted by the file backends,
+/// for the `seed.plaintext` / `seed.enc` locations.
 ///
 /// **Selection.** If [`SecretsConfig::backend`] is set it wins outright — the
 /// named backend is built and its required fields are validated. A mismatch
@@ -76,6 +78,10 @@ pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// 6. Config file seed (if `config-seed` compiled + `seed` set)
 /// 7. OS keyring (if `keyring` compiled — the default)
 /// 8. Plaintext file (NOT secure)
+///
+/// `encrypted_file` is not in the chain at all: it is built only for an
+/// explicit `backend = "encrypted_file"`, and a `[secrets.encrypted_file]`
+/// table without that selector is an error rather than silently ignored.
 ///
 /// Note what the implicit chain cannot express: plaintext has no selector
 /// field of its own, and the keyring arm matches unconditionally, so on any
@@ -227,6 +233,31 @@ fn build_backend(secrets: &SecretsConfig, data_dir: &Path) -> Result<Box<dyn See
         return Err(uncompiled("config_seed", "config-seed"));
     }
 
+    // Encrypted file — explicit only. A `[secrets.encrypted_file]` table with
+    // no selector is refused rather than ignored: falling through to the
+    // keyring would leave an operator who meant to encrypt at rest on a
+    // different backend than they configured.
+    if matches!(explicit, Some(SecretBackend::EncryptedFile)) {
+        let cfg = secrets.encrypted_file.as_ref().ok_or_else(|| {
+            AppError::Config(
+                "secrets.backend = encrypted_file requires a [secrets.encrypted_file] table \
+                 naming the key-encryption key source (kek = { source = \"passphrase\" | \
+                 \"systemd_creds\" | \"tpm\", ... })"
+                    .into(),
+            )
+        })?;
+        let store = EncryptedFileSeedStore::from_config(cfg, data_dir, VTA_ENCRYPTED_FILENAME)?;
+        return Ok(Box::new(store));
+    }
+    if explicit.is_none() && secrets.encrypted_file.is_some() {
+        return Err(AppError::Config(
+            "[secrets.encrypted_file] is set but secrets.backend is not; the encrypted_file \
+             backend is only ever selected explicitly. Add `backend = \"encrypted_file\"` to \
+             [secrets]."
+                .into(),
+        ));
+    }
+
     // Keyring — the implicit default when nothing is selected, or an
     // explicit `backend = "keyring"`. An explicit keyring selection on a
     // binary built without the feature is a hard error (mirrors the arms
@@ -269,6 +300,9 @@ fn build_backend(secrets: &SecretsConfig, data_dir: &Path) -> Result<Box<dyn See
         Ok(Box::new(store))
     }
 }
+
+/// Default `encrypted_file` location under the VTA's data dir.
+pub const VTA_ENCRYPTED_FILENAME: &str = "seed.enc";
 
 /// A backend was requested (explicitly, or implicitly by setting its
 /// selector field) on a binary built without its feature. Fail closed —

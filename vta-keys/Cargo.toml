@@ -32,6 +32,8 @@ k8s-secrets = ["vti-secrets/k8s-secrets"]
 config-seed = ["vti-secrets/config-seed"]
 keyring = ["vti-secrets/keyring"]
 tee = ["vti-secrets/tee"]
+# TPM 2.0 KEK source for the `encrypted_file` backend (Linux, native tss2 libs).
+tpm = ["vti-secrets/tpm"]
 
 [dependencies]
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.17" }

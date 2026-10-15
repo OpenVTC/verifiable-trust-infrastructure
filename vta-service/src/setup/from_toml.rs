@@ -413,6 +413,26 @@ pub enum SecretsBackendInput {
     },
     /// Plaintext file under `data_dir`. **Not recommended** — for dev only.
     Plaintext,
+    /// AEAD-encrypted file (`<data_dir>/seed.enc` unless `path` is set),
+    /// keyed by an explicit key-encryption key source — the secure local
+    /// option for a host with no OS keyring. Same shape as the generated
+    /// `[secrets.encrypted_file]` table:
+    ///
+    /// ```toml
+    /// [secrets]
+    /// backend = "encrypted_file"
+    /// kek = { source = "passphrase", file = "/etc/vta/seed-passphrase" }
+    /// ```
+    ///
+    /// The KEK must be readable when `vta setup` runs, because setup writes
+    /// the seed.
+    EncryptedFile {
+        /// Envelope location. Defaults to `<data_dir>/seed.enc`.
+        #[serde(default)]
+        path: Option<PathBuf>,
+        /// Key-encryption key source.
+        kek: vti_secrets::KekSource,
+    },
 }
 
 /// Written by hand so the Vault token never reaches a log: a derived `Debug` would print it.
@@ -493,6 +513,11 @@ impl std::fmt::Debug for SecretsBackendInput {
                 .field("secret_key", secret_key)
                 .finish(),
             Self::Plaintext => f.write_str("Plaintext"),
+            Self::EncryptedFile { path, kek } => f
+                .debug_struct("EncryptedFile")
+                .field("path", path)
+                .field("kek", kek)
+                .finish(),
         }
     }
 }
@@ -1567,6 +1592,7 @@ fn backend_selector(input: &SecretsBackendInput) -> SecretBackend {
         SecretsBackendInput::Vault { .. } => SecretBackend::Vault,
         SecretsBackendInput::Kubernetes { .. } => SecretBackend::Kubernetes,
         SecretsBackendInput::Plaintext => SecretBackend::Plaintext,
+        SecretsBackendInput::EncryptedFile { .. } => SecretBackend::EncryptedFile,
     }
 }
 
@@ -1765,6 +1791,13 @@ fn secrets_config_from_input(
             // what actually selects plaintext over the compiled-in keyring.
             let mut c = SecretsConfig::default();
             c.allow_plaintext = true;
+            c
+        }
+        SecretsBackendInput::EncryptedFile { path, kek } => {
+            let mut encrypted = vti_secrets::EncryptedFileConfig::new(kek.clone());
+            encrypted.path = path.clone();
+            let mut c = SecretsConfig::default();
+            c.encrypted_file = Some(encrypted);
             c
         }
     };
@@ -2243,6 +2276,39 @@ mod tests {
     }
 
     #[test]
+    fn encrypted_file_input_parses_and_lands_in_its_own_table() {
+        let raw = r#"
+            config_path = "/tmp/vta-test/config.toml"
+            data_dir    = "/tmp/vta-test/data"
+
+            [secrets]
+            backend = "encrypted_file"
+            path = "/var/lib/vta/seed.enc"
+            kek = { source = "passphrase", file = "/etc/vta/seed-passphrase" }
+        "#;
+        let inputs = parse(raw).expect("encrypted_file inputs should parse");
+        let secrets = secrets_config_from_input(&inputs.secrets).expect("converts");
+        assert_eq!(secrets.backend, Some(SecretBackend::EncryptedFile));
+        assert!(!secrets.allow_plaintext);
+        let toml_out = toml::to_string(&secrets).expect("serializes");
+        assert!(
+            toml_out.contains("backend = \"encrypted_file\"")
+                && toml_out.contains("[encrypted_file")
+                && toml_out.contains("/etc/vta/seed-passphrase"),
+            "generated config must carry the table, got:\n{toml_out}"
+        );
+        let back: SecretsConfig = toml::from_str(&toml_out).expect("re-parses");
+        assert_eq!(back.encrypted_file, secrets.encrypted_file);
+
+        // An inline passphrase is not a field.
+        let inline = raw.replace(
+            r#"kek = { source = "passphrase", file = "/etc/vta/seed-passphrase" }"#,
+            r#"kek = { source = "passphrase", passphrase = "hunter2" }"#,
+        );
+        assert!(parse(&inline).is_err());
+    }
+
+    #[test]
     fn every_wizard_backend_choice_states_its_selector() {
         // No wizard choice may lean on implicit resolution — that is how
         // plaintext silently became keyring.
@@ -2255,6 +2321,15 @@ mod tests {
                 SecretBackend::Keyring,
             ),
             (SecretsBackendInput::Plaintext, SecretBackend::Plaintext),
+            (
+                SecretsBackendInput::EncryptedFile {
+                    path: None,
+                    kek: vti_secrets::KekSource::SystemdCreds {
+                        credential: "vta-kek".into(),
+                    },
+                },
+                SecretBackend::EncryptedFile,
+            ),
         ];
         for (input, expected) in cases {
             let secrets = secrets_config_from_input(&input).expect("converts");

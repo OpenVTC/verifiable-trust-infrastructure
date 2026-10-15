@@ -1082,6 +1082,7 @@ where
 /// Variant → required field: `vault` → `vault_addr`, `k8s` →
 /// `k8s_secret_name`, `aws` → `aws_secret_name`, `gcp` → `gcp_secret_name`
 /// (+ `gcp_project`), `azure` → `azure_vault_url`, `config` → `secret`.
+/// `encrypted-file` → the `[secrets.encrypted_file]` table.
 /// `keyring` and `plaintext` need no field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1102,6 +1103,10 @@ pub enum SecretBackend {
     Config,
     /// Plaintext file under the data dir — NOT secure, dev/test only.
     Plaintext,
+    /// AEAD-encrypted file under the data dir (`secret.enc` by default), keyed
+    /// by the KEK source in `[secrets.encrypted_file]`. Only ever selected
+    /// explicitly. Implemented by `vti_secrets::seed_store::EncryptedFileSeedStore`.
+    EncryptedFile,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1111,7 +1116,7 @@ pub struct SecretsConfig {
     /// "whichever selector field is set" resolution and `create_secret_store`
     /// validates the chosen backend's required fields. Omit to keep the
     /// legacy priority-chain behaviour. Accepts `keyring` | `vault` | `k8s`
-    /// | `aws` | `gcp` | `azure` | `config` | `plaintext`.
+    /// | `aws` | `gcp` | `azure` | `config` | `plaintext` | `encrypted-file`.
     #[serde(default)]
     pub backend: Option<SecretBackend>,
     /// Hex-encoded VTC key material (config-secret feature)
@@ -1189,6 +1194,11 @@ pub struct SecretsConfig {
     /// key material (k8s-secrets feature). Default `secret`.
     #[serde(default = "default_k8s_secret_key")]
     pub k8s_secret_key: String,
+    /// `[secrets.encrypted_file]`: location and key-encryption key source for
+    /// `backend = "encrypted-file"` (the shape is `vti_secrets`'s, shared with
+    /// the VTA). Never selects the backend by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted_file: Option<vti_secrets::EncryptedFileConfig>,
 }
 
 fn default_keyring_service() -> String {
@@ -1263,6 +1273,7 @@ impl std::fmt::Debug for SecretsConfig {
             .field("k8s_secret_name", &self.k8s_secret_name)
             .field("k8s_namespace", &self.k8s_namespace)
             .field("k8s_secret_key", &self.k8s_secret_key)
+            .field("encrypted_file", &self.encrypted_file)
             .finish()
     }
 }
@@ -1296,6 +1307,7 @@ impl Default for SecretsConfig {
             k8s_secret_name: None,
             k8s_namespace: None,
             k8s_secret_key: default_k8s_secret_key(),
+            encrypted_file: None,
         }
     }
 }
@@ -1882,6 +1894,7 @@ mod tests {
             ("azure", SecretBackend::Azure),
             ("config", SecretBackend::Config),
             ("plaintext", SecretBackend::Plaintext),
+            ("encrypted-file", SecretBackend::EncryptedFile),
         ] {
             let cfg: SecretsConfig =
                 toml::from_str(&format!("backend = \"{wire}\"")).expect("parse backend");

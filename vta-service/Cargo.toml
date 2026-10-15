@@ -94,6 +94,11 @@ vault-secrets = ["vti-secrets/vault-secrets", "vta-keys/vault-secrets"]
 # `Secret` resource. Off by default; deliberately enabled for in-cluster
 # deployments that prefer native k8s Secrets over a cloud secret manager.
 k8s-secrets = ["vti-secrets/k8s-secrets", "vta-keys/k8s-secrets"]
+# TPM 2.0 key-encryption key for the `encrypted_file` seed-store backend
+# (`[secrets.encrypted_file] kek = { source = "tpm" }`). Linux only; needs the
+# native tss2 libraries at build time. The passphrase and systemd-creds KEK
+# sources need no feature.
+tpm = ["vti-secrets/tpm", "vta-keys/tpm"]
 tee = [
   "webvh",
   "dep:vta-tee",

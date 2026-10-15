@@ -152,6 +152,7 @@ legacy "whichever field is set wins" resolution.
 | `gcp` | `gcp-secrets` | `gcp_secret_name` (+ `gcp_project`) | |
 | `azure` | `azure-secrets` | `azure_vault_url` | |
 | `config` | `config-secret` | `secret` (written by setup) | Hex bundle inline in config.toml; read-only at runtime. |
+| `encrypted-file` | always (`tpm` for a TPM key) | `[secrets.encrypted_file]` with a `kek` source | AES-256-GCM file, default `<data_dir>/secret.enc`. The secure local option for a host with no OS keyring. Never selected implicitly. |
 | `plaintext` | always | — | NOT secure; dev/test only. |
 
 A backend selected on a binary built without its feature is a hard config
@@ -160,7 +161,25 @@ intentionally not a VTC backend; only the VTA runs in a TEE.)
 
 `[secrets]` is flat here (e.g. `vault_addr`, `k8s_secret_name`), matching
 the runtime `config.toml` — the same table setup writes and the daemon
-reads back at boot.
+reads back at boot. The one sub-table is `[secrets.encrypted_file]`:
+
+```toml
+[secrets]
+backend = "encrypted-file"
+
+[secrets.encrypted_file]
+path = "/var/lib/vtc/secret.enc"   # optional; default <data_dir>/secret.enc
+kek  = { source = "systemd_creds", credential = "vtc-secret-kek" }
+# or { source = "passphrase", file = "/etc/vtc/secret-passphrase" }
+# or { source = "passphrase", credential = "vtc-secret-passphrase" }
+# or { source = "tpm", pcrs = [7] }   # Linux build with the `tpm` feature
+```
+
+A passphrase is never taken from the config or an environment variable.
+The KEK must be readable while setup runs, since setup writes the key bundle.
+The KEK sources, the file format and the threat model (it protects a copied
+disk, image or backup; it does not protect against root on the running host)
+are described in [secret backends](../02-vta/secret-backends.md#encrypted-file-encrypted_file).
 
 ## Kubernetes
 

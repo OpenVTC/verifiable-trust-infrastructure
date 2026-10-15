@@ -198,12 +198,24 @@ summary.
 | `"vault"` | `addr`, `secret_path`, optional `kv_mount`/`secret_key`/`namespace`/`auth_method`/auth fields |
 | `"kubernetes"` | `secret_name`, optional `namespace`, optional `secret_key` (default `"seed"`) |
 | `"config_seed"` | none — hex seed embedded in `config.toml`. **Not recommended.** |
+| `"encrypted_file"` | `kek` (`{ source = "passphrase", file = … }` / `{ source = "passphrase", credential = … }` / `{ source = "systemd_creds", credential = … }` / `{ source = "tpm", pcrs = [ … ] }`), optional `path` (default `<data_dir>/seed.enc`). AES-256-GCM file for a host with no OS keyring; the KEK must be readable when setup runs. See [secret backends](secret-backends.md#encrypted-file-encrypted_file). |
 | `"plaintext"` | none — plaintext file under `data_dir`. **Dev only.** |
 
 Cloud / external backends require the matching feature at compile time
 (`aws-secrets`, `gcp-secrets`, `azure-secrets`, `vault-secrets`,
 `k8s-secrets`) — the wizard refuses to proceed with a clear error if the
 feature isn't compiled in.
+
+`encrypted_file` needs no feature, except for `source = "tpm"`, which needs a
+Linux build with the `tpm` feature. In the setup file its fields sit directly
+in `[secrets]`; the generated `config.toml` carries them as a
+`[secrets.encrypted_file]` table:
+
+```toml
+[secrets]
+backend = "encrypted_file"
+kek = { source = "systemd_creds", credential = "vta-seed-kek" }
+```
 
 A Kubernetes `Secret` backend, for example:
 

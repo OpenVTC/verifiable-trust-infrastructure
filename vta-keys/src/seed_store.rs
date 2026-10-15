@@ -11,6 +11,7 @@ use vta_config::AppConfig;
 use vti_common::error::AppError;
 
 pub use vti_secrets::SeedStore;
+pub use vti_secrets::seed_store::EncryptedFileSeedStore;
 pub use vti_secrets::seed_store::PlaintextSeedStore;
 
 #[cfg(feature = "aws-secrets")]
@@ -33,8 +34,8 @@ pub use vti_secrets::seed_store::VaultSeedStore;
 /// Create a seed store backend from the VTA's [`AppConfig`].
 ///
 /// Thin wrapper over [`vti_secrets::create_seed_store`] that supplies the
-/// `[secrets]` table + the store data dir (consulted only by the plaintext
-/// fallback). Kept so the many `create_seed_store(&config)` call sites across
+/// `[secrets]` table + the store data dir (consulted only by the file
+/// backends). Kept so the many `create_seed_store(&config)` call sites across
 /// the service stay unchanged after the extraction.
 pub fn create_seed_store(config: &AppConfig) -> Result<Box<dyn SeedStore>, AppError> {
     vti_secrets::create_seed_store(&config.secrets, &config.store.data_dir)

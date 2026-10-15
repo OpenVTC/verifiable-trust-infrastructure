@@ -127,6 +127,11 @@ k8s-secrets = ["vti-secrets/k8s-secrets"]
 # setup wizard has no Vault picker, so operators configure it via the
 # `[secrets]` table (`vault_addr`, …) or `setup --from <toml>`.
 vault-secrets = ["vti-secrets/vault-secrets"]
+# TPM 2.0 key-encryption key for the `encrypted-file` secrets backend
+# (`[secrets.encrypted_file] kek = { source = "tpm" }`). Linux only; needs the
+# native tss2 libraries at build time. The passphrase and systemd-creds KEK
+# sources need no feature.
+tpm = ["vti-secrets/tpm"]
 
 [[bin]]
 name = "vtc"

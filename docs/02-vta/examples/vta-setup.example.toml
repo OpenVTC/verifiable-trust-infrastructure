@@ -135,6 +135,19 @@ service = "vta-prod"   # default "vta"; use a unique name per VTA on the same ho
 # [secrets]
 # backend = "config_seed"
 
+# AES-256-GCM encrypted file — the secure local option for a host with no
+# OS keyring. The key-encryption key comes from exactly one source, never from
+# this file or an environment variable:
+#   { source = "passphrase", file = "/etc/vta/seed-passphrase" }
+#   { source = "passphrase", credential = "vta-seed-passphrase" }  # $CREDENTIALS_DIRECTORY
+#   { source = "systemd_creds", credential = "vta-seed-kek" }      # 32-byte key
+#   { source = "tpm", pcrs = [7] }                                 # Linux, `tpm` feature
+# The KEK must be readable while setup runs (setup writes the seed).
+# [secrets]
+# backend = "encrypted_file"
+# path    = "/var/lib/vta/seed.enc"    # optional; default <data_dir>/seed.enc
+# kek     = { source = "systemd_creds", credential = "vta-seed-kek" }
+
 # Plaintext file under `data_dir`. Dev only. The wizard writes BOTH
 # `backend = "plaintext"` (which backend) and `allow_plaintext = true`
 # (yes, a cleartext master seed is acceptable) into the generated

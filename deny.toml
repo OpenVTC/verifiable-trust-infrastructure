@@ -111,6 +111,11 @@ allow = [
   # is the functionally-equivalent BSD variant we already accept.
   "MIT-0",
   "Apache-2.0",
+  # Apache-2.0 plus the LLVM exception, which only waives obligations for
+  # code compiled into a binary — strictly more permissive than Apache-2.0.
+  # Pulled in as a build dependency (target-lexicon) of tss-esapi-sys, behind
+  # vti-secrets' optional `tpm` feature (#1820).
+  "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
   "BSD-3-Clause",
   "BSL-1.0",
