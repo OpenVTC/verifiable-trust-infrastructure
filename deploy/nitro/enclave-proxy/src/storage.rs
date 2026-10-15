@@ -219,6 +219,7 @@ async fn handle_connection(
             OP_INSERT_IF_ABSENT => handle_insert_if_absent(state, &request[1..]).await,
             OP_SWAP_IF_ABSENT => handle_swap_if_absent(state, &request[1..]).await,
             OP_MOVE_IF_EQUAL => handle_move_if_equal(state, &request[1..]).await,
+            OP_APPLY_BATCH => handle_apply_batch(state, &request[1..]).await,
             _ => build_error(&format!("unknown opcode: {opcode:#04x}")),
         };
 
@@ -565,6 +566,113 @@ async fn handle_move_if_equal(state: &Arc<StorageState>, data: &[u8]) -> Vec<u8>
     .await
 }
 
+/// One OP_APPLY_BATCH precondition.
+enum BatchCheck {
+    Absent(Vec<u8>),
+    Present(Vec<u8>),
+    Equals(Vec<u8>, Vec<u8>),
+}
+
+/// One OP_APPLY_BATCH write; `None` deletes.
+type BatchWrite = (Vec<u8>, Option<Vec<u8>>);
+
+fn parse_batch(data: &[u8]) -> Result<(String, Vec<BatchCheck>, Vec<BatchWrite>), String> {
+    let (ks_name, mut offset) = decode_keyspace(data, 0)?;
+    let mut checks = Vec::new();
+    let mut writes: Vec<BatchWrite> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    while offset < data.len() {
+        let (tag, next) = decode_bytes(data, offset)?;
+        let (key, next) = decode_bytes(data, next)?;
+        offset = next;
+        let [tag] = tag else {
+            return Err(format!("batch tag of {} bytes", tag.len()));
+        };
+        let is_check = matches!(*tag, BATCH_ABSENT | BATCH_PRESENT | BATCH_EQUALS);
+        if is_check && !writes.is_empty() {
+            return Err("batch precondition after a write".into());
+        }
+        if !is_check && !seen.insert(key.to_vec()) {
+            // One sequence number per batch: two writes to a key would leave
+            // which one survives to the memtable.
+            return Err("batch writes the same key twice".into());
+        }
+        let mut field = || -> Result<Vec<u8>, String> {
+            let (v, next) = decode_bytes(data, offset)?;
+            offset = next;
+            Ok(v.to_vec())
+        };
+        match *tag {
+            BATCH_ABSENT => checks.push(BatchCheck::Absent(key.to_vec())),
+            BATCH_PRESENT => checks.push(BatchCheck::Present(key.to_vec())),
+            BATCH_EQUALS => checks.push(BatchCheck::Equals(key.to_vec(), field()?)),
+            BATCH_PUT => writes.push((key.to_vec(), Some(field()?))),
+            BATCH_DELETE => writes.push((key.to_vec(), None)),
+            other => return Err(format!("unknown batch tag {other:#04x}")),
+        }
+    }
+    if checks.is_empty() && writes.is_empty() {
+        return Err("empty batch".into());
+    }
+    if checks.len() >= u32::MAX as usize {
+        return Err("too many batch preconditions".into());
+    }
+    Ok((ks_name.to_string(), checks, writes))
+}
+
+async fn handle_apply_batch(state: &Arc<StorageState>, data: &[u8]) -> Vec<u8> {
+    let (ks_name, checks, writes) = match parse_batch(data) {
+        Ok(v) => v,
+        Err(e) => return build_error(&format!("invalid apply_batch request: {e}")),
+    };
+    let entry = match state.entry(&ks_name).await {
+        Ok(e) => e,
+        Err(e) => return build_error(&e),
+    };
+    critical_section(state, entry, move |state, ks| {
+        for (i, check) in checks.iter().enumerate() {
+            let holds = match check {
+                BatchCheck::Absent(k) => ks.contains_key(k).map(|present| !present),
+                BatchCheck::Present(k) => ks.contains_key(k),
+                BatchCheck::Equals(k, expected) => ks
+                    .get(k)
+                    .map(|current| current.is_some_and(|c| *c == **expected)),
+            };
+            match holds {
+                Ok(true) => {}
+                Ok(false) => return build_ok_u32(i as u32 + 1),
+                Err(e) => return build_error(&format!("apply_batch failed: {e}")),
+            }
+        }
+        if writes.is_empty() {
+            return build_ok_u32(0);
+        }
+        // One write batch: one journal record, so recovery after a crash
+        // replays every write or none.
+        let mut batch = state.db.batch();
+        for (k, v) in &writes {
+            match v {
+                Some(v) => batch.insert(ks, k.as_slice(), v.as_slice()),
+                None => batch.remove(ks, k.as_slice()),
+            }
+        }
+        if let Err(e) = batch.commit() {
+            return build_error(&format!("apply_batch failed: {e}"));
+        }
+        #[cfg(test)]
+        state
+            .batch_commits
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        for (k, v) in &writes {
+            if let Some(v) = v {
+                after_insert(state, &ks_name, k, v);
+            }
+        }
+        build_ok_u32(0)
+    })
+    .await
+}
+
 /// Write `value` at `new` and delete `old`, unless `new` is occupied
 /// (`Ok(false)`, nothing written). The caller holds the keyspace's lock.
 ///
@@ -640,6 +748,7 @@ mod tests {
             OP_INSERT_IF_ABSENT => handle_insert_if_absent(state, body).await,
             OP_SWAP_IF_ABSENT => handle_swap_if_absent(state, body).await,
             OP_MOVE_IF_EQUAL => handle_move_if_equal(state, body).await,
+            OP_APPLY_BATCH => handle_apply_batch(state, body).await,
             op => panic!("unexpected op {op}"),
         }
     }
@@ -683,8 +792,113 @@ mod tests {
         let caps = u32::from_be_bytes([resp[1], resp[2], resp[3], resp[4]]);
         assert_eq!(
             caps,
-            CAP_TAKE | CAP_INSERT_IF_ABSENT | CAP_SWAP_IF_ABSENT | CAP_MOVE_IF_EQUAL
+            CAP_TAKE
+                | CAP_INSERT_IF_ABSENT
+                | CAP_SWAP_IF_ABSENT
+                | CAP_MOVE_IF_EQUAL
+                | CAP_APPLY_BATCH
         );
+    }
+
+    /// An OP_APPLY_BATCH request: each entry is a tag and its fields.
+    fn batch(entries: &[(u8, &[&[u8]])]) -> Vec<u8> {
+        let mut fields: Vec<&[u8]> = Vec::new();
+        let tags: Vec<[u8; 1]> = entries.iter().map(|(t, _)| [*t]).collect();
+        for ((_, rest), tag) in entries.iter().zip(&tags) {
+            fields.push(tag);
+            fields.extend_from_slice(rest);
+        }
+        req(OP_APPLY_BATCH, &fields)
+    }
+
+    fn batch_outcome(resp: &[u8]) -> u32 {
+        assert_eq!(resp[0], STATUS_OK, "{resp:?}");
+        u32::from_be_bytes([resp[1], resp[2], resp[3], resp[4]])
+    }
+
+    /// An applied batch is one write batch (one journal record); a refused
+    /// one names the first precondition that failed and writes nothing.
+    #[tokio::test]
+    async fn apply_batch_commits_one_write_batch_or_nothing() {
+        let s = state();
+        let batches = || s.batch_commits.load(Ordering::SeqCst);
+        put(&s, b"old", b"v").await;
+
+        let r = dispatch(
+            &s,
+            &batch(&[
+                (BATCH_ABSENT, &[b"new"]),
+                (BATCH_EQUALS, &[b"old", b"v"]),
+                (BATCH_PUT, &[b"new", b"w"]),
+                (BATCH_PUT, &[b"idx", b"1"]),
+                (BATCH_DELETE, &[b"old"]),
+            ]),
+        )
+        .await;
+        assert_eq!(batch_outcome(&r), 0);
+        assert_eq!(batches(), 1);
+        assert_eq!(get(&s, b"old").await, None);
+        assert_eq!(get(&s, b"new").await, Some(b"w".to_vec()));
+        assert_eq!(get(&s, b"idx").await, Some(b"1".to_vec()));
+
+        // Each kind of precondition refusing, reported by its 1-based index.
+        let put_xy: &[&[u8]] = &[b"x", b"y"];
+        for (entries, refused) in [
+            (vec![(BATCH_ABSENT, &[&b"new"[..]][..])], 1),
+            (
+                vec![
+                    (BATCH_PRESENT, &[&b"new"[..]][..]),
+                    (BATCH_PRESENT, &[&b"old"[..]][..]),
+                ],
+                2,
+            ),
+            (vec![(BATCH_EQUALS, &[&b"new"[..], &b"other"[..]][..])], 1),
+            (vec![(BATCH_EQUALS, &[&b"old"[..], &b"v"[..]][..])], 1),
+        ] {
+            let mut entries = entries;
+            entries.push((BATCH_PUT, put_xy));
+            let r = dispatch(&s, &batch(&entries)).await;
+            assert_eq!(batch_outcome(&r), refused);
+        }
+        assert_eq!(get(&s, b"x").await, None, "refusals write nothing");
+        assert_eq!(batches(), 1);
+
+        // Preconditions only: checked, nothing committed.
+        let r = dispatch(&s, &batch(&[(BATCH_PRESENT, &[b"new"])])).await;
+        assert_eq!(batch_outcome(&r), 0);
+        assert_eq!(batches(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn apply_batch_under_concurrency_admits_exactly_one() {
+        let s = state();
+        let request = batch(&[
+            (BATCH_ABSENT, &[b"claim"]),
+            (BATCH_PUT, &[b"claim", b"v"]),
+            (BATCH_PUT, &[b"index", b"v"]),
+        ]);
+        let wins = race(&s, request, 64, |r| batch_outcome(r) == 0).await;
+        assert_eq!(wins, 1);
+    }
+
+    #[tokio::test]
+    async fn malformed_batches_are_refused_before_any_write() {
+        let s = state();
+        for bad in [
+            // A precondition after a write.
+            batch(&[(BATCH_PUT, &[b"a", b"1"]), (BATCH_ABSENT, &[b"b"])]),
+            // One key written twice.
+            batch(&[(BATCH_PUT, &[b"a", b"1"]), (BATCH_DELETE, &[b"a"])]),
+            // An unknown tag.
+            batch(&[(b'z', &[b"a"])]),
+            // A put without its value.
+            batch(&[(BATCH_PUT, &[b"a"])]),
+        ] {
+            let resp = dispatch(&s, &bad).await;
+            assert_eq!(resp[0], STATUS_ERROR, "{resp:?}");
+        }
+        assert_eq!(get(&s, b"a").await, None);
+        assert_eq!(s.batch_commits.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -894,6 +1108,7 @@ mod tests {
             OP_INSERT_IF_ABSENT,
             OP_SWAP_IF_ABSENT,
             OP_MOVE_IF_EQUAL,
+            OP_APPLY_BATCH,
         ] {
             // Keyspace only; every key/value field missing.
             let mut truncated = vec![op];

@@ -42,6 +42,17 @@ const OP_TAKE: u8 = 0x08;
 const OP_INSERT_IF_ABSENT: u8 = 0x09;
 const OP_SWAP_IF_ABSENT: u8 = 0x0A;
 const OP_MOVE_IF_EQUAL: u8 = 0x0B;
+// `[op][ks]` then length-prefixed fields: each precondition (tag, key[,
+// stored bytes]), then each write (tag, key[, value]). Applied as one write
+// batch under the keyspace lock only if every precondition holds. Answers
+// `[OK][u32]`: 0 when applied, n when precondition n-1 did not hold.
+const OP_APPLY_BATCH: u8 = 0x0C;
+
+const BATCH_ABSENT: u8 = b'a';
+const BATCH_PRESENT: u8 = b'p';
+const BATCH_EQUALS: u8 = b'e';
+const BATCH_PUT: u8 = b'i';
+const BATCH_DELETE: u8 = b'd';
 
 /// Requests that cannot modify a keyspace. Everything else is tracked as a
 /// write (`VsockKeyspaceHandle::send`).
@@ -56,6 +67,7 @@ const CAP_TAKE: u32 = 1 << 0;
 const CAP_INSERT_IF_ABSENT: u32 = 1 << 1;
 const CAP_SWAP_IF_ABSENT: u32 = 1 << 2;
 const CAP_MOVE_IF_EQUAL: u32 = 1 << 3;
+const CAP_APPLY_BATCH: u32 = 1 << 4;
 
 const MOVE_MOVED: u8 = 0;
 const MOVE_SOURCE_MISSING: u8 = 1;
@@ -661,6 +673,143 @@ impl VsockKeyspaceHandle {
         }
     }
 
+    /// See [`crate::store::KeyspaceHandle::apply_batch`]. Every key the batch
+    /// checks or writes is locked for the whole operation.
+    ///
+    /// `require_unchanged` is compared in plaintext here, in the enclave, as
+    /// in [`Self::move_if_unchanged`]: the proxy is then asked to apply only
+    /// while the row still holds the ciphertext just read, so the parent
+    /// never sees what it compares.
+    pub async fn apply_batch(&self, batch: super::Batch) -> Result<super::BatchOutcome, AppError> {
+        use super::{BatchOutcome, Check, Write};
+        let _guard = {
+            let keys = batch.keys();
+            self.locks.lock(&self.keyspace, &keys).await
+        };
+        let super::Batch { checks, writes } = batch;
+
+        // Plaintext comparisons become comparisons with the stored bytes. The
+        // keys are locked, so those bytes cannot change before the batch is
+        // applied by this enclave.
+        let mut stored_checks = Vec::with_capacity(checks.len());
+        for (i, check) in checks.into_iter().enumerate() {
+            let Check::Unchanged(k, expected) = check else {
+                stored_checks.push(check);
+                continue;
+            };
+            let current = self.get_stored(&k).await?;
+            let unchanged = match &current {
+                Some(stored) => self.maybe_decrypt(&k, stored)? == expected,
+                None => false,
+            };
+            if !unchanged {
+                // Report the first precondition that fails, as the local
+                // store does: an earlier one may fail too.
+                let first = self.first_failing(&stored_checks).await?;
+                return Ok(BatchOutcome::Refused {
+                    check: first.unwrap_or(i),
+                });
+            }
+            stored_checks.push(Check::Unchanged(k, current.unwrap_or_default()));
+        }
+
+        if writes.is_empty() {
+            return Ok(match self.first_failing(&stored_checks).await? {
+                Some(check) => BatchOutcome::Refused { check },
+                None => BatchOutcome::Applied,
+            });
+        }
+        let writes = writes
+            .into_iter()
+            .map(|w| match w {
+                Write::Put(k, v) => {
+                    let v = self.maybe_encrypt(&k, v)?;
+                    Ok(Write::Put(k, v))
+                }
+                d => Ok(d),
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
+
+        if self.has(CAP_APPLY_BATCH).await {
+            let mut p = vec![OP_APPLY_BATCH];
+            encode_keyspace(&mut p, &self.keyspace);
+            for check in &stored_checks {
+                match check {
+                    Check::Absent(k) => {
+                        encode_bytes(&mut p, &[BATCH_ABSENT]);
+                        encode_bytes(&mut p, k);
+                    }
+                    Check::Present(k) => {
+                        encode_bytes(&mut p, &[BATCH_PRESENT]);
+                        encode_bytes(&mut p, k);
+                    }
+                    Check::Unchanged(k, stored) => {
+                        encode_bytes(&mut p, &[BATCH_EQUALS]);
+                        encode_bytes(&mut p, k);
+                        encode_bytes(&mut p, stored);
+                    }
+                }
+            }
+            for write in &writes {
+                match write {
+                    Write::Put(k, v) => {
+                        encode_bytes(&mut p, &[BATCH_PUT]);
+                        encode_bytes(&mut p, k);
+                        encode_bytes(&mut p, v);
+                    }
+                    Write::Delete(k) => {
+                        encode_bytes(&mut p, &[BATCH_DELETE]);
+                        encode_bytes(&mut p, k);
+                    }
+                }
+            }
+            if let Some(resp) = self.send_atomic(&p).await? {
+                return match decode_u32(&resp)? {
+                    0 => Ok(BatchOutcome::Applied),
+                    n if (n as usize) <= stored_checks.len() => Ok(BatchOutcome::Refused {
+                        check: n as usize - 1,
+                    }),
+                    n => Err(AppError::Internal(format!(
+                        "storage proxy: batch refused on precondition {n} of {}",
+                        stored_checks.len()
+                    ))),
+                };
+            }
+        }
+
+        // Single operations: exclusive under the key locks, but a crash can
+        // land between the writes.
+        if let Some(check) = self.first_failing(&stored_checks).await? {
+            return Ok(BatchOutcome::Refused { check });
+        }
+        for write in &writes {
+            match write {
+                Write::Put(k, v) => self.put_stored(k, v).await?,
+                Write::Delete(k) => self.remove(k.clone()).await?,
+            }
+        }
+        Ok(BatchOutcome::Applied)
+    }
+
+    /// The index of the first of `checks` that does not hold, reading each
+    /// key's stored bytes. `Unchanged` here holds stored bytes, not
+    /// plaintext. The caller holds every key's lock.
+    async fn first_failing(&self, checks: &[super::Check]) -> Result<Option<usize>, AppError> {
+        use super::Check;
+        for (i, check) in checks.iter().enumerate() {
+            let current = self.get_stored(check.key()).await?;
+            let holds = match check {
+                Check::Absent(_) => current.is_none(),
+                Check::Present(_) => current.is_some(),
+                Check::Unchanged(_, stored) => current.as_ref() == Some(stored),
+            };
+            if !holds {
+                return Ok(Some(i));
+            }
+        }
+        Ok(None)
+    }
+
     /// Re-insert the exact bytes an OP_TAKE returned and the enclave could not
     /// decrypt or authenticate. The caller holds the key's lock.
     ///
@@ -893,6 +1042,23 @@ fn decode_byte(data: &[u8]) -> Result<u8, AppError> {
 
 fn decode_bool(data: &[u8]) -> Result<bool, AppError> {
     Ok(decode_byte(data)? != 0)
+}
+
+/// `[OK][u32]` → u32; an error status carries its message.
+fn decode_u32(data: &[u8]) -> Result<u32, AppError> {
+    match data.first() {
+        Some(&STATUS_OK) if data.len() >= 5 => {
+            Ok(u32::from_be_bytes([data[1], data[2], data[3], data[4]]))
+        }
+        Some(&STATUS_ERROR) => {
+            decode_ok(data)?;
+            Err(AppError::Internal("storage proxy error".into()))
+        }
+        _ => Err(AppError::Internal(format!(
+            "malformed response from storage proxy ({} bytes)",
+            data.len()
+        ))),
+    }
 }
 
 fn decode_kv_list(data: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
@@ -1195,6 +1361,18 @@ mod tests {
         assert_eq!(OP_PREFIX_ITER, 0x04);
         assert_eq!(OP_PREFIX_KEYS, 0x05);
         assert_eq!(OP_PERSIST, 0x06);
+        assert_eq!(OP_APPLY_BATCH, 0x0C);
+        assert_eq!(CAP_APPLY_BATCH, 1 << 4);
+        assert_eq!(
+            [
+                BATCH_ABSENT,
+                BATCH_PRESENT,
+                BATCH_EQUALS,
+                BATCH_PUT,
+                BATCH_DELETE
+            ],
+            *b"apeid"
+        );
     }
 
     #[test]
@@ -1265,7 +1443,8 @@ mod atomicity_tests {
     type Rows = Arc<StdMutex<HashMap<(String, Vec<u8>), Vec<u8>>>>;
 
     const BOTH: [bool; 2] = [false, true];
-    const ALL_CAPS: u32 = CAP_TAKE | CAP_INSERT_IF_ABSENT | CAP_SWAP_IF_ABSENT | CAP_MOVE_IF_EQUAL;
+    const ALL_CAPS: u32 =
+        CAP_TAKE | CAP_INSERT_IF_ABSENT | CAP_SWAP_IF_ABSENT | CAP_MOVE_IF_EQUAL | CAP_APPLY_BATCH;
 
     #[derive(Clone)]
     struct FakeParent {
@@ -1512,7 +1691,12 @@ mod atomicity_tests {
             let op = req[0];
             let atomic_op = matches!(
                 op,
-                OP_HELLO | OP_TAKE | OP_INSERT_IF_ABSENT | OP_SWAP_IF_ABSENT | OP_MOVE_IF_EQUAL
+                OP_HELLO
+                    | OP_TAKE
+                    | OP_INSERT_IF_ABSENT
+                    | OP_SWAP_IF_ABSENT
+                    | OP_MOVE_IF_EQUAL
+                    | OP_APPLY_BATCH
             );
             if atomic_op && !self.atomic.load(Ordering::SeqCst) {
                 // The real proxy's dispatcher, before these opcodes existed.
@@ -1597,6 +1781,42 @@ mod atomicity_tests {
                         }
                     };
                     vec![STATUS_OK, outcome]
+                }
+                OP_APPLY_BATCH => {
+                    let mut f = fields.iter();
+                    let mut refused = 0u32;
+                    let mut n = 0u32;
+                    let mut writes = Vec::new();
+                    while let Some(tag) = f.next() {
+                        let key = id(f.next().unwrap());
+                        match tag[0] {
+                            BATCH_ABSENT | BATCH_PRESENT | BATCH_EQUALS => {
+                                n += 1;
+                                let holds = match tag[0] {
+                                    BATCH_ABSENT => !rows.contains_key(&key),
+                                    BATCH_PRESENT => rows.contains_key(&key),
+                                    _ => rows.get(&key) == Some(f.next().unwrap()),
+                                };
+                                if !holds && refused == 0 {
+                                    refused = n;
+                                }
+                            }
+                            BATCH_PUT => writes.push((key, Some(f.next().unwrap().clone()))),
+                            BATCH_DELETE => writes.push((key, None)),
+                            t => panic!("fake parent: unexpected batch tag {t}"),
+                        }
+                    }
+                    if refused == 0 {
+                        for (k, v) in writes {
+                            match v {
+                                Some(v) => rows.insert(k, v),
+                                None => rows.remove(&k),
+                            };
+                        }
+                    }
+                    let mut out = vec![STATUS_OK];
+                    out.extend_from_slice(&refused.to_be_bytes());
+                    out
                 }
                 other => panic!("fake parent: unexpected opcode {other:#04x}"),
             }
@@ -1756,6 +1976,171 @@ mod atomicity_tests {
                 Some("v2")
             );
             assert_eq!(h.get_raw(b"old".to_vec()).await.unwrap(), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_batch_reports_every_outcome_in_both_modes() {
+        use super::super::{Batch, BatchOutcome::*};
+        for atomic in BOTH {
+            let parent = FakeParent::new(atomic);
+            let h = parent.handle().await;
+            h.insert(b"old".to_vec(), &"v1").await.unwrap();
+            let v1 = serde_json::to_vec(&"v1").unwrap();
+
+            let mut b = Batch::new();
+            b.require_absent(b"new".to_vec())
+                .require_unchanged(b"old".to_vec(), v1.clone());
+            b.insert(b"new".to_vec(), &"v2").unwrap();
+            b.insert_raw(b"idx".to_vec(), b"1".to_vec())
+                .remove(b"old".to_vec());
+            assert_eq!(h.apply_batch(b).await.unwrap(), Applied, "{}", mode(atomic));
+            assert_eq!(
+                h.get::<String>(b"new".to_vec()).await.unwrap().as_deref(),
+                Some("v2")
+            );
+            assert_eq!(
+                h.get_raw(b"idx".to_vec()).await.unwrap(),
+                Some(b"1".to_vec())
+            );
+            assert_eq!(h.get_raw(b"old".to_vec()).await.unwrap(), None);
+
+            // The first failing precondition is the one reported, whichever
+            // kind it is — including a plaintext comparison after another
+            // failing check.
+            let refused = |checks: fn(&mut Batch)| {
+                let h = h.clone();
+                async move {
+                    let mut b = Batch::new();
+                    checks(&mut b);
+                    b.insert_raw(b"x".to_vec(), b"y".to_vec());
+                    h.apply_batch(b).await.unwrap()
+                }
+            };
+            assert_eq!(
+                refused(|b| {
+                    b.require_absent(b"new".to_vec());
+                })
+                .await,
+                Refused { check: 0 },
+                "{}",
+                mode(atomic)
+            );
+            assert_eq!(
+                refused(|b| {
+                    b.require_present(b"new".to_vec())
+                        .require_present(b"old".to_vec());
+                })
+                .await,
+                Refused { check: 1 },
+                "{}",
+                mode(atomic)
+            );
+            assert_eq!(
+                refused(|b| {
+                    b.require_present(b"gone".to_vec())
+                        .require_unchanged(b"new".to_vec(), serde_json::to_vec(&"other").unwrap());
+                })
+                .await,
+                Refused { check: 0 },
+                "{}",
+                mode(atomic)
+            );
+            assert_eq!(
+                refused(|b| {
+                    b.require_present(b"new".to_vec())
+                        .require_unchanged(b"new".to_vec(), serde_json::to_vec(&"other").unwrap());
+                })
+                .await,
+                Refused { check: 1 },
+                "{}",
+                mode(atomic)
+            );
+            assert_eq!(
+                h.get_raw(b"x".to_vec()).await.unwrap(),
+                None,
+                "nothing written"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn apply_batch_under_concurrency_admits_exactly_one() {
+        use super::super::Batch;
+        for atomic in BOTH {
+            let h = FakeParent::new(atomic).handle().await;
+            let wins = race(|| {
+                let h = h.clone();
+                async move {
+                    let mut b = Batch::new();
+                    b.require_absent(b"claim".to_vec())
+                        .insert_raw(b"claim".to_vec(), b"v".to_vec())
+                        .insert_raw(b"index".to_vec(), b"v".to_vec());
+                    h.apply_batch(b).await.unwrap().is_applied()
+                }
+            })
+            .await;
+            assert_eq!(wins, 1, "{}", mode(atomic));
+        }
+    }
+
+    /// A proxy that serves OP_APPLY_BATCH gets one request for the whole
+    /// batch (plus one read per plaintext comparison); an older one gets a
+    /// read per precondition and a request per write.
+    #[tokio::test]
+    async fn an_atomic_batch_is_one_request() {
+        use super::super::Batch;
+        for (atomic, expected) in [(true, 2), (false, 5)] {
+            let parent = FakeParent::new(atomic);
+            let h = parent.handle().await;
+            h.insert(b"old".to_vec(), &"v1").await.unwrap();
+            let before = parent.requests();
+            let mut b = Batch::new();
+            b.require_absent(b"new".to_vec())
+                .require_unchanged(b"old".to_vec(), serde_json::to_vec(&"v1").unwrap())
+                .insert_raw(b"new".to_vec(), b"v2".to_vec())
+                .remove(b"old".to_vec());
+            assert!(h.apply_batch(b).await.unwrap().is_applied());
+            assert_eq!(parent.requests() - before, expected, "{}", mode(atomic));
+        }
+    }
+
+    /// `require_unchanged` is compared in plaintext by the enclave; the parent
+    /// only ever compares and stores ciphertext.
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn a_batch_never_shows_the_parent_plaintext() {
+        use super::super::{Batch, BatchOutcome::*};
+        for atomic in BOTH {
+            let parent = FakeParent::new(atomic);
+            let h = parent.handle().await.with_encryption([7u8; 32]);
+            h.insert(b"old".to_vec(), &"secret-v1").await.unwrap();
+            let mut b = Batch::new();
+            b.require_unchanged(b"old".to_vec(), serde_json::to_vec(&"secret-v1").unwrap());
+            b.insert(b"new".to_vec(), &"secret-v2").unwrap();
+            b.remove(b"old".to_vec());
+            assert_eq!(h.apply_batch(b).await.unwrap(), Applied, "{}", mode(atomic));
+
+            let mut b = Batch::new();
+            b.require_unchanged(b"new".to_vec(), serde_json::to_vec(&"secret-v1").unwrap());
+            b.remove(b"new".to_vec());
+            assert_eq!(
+                h.apply_batch(b).await.unwrap(),
+                Refused { check: 0 },
+                "{}: a stale plaintext is refused",
+                mode(atomic)
+            );
+            for row in parent.stored() {
+                assert!(
+                    !row.windows(6).any(|w| w == b"secret"),
+                    "{}: plaintext reached the parent",
+                    mode(atomic)
+                );
+            }
+            assert_eq!(
+                h.get::<String>(b"new".to_vec()).await.unwrap().as_deref(),
+                Some("secret-v2")
+            );
         }
     }
 

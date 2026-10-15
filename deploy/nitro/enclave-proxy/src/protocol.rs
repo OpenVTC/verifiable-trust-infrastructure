@@ -47,14 +47,29 @@ pub const OP_SWAP_IF_ABSENT: u8 = 0x0A;
 /// `[op][ks][old][expected][new][value]` → `[OK][outcome]`: move only while
 /// `old` holds exactly `expected` and `new` is absent.
 pub const OP_MOVE_IF_EQUAL: u8 = 0x0B;
+/// `[op][ks]` then length-prefixed fields: each precondition as a tag and a
+/// key (plus the expected stored bytes for `BATCH_EQUALS`), then each write as
+/// a tag and a key (plus the value for `BATCH_PUT`). Every precondition comes
+/// before every write. → `[OK][u32]`: 0 when every precondition held and the
+/// writes were committed as one write batch, n when precondition n-1 did not
+/// hold and nothing was written.
+pub const OP_APPLY_BATCH: u8 = 0x0C;
+
+/// OP_APPLY_BATCH tags.
+pub const BATCH_ABSENT: u8 = b'a';
+pub const BATCH_PRESENT: u8 = b'p';
+pub const BATCH_EQUALS: u8 = b'e';
+pub const BATCH_PUT: u8 = b'i';
+pub const BATCH_DELETE: u8 = b'd';
 
 pub const CAP_TAKE: u32 = 1 << 0;
 pub const CAP_INSERT_IF_ABSENT: u32 = 1 << 1;
 pub const CAP_SWAP_IF_ABSENT: u32 = 1 << 2;
 pub const CAP_MOVE_IF_EQUAL: u32 = 1 << 3;
+pub const CAP_APPLY_BATCH: u32 = 1 << 4;
 /// Everything this proxy serves.
 pub const CAPABILITIES: u32 =
-    CAP_TAKE | CAP_INSERT_IF_ABSENT | CAP_SWAP_IF_ABSENT | CAP_MOVE_IF_EQUAL;
+    CAP_TAKE | CAP_INSERT_IF_ABSENT | CAP_SWAP_IF_ABSENT | CAP_MOVE_IF_EQUAL | CAP_APPLY_BATCH;
 
 /// OP_MOVE_IF_EQUAL outcomes (the enclave's `MoveOutcome`).
 pub const MOVE_MOVED: u8 = 0;

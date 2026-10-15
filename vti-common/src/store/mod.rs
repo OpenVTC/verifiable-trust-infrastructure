@@ -454,6 +454,179 @@ impl KeyspaceHandle {
             }
         }
     }
+
+    /// Apply `batch`'s writes only if every one of its preconditions holds,
+    /// as one operation.
+    ///
+    /// Atomic with respect to every other multi-step operation on this
+    /// keyspace (exactly one of two racing batches requiring the same key
+    /// absent is applied) and, on the local store and on a proxy that serves
+    /// OP_APPLY_BATCH, with respect to a crash: the writes are one journal
+    /// record, so recovery replays all of them or none. A proxy without it
+    /// gets the batch as single operations under the enclave's key locks —
+    /// still exclusive, but a crash can land between them, as with every
+    /// other atomic operation's fallback.
+    ///
+    /// A refused batch writes nothing. A batch with no writes only checks.
+    pub async fn apply_batch(&self, batch: Batch) -> Result<BatchOutcome, AppError> {
+        batch.validate()?;
+        match self {
+            KeyspaceHandle::Local(h) => h.apply_batch(batch).await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.apply_batch(batch).await,
+        }
+    }
+}
+
+// ===========================================================================
+// Batch — several writes to one keyspace and their preconditions, as one
+// ===========================================================================
+
+/// One precondition of a [`Batch`], checked against the keyspace as it is
+/// before any of the batch's writes.
+#[derive(Clone, Debug)]
+pub(crate) enum Check {
+    /// No row at the key.
+    Absent(Vec<u8>),
+    /// A row at the key, whatever it holds.
+    Present(Vec<u8>),
+    /// A row at the key holding exactly these plaintext bytes.
+    Unchanged(Vec<u8>, Vec<u8>),
+}
+
+impl Check {
+    #[cfg(feature = "vsock-store")]
+    pub(crate) fn key(&self) -> &[u8] {
+        match self {
+            Check::Absent(k) | Check::Present(k) | Check::Unchanged(k, _) => k,
+        }
+    }
+}
+
+/// One write of a [`Batch`]. A `Put` value is plaintext until the batch is
+/// applied, when it is encrypted for its own key like any other insert.
+#[derive(Clone, Debug)]
+pub(crate) enum Write {
+    Put(Vec<u8>, Vec<u8>),
+    Delete(Vec<u8>),
+}
+
+impl Write {
+    pub(crate) fn key(&self) -> &[u8] {
+        match self {
+            Write::Put(k, _) | Write::Delete(k) => k,
+        }
+    }
+}
+
+/// Writes to one keyspace, applied together only if every precondition
+/// holds — see [`KeyspaceHandle::apply_batch`].
+///
+/// Preconditions are checked against the keyspace before any of the writes;
+/// a key may be written at most once per batch.
+#[derive(Clone, Debug, Default)]
+pub struct Batch {
+    pub(crate) checks: Vec<Check>,
+    pub(crate) writes: Vec<Write>,
+}
+
+impl Batch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Apply only if no row is stored at `key`.
+    pub fn require_absent(&mut self, key: impl Into<Vec<u8>>) -> &mut Self {
+        self.checks.push(Check::Absent(key.into()));
+        self
+    }
+
+    /// Apply only if a row is stored at `key`.
+    pub fn require_present(&mut self, key: impl Into<Vec<u8>>) -> &mut Self {
+        self.checks.push(Check::Present(key.into()));
+        self
+    }
+
+    /// Apply only if the row at `key` still holds exactly `expected` — its
+    /// plaintext as [`KeyspaceHandle::get_raw`] returned it. A missing row
+    /// fails this check.
+    pub fn require_unchanged(
+        &mut self,
+        key: impl Into<Vec<u8>>,
+        expected: impl Into<Vec<u8>>,
+    ) -> &mut Self {
+        self.checks
+            .push(Check::Unchanged(key.into(), expected.into()));
+        self
+    }
+
+    /// Store `value` (serde JSON, as [`KeyspaceHandle::insert`]) at `key`.
+    pub fn insert<V: Serialize>(
+        &mut self,
+        key: impl Into<Vec<u8>>,
+        value: &V,
+    ) -> Result<&mut Self, AppError> {
+        self.writes
+            .push(Write::Put(key.into(), serde_json::to_vec(value)?));
+        Ok(self)
+    }
+
+    /// Store raw bytes at `key`, as [`KeyspaceHandle::insert_raw`].
+    pub fn insert_raw(&mut self, key: impl Into<Vec<u8>>, value: impl Into<Vec<u8>>) -> &mut Self {
+        self.writes.push(Write::Put(key.into(), value.into()));
+        self
+    }
+
+    /// Delete the row at `key`, if any.
+    pub fn remove(&mut self, key: impl Into<Vec<u8>>) -> &mut Self {
+        self.writes.push(Write::Delete(key.into()));
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.checks.is_empty() && self.writes.is_empty()
+    }
+
+    /// Refuse a batch that writes one key twice. Within one fjall write
+    /// batch every item shares a sequence number, so which of two writes to a
+    /// key survives would be decided by the memtable, not by the caller.
+    pub(crate) fn validate(&self) -> Result<(), AppError> {
+        let mut seen = std::collections::HashSet::new();
+        for w in &self.writes {
+            if !seen.insert(w.key()) {
+                return Err(AppError::Internal(
+                    "store batch writes the same key twice".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Every key the batch checks or writes, for locking.
+    #[cfg(feature = "vsock-store")]
+    pub(crate) fn keys(&self) -> Vec<&[u8]> {
+        self.checks
+            .iter()
+            .map(Check::key)
+            .chain(self.writes.iter().map(Write::key))
+            .collect()
+    }
+}
+
+/// What [`KeyspaceHandle::apply_batch`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchOutcome {
+    /// Every precondition held and every write was applied.
+    Applied,
+    /// The precondition at this index (in the order they were added) did not
+    /// hold. Nothing was written.
+    Refused { check: usize },
+}
+
+impl BatchOutcome {
+    pub fn is_applied(self) -> bool {
+        self == BatchOutcome::Applied
+    }
 }
 
 /// What [`KeyspaceHandle::move_if_unchanged`] did.
@@ -1004,6 +1177,71 @@ impl LocalKeyspaceHandle {
         .await
     }
 
+    /// See [`KeyspaceHandle::apply_batch`]. The checks and the commit run
+    /// under the per-keyspace write lock (see [`WriteLocks`]), and the writes
+    /// are one fjall write batch — one journal record.
+    pub async fn apply_batch(&self, batch: Batch) -> Result<BatchOutcome, AppError> {
+        let Batch { checks, writes } = batch;
+        let writes = writes
+            .into_iter()
+            .map(|w| match w {
+                Write::Put(k, v) => {
+                    let v = self.maybe_encrypt(&k, v)?;
+                    Ok(Write::Put(k, v))
+                }
+                d => Ok(d),
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
+        let db = self.db.clone();
+        let ks = self.keyspace.clone();
+        let lock = self.write_lock.clone();
+        let write = self.writes.begin().known_on_drop();
+        #[cfg(feature = "encryption")]
+        let enc_key = self.encryption_key.clone();
+        #[cfg(feature = "encryption")]
+        let name = self.name.clone();
+        blocking_with_timeout(move || {
+            let _guard = lock_writes(&lock);
+            // Ends the write on every exit path, after anything written here.
+            let _write = write;
+            for (i, check) in checks.iter().enumerate() {
+                let holds = match check {
+                    Check::Absent(k) => !ks.contains_key(k)?,
+                    Check::Present(k) => ks.contains_key(k)?,
+                    Check::Unchanged(k, expected) => match ks.get(k)? {
+                        None => false,
+                        Some(stored) => {
+                            #[cfg(feature = "encryption")]
+                            let current = {
+                                let key = enc_key.as_ref().map(|arc| &***arc);
+                                encryption::maybe_decrypt_bytes(key, &name, k, &stored)?
+                            };
+                            #[cfg(not(feature = "encryption"))]
+                            let current = stored.to_vec();
+                            current == *expected
+                        }
+                    },
+                };
+                if !holds {
+                    return Ok(BatchOutcome::Refused { check: i });
+                }
+            }
+            if writes.is_empty() {
+                return Ok(BatchOutcome::Applied);
+            }
+            let mut batch = db.batch();
+            for w in writes {
+                match w {
+                    Write::Put(k, v) => batch.insert(&ks, k, v),
+                    Write::Delete(k) => batch.remove(&ks, k),
+                }
+            }
+            batch.commit()?;
+            Ok(BatchOutcome::Applied)
+        })
+        .await
+    }
+
     fn maybe_encrypt(&self, store_key: &[u8], plaintext: Vec<u8>) -> Result<Vec<u8>, AppError> {
         #[cfg(feature = "encryption")]
         {
@@ -1238,6 +1476,129 @@ mod tests {
         let before = journal_seqno(&store);
         assert!(!ks.swap("c", "d", &"row".to_string()).await.unwrap());
         assert_eq!(journal_seqno(&store), before, "refusal writes nothing");
+    }
+
+    /// An applied batch is one journal record — every write lands under one
+    /// sequence number, so recovery replays all of them or none — and a
+    /// refused one writes nothing.
+    #[tokio::test]
+    async fn apply_batch_commits_one_journal_record_or_nothing() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("test").unwrap();
+        ks.insert("old", &"v1".to_string()).await.unwrap();
+        let v1 = ks.get_raw("old").await.unwrap().unwrap();
+
+        let mut b = Batch::new();
+        b.require_absent("new").require_unchanged("old", v1.clone());
+        b.insert("new", &"v2".to_string()).unwrap();
+        b.insert_raw("idx:a", "1")
+            .insert_raw("idx:b", "1")
+            .remove("old");
+        let before = journal_seqno(&store);
+        assert_eq!(ks.apply_batch(b).await.unwrap(), BatchOutcome::Applied);
+        assert_eq!(journal_seqno(&store) - before, 1, "one journal record");
+        assert_eq!(
+            ks.get::<String>("new").await.unwrap().as_deref(),
+            Some("v2")
+        );
+        assert!(ks.get_raw("idx:a").await.unwrap().is_some());
+        assert!(ks.get_raw("idx:b").await.unwrap().is_some());
+        assert!(ks.get_raw("old").await.unwrap().is_none());
+
+        // Refused: the stale `old` comparison. Nothing written.
+        let mut b = Batch::new();
+        b.require_absent("other").require_unchanged("new", v1);
+        b.insert_raw("x", "y");
+        let before = journal_seqno(&store);
+        assert_eq!(
+            ks.apply_batch(b).await.unwrap(),
+            BatchOutcome::Refused { check: 1 }
+        );
+        assert_eq!(journal_seqno(&store), before, "refusal writes nothing");
+        assert!(ks.get_raw("x").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_batch_reports_the_first_failing_precondition() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("test").unwrap();
+        ks.insert("a", &"v".to_string()).await.unwrap();
+        let v = ks.get_raw("a").await.unwrap().unwrap();
+        let outcome = |b: Batch| {
+            let ks = ks.clone();
+            async move { ks.apply_batch(b).await.unwrap() }
+        };
+
+        let mut b = Batch::new();
+        b.require_present("a")
+            .require_absent("a")
+            .require_present("missing");
+        assert_eq!(outcome(b).await, BatchOutcome::Refused { check: 1 });
+
+        let mut b = Batch::new();
+        b.require_unchanged("missing", v.clone());
+        assert_eq!(outcome(b).await, BatchOutcome::Refused { check: 0 });
+
+        // Preconditions only: checked, nothing written.
+        let mut b = Batch::new();
+        b.require_present("a").require_unchanged("a", v);
+        let before = journal_seqno(&store);
+        assert_eq!(outcome(b).await, BatchOutcome::Applied);
+        assert_eq!(journal_seqno(&store), before);
+    }
+
+    #[tokio::test]
+    async fn apply_batch_refuses_a_key_written_twice() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("test").unwrap();
+        let mut b = Batch::new();
+        b.insert_raw("k", "1").remove("k");
+        assert!(ks.apply_batch(b).await.is_err());
+        assert!(ks.get_raw("k").await.unwrap().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn apply_batch_under_concurrency_admits_exactly_one() {
+        let (store, _dir) = temp_store();
+        let mut handles = Vec::new();
+        for n in 0..16 {
+            let ks = store.keyspace("test").unwrap();
+            handles.push(tokio::spawn(async move {
+                let mut b = Batch::new();
+                b.require_absent("claim")
+                    .insert_raw("claim", format!("{n}"))
+                    .insert_raw(format!("by:{n}"), "1");
+                ks.apply_batch(b).await.unwrap().is_applied()
+            }));
+        }
+        let mut applied = 0;
+        for h in handles {
+            if h.await.unwrap() {
+                applied += 1;
+            }
+        }
+        assert_eq!(applied, 1, "exactly one batch may claim the key");
+        let ks = store.keyspace("test").unwrap();
+        assert_eq!(ks.prefix_keys("by:").await.unwrap().len(), 1);
+    }
+
+    /// `require_unchanged` compares plaintext, whatever ciphertext a fresh
+    /// nonce gave the stored row.
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn apply_batch_compares_plaintext_on_an_encrypted_keyspace() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("test").unwrap().with_encryption([9u8; 32]);
+        ks.insert("a", &"secret".to_string()).await.unwrap();
+        let plain = ks.get_raw("a").await.unwrap().unwrap();
+        let mut b = Batch::new();
+        b.require_unchanged("a", plain);
+        b.insert("a", &"secret-2".to_string()).unwrap();
+        assert!(ks.apply_batch(b).await.unwrap().is_applied());
+        assert_eq!(
+            ks.get::<String>("a").await.unwrap().as_deref(),
+            Some("secret-2")
+        );
     }
 
     #[tokio::test]

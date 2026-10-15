@@ -26,7 +26,7 @@
 //! See [`super::storage`] for the primary-key helpers.
 
 use vti_common::error::AppError;
-use vti_common::store::KeyspaceHandle;
+use vti_common::store::{Batch, KeyspaceHandle};
 
 use super::model::{IndexField, StoredCredential};
 
@@ -82,33 +82,34 @@ fn id_from_index_key(key: &[u8]) -> Option<String> {
     std::str::from_utf8(id).ok().map(|s| s.to_string())
 }
 
-/// Insert every index entry for `cred`. Idempotent: re-inserting the same
-/// credential overwrites the same sentinel rows. Call **after** writing the
-/// primary record.
-pub(crate) async fn insert_for(
-    vault: &KeyspaceHandle,
-    cred: &StoredCredential,
-) -> Result<(), AppError> {
-    for (field, value) in cred.index_terms() {
-        vault
-            .insert_raw(index_key(field, &value, &cred.id), SENTINEL.to_vec())
-            .await?;
-    }
-    Ok(())
+/// Every index key `cred` produces.
+fn index_keys(cred: &StoredCredential) -> std::collections::BTreeSet<Vec<u8>> {
+    cred.index_terms()
+        .into_iter()
+        .map(|(field, value)| index_key(field, &value, &cred.id))
+        .collect()
 }
 
-/// Remove every index entry that `cred` would have produced. Used both by
-/// delete and by the update path (remove-old then insert-new), so a status
-/// or community change never leaves a stale index row pointing at the
-/// credential under its previous value.
-pub(crate) async fn remove_for(
-    vault: &KeyspaceHandle,
-    cred: &StoredCredential,
-) -> Result<(), AppError> {
-    for (field, value) in cred.index_terms() {
-        vault.remove(index_key(field, &value, &cred.id)).await?;
+/// Stage into `batch` the index changes that take `prev`'s entries to
+/// `next`'s: delete the entries only `prev` had, write every entry `next`
+/// has. `None` on either side is "no record". Committed in the same batch as
+/// the primary record, so the record and its index entries change together
+/// — a crash or a concurrent writer can never leave an index row pointing at
+/// this credential under a value it no longer holds, nor a record missing
+/// one of its rows.
+pub(crate) fn stage_reindex(
+    batch: &mut Batch,
+    prev: Option<&StoredCredential>,
+    next: Option<&StoredCredential>,
+) {
+    let old = prev.map(index_keys).unwrap_or_default();
+    let new = next.map(index_keys).unwrap_or_default();
+    for key in old.difference(&new) {
+        batch.remove(key.clone());
     }
-    Ok(())
+    for key in new {
+        batch.insert_raw(key, SENTINEL.to_vec());
+    }
 }
 
 /// Scan the index for every credential id stored under `(field, value)`.

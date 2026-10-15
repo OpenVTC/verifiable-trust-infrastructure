@@ -1,5 +1,5 @@
 use crate::error::AppError;
-use crate::store::KeyspaceHandle;
+use crate::store::{Batch, KeyspaceHandle};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -535,10 +535,10 @@ pub async fn resolve_did_session(
 ///
 /// Issuing a token *is* making it current — login and rotation are the
 /// only callers — so the two writes live together here rather than
-/// relying on every caller to remember the second. The current-token
-/// record is written first: while the index entry does not yet exist
-/// the token cannot be presented, so no reader can observe an index
-/// entry whose token is not yet current.
+/// relying on every caller to remember the second. They are one store
+/// batch: no reader, and no recovery after a crash, can observe an index
+/// entry whose token is not yet current, or a current token that cannot
+/// be presented.
 ///
 /// A token whose index entry outlives its currency — the previous login's,
 /// or a parallel chain's — is refused by `/auth/refresh`
@@ -549,15 +549,15 @@ pub async fn store_refresh_index(
     token: &str,
     session_id: &str,
 ) -> Result<(), AppError> {
-    sessions
+    let mut batch = Batch::new();
+    batch
         .insert_raw(
             current_refresh_key(session_id),
             refresh_token_hash(token).into_bytes(),
         )
-        .await?;
-    sessions
-        .insert_raw(refresh_key(token), session_id.as_bytes().to_vec())
-        .await
+        .insert_raw(refresh_key(token), session_id.as_bytes().to_vec());
+    sessions.apply_batch(batch).await?;
+    Ok(())
 }
 
 /// Hash of the refresh token `session_id` currently issues, if recorded.
