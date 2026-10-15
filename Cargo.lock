@@ -11800,6 +11800,7 @@ dependencies = [
  "rcgen 0.14.10",
  "regorus",
  "reqwest",
+ "room-host",
  "serde",
  "serde_ignored",
  "serde_json",
@@ -12339,6 +12340,36 @@ dependencies = [
  "tokio",
  "unsigned-varint",
  "url",
+]
+
+[[package]]
+name = "vti-witness"
+version = "0.1.0"
+dependencies = [
+ "affinidi-did-resolver-cache-sdk",
+ "affinidi-messaging-core",
+ "affinidi-messaging-sdk",
+ "affinidi-secrets-resolver",
+ "affinidi-tdk",
+ "anyhow",
+ "chrono",
+ "clap",
+ "futures-util",
+ "rand 0.10.2",
+ "serde",
+ "serde_ignored",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "trust-tasks-didcomm",
+ "trust-tasks-rs",
+ "uuid",
+ "vta-sdk",
+ "vti-common",
+ "vti-secrets",
 ]
 
 [[package]]
