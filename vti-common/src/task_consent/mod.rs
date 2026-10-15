@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::AppError;
-use crate::store::KeyspaceHandle;
+use crate::store::{Batch, KeyspaceHandle};
 
 const PENDING_PREFIX: &[u8] = b"pending:";
 const GRANT_PREFIX: &[u8] = b"grant:";
@@ -296,18 +296,24 @@ fn decode<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, AppError> {
 
 // ── Pending ────────────────────────────────────────────────────────────────
 
+/// How many times a read-modify-write of one pending request re-reads it after
+/// another writer changed it between the read and the conditional write.
+///
+/// An attempt is lost only to another decision on the same request that was
+/// applied, so a writer loses at most once per concurrent approver; the bound
+/// only stops a pathological stream from holding a caller forever.
+const WRITE_ATTEMPTS: usize = 64;
+
+/// Store a pending request and its wire index, as one store batch — an index
+/// without its pending (or the reverse) would leave a decision unresolvable.
 pub async fn store_pending(ks: &KeyspaceHandle, p: &PendingTaskConsent) -> Result<(), AppError> {
-    let key = String::from_utf8(pending_key(&p.digest))
-        .map_err(|e| AppError::Internal(format!("pending key not utf-8: {e}")))?;
-    ks.insert(key, p).await?;
+    let mut batch = Batch::new();
+    batch.insert(pending_key(&p.digest), p)?;
     // Index the wire digest, since that is the only one an approver's decision
     // can carry back to us.
-    ks.insert_raw(
-        String::from_utf8(wire_index_key(&p.wire_digest))
-            .map_err(|e| AppError::Internal(format!("wire index key not utf-8: {e}")))?,
-        p.digest.as_bytes().to_vec(),
-    )
-    .await
+    batch.insert_raw(wire_index_key(&p.wire_digest), p.digest.as_bytes().to_vec());
+    ks.apply_batch(batch).await?;
+    Ok(())
 }
 
 /// Resolve the salted wire digest an approver signed back to the internal digest
@@ -333,57 +339,144 @@ pub async fn get_pending(
     digest: &str,
     now: u64,
 ) -> Result<Option<PendingTaskConsent>, AppError> {
+    Ok(read_live_pending(ks, digest, now).await?.map(|(_, p)| p))
+}
+
+/// The live pending at `digest` as stored (plaintext, for a `require_unchanged`
+/// precondition) and as parsed. Sweeps an expired one — only while it is still
+/// the expired row read, so a fresh request re-stored at the same digest in the
+/// meantime is not swept with it.
+async fn read_live_pending(
+    ks: &KeyspaceHandle,
+    digest: &str,
+    now: u64,
+) -> Result<Option<(Vec<u8>, PendingTaskConsent)>, AppError> {
     let key = pending_key(digest);
     let Some(b) = ks.get_raw(key.clone()).await? else {
         return Ok(None);
     };
     let p: PendingTaskConsent = decode(&b)?;
     if p.expires_at <= now {
-        ks.remove(key).await?;
-        ks.remove(wire_index_key(&p.wire_digest)).await?;
+        let mut batch = Batch::new();
+        batch
+            .require_unchanged(key.clone(), b)
+            .remove(key)
+            .remove(wire_index_key(&p.wire_digest));
+        ks.apply_batch(batch).await?;
         return Ok(None);
     }
-    Ok(Some(p))
+    Ok(Some((b, p)))
 }
 
-/// Delete a pending request and its wire index. Takes the record rather than a
-/// digest so both keys are always removed together — an orphaned index would
-/// resolve to a pending that no longer exists.
+/// Delete a pending request and its wire index, as one store batch. Takes the
+/// record rather than a digest so both keys are always removed together — an
+/// orphaned index would resolve to a pending that no longer exists.
 pub async fn delete_pending(ks: &KeyspaceHandle, p: &PendingTaskConsent) -> Result<(), AppError> {
-    ks.remove(pending_key(&p.digest)).await?;
-    ks.remove(wire_index_key(&p.wire_digest)).await
+    let mut batch = Batch::new();
+    batch
+        .remove(pending_key(&p.digest))
+        .remove(wire_index_key(&p.wire_digest));
+    ks.apply_batch(batch).await?;
+    Ok(())
 }
 
 /// Record an approval (idempotent per approver) and return the updated pending.
 /// `Ok(None)` if there is no live pending consent for the digest. The caller
-/// decides whether `approvals.len() >= min_approvals` and, if so, issues a grant.
+/// decides whether `approvals.len() >= min_approvals` and, if so, issues a grant
+/// with [`grant_from_pending`].
+///
+/// The write applies only while the pending is still the row read, so it can
+/// neither lose a concurrent approver's signature nor resurrect a request a
+/// concurrent denial (or grant) deleted — a resurrected pending would let a
+/// later approval reach the threshold of a request that was refused.
 pub async fn add_approval(
     ks: &KeyspaceHandle,
     digest: &str,
     approver_did: &str,
     now: u64,
 ) -> Result<Option<PendingTaskConsent>, AppError> {
-    let Some(mut p) = get_pending(ks, digest, now).await? else {
-        return Ok(None);
-    };
-    if !p.approvals.iter().any(|a| a == approver_did) {
+    for _ in 0..WRITE_ATTEMPTS {
+        let Some((raw, mut p)) = read_live_pending(ks, digest, now).await? else {
+            return Ok(None);
+        };
+        if p.approvals.iter().any(|a| a == approver_did) {
+            return Ok(Some(p));
+        }
         p.approvals.push(approver_did.to_string());
-        store_pending(ks, &p).await?;
+        let key = pending_key(digest);
+        let mut batch = Batch::new();
+        batch.require_unchanged(key.clone(), raw).insert(key, &p)?;
+        if ks.apply_batch(batch).await?.is_applied() {
+            return Ok(Some(p));
+        }
     }
-    Ok(Some(p))
+    Err(AppError::Conflict(format!(
+        "task-consent pending {digest} kept changing while an approval was recorded"
+    )))
+}
+
+/// Mint `grant` from the pending request it completes and retire that request,
+/// as one store batch: the grant is written, and the pending and its wire index
+/// removed, only while the pending is still live and still carries every
+/// approval the grant names.
+///
+/// Returns `false` (nothing written) when the pending is gone — a concurrent
+/// denial deleted it, another approval already minted the grant, or it lapsed.
+/// Writing the grant and deleting the pending separately let a denial landing
+/// between an approval and the grant be overridden by the grant, and two
+/// approvals crossing the threshold together each mint one.
+pub async fn grant_from_pending(
+    ks: &KeyspaceHandle,
+    grant: &TaskConsentGrant,
+    now: u64,
+) -> Result<bool, AppError> {
+    for _ in 0..WRITE_ATTEMPTS {
+        let Some((raw, p)) = read_live_pending(ks, &grant.digest, now).await? else {
+            return Ok(false);
+        };
+        if p.requester_did != grant.requester_did
+            || p.type_uri != grant.type_uri
+            || !grant.approvers.iter().all(|a| p.approvals.contains(a))
+            || (p.approvals.len() as u32) < p.min_approvals
+        {
+            return Ok(false);
+        }
+        let key = pending_key(&p.digest);
+        let mut batch = Batch::new();
+        batch
+            .require_unchanged(key.clone(), raw)
+            .insert(grant_key(&grant.requester_did, &grant.digest), grant)?
+            .remove(key)
+            .remove(wire_index_key(&p.wire_digest));
+        if ks.apply_batch(batch).await?.is_applied() {
+            return Ok(true);
+        }
+    }
+    Err(AppError::Conflict(format!(
+        "task-consent pending {} kept changing while its grant was minted",
+        grant.digest
+    )))
 }
 
 /// Prune expired pendings and lapsed grants. Both paths already expire lazily on
 /// read; this bounds the space an unanswered request can hold indefinitely.
+///
+/// Each removal applies only while the row is still the expired one read, so a
+/// request or grant re-stored at the same key meanwhile survives.
 pub async fn sweep_expired(ks: &KeyspaceHandle, now: u64) -> Result<usize, AppError> {
     let mut pruned = 0usize;
 
     for (key, value) in ks.prefix_iter_raw("pending:").await? {
         match serde_json::from_slice::<PendingTaskConsent>(&value) {
             Ok(p) if p.expires_at <= now => {
-                ks.remove(key).await?;
-                ks.remove(wire_index_key(&p.wire_digest)).await?;
-                pruned += 1;
+                let mut batch = Batch::new();
+                batch
+                    .require_unchanged(key.clone(), value)
+                    .remove(key)
+                    .remove(wire_index_key(&p.wire_digest));
+                if ks.apply_batch(batch).await?.is_applied() {
+                    pruned += 1;
+                }
             }
             Ok(_) => {}
             Err(e) => tracing::debug!(error = %e, "task-consent sweeper: unreadable pending row"),
@@ -393,8 +486,11 @@ pub async fn sweep_expired(ks: &KeyspaceHandle, now: u64) -> Result<usize, AppEr
     for (key, value) in ks.prefix_iter_raw("grant:").await? {
         match serde_json::from_slice::<TaskConsentGrant>(&value) {
             Ok(g) if g.expires_at <= now => {
-                ks.remove(key).await?;
-                pruned += 1;
+                let mut batch = Batch::new();
+                batch.require_unchanged(key.clone(), value).remove(key);
+                if ks.apply_batch(batch).await?.is_applied() {
+                    pruned += 1;
+                }
             }
             Ok(_) => {}
             Err(e) => tracing::debug!(error = %e, "task-consent sweeper: unreadable grant row"),
@@ -404,17 +500,34 @@ pub async fn sweep_expired(ks: &KeyspaceHandle, now: u64) -> Result<usize, AppEr
     Ok(pruned)
 }
 
+/// Remove a pending request and its wire index only if the pending is still
+/// stored, as one store batch. Returns whether it was there to remove — `false`
+/// means a concurrent decision already resolved it (an approval minted its
+/// grant, or another denial), so the caller must not report it as denied.
+pub async fn remove_pending_if_present(
+    ks: &KeyspaceHandle,
+    p: &PendingTaskConsent,
+) -> Result<bool, AppError> {
+    let mut batch = Batch::new();
+    batch
+        .require_present(pending_key(&p.digest))
+        .remove(pending_key(&p.digest))
+        .remove(wire_index_key(&p.wire_digest));
+    Ok(ks.apply_batch(batch).await?.is_applied())
+}
+
 // ── Grant ──────────────────────────────────────────────────────────────────
 
 pub async fn store_grant(ks: &KeyspaceHandle, g: &TaskConsentGrant) -> Result<(), AppError> {
-    let key = String::from_utf8(grant_key(&g.requester_did, &g.digest))
-        .map_err(|e| AppError::Internal(format!("grant key not utf-8: {e}")))?;
-    ks.insert(key, g).await
+    ks.insert(grant_key(&g.requester_did, &g.digest), g).await
 }
 
 /// Consume a valid grant for `(requester, digest)` — single-use: on a hit the
 /// grant is removed before returning. Returns `None` if absent or expired (an
 /// expired grant is also removed). This is the gate's allow-path check.
+///
+/// The read and the removal are one atomic take, so of two re-submits racing
+/// on one grant exactly one receives it.
 ///
 /// `type_uri` is re-asserted against the grant even though [`payload_digest`]
 /// already folds it in: the digest binding is the load-bearing defence, and this
@@ -426,13 +539,11 @@ pub async fn consume_grant(
     digest: &str,
     now: u64,
 ) -> Result<Option<TaskConsentGrant>, AppError> {
-    let key = grant_key(requester_did, digest);
-    let Some(bytes) = ks.get_raw(key.clone()).await? else {
+    // Remove either way: a hit is single-use, an expired grant is swept.
+    let Some(bytes) = ks.take_raw(grant_key(requester_did, digest)).await? else {
         return Ok(None);
     };
     let grant: TaskConsentGrant = decode(&bytes)?;
-    // Remove either way: a hit is single-use, an expired grant is swept.
-    ks.remove(key).await?;
     if grant.expires_at <= now {
         return Ok(None);
     }
@@ -465,7 +576,10 @@ pub async fn get_grant(
     };
     let grant: TaskConsentGrant = decode(&bytes)?;
     if grant.expires_at <= now {
-        ks.remove(key).await?;
+        // Only the expired row read: a fresh grant stored meanwhile stays.
+        let mut batch = Batch::new();
+        batch.require_unchanged(key.clone(), bytes).remove(key);
+        ks.apply_batch(batch).await?;
         return Ok(None);
     }
     Ok(Some(grant))
@@ -862,5 +976,191 @@ mod tests {
             err.to_string().contains("type mismatch"),
             "expected a type-mismatch refusal, got: {err}"
         );
+    }
+
+    // ── Concurrency: every multi-step write above is one conditional batch ──
+
+    const ROUNDS: usize = 40;
+    const RACERS: usize = 16;
+
+    /// Single use under contention: of many re-submits racing on one grant,
+    /// exactly one receives it. A get-then-remove handed it to several.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_consumes_spend_a_grant_exactly_once() {
+        let (ks, _d) = temp_ks().await;
+        for _ in 0..ROUNDS {
+            store_grant(&ks, &grant("d1", 500)).await.unwrap();
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(RACERS));
+            let mut tasks = Vec::new();
+            for _ in 0..RACERS {
+                let ks = ks.clone();
+                let barrier = barrier.clone();
+                tasks.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    consume_grant(&ks, "did:key:zReq", T_UPDATE, "d1", 200)
+                        .await
+                        .unwrap()
+                        .is_some()
+                }));
+            }
+            let mut hits = 0;
+            for t in tasks {
+                hits += t.await.unwrap() as usize;
+            }
+            assert_eq!(hits, 1, "a grant must be spent exactly once");
+        }
+    }
+
+    /// Distinct approvers deciding together must all be counted. An unlocked
+    /// read-then-store let each overwrite the others' signatures.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_approvals_are_never_lost() {
+        let (ks, _d) = temp_ks().await;
+        for round in 0..ROUNDS {
+            let digest = format!("d{round}");
+            store_pending(&ks, &pending(&digest, RACERS as u32))
+                .await
+                .unwrap();
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(RACERS));
+            let mut tasks = Vec::new();
+            for i in 0..RACERS {
+                let (ks, barrier, digest) = (ks.clone(), barrier.clone(), digest.clone());
+                tasks.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    add_approval(&ks, &digest, &format!("did:key:z{i}"), 200)
+                        .await
+                        .unwrap()
+                }));
+            }
+            for t in tasks {
+                t.await.unwrap();
+            }
+            let p = get_pending(&ks, &digest, 200).await.unwrap().unwrap();
+            assert_eq!(p.approvals.len(), RACERS, "an approval was lost");
+        }
+    }
+
+    /// A denial is final: an approval racing it must not write the pending back,
+    /// or a later approval could reach the threshold of a refused request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn an_approval_never_resurrects_a_denied_pending() {
+        let (ks, _d) = temp_ks().await;
+        for round in 0..ROUNDS * 4 {
+            let p = pending(&format!("d{round}"), 2);
+            store_pending(&ks, &p).await.unwrap();
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(RACERS + 1));
+            let mut tasks = Vec::new();
+            for i in 0..RACERS {
+                let (ks, barrier, digest) = (ks.clone(), barrier.clone(), p.digest.clone());
+                tasks.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    add_approval(&ks, &digest, &format!("did:key:z{i}"), 200)
+                        .await
+                        .unwrap();
+                }));
+            }
+            let deny = {
+                let (ks, barrier, p) = (ks.clone(), barrier.clone(), p.clone());
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    delete_pending(&ks, &p).await.unwrap();
+                })
+            };
+            for t in tasks {
+                t.await.unwrap();
+            }
+            deny.await.unwrap();
+            assert!(
+                get_pending(&ks, &p.digest, 200).await.unwrap().is_none(),
+                "a denied pending came back"
+            );
+        }
+    }
+
+    /// Of a denial and the approvals that cross the threshold together, exactly
+    /// one decision resolves the request: either one grant is minted and the
+    /// denial finds nothing, or the denial lands and no grant exists.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn a_pending_resolves_to_exactly_one_grant_or_one_denial() {
+        let (ks, _d) = temp_ks().await;
+        for round in 0..ROUNDS {
+            let digest = format!("d{round}");
+            let mut p = pending(&digest, 1);
+            p.approvals = vec!["did:key:zA".into()];
+            store_pending(&ks, &p).await.unwrap();
+            let mut g = grant(&digest, 5000);
+            g.type_uri = p.type_uri.clone();
+
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(RACERS + 1));
+            let mut grants = Vec::new();
+            for _ in 0..RACERS {
+                let (ks, barrier, g) = (ks.clone(), barrier.clone(), g.clone());
+                grants.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    grant_from_pending(&ks, &g, 200).await.unwrap()
+                }));
+            }
+            let deny = {
+                let (ks, barrier, p) = (ks.clone(), barrier.clone(), p.clone());
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    remove_pending_if_present(&ks, &p).await.unwrap()
+                })
+            };
+            let mut minted = 0;
+            for t in grants {
+                minted += t.await.unwrap() as usize;
+            }
+            let denied = deny.await.unwrap() as usize;
+            assert_eq!(minted + denied, 1, "minted {minted}, denied {denied}");
+            let granted = get_grant(&ks, "did:key:zReq", &digest, 200)
+                .await
+                .unwrap()
+                .is_some();
+            assert_eq!(granted, minted == 1, "a grant exists iff one was minted");
+            assert!(get_pending(&ks, &digest, 200).await.unwrap().is_none());
+            assert!(
+                pending_by_wire_digest(&ks, &p.wire_digest, 200)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "the wire index must go with its pending"
+            );
+        }
+    }
+
+    /// A pending and its wire index are written and retired together: one
+    /// journal record each time, so a crash never leaves one without the other.
+    #[tokio::test]
+    async fn pending_and_its_index_commit_as_one_journal_record() {
+        let (ks, _d) = temp_ks().await;
+        let seq = || ks.journal_seqno().unwrap();
+        let mut p = pending("d1", 1);
+        p.approvals = vec!["did:key:zA".into()];
+        let before = seq();
+        store_pending(&ks, &p).await.unwrap();
+        assert_eq!(seq() - before, 1, "store_pending");
+        let mut g = grant("d1", 5000);
+        g.type_uri = p.type_uri.clone();
+        let before = seq();
+        assert!(grant_from_pending(&ks, &g, 200).await.unwrap());
+        assert_eq!(seq() - before, 1, "grant_from_pending");
+    }
+
+    /// A grant is minted only from the approvals it names.
+    #[tokio::test]
+    async fn grant_from_pending_refuses_unrecorded_approvers() {
+        let (ks, _d) = temp_ks().await;
+        let mut p = pending("d1", 1);
+        p.approvals = vec!["did:key:zA".into()];
+        store_pending(&ks, &p).await.unwrap();
+        let mut g = grant("d1", 5000);
+        g.type_uri = p.type_uri.clone();
+        g.approvers = vec!["did:key:zB".into()];
+        assert!(!grant_from_pending(&ks, &g, 200).await.unwrap());
+        assert!(get_pending(&ks, "d1", 200).await.unwrap().is_some());
+        g.approvers = vec!["did:key:zA".into()];
+        assert!(grant_from_pending(&ks, &g, 200).await.unwrap());
+        assert!(get_pending(&ks, "d1", 200).await.unwrap().is_none());
     }
 }
