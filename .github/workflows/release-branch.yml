@@ -40,7 +40,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Install system dependencies
-        run: bash scripts/install-build-deps.sh
+        run: bash scripts/install-build-deps.sh libtss2-dev
       - name: Install the Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal --no-self-update

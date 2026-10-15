@@ -367,12 +367,18 @@ jobs:
           # install straight from the shipped index. Refreshing the index is the
           # fallback, still bounded and retried, for the case where the package
           # genuinely is not in it.
+          #
+          # libtss2-dev: release-plz semver-checks every crate with its
+          # features on, which turns on vti-secrets' `tpm` feature (#1820);
+          # `tss-esapi-sys` links the system tss2 libraries, and without them
+          # rustdoc for vta-service fails and the Release PR is never
+          # regenerated. The release job above builds default features only.
           pkgs=""
-          for p in libdbus-1-dev pkg-config; do
+          for p in libdbus-1-dev pkg-config libtss2-dev; do
             dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
           done
           if [ -z "$pkgs" ]; then
-            echo "libdbus-1-dev and pkg-config already present; nothing to do"
+            echo "libdbus-1-dev, pkg-config and libtss2-dev already present; nothing to do"
             exit 0
           fi
           echo "missing:$pkgs"
