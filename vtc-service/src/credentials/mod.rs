@@ -65,6 +65,7 @@ pub(crate) mod proof_set;
 pub mod signer;
 pub mod statement;
 pub mod task_context;
+pub mod trusted_witnesses;
 pub mod vac;
 pub mod vm_resolver;
 pub mod vmc;

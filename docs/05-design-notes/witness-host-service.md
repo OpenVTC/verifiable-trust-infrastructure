@@ -282,8 +282,13 @@ They are **parties**, never witnesses:
   have needed a second socket for a DID the client already speaks for, and is
   retired unimplemented. Operator guide: [the VTA as a witnessed
   party](../02-vta/witness-party.md).
-- **The VTC** already verifies VWCs. It gains a configured list of witness DIDs
-  it trusts, for its criteria to reference.
+- **The VTC** already verifies VWCs. It keeps a configured list of the witness
+  DIDs it trusts (`witnesses.trusted`, [trusted witnesses](../03-vtc/trusted-witnesses.md)),
+  empty by default, and counts a VWC only from a listed witness and only with
+  the outcome evidence of its session (VTI-CMP-023), carried beside the VWC in
+  `ext["org.openvtc.witness"].outcomeEvidence`. The list is community
+  configuration that criteria and policy read through the host's verdict, so it
+  needs no Trust Task family of its own.
 - **The `dtg-witness` DID template** ships with the other built-ins, so any operator
   can provision a witness from their VTA.
 
@@ -309,7 +314,8 @@ They are **parties**, never witnesses:
    existing VWC verifier.
 3. **P3 — the party side.** The VTA tasks that make it the party for its
    principal and store the VWC with its evidence (`vta/witness/*`,
-   trust-tasks-tf #779 — done); the VTC's list of trusted witnesses (to come).
+   trust-tasks-tf #779 — done); the VTC's list of trusted witnesses and the
+   outcome-evidence pairing (done; the join paths carry no evidence yet).
 4. **Later.** VWC revocation through a status list.
 
 No VTI specification change is expected: this implements the host-service role

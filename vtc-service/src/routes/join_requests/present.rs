@@ -362,6 +362,19 @@ async fn presentation_from_verified_set(
     // generic statement (vtc/endorsement-types/register/0.1).
     let accepted = crate::endorsement_types::accept_list(&state.endorsement_types_ks).await?;
 
+    // The witnesses this community trusts, read once for the whole set. This
+    // path has no carriage for a witnessing session's outcome evidence, so a
+    // VWC from a trusted witness is `noOutcomeEvidence` here (VTI-CMP-023) and
+    // meets no criterion; one from any other witness is `untrustedWitness`.
+    let trusted_witnesses = crate::credentials::trusted_witnesses::live_for(state).await;
+    let vm_resolver = state.trust_task_vm_resolver();
+    let witness_ctx = witness::WitnessContext {
+        relationships_ks: &state.relationships_ks,
+        trusted: &trusted_witnesses,
+        evidence: &[],
+        resolver: &vm_resolver,
+    };
+
     let mut credentials = Vec::with_capacity(set.presentations.len());
     for p in &set.presentations {
         if let Some(predicate) = crate::credentials::ingress::statement_predicate(&p.claims)
@@ -394,15 +407,7 @@ async fn presentation_from_verified_set(
         // the edge. The policy still sees an unbound witness.
         let is_witness = witness::is_witness_statement(&p.claims);
         let witness_binding = if is_witness {
-            Some(
-                witness::resolve_binding(&state.relationships_ks, &p.claims)
-                    .await
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(error = %e, issuer = %p.issuer_did,
-                            "could not resolve witness digest binding");
-                        witness::WitnessBinding::Unresolved
-                    }),
-            )
+            Some(witness::assess_or_unresolved(&witness_ctx, &p.issuer_did, &p.claims).await)
         } else {
             None
         };

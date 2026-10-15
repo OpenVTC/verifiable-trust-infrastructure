@@ -15,8 +15,9 @@ never be a node's own (VTI-KEY-007). The reasoning is in the design note,
 > opens witness sessions, verifies the party's presentation and issues a VWC
 > ([The protocol](#the-protocol)). A VTA can be the party for its principal —
 > `vta/witness/{open,present,accept}`, the client carrying the documents
-> ([the VTA as a witnessed party](../02-vta/witness-party.md)). The VTC's list
-> of trusted witnesses is still to come.
+> ([the VTA as a witnessed party](../02-vta/witness-party.md)). A VTC counts a
+> VWC only from a witness on its [list of trusted witnesses](../03-vtc/trusted-witnesses.md),
+> and only with the outcome evidence of its session.
 
 ## What it is
 
@@ -405,5 +406,10 @@ wanting stronger independence runs its witness under a separate operator.
    and the client carries them, because the relationship DID's one mediator
    connection is the client's ([the VTA as a witnessed party](../02-vta/witness-party.md)).
    The end-to-end test drives this service's dispatch core as the witness. The
-   VTC's list of trusted witnesses remains.
-4. **Later**: VWC revocation through a status list.
+   VTC side is done too: a [list of trusted witnesses](../03-vtc/trusted-witnesses.md)
+   (`witnesses.trusted`, empty by default), and the pairing of each VWC with the
+   outcome evidence of its session, carried on the personhood assertion. The
+   join paths do not carry outcome evidence yet.
+4. **Next**: standardise the outcome-evidence carriage upstream and carry it on
+   the join submission, so a VWC can meet a join criterion.
+5. **Later**: VWC revocation through a status list.

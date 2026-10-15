@@ -726,36 +726,41 @@ pub async fn verify_embedded_credentials(
     let resolver = crate::credentials::vm_resolver::DidVmResolver::new(state.did_resolver.clone());
     let fetcher = crate::routes::join_requests::present::credential_status_fetcher(state);
     let aliases = type_aliases(state).await?;
+    // A VWC counts toward a criterion only on the host's full verdict
+    // (`credentials::witness::assess`). The join submission has no carriage
+    // for a witnessing session's outcome evidence yet, so none travels here:
+    // a VWC from a trusted witness is `noOutcomeEvidence` (VTI-CMP-023), and
+    // one from any other witness `untrustedWitness`.
+    let trusted_witnesses = crate::credentials::trusted_witnesses::live_for(state).await;
+    let vm_resolver = state.trust_task_vm_resolver();
+    let witness_ctx = crate::credentials::witness::WitnessContext {
+        relationships_ks: &state.relationships_ks,
+        trusted: &trusted_witnesses,
+        evidence: &[],
+        resolver: &vm_resolver,
+    };
 
     let mut out = Vec::new();
     for vc in vcs.iter().filter(|v| v.is_object()) {
         match verify_one_credential(vc, applicant_did, &resolver, &fetcher, now).await {
+            Ok((issuer, concrete)) if crate::credentials::witness::is_witness_statement(vc) => {
+                let verdict =
+                    crate::credentials::witness::assess_or_unresolved(&witness_ctx, &issuer, vc)
+                        .await;
+                if !verdict.is_bound() {
+                    warn!(
+                        applicant = %applicant_did,
+                        witness = %issuer,
+                        ?verdict,
+                        "presented witness credential does not count here — it meets no join \
+                         criterion"
+                    );
+                    continue;
+                }
+                out.push(presented_credential(vc, issuer, concrete, &aliases));
+            }
             Ok((issuer, concrete)) => {
-                // Its own `type` array, and the registered URIs its concrete
-                // type is also known by.
-                let mut types: Vec<String> = match vc.get("type") {
-                    Some(JsonValue::Array(t)) => t
-                        .iter()
-                        .filter_map(JsonValue::as_str)
-                        .map(str::to_string)
-                        .collect(),
-                    Some(JsonValue::String(t)) => vec![t.clone()],
-                    _ => Vec::new(),
-                };
-                if !types.contains(&concrete) {
-                    types.push(concrete.clone());
-                }
-                if let Some(more) = aliases.get(&concrete) {
-                    types.extend(more.iter().cloned());
-                }
-                out.push(PresentedCredential {
-                    formats: vec![LDP_VC_FORMAT],
-                    types,
-                    claims: vc.clone(),
-                    issuer,
-                    issuer_authority_key_ids: Vec::new(),
-                    only_for: None,
-                });
+                out.push(presented_credential(vc, issuer, concrete, &aliases))
             }
             Err(reason) => warn!(
                 applicant = %applicant_did,
@@ -766,6 +771,40 @@ pub async fn verify_embedded_credentials(
         }
     }
     Ok(out)
+}
+
+/// A verified embedded credential as a criterion's query reads it: its own
+/// `type` array, its concrete type, and the registered URIs that type is also
+/// known by.
+fn presented_credential(
+    vc: &JsonValue,
+    issuer: String,
+    concrete: String,
+    aliases: &HashMap<String, Vec<String>>,
+) -> PresentedCredential {
+    let mut types: Vec<String> = match vc.get("type") {
+        Some(JsonValue::Array(t)) => t
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .map(str::to_string)
+            .collect(),
+        Some(JsonValue::String(t)) => vec![t.clone()],
+        _ => Vec::new(),
+    };
+    if !types.contains(&concrete) {
+        types.push(concrete.clone());
+    }
+    if let Some(more) = aliases.get(&concrete) {
+        types.extend(more.iter().cloned());
+    }
+    PresentedCredential {
+        formats: vec![LDP_VC_FORMAT],
+        types,
+        claims: vc.clone(),
+        issuer,
+        issuer_authority_key_ids: Vec::new(),
+        only_for: None,
+    }
 }
 
 /// The registered type URIs each concrete DTG type is also known by, so a
@@ -844,6 +883,14 @@ pub fn presented_from_verified(
         .iter()
         .enumerate()
         .filter(|(_, c)| c.holder_bound && c.status == CredentialStatus::Valid)
+        // A VWC meets a criterion only on the host's full verdict: a trusted
+        // witness, its session shown complete, its digest bound to an edge
+        // held here. `None` is every credential that is not a VWC.
+        .filter(|(_, c)| {
+            c.witness_binding
+                .as_ref()
+                .is_none_or(crate::credentials::witness::WitnessBinding::is_bound)
+        })
         .map(|(n, c)| PresentedCredential {
             formats: vec![SD_JWT_VC_FORMAT, LDP_VC_FORMAT],
             types: vec![c.credential_type.clone()],
@@ -1147,5 +1194,51 @@ mod tests {
             needs,
             ["agreed:code-of-conduct", NEED_INVITATION, NEED_CREDENTIALS]
         );
+    }
+
+    /// A VWC meets a criterion only on the host's full verdict. Every other
+    /// state — an untrusted witness, no outcome evidence, a digest naming no
+    /// edge held here — leaves it out of what a query can be met by.
+    #[test]
+    fn a_witness_counts_toward_a_criterion_only_when_bound() {
+        use crate::ceremony::{Credential, CredentialStatus, Presentation};
+        use crate::credentials::witness::WitnessBinding;
+
+        let credential = |binding: Option<WitnessBinding>| Credential {
+            credential_type: "StatementCredential".into(),
+            predicate: binding
+                .as_ref()
+                .map(|_| dtg_credentials::WITNESSED_V1.into()),
+            issuer: "did:key:z6MkWitness".into(),
+            issuer_trusted: true,
+            status: CredentialStatus::Valid,
+            holder_bound: true,
+            claims: json!({ "credentialSubject": { "id": "did:key:zApplicant" } }),
+            valid_until: None,
+            witness_binding: binding,
+            task_context: None,
+        };
+        let bound = WitnessBinding::Bound {
+            relationship_id: uuid::Uuid::new_v4(),
+        };
+        for (binding, counts) in [
+            (None, true),
+            (Some(bound), true),
+            (Some(WitnessBinding::UntrustedWitness), false),
+            (Some(WitnessBinding::NoOutcomeEvidence), false),
+            (Some(WitnessBinding::OutcomeInvalid), false),
+            (Some(WitnessBinding::Unresolved), false),
+        ] {
+            let presentation = Presentation {
+                verified: true,
+                holder: "did:key:zApplicant".into(),
+                credentials: vec![credential(binding.clone())],
+            };
+            assert_eq!(
+                presented_from_verified(&presentation, &[]).len(),
+                usize::from(counts),
+                "{binding:?}"
+            );
+        }
     }
 }

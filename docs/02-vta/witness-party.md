@@ -43,6 +43,12 @@ client does what only it can (speak on the relationship DID's connection).
 | 4 | client → witness | that document, sent from the relationship DID; discard it once answered |
 | 5 | client → VTA | `vta/witness/accept` — hand back the witness's submit `#response`; the VTA verifies the VWC and stores it with its evidence |
 
+`vta/witness/accept` answers with `evidence: { session, outcome }`, the outcome
+evidence of the session. Keep it with the VWC: a VTC counts a VWC only with that
+evidence beside it, in the personhood assertion's
+`ext["org.openvtc.witness"].outcomeEvidence`, and only from a witness it has
+listed as trusted ([trusted witnesses](../03-vtc/trusted-witnesses.md)).
+
 A refusal from the witness (`witness/session:refused`, `challengeMismatch`,
 `presentationInvalid`) ends the session at the client and is not handed back. The
 VTA's record simply expires; open a new session to try again.

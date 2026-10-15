@@ -5712,7 +5712,30 @@ async fn handle_personhood_assert(
         }
     };
 
-    match crate::routes::members::personhood::assert_inner(state, &body.did, &presentation).await {
+    // The outcome evidence of each witnessing session a VWC in the presentation
+    // cites (VTI-CMP-023), in the OpenVTC carriage. A malformed carriage is
+    // refused rather than read as none.
+    let evidence =
+        match crate::credentials::witness::outcome_evidence_from_ext(doc.payload.get("ext")) {
+            Ok(e) => e,
+            Err(e) => {
+                return reject_with(
+                    &doc,
+                    RejectReason::MalformedRequest {
+                        reason: e.to_string(),
+                    },
+                );
+            }
+        };
+
+    match crate::routes::members::personhood::assert_inner(
+        state,
+        &body.did,
+        &presentation,
+        &evidence,
+    )
+    .await
+    {
         Ok(res) => success_response(&doc, res),
         Err(e) => task_error_to_reject(&doc, &e),
     }

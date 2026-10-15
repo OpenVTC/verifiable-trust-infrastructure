@@ -1058,3 +1058,138 @@ async fn vti_apv_022_config_import_refuses_single_admin_mode() {
     );
     assert!(!fix.state.config.read().await.acl.single_admin_mode);
 }
+
+// ──────────────────────── trusted witnesses ────────────────────────
+//
+// `witnesses.trusted` (`credentials::trusted_witnesses`): the witnesses whose
+// VWCs count here. Runtime-patchable under `vtc.config.admin`, audited with
+// both lists, read live by every VWC check.
+
+const WITNESSES_KEY: &str = "witnesses.trusted";
+const WITNESS: &str = "did:webvh:QmScid:witness.independent.example";
+
+/// Empty by default — no witness is trusted until a community names one.
+#[tokio::test]
+async fn trusted_witnesses_default_to_none() {
+    let fix = build_signed(false).await;
+    let admin = admin(&fix).await;
+    let (status, body) = show(&fix, &admin).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(field(&body, WITNESSES_KEY)["value"], json!([]));
+    assert_eq!(field(&body, WITNESSES_KEY)["source"], "default");
+    assert!(
+        vtc_service::credentials::trusted_witnesses::live_for(&fix.state)
+            .await
+            .is_empty()
+    );
+}
+
+/// A patch takes effect on the next VWC without a reload, shows in the
+/// effective view, and is audited as a `ConfigChanged` row carrying the list.
+#[tokio::test]
+async fn patching_trusted_witnesses_is_live_and_audited() {
+    use vti_common::audit::{AuditEnvelope, AuditEvent};
+
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let list = json!([{ "did": WITNESS, "label": "Independent witness" }]);
+    let (status, body) = patch(
+        &fix,
+        &admin,
+        json!({ "overrides": { WITNESSES_KEY: list } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["applied"], json!([WITNESSES_KEY]), "{body}");
+
+    assert!(
+        vtc_service::credentials::trusted_witnesses::live_for(&fix.state)
+            .await
+            .contains(WITNESS),
+        "read live: no reload between the patch and the next VWC"
+    );
+    let (_, shown) = show(&fix, &admin).await;
+    assert_eq!(field(&shown, WITNESSES_KEY)["value"], list);
+    assert_eq!(field(&shown, WITNESSES_KEY)["source"], "db");
+
+    let raw = fix
+        .state
+        .audit_ks
+        .prefix_iter_raw(b"2".to_vec())
+        .await
+        .unwrap();
+    let change = raw
+        .iter()
+        .map(|(_, v)| serde_json::from_slice::<AuditEnvelope>(v).unwrap())
+        .find_map(|e| match e.event {
+            AuditEvent::ConfigChanged(data) => {
+                assert_eq!(e.actor_did_plain.as_deref(), Some(admin.did.as_str()));
+                data.changes.into_iter().find(|c| c.key == WITNESSES_KEY)
+            }
+            _ => None,
+        })
+        .expect("the change is audited");
+    assert_eq!(change.new_value, list);
+    assert_eq!(change.old_value, None);
+
+    // Emptying it again is a change like any other, and trusts nobody.
+    let (status, body) = patch(&fix, &admin, json!({ "overrides": { WITNESSES_KEY: [] } })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        vtc_service::credentials::trusted_witnesses::live_for(&fix.state)
+            .await
+            .is_empty()
+    );
+}
+
+/// A list the host would not read as written is refused, never stored: not a
+/// DID, a key rather than a DID, a duplicate, and the community's own DID.
+#[tokio::test]
+async fn a_malformed_witness_list_is_refused() {
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    for (why, value) in [
+        ("bare strings", json!([WITNESS])),
+        ("not a DID", json!([{ "did": "witness.example" }])),
+        ("a key", json!([{ "did": format!("{WITNESS}#key-0") }])),
+        (
+            "a duplicate",
+            json!([{ "did": WITNESS }, { "did": WITNESS }]),
+        ),
+        ("the community itself", json!([{ "did": COMMUNITY_DID }])),
+    ] {
+        let (status, body) = patch(
+            &fix,
+            &admin,
+            json!({ "overrides": { WITNESSES_KEY: value } }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{why}: {body}");
+        assert_eq!(body["applied"], json!([]), "{why}: {body}");
+        assert_eq!(body["rejected"][0]["key"], WITNESSES_KEY, "{why}: {body}");
+    }
+    assert!(
+        vtc_service::credentials::trusted_witnesses::live_for(&fix.state)
+            .await
+            .is_empty()
+    );
+}
+
+/// The list is configuration: only a holder of `vtc.config.admin` changes it.
+#[tokio::test]
+async fn a_member_cannot_change_the_trusted_witnesses() {
+    let fix = build_signed(true).await;
+    let member = signer(&fix, vtc_service::acl::VtcRole::Member).await;
+    let (_, body) = patch(
+        &fix,
+        &member,
+        json!({ "overrides": { WITNESSES_KEY: [{ "did": WITNESS }] } }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&body), "permissionDenied", "{body}");
+    assert!(
+        vtc_service::credentials::trusted_witnesses::live_for(&fix.state)
+            .await
+            .is_empty()
+    );
+}

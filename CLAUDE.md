@@ -1299,6 +1299,28 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Docs**: `docs/03-vtc/community-lifecycle.md` (*Admitting a member
   directly*).
 
+### VTC trusted witnesses (`witnesses.trusted`)
+- **What**: The witnesses whose Verifiable Witness Credentials (`witnessed/1`
+  statements, issued by `vti-witness`) count in a community. Community
+  configuration — `[witnesses] trusted` or the runtime key `witnesses.trusted`
+  via `config/patch` / `vtc/config/import` (`vtc.config.admin`, audited
+  `ConfigChanged`, marked `trust_semantics`) — no Trust Task family of its own.
+- **Invariants to preserve**: empty (the default), unreadable or corrupt means
+  **no** witness is trusted. The host settles one verdict per VWC in a fixed
+  order — trusted witness (`untrustedWitness`), then outcome evidence of the
+  cited session paired by the framework's four checks plus VWC identity
+  (`noOutcomeEvidence` / `outcomeInvalid`, VTI-CMP-023), then the digest
+  binding — so every later state implies the earlier checks passed and no
+  policy can accept what the host refused (VTI-VTC-022). Evidence rides
+  `ext["org.openvtc.witness"].outcomeEvidence` on `personhood/assert` only (the
+  `evidence` `vta/witness/accept` returns); the join paths carry none, so a VWC
+  meets no criterion there. Never compare witness DIDs other than verbatim,
+  never let a community list its own DID.
+- **Code**: `vtc-service/src/credentials/{trusted_witnesses,witness}.rs`,
+  `vtc-service/src/config_store.rs`, `vtc-service/src/routes/members/personhood.rs`,
+  `vtc-service/src/join/criteria.rs`.
+- **Docs**: `docs/03-vtc/trusted-witnesses.md`.
+
 ### VTC step-up: passkeys and approver devices
 - **What**: Authority-changing VTC acts need a step-up bound to a digest of
   that one operation (`acl::bound_step_up`, one use within 300 s). It is

@@ -178,6 +178,9 @@ How to operate and integrate against a VTC.
   VTA, and wiring a VTC to it.
 - **[Personhood + relationships](03-vtc/personhood-and-graph.md)** —
   personhood assertion, VRC trust graph, custom endorsements.
+- **[Trusted witnesses](03-vtc/trusted-witnesses.md)** — the witnesses whose
+  VWCs count in this community (`witnesses.trusted`, empty by default), and
+  the outcome evidence a VWC must travel with.
 - **[Peer identity vetting](03-vtc/vetting.md)** — requiring existing
   members to vet an applicant: vetting requirements in the join manifest,
   what the host checks in each statement, and what the default join policy

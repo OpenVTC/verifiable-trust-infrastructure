@@ -25,7 +25,7 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::info;
+use tracing::{info, warn};
 use vti_common::error::AppError;
 
 use crate::community::{CommunityProfile, CommunityProfileUpdate, load_profile, store_profile};
@@ -145,6 +145,16 @@ pub(crate) async fn patch_config(
             sensitive = def.sensitive,
             "admin config PATCH applied"
         );
+        if def.trust_semantics {
+            // VTI-CMP-092: identifiable as a change to trust semantics, not
+            // only as one more settings row.
+            warn!(
+                key = %key,
+                actor = %actor,
+                trust_semantics = true,
+                "a configuration key that alters trust semantics was changed (VTI-CMP-090)"
+            );
+        }
 
         let mut change = ConfigChange {
             key: key.clone(),
@@ -384,6 +394,12 @@ async fn check_against_community(
     {
         crate::acl::admin_consent::check_threshold_meetable(state, n).await?;
     }
+    // A community never witnesses (VTI-KEY-007): its own DID on its own list
+    // would let it vouch for edges it is a party to.
+    if key == crate::credentials::trusted_witnesses::WITNESSES_TRUSTED {
+        let own = state.config.read().await.vtc_did.clone();
+        crate::credentials::trusted_witnesses::parse_list(value, own.as_deref())?;
+    }
     Ok(())
 }
 
@@ -431,6 +447,9 @@ fn lookup_live(cfg: &crate::config::AppConfig, key: &str) -> Value {
             Value::Number(cfg.acl.unrestricted_admin_consent_threshold.into())
         }
         crate::config_store::CONSENT_REQUEST_PUSH => Value::Bool(cfg.acl.consent_request_push),
+        crate::credentials::trusted_witnesses::WITNESSES_TRUSTED => {
+            serde_json::to_value(&cfg.witnesses.trusted).unwrap_or(Value::Null)
+        }
         other => crate::config_store::action_key_live(cfg, other)
             .map(|n| Value::Number(n.into()))
             .unwrap_or(Value::Null),
@@ -480,6 +499,15 @@ fn apply_to_live(cfg: &mut crate::config::AppConfig, key: &str, value: &Value) -
         && let Some(b) = value.as_bool()
     {
         cfg.acl.consent_request_push = b;
+        return true;
+    }
+    // Read live by `trusted_witnesses::live`; this keeps the in-memory copy in
+    // step with what it enforces.
+    if key == crate::credentials::trusted_witnesses::WITNESSES_TRUSTED
+        && let Ok(list) =
+            crate::credentials::trusted_witnesses::parse_list(value, cfg.vtc_did.as_deref())
+    {
+        cfg.witnesses.trusted = list;
         return true;
     }
     // The action-list settings are read live by `crate::admin_actions` too;
@@ -825,6 +853,13 @@ pub(crate) async fn import_inner(
         };
         change.redact_if(|k| matches!(lookup(k), Some(d) if d.sensitive));
         audit_changes.push(change);
+        if def.trust_semantics {
+            warn!(
+                key = %key,
+                trust_semantics = true,
+                "a configuration key that alters trust semantics was imported (VTI-CMP-090)"
+            );
+        }
         if def.requires_restart {
             requires_restart = true;
             pending_restart.push(key.clone());

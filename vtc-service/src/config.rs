@@ -108,6 +108,15 @@ pub struct AppConfig {
     /// the largest wallet response accepted. See [`crate::oid4vp::session`].
     #[serde(default)]
     pub oid4vp: Oid4vpConfig,
+    /// The witnesses this community trusts (`[witnesses]`): whose Verifiable
+    /// Witness Credentials count as evidence here. **Absent or empty means
+    /// none does.** Runtime-patchable as `witnesses.trusted`. See
+    /// [`crate::credentials::trusted_witnesses`].
+    #[serde(
+        default,
+        skip_serializing_if = "crate::credentials::trusted_witnesses::WitnessesConfig::is_empty"
+    )]
+    pub witnesses: crate::credentials::trusted_witnesses::WitnessesConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
 }
@@ -1855,6 +1864,7 @@ impl AppConfig {
         validate_website_isolation(&self.routing, self.website.root_dir.is_some())?;
         validate_cors(&self.cors)?;
         self.admin_ui.validate()?;
+        self.witnesses.validate(self.vtc_did.as_deref())?;
         Ok(())
     }
 
