@@ -4,7 +4,10 @@
 // VTC for a console session through `ext["org.openvtc.session"]`.
 //
 // States: idle → waiting (the code) → claimed (the number) → confirm
-// ("Continue as …?") → signed in; or declined, cancelled, expired.
+// ("Continue as …?") → signed in; or declined, cancelled, expired. The
+// confirm is skipped when this browser last continued as the same identity
+// for the same audience: "Continue as …?" guards against someone else's
+// identity being signed in here (T4), and a known identity is not that.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
@@ -64,6 +67,27 @@ export function QrSvg({ text, label }: { text: string; label: string }) {
       <path d={cells.join("")} fill="#000000" />
     </svg>
   );
+}
+
+/** The identity this browser last chose "Continue" for, per audience. A
+ *  convenience only: when it is missing (cleared, private window, storage
+ *  blocked) the page asks again. */
+const knownKey = (audience: SessionAudience) => `vtc-wallet-signin-known-${audience}`;
+
+function knownSubject(audience: SessionAudience): string | null {
+  try {
+    return window.localStorage.getItem(knownKey(audience));
+  } catch {
+    return null;
+  }
+}
+
+function rememberSubject(audience: SessionAudience, subject: string): void {
+  try {
+    window.localStorage.setItem(knownKey(audience), subject);
+  } catch {
+    /* the next sign-in asks again */
+  }
 }
 
 /** What an ended sign-in says. */
@@ -170,6 +194,10 @@ export function WalletSignIn({
             });
             return;
           }
+          if (result.subject && result.subject === knownSubject(audience)) {
+            void onSignedIn();
+            return;
+          }
           setPhase({ kind: "confirm", result });
           return;
         } catch (e) {
@@ -215,7 +243,7 @@ export function WalletSignIn({
         }
       }
     },
-    [audience],
+    [audience, onSignedIn],
   );
 
   const showCode = async () => {
@@ -254,6 +282,11 @@ export function WalletSignIn({
     if (cfgRef.current) await cancelRequest(cfgRef.current, requestId);
     forgetSessionKey();
     setPhase({ kind: "ended", reason: "cancelled" });
+  };
+
+  const continueAs = (subject: string) => {
+    rememberSubject(audience, subject);
+    void onSignedIn();
   };
 
   const notMe = async () => {
@@ -362,7 +395,11 @@ export function WalletSignIn({
             ?
           </p>
           <div className="confirm-actions">
-            <button type="button" className="btn btn-primary" onClick={() => onSignedIn()}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => continueAs(phase.result.subject)}
+            >
               Continue
             </button>
             <button type="button" className="btn btn-secondary" onClick={notMe}>

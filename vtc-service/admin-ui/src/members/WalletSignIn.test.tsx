@@ -1,6 +1,7 @@
 // The trigger-link sign-in page: the code is a link to the same text (C2), the
 // number shows once claimed, the session is confirmed before use, and the
-// code hides on `visibilitychange` without cancelling (C9).
+// code hides on `visibilitychange` without cancelling (C9). The confirm is
+// skipped only for the identity this browser last continued as.
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -133,6 +134,55 @@ describe("wallet sign-in", () => {
       expect(screen.getByRole("button", { name: /show sign-in code/i })).toBeTruthy(),
     );
     expect(onSignedIn).not.toHaveBeenCalled();
+  });
+
+  it("lets a browser straight in as the identity it last continued as, and asks for any other", async () => {
+    const redeemed = (subject: string, displayName: string) => () =>
+      json(200, {
+        type: "https://trusttasks.org/spec/auth/oob/redeem/0.1#response",
+        payload: {
+          subject,
+          displayName,
+          notAfter: Math.floor(Date.now() / 1000) + 3600,
+          amr: ["did", "oob", "uv"],
+        },
+      });
+    const store = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    });
+
+    // First time: asked, and Continue remembers Alice.
+    stubService([redeemed("did:webvh:x:alice", "Alice")]);
+    const first = vi.fn();
+    const a = render(<WalletSignIn onSignedIn={first} />);
+    fireEvent.click(screen.getByRole("button", { name: /show sign-in code/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^continue$/i }));
+    expect(first).toHaveBeenCalledTimes(1);
+    a.unmount();
+
+    // Alice again: no question.
+    stubService([redeemed("did:webvh:x:alice", "Alice")]);
+    const second = vi.fn();
+    const b = render(<WalletSignIn onSignedIn={second} />);
+    fireEvent.click(screen.getByRole("button", { name: /show sign-in code/i }));
+    await waitFor(() => expect(second).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/continue as/i)).toBeNull();
+    b.unmount();
+
+    // Someone else signing this browser in (T4): asked, and Not me keeps Alice.
+    stubService([redeemed("did:webvh:x:mallory", "Mallory")]);
+    const third = vi.fn();
+    render(<WalletSignIn onSignedIn={third} />);
+    fireEvent.click(screen.getByRole("button", { name: /show sign-in code/i }));
+    await screen.findByText(/continue as/i);
+    expect(screen.getByText("Mallory")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /not me/i }));
+    await screen.findByRole("button", { name: /show sign-in code/i });
+    expect(third).not.toHaveBeenCalled();
+    expect([...store.values()]).toEqual(["did:webvh:x:alice"]);
   });
 
   it("tells a cancelled sign-in from a declined one", async () => {
