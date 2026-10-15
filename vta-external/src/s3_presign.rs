@@ -100,6 +100,51 @@ fn settings(v: &Value) -> Result<Settings, SettingsError> {
     })
 }
 
+/// The origin the probe dials: the endpoint's host, behind the bucket for a
+/// virtual-hosted store. Validated settings only.
+fn dial_origin(s: &Settings) -> String {
+    let host = s.endpoint.host_str().unwrap_or_default();
+    let host = if s.path_style {
+        host.to_string()
+    } else {
+        format!("{}.{host}", s.bucket)
+    };
+    match s.endpoint.port() {
+        Some(p) => format!("https://{host}:{p}/"),
+        None => format!("https://{host}/"),
+    }
+}
+
+/// Whether this custodian may connect to the store under `policy`: a public
+/// host always, a private-network or loopback one only when the operator opted
+/// in (`VTA_ALLOW_PRIVATE_ENDPOINTS`), link-local and cloud metadata never.
+/// Checked at `create` / `update` and again before every probe dials, since an
+/// account outlives the setting it was created under.
+fn check_endpoint(
+    s: &Settings,
+    policy: vta_sdk::http::EndpointPolicy,
+) -> Result<(), SettingsError> {
+    vta_sdk::http::guard_foreign_url(&dial_origin(s), policy)
+        .map_err(|e| SettingsError::new("endpoint", e.to_string()))
+}
+
+/// The bound prefixes a lifecycle rule must cover: each one, less those already
+/// inside a shorter one (S3 applies every matching rule, so a nested one adds
+/// nothing). Sorted.
+fn covering_prefixes(prefixes: &[String]) -> Vec<String> {
+    let mut sorted: Vec<String> = prefixes.to_vec();
+    sorted.sort();
+    sorted.dedup();
+    let mut out: Vec<String> = Vec::new();
+    for p in sorted {
+        // Sorted, so any covering prefix of `p` is already in `out`.
+        if !out.iter().any(|q| p.starts_with(q.as_str())) {
+            out.push(p);
+        }
+    }
+    out
+}
+
 /// The account's access key id, for checking a sealed secret's claim.
 pub fn access_key_id(settings_value: &Value) -> Option<&str> {
     settings_value.get("accessKeyId").and_then(Value::as_str)
@@ -385,7 +430,10 @@ impl ExternalAuthDriver for S3StaticPresign {
     }
 
     fn validate_settings(&self, v: &Value) -> Result<(), SettingsError> {
-        settings(v).map(|_| ())
+        check_endpoint(
+            &settings(v)?,
+            vta_sdk::http::EndpointPolicy::process_default(),
+        )
     }
 
     /// The store's own host — the one the probe dials. Issuance itself needs
@@ -460,14 +508,22 @@ impl ExternalAuthDriver for S3StaticPresign {
         // A direct upload the host never completes or aborts (it crashed, or lost
         // the upload id) keeps its parts, and bills for them, until it is aborted.
         // The host's own sweep aborts what it knows of; this rule is the backstop.
-        let lifecycle = json!({
-            "Rules": [{
-                "ID": "abort-incomplete-room-uploads",
-                "Status": "Enabled",
-                "Filter": { "Prefix": prefixes.first().cloned().unwrap_or_else(|| "rooms/".into()) },
-                "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 2 },
-            }],
-        });
+        // One rule per bound prefix: a consumer may upload under any of them, and
+        // a rule filters on one prefix only. IDs are unique within the
+        // configuration, as S3 requires.
+        let rules: Vec<Value> = covering_prefixes(&prefixes)
+            .into_iter()
+            .enumerate()
+            .map(|(i, prefix)| {
+                json!({
+                    "ID": format!("abort-incomplete-uploads-{}", i + 1),
+                    "Status": "Enabled",
+                    "Filter": { "Prefix": prefix },
+                    "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 2 },
+                })
+            })
+            .collect();
+        let lifecycle = json!({ "Rules": rules });
         json!({
             "model": "s3-static-presign",
             "artifacts": [{
@@ -564,6 +620,8 @@ impl ExternalAuthDriver for S3StaticPresign {
         })
     }
 
+    /// Under the process's endpoint policy; `http` should be
+    /// [`crate::driver::probe_client`], which follows the same policy.
     async fn probe(
         &self,
         account: &AccountRecord,
@@ -571,109 +629,130 @@ impl ExternalAuthDriver for S3StaticPresign {
         http: &reqwest::Client,
         now: DateTime<Utc>,
     ) -> Value {
-        let mut steps: Vec<Value> = Vec::new();
-        // `complete` is true only when the canary steps ran: put, get and
-        // delete, the account exercised end to end.
-        let report = |steps: Vec<Value>| {
-            let ok = !steps.is_empty() && steps.iter().all(|s| s["ok"] == true);
-            let complete = steps.iter().any(|s| s["step"] == "delete");
-            json!({ "at": rfc3339(now), "ok": ok, "complete": complete, "steps": steps })
-        };
+        probe_with(
+            account,
+            secret,
+            http,
+            vta_sdk::http::EndpointPolicy::process_default(),
+            now,
+        )
+        .await
+    }
+}
 
-        // sign: build the three presigned requests.
-        let started = std::time::Instant::now();
-        let signed = (|| {
-            let s = settings(&account.settings).map_err(|e| format!("{}: {}", e.member, e.why))?;
-            let secret = secret.ok_or("the account's secret has not been set")?;
-            // The narrowest bound prefix: the canary goes where the tightest
-            // binding can reach, so a key scoped to it passes. With no
-            // bindings, the settings' `probePrefix`.
-            let prefix = account
-                .bindings
-                .iter()
-                .filter_map(|b| b.scope_ceiling.as_ref())
-                .flat_map(|c| c.prefixes.iter())
-                .max_by_key(|p| p.len())
-                .cloned()
-                .or_else(|| s.probe_prefix.clone());
-            let key = format!(
-                "{}vta-probe-{}",
-                prefix.as_deref().unwrap_or("vta-probe/"),
-                now.timestamp()
-            );
-            Ok::<_, String>((
-                prefix.is_some(),
-                [("put", "PUT"), ("get", "GET"), ("delete", "DELETE")]
-                    .map(|(step, m)| (step, presign(&s, secret, m, &key, 120, now))),
-            ))
-        })();
-        let presigned = match signed {
-            Ok((bound, p)) => {
-                steps.push(json!({ "step": "sign", "ok": true, "durationMs": started.elapsed().as_millis() as u64 }));
-                // With no binding and no `probePrefix` there is nowhere the
-                // key is meant to reach, so nothing is written and the report
-                // is `complete: false`.
-                if !bound {
-                    return report(steps);
-                }
-                p
-            }
-            Err(e) => {
-                steps.push(json!({ "step": "sign", "ok": false, "providerError": e }));
+/// [`S3StaticPresign::probe`] under an explicit endpoint policy.
+async fn probe_with(
+    account: &AccountRecord,
+    secret: Option<&str>,
+    http: &reqwest::Client,
+    policy: vta_sdk::http::EndpointPolicy,
+    now: DateTime<Utc>,
+) -> Value {
+    let mut steps: Vec<Value> = Vec::new();
+    // `complete` is true only when the canary steps ran: put, get and
+    // delete, the account exercised end to end.
+    let report = |steps: Vec<Value>| {
+        let ok = !steps.is_empty() && steps.iter().all(|s| s["ok"] == true);
+        let complete = steps.iter().any(|s| s["step"] == "delete");
+        json!({ "at": rfc3339(now), "ok": ok, "complete": complete, "steps": steps })
+    };
+
+    // sign: build the three presigned requests.
+    let started = std::time::Instant::now();
+    let signed = (|| {
+        let s = settings(&account.settings).map_err(|e| format!("{}: {}", e.member, e.why))?;
+        // Before anything is signed or dialled: the probe client's resolver
+        // never sees an IP-literal host, so this is what keeps it off one.
+        check_endpoint(&s, policy).map_err(|e| format!("{}: {}", e.member, e.why))?;
+        let secret = secret.ok_or("the account's secret has not been set")?;
+        // The narrowest bound prefix: the canary goes where the tightest
+        // binding can reach, so a key scoped to it passes. With no
+        // bindings, the settings' `probePrefix`.
+        let prefix = account
+            .bindings
+            .iter()
+            .filter_map(|b| b.scope_ceiling.as_ref())
+            .flat_map(|c| c.prefixes.iter())
+            .max_by_key(|p| p.len())
+            .cloned()
+            .or_else(|| s.probe_prefix.clone());
+        let key = format!(
+            "{}vta-probe-{}",
+            prefix.as_deref().unwrap_or("vta-probe/"),
+            now.timestamp()
+        );
+        Ok::<_, String>((
+            prefix.is_some(),
+            [("put", "PUT"), ("get", "GET"), ("delete", "DELETE")]
+                .map(|(step, m)| (step, presign(&s, secret, m, &key, 120, now))),
+        ))
+    })();
+    let presigned = match signed {
+        Ok((bound, p)) => {
+            steps.push(json!({ "step": "sign", "ok": true, "durationMs": started.elapsed().as_millis() as u64 }));
+            // With no binding and no `probePrefix` there is nowhere the
+            // key is meant to reach, so nothing is written and the report
+            // is `complete: false`.
+            if !bound {
                 return report(steps);
             }
-        };
+            p
+        }
+        Err(e) => {
+            steps.push(json!({ "step": "sign", "ok": false, "providerError": e }));
+            return report(steps);
+        }
+    };
 
-        // put, get, delete: each must succeed, and the first failure ends it.
-        let body = b"vta external account probe".to_vec();
-        for (step, p) in presigned {
-            let started = std::time::Instant::now();
-            let mut rb = match p.method {
-                "PUT" => http.put(&p.url).body(body.clone()),
-                "GET" => http.get(&p.url),
-                _ => http.delete(&p.url),
-            };
-            rb = rb.timeout(std::time::Duration::from_secs(15));
-            let outcome = rb.send().await;
-            let ms = started.elapsed().as_millis() as u64;
-            match outcome {
-                Ok(resp) => {
-                    let status = resp.status();
-                    let request_id = resp
-                        .headers()
-                        .get("x-amz-request-id")
-                        .or_else(|| resp.headers().get("cf-ray"))
-                        .and_then(|v| v.to_str().ok())
-                        .filter(|v| v.bytes().all(|b| (b'!'..=b'~').contains(&b)))
-                        .map(|v| v.chars().take(256).collect::<String>());
-                    let mut entry =
-                        json!({ "step": step, "ok": status.is_success(), "durationMs": ms });
-                    if let Some(id) = request_id {
-                        entry["providerRequestId"] = Value::String(id);
-                    }
-                    if !status.is_success() {
-                        let text = vta_sdk::http::read_body_capped(resp, 4096)
-                            .await
-                            .map(|b| String::from_utf8_lossy(&b).into_owned())
-                            .unwrap_or_default();
-                        entry["providerError"] =
-                            Value::String(redact(&format!("HTTP {status}: {text}"), &p.url));
-                        steps.push(entry);
-                        return report(steps);
-                    }
-                    steps.push(entry);
+    // put, get, delete: each must succeed, and the first failure ends it.
+    let body = b"vta external account probe".to_vec();
+    for (step, p) in presigned {
+        let started = std::time::Instant::now();
+        let mut rb = match p.method {
+            "PUT" => http.put(&p.url).body(body.clone()),
+            "GET" => http.get(&p.url),
+            _ => http.delete(&p.url),
+        };
+        rb = rb.timeout(std::time::Duration::from_secs(15));
+        let outcome = rb.send().await;
+        let ms = started.elapsed().as_millis() as u64;
+        match outcome {
+            Ok(resp) => {
+                let status = resp.status();
+                let request_id = resp
+                    .headers()
+                    .get("x-amz-request-id")
+                    .or_else(|| resp.headers().get("cf-ray"))
+                    .and_then(|v| v.to_str().ok())
+                    .filter(|v| v.bytes().all(|b| (b'!'..=b'~').contains(&b)))
+                    .map(|v| v.chars().take(256).collect::<String>());
+                let mut entry =
+                    json!({ "step": step, "ok": status.is_success(), "durationMs": ms });
+                if let Some(id) = request_id {
+                    entry["providerRequestId"] = Value::String(id);
                 }
-                Err(e) => {
-                    steps.push(json!({
-                        "step": step, "ok": false, "durationMs": ms,
-                        "providerError": redact(&e.to_string(), &p.url),
-                    }));
+                if !status.is_success() {
+                    let text = vta_sdk::http::read_body_capped(resp, 4096)
+                        .await
+                        .map(|b| String::from_utf8_lossy(&b).into_owned())
+                        .unwrap_or_default();
+                    entry["providerError"] =
+                        Value::String(redact(&format!("HTTP {status}: {text}"), &p.url));
+                    steps.push(entry);
                     return report(steps);
                 }
+                steps.push(entry);
+            }
+            Err(e) => {
+                steps.push(json!({
+                    "step": step, "ok": false, "durationMs": ms,
+                    "providerError": redact(&e.to_string(), &p.url),
+                }));
+                return report(steps);
             }
         }
-        report(steps)
     }
+    report(steps)
 }
 
 #[cfg(test)]
@@ -1007,5 +1086,228 @@ mod tests {
         assert_eq!(report["ok"], true, "{report}");
         assert_eq!(report["complete"], false, "{report}");
         assert_eq!(report["steps"].as_array().unwrap().len(), 1);
+    }
+
+    fn account(endpoint: &str, path_style: bool, prefixes: &[&[&str]]) -> AccountRecord {
+        let now = Utc::now();
+        AccountRecord {
+            id: "store".into(),
+            label: "store".into(),
+            context: "c".into(),
+            settings: json!({
+                "model": "s3-static-presign", "endpoint": endpoint, "pathStyle": path_style,
+                "region": "us-east-1", "bucket": "rooms", "accessKeyId": "AKID",
+            }),
+            state: crate::model::AccountState::Active,
+            public_material: None,
+            secret: None,
+            bindings: prefixes
+                .iter()
+                .enumerate()
+                .map(|(i, ps)| crate::model::Binding {
+                    consumer: format!("did:key:z6Mkconsumer{i}"),
+                    scope_ceiling: Some(crate::model::ScopeCeiling {
+                        prefixes: ps.iter().map(|p| p.to_string()).collect(),
+                        actions: vec!["put".into(), "get".into(), "delete".into()],
+                        scopes: vec![],
+                    }),
+                    max_ttl_seconds: 900,
+                    rate_per_minute: 60,
+                    source_cidrs: vec![],
+                    granted_at: Some(now),
+                })
+                .collect(),
+            provider_setup_required: true,
+            last_probe: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    use vta_sdk::http::EndpointPolicy;
+
+    /// A store on a LAN or loopback is an endpoint only with the operator's
+    /// opt-in; link-local and metadata never are; a public one always is.
+    #[test]
+    fn a_private_endpoint_needs_the_opt_in_and_metadata_never_passes() {
+        let check = |endpoint: &str, path_style: bool, policy| {
+            let a = account(endpoint, path_style, &[]);
+            check_endpoint(&settings(&a.settings).unwrap(), policy)
+        };
+        for (e, ps) in [
+            ("https://s3.example.org", false),
+            ("https://minio.example.org:9000", true),
+        ] {
+            assert!(check(e, ps, EndpointPolicy::public_only()).is_ok(), "{e}");
+            assert!(
+                check(e, ps, EndpointPolicy::private_allowed()).is_ok(),
+                "{e}"
+            );
+        }
+        for e in [
+            "https://10.0.0.5:9000",
+            "https://192.168.1.20",
+            "https://127.0.0.1:4566",
+            "https://localhost:4566",
+            "https://minio.internal",
+        ] {
+            let err = check(e, true, EndpointPolicy::public_only()).expect_err(e);
+            assert_eq!(err.member, "endpoint");
+            assert!(
+                err.why.contains("VTA_ALLOW_PRIVATE_ENDPOINTS"),
+                "{e}: {}",
+                err.why
+            );
+            assert!(
+                check(e, true, EndpointPolicy::private_allowed()).is_ok(),
+                "{e}"
+            );
+        }
+        for e in [
+            "https://169.254.169.254",
+            "https://[fd00:ec2::254]",
+            "https://metadata.google.internal",
+        ] {
+            assert!(
+                check(e, true, EndpointPolicy::public_only()).is_err(),
+                "{e}"
+            );
+            assert!(
+                check(e, true, EndpointPolicy::private_allowed()).is_err(),
+                "{e}"
+            );
+        }
+        // Virtual-hosted: what is checked is the host the probe dials.
+        assert!(
+            check(
+                "https://localhost:4566",
+                false,
+                EndpointPolicy::public_only()
+            )
+            .is_err()
+        );
+        assert!(
+            check(
+                "https://localhost:4566",
+                false,
+                EndpointPolicy::private_allowed()
+            )
+            .is_ok()
+        );
+    }
+
+    /// Without the opt-in a probe of a private endpoint stops at `sign`, naming
+    /// the switch, and dials nothing. With it, the probe gets past the check
+    /// and dials the store (here a closed loopback port, so `put` fails).
+    #[tokio::test]
+    async fn a_probe_of_a_private_endpoint_follows_the_endpoint_policy() {
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let a = account(&format!("https://127.0.0.1:{port}"), true, &[&["rooms/"]]);
+        let now = Utc::now();
+
+        let public = EndpointPolicy::public_only();
+        let report = probe_with(
+            &a,
+            Some("secret"),
+            crate::driver::probe_client_for(public),
+            public,
+            now,
+        )
+        .await;
+        let steps = report["steps"].as_array().unwrap();
+        assert_eq!(steps.len(), 1, "{report}");
+        assert_eq!(steps[0]["step"], "sign");
+        assert_eq!(steps[0]["ok"], false);
+        assert!(
+            steps[0]["providerError"]
+                .as_str()
+                .unwrap()
+                .contains("VTA_ALLOW_PRIVATE_ENDPOINTS"),
+            "{report}"
+        );
+
+        let private = EndpointPolicy::private_allowed();
+        let report = probe_with(
+            &a,
+            Some("secret"),
+            crate::driver::probe_client_for(private),
+            private,
+            now,
+        )
+        .await;
+        let steps = report["steps"].as_array().unwrap();
+        assert_eq!(steps[0]["step"], "sign", "{report}");
+        assert_eq!(steps[0]["ok"], true, "{report}");
+        assert_eq!(steps[1]["step"], "put", "{report}");
+        assert_eq!(report["complete"], false, "{report}");
+    }
+
+    fn lifecycle_rules(a: &AccountRecord) -> Vec<Value> {
+        let setup = S3StaticPresign.setup(a);
+        let art = setup["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["name"] == "bucket-lifecycle.json")
+            .unwrap();
+        let v: Value = serde_json::from_str(art["content"].as_str().unwrap()).unwrap();
+        v["Rules"].as_array().unwrap().clone()
+    }
+
+    /// Every bound prefix gets its own abort rule: with `rooms/` and `probe/`
+    /// bound, `probe/` sorts first and must not be the only one covered.
+    #[test]
+    fn the_lifecycle_covers_every_bound_prefix() {
+        let a = account(
+            "https://s3.example.org",
+            false,
+            &[&["rooms/"], &["probe/", "rooms/"]],
+        );
+        let rules = lifecycle_rules(&a);
+        let prefixes: Vec<&str> = rules
+            .iter()
+            .map(|r| r["Filter"]["Prefix"].as_str().unwrap())
+            .collect();
+        assert_eq!(prefixes, ["probe/", "rooms/"]);
+        let ids: std::collections::BTreeSet<&str> =
+            rules.iter().map(|r| r["ID"].as_str().unwrap()).collect();
+        assert_eq!(ids.len(), rules.len(), "rule IDs are unique");
+        for r in &rules {
+            assert_eq!(r["Status"], "Enabled");
+            assert_eq!(
+                r["AbortIncompleteMultipartUpload"]["DaysAfterInitiation"],
+                2
+            );
+        }
+
+        // The permissions policy names every prefix too.
+        let setup = S3StaticPresign.setup(&a);
+        let policy = setup["artifacts"][0]["content"].as_str().unwrap();
+        assert!(policy.contains("arn:aws:s3:::rooms/probe/*"), "{policy}");
+        assert!(policy.contains("arn:aws:s3:::rooms/rooms/*"), "{policy}");
+    }
+
+    /// A prefix inside another needs no rule of its own; with nothing bound the
+    /// default `rooms/` is covered.
+    #[test]
+    fn the_lifecycle_skips_nested_prefixes_and_defaults_to_rooms() {
+        let a = account(
+            "https://s3.example.org",
+            false,
+            &[&["rooms/", "rooms/a/"], &["files/"]],
+        );
+        let prefixes: Vec<String> = lifecycle_rules(&a)
+            .iter()
+            .map(|r| r["Filter"]["Prefix"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(prefixes, ["files/", "rooms/"]);
+
+        let a = account("https://s3.example.org", false, &[]);
+        let rules = lifecycle_rules(&a);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["Filter"]["Prefix"], "rooms/");
     }
 }

@@ -157,8 +157,23 @@ pub fn driver_for(model: &str) -> Option<&'static dyn ExternalAuthDriver> {
 pub const SUPPORTED_MODELS: &[&str] = &["s3-static-presign"];
 
 /// One process-wide client for probes: the SSRF-hardened foreign-fetch
-/// profile, since a provider endpoint is administrator-supplied.
+/// profile (no redirects, no proxy, vetted DNS answers), since a provider
+/// endpoint is administrator-supplied — under the process's endpoint policy,
+/// so a store on a private network or loopback (MinIO on a LAN, LocalStack) is
+/// reachable only when the operator set `VTA_ALLOW_PRIVATE_ENDPOINTS`, the same
+/// switch that lets this VTA resolve a DID on such a host. Public-only otherwise.
 pub fn probe_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(vta_sdk::http::foreign_fetch_client)
+    probe_client_for(vta_sdk::http::EndpointPolicy::process_default())
+}
+
+/// [`probe_client`] under an explicit endpoint policy.
+pub fn probe_client_for(policy: vta_sdk::http::EndpointPolicy) -> &'static reqwest::Client {
+    static PUBLIC: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    static PRIVATE: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let cell = if policy.allow_private {
+        &PRIVATE
+    } else {
+        &PUBLIC
+    };
+    cell.get_or_init(|| vta_sdk::http::foreign_fetch_client_for(policy))
 }
