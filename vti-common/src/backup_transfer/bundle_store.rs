@@ -136,7 +136,7 @@ impl BundleToken {
     }
 }
 
-fn bundle_key(id: &Uuid) -> String {
+pub(super) fn bundle_key(id: &Uuid) -> String {
     format!("bundle:{id}")
 }
 

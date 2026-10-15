@@ -233,7 +233,7 @@ impl ChunkPlan {
     }
 }
 
-fn plan_key(id: &Uuid) -> String {
+pub(super) fn plan_key(id: &Uuid) -> String {
     format!("chunks:{id}")
 }
 
@@ -257,7 +257,7 @@ pub async fn delete_plan(ks: &KeyspaceHandle, id: &Uuid) -> Result<(), AppError>
 /// bitmap before either stored it would lose one index's progress. One lock for
 /// all bundles is enough: the critical section is a small record write, or one
 /// chunk-sized read or write, and the per-DID limiter bounds how many wait.
-fn chunk_lock() -> &'static tokio::sync::Mutex<()> {
+pub(super) fn chunk_lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }

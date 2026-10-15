@@ -148,7 +148,14 @@ pub async fn set_file_mode_600(path: &Path) -> Result<(), AppError> {
 /// Cancel an open bundle the caller owns: delete any staged bytes, mark it
 /// `Aborted`, and drop a chunked bundle's plan. `Ok(false)` when the bundle was
 /// already terminal, so a retried abort is safe.
+///
+/// Runs under the chunk lock every other read-modify-write of a bundle record
+/// takes, and writes the record and the plan's removal as one store batch.
+/// Outside it, an abort's stale copy of the record could overwrite a chunk
+/// write's or a finalize's update (or be overwritten by one, un-aborting the
+/// bundle), and two aborts could both report having aborted it.
 pub async fn abort(ks: &KeyspaceHandle, caller_did: &str, id: &Uuid) -> Result<bool, AppError> {
+    let _guard = chunked::chunk_lock().lock().await;
     let mut record = require_owned(ks, id, caller_did).await?;
     if record.state.is_terminal() {
         return Ok(false);
@@ -167,7 +174,61 @@ pub async fn abort(ks: &KeyspaceHandle, caller_did: &str, id: &Uuid) -> Result<b
     }
     record.state = bundle_store::BundleState::Aborted;
     record.blob_path = None;
-    bundle_store::store_bundle(ks, &record).await?;
-    chunked::delete_plan(ks, id).await?;
+    let mut batch = crate::store::Batch::new();
+    batch
+        .insert(bundle_store::bundle_key(id), &record)?
+        .remove(chunked::plan_key(id));
+    ks.apply_batch(batch).await?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod abort_tests {
+    use super::bundle_store::{BundleState, store_bundle};
+    use super::*;
+    use crate::config::StoreConfig;
+
+    /// Aborts racing on one open bundle: exactly one aborts it, the rest find
+    /// it already terminal. Unlocked, each read the open record and each
+    /// reported having aborted it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn racing_aborts_abort_a_bundle_exactly_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(&StoreConfig {
+            data_dir: dir.path().into(),
+        })
+        .unwrap();
+        let ks = store.keyspace("backup_bundles_abort_test").unwrap();
+        for _ in 0..40 {
+            let now = chrono::Utc::now();
+            let record = BundleRecord {
+                bundle_id: Uuid::new_v4(),
+                kind: BundleKind::Import,
+                state: BundleState::ImportPending,
+                created_at: now,
+                expires_at: now + Duration::hours(1),
+                created_by: "did:example:admin".into(),
+                algorithm: "stream".into(),
+                expected_sha256: "0".repeat(64),
+                expected_size_bytes: 1,
+                token_hash: [0u8; 32],
+                blob_path: None,
+            };
+            store_bundle(&ks, &record).await.unwrap();
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+            let mut tasks = Vec::new();
+            for _ in 0..8 {
+                let (ks, barrier, id) = (ks.clone(), barrier.clone(), record.bundle_id);
+                tasks.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    abort(&ks, "did:example:admin", &id).await.unwrap()
+                }));
+            }
+            let mut aborted = 0;
+            for t in tasks {
+                aborted += t.await.unwrap() as usize;
+            }
+            assert_eq!(aborted, 1, "{aborted} callers aborted one bundle");
+        }
+    }
 }
