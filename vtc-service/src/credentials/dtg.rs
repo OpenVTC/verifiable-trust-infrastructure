@@ -180,6 +180,29 @@ pub async fn issue_role_action(
     validity: Duration,
 ) -> Result<Value, AppError> {
     let (valid_from, valid_until) = window(validity);
+    issue_role_action_in(
+        signer,
+        member_did,
+        role,
+        id,
+        status_ref,
+        valid_from,
+        valid_until,
+    )
+    .await
+}
+
+/// [`issue_role_action`] over an explicit validity window — re-signing an
+/// existing grant without moving its `validFrom`/`validUntil`.
+pub async fn issue_role_action_in(
+    signer: &LocalSigner,
+    member_did: &str,
+    role: &str,
+    id: Option<&str>,
+    status_ref: Option<&CredentialStatusRef>,
+    valid_from: DateTime<Utc>,
+    valid_until: DateTime<Utc>,
+) -> Result<Value, AppError> {
     let dtg = DTGCredential::new_community_role_vac(
         signer.issuer_did().to_string(),
         member_did.to_string(),

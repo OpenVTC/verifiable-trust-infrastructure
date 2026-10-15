@@ -43,8 +43,8 @@ pub const VETTER_GRANT_ROW_TYPE: &str = vta_sdk::protocols::vetting::VETTER_ROLE
 
 pub use storage::{
     ENDORSEMENTS_PREFIX, count_live_by_type, delete_endorsement, endorsements_by_type,
-    endorsements_for_subject, get_endorsement, list_endorsements, list_endorsements_matching,
-    mark_revoked, store_endorsement,
+    endorsements_for_subject, get_endorsement, get_endorsement_raw, list_endorsements,
+    list_endorsements_matching, mark_revoked, replace_if_unchanged, store_endorsement,
 };
 
 /// A stored community-issued credential record. The accompanying credential
