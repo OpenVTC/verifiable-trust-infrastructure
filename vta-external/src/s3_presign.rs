@@ -17,7 +17,9 @@ use url::Url;
 
 use vta_sdk::sealed_transfer::ExternalCredentialPayload;
 
-use crate::driver::{DriverError, ExternalAuthDriver, IssueRequest, Issued, SettingsError};
+use crate::driver::{
+    BatchIssueRequest, DriverError, ExternalAuthDriver, IssueRequest, Issued, SettingsError,
+};
 use crate::model::{AccountRecord, rfc3339};
 
 /// The driver.
@@ -143,7 +145,7 @@ fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
 }
 
 /// Presign `method` on `key` (the object key, already validated) for
-/// `expires_seconds` from `now`. Pure: no clock, no network.
+/// `expires_seconds` from `now`, signing only `host`. Pure: no clock, no network.
 fn presign(
     s: &Settings,
     secret: &str,
@@ -152,6 +154,24 @@ fn presign(
     expires_seconds: u32,
     now: DateTime<Utc>,
 ) -> Presigned {
+    presign_with(s, secret, method, key, &[], &[], expires_seconds, now).0
+}
+
+/// Presign `method` on `key` with `query` added to the signed query and
+/// `headers` (name as returned, value) signed beside `host`. Every name and value
+/// is percent-encoded by the SigV4 rules, never formatted in. Returns the request
+/// and the headers it must carry, exactly as signed. Pure.
+#[allow(clippy::too_many_arguments)]
+fn presign_with(
+    s: &Settings,
+    secret: &str,
+    method: &'static str,
+    key: &str,
+    query: &[(&str, String)],
+    headers: &[(&'static str, String)],
+    expires_seconds: u32,
+    now: DateTime<Utc>,
+) -> (Presigned, std::collections::BTreeMap<String, String>) {
     let host = match (s.path_style, s.endpoint.host_str()) {
         (_, None) => unreachable!("validated: endpoint has a host"),
         (true, Some(h)) => h.to_string(),
@@ -173,22 +193,45 @@ fn presign(
     let scope = format!("{date}/{}/s3/aws4_request", s.region);
     let credential = format!("{}/{scope}", s.access_key_id);
 
-    let mut query = [
-        ("X-Amz-Algorithm", "AWS4-HMAC-SHA256".to_string()),
-        ("X-Amz-Credential", credential),
-        ("X-Amz-Date", amz_date.clone()),
-        ("X-Amz-Expires", expires_seconds.to_string()),
-        ("X-Amz-SignedHeaders", "host".to_string()),
-    ];
-    query.sort_by(|a, b| a.0.cmp(b.0));
-    let canonical_query = query
+    // The signed headers: `host` and those asked for, by lower-case name, sorted.
+    let mut canon_headers: Vec<(String, String)> = vec![("host".into(), host.clone())];
+    canon_headers.extend(
+        headers
+            .iter()
+            .map(|(n, v)| (n.to_ascii_lowercase(), v.trim().to_string())),
+    );
+    canon_headers.sort();
+    let signed_headers = canon_headers
         .iter()
-        .map(|(k, v)| format!("{}={}", uri_encode(k, false), uri_encode(v, false)))
+        .map(|(n, _)| n.as_str())
+        .collect::<Vec<_>>()
+        .join(";");
+
+    let mut params: Vec<(String, String)> = vec![
+        ("X-Amz-Algorithm".into(), "AWS4-HMAC-SHA256".into()),
+        ("X-Amz-Credential".into(), credential),
+        ("X-Amz-Date".into(), amz_date.clone()),
+        ("X-Amz-Expires".into(), expires_seconds.to_string()),
+        ("X-Amz-SignedHeaders".into(), signed_headers.clone()),
+    ];
+    params.extend(query.iter().map(|(k, v)| (k.to_string(), v.clone())));
+    let mut encoded: Vec<(String, String)> = params
+        .iter()
+        .map(|(k, v)| (uri_encode(k, false), uri_encode(v, false)))
+        .collect();
+    encoded.sort();
+    let canonical_query = encoded
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
         .join("&");
 
+    let canonical_header_block: String = canon_headers
+        .iter()
+        .map(|(n, v)| format!("{n}:{v}\n"))
+        .collect();
     let canonical_request = format!(
-        "{method}\n{canonical_uri}\n{canonical_query}\nhost:{host}\n\nhost\nUNSIGNED-PAYLOAD"
+        "{method}\n{canonical_uri}\n{canonical_query}\n{canonical_header_block}\n{signed_headers}\nUNSIGNED-PAYLOAD"
     );
     let string_to_sign = format!(
         "AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{}",
@@ -200,13 +243,116 @@ fn presign(
     let k_signing = hmac(&k_service, b"aws4_request");
     let signature = hex::encode(hmac(&k_signing, string_to_sign.as_bytes()));
 
-    Presigned {
-        method,
-        url: format!(
-            "{}://{host}{canonical_uri}?{canonical_query}&X-Amz-Signature={signature}",
-            s.endpoint.scheme()
+    let returned = headers
+        .iter()
+        .map(|(n, v)| (n.to_string(), v.clone()))
+        .collect();
+    (
+        Presigned {
+            method,
+            url: format!(
+                "{}://{host}{canonical_uri}?{canonical_query}&X-Amz-Signature={signature}",
+                s.endpoint.scheme()
+            ),
+        },
+        returned,
+    )
+}
+
+/// One operation of a batch as SigV4 parts: method, signed query, signed
+/// headers — exactly the specification's table (`issue/0.2` item 10), and
+/// nothing else.
+/// A signed query or header list: names fixed by the table, values validated.
+type Signed = Vec<(&'static str, String)>;
+
+fn operation_parts(
+    op: &crate::batch::PresignRequest,
+    upload_id: Option<&str>,
+) -> (&'static str, Signed, Signed) {
+    use crate::batch::PresignRequest as Op;
+    let id = || upload_id.unwrap_or_default().to_string();
+    match op {
+        Op::Put {
+            checksum_sha256,
+            content_length,
+        } => (
+            "PUT",
+            vec![],
+            vec![
+                ("Content-Length", content_length.to_string()),
+                ("x-amz-checksum-sha256", checksum_sha256.to_string()),
+            ],
         ),
+        Op::Get => ("GET", vec![], vec![]),
+        Op::Head => (
+            "HEAD",
+            vec![],
+            vec![("x-amz-checksum-mode", "ENABLED".into())],
+        ),
+        Op::Delete => ("DELETE", vec![], vec![]),
+        Op::CreateMultipart => (
+            "POST",
+            vec![("uploads", String::new())],
+            vec![("x-amz-checksum-algorithm", "SHA256".into())],
+        ),
+        Op::UploadPart {
+            checksum_sha256,
+            content_length,
+            part_number,
+        } => (
+            "PUT",
+            vec![("partNumber", part_number.to_string()), ("uploadId", id())],
+            vec![
+                ("Content-Length", content_length.to_string()),
+                ("x-amz-checksum-sha256", checksum_sha256.to_string()),
+            ],
+        ),
+        Op::ListParts { part_number_marker } => {
+            let mut q = vec![("uploadId", id()), ("max-parts", "1000".into())];
+            if let Some(m) = part_number_marker {
+                q.push(("part-number-marker", m.to_string()));
+            }
+            ("GET", q, vec![])
+        }
+        Op::CompleteMultipart { content_length } => (
+            "POST",
+            vec![("uploadId", id())],
+            vec![("x-amz-mp-object-size", content_length.to_string())],
+        ),
+        Op::AbortMultipart => ("DELETE", vec![("uploadId", id())], vec![]),
+        // `check_batch` refuses an operation this build does not know.
+        _ => ("GET", vec![], vec![]),
     }
+}
+
+/// Presign every operation of `batch`, in order, for `ttl` seconds from `now`.
+fn presign_batch(
+    s: &Settings,
+    secret: &str,
+    batch: &crate::batch::PresignBatch,
+    ttl: u32,
+    now: DateTime<Utc>,
+) -> Vec<vta_sdk::sealed_transfer::PresignedEntry> {
+    let key = format!("{}{}", batch.prefix.as_str(), batch.object_key.as_str());
+    let upload_id = batch.upload_id.as_ref().map(|u| u.as_str());
+    let expires_at = rfc3339(now + Duration::seconds(i64::from(ttl)));
+    batch
+        .requests
+        .iter()
+        .enumerate()
+        .map(|(i, op)| {
+            let (method, query, headers) = operation_parts(op, upload_id);
+            let (p, headers) = presign_with(s, secret, method, &key, &query, &headers, ttl, now);
+            vta_sdk::sealed_transfer::PresignedEntry {
+                index: i as u32,
+                operation: crate::batch::operation_name(op).to_string(),
+                method: p.method.to_string(),
+                url: p.url.clone(),
+                headers,
+                expires_at: expires_at.clone(),
+            }
+        })
+        .collect()
 }
 
 /// Remove a presigned URL's signature (and its credential scope) from text a
@@ -231,6 +377,10 @@ impl ExternalAuthDriver for S3StaticPresign {
     }
 
     fn holds_secret(&self) -> bool {
+        true
+    }
+
+    fn takes_presign(&self) -> bool {
         true
     }
 
@@ -282,21 +432,40 @@ impl ExternalAuthDriver for S3StaticPresign {
             "Version": "2012-10-17",
             "Statement": [{
                 "Effect": "Allow",
-                "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+                // Multipart writes are PutObject; ListParts and AbortMultipartUpload are
+                // their own actions (`external/credentials/issue/0.2`, direct uploads).
+                "Action": [
+                    "s3:PutObject",
+                    "s3:GetObject",
+                    "s3:DeleteObject",
+                    "s3:ListMultipartUploadParts",
+                    "s3:AbortMultipartUpload",
+                ],
                 "Resource": resources,
             }],
         });
-        // For a browser reading a room's file straight from the bucket (a VTC's
-        // `rooms/blobs/get/0.2` direct mode): the presigned GET is cross-origin, and its
-        // `Range` header makes it a preflighted request. Reads only — no write is ever
-        // presigned for a browser, and the origins are the operator's to fill in.
+        // For a browser moving a room's file straight to or from the bucket (a VTC's
+        // `rooms/blobs/*/0.2` direct mode): the presigned requests are cross-origin, a
+        // ranged GET and a part PUT carrying its signed checksum are both preflighted.
+        // The origins are the operator's to fill in.
         let cors = json!({
             "CORSRules": [{
                 "AllowedOrigins": ["https://<origin of the community's portal or console>"],
-                "AllowedMethods": ["GET"],
-                "AllowedHeaders": ["Range"],
+                "AllowedMethods": ["GET", "PUT"],
+                "AllowedHeaders": ["Range", "Content-Length", "x-amz-checksum-sha256"],
                 "ExposeHeaders": ["Content-Length", "Content-Range", "ETag"],
                 "MaxAgeSeconds": 300,
+            }],
+        });
+        // A direct upload the host never completes or aborts (it crashed, or lost
+        // the upload id) keeps its parts, and bills for them, until it is aborted.
+        // The host's own sweep aborts what it knows of; this rule is the backstop.
+        let lifecycle = json!({
+            "Rules": [{
+                "ID": "abort-incomplete-room-uploads",
+                "Status": "Enabled",
+                "Filter": { "Prefix": prefixes.first().cloned().unwrap_or_else(|| "rooms/".into()) },
+                "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 2 },
             }],
         });
         json!({
@@ -309,13 +478,17 @@ impl ExternalAuthDriver for S3StaticPresign {
                 "name": "bucket-cors.json",
                 "mediaType": "application/json",
                 "content": serde_json::to_string_pretty(&cors).unwrap_or_default(),
+            }, {
+                "name": "bucket-lifecycle.json",
+                "mediaType": "application/json",
+                "content": serde_json::to_string_pretty(&lifecycle).unwrap_or_default(),
             }],
             "steps": [
                 {"description": format!(
                     "Create an access key at the store scoped to bucket {bucket}, allowing only \
-                     PutObject, GetObject and DeleteObject on the prefixes in \
-                     permissions-policy.json: no listing, no bucket or policy actions, no other \
-                     bucket. (On R2 and B2, an API token restricted to this bucket with object \
+                     PutObject, GetObject, DeleteObject, ListMultipartUploadParts and \
+                     AbortMultipartUpload on the prefixes in permissions-policy.json: no \
+                     listing, no bucket or policy actions, no other bucket. (On R2 and B2, an API token restricted to this bucket with object \
                      read and write; on MinIO, a user with this policy attached.)"
                 )},
                 {"description": "Seal the secret access key in your client to this VTA and set it with \
@@ -325,13 +498,20 @@ impl ExternalAuthDriver for S3StaticPresign {
                     object under the narrowest bound prefix (or the settings' probePrefix before \
                     anything is bound), so the key must allow exactly that. Only a probe that is \
                     ok and complete makes the account usable."},
-                {"description": "Optional, for browsers that read files straight from the bucket \
-                    (a VTC's direct downloads): set bucket-cors.json as the bucket's CORS \
+                {"description": "Bind each consumer with the actions put, get and delete: put \
+                    writes (multipart included), get reads and checks what was written, \
+                    delete removes files and aborts an abandoned upload."},
+                {"description": "Recommended: set bucket-lifecycle.json as the bucket's lifecycle \
+                    configuration (`aws s3api put-bucket-lifecycle-configuration --bucket \
+                    <bucket> --lifecycle-configuration file://bucket-lifecycle.json`), so a \
+                    multipart upload nobody completes or aborts is reclaimed by the store."},
+                {"description": "Optional, for browsers that move files straight to or from the \
+                    bucket (a VTC's direct transfers): set bucket-cors.json as the bucket's CORS \
                     configuration, with AllowedOrigins replaced by the origins your members' \
                     browsers load the portal from (`aws s3api put-bucket-cors --bucket <bucket> \
                     --cors-configuration file://bucket-cors.json`; on R2, the bucket's CORS \
-                    policy). Without it a browser's direct read fails and it must ask for a \
-                    proxied one; non-browser clients need nothing."},
+                    policy). Without it a browser must ask for a proxied transfer; \
+                    non-browser clients need nothing."},
             ],
         })
     }
@@ -361,6 +541,24 @@ impl ExternalAuthDriver for S3StaticPresign {
                 headers: Default::default(),
                 expires_at: rfc3339(expires_at),
                 provider_request_id: None,
+            },
+            expires_at,
+        })
+    }
+
+    async fn issue_batch(&self, req: BatchIssueRequest<'_>) -> Result<Issued, DriverError> {
+        let s = settings(&req.account.settings).map_err(|e| DriverError::Internal(e.why))?;
+        let Some(secret) = req.secret else {
+            return Err(DriverError::SetupRequired(
+                "the account's secret has not been set (external/accounts/secret/set)".into(),
+            ));
+        };
+        let requests = presign_batch(&s, secret, req.batch, req.ttl_seconds, req.now);
+        let expires_at = req.now + Duration::seconds(i64::from(req.ttl_seconds));
+        Ok(Issued {
+            credential: ExternalCredentialPayload::PresignedRequests {
+                requests,
+                expires_at: rfc3339(expires_at),
             },
             expires_at,
         })
@@ -481,6 +679,217 @@ impl ExternalAuthDriver for S3StaticPresign {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    fn r2() -> Settings {
+        settings(&json!({
+            "model": "s3-static-presign",
+            "endpoint": "https://acct.r2.cloudflarestorage.com",
+            "region": "auto",
+            "bucket": "rooms-eu",
+            "accessKeyId": "AKIDEXAMPLE",
+        }))
+        .unwrap()
+    }
+
+    const SECRET: &str = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+    const SUM: &str = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+
+    /// Recompute a presigned request's signature from what a verifier sees — the URL
+    /// and the headers sent — as storage does: the query minus the signature, the
+    /// headers `X-Amz-SignedHeaders` names, `UNSIGNED-PAYLOAD`.
+    fn verifies(method: &str, url: &str, sent: &BTreeMap<String, String>) -> bool {
+        let u = Url::parse(url).unwrap();
+        let mut sig = String::new();
+        let mut q: Vec<(String, String)> = Vec::new();
+        let mut signed_names = String::new();
+        let mut date = String::new();
+        for (k, v) in u.query_pairs() {
+            match k.as_ref() {
+                "X-Amz-Signature" => sig = v.to_string(),
+                _ => {
+                    if k == "X-Amz-SignedHeaders" {
+                        signed_names = v.to_string();
+                    }
+                    if k == "X-Amz-Date" {
+                        date = v.to_string();
+                    }
+                    q.push((uri_encode(&k, false), uri_encode(&v, false)));
+                }
+            }
+        }
+        q.sort();
+        let cq = q
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("&");
+        let host = u.host_str().unwrap().to_string();
+        let lower: BTreeMap<String, String> = sent
+            .iter()
+            .map(|(k, v)| (k.to_ascii_lowercase(), v.clone()))
+            .collect();
+        let mut block = String::new();
+        for name in signed_names.split(';') {
+            let v = if name == "host" {
+                Some(&host)
+            } else {
+                lower.get(name)
+            };
+            let Some(v) = v else { return false };
+            block.push_str(&format!("{name}:{v}\n"));
+        }
+        let creq = format!(
+            "{method}\n{}\n{cq}\n{block}\n{signed_names}\nUNSIGNED-PAYLOAD",
+            u.path()
+        );
+        let scope = format!("{}/auto/s3/aws4_request", &date[..8]);
+        let sts = format!(
+            "AWS4-HMAC-SHA256\n{date}\n{scope}\n{}",
+            hex::encode(Sha256::digest(creq.as_bytes()))
+        );
+        let k = hmac(
+            &hmac(
+                &hmac(
+                    &hmac(format!("AWS4{SECRET}").as_bytes(), &date.as_bytes()[..8]),
+                    b"auto",
+                ),
+                b"s3",
+            ),
+            b"aws4_request",
+        );
+        hex::encode(hmac(&k, sts.as_bytes())) == sig
+    }
+
+    fn batch(v: Value) -> crate::batch::PresignBatch {
+        serde_json::from_value(v).unwrap()
+    }
+
+    /// Every operation is signed with exactly the table's method, query and headers
+    /// (`issue/0.2` item 10): the signature covers them, any other value fails, and
+    /// nothing else is signed.
+    #[test]
+    fn a_batch_signs_exactly_the_specifications_headers_and_query() {
+        let now = Utc::now();
+        let mp = batch(json!({
+            "prefix": "rooms/abc/", "objectKey": "zBlob-u1", "uploadId": "up/load+id=",
+            "requests": [
+                {"operation": "upload-part", "partNumber": 3, "contentLength": 5242880, "checksumSha256": SUM},
+                {"operation": "list-parts", "partNumberMarker": 1000},
+                {"operation": "complete-multipart", "contentLength": 15728640},
+                {"operation": "abort-multipart"},
+            ]
+        }));
+        let set = presign_batch(&r2(), SECRET, &mp, 300, now);
+        let one = batch(json!({
+            "prefix": "rooms/abc/", "objectKey": "zBlob-u1",
+            "requests": [
+                {"operation": "put", "contentLength": 300000, "checksumSha256": SUM},
+                {"operation": "create-multipart"},
+                {"operation": "head"}, {"operation": "get"}, {"operation": "delete"},
+            ]
+        }));
+        let set2 = presign_batch(&r2(), SECRET, &one, 300, now);
+        let expect: &[(&str, &str, &[&str], &[&str])] = &[
+            // operation, method, signed headers (beside host), non-auth query keys
+            (
+                "upload-part",
+                "PUT",
+                &["content-length", "x-amz-checksum-sha256"],
+                &["partNumber", "uploadId"],
+            ),
+            (
+                "list-parts",
+                "GET",
+                &[],
+                &["max-parts", "part-number-marker", "uploadId"],
+            ),
+            (
+                "complete-multipart",
+                "POST",
+                &["x-amz-mp-object-size"],
+                &["uploadId"],
+            ),
+            ("abort-multipart", "DELETE", &[], &["uploadId"]),
+            (
+                "put",
+                "PUT",
+                &["content-length", "x-amz-checksum-sha256"],
+                &[],
+            ),
+            (
+                "create-multipart",
+                "POST",
+                &["x-amz-checksum-algorithm"],
+                &["uploads"],
+            ),
+            ("head", "HEAD", &["x-amz-checksum-mode"], &[]),
+            ("get", "GET", &[], &[]),
+            ("delete", "DELETE", &[], &[]),
+        ];
+        for (entry, (op, method, hdrs, query)) in set.iter().chain(set2.iter()).zip(expect) {
+            assert_eq!(entry.operation, *op);
+            assert_eq!(entry.method, *method);
+            let u = Url::parse(&entry.url).unwrap();
+            assert!(
+                u.path().ends_with("/rooms/abc/zBlob-u1"),
+                "{op}: one object"
+            );
+            let signed: Vec<String> = u
+                .query_pairs()
+                .find(|(k, _)| k == "X-Amz-SignedHeaders")
+                .unwrap()
+                .1
+                .split(';')
+                .map(str::to_string)
+                .collect();
+            let mut want: Vec<String> = hdrs.iter().map(|h| h.to_string()).collect();
+            want.push("host".into());
+            want.sort();
+            assert_eq!(signed, want, "{op}: signed headers");
+            let mut extra: Vec<String> = u
+                .query_pairs()
+                .map(|(k, _)| k.to_string())
+                .filter(|k| !k.starts_with("X-Amz-"))
+                .collect();
+            extra.sort();
+            assert_eq!(extra, query.to_vec(), "{op}: signed query");
+            let returned: Vec<String> = entry
+                .headers
+                .keys()
+                .map(|k| k.to_ascii_lowercase())
+                .collect();
+            assert_eq!(
+                returned.len(),
+                hdrs.len(),
+                "{op}: every signed header returned"
+            );
+            assert!(
+                verifies(method, &entry.url, &entry.headers),
+                "{op}: verifies as sent"
+            );
+            for name in entry.headers.keys() {
+                let mut tampered = entry.headers.clone();
+                tampered.insert(name.clone(), "1".into());
+                assert!(
+                    !verifies(method, &entry.url, &tampered),
+                    "{op}: {name} is covered"
+                );
+            }
+            assert!(
+                !verifies("PATCH", &entry.url, &entry.headers),
+                "{op}: method is covered"
+            );
+        }
+        // The upload id is percent-encoded into the signed query, not interpolated.
+        assert!(set[0].url.contains("uploadId=up%2Fload%2Bid%3D"));
+        assert!(set[0].url.contains("partNumber=3"));
+        assert_eq!(set[0].headers["Content-Length"], "5242880");
+        assert_eq!(set[2].headers["x-amz-mp-object-size"], "15728640");
+        // A changed query value no longer verifies.
+        let moved = set[0].url.replace("partNumber=3", "partNumber=4");
+        assert!(!verifies("PUT", &moved, &set[0].headers));
+    }
 
     /// The worked example in the S3 API reference, "Authenticating Requests:
     /// Using Query Parameters (AWS Signature Version 4)": a presigned GET of

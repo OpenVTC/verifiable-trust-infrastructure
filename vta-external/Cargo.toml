@@ -19,6 +19,9 @@ vta-keyspaces = { path = "../vta-keyspaces", version = "0.17" }
 vta-keys = { path = "../vta-keys", version = "0.21" }
 vti-common = { path = "../vti-common", version = "0.44" }
 vta-sdk = { path = "../vta-sdk", version = "0.68", features = ["client"] }
+# The generated `external/credentials/issue/0.2` types: a presign batch is read
+# and checked as the specification's own type, never a mirror of it.
+trust-tasks-rs = { workspace = true }
 async-trait = "0.1"
 base64 = { workspace = true }
 chrono = { workspace = true }

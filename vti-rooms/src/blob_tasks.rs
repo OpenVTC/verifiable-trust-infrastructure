@@ -341,6 +341,25 @@ pub async fn begin_v2(
             if b.already_committed {
                 body["alreadyCommitted"] = json!(true);
             }
+            if b.mode == TransferMode::Direct && !b.targets.is_empty() {
+                let targets: Vec<Value> = b
+                    .targets
+                    .iter()
+                    .map(|(index, t)| {
+                        let mut v = json!({
+                            "index": index,
+                            "method": "PUT",
+                            "url": t.url,
+                            "expiresAt": t.expires_at,
+                        });
+                        if !t.headers.is_empty() {
+                            v["headers"] = json!(t.headers);
+                        }
+                        v
+                    })
+                    .collect();
+                body["targets"] = json!(targets);
+            }
             checked::<upload_begin_v2::Response>(body)
         }
         Err(e @ BlobError::TooManyUploads { max_open }) => Err(declared(

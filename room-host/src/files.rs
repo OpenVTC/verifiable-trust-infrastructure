@@ -1066,6 +1066,283 @@ mod tests {
         }
     }
 
+    // ─── 0.2 direct uploads, against an S3-shaped store ────────────────────
+
+    const PART: usize = vti_common::blob_store::MIN_MULTIPART_PART_BYTES as usize;
+
+    fn direct_host(s3: &vti_common::blob_store::mock_s3::MockS3) -> Host {
+        let dir = tempfile::tempdir().unwrap();
+        let store = vti_common::blob_store::presigned::PresignedBlobs::new(
+            "s3",
+            s3.presigner(),
+            Some("community/"),
+        )
+        .unwrap()
+        .with_plain_http();
+        let state = open_state_with_files(
+            dir.path(),
+            vti_common::auth::TrustTaskVmResolver::did_key_only(),
+            FilesConfig {
+                store: Some(Arc::new(store)),
+                config_id: Some("s3".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let app = router(state.clone());
+        Host {
+            _dir: dir,
+            state,
+            app,
+        }
+    }
+
+    fn part_plan(b: &Blob, part: usize) -> Value {
+        let digests: Vec<String> = b
+            .bytes
+            .chunks(part)
+            .map(|c| sha256_digest_multibase(&Sha256::digest(c).into()))
+            .collect();
+        json!({ "partSize": part, "partCount": digests.len(), "partDigests": digests })
+    }
+
+    async fn begin_direct(h: &Host, f: &RoomFixture, b: &Blob, part: usize) -> (StatusCode, Value) {
+        call(
+            &h.app,
+            UPLOAD_BEGIN_V2_TYPE,
+            json!({
+                "roomId": f.room.room_id,
+                "presentation": f.as_owner(),
+                "manifest": b.manifest,
+                "directParts": part_plan(b, part),
+            }),
+            &f.owner,
+        )
+        .await
+    }
+
+    /// What a member's client does with a target: exactly its method and headers.
+    async fn put_target(target: &Value, bytes: &[u8]) -> reqwest::StatusCode {
+        let url = target["url"]
+            .as_str()
+            .unwrap()
+            .replacen("https://", "http://", 1);
+        let mut req = reqwest::Client::new().put(url);
+        for (k, v) in target["headers"].as_object().unwrap() {
+            req = req.header(k, v.as_str().unwrap());
+        }
+        req.body(bytes.to_vec()).send().await.unwrap().status()
+    }
+
+    /// Begin → write each part to its bound target → commit (verified at storage)
+    /// → a record names the blob → read it back direct. Charged to the member at
+    /// commit; no byte passed through the host.
+    #[tokio::test]
+    async fn a_direct_upload_is_verified_at_storage_before_it_is_recorded() {
+        let s3 = vti_common::blob_store::mock_s3::MockS3::start(true).await;
+        let h = direct_host(&s3);
+        let f = room(&h).await;
+        let b = blob(PART + 300_000, 11);
+        let (status, begun) = begin_direct(&h, &f, &b, PART).await;
+        assert_eq!(status, StatusCode::OK, "{begun}");
+        assert_eq!(begun["mode"], "direct");
+        assert_eq!(begun["missing"], json!([0, 1]));
+        let targets = begun["targets"].as_array().unwrap().clone();
+        assert_eq!(targets.len(), 2);
+        for t in &targets {
+            assert_eq!(t["method"], "PUT");
+            assert!(t["url"].as_str().unwrap().starts_with("https://"));
+            assert!(t["headers"]["x-amz-checksum-sha256"].is_string());
+            assert!(t["headers"]["Content-Length"].is_string());
+            let exp: chrono::DateTime<chrono::Utc> =
+                serde_json::from_value(t["expiresAt"].clone()).unwrap();
+            assert!(exp <= chrono::Utc::now() + chrono::Duration::seconds(301));
+        }
+        let id = begun["uploadId"].as_str().unwrap().to_string();
+        // Storage refuses bytes other than the part's.
+        assert_eq!(
+            put_target(&targets[0], &b.bytes[1..PART + 1]).await,
+            reqwest::StatusCode::BAD_REQUEST
+        );
+        assert!(put_target(&targets[0], &b.bytes[..PART]).await.is_success());
+
+        // One part is missing: `incomplete`, and a re-begin answers only it.
+        let (_, out) = call(
+            &h.app,
+            UPLOAD_COMMIT_V2_TYPE,
+            json!({ "uploadId": id }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(code(&out), "rooms/blobs/upload/commit:incomplete", "{out}");
+        let (_, again) = begin_direct(&h, &f, &b, PART).await;
+        assert_eq!(again["uploadId"], id.as_str());
+        assert_eq!(again["missing"], json!([1]));
+        assert!(
+            put_target(&again["targets"][0], &b.bytes[PART..])
+                .await
+                .is_success()
+        );
+
+        // Only the owner commits a direct upload.
+        let (_, out) = call(
+            &h.app,
+            UPLOAD_COMMIT_V2_TYPE,
+            json!({ "uploadId": id }),
+            &Party::new(),
+        )
+        .await;
+        assert_eq!(code(&out), "rooms/blobs/upload/commit:notFound");
+        let (status, out) = call(
+            &h.app,
+            UPLOAD_COMMIT_V2_TYPE,
+            json!({ "uploadId": id }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(out["blobRef"], b.blob_ref);
+        assert_eq!(s3.open_uploads(), 0);
+        assert_eq!(info(&h, &f).await["usage"]["room"]["files"], 1);
+        assert_eq!(info(&h, &f).await["usage"]["room"]["reservedBytes"], 0);
+
+        let (status, out) = put_record(&h, &f, "giXFLTGBdnnQJRoIsktuIg", &[&b.blob_ref]).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        let got = get_v2(&h, &f, &b.blob_ref, false).await;
+        assert_eq!(got["mode"], "proxied");
+        let (status, c) = call(
+            &h.app,
+            DOWNLOAD_CHUNK_TYPE,
+            json!({ "downloadId": got["downloadId"], "index": 0 }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{c}");
+    }
+
+    /// Storage that does not enforce the signed checksum accepts other bytes; the
+    /// commit catches them at storage, deletes what is there and refuses.
+    #[tokio::test]
+    async fn a_tampered_direct_upload_is_refused_and_deleted() {
+        let s3 = vti_common::blob_store::mock_s3::MockS3::start(false).await;
+        let h = direct_host(&s3);
+        let f = room(&h).await;
+        let b = blob(PART + 1000, 12);
+        let (_, begun) = begin_direct(&h, &f, &b, PART).await;
+        let id = begun["uploadId"].as_str().unwrap().to_string();
+        let mut forged = b.bytes[..PART].to_vec();
+        forged[7] ^= 0xff;
+        assert!(put_target(&begun["targets"][0], &forged).await.is_success());
+        assert!(
+            put_target(&begun["targets"][1], &b.bytes[PART..])
+                .await
+                .is_success()
+        );
+        let (_, out) = call(
+            &h.app,
+            UPLOAD_COMMIT_V2_TYPE,
+            json!({ "uploadId": id }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(
+            code(&out),
+            "rooms/blobs/upload/commit:digestMismatch",
+            "{out}"
+        );
+        assert_eq!(s3.open_uploads(), 0);
+        assert!(s3.objects().is_empty());
+        assert_eq!(info(&h, &f).await["usage"]["room"]["reservedBytes"], 0);
+        assert!(
+            h.state
+                .files
+                .blob(&f.room.room_id, &b.blob_ref)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// Abort takes the parts storage holds, and a lapsed upload's are taken by the
+    /// sweep; either way the reservation comes back.
+    #[tokio::test]
+    async fn abort_and_the_sweep_reclaim_a_direct_upload_at_storage() {
+        let s3 = vti_common::blob_store::mock_s3::MockS3::start(true).await;
+        let h = direct_host(&s3);
+        let f = room(&h).await;
+        let b = blob(PART + 10, 13);
+        let (_, begun) = begin_direct(&h, &f, &b, PART).await;
+        let id = begun["uploadId"].as_str().unwrap().to_string();
+        assert!(
+            put_target(&begun["targets"][0], &b.bytes[..PART])
+                .await
+                .is_success()
+        );
+        let (status, out) = call(
+            &h.app,
+            UPLOAD_ABORT_V2_TYPE,
+            json!({ "uploadId": id }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(out["aborted"], true);
+        assert_eq!(s3.open_uploads(), 0);
+        assert_eq!(info(&h, &f).await["usage"]["room"]["reservedBytes"], 0);
+
+        let other = blob(PART + 20, 14);
+        let (_, begun) = begin_direct(&h, &f, &other, PART).await;
+        assert!(
+            put_target(&begun["targets"][0], &other.bytes[..PART])
+                .await
+                .is_success()
+        );
+        assert_eq!(s3.open_uploads(), 1);
+        h.state.files.lapse_direct_uploads().await.unwrap();
+        let stats = h.state.files.sweep().await.unwrap();
+        assert_eq!(stats.released, 1);
+        assert_eq!(
+            s3.open_uploads(),
+            0,
+            "the sweep aborts the multipart upload"
+        );
+        assert_eq!(info(&h, &f).await["usage"]["room"]["reservedBytes"], 0);
+    }
+
+    /// One part is one bound PUT; a plan whose parts storage could not take, from a
+    /// producer with no upload key, is no mode at all — naming both the host has.
+    #[tokio::test]
+    async fn a_single_part_plan_is_one_put_and_an_unsuitable_plan_has_no_mode() {
+        let s3 = vti_common::blob_store::mock_s3::MockS3::start(true).await;
+        let h = direct_host(&s3);
+        let f = room(&h).await;
+        let b = blob(40_000, 15);
+        let (_, begun) = begin_direct(&h, &f, &b, b.bytes.len()).await;
+        assert_eq!(begun["mode"], "direct", "{begun}");
+        assert!(
+            put_target(&begun["targets"][0], &b.bytes)
+                .await
+                .is_success()
+        );
+        let (status, out) = call(
+            &h.app,
+            UPLOAD_COMMIT_V2_TYPE,
+            json!({ "uploadId": begun["uploadId"] }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+
+        let small = blob(40_000, 16);
+        let (_, out) = begin_direct(&h, &f, &small, 16_384).await;
+        assert_eq!(
+            code(&out),
+            "rooms/blobs/upload/begin:noTransferMode",
+            "{out}"
+        );
+        assert_eq!(out["details"]["modes"], json!(["direct", "proxied"]));
+    }
+
     /// The owner's read of who is using the room: one entry per member who has
     /// stored something, under the member at the root of their chain.
     #[tokio::test]

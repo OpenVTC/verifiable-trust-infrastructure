@@ -44,7 +44,8 @@ use vti_common::backup_transfer::chunked::{
 };
 use vti_common::backup_transfer::{self, MAX_OPEN_BUNDLES_PER_DID};
 use vti_common::blob_store::{
-    self, BackendRef, BlobKey, BlobStore, Deletion, MAX_BLOB_BYTES, PresignedRequest,
+    self, BackendRef, BlobKey, BlobStore, Deletion, DirectFinish, DirectPart, MAX_BLOB_BYTES,
+    MIN_MULTIPART_PART_BYTES, PresignedRequest,
 };
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
@@ -496,7 +497,53 @@ struct UploadRecord {
     /// never charged or reported (`begin/0.2` items 14–15).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     upload_key_did: Option<String>,
+    /// `0.2`, direct: where the parts go and what they must be. Absent on every
+    /// proxied upload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    direct: Option<DirectState>,
 }
+
+/// A direct upload's state: the object this host chose, storage's multipart upload
+/// id, the part plan every part is bound to, and when the slot lapses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectState {
+    object_key: BlobKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    storage_upload_id: Option<String>,
+    part_size: u64,
+    /// Each part's sha2-256, as `DigestMultibase`, in order.
+    part_digests: Vec<String>,
+    expires_at: DateTime<Utc>,
+}
+
+impl DirectState {
+    /// The plan as storage operations take it: 1-based numbers, lengths, digests.
+    fn parts(&self, size: u64) -> Vec<DirectPart> {
+        self.part_digests
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                let start = i as u64 * self.part_size;
+                DirectPart {
+                    number: i as u32 + 1,
+                    len: (size - start).min(self.part_size),
+                    sha256: blob_store::sha256_from_digest_multibase(d).unwrap_or([0; 32]),
+                }
+            })
+            .collect()
+    }
+}
+
+/// How long a direct upload's slot lives after the begin that last resumed it
+/// (begin/0.2 item 11: no sooner than 15 minutes), up to [`DIRECT_LIFETIME`].
+const DIRECT_IDLE: Duration = Duration::minutes(30);
+/// The longest a direct upload's slot lives in all (item 11: at least 24 hours).
+const DIRECT_LIFETIME: Duration = Duration::hours(24);
+/// The most part targets one begin answers with (`targets`: at most 128). Below it,
+/// because one answer is one presign issuance, and a sealed set of more does not
+/// fit the custodian's answer.
+pub const MAX_TARGETS: usize = 64;
 
 /// Which version of the `rooms/blobs/upload/*` tasks an upload belongs to.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -584,6 +631,13 @@ pub struct PartPlan {
 }
 
 impl PartPlan {
+    /// Whether S3-class storage takes this plan: one part (a single write), or parts
+    /// of at least 5 MiB but the last, at most 1024 of them.
+    fn suits_storage(&self) -> bool {
+        self.part_count == 1
+            || (self.part_size >= MIN_MULTIPART_PART_BYTES && self.part_count <= 1024)
+    }
+
     /// Refuse a plan inconsistent with `manifest` (`invalidParts`): a part count
     /// that does not follow from the size, a digest list of the wrong length, or
     /// a digest that is not sha2-256 — what storage itself checks a part against.
@@ -632,9 +686,14 @@ impl UploadCaller<'_> {
     fn admits(&self, rec: &UploadRecord) -> bool {
         match *self {
             Self::V1(opener) => rec.protocol == TransferProtocol::V1 && rec.opener == opener,
+            // Proxied: the upload key and nobody else. Direct: the owner, since no
+            // byte passes through a document (commit/0.2 and abort/0.2 item 1).
             Self::V2(signer) => {
                 rec.protocol == TransferProtocol::V2
-                    && rec.upload_key_did.as_deref() == Some(signer)
+                    && match &rec.direct {
+                        Some(_) => rec.opener == signer,
+                        None => rec.upload_key_did.as_deref() == Some(signer),
+                    }
             }
         }
     }
@@ -691,6 +750,9 @@ pub struct Begun {
     pub already_committed: bool,
     /// How the bytes move. Always [`TransferMode::Proxied`] for a `0.1` upload.
     pub mode: TransferMode,
+    /// Direct mode: a bound `PUT` for some or all of the `missing` parts, each with
+    /// the 0-based part index it writes. Bearer credentials: never logged.
+    pub targets: Vec<(u64, PresignedRequest)>,
 }
 
 /// What a stored chunk answers.
@@ -1111,6 +1173,21 @@ impl BlobHost {
         }
     }
 
+    /// Test hook: let every open direct upload's slot lapse now, as the clock would,
+    /// so a test can run the sweep that reclaims it.
+    #[cfg(feature = "test-support")]
+    pub async fn lapse_direct_uploads(&self) -> Result<(), AppError> {
+        for (key, raw) in self.blobs.prefix_iter_raw(b"upload:".to_vec()).await? {
+            if let Ok(mut rec) = serde_json::from_slice::<UploadRecord>(&raw)
+                && let Some(d) = rec.direct.as_mut()
+            {
+                d.expires_at = Utc::now() - Duration::seconds(1);
+                self.blobs.insert(key, &rec).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// The room's usage, reservations included.
     pub async fn room_usage(&self, room_id: &str) -> Result<Usage, AppError> {
         Ok(self
@@ -1156,16 +1233,11 @@ impl BlobHost {
     /// mode, from what the producer `offer`s, what the room's storage can do and
     /// this host's [`DirectTransfer`] policy (item 16).
     ///
-    /// **Direct uploads are never chosen yet.** Item 17 requires each part's
-    /// target to bind the part's exact length and SHA-256 into the URL's signature
-    /// (for S3, `Content-Length` and `x-amz-checksum-sha256` as signed headers),
-    /// and the only presigning storage a host here has — a community VTA's
-    /// `s3-static-presign` account — issues one `put`, `get` or `delete` of one
-    /// object with no signed headers and no multipart operations, which is all
-    /// `external/credentials/issue/0.1` can ask for. Such storage "cannot issue
-    /// the targets item 17 requires", so a producer offering only `directParts`
-    /// is refused `noTransferMode` naming `proxied`, as the specification says.
-    /// A plan it sends is still checked (`invalidParts`).
+    /// In direct mode the host chooses the object (unique to the upload), starts
+    /// the multipart upload at storage for a plan of several parts, and answers with
+    /// bound `PUT` targets for up to [`MAX_TARGETS`] missing parts; the producer
+    /// begins again, with the same manifest and plan, for the rest and for any that
+    /// lapsed.
     pub async fn begin_v2(
         &self,
         room: &Room,
@@ -1180,15 +1252,113 @@ impl BlobHost {
 
     /// The mode a `0.2` begin is answered in, or why none (item 16). `None` is a
     /// `0.1` begin, which is always proxied.
-    fn choose_mode(offer: Option<&UploadOffer>) -> Result<TransferMode, BlobError> {
-        match offer {
-            None => Ok(TransferMode::Proxied),
-            // See `begin_v2`: no store here can bind a part's length and checksum.
-            Some(o) if o.upload_key_did.is_some() => Ok(TransferMode::Proxied),
-            Some(_) => Err(BlobError::NoTransferMode {
-                modes: vec![TransferMode::Proxied],
-            }),
+    ///
+    /// Direct when the producer offered a part plan, this host's policy allows
+    /// it for the room's tier, the room's storage can take a direct upload — issue
+    /// writes bound to each part's length and SHA-256, and verify the object before
+    /// it is recorded — and the plan suits it. Otherwise proxied, when the producer
+    /// named an upload key; otherwise no mode is open to both sides.
+    async fn choose_mode(
+        &self,
+        room: &Room,
+        offer: Option<&UploadOffer>,
+    ) -> Result<TransferMode, BlobError> {
+        let Some(o) = offer else {
+            return Ok(TransferMode::Proxied);
+        };
+        let can_direct =
+            self.direct.allows(room.visibility) && self.direct_store(&room.room_id).await.is_some();
+        if can_direct && o.direct_parts.as_ref().is_some_and(PartPlan::suits_storage) {
+            return Ok(TransferMode::Direct);
         }
+        if o.upload_key_did.is_some() {
+            return Ok(TransferMode::Proxied);
+        }
+        let mut modes = Vec::new();
+        if can_direct {
+            modes.push(TransferMode::Direct);
+        }
+        modes.push(TransferMode::Proxied);
+        Err(BlobError::NoTransferMode { modes })
+    }
+
+    /// The store a new upload in `room_id` goes to, when it takes direct uploads.
+    async fn direct_store(&self, room_id: &str) -> Option<(UploadTarget, Arc<dyn BlobStore>)> {
+        let target = self.stores.upload_target(room_id).await.ok()?;
+        let store = self
+            .stores
+            .store_for(&target.config_id, room_id)
+            .await
+            .ok()?;
+        store.direct_uploads().then_some((target, store))
+    }
+
+    /// The offer a direct upload is bound with: version `0.2`, and any upload key
+    /// the producer also sent ignored (begin/0.2 item 15).
+    fn without_key(offer: Option<&UploadOffer>) -> UploadOffer {
+        UploadOffer {
+            upload_key_did: None,
+            direct_parts: offer.and_then(|o| o.direct_parts.clone()),
+        }
+    }
+
+    /// Bound `PUT`s for the first [`MAX_TARGETS`] of `missing` (0-based part indices).
+    async fn targets_for(
+        &self,
+        rec: &UploadRecord,
+        missing: &[u64],
+    ) -> Result<Vec<(u64, PresignedRequest)>, BlobError> {
+        let Some(d) = &rec.direct else {
+            return Ok(Vec::new());
+        };
+        let config = rec.config_id.clone().unwrap_or_default();
+        let store = self.stores.store_for(&config, &rec.room_id).await?;
+        let plan = d.parts(rec.size);
+        let wanted: Vec<DirectPart> = missing
+            .iter()
+            .take(MAX_TARGETS)
+            .filter_map(|i| plan.get(*i as usize).copied())
+            .collect();
+        if wanted.is_empty() {
+            return Ok(Vec::new());
+        }
+        let reqs = store
+            .direct_targets(&d.object_key, d.storage_upload_id.as_deref(), &wanted)
+            .await?;
+        Ok(wanted
+            .iter()
+            .zip(reqs)
+            .map(|(p, r)| (u64::from(p.number) - 1, r))
+            .collect())
+    }
+
+    /// Abort a direct upload at storage and delete what it holds there.
+    async fn abort_direct(&self, rec: &UploadRecord) -> Result<(), AppError> {
+        let Some(d) = &rec.direct else {
+            return Ok(());
+        };
+        let config = rec.config_id.clone().unwrap_or_default();
+        let store = self.stores.store_for(&config, &rec.room_id).await?;
+        store
+            .direct_abort(&d.object_key, d.storage_upload_id.as_deref())
+            .await
+    }
+
+    /// How many direct uploads `opener` holds open, for the per-party cap proxied
+    /// uploads take from their slots.
+    async fn open_direct_uploads(&self, opener: &str) -> Result<usize, AppError> {
+        let now = Utc::now();
+        let mut n = 0;
+        for (_, raw) in self.blobs.prefix_iter_raw(b"upload:".to_vec()).await? {
+            if let Ok(rec) = serde_json::from_slice::<UploadRecord>(&raw)
+                && rec.phase == UploadPhase::Open
+                && rec.opener == opener
+                && rec.direct.as_ref().is_some_and(|d| d.expires_at > now)
+            {
+                n += 1;
+            }
+        }
+        Ok(n)
     }
 
     /// Bind `rec` to the version and upload key of the begin that opened or
@@ -1299,7 +1469,7 @@ impl BlobHost {
         }
         // Chosen now and refused only where the specification places it: after
         // every check that applies to this begin, before anything is reserved.
-        let mode = Self::choose_mode(offer.as_ref());
+        let mode = self.choose_mode(room, offer.as_ref()).await;
 
         // Resume: the same opener, room and manifest, while its slot is open.
         let index = upload_index_key(opener, &room.room_id, &manifest.blob_ref);
@@ -1315,7 +1485,11 @@ impl BlobHost {
                     && self.blob(&room.room_id, &rec.blob_ref).await?.is_some()
                 {
                     let mode = mode?;
-                    self.bind(&mut rec, offer.as_ref()).await?;
+                    let bound = match mode {
+                        TransferMode::Direct => Some(Self::without_key(offer.as_ref())),
+                        TransferMode::Proxied => offer.clone(),
+                    };
+                    self.bind(&mut rec, bound.as_ref()).await?;
                     self.blobs.insert(upload_key_record(&id), &rec).await?;
                     return Ok(Begun {
                         upload_id: id,
@@ -1323,10 +1497,56 @@ impl BlobHost {
                         expires_at: already_expiry(&rec),
                         already_committed: true,
                         mode,
+                        targets: Vec::new(),
                     });
                 }
-            } else if let Some(slot) = self.live_slot(&id).await? {
-                let mode = mode?;
+            } else if let Some(d) = rec.direct.clone() {
+                // A direct upload resumes while its slot is open and the producer
+                // still takes direct transfer: fresh targets for the parts storage
+                // does not yet hold, and the slot extended.
+                if d.expires_at > Utc::now() && matches!(mode, Ok(TransferMode::Direct)) {
+                    let config = rec.config_id.clone().unwrap_or_default();
+                    let store = self.stores.store_for(&config, &rec.room_id).await?;
+                    let held = store
+                        .direct_held(
+                            &d.object_key,
+                            d.storage_upload_id.as_deref(),
+                            &d.parts(rec.size),
+                        )
+                        .await?;
+                    let missing: Vec<u64> = (0..d.part_digests.len() as u64)
+                        .filter(|i| !held.contains(&(*i as u32 + 1)))
+                        .collect();
+                    let ceiling = DateTime::from_timestamp(rec.created_at as i64, 0)
+                        .unwrap_or_else(Utc::now)
+                        + DIRECT_LIFETIME;
+                    let expires_at = (Utc::now() + DIRECT_IDLE).min(ceiling);
+                    if let Some(state) = rec.direct.as_mut() {
+                        state.expires_at = expires_at;
+                    }
+                    self.bind(&mut rec, Some(&Self::without_key(offer.as_ref())))
+                        .await?;
+                    self.blobs.insert(upload_key_record(&id), &rec).await?;
+                    let targets = self.targets_for(&rec, &missing).await?;
+                    return Ok(Begun {
+                        upload_id: id,
+                        missing,
+                        expires_at,
+                        already_committed: false,
+                        mode: TransferMode::Direct,
+                        targets,
+                    });
+                }
+                // Lapsed, or the producer no longer takes direct transfer: what
+                // storage holds for it goes, and the begin starts afresh.
+                if let Err(e) = self.abort_direct(&rec).await {
+                    tracing::warn!(error = %e, "a superseded direct upload was not aborted at storage; the sweep retries");
+                }
+            } else if offer.as_ref().is_none_or(|o| o.upload_key_did.is_some())
+                && let Some(slot) = self.live_slot(&id).await?
+            {
+                // A proxied slot resumes as proxied: its chunks are staged here.
+                let mode = mode.map(|_| TransferMode::Proxied)?;
                 let plan = chunked::get_plan(&self.transfers, &id)
                     .await?
                     .ok_or(BlobError::NotFound)?;
@@ -1347,6 +1567,7 @@ impl BlobHost {
                     expires_at: slot.expires_at,
                     already_committed: false,
                     mode,
+                    targets: Vec::new(),
                 });
             }
             // Its slot lapsed: give its reservation back and open a new one.
@@ -1381,6 +1602,7 @@ impl BlobHost {
                 config_id: None,
                 protocol: TransferProtocol::V1,
                 upload_key_did: None,
+                direct: None,
             };
             self.bind(&mut rec, offer.as_ref()).await?;
             self.blobs
@@ -1393,6 +1615,7 @@ impl BlobHost {
                 expires_at: already_expiry(&rec),
                 already_committed: true,
                 mode,
+                targets: Vec::new(),
             });
         }
 
@@ -1400,6 +1623,69 @@ impl BlobHost {
         self.check_limits(&room.room_id, member, manifest.size, &target, &limits)
             .await?;
         let mode = mode?;
+        if mode == TransferMode::Direct {
+            let plan = offer
+                .as_ref()
+                .and_then(|o| o.direct_parts.clone())
+                .ok_or_else(|| AppError::Internal("direct mode with no part plan".into()))?;
+            if self.open_direct_uploads(opener).await? >= MAX_OPEN_BUNDLES_PER_DID {
+                return Err(BlobError::TooManyUploads {
+                    max_open: MAX_OPEN_BUNDLES_PER_DID,
+                });
+            }
+            let store = self
+                .stores
+                .store_for(&target.config_id, &room.room_id)
+                .await?;
+            // The object is the host's choice, never the producer's (item 17), and
+            // unique to this upload, so no other upload of the blob shares it.
+            let upload_id = Uuid::new_v4();
+            let object_key = BlobKey::for_upload(&room.room_id, &manifest.blob_ref, &upload_id)?;
+            let storage_upload_id = store.direct_begin(&object_key, plan.part_count > 1).await?;
+            let expires_at = Utc::now() + DIRECT_IDLE;
+            let mut rec = UploadRecord {
+                upload_id,
+                room_id: room.room_id.clone(),
+                opener: opener.to_string(),
+                charged_to: member.map(str::to_string),
+                blob_ref: manifest.blob_ref.clone(),
+                size: manifest.size,
+                manifest: manifest.raw.clone(),
+                phase: UploadPhase::Open,
+                created_at: now_secs(),
+                finished_at: None,
+                already_committed: false,
+                config_id: Some(target.config_id),
+                protocol: TransferProtocol::V1,
+                upload_key_did: None,
+                direct: Some(DirectState {
+                    object_key,
+                    storage_upload_id,
+                    part_size: plan.part_size,
+                    part_digests: plan.part_digests.clone(),
+                    expires_at,
+                }),
+            };
+            self.reserve(&rec).await?;
+            self.bind(&mut rec, Some(&Self::without_key(offer.as_ref())))
+                .await?;
+            self.blobs
+                .insert(upload_key_record(&rec.upload_id), &rec)
+                .await?;
+            self.blobs.insert(index, &rec.upload_id).await?;
+            let missing: Vec<u64> = (0..plan.part_count).collect();
+            // A failure here leaves the upload open: the producer begins again for
+            // its targets.
+            let targets = self.targets_for(&rec, &missing).await?;
+            return Ok(Begun {
+                upload_id,
+                missing,
+                expires_at,
+                already_committed: false,
+                mode,
+                targets,
+            });
+        }
         if let Some(k) = offer.as_ref().and_then(|o| o.upload_key_did.as_deref())
             && self.key_bound_elsewhere(k, Uuid::nil()).await?
         {
@@ -1445,6 +1731,7 @@ impl BlobHost {
             config_id: Some(target.config_id),
             protocol: TransferProtocol::V1,
             upload_key_did: None,
+            direct: None,
         };
         self.reserve(&rec).await?;
         self.bind(&mut rec, offer.as_ref()).await?;
@@ -1458,6 +1745,7 @@ impl BlobHost {
             expires_at: slot.expires_at,
             already_committed: false,
             mode,
+            targets: Vec::new(),
         })
     }
 
@@ -1569,6 +1857,10 @@ impl BlobHost {
             });
         }
 
+        if let Some(d) = rec.direct.clone() {
+            return self.commit_direct(rec, d).await;
+        }
+
         match chunked::finalize_precheck_for(&self.transfers, &owner, upload_id).await {
             Ok(()) => {}
             Err(ChunkedError::IncompleteUpload { missing_count, .. }) => {
@@ -1642,6 +1934,86 @@ impl BlobHost {
         })
     }
 
+    /// A direct upload's commit (`commit/0.2` items 2, 3, 5–8): verify the object at
+    /// storage before recording anything — each part's length and checksum, the
+    /// completion bound to the planned size, the assembled object's length and
+    /// checksum — and, on any disagreement, delete what storage holds, release the
+    /// reservation and refuse `digestMismatch`. Called under the lock.
+    async fn commit_direct(
+        &self,
+        mut rec: UploadRecord,
+        d: DirectState,
+    ) -> Result<Committed, BlobError> {
+        let id = rec.upload_id;
+        if d.expires_at <= Utc::now() {
+            return Err(BlobError::NotFound);
+        }
+        let config_id = rec.config_id.clone().unwrap_or_default();
+        let store = self.stores.store_for(&config_id, &rec.room_id).await?;
+        let finished = store
+            .direct_finish(
+                &d.object_key,
+                d.storage_upload_id.as_deref(),
+                &d.parts(rec.size),
+            )
+            .await?;
+        let backend_ref = match finished {
+            DirectFinish::Missing(n) => {
+                return Err(BlobError::Incomplete { remaining_count: n });
+            }
+            DirectFinish::Mismatch(why) => {
+                tracing::warn!(upload = %id, why = %why, "a direct upload's object is not its plan; deleted");
+                self.release_reservation(&rec).await?;
+                rec.phase = UploadPhase::Released;
+                rec.finished_at = Some(now_secs());
+                self.blobs.insert(upload_key_record(&id), &rec).await?;
+                return Err(BlobError::DigestMismatch);
+            }
+            DirectFinish::Stored(at) => at,
+        };
+        // Already in this room (another upload of the blob committed first): this
+        // object goes, and nothing is charged twice.
+        if let Some(existing) = self.blob(&rec.room_id, &rec.blob_ref).await? {
+            if let Err(e) = store.delete(&backend_ref).await {
+                tracing::warn!(upload = %id, error = %e, "a duplicate direct upload's object was not deleted");
+            }
+            self.release_reservation(&rec).await?;
+            rec.phase = UploadPhase::Committed;
+            rec.finished_at = Some(now_secs());
+            self.blobs.insert(upload_key_record(&id), &rec).await?;
+            return Ok(Committed {
+                blob_ref: existing.blob_ref,
+                size: existing.size,
+            });
+        }
+        let entry = BlobEntry {
+            room_id: rec.room_id.clone(),
+            blob_ref: rec.blob_ref.clone(),
+            size: rec.size,
+            manifest: rec.manifest.clone(),
+            config_id: config_id.clone(),
+            backend_ref,
+            state: BlobState::Committed,
+            refs: 0,
+            charged_to: rec.charged_to.clone(),
+            committed_at: now_secs(),
+            orphaned_at: None,
+        };
+        self.blobs
+            .insert(blob_key(&entry.room_id, &entry.blob_ref), &entry)
+            .await?;
+        self.convert_reservation(&rec, &config_id).await?;
+        self.record_upload(&rec.room_id, rec.charged_to.as_deref())
+            .await?;
+        rec.phase = UploadPhase::Committed;
+        rec.finished_at = Some(now_secs());
+        self.blobs.insert(upload_key_record(&id), &rec).await?;
+        Ok(Committed {
+            blob_ref: entry.blob_ref,
+            size: entry.size,
+        })
+    }
+
     /// `rooms/blobs/upload/abort/0.1`. `Ok(true)` when this call aborted it,
     /// `Ok(false)` when it already was.
     pub async fn abort(&self, opener: &str, upload_id: &str) -> Result<bool, BlobError> {
@@ -1675,7 +2047,11 @@ impl BlobHost {
             // aborting; an expired upload is not one this caller can abort.
             UploadPhase::Committed | UploadPhase::Released => return Err(BlobError::NotFound),
         }
-        if !rec.already_committed {
+        if rec.direct.is_some() {
+            // Abort the write at storage and delete what it holds (abort/0.2 item 2).
+            self.abort_direct(&rec).await?;
+            self.release_reservation(&rec).await?;
+        } else if !rec.already_committed {
             if let Err(e) = backup_transfer::abort(&self.transfers, &owner, &id).await
                 && !matches!(e, AppError::NotFound(_))
             {
@@ -2121,9 +2497,21 @@ impl BlobHost {
                     let _guard = self.lock.lock().await;
                     let lapsed = if rec.already_committed {
                         rec.created_at + ALREADY_COMMITTED_TTL_SECS <= now
+                    } else if let Some(d) = &rec.direct {
+                        d.expires_at <= Utc::now()
                     } else {
                         self.live_slot(&rec.upload_id).await?.is_none()
                     };
+                    // A lapsed direct upload's parts, or an object it wrote and never
+                    // committed, are reclaimed at storage before its reservation is
+                    // given back; a failure is retried on the next pass.
+                    if lapsed
+                        && rec.direct.is_some()
+                        && let Err(e) = self.abort_direct(&rec).await
+                    {
+                        tracing::warn!(upload = %rec.upload_id, error = %e, "a lapsed direct upload was not reclaimed; retry next pass");
+                        continue;
+                    }
                     if lapsed {
                         if !rec.already_committed {
                             self.release_reservation(&rec).await?;
@@ -2542,25 +2930,18 @@ mod direct_tests {
         assert!(!DirectTransfer::Off.allows(Visibility::Open));
     }
 
-    /// A `0.1` begin is always proxied; a `0.2` one needs a key until some store can
-    /// bind a part's length and checksum, and then names what it would use.
+    /// S3-class storage takes one part, or parts of at least 5 MiB but the last.
     #[test]
-    fn a_direct_only_offer_has_no_mode_yet() {
-        assert_eq!(BlobHost::choose_mode(None).unwrap(), TransferMode::Proxied);
-        let keyed = UploadOffer {
-            upload_key_did: Some("did:key:z6Mk".into()),
-            direct_parts: None,
+    fn a_plan_suits_storage_by_its_part_size() {
+        let plan = |size: u64, count: u64| PartPlan {
+            part_size: size,
+            part_count: count,
+            part_digests: vec![],
         };
-        assert_eq!(
-            BlobHost::choose_mode(Some(&keyed)).unwrap(),
-            TransferMode::Proxied
-        );
-        match BlobHost::choose_mode(Some(&UploadOffer::default())) {
-            Err(BlobError::NoTransferMode { modes }) => {
-                assert_eq!(modes, vec![TransferMode::Proxied])
-            }
-            other => panic!("{other:?}"),
-        }
+        assert!(plan(300_000, 1).suits_storage());
+        assert!(plan(MIN_MULTIPART_PART_BYTES, 3).suits_storage());
+        assert!(!plan(MIN_MULTIPART_PART_BYTES - 1, 3).suits_storage());
+        assert!(!plan(MIN_MULTIPART_PART_BYTES, 1025).suits_storage());
     }
 
     #[test]

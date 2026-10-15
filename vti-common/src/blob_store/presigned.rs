@@ -37,7 +37,10 @@ use async_trait::async_trait;
 use chrono::Utc;
 use reqwest::StatusCode;
 
-use super::{BackendRef, BlobKey, BlobStore, Deletion, Health, PROBE_PREFIX, check_kind};
+use super::{
+    BackendRef, BlobKey, BlobStore, Deletion, DirectFinish, DirectPart, Health, PROBE_PREFIX,
+    StorageOp, check_kind,
+};
 use crate::error::AppError;
 
 /// How long before its expiry a cached `GET` request stops being reused.
@@ -92,6 +95,87 @@ pub trait Presigner: Send + Sync {
         prefix: &str,
         object_key: &str,
     ) -> Result<PresignedRequest, AppError>;
+
+    /// Whether [`presign_ops`](Self::presign_ops) works: writes bound to their
+    /// length and checksum, multipart, head (`external/credentials/issue/0.2`).
+    fn presigns_ops(&self) -> bool {
+        false
+    }
+
+    /// Presign `ops` on the one object `prefix + object_key` (and at most one
+    /// multipart upload of it), answered in order. At most [`MAX_OPS`] at once.
+    async fn presign_ops(
+        &self,
+        prefix: &str,
+        object_key: &str,
+        upload_id: Option<&str>,
+        ops: &[StorageOp],
+    ) -> Result<Vec<PresignedRequest>, AppError> {
+        let _ = (prefix, object_key, upload_id, ops);
+        Err(AppError::Internal(
+            "this presigner presigns one put, get or delete at a time".into(),
+        ))
+    }
+}
+
+/// The most operations asked of a presigner at once. Below the specification's
+/// 128: a set of presigned requests sealed by the VTA is about 2.9 KiB a request,
+/// and the answer is bounded at 256 KiB.
+pub const MAX_OPS: usize = 64;
+
+/// The method each [`StorageOp`] is presigned for.
+fn op_method(op: &StorageOp) -> &'static str {
+    match op {
+        StorageOp::Put { .. } | StorageOp::UploadPart { .. } => "PUT",
+        StorageOp::Get | StorageOp::ListParts { .. } => "GET",
+        StorageOp::Head => "HEAD",
+        StorageOp::Delete | StorageOp::AbortMultipart => "DELETE",
+        StorageOp::CreateMultipart | StorageOp::CompleteMultipart { .. } => "POST",
+    }
+}
+
+/// Standard, padded base64 of a SHA-256: how S3 carries `x-amz-checksum-sha256`.
+pub fn checksum_b64(sha256: &[u8; 32]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(sha256)
+}
+
+/// What S3 reports as a multipart object's SHA-256: the SHA-256 of its parts'
+/// digests concatenated, then `-<part count>`.
+pub fn composite_checksum(parts: &[DirectPart]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for p in parts {
+        h.update(p.sha256);
+    }
+    format!("{}-{}", checksum_b64(&h.finalize().into()), parts.len())
+}
+
+/// One part as storage lists it.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct ListedPart {
+    part_number: u32,
+    size: u64,
+    #[serde(rename = "ETag")]
+    etag: String,
+    #[serde(rename = "ChecksumSHA256", default)]
+    checksum_sha256: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct ListPartsResult {
+    #[serde(rename = "Part", default)]
+    parts: Vec<ListedPart>,
+    #[serde(default)]
+    is_truncated: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct InitiateMultipartUploadResult {
+    upload_id: String,
 }
 
 /// A blob store over presigned requests.
@@ -241,15 +325,199 @@ impl PresignedBlobs {
         }
     }
 
+    /// Presign `ops` on `key`, each checked as [`Self::check`] checks a single one:
+    /// HTTPS, the operation's method, the object asked for.
+    async fn ops(
+        &self,
+        key: &BlobKey,
+        upload_id: Option<&str>,
+        ops: &[StorageOp],
+    ) -> Result<Vec<PresignedRequest>, AppError> {
+        let (prefix, object) = self.split(key)?;
+        let full = format!("{prefix}{object}");
+        let mut out = Vec::with_capacity(ops.len());
+        for chunk in ops.chunks(MAX_OPS) {
+            let reqs = self
+                .presigner
+                .presign_ops(&prefix, object, upload_id, chunk)
+                .await?;
+            if reqs.len() != chunk.len() {
+                return Err(AppError::Internal(format!(
+                    "the presigner answered {} requests for {} operations",
+                    reqs.len(),
+                    chunk.len()
+                )));
+            }
+            for (req, op) in reqs.iter().zip(chunk) {
+                self.check_method(req, op_method(op), &full)?;
+            }
+            out.extend(reqs);
+        }
+        Ok(out)
+    }
+
+    fn check_method(
+        &self,
+        req: &PresignedRequest,
+        method: &str,
+        full_key: &str,
+    ) -> Result<(), AppError> {
+        let refuse = |why: &str| {
+            Err(AppError::Internal(format!(
+                "the presigned request for `{full_key}` was refused: {why}"
+            )))
+        };
+        let Ok(url) = reqwest::Url::parse(&req.url) else {
+            return refuse("its URL does not parse");
+        };
+        if !(url.scheme() == "https" || (self.plain_http && url.scheme() == "http")) {
+            return refuse("it is not HTTPS");
+        }
+        if !req.method.eq_ignore_ascii_case(method) {
+            return refuse("its method is not the operation asked for");
+        }
+        if !url.path().ends_with(&format!("/{full_key}")) {
+            return refuse("it names a different object");
+        }
+        Ok(())
+    }
+
+    /// Send `req` with `body`, refusing a non-success answer.
+    async fn send(
+        &self,
+        op: &str,
+        req: &PresignedRequest,
+        body: Option<Vec<u8>>,
+    ) -> Result<reqwest::Response, AppError> {
+        let mut b = self.builder(req)?;
+        if let Some(body) = body {
+            b = b.body(body);
+        }
+        let res = b.send().await.map_err(|e| transport(op, e))?;
+        if !res.status().is_success() {
+            return Err(refused(op, res.status()));
+        }
+        Ok(res)
+    }
+
+    /// Every part storage lists for `upload_id`, from the `list` requests in order
+    /// until one is not truncated.
+    async fn listed(&self, list: &[PresignedRequest]) -> Result<Vec<ListedPart>, AppError> {
+        let mut parts = Vec::new();
+        for req in list {
+            let res = self.send("part listing", req, None).await?;
+            let text = res.text().await.map_err(|e| transport("part listing", e))?;
+            let page: ListPartsResult = quick_xml::de::from_str(&text).map_err(|e| {
+                AppError::Internal(format!("storage's part listing does not parse: {e}"))
+            })?;
+            parts.extend(page.parts);
+            if !page.is_truncated {
+                return Ok(parts);
+            }
+        }
+        Err(AppError::Internal(
+            "storage lists more parts than the plan has".into(),
+        ))
+    }
+
+    /// The planned parts the listing shows with their planned length and checksum,
+    /// and whether it shows anything else (a part outside the plan, or one whose
+    /// length or checksum differs).
+    fn compare(plan: &[DirectPart], listed: &[ListedPart]) -> (Vec<u32>, Option<String>) {
+        let mut held = Vec::new();
+        for l in listed {
+            let Some(p) = plan.iter().find(|p| p.number == l.part_number) else {
+                return (
+                    held,
+                    Some(format!(
+                        "storage holds part {}, which the plan does not",
+                        l.part_number
+                    )),
+                );
+            };
+            if l.size != p.len {
+                return (
+                    held,
+                    Some(format!(
+                        "part {} is {} bytes, not {}",
+                        p.number, l.size, p.len
+                    )),
+                );
+            }
+            if l.checksum_sha256.as_deref() != Some(checksum_b64(&p.sha256).as_str()) {
+                return (
+                    held,
+                    Some(format!("part {}'s checksum is not the plan's", p.number)),
+                );
+            }
+            held.push(p.number);
+        }
+        (held, None)
+    }
+
+    /// The list requests a plan of `parts` needs: one per 1000 parts.
+    fn list_ops(parts: usize) -> Vec<StorageOp> {
+        (0..parts.div_ceil(1000).max(1))
+            .map(|page| StorageOp::ListParts {
+                marker: (page > 0).then_some(page as u32 * 1000),
+            })
+            .collect()
+    }
+
+    /// HEAD with checksum mode: the object's length and SHA-256 as storage reports
+    /// them, or `None` when it holds no object.
+    async fn head(
+        &self,
+        req: &PresignedRequest,
+    ) -> Result<Option<(u64, Option<String>)>, AppError> {
+        let res = self
+            .builder(req)?
+            .send()
+            .await
+            .map_err(|e| transport("check", e))?;
+        if res.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !res.status().is_success() {
+            return Err(refused("check", res.status()));
+        }
+        let len = res
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(u64::MAX);
+        let sum = res
+            .headers()
+            .get("x-amz-checksum-sha256")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        Ok(Some((len, sum)))
+    }
+
     fn builder(&self, req: &PresignedRequest) -> Result<reqwest::RequestBuilder, AppError> {
         let method = reqwest::Method::from_bytes(req.method.to_ascii_uppercase().as_bytes())
             .map_err(|_| AppError::Internal("presigned request has no valid method".into()))?;
-        let mut b = self.http.request(method, &req.url);
+        // A test store on the loopback: the presigner names it `https` (as a target
+        // handed to a member must be), and it answers plain `http`.
+        let url = if self.plain_http && req.url.starts_with("https://127.0.0.1") {
+            req.url.replacen("https://", "http://", 1)
+        } else {
+            req.url.clone()
+        };
+        let mut b = self.http.request(method, &url);
         for (name, value) in &req.headers {
             b = b.header(name, value);
         }
         Ok(b)
     }
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// A transport failure, without the URL: reqwest's error names it, signature
@@ -377,6 +645,210 @@ impl BlobStore for PresignedBlobs {
             .await?;
         self.check(&req, PresignAction::Get, &format!("{prefix}{object}"))?;
         Ok(Some(req))
+    }
+
+    fn direct_uploads(&self) -> bool {
+        self.presigner.presigns_ops()
+    }
+
+    async fn direct_begin(
+        &self,
+        key: &BlobKey,
+        multipart: bool,
+    ) -> Result<Option<String>, AppError> {
+        if !multipart {
+            return Ok(None);
+        }
+        let reqs = self.ops(key, None, &[StorageOp::CreateMultipart]).await?;
+        let res = self.send("multipart start", &reqs[0], None).await?;
+        let text = res
+            .text()
+            .await
+            .map_err(|e| transport("multipart start", e))?;
+        let started: InitiateMultipartUploadResult =
+            quick_xml::de::from_str(&text).map_err(|e| {
+                AppError::Internal(format!("storage's multipart start does not parse: {e}"))
+            })?;
+        Ok(Some(started.upload_id))
+    }
+
+    async fn direct_targets(
+        &self,
+        key: &BlobKey,
+        upload_id: Option<&str>,
+        parts: &[DirectPart],
+    ) -> Result<Vec<PresignedRequest>, AppError> {
+        let ops: Vec<StorageOp> = parts
+            .iter()
+            .map(|p| match upload_id {
+                Some(_) => StorageOp::UploadPart {
+                    part: p.number,
+                    len: p.len,
+                    sha256: p.sha256,
+                },
+                None => StorageOp::Put {
+                    len: p.len,
+                    sha256: p.sha256,
+                },
+            })
+            .collect();
+        self.ops(key, upload_id, &ops).await
+    }
+
+    async fn direct_held(
+        &self,
+        key: &BlobKey,
+        upload_id: Option<&str>,
+        plan: &[DirectPart],
+    ) -> Result<Vec<u32>, AppError> {
+        match upload_id {
+            Some(id) => {
+                let list = self.ops(key, Some(id), &Self::list_ops(plan.len())).await?;
+                let listed = self.listed(&list).await?;
+                Ok(Self::compare(plan, &listed).0)
+            }
+            None => {
+                let head = self.ops(key, None, &[StorageOp::Head]).await?;
+                let p = plan.first().copied();
+                Ok(match (self.head(&head[0]).await?, p) {
+                    (Some((len, Some(sum))), Some(p))
+                        if len == p.len && sum == checksum_b64(&p.sha256) =>
+                    {
+                        vec![p.number]
+                    }
+                    _ => Vec::new(),
+                })
+            }
+        }
+    }
+
+    /// `rooms/blobs/upload/commit/0.2` item 3, at storage: every part's length and
+    /// checksum (listed), the completion bound to the planned size, and the
+    /// assembled object's length and checksum (head) — all asked for in one
+    /// issuance with the abort and delete a disagreement needs. On any disagreement
+    /// what storage holds for the upload is deleted.
+    async fn direct_finish(
+        &self,
+        key: &BlobKey,
+        upload_id: Option<&str>,
+        plan: &[DirectPart],
+    ) -> Result<DirectFinish, AppError> {
+        let total: u64 = plan.iter().map(|p| p.len).sum();
+        let Some(id) = upload_id else {
+            let reqs = self
+                .ops(key, None, &[StorageOp::Head, StorageOp::Delete])
+                .await?;
+            let Some(p) = plan.first() else {
+                return Err(AppError::Internal("a direct upload with no parts".into()));
+            };
+            return match self.head(&reqs[0]).await? {
+                None => Ok(DirectFinish::Missing(1)),
+                Some((len, sum))
+                    if len == p.len && sum.as_deref() == Some(checksum_b64(&p.sha256).as_str()) =>
+                {
+                    Ok(DirectFinish::Stored(BackendRef {
+                        kind: self.kind.to_string(),
+                        key: key.clone(),
+                    }))
+                }
+                Some((len, _)) => {
+                    self.send("delete", &reqs[1], None).await?;
+                    Ok(DirectFinish::Mismatch(format!(
+                        "storage holds {len} bytes, or a checksum, other than the plan's"
+                    )))
+                }
+            };
+        };
+        let mut ops = Self::list_ops(plan.len());
+        let lists = ops.len();
+        ops.extend([
+            StorageOp::CompleteMultipart { len: total },
+            StorageOp::Head,
+            StorageOp::AbortMultipart,
+            StorageOp::Delete,
+        ]);
+        let reqs = self.ops(key, Some(id), &ops).await?;
+        let (list, rest) = reqs.split_at(lists);
+        let (complete, head, abort, delete) = (&rest[0], &rest[1], &rest[2], &rest[3]);
+        let discard = |why: String| async move {
+            let _ = self.send("abort", abort, None).await;
+            let _ = self.send("delete", delete, None).await;
+            Ok(DirectFinish::Mismatch(why))
+        };
+
+        let listed = self.listed(list).await?;
+        let (held, wrong) = Self::compare(plan, &listed);
+        if let Some(why) = wrong {
+            return discard(why).await;
+        }
+        if held.len() < plan.len() {
+            return Ok(DirectFinish::Missing((plan.len() - held.len()) as u64));
+        }
+        let mut body = String::from("<CompleteMultipartUpload>");
+        for p in plan {
+            let l = listed
+                .iter()
+                .find(|l| l.part_number == p.number)
+                .expect("compared above");
+            body.push_str(&format!(
+                "<Part><PartNumber>{}</PartNumber><ETag>{}</ETag><ChecksumSHA256>{}</ChecksumSHA256></Part>",
+                p.number,
+                xml_escape(&l.etag),
+                checksum_b64(&p.sha256)
+            ));
+        }
+        body.push_str("</CompleteMultipartUpload>");
+        let completed = self
+            .builder(complete)?
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| transport("completion", e))?;
+        let status = completed.status();
+        // S3 can answer 200 with an error document in the body.
+        let text = completed.text().await.unwrap_or_default();
+        if !status.is_success() || text.contains("<Error>") {
+            return discard(format!(
+                "storage refused to assemble the parts (HTTP {})",
+                status.as_u16()
+            ))
+            .await;
+        }
+        match self.head(head).await? {
+            Some((len, Some(sum))) if len == total && sum == composite_checksum(plan) => {
+                Ok(DirectFinish::Stored(BackendRef {
+                    kind: self.kind.to_string(),
+                    key: key.clone(),
+                }))
+            }
+            Some((len, sum)) => {
+                discard(format!(
+                    "the assembled object is {len} bytes with checksum {}, not the plan's",
+                    sum.as_deref().unwrap_or("(none reported)")
+                ))
+                .await
+            }
+            None => discard("the assembled object is not in storage".into()).await,
+        }
+    }
+
+    async fn direct_abort(&self, key: &BlobKey, upload_id: Option<&str>) -> Result<(), AppError> {
+        let ops: Vec<StorageOp> = match upload_id {
+            Some(_) => vec![StorageOp::AbortMultipart, StorageOp::Delete],
+            None => vec![StorageOp::Delete],
+        };
+        for req in self.ops(key, upload_id, &ops).await? {
+            let res = self
+                .builder(&req)?
+                .send()
+                .await
+                .map_err(|e| transport("abort", e))?;
+            // Gone already is aborted.
+            if !(res.status().is_success() || res.status() == StatusCode::NOT_FOUND) {
+                return Err(refused("abort", res.status()));
+            }
+        }
+        Ok(())
     }
 
     /// Whether a request can be presigned now: the presigner answers, and for
@@ -628,5 +1100,167 @@ mod tests {
             expires_at: Utc::now(),
         };
         assert!(!format!("{r:?}").contains("secret"));
+    }
+}
+
+#[cfg(test)]
+mod direct_tests {
+    use super::super::mock_s3::MockS3;
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    const PART: usize = super::super::MIN_MULTIPART_PART_BYTES as usize;
+
+    fn store(s3: &MockS3) -> PresignedBlobs {
+        PresignedBlobs::new("s3", s3.presigner(), Some("community/"))
+            .unwrap()
+            .with_plain_http()
+    }
+
+    fn plan(bytes: &[u8], part: usize) -> Vec<DirectPart> {
+        bytes
+            .chunks(part)
+            .enumerate()
+            .map(|(i, c)| DirectPart {
+                number: i as u32 + 1,
+                len: c.len() as u64,
+                sha256: Sha256::digest(c).into(),
+            })
+            .collect()
+    }
+
+    fn key(n: u8) -> BlobKey {
+        BlobKey::for_upload(
+            "did:key:zRoom",
+            &super::super::sha256_digest_multibase(&[n; 32]),
+            &uuid::Uuid::new_v4(),
+        )
+        .unwrap()
+    }
+
+    /// What a member's client does with a target: send exactly its method and
+    /// headers, and the bytes.
+    async fn put(target: &PresignedRequest, bytes: &[u8]) -> reqwest::StatusCode {
+        let mut b = reqwest::Client::new().put(target.url.replacen("https://", "http://", 1));
+        for (k, v) in &target.headers {
+            b = b.header(k, v);
+        }
+        b.body(bytes.to_vec()).send().await.unwrap().status()
+    }
+
+    /// A multipart direct upload end to end: create, write each part to its
+    /// bound target, verify at storage (listing, completion bound to the size,
+    /// head with the composite checksum), and the object is there.
+    #[tokio::test]
+    async fn a_multipart_upload_is_verified_at_storage_and_completed() {
+        let s3 = MockS3::start(true).await;
+        let s = store(&s3);
+        assert!(s.direct_uploads());
+        let bytes: Vec<u8> = (0..PART * 2 + 1000).map(|i| (i % 251) as u8).collect();
+        let plan = plan(&bytes, PART);
+        let k = key(1);
+        let id = s
+            .direct_begin(&k, true)
+            .await
+            .unwrap()
+            .expect("an upload id");
+        let targets = s.direct_targets(&k, Some(&id), &plan).await.unwrap();
+        assert_eq!(targets.len(), 3);
+        assert_eq!(
+            s.direct_finish(&k, Some(&id), &plan).await.unwrap(),
+            DirectFinish::Missing(3)
+        );
+        for (t, c) in targets.iter().zip(bytes.chunks(PART)).take(2) {
+            assert!(put(t, c).await.is_success());
+        }
+        assert_eq!(
+            s.direct_held(&k, Some(&id), &plan).await.unwrap(),
+            vec![1, 2]
+        );
+        assert!(put(&targets[2], &bytes[PART * 2..]).await.is_success());
+        match s.direct_finish(&k, Some(&id), &plan).await.unwrap() {
+            DirectFinish::Stored(at) => assert_eq!(
+                s.get_range(&at, 0, bytes.len() as u64).await.unwrap(),
+                bytes
+            ),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(s3.open_uploads(), 0);
+    }
+
+    /// Storage itself refuses bytes other than the signed checksum; a store that
+    /// does not is caught at commit, which deletes what it holds.
+    #[tokio::test]
+    async fn other_bytes_are_refused_by_storage_or_caught_at_commit() {
+        let s3 = MockS3::start(true).await;
+        let s = store(&s3);
+        let bytes = vec![7u8; PART + 10];
+        let plan = plan(&bytes, PART);
+        let k = key(2);
+        let id = s.direct_begin(&k, true).await.unwrap().unwrap();
+        let targets = s.direct_targets(&k, Some(&id), &plan).await.unwrap();
+        let mut forged = bytes[..PART].to_vec();
+        forged[0] ^= 1;
+        assert_eq!(
+            put(&targets[0], &forged).await,
+            reqwest::StatusCode::BAD_REQUEST
+        );
+
+        let lax = MockS3::start(false).await;
+        let s = store(&lax);
+        let k = key(3);
+        let id = s.direct_begin(&k, true).await.unwrap().unwrap();
+        let targets = s.direct_targets(&k, Some(&id), &plan).await.unwrap();
+        assert!(put(&targets[0], &forged).await.is_success());
+        assert!(put(&targets[1], &bytes[PART..]).await.is_success());
+        assert!(matches!(
+            s.direct_finish(&k, Some(&id), &plan).await.unwrap(),
+            DirectFinish::Mismatch(_)
+        ));
+        assert_eq!(lax.open_uploads(), 0, "the upload is aborted");
+        assert!(lax.objects().is_empty(), "nothing is left");
+    }
+
+    #[tokio::test]
+    async fn a_single_part_upload_is_one_bound_put_checked_by_head() {
+        let s3 = MockS3::start(false).await;
+        let s = store(&s3);
+        let bytes = vec![3u8; 1000];
+        let plan = plan(&bytes, 1000);
+        let k = key(4);
+        assert_eq!(s.direct_begin(&k, false).await.unwrap(), None);
+        let t = s.direct_targets(&k, None, &plan).await.unwrap();
+        assert_eq!(t[0].headers["Content-Length"], "1000");
+        assert_eq!(
+            s.direct_finish(&k, None, &plan).await.unwrap(),
+            DirectFinish::Missing(1)
+        );
+        assert!(put(&t[0], &vec![4u8; 1000]).await.is_success());
+        assert!(matches!(
+            s.direct_finish(&k, None, &plan).await.unwrap(),
+            DirectFinish::Mismatch(_)
+        ));
+        assert!(s3.objects().is_empty(), "the wrong object is deleted");
+        assert!(put(&t[0], &bytes).await.is_success());
+        assert!(matches!(
+            s.direct_finish(&k, None, &plan).await.unwrap(),
+            DirectFinish::Stored(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn abort_reclaims_parts_and_the_object() {
+        let s3 = MockS3::start(true).await;
+        let s = store(&s3);
+        let bytes = vec![5u8; PART + 1];
+        let plan = plan(&bytes, PART);
+        let k = key(5);
+        let id = s.direct_begin(&k, true).await.unwrap().unwrap();
+        let targets = s.direct_targets(&k, Some(&id), &plan).await.unwrap();
+        assert!(put(&targets[0], &bytes[..PART]).await.is_success());
+        s.direct_abort(&k, Some(&id)).await.unwrap();
+        assert_eq!(s3.open_uploads(), 0);
+        // Again: already gone is aborted.
+        s.direct_abort(&k, Some(&id)).await.unwrap();
     }
 }

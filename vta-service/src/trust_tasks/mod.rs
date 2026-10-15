@@ -2596,6 +2596,8 @@ dispatch_table! {
         [ Destructive Metadata false ],
     vta_sdk::trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1 => external::handle_issue
         [ Mutating Secret true ],
+    vta_sdk::trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2 => external::handle_issue_v2
+        [ Mutating Secret true ],
     // ─── Hidden-vetting PCS engine (`vta/pcs/*`) ───────────────────
     // Classes match each specification's own declarations. `actsAsSubject` is
     // true wherever the engine exercises the member's PCS key.

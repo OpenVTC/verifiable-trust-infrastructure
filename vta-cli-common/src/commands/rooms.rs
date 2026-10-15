@@ -18,8 +18,11 @@
 //! lookup and `keys commit --host`) build the request unsigned and have the VTA complete
 //! it as the persona: the persona's own authority narrowed to the one action, the persona
 //! as `issuer` and signer. The host records the persona, and this client's DID reaches it
-//! nowhere. File transfer and `renew` still present for this client
-//! ([`VtaClient::room_present`]) and sign with its own key; they move separately.
+//! nowhere. File transfer works the same way (`rooms/blobs/*/0.2`): the begin, the record,
+//! the read and — in direct mode — the commit are completed as the persona, and a proxied
+//! upload's chunks are signed by a single-use upload key minted for that upload. `renew`
+//! still presents for this client ([`VtaClient::room_present`]) and signs with its own
+//! key; it moves separately.
 //!
 //! The credentials the presentation is derived from, and the group key that
 //! opens a record, stay inside the VTA. This CLI holds neither at any point,
@@ -153,8 +156,21 @@ async fn act_and_send(
     type_uri: &str,
     payload: Value,
 ) -> Result<(String, Value), Box<dyn std::error::Error>> {
+    act_and_send_as(client, target, type_uri, payload, None).await
+}
+
+/// [`act_and_send`], naming the member to act as — required for a document that names
+/// no room (a download chunk, a direct upload's commit or abort), whose authority is
+/// the transfer the member's own request opened.
+async fn act_and_send_as(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    type_uri: &str,
+    payload: Value,
+    issuer: Option<&str>,
+) -> Result<(String, Value), Box<dyn std::error::Error>> {
     let host_did = target.host_did.unwrap_or("did:key:zHost");
-    let document = vta_sdk::client::unsigned_room_request(type_uri, host_did, None, payload)?;
+    let document = vta_sdk::client::unsigned_room_request(type_uri, host_did, issuer, payload)?;
     let completed = client.room_act(&document).await.map_err(|e| {
         let text = e.to_string();
         let hint = if text.contains("principalAmbiguous") {
@@ -779,21 +795,6 @@ async fn room_tier(
     Ok((visibility != "open", member))
 }
 
-/// Whether the room seals its records, from `rooms/info`, presented for this client — the
-/// file commands' path until their transfer moves to acting as the member.
-async fn is_sealed_tier(
-    target: &RoomTarget<'_>,
-    signer: &RoomSigner<'_>,
-    read: &RoomSession,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let info = target
-        .client()
-        .room_info(read, signer.did, signer.key_multibase)
-        .await
-        .map_err(|e| format!("could not read the room's tier (rooms/info): {e}"))?;
-    Ok(wire_str(&info.visibility) != "open")
-}
-
 /// Have the VTA sign `content` **as the member** and seal it (`rooms/keys/seal/0.2`), and
 /// put it as the member (`rooms/keys/act/0.1`), re-sealing at the version the host assigned
 /// whenever that is not the one sealed for. Returns the version written.
@@ -807,6 +808,17 @@ async fn write_sealed(
     target: &RoomTarget<'_>,
     content: SealedRecordBody,
     expected_version: Option<u64>,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    write_sealed_naming(client, target, content, expected_version, None).await
+}
+
+/// [`write_sealed`], naming `blobs` committed in the room (`rooms/records/put/0.2`).
+async fn write_sealed_naming(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    content: SealedRecordBody,
+    expected_version: Option<u64>,
+    blobs: Option<Vec<String>>,
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let head = list_page(client, target, None, None, None)
         .await?
@@ -836,102 +848,16 @@ async fn write_sealed(
         if let Some(v) = expected {
             payload["expectedVersion"] = serde_json::json!(v);
         }
-        let (_, reply) = act_and_send(
-            client,
-            target,
-            vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
-            payload,
-        )
-        .await?;
+        let put_type = match &blobs {
+            Some(b) => {
+                payload["blobs"] = serde_json::json!(b);
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V2_TYPE
+            }
+            None => vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+        };
+        let (_, reply) = act_and_send(client, target, put_type, payload).await?;
         let put: vti_rooms::wire::PutRecordResponse = parse_reply("rooms/records/put", reply)?;
         landed = put.version;
-        if landed == intended {
-            return Ok(landed);
-        }
-        // Another write took the predicted version. The record is stored but sealed for the
-        // wrong one, so it does not open; rewrite it, and only over what just landed.
-        expected = Some(landed);
-        intended = landed + 1;
-    }
-    Err(format!(
-        "{key} is stored at version {landed} but sealed for another version, so it does not \
-         open: the room kept moving under {SEALED_WRITE_ATTEMPTS} attempts. Write it again \
-         with --expected-version {landed}."
-    )
-    .into())
-}
-
-/// Sign `content`, seal it through the VTA and put it, re-sealing at the version the host
-/// assigned whenever that is not the one sealed for. Returns the version written.
-///
-/// The record's associated data and its signed body both name the version, and the host
-/// assigns it from a room-wide counter, so the version is predicted from the room's head and
-/// a miss is corrected by a rewrite. Until that rewrite lands the record does not open,
-/// which is why a write that runs out of attempts says so and names the key.
-#[allow(clippy::too_many_arguments)]
-async fn write_sealed_as_client(
-    client: &VtaClient,
-    target: &RoomTarget<'_>,
-    signer: &RoomSigner<'_>,
-    read: &RoomSession,
-    write: &RoomSession,
-    content: SealedRecordBody,
-    blobs: Option<Vec<String>>,
-    expected_version: Option<u64>,
-) -> Result<u64, Box<dyn std::error::Error>> {
-    let holder =
-        vta_sdk::trust_task_sign::HolderKey::from_did_key(signer.did, signer.key_multibase)?;
-    let host = target.client();
-    let head = host
-        .list_records(read, None, None, None, signer.did, signer.key_multibase)
-        .await?
-        .head_version
-        .unwrap_or(0);
-
-    let key = content.key.clone();
-    let mut intended = head + 1;
-    let mut expected = expected_version;
-    let mut landed = 0;
-    for _ in 0..SEALED_WRITE_ATTEMPTS {
-        let signed = content.clone().at_version(intended).sign(&holder).await?;
-        let sealed = client
-            .room_seal(target.room_id, &key, intended, &signed)
-            .await?
-            .sealed;
-        let sealed = SealedContent {
-            ciphertext: sealed.ciphertext,
-            nonce: sealed.nonce,
-            epoch: u32::try_from(sealed.epoch.get())
-                .map_err(|_| "the VTA sealed under an epoch this client cannot represent")?,
-        };
-        landed = match &blobs {
-            Some(blobs) => host
-                .put_sealed_record_with_blobs(
-                    write,
-                    &key,
-                    sealed,
-                    blobs,
-                    expected,
-                    signer.did,
-                    signer.key_multibase,
-                )
-                .await?
-                .version
-                .get(),
-            None => {
-                host.put_record(
-                    write,
-                    &key,
-                    Some(sealed),
-                    None,
-                    expected,
-                    signer.did,
-                    signer.key_multibase,
-                )
-                .await?
-                .version
-            }
-        };
         if landed == intended {
             return Ok(landed);
         }
@@ -1005,34 +931,62 @@ async fn open_and_verify(
         .map_err(|e| format!("refusing record {key}: {e}"))?)
 }
 
+/// The part size a direct upload is cut into: one part up to [`SINGLE_PART_MAX`], else
+/// parts of this size (storage's multipart floor is 5 MiB).
+const DIRECT_PART: usize = 8 * 1024 * 1024;
+/// The largest blob sent as one direct part.
+const SINGLE_PART_MAX: usize = 16 * 1024 * 1024;
+/// How many times a direct upload asks again for targets before giving up.
+const DIRECT_BEGIN_ATTEMPTS: usize = 64;
+
+/// The part plan (`directParts`) for `ciphertext`: its parts, and each one's sha2-256.
+fn direct_plan(ciphertext: &[u8]) -> (usize, Value) {
+    use sha2::Digest as _;
+    let part = if ciphertext.len() <= SINGLE_PART_MAX {
+        ciphertext.len().max(1)
+    } else {
+        DIRECT_PART
+    };
+    let digests: Vec<String> = ciphertext
+        .chunks(part)
+        .map(|c| vti_common::blob_store::sha256_digest_multibase(&sha2::Sha256::digest(c).into()))
+        .collect();
+    (
+        part,
+        serde_json::json!({ "partSize": part, "partCount": digests.len(), "partDigests": digests }),
+    )
+}
+
 /// `rooms file put` — seal a local file, upload its ciphertext, and write the record that
-/// names it.
+/// names it, all **as the member** (`rooms/blobs/*/0.2` through `rooms/keys/act`).
 ///
 /// The file is sealed here under one file's key from the VTA (`rooms/keys/file-key`); its
-/// bytes never pass through the VTA, and the host receives only ciphertext. Its name, type,
-/// size and plaintext digest go inside the record's signed, sealed body.
-#[allow(clippy::too_many_arguments)]
+/// bytes never pass through the VTA, and the host receives only ciphertext. The member's
+/// VTA signs the begin, the record and — in direct mode — the commit, as the member; the
+/// bytes go straight to the room's storage over targets the host issued (direct) or to the
+/// host as chunk documents signed by a single-use upload key minted here for this upload
+/// alone (proxied). This client's own key signs nothing the host receives.
 pub async fn cmd_rooms_file_put(
     client: &VtaClient,
     target: RoomTarget<'_>,
-    signer: RoomSigner<'_>,
     path: &std::path::Path,
     title: Option<String>,
     description: Option<String>,
     tags: Vec<String>,
     padme: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use trust_tasks_rs::Payload as _;
+    use trust_tasks_rs::specs::rooms::blobs::upload;
     use vti_rooms::files::{self, FileBinding, Padding};
 
-    let read = present(client, &target, "read").await?;
-    if !is_sealed_tier(&target, &signer, &read).await? {
+    let (sealed_tier, member) = room_tier(client, &target).await?;
+    if !sealed_tier {
         return Err(
             "this room is `open`: its records are cleartext, and a file's manifest \
                     belongs inside a sealed body. Files go in `attributed` and `private` rooms."
                 .into(),
         );
     }
-    let write = present(client, &target, "write").await?;
 
     let plaintext = std::fs::read(path)?;
     let name = path
@@ -1059,47 +1013,122 @@ pub async fn cmd_rooms_file_put(
         &plaintext,
         if padme { Padding::Padme } else { Padding::None },
     )?;
+    let ciphertext: Vec<u8> = sealed.chunks.concat();
 
-    let host = target.client();
-    let begun = host
-        .begin_upload(&write, &sealed.blob, signer.did, signer.key_multibase)
+    // The upload key: minted here for this upload alone, from no key held for anything
+    // else, and dropped when the upload ends.
+    let (key_did, key_secret) = crate::local_keygen::generate_unbound_admin_did_key();
+    let key_secret = zeroize::Zeroizing::new(key_secret);
+    let (part_size, plan) = direct_plan(&ciphertext);
+    let begin_payload = serde_json::json!({
+        "roomId": target.room_id,
+        "manifest": sealed.blob,
+        "uploadKey": key_did,
+        "directParts": plan,
+    });
+    let begin = || async {
+        let (_, reply) = act_and_send(
+            client,
+            &target,
+            upload::begin::v0_2::Payload::TYPE_URI,
+            begin_payload.clone(),
+        )
         .await?;
-    let blob_ref = if begun.already_committed == Some(true) {
-        sealed.file.blob_ref.clone()
-    } else {
-        let upload_id = wire_str(&begun.upload_id);
-        let sent: Result<(), Box<dyn std::error::Error>> = async {
-            for index in &begun.missing {
-                let i = usize::try_from(index.0)
-                    .ok()
-                    .filter(|i| *i < sealed.chunks.len())
-                    .ok_or_else(|| {
-                        format!("the host asked for chunk {}, which does not exist", index.0)
-                    })?;
-                host.upload_chunk(
-                    &upload_id,
-                    i as u64,
-                    &sealed.chunks[i],
-                    signer.did,
-                    signer.key_multibase,
-                )
-                .await?;
-            }
-            Ok(())
-        }
-        .await;
-        if let Err(e) = sent {
-            // Release what `begin` reserved rather than leaving it to expire.
-            let _ = host
-                .abort_upload(&upload_id, signer.did, signer.key_multibase)
-                .await;
-            return Err(e);
-        }
-        let committed = host
-            .commit_upload(&upload_id, signer.did, signer.key_multibase)
-            .await?;
-        wire_str(&committed.blob_ref)
+        parse_reply::<upload::begin::v0_2::Response>("rooms/blobs/upload/begin", reply)
     };
+    let mut begun = begin().await?;
+    let direct = wire_str(&begun.mode) == "direct";
+    let upload_id = begun.upload_id.to_string();
+    let host = target.client();
+
+    let sent: Result<(), Box<dyn std::error::Error>> = async {
+        if begun.already_committed == Some(true) {
+            return Ok(());
+        }
+        if direct {
+            // Each part to its own target, with exactly the headers it names; begin again,
+            // with the identical manifest and plan, for parts beyond the first batch or
+            // whose target lapsed.
+            for _ in 0..DIRECT_BEGIN_ATTEMPTS {
+                if begun.missing.is_empty() {
+                    return Ok(());
+                }
+                if begun.targets.is_empty() {
+                    return Err("the host answered direct mode with no targets".into());
+                }
+                for t in &begun.targets {
+                    let i = usize::try_from(t.index)
+                        .ok()
+                        .filter(|i| i * part_size < ciphertext.len().max(1))
+                        .ok_or("the host issued a target for a part that does not exist")?;
+                    let part =
+                        &ciphertext[i * part_size..((i + 1) * part_size).min(ciphertext.len())];
+                    vtc_client::rooms::files::put_part(t, part).await?;
+                }
+                begun = begin().await?;
+            }
+            return Err("the upload did not finish: the host kept asking for parts".into());
+        }
+        for index in &begun.missing {
+            let i = usize::try_from(index.0)
+                .ok()
+                .filter(|i| *i < sealed.chunks.len())
+                .ok_or_else(|| {
+                    format!("the host asked for chunk {}, which does not exist", index.0)
+                })?;
+            host.upload_chunk_v2(
+                &upload_id,
+                i as u64,
+                &sealed.chunks[i],
+                &key_did,
+                &key_secret,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+    .await;
+
+    // Commit and abort: the upload key's (proxied), or the member's own (direct).
+    let finish = |type_uri: &'static str| {
+        let (upload_id, key_did, key_secret, member) = (
+            upload_id.clone(),
+            key_did.clone(),
+            key_secret.clone(),
+            member.clone(),
+        );
+        let target = &target;
+        async move {
+            let payload = serde_json::json!({ "uploadId": upload_id });
+            if direct {
+                act_and_send_as(client, target, type_uri, payload, Some(&member))
+                    .await
+                    .map(|(_, reply)| reply)
+            } else {
+                let doc = vta_sdk::trust_task_sign::build_signed(
+                    type_uri,
+                    payload,
+                    &key_did,
+                    &key_secret,
+                    target.host_did.unwrap_or("did:key:zHost"),
+                )
+                .await
+                .map_err(|e| format!("could not sign with the upload key: {e}"))?;
+                let doc: Value = serde_json::from_str(&doc)?;
+                Ok(target.client().send_signed_room_document(&doc).await?)
+            }
+        }
+    };
+    if let Err(e) = sent {
+        // Release what `begin` reserved rather than leaving it to expire.
+        let _ = finish(upload::abort::v0_2::Payload::TYPE_URI).await;
+        return Err(e);
+    }
+    let committed: upload::commit::v0_2::Response = parse_reply(
+        "rooms/blobs/upload/commit",
+        finish(upload::commit::v0_2::Payload::TYPE_URI).await?,
+    )?;
+    let blob_ref = wire_str(&committed.blob_ref);
     if !files::same_digest(&blob_ref, &sealed.file.blob_ref) {
         return Err(format!(
             "the host committed {blob_ref}, not the blob sealed here ({})",
@@ -1115,21 +1144,18 @@ pub async fn cmd_rooms_file_put(
             key: &key,
             version: 1,
         },
-        signer.did,
+        &member,
     );
     content.title = title;
     content.description = description;
     content.tags = tags;
     content.file = Some(sealed.file.clone());
-    let version = write_sealed_as_client(
+    let version = write_sealed_naming(
         client,
         &target,
-        &signer,
-        &read,
-        &write,
         content,
-        Some(vec![blob_ref.clone()]),
         Some(0),
+        Some(vec![blob_ref.clone()]),
     )
     .await?;
 
@@ -1139,12 +1165,18 @@ pub async fn cmd_rooms_file_put(
             "version": version,
             "blobRef": blob_ref,
             "size": sealed.file.size,
+            "mode": if direct { "direct" } else { "proxied" },
         }))?;
         return Ok(());
     }
     println!(
-        "Put {name} ({} bytes) as record {key} at version {version}\n  blobRef  {blob_ref}\n  Members fetch it with `pnm rooms file get {key}`.",
-        sealed.file.size
+        "Put {name} ({} bytes, {}) as record {key} at version {version}, as {member}\n  blobRef  {blob_ref}\n  Members fetch it with `pnm rooms file get {key}`.",
+        sealed.file.size,
+        if direct {
+            "straight to the room's storage"
+        } else {
+            "through the host"
+        }
     );
     Ok(())
 }
@@ -1165,26 +1197,34 @@ fn local_name(untrusted: &str) -> String {
     }
 }
 
-/// `rooms file get` — fetch a record's file, check it against what its author signed, and
-/// write the plaintext.
+/// `rooms file get` — fetch a record's file **as the member**, check it against what its
+/// author signed, and write the plaintext.
 ///
+/// The record and the blob are asked for through the member's VTA (`rooms/keys/act`); the
+/// bytes come straight from the room's storage when the host offers it (`direct`, a ranged
+/// read per chunk), or chunk by chunk through the host, each request signed as the member.
 /// Nothing is written unless every check holds: the record body's signature and location,
 /// the blob being the one the author named, every chunk against the manifest, and the
 /// plaintext against the author's digest.
 pub async fn cmd_rooms_file_get(
     client: &VtaClient,
     target: RoomTarget<'_>,
-    signer: RoomSigner<'_>,
     key: &str,
     out: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use trust_tasks_rs::Payload as _;
+    use trust_tasks_rs::specs::rooms::blobs::{chunk as blob_chunk, get as blob_get};
     use vti_rooms::files::{self, BlobManifest};
 
-    let read = present(client, &target, "read").await?;
-    let host = target.client();
-    let record = host
-        .get_record_v2(&read, key, signer.did, signer.key_multibase)
-        .await?;
+    let (member, record) = act_and_send(
+        client,
+        &target,
+        vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
+        serde_json::json!({ "roomId": target.room_id, "key": key }),
+    )
+    .await?;
+    let record: vtc_client::rooms::files::GetRecordV2Response =
+        parse_reply("rooms/records/get", record)?;
     let sealed = record.sealed.as_ref().ok_or(
         "the record has no sealed body: it is on an `open` room, or it has been retracted",
     )?;
@@ -1221,20 +1261,48 @@ pub async fn cmd_rooms_file_get(
         );
     }
 
-    let started = host
-        .get_blob(&read, &file.blob_ref, signer.did, signer.key_multibase)
-        .await?;
+    let (_, started) = act_and_send(
+        client,
+        &target,
+        blob_get::v0_2::Payload::TYPE_URI,
+        serde_json::json!({ "roomId": target.room_id, "blobRef": file.blob_ref, "direct": true }),
+    )
+    .await?;
+    let started: blob_get::v0_2::Response = parse_reply("rooms/blobs/get", started)?;
     let blob: BlobManifest = serde_json::from_value(serde_json::to_value(&started.manifest)?)?;
     // The file manifest is the author's; the blob manifest is the host's. Before a byte is
     // trusted: it is the blob the author named, and its shape is the one the author's
     // segment size and length give.
     file.check_blob(&blob)?;
-    let download_id = wire_str(&started.download_id);
+    let size = blob.size;
+    let chunk_size = blob.chunks.chunk_size;
     let mut chunks = Vec::with_capacity(blob.chunks.chunk_digests.len());
     for (i, expected) in blob.chunks.chunk_digests.iter().enumerate() {
-        let chunk = host
-            .download_chunk(&download_id, i as u64, signer.did, signer.key_multibase)
-            .await?;
+        let chunk = match (&started.target, &started.download_id) {
+            (Some(t), _) => {
+                let start = i as u64 * chunk_size;
+                vtc_client::rooms::files::get_range(t, start..(start + chunk_size).min(size))
+                    .await?
+            }
+            (None, Some(download_id)) => {
+                let (_, reply) = act_and_send_as(
+                    client,
+                    &target,
+                    blob_chunk::v0_1::Payload::TYPE_URI,
+                    serde_json::json!({ "downloadId": download_id, "index": i }),
+                    Some(&member),
+                )
+                .await?;
+                let c: blob_chunk::v0_1::Response = parse_reply("rooms/blobs/chunk", reply)?;
+                base64::Engine::decode(
+                    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                    c.data.as_str(),
+                )?
+            }
+            (None, None) => {
+                return Err("the host answered with neither a target nor a download".into());
+            }
+        };
         if !files::same_digest(&files::digest_multibase(&chunk), expected) {
             return Err(format!("chunk {i} does not match the manifest").into());
         }

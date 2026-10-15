@@ -252,6 +252,23 @@ impl VtaClient {
         )
         .await
     }
+
+    /// `external/credentials/issue/0.2`: a credential under `scope`, or — for an
+    /// `s3-static-presign` account — a batch of presigned requests under
+    /// `presign`, whose sealed cleartext is a
+    /// [`PresignedRequests`](crate::sealed_transfer::ExternalCredentialPayload::PresignedRequests)
+    /// set. Open it with [`open_external_credential`]; keep it in memory only.
+    pub async fn external_credentials_issue_v2(
+        &self,
+        req: &ext::credentials::issue::v0_2::Payload,
+    ) -> Result<ext::credentials::issue::v0_2::Response, VtaError> {
+        self.external_call(
+            trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2,
+            req,
+            EXTERNAL_TT_TIMEOUT,
+        )
+        .await
+    }
 }
 
 /// Seal an external account's secret in the client, to `wrapping_did_key` (the

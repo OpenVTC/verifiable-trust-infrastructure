@@ -28,8 +28,10 @@ use async_trait::async_trait;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::external::credentials::issue::v0_1 as issue;
+use trust_tasks_rs::specs::external::credentials::issue::v0_2 as issue_v2;
 use vta_sdk::sealed_transfer::ExternalCredentialPayload;
-use vti_common::blob_store::presigned::{PresignAction, PresignedRequest, Presigner};
+use vti_common::blob_store::StorageOp;
+use vti_common::blob_store::presigned::{PresignAction, PresignedRequest, Presigner, checksum_b64};
 use vti_common::error::AppError;
 use zeroize::Zeroizing;
 
@@ -45,6 +47,7 @@ pub const TTL_SECONDS: i64 = 300;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 
 const ISSUE: &str = <issue::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+const ISSUE_V2: &str = <issue_v2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// How a Trust Task reaches the VTA and its signed reply comes back: the
 /// community's [`VtaLink`] in a running community, a stand-in in tests.
@@ -112,9 +115,18 @@ impl VtaStorage {
 
     /// Ask for one presigned request; the VTA's refusal as `Ok(Err((code, message)))`.
     async fn issue(&self, asked: &Value) -> Result<Result<String, (String, String)>, AppError> {
+        self.issue_at(ISSUE, asked).await
+    }
+
+    /// Ask at `type_uri` (`issue/0.1` or `0.2`); the sealed answer, or the VTA's refusal.
+    async fn issue_at(
+        &self,
+        type_uri: &str,
+        asked: &Value,
+    ) -> Result<Result<String, (String, String)>, AppError> {
         let reply = self
             .vta
-            .exchange(ISSUE, asked, REPLY_TIMEOUT)
+            .exchange(type_uri, asked, REPLY_TIMEOUT)
             .await
             .map_err(|e| match e {
                 PeerError::Transient(m) => {
@@ -133,7 +145,11 @@ impl VtaStorage {
                 reply.payload["message"].as_str().unwrap_or("").to_string(),
             )));
         }
-        read_answer(&reply, asked).map(Ok)
+        if type_uri == ISSUE_V2 {
+            read_batch_answer(&reply, asked).map(Ok)
+        } else {
+            read_answer(&reply, asked).map(Ok)
+        }
     }
 
     /// What the VTA says of `account` in `context` for objects under `prefix`
@@ -271,6 +287,81 @@ fn request(
     })
 }
 
+/// The `issue/0.2` request presigning `ops` on one object of one room.
+fn batch_request(
+    account: &str,
+    context: &str,
+    prefix: &str,
+    object: &str,
+    upload_id: Option<&str>,
+    ops: &[StorageOp],
+) -> Value {
+    let requests: Vec<Value> = ops
+        .iter()
+        .map(|op| match *op {
+            StorageOp::Put { len, sha256 } => json!({
+                "operation": "put", "contentLength": len, "checksumSha256": checksum_b64(&sha256),
+            }),
+            StorageOp::Get => json!({ "operation": "get" }),
+            StorageOp::Head => json!({ "operation": "head" }),
+            StorageOp::Delete => json!({ "operation": "delete" }),
+            StorageOp::CreateMultipart => json!({ "operation": "create-multipart" }),
+            StorageOp::UploadPart { part, len, sha256 } => json!({
+                "operation": "upload-part", "partNumber": part, "contentLength": len,
+                "checksumSha256": checksum_b64(&sha256),
+            }),
+            StorageOp::ListParts { marker: Some(m) } => {
+                json!({ "operation": "list-parts", "partNumberMarker": m })
+            }
+            StorageOp::ListParts { marker: None } => json!({ "operation": "list-parts" }),
+            StorageOp::CompleteMultipart { len } => {
+                json!({ "operation": "complete-multipart", "contentLength": len })
+            }
+            StorageOp::AbortMultipart => json!({ "operation": "abort-multipart" }),
+        })
+        .collect();
+    let mut presign = json!({ "prefix": prefix, "objectKey": object, "requests": requests });
+    if let Some(id) = upload_id {
+        presign["uploadId"] = json!(id);
+    }
+    json!({ "account": account, "context": context, "presign": presign, "ttlSeconds": TTL_SECONDS })
+}
+
+/// Read an `issue/0.2` answer as the sealed set, after checking it is that task's
+/// answer, for exactly the batch asked.
+fn read_batch_answer(
+    reply: &trust_tasks_rs::TrustTask<Value>,
+    asked: &Value,
+) -> Result<String, AppError> {
+    if reply.type_uri.to_string() != format!("{ISSUE_V2}#response") {
+        return Err(unavailable(
+            "the community's VTA answered a storage request with something else".into(),
+        ));
+    }
+    let answer: issue_v2::Response =
+        serde_json::from_value(reply.payload.clone()).map_err(|e| {
+            unavailable(format!(
+                "the community's VTA answered with a malformed credential: {e}"
+            ))
+        })?;
+    let issue_v2::Response::Variant1 {
+        presign,
+        sealed_credential,
+        ..
+    } = answer
+    else {
+        return Err(unavailable(
+            "the community's VTA answered a presign batch with a scope".into(),
+        ));
+    };
+    if serde_json::to_value(&presign).unwrap_or(Value::Null) != asked["presign"] {
+        return Err(unavailable(
+            "the community's VTA presigned a different batch than asked".into(),
+        ));
+    }
+    Ok(sealed_credential.to_string())
+}
+
 /// Read the VTA's answer as the sealed credential, after checking it is the
 /// issue task's answer, for exactly the scope asked.
 fn read_answer(
@@ -298,6 +389,80 @@ fn read_answer(
 
 #[async_trait]
 impl Presigner for AccountPresigner {
+    fn presigns_ops(&self) -> bool {
+        true
+    }
+
+    /// One `external/credentials/issue/0.2` batch: every request for one object,
+    /// in order, each write bound to its length and checksum. One issuance against
+    /// the binding's rate, whatever the batch's size.
+    async fn presign_ops(
+        &self,
+        prefix: &str,
+        object_key: &str,
+        upload_id: Option<&str>,
+        ops: &[StorageOp],
+    ) -> Result<Vec<PresignedRequest>, AppError> {
+        let link = &self.link;
+        let asked = batch_request(
+            &self.account,
+            &self.context,
+            prefix,
+            object_key,
+            upload_id,
+            ops,
+        );
+        let armored = link
+            .issue_at(ISSUE_V2, &asked)
+            .await?
+            .map_err(|(code, message)| {
+                unavailable(format!(
+                    "the community's VTA refused a storage request ({code}): {message}"
+                ))
+            })?;
+        let secret = link.key_agreement_secret().await?;
+        let credential = vta_sdk::client::open_external_credential(&armored, &secret)
+            .map_err(|e| unavailable(format!("the storage requests did not open: {e}")))?;
+        let ExternalCredentialPayload::PresignedRequests { requests, .. } = &credential else {
+            return Err(unavailable(format!(
+                "external account `{}` answered a presign batch with something else",
+                self.account
+            )));
+        };
+        if requests.len() != ops.len() {
+            return Err(unavailable(format!(
+                "the VTA presigned {} requests for {} operations",
+                requests.len(),
+                ops.len()
+            )));
+        }
+        let mut out = Vec::with_capacity(requests.len());
+        for (i, r) in requests.iter().enumerate() {
+            if r.index as usize != i {
+                return Err(unavailable(
+                    "the VTA's presigned requests are out of order".into(),
+                ));
+            }
+            if !self.addresses(&r.url) {
+                return Err(unavailable(format!(
+                    "external account `{}` presigns for a different bucket or endpoint than this \
+                     config's `{}`",
+                    self.account, self.bucket
+                )));
+            }
+            let expires_at = chrono::DateTime::parse_from_rfc3339(&r.expires_at)
+                .map(|t| t.with_timezone(&chrono::Utc))
+                .map_err(|_| unavailable("a presigned request has no readable expiry".into()))?;
+            out.push(PresignedRequest {
+                method: r.method.clone(),
+                url: r.url.clone(),
+                headers: r.headers.clone(),
+                expires_at,
+            });
+        }
+        Ok(out)
+    }
+
     async fn presign(
         &self,
         action: PresignAction,
@@ -462,6 +627,51 @@ mod tests {
             json!({}),
         );
         assert!(read_answer(&reply, &asked()).is_err());
+    }
+
+    /// A direct upload's batch is the specification's payload, each write carrying
+    /// its length and checksum; an answer presigning another batch is refused.
+    #[test]
+    fn a_batch_request_conforms_and_its_answer_must_echo_it() {
+        let ops = [
+            StorageOp::UploadPart {
+                part: 2,
+                len: 5_242_880,
+                sha256: [9; 32],
+            },
+            StorageOp::ListParts { marker: None },
+            StorageOp::CompleteMultipart { len: 10_485_760 },
+        ];
+        let v = batch_request(
+            "eu-r2",
+            "community",
+            "rooms/0123/",
+            "zBlob-u1",
+            Some("UP"),
+            &ops,
+        );
+        assert_eq!(
+            v["presign"]["requests"][0]["checksumSha256"],
+            checksum_b64(&[9; 32])
+        );
+        assert_eq!(v["ttlSeconds"], TTL_SECONDS);
+        serde_json::from_value::<issue_v2::Payload>(v.clone()).expect("conforms to issue 0.2");
+
+        let mut other = v["presign"].clone();
+        other["objectKey"] = json!("zOther");
+        let reply = doc(
+            &format!("{ISSUE_V2}#response"),
+            json!({
+                "sealedCredential": format!(
+                    "-----BEGIN VTA SEALED BUNDLE-----\n{}\n-----END VTA SEALED BUNDLE-----\n",
+                    "x".repeat(64)
+                ),
+                "expiresAt": "2030-01-01T00:00:00Z",
+                "presign": other,
+            }),
+        );
+        let err = read_batch_answer(&reply, &v).unwrap_err().to_string();
+        assert!(err.contains("different batch"), "{err}");
     }
 
     #[test]

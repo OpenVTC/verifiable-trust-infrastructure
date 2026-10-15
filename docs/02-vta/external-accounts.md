@@ -52,6 +52,20 @@ its DID document — with neither, the VTA refuses with `noKeyAgreement` before
 signing anything), inside a signed response. The consumer verifies that
 response's proof before opening the bundle: it is what anchors it.
 
+For an `s3-static-presign` account, `external/credentials/issue/0.2` takes a
+**presign batch** instead of a scope: up to 128 operations on one object (and at
+most one multipart upload of it) — `put`, `get`, `head`, `delete`,
+`create-multipart`, `upload-part`, `list-parts`, `complete-multipart`,
+`abort-multipart` — each presigned exactly as the specification's table says,
+with a write bound to its `Content-Length` and `x-amz-checksum-sha256`. The
+binding's ceiling is unchanged: multipart writes and `list-parts` need `put`,
+`head` needs `get`, `abort-multipart` needs `delete`. The batch counts once
+against the rate, and comes back sealed as one `PresignedRequestSet`. This VTA
+refuses a batch whose sealed answer would exceed the response's 256 KiB
+(`invalidBatch`): about 90 presigned requests fit, so a consumer asks in batches
+of 64. `pnm external issue <account> --context <id> --presign @batch.json` sends
+one from the CLI, printed still sealed. `0.1` is served beside it.
+
 A caller with no binding on the account — or naming an account that does not
 exist — gets `external:notFound`, the same answer either way. Only a bound
 consumer learns an account's state.

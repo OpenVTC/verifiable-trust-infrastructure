@@ -2282,6 +2282,10 @@ pub const TASK_EXTERNAL_ACCOUNTS_DELETE_0_1: &str =
 pub const TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1: &str =
     <trust_tasks_rs::specs::external::credentials::issue::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `external/credentials/issue/0.2` — a session or token under `scope`, or up to 128 presigned requests on one object under `presign` (each write bound to its length and SHA-256, multipart included), sealed to the caller.
+pub const TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2: &str =
+    <trust_tasks_rs::specs::external::credentials::issue::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 // ─── Hidden-vetting PCS engine (`vta/pcs/*`, trust-tasks-tf #756) ──────────
 // The VTA holds its principal's PCS keys and runs every member-side
 // hidden-vetting operation; the client carries messages and never holds a key.
@@ -2608,6 +2612,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_EXTERNAL_ACCOUNTS_RESTORE_0_1,
     TASK_EXTERNAL_ACCOUNTS_DELETE_0_1,
     TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1,
+    TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2,
     // Hidden-vetting PCS engine (`vta/pcs/*`)
     TASK_VTA_PCS_APPLICATIONS_CREATE_0_1,
     TASK_VTA_PCS_APPLICATIONS_SHOW_0_1,

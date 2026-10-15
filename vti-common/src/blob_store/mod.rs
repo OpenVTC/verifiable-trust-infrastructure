@@ -50,6 +50,12 @@ pub mod presigned;
 #[cfg(any(test, feature = "test-support"))]
 pub mod conformance;
 
+#[cfg(all(
+    any(test, feature = "test-support"),
+    any(test, feature = "blob-presigned")
+))]
+pub mod mock_s3;
+
 /// The largest blob any store accepts: 4096 chunks of at most 256 KiB, the
 /// chunked-transfer ceiling (`vta/_shared/0.1/backup-transfer`). A room's own
 /// limits may be lower, never higher.
@@ -74,6 +80,23 @@ impl BlobKey {
     pub fn for_room(room_id: &str, blob_ref: &str) -> Result<Self, AppError> {
         validate_blob_ref(blob_ref)?;
         Ok(Self(format!("{}{blob_ref}", room_prefix(room_id))))
+    }
+
+    /// The key a direct upload of `blob_ref` in `room_id` writes to: the room's
+    /// prefix and the BlobRef, made unique to the upload by `upload`, so two uploads
+    /// of one blob never write, verify or delete each other's object. Chosen by the
+    /// host, never by the uploader (`rooms/blobs/upload/begin/0.2` item 17).
+    pub fn for_upload(
+        room_id: &str,
+        blob_ref: &str,
+        upload: &uuid::Uuid,
+    ) -> Result<Self, AppError> {
+        validate_blob_ref(blob_ref)?;
+        Ok(Self(format!(
+            "{}{blob_ref}-{}",
+            room_prefix(room_id),
+            upload.simple()
+        )))
     }
 
     /// A fresh canary key under [`PROBE_PREFIX`], for checking a store works:
@@ -212,6 +235,60 @@ impl std::fmt::Debug for PresignedRequest {
     }
 }
 
+/// One storage request a direct transfer needs presigned
+/// (`external/credentials/issue/0.2`, `PresignRequest`): each write bound to its
+/// exact length and SHA-256, so storage itself refuses any other bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageOp {
+    Put {
+        len: u64,
+        sha256: [u8; 32],
+    },
+    Get,
+    Head,
+    Delete,
+    CreateMultipart,
+    UploadPart {
+        part: u32,
+        len: u64,
+        sha256: [u8; 32],
+    },
+    ListParts {
+        marker: Option<u32>,
+    },
+    CompleteMultipart {
+        len: u64,
+    },
+    AbortMultipart,
+}
+
+/// One part of a direct upload's plan: its 1-based number, exact length and
+/// SHA-256. A plan of one part is a single-object write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectPart {
+    pub number: u32,
+    pub len: u64,
+    pub sha256: [u8; 32],
+}
+
+/// The smallest part but the last that S3-class storage accepts in a multipart
+/// upload.
+pub const MIN_MULTIPART_PART_BYTES: u64 = 5 * 1024 * 1024;
+
+/// What checking a direct upload at storage found (`rooms/blobs/upload/commit/0.2`
+/// item 3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirectFinish {
+    /// Every part had its planned length and checksum, the object was assembled to
+    /// the planned size, and storage's checksum of it agrees: it is stored here.
+    Stored(BackendRef),
+    /// Parts are missing; the upload stays open to be finished.
+    Missing(u64),
+    /// Storage holds something other than the plan. What it held for the upload has
+    /// been deleted.
+    Mismatch(String),
+}
+
 /// A store of opaque blobs, one instance per storage configuration.
 ///
 /// # Contract
@@ -255,6 +332,74 @@ pub trait BlobStore: Send + Sync {
         let _ = at;
         Ok(None)
     }
+
+    // ─── direct uploads (`rooms/blobs/upload/*/0.2`, direct mode) ──────────
+    //
+    // Only a store that can presign writes bound to their length and checksum
+    // takes direct uploads; every other answers `false` and is never asked.
+
+    /// Whether this store can take a direct upload: issue writes bound to each
+    /// part's length and SHA-256, and verify the object before it is recorded.
+    fn direct_uploads(&self) -> bool {
+        false
+    }
+
+    /// Start a direct upload of `key`: for a multipart one, create it at storage
+    /// and return its upload id. A single-object write needs no start.
+    async fn direct_begin(
+        &self,
+        key: &BlobKey,
+        multipart: bool,
+    ) -> Result<Option<String>, AppError> {
+        let _ = (key, multipart);
+        Err(no_direct())
+    }
+
+    /// The writes for `parts` of the direct upload of `key`: one presigned `PUT`
+    /// each, in order, bound to the part's length and SHA-256.
+    async fn direct_targets(
+        &self,
+        key: &BlobKey,
+        upload_id: Option<&str>,
+        parts: &[DirectPart],
+    ) -> Result<Vec<PresignedRequest>, AppError> {
+        let _ = (key, upload_id, parts);
+        Err(no_direct())
+    }
+
+    /// The numbers of the planned parts storage holds with their planned length and
+    /// checksum, for a resumed upload's `missing`.
+    async fn direct_held(
+        &self,
+        key: &BlobKey,
+        upload_id: Option<&str>,
+        plan: &[DirectPart],
+    ) -> Result<Vec<u32>, AppError> {
+        let _ = (key, upload_id, plan);
+        Err(no_direct())
+    }
+
+    /// Check the direct upload of `key` at storage against `plan` and complete it:
+    /// [`DirectFinish`] says what was found. Nothing is recorded here.
+    async fn direct_finish(
+        &self,
+        key: &BlobKey,
+        upload_id: Option<&str>,
+        plan: &[DirectPart],
+    ) -> Result<DirectFinish, AppError> {
+        let _ = (key, upload_id, plan);
+        Err(no_direct())
+    }
+
+    /// Abort the direct upload of `key` and delete whatever storage holds for it.
+    async fn direct_abort(&self, key: &BlobKey, upload_id: Option<&str>) -> Result<(), AppError> {
+        let _ = (key, upload_id);
+        Err(no_direct())
+    }
+}
+
+fn no_direct() -> AppError {
+    AppError::Internal("this store takes no direct uploads".into())
 }
 
 /// Refuse a [`BackendRef`] written by a different kind of store. A blob index

@@ -295,12 +295,6 @@ delivered"*.
 
 Found in this run; each is being fixed.
 
-- **Files are still attributed to the client.** `pnm rooms put`, `get`, `list`,
-  `curate` and `keys commit --host` now act as the persona (`rooms/keys/act`,
-  `rooms/keys/seal` 0.2), and `keys backfill` / `read` / `browse` present as the
-  persona from any client allowed to act in its context. `pnm rooms file put/get`
-  still sign their transfer with the CLI's own key until they move to the
-  `rooms/blobs/*` 0.2 tasks.
 - **Making a member needs the console.** No CLI until `vtc/members/admit` is
   specified.
 - **`private` rooms are not served yet** — use `attributed`.

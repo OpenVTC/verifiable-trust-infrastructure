@@ -263,7 +263,6 @@ pub(crate) async fn run(
                         host_did: host_did.as_deref(),
                         room_id: &room_id,
                     },
-                    signer,
                     &path,
                     title,
                     description,
@@ -286,7 +285,6 @@ pub(crate) async fn run(
                         host_did: host_did.as_deref(),
                         room_id: &room_id,
                     },
-                    signer,
                     &key,
                     out.as_deref(),
                 )

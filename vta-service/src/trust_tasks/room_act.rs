@@ -906,6 +906,229 @@ mod tests {
             .expect("the body verifies against the persona's key");
     }
 
+    /// A file moved by the member's own client is the persona's too: the begin and the
+    /// direct commit are completed as the persona, the bytes go straight to storage over
+    /// the host's targets, and a proxied upload's chunks are signed by a single-use key —
+    /// and neither the client's DID nor the upload key is recorded anywhere.
+    #[tokio::test]
+    async fn a_file_moved_by_the_members_own_client_is_the_personas() {
+        use sha2::{Digest, Sha256};
+        use trust_tasks_rs::specs::rooms::blobs::upload as up;
+        use vti_common::blob_store::sha256_digest_multibase as mb;
+
+        let f = fixture(&["read", "write"]).await;
+        let client = alice_client();
+        let s3 = vti_common::blob_store::mock_s3::MockS3::start(true).await;
+        let store =
+            vti_common::blob_store::presigned::PresignedBlobs::new("s3", s3.presigner(), None)
+                .unwrap()
+                .with_plain_http();
+        let host_dir = tempfile::tempdir().unwrap();
+        let host = room_host::open_state_with_files(
+            host_dir.path(),
+            vti_common::auth::TrustTaskVmResolver::did_key_only(),
+            room_host::FilesConfig {
+                store: Some(std::sync::Arc::new(store)),
+                config_id: Some("s3".into()),
+                ..Default::default()
+            },
+        )
+        .expect("a host");
+        vti_rooms::storage::create_room(
+            host.rooms(),
+            &vti_rooms::Room {
+                room_id: f.room.did.clone(),
+                owner_did: f.alice.did.clone(),
+                visibility: vti_rooms::Visibility::Attributed,
+                retention_policy: vti_rooms::RetentionPolicy::Chained,
+                anchor_cadence: Default::default(),
+                epoch: 1,
+                next_version: 1,
+                retention_days: 90,
+                epoch_expires_at: None,
+                created_at: 0,
+                updated_at: 0,
+                mirror_of: None,
+            },
+        )
+        .await
+        .expect("seed the room");
+
+        let manifest = |bytes: &[u8]| {
+            let digests: Vec<String> = bytes
+                .chunks(16_384)
+                .map(|c| mb(&Sha256::digest(c).into()))
+                .collect();
+            json!({
+                "size": bytes.len(),
+                "chunks": { "chunkSize": 16_384, "chunkCount": digests.len(), "chunkDigests": digests },
+                "digest": mb(&Sha256::digest(bytes).into()),
+            })
+        };
+        // Act, then send the completed document to the host, checking what it carries.
+        let send = |doc: Value| {
+            let host = host.clone();
+            let client_did = client.did.clone();
+            async move {
+                let sent = serde_json::to_string(&doc).unwrap();
+                assert!(
+                    !sent.contains(&client_did),
+                    "the client's DID reached the host"
+                );
+                let answer = room_host::dispatch(&host, sent.as_bytes()).await;
+                assert_eq!(answer.status, 200, "{}", answer.document);
+                answer.document["payload"].clone()
+            }
+        };
+        let completed = |out: Value| {
+            assert!(
+                out["type"].as_str().unwrap().ends_with("#response"),
+                "{out}"
+            );
+            assert_eq!(out["payload"]["principal"], f.alice.did);
+            out["payload"]["document"].clone()
+        };
+
+        // Direct: two parts straight to storage, committed as the persona.
+        const PART: usize = vti_common::blob_store::MIN_MULTIPART_PART_BYTES as usize;
+        let bytes: Vec<u8> = (0..PART + 70_000).map(|i| (i % 253) as u8).collect();
+        let plan: Vec<String> = bytes
+            .chunks(PART)
+            .map(|c| mb(&Sha256::digest(c).into()))
+            .collect();
+        let key = vta_sdk::did_key::ed25519_multibase_pubkey(&[7; 32]);
+        let begin = completed(
+            act(
+                &f.state,
+                &client,
+                unsigned(
+                    <up::begin::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                    "did:key:zHost",
+                    json!({
+                        "roomId": f.room.did, "manifest": manifest(&bytes),
+                        "uploadKey": format!("did:key:{key}"),
+                        "directParts": { "partSize": PART, "partCount": 2, "partDigests": plan },
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(begin["issuer"], f.alice.did);
+        let begun = send(begin).await;
+        assert_eq!(begun["mode"], "direct", "{begun}");
+        for (t, part) in begun["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(bytes.chunks(PART))
+        {
+            let mut req = reqwest::Client::new().put(
+                t["url"]
+                    .as_str()
+                    .unwrap()
+                    .replacen("https://", "http://", 1),
+            );
+            for (k, v) in t["headers"].as_object().unwrap() {
+                req = req.header(k, v.as_str().unwrap());
+            }
+            assert!(
+                req.body(part.to_vec())
+                    .send()
+                    .await
+                    .unwrap()
+                    .status()
+                    .is_success()
+            );
+        }
+        let mut commit = unsigned(
+            <up::commit::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            "did:key:zHost",
+            json!({ "uploadId": begun["uploadId"] }),
+        );
+        // No room is named, so the member is.
+        commit["issuer"] = json!(f.alice.did);
+        let committed = send(completed(act(&f.state, &client, commit).await)).await;
+        let blob_ref = committed["blobRef"].as_str().unwrap().to_string();
+        let entry = host
+            .files()
+            .blob(&f.room.did, &blob_ref)
+            .await
+            .unwrap()
+            .expect("committed after verification at storage");
+        assert_eq!(entry.charged_to.as_deref(), Some(f.alice.did.as_str()));
+        assert!(!serde_json::to_string(&entry).unwrap().contains(&client.did));
+
+        // Proxied: the persona begins, a single-use key sends and commits.
+        let small: Vec<u8> = (0..20_000).map(|i| (i % 7) as u8).collect();
+        let (key_did, key_secret) = {
+            let seed = [9u8; 32];
+            let pk = ed25519_dalek::SigningKey::from_bytes(&seed)
+                .verifying_key()
+                .to_bytes();
+            (
+                format!(
+                    "did:key:{}",
+                    vta_sdk::did_key::ed25519_multibase_pubkey(&pk)
+                ),
+                multibase::encode(multibase::Base::Base58Btc, seed),
+            )
+        };
+        let begin = completed(
+            act(
+                &f.state,
+                &client,
+                unsigned(
+                    <up::begin::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                    "did:key:zHost",
+                    json!({ "roomId": f.room.did, "manifest": manifest(&small), "uploadKey": key_did }),
+                ),
+            )
+            .await,
+        );
+        let begun = send(begin).await;
+        assert_eq!(begun["mode"], "proxied", "{begun}");
+        let by_key = |type_uri: &'static str, payload: Value| {
+            let (key_did, key_secret) = (key_did.clone(), key_secret.clone());
+            async move {
+                let doc = vta_sdk::trust_task_sign::build_signed(
+                    type_uri,
+                    payload,
+                    &key_did,
+                    &key_secret,
+                    "did:key:zHost",
+                )
+                .await
+                .unwrap();
+                serde_json::from_str::<Value>(&doc).unwrap()
+            }
+        };
+        for (i, c) in small.chunks(16_384).enumerate() {
+            let doc = by_key(
+                <up::chunk::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                json!({ "uploadId": begun["uploadId"], "index": i,
+                        "data": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, c),
+                        "digestMultibase": mb(&Sha256::digest(c).into()) }),
+            )
+            .await;
+            send(doc).await;
+        }
+        let doc = by_key(
+            <up::commit::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            json!({ "uploadId": begun["uploadId"] }),
+        )
+        .await;
+        let committed = send(doc).await;
+        let entry = host
+            .files()
+            .blob(&f.room.did, committed["blobRef"].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.charged_to.as_deref(), Some(f.alice.did.as_str()));
+        let raw = serde_json::to_string(&entry).unwrap();
+        assert!(!raw.contains(&key_did) && !raw.contains(&client.did));
+    }
+
     /// Item 1: a type outside the table is refused before anything is resolved.
     #[tokio::test]
     async fn act_refuses_a_type_outside_the_table() {

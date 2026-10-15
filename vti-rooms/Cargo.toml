@@ -44,6 +44,9 @@ mls = [
 # it from the member's VTA — and so needs no OpenMLS. `mls` implies it, because a
 # member holding the group derives file keys itself.
 files = ["dep:chacha20poly1305", "dep:hkdf", "dep:getrandom"]
+# Hooks for a host's own tests (`BlobHost::lapse_direct_uploads`). Never in a
+# production build.
+test-support = ["host"]
 
 [dependencies]
 # The Trust Task framework. A normal dependency rather than a dev one, because

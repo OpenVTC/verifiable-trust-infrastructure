@@ -861,9 +861,16 @@ community's ACL or a session.
   2. Give the community's DID an ACL entry holding `external-auth-use` in the
      account's context, and bind it to the account with a ceiling of
      `<prefix>rooms/` and `<prefix>probe/` (`<prefix>` is the config's
-     `prefix`, if any), actions `put`, `get` and `delete`, `maxTtlSeconds` of at
-     least 300, and a rate per minute that covers an upload, a delete, and a
-     read per file being downloaded.
+     `prefix`, if any), actions `put`, `get` and `delete` — all three: `put`
+     writes (a direct upload's multipart steps included), `get` reads and checks
+     what was written (`head`), `delete` removes files and aborts an abandoned
+     upload — `maxTtlSeconds` of at least 300, and a rate per minute that covers
+     a few issuances per file. A direct upload is about four (create, one per 64
+     parts, the checks and completion together), whatever its size: one
+     `external/credentials/issue/0.2` batch counts once.
+     The access key at the store must also allow `ListMultipartUploadParts` and
+     `AbortMultipartUpload` on those prefixes; `pnm external setup` prints the
+     policy.
   3. Create the config, with `auth` naming the account by its context and
      identifier, and `settings` naming the same bucket (and `endpoint`
      for R2, B2 or MinIO) as the account. Creating it asks the VTA once: an
@@ -872,9 +879,15 @@ community's ACL or a session.
      presigned request for a different bucket or endpoint than the config's is
      refused before it is sent. Through a VTA account, `prefix` is lowercase
      segments only, as the VTA's scope accepts.
-  4. *Optional, for browsers:* set the bucket's CORS so a browser may read files
-     straight from it (direct transfer, below). `pnm external setup` prints the
-     rule as `bucket-cors.json`: `GET` only, the `Range` request header allowed,
+  4. *Recommended:* set the bucket's lifecycle rule
+     `AbortIncompleteMultipartUpload` (`bucket-lifecycle.json` from `pnm external
+     setup`, two days), so a direct upload nobody completes or aborts — the VTC
+     crashed, or lost its record — is reclaimed by the store. The VTC's own sweep
+     aborts every upload it knows of when it lapses.
+  5. *Optional, for browsers:* set the bucket's CORS so a browser may move files
+     straight to and from it (direct transfer, below). `pnm external setup` prints
+     the rule as `bucket-cors.json`: `GET` and `PUT`, the `Range`,
+     `Content-Length` and `x-amz-checksum-sha256` request headers allowed,
      `Content-Length`, `Content-Range` and `ETag` exposed, and `AllowedOrigins`
      for you to set to the origins your members' browsers load the portal from.
      Non-browser clients (`pnm`, `vtc-client`) need nothing.
@@ -897,13 +910,28 @@ community's ACL or a session.
     and their activity the tier exists to deny anyone. The default,
     `"not_private"`, allows it for `open` and `attributed` rooms; `"off"` keeps
     every transfer through the VTC.
-  - **Uploads are proxied in this build.** `rooms/blobs/upload/begin/0.2`
-    requires each direct part's URL to bind the part's exact length and SHA-256
-    as signed headers, and a VTA's `s3-static-presign` account presigns one
-    `put`, `get` or `delete` with no signed headers and no multipart operations
-    — all `external/credentials/issue/0.1` can ask for. So a `0.2` begin is
-    answered `mode: proxied` when it names an `uploadKey`, and
-    `noTransferMode` (naming `proxied`) when it offers only `directParts`.
+  - **Uploads** (`rooms/blobs/upload/begin/0.2` with `directParts`): on an
+    `s3` config through the community's VTA, the answer is `mode: direct`. The
+    VTC chooses the object (the room's prefix, the BlobRef and the upload's id),
+    starts a multipart upload for a plan of several parts, and answers with a
+    presigned `PUT` per part — at most 64 per answer, each bound by its signature
+    to the part's exact `Content-Length` and `x-amz-checksum-sha256`, expiring
+    within five minutes, never logged. The member writes each part to its target
+    and begins again, with the same manifest and plan, for the rest or for any
+    that lapsed. Every request is presigned by the VTA in
+    `external/credentials/issue/0.2` batches; the VTC holds no storage
+    credential. A plan of one part is one `PUT`; several parts must be at least
+    5 MiB but the last (storage's floor), or the begin is answered proxied (with
+    an upload key) or `noTransferMode`.
+  - **Commit verifies at storage before recording anything**
+    (`rooms/blobs/upload/commit/0.2` item 3): every part's length and checksum
+    from storage's own listing, the completion bound to the planned total size,
+    and the assembled object's length and composite checksum from storage. Any
+    difference — a store that accepted bytes other than the signed checksum
+    included — deletes what storage holds for the upload, releases its
+    reservation and answers `digestMismatch`. A direct commit and abort are the
+    member's own, signed like the begin; usage is charged at begin (the
+    reservation) and at the verified commit.
   - **The upload key.** A `0.2` proxied upload's chunk, commit and abort are
     signed by the `uploadKey` the begin named — a `did:key` generated for that
     one upload — so the member's VTA signs the begin and never sees a byte. The

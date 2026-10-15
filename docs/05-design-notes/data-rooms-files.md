@@ -290,21 +290,42 @@ moves a site in chunked Trust Tasks over `vti_common::backup_transfer`.
   is counted when the target is issued — one download, the blob's whole size as
   egress — because no byte passes through the host to be counted later (§6.3).
 
-  **Direct uploads are not chosen yet.** `begin/0.2` item 17 requires each part's
-  target to bind the part's exact length and SHA-256 into its signature (for S3,
-  `Content-Length` and `x-amz-checksum-sha256` as signed headers), and commit
-  (item 3) to verify the object at storage (each part's length and checksum, the
-  assembled size and the composite checksum) before recording anything. The only
-  presigning store here is a VTA's `s3-static-presign` account, and
-  `external/credentials/issue/0.1` can ask it for one `put`, `get` or `delete`
-  of one object: no signed headers, no `CreateMultipartUpload` / `UploadPart` /
-  `CompleteMultipartUpload` / `AbortMultipartUpload`, no `HEAD` or
-  `GetObjectAttributes`. Such storage "cannot issue the targets item 17
-  requires", so a begin offering only `directParts` is `noTransferMode` naming
-  `proxied`, and one also naming an `uploadKey` is proxied. Enabling it needs the
-  external-accounts specification to grow a scope that carries the part's
-  length and checksum, the multipart operations and an object read of
-  attributes; until then nothing here diverges from either specification.
+  **Direct uploads** need what `begin/0.2` item 17 and `commit/0.2` item 3
+  require: each part's target bound by its signature to the part's exact length
+  and SHA-256, and the object verified at storage before anything is recorded.
+  The community's VTA presigns them through `external/credentials/issue/0.2`
+  (trust-tasks-tf #775): batches of up to 128 operations on one object — `put`,
+  `create-multipart`, `upload-part` (with `Content-Length` and
+  `x-amz-checksum-sha256` signed), `list-parts`, `complete-multipart` (with
+  `x-amz-mp-object-size` signed), `head` (with `x-amz-checksum-mode`), `delete`
+  and `abort-multipart` — under the binding's unchanged `put` / `get` /
+  `delete` ceiling, one issuance against the rate per batch. The VTA only
+  presigns; the VTC performs and checks (`BlobStore::direct_*`,
+  `vti_common::blob_store::presigned`):
+
+  - **begin** chooses the object (`BlobKey::for_upload`: the room's prefix, the
+    BlobRef, the upload's id, so two uploads of one blob never touch each other's
+    object), creates the multipart upload for a plan of several parts, reserves,
+    and answers up to 64 part targets; a re-begin answers fresh targets for what
+    storage does not yet hold (`list-parts`).
+  - **commit** asks one batch for the listing, the completion, the head, and the
+    abort and delete a disagreement needs; it checks every part's length and
+    checksum as storage lists them, completes bound to the planned size, and
+    checks the object's length and composite checksum (`SHA-256` of the parts'
+    digests, `-N`). Any difference deletes what storage holds and answers
+    `digestMismatch`; a part not yet held answers `incomplete` and keeps the
+    upload open. A store that ignores a signed checksum is caught here, which is
+    why the check is not left to storage alone (issue/0.2 consumer item 3).
+  - **abort** and the **sweep** (a slot idle for 30 minutes, or 24 hours in all)
+    abort the multipart upload and delete the object; the bucket's
+    `AbortIncompleteMultipartUpload` rule is the backstop for an upload the VTC
+    forgot.
+
+  At most 64 operations go in one batch, not 128: the sealed-transfer encoding
+  carries byte fields as CBOR arrays, so one presigned request is about 2.9 KiB
+  sealed and armored, and the answer's `sealedCredential` is bounded at 256 KiB.
+  The VTA refuses a batch whose sealed answer would not fit (`invalidBatch`)
+  rather than answer out of schema.
 
 The manifest digests let a reader check what it fetched without trusting the
 bucket, in either mode. Walrus reads (§5.4) would answer direct the same way.

@@ -554,6 +554,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // carries a sealed credential, so it must never be cached — which
     // `RetrySafe` guarantees by keeping no record at all.
     (trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1, RetrySafe),
+    // The same for a presign batch: a second set of presigned requests is
+    // harmless and expires (`issue/0.2`, Retries).
+    (trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2, RetrySafe),
     // The room oracle mints a presentation and **stores nothing** — the spec's
     // own `sideEffects: none`. A second execution leaves this VTA's state
     // byte-identical, which is what `RetrySafe` means; it does not mean the

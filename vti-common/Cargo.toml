@@ -70,7 +70,7 @@ blob-gcs = ["dep:object_store", "object_store/gcp"]
 # Room file storage through presigned requests only (`blob_store::presigned`):
 # the store holds no credential, and asks a `Presigner` (a community's VTA
 # external account) for one request per operation.
-blob-presigned = ["reqwest/stream"]
+blob-presigned = ["reqwest/stream", "dep:quick-xml"]
 
 [dependencies]
 # vta-sdk for the canonical auth wire shapes
@@ -177,8 +177,15 @@ ipnetwork = { workspace = true, optional = true }
 # takes a custom credential provider, which is where VTA-issued, room-scoped
 # credentials plug in later (data-rooms-files.md §7.4).
 object_store = { version = "0.14", default-features = false, optional = true }
+# S3's XML answers to the multipart and listing requests a direct upload's
+# verification reads (`blob_store::presigned`). Already in the graph through
+# `object_store`.
+quick-xml = { version = "0.41", features = ["serialize"], optional = true }
 
 [dev-dependencies]
+# `blob_store::presigned` also compiles for this crate's own tests without the
+# `blob-presigned` feature, and reads S3's XML answers.
+quick-xml = { version = "0.41", features = ["serialize"] }
 # Parses the config fixtures in the VaultConfig tests.
 toml = { workspace = true }
 tempfile = "3"

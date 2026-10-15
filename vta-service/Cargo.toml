@@ -423,6 +423,9 @@ vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.1", features = ["h
 # Path-only (no version): `room-host` is `publish = false`, and a dev-dependency
 # without a version is dropped when this crate is packaged.
 room-host = { path = "../room-host" }
+# The S3-shaped mock store, for the act-driven direct-upload test.
+vti-common = { path = "../vti-common", features = ["blob-presigned", "test-support"] }
+reqwest = { workspace = true }
 tempfile = "3"
 # The exact parser the DID-hosting server uses to read `alsoKnownAs` off a
 # published log. Dev-only: it lets the agent-name contract test assert that

@@ -160,6 +160,9 @@ multibase = { workspace = true }
 base64 = { workspace = true }
 # A stand-in store that presigns reads, for the direct `rooms/blobs/get/0.2` tests.
 async-trait = "0.1"
+# The S3-shaped mock store and its presigner, for the direct-upload tests.
+vti-common = { path = "../vti-common", features = ["blob-presigned", "test-support"] }
+vti-rooms = { path = "../vti-rooms", features = ["test-support"] }
 getrandom = "0.4"
 reqwest = { workspace = true }
 uuid = { workspace = true }
