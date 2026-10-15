@@ -1036,7 +1036,10 @@ is asked to (`principalAmbiguous`).
 
 `act` is not a signing oracle: only the table's host-bound room requests are
 completed, never `rooms/epoch/prune`, ownership changes, `rooms/create` or a
-chunk upload, and a delegate (§7) is refused. `renew` and the file transfers
+chunk upload, and a delegate (§7) is refused. A `rooms/epoch/mint` for a room
+your VTA holds group state for is refused (`sealedRoomMint`): a sealed room's
+epoch advances only with a group commit, which only the owner's key holder
+makes (`rooms/owner/group/renew`). An `open` room still mints through `act`. `renew` and the file transfers
 still present for the CLI itself (`rooms/keys/present`) for now.
 
 **On a sealed room, every record is signed by your persona.** `pnm rooms put`

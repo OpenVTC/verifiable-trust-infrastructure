@@ -46,10 +46,10 @@ pub type ActRow = (&'static str, Option<&'static str>);
 /// The table, exactly as `rooms/keys/act/0.1` states it. Type URIs come from the
 /// generated payload types, never a literal.
 ///
-/// `rooms/epoch/mint/0.1` is here because the specification lists it. Whether a member's
-/// client should be able to mint an epoch on a sealed room this way — a mint that carries
-/// no group commit desynchronises the room's epoch from its MLS epoch — is an open
-/// question for the specification, not one this table answers locally.
+/// `rooms/epoch/mint/0.1` is in the table, and refused for any room this VTA holds group
+/// state for (`sealedRoomMint`, recipient item 9, checked in the handler): a mint carries
+/// no group commit, so on a sealed room it would leave the room's epoch ahead of its MLS
+/// epoch. A sealed room is renewed with `rooms/owner/group/renew`.
 pub const ACT_TABLE: &[ActRow] = &[
     (spec::records::put::v0_1::Payload::TYPE_URI, Some("write")),
     (spec::records::put::v0_2::Payload::TYPE_URI, Some("write")),

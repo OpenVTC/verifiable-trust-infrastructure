@@ -95,6 +95,14 @@ async fn require_not_delegate(
     }
 }
 
+/// Whether this VTA holds group state for `room_id` for any member it serves — including a
+/// row from before per-member keying.
+async fn holds_any_group(state: &AppState, room_id: &str) -> Result<bool, AppError> {
+    let groups = &state.room_groups_ks;
+    Ok(!room_groups::holders(groups, room_id).await?.is_empty()
+        || room_groups::legacy_group(groups, room_id).await?.is_some())
+}
+
 /// `rooms/keys/act/0.1`.
 pub(super) async fn handle_act(
     state: &AppState,
@@ -162,6 +170,31 @@ pub(super) async fn handle_act(
         .get("roomId")
         .and_then(Value::as_str)
         .map(str::to_string);
+
+    // Item 9: a mint for a room whose group this VTA holds — for ANY member it serves — is
+    // refused before anyone is resolved. On a sealed room the epoch advances only with a
+    // group commit, which the caller cannot make, and a host that minted anyway would leave
+    // every member's key holder an epoch behind. Open rooms (no group) still mint.
+    if room_act::bare_type(type_uri)
+        == <trust_tasks_rs::specs::rooms::epoch::mint::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI
+        && let Some(room_id) = &room_id
+    {
+        let held = match holds_any_group(state, room_id).await {
+            Ok(h) => h,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
+        if held {
+            return reject_declared(
+                &doc,
+                spec::error_codes::SEALED_ROOM_MINT,
+                format!(
+                    "room `{room_id}` is sealed here: its epoch advances only with a group \
+                     commit. Renew it from the owner's key holder with `pnm rooms owner \
+                     group-renew` (rooms/owner/group/renew)"
+                ),
+            );
+        }
+    }
 
     // Item 2: whom to act as.
     let completed = match &room_id {
@@ -891,6 +924,36 @@ mod tests {
         assert_eq!(
             out["payload"]["details"]["type"],
             vti_rooms::wire::ROOMS_EPOCH_PRUNE_TYPE
+        );
+    }
+
+    /// Item 9: a mint for a room whose group this VTA holds — for any member, even one the
+    /// caller cannot act as — is `sealedRoomMint`; an open room (no group here) still mints.
+    #[tokio::test]
+    async fn act_refuses_a_mint_for_a_sealed_room_and_completes_one_for_an_open_room() {
+        let f = fixture(&["read", "write", "admin"]).await;
+        let mint = |room: &str| {
+            unsigned(
+                vti_rooms::wire::ROOMS_EPOCH_MINT_TYPE,
+                "did:key:zHost",
+                json!({ "roomId": room, "epoch": 2 }),
+            )
+        };
+
+        // Open: no group state, so the table applies.
+        let out = act(&f.state, &alice_client(), mint(&f.room.did)).await;
+        assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
+
+        // Sealed: bob's persona holds the group — another member, another context.
+        found_group(&f, &f.bob.did).await;
+        let out = act(&f.state, &alice_client(), mint(&f.room.did)).await;
+        assert_eq!(code(&out), "rooms/keys/act:sealedRoomMint", "{out}");
+        assert!(
+            out["payload"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("group-renew"),
+            "{out}"
         );
     }
 
