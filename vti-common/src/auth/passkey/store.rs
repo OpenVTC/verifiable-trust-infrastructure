@@ -8,16 +8,11 @@
 //!
 //! webvh-common's storage relies on an atomic `take` (get + delete in
 //! one step) for race protection: a second concurrent finish-ceremony
-//! call must see `None` after the first has consumed the state.
-//! vti-common's [`KeyspaceHandle`] doesn't expose `take` directly, so
-//! we sequence `get` + `remove` in this module's helpers
-//! [`take`] / [`take_raw`]. This is **not** crash-atomic — if the
-//! process dies between read and delete, the next call returns the
-//! value again. For the WebAuthn ceremony state we manage here that's
-//! fine: stale registration state simply blocks another enrolment
-//! until it expires or is overwritten. Concurrent in-process calls
-//! are sequenced through Tokio's storage layer and never both see the
-//! same value as `Some(_)`.
+//! call must see `None` after the first has consumed the state. The
+//! helpers [`take`] / [`take_raw`] here are [`KeyspaceHandle::take_raw`],
+//! which reads and deletes under the keyspace's write lock (the vsock
+//! store holds the key's lock across both), so of two racing calls
+//! exactly one sees `Some(_)`.
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -149,28 +144,21 @@ fn passkey_did_key(did: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// `take` helpers — sequenced get + remove (see module docs)
+// `take` helpers — atomic get + remove (see module docs)
 // ---------------------------------------------------------------------------
 
 async fn take<V>(ks: &KeyspaceHandle, key: String) -> Result<Option<V>, AppError>
 where
     V: DeserializeOwned + Send + 'static,
 {
-    let key_bytes = key.into_bytes();
-    let value: Option<V> = ks.get(key_bytes.clone()).await?;
-    if value.is_some() {
-        ks.remove(key_bytes).await?;
+    match take_raw(ks, key).await? {
+        Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+        None => Ok(None),
     }
-    Ok(value)
 }
 
 async fn take_raw(ks: &KeyspaceHandle, key: String) -> Result<Option<Vec<u8>>, AppError> {
-    let key_bytes = key.into_bytes();
-    let value = ks.get_raw(key_bytes.clone()).await?;
-    if value.is_some() {
-        ks.remove(key_bytes).await?;
-    }
-    Ok(value)
+    ks.take_raw(key.into_bytes()).await
 }
 
 // ---------------------------------------------------------------------------
@@ -501,6 +489,30 @@ mod tests {
         // Second take returns None — protects ceremony-finish from races.
         let again = take_enrollment(&ks, &e.token).await.unwrap();
         assert!(again.is_none());
+    }
+
+    /// Two finish-ceremony calls racing on one enrolment: exactly one takes
+    /// it. A get-then-remove let several consume a single-use invite.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_takes_consume_an_enrollment_exactly_once() {
+        let (ks, _dir) = temp_ks();
+        for _ in 0..40 {
+            store_enrollment(&ks, &sample_enrollment()).await.unwrap();
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(16));
+            let mut tasks = Vec::new();
+            for _ in 0..16 {
+                let (ks, barrier) = (ks.clone(), barrier.clone());
+                tasks.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    take_enrollment(&ks, "abcd1234").await.unwrap().is_some()
+                }));
+            }
+            let mut taken = 0;
+            for t in tasks {
+                taken += t.await.unwrap() as usize;
+            }
+            assert_eq!(taken, 1, "an enrolment must be consumed exactly once");
+        }
     }
 
     #[tokio::test]
