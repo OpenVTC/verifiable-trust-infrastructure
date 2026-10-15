@@ -840,12 +840,10 @@ async fn enforce_single_membership(
 
     // Every presented pseudonym is claimed, not just the first. A member may
     // legitimately present two accepted IDVCs; if either names a person
-    // already here, they are that person.
-    for pseudonym in &pseudonyms {
-        crate::members::pseudonym::claim(&state.members_ks, community_did, pseudonym, member_did)
-            .await?;
-    }
-    Ok(())
+    // already here, they are that person — and then none is claimed.
+    let pseudonyms: Vec<&str> = pseudonyms.iter().map(String::as_str).collect();
+    crate::members::pseudonym::claim_all(&state.members_ks, community_did, &pseudonyms, member_did)
+        .await
 }
 
 /// Whether `vp_claims` carries this community's own `vetted/1` statement about

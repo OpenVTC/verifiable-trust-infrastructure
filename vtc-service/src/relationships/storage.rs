@@ -6,7 +6,7 @@ use uuid::Uuid;
 use vti_common::audit::AuditKey;
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated, paginate};
-use vti_common::store::KeyspaceHandle;
+use vti_common::store::{Batch, KeyspaceHandle};
 
 use crate::credentials::lifecycle::LifecycleEventKind;
 
@@ -106,7 +106,12 @@ pub async fn delete_relationship(
     // still walk best-effort to clean up any orphan index
     // rows.
     if let Some(rel) = get_relationship(primary, id).await? {
-        primary.remove(primary_key(id)).await?;
+        // A store batch rather than a plain remove, so it is ordered against a
+        // concurrent lifecycle update's conditional write — which then finds
+        // the row gone instead of writing it back after this delete.
+        let mut batch = Batch::new();
+        batch.remove(primary_key(id));
+        primary.apply_batch(batch).await?;
         index.remove(index_key(&rel.issuer_did, id)).await?;
         if rel.subject_did != rel.issuer_did {
             index.remove(index_key(&rel.subject_did, id)).await?;
@@ -117,14 +122,60 @@ pub async fn delete_relationship(
     Ok(())
 }
 
+/// How many times [`update_relationship_with`] re-reads a row another writer
+/// changed between its read and its conditional write. An attempt is lost only
+/// to another write to the same edge that was applied; the bound only stops a
+/// pathological stream of them from holding a caller forever.
+const UPDATE_ATTEMPTS: usize = 64;
+
+/// Read-modify-write one relationship row as a conditional store batch.
+///
+/// `modify` runs on the row as stored and returns whether it changed anything;
+/// the write applies only while the row is still the one read, and is retried
+/// against a fresh read otherwise — so two writers cannot each append to the
+/// copy they read and have the later silently drop the earlier's change, and a
+/// row deleted meanwhile is not written back. `Ok(None)` when there is no row.
+///
+/// Only the primary row is written: the secondary index carries just the edge
+/// id, which a lifecycle change never alters.
+async fn update_relationship_with<F>(
+    primary: &KeyspaceHandle,
+    id: Uuid,
+    mut modify: F,
+) -> Result<Option<Relationship>, AppError>
+where
+    F: FnMut(&mut Relationship) -> Result<bool, AppError>,
+{
+    let key = primary_key(id);
+    for _ in 0..UPDATE_ATTEMPTS {
+        let Some(raw) = primary.get_raw(key.clone()).await? else {
+            return Ok(None);
+        };
+        let mut rel = decode(&raw)?;
+        if !modify(&mut rel)? {
+            return Ok(Some(rel));
+        }
+        let mut batch = Batch::new();
+        batch
+            .require_unchanged(key.clone(), raw)
+            .insert(key.clone(), &rel)?;
+        if primary.apply_batch(batch).await?.is_applied() {
+            return Ok(Some(rel));
+        }
+    }
+    Err(AppError::Conflict(format!(
+        "VRC {id} kept changing while its lifecycle was being recorded"
+    )))
+}
+
 /// Append a lifecycle event to one edge and persist the row.
 ///
-/// Read-modify-write against the primary keyspace, then a full
-/// [`store_relationship`] so the secondary index stays paired with the row it
-/// describes. The index carries only the edge id, so it does not change here —
-/// rewriting it anyway keeps one write path for a relationship row rather than
-/// a second, subtly different one that a later index change would have to
-/// remember.
+/// A conditional read-modify-write of the primary row
+/// ([`update_relationship_with`]): the event is appended to the row as stored
+/// and written only while it is still that row, so of two events racing on
+/// one edge both are recorded in order or the later is refused by the
+/// transition rules against the earlier — never silently lost. The secondary
+/// index carries only the edge id, so it does not change here.
 ///
 /// The transition rules (what may follow what, and that nothing follows a
 /// terminal event) are enforced by
@@ -135,17 +186,17 @@ pub async fn delete_relationship(
 /// second read — and so it cannot report a state it did not persist.
 pub async fn record_lifecycle_event(
     primary: &KeyspaceHandle,
-    index: &KeyspaceHandle,
+    _index: &KeyspaceHandle,
     id: Uuid,
     kind: LifecycleEventKind,
     now: DateTime<Utc>,
 ) -> Result<Relationship, AppError> {
-    let mut rel = get_relationship(primary, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("VRC {id} not found")))?;
-    rel.lifecycle.record(kind, now)?;
-    store_relationship(primary, index, &rel).await?;
-    Ok(rel)
+    update_relationship_with(primary, id, |rel| {
+        rel.lifecycle.record(kind.clone(), now)?;
+        Ok(true)
+    })
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("VRC {id} not found")))
 }
 
 /// Record that `by_digest` displaces every edge this issuer already holds to
@@ -166,9 +217,13 @@ pub async fn record_lifecycle_event(
 /// state. Everything else is superseded, including rows that are merely
 /// expired or suspended — "this was replaced" is a more useful thing to have
 /// recorded than "this lapsed", and it is the true one.
+///
+/// Each edge is updated conditionally on its row as stored
+/// ([`update_relationship_with`]), and the terminal check is made against
+/// that row, so an edge withdrawn since the scan is skipped, not refused.
 pub async fn supersede_prior_edges(
     primary: &KeyspaceHandle,
-    index: &KeyspaceHandle,
+    _index: &KeyspaceHandle,
     issuer_did: &str,
     subject_did: &str,
     except_id: Uuid,
@@ -176,22 +231,27 @@ pub async fn supersede_prior_edges(
     now: DateTime<Utc>,
 ) -> Result<Vec<Uuid>, AppError> {
     let mut superseded = Vec::new();
-    for mut rel in list_all(primary).await? {
-        if rel.id == except_id
-            || rel.issuer_did != issuer_did
-            || rel.subject_did != subject_did
-            || rel.lifecycle.is_terminal()
-        {
+    for rel in list_all(primary).await? {
+        if rel.id == except_id || rel.issuer_did != issuer_did || rel.subject_did != subject_did {
             continue;
         }
-        rel.lifecycle.record(
-            LifecycleEventKind::Superseded {
-                by: by_digest.to_string(),
-            },
-            now,
-        )?;
-        store_relationship(primary, index, &rel).await?;
-        superseded.push(rel.id);
+        let mut recorded = false;
+        update_relationship_with(primary, rel.id, |rel| {
+            recorded = !rel.lifecycle.is_terminal();
+            if recorded {
+                rel.lifecycle.record(
+                    LifecycleEventKind::Superseded {
+                        by: by_digest.to_string(),
+                    },
+                    now,
+                )?;
+            }
+            Ok(recorded)
+        })
+        .await?;
+        if recorded {
+            superseded.push(rel.id);
+        }
     }
     Ok(superseded)
 }
@@ -386,6 +446,45 @@ mod tests {
             created_at: Utc::now(),
             persona: None,
             lifecycle: Default::default(),
+        }
+    }
+
+    /// Terminal events racing on one live edge: exactly one is recorded and
+    /// every other is refused by the transition rules. A plain read-modify-
+    /// write let each append to its own copy and all but the last vanish.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn racing_lifecycle_events_are_never_lost() {
+        let (primary, index, _audit, _dir) = temp_kss().await;
+        for _ in 0..40 {
+            let rel = fresh("did:key:zA", "did:key:zB");
+            store_relationship(&primary, &index, &rel).await.unwrap();
+            let now = Utc::now();
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+            let mut tasks = Vec::new();
+            for i in 0..8 {
+                let (primary, index, barrier) = (primary.clone(), index.clone(), barrier.clone());
+                tasks.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    record_lifecycle_event(
+                        &primary,
+                        &index,
+                        rel.id,
+                        LifecycleEventKind::Withdrawn {
+                            reason: Some(format!("w{i}")),
+                        },
+                        now,
+                    )
+                    .await
+                    .is_ok()
+                }));
+            }
+            let mut ok = 0;
+            for t in tasks {
+                ok += t.await.unwrap() as usize;
+            }
+            let stored = get_relationship(&primary, rel.id).await.unwrap().unwrap();
+            assert_eq!(ok, 1, "{ok} terminal events reported recorded");
+            assert_eq!(stored.lifecycle.events().len(), 1);
         }
     }
 

@@ -29,7 +29,7 @@ use crate::ceremony::{
     Presentation, Purpose, Verdict, VerifiedFacts, assemble_facts,
 };
 use crate::credentials::invitation_verify::{
-    ConsumedInvitation, mark_consumed, verify_presented_invitation,
+    ConsumedInvitation, mark_consumed, release_consumed, verify_presented_invitation,
 };
 use crate::credentials::vac::VAC_TYPE;
 use crate::credentials::vmc::VMC_TYPE;
@@ -630,9 +630,48 @@ async fn apply_verdict_to_request(
                 publish_consent: request.registry_consent,
                 label: None,
             };
-            if let EffectOutcome::Admitted(creds) =
-                execute::apply(state, plan, applicant_did).await?
+            // Claim a single-use invitation *before* admitting on it. The
+            // verdict was decided over an `invitation.consumed` read earlier,
+            // so two redeems of one invitation racing here both saw it
+            // unconsumed; burning it only after the admission let both be
+            // admitted. `mark_consumed` is an atomic insert-if-absent, so
+            // exactly one wins, and the loser is admitted on nothing. A failed
+            // admission gives the claim back, so the invitee can retry.
+            let claimed = match consume_invitation_id.as_deref() {
+                Some(vic_id) => {
+                    let record = ConsumedInvitation {
+                        applicant: applicant_did.to_string(),
+                        consumed_at: chrono::Utc::now(),
+                        via_join_request_id: request.id.to_string(),
+                    };
+                    if !mark_consumed(&state.consumed_invitations_ks, vic_id, &record).await? {
+                        warn!(
+                            vic_id = %vic_id,
+                            applicant = %applicant_did,
+                            "invitation consumed by a concurrent redeem; not admitting on it",
+                        );
+                        return Err(AppError::Conflict(
+                            "this invitation has already been redeemed".into(),
+                        ));
+                    }
+                    Some((vic_id, record))
+                }
+                None => None,
+            };
+            let applied = execute::apply(state, plan, applicant_did).await;
+            if !matches!(applied, Ok(EffectOutcome::Admitted(_)))
+                && let Some((vic_id, record)) = &claimed
             {
+                match release_consumed(&state.consumed_invitations_ks, vic_id, record).await {
+                    Ok(_) => {}
+                    Err(e) => warn!(
+                        vic_id = %vic_id,
+                        error = %e,
+                        "admission failed and the invitation claim could not be released",
+                    ),
+                }
+            }
+            if let EffectOutcome::Admitted(creds) = applied? {
                 // Deliver the issued VMC + role VAC to the applicant's wallet
                 // over DIDComm — mirrors the approve path. Best-effort: the
                 // credentials are already issued (and returned inline on the
@@ -670,30 +709,10 @@ async fn apply_verdict_to_request(
                 .await?;
                 admit = Some(creds);
 
-                // Burn a single-use invitation now that the admit succeeded. The
+                // The invitation was burned before the admission (above); the
                 // `consumed` ledger row blocks a later re-redeem (e.g. re-join
-                // after leaving); best-effort — the member is already admitted,
-                // so a ledger write failure is logged, not fatal.
-                if let Some(vic_id) = consume_invitation_id.as_deref() {
-                    let record = ConsumedInvitation {
-                        applicant: applicant_did.to_string(),
-                        consumed_at: chrono::Utc::now(),
-                        via_join_request_id: request.id.to_string(),
-                    };
-                    match mark_consumed(&state.consumed_invitations_ks, vic_id, &record).await {
-                        Ok(true) => {}
-                        Ok(false) => warn!(
-                            vic_id = %vic_id,
-                            applicant = %applicant_did,
-                            "invitation was already consumed at admit time (concurrent redeem)",
-                        ),
-                        Err(e) => warn!(
-                            vic_id = %vic_id,
-                            error = %e,
-                            "failed to record invitation consumption; member admitted",
-                        ),
-                    }
-
+                // after leaving).
+                if claimed.is_some() {
                     // Flag the freshly-admitted member as invitation-joined so
                     // the admin UI can badge them. Best-effort metadata patch —
                     // the member + credentials already exist.
