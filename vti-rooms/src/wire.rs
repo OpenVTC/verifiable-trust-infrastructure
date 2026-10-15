@@ -88,6 +88,21 @@ pub const ROOMS_BLOBS_GET_TYPE: &str =
 /// `rooms/blobs/chunk/0.1`.
 pub const ROOMS_BLOBS_CHUNK_TYPE: &str =
     <trust_tasks_rs::specs::rooms::blobs::chunk::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/blobs/upload/begin/0.2`: an upload that says how its bytes move.
+pub const ROOMS_BLOBS_UPLOAD_BEGIN_V2_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::blobs::upload::begin::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/blobs/upload/chunk/0.2`: signed by the upload's single-use key.
+pub const ROOMS_BLOBS_UPLOAD_CHUNK_V2_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::blobs::upload::chunk::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/blobs/upload/commit/0.2`.
+pub const ROOMS_BLOBS_UPLOAD_COMMIT_V2_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::blobs::upload::commit::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/blobs/upload/abort/0.2`.
+pub const ROOMS_BLOBS_UPLOAD_ABORT_V2_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::blobs::upload::abort::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/blobs/get/0.2`: a download, direct from storage or through the host.
+pub const ROOMS_BLOBS_GET_V2_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::blobs::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/info/0.1`.
 pub const ROOMS_INFO_TYPE: &str =
     <trust_tasks_rs::specs::rooms::info::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -120,6 +135,12 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_BLOBS_CHUNK_TYPE,
     ROOMS_INFO_TYPE,
     ROOMS_USAGE_TYPE,
+    // Direct-to-storage transfer (`rooms/blobs/*` 0.2), beside 0.1.
+    ROOMS_BLOBS_UPLOAD_BEGIN_V2_TYPE,
+    ROOMS_BLOBS_UPLOAD_CHUNK_V2_TYPE,
+    ROOMS_BLOBS_UPLOAD_COMMIT_V2_TYPE,
+    ROOMS_BLOBS_UPLOAD_ABORT_V2_TYPE,
+    ROOMS_BLOBS_GET_V2_TYPE,
 ];
 
 /// What a party presents to act on a room.

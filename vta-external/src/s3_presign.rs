@@ -286,12 +286,29 @@ impl ExternalAuthDriver for S3StaticPresign {
                 "Resource": resources,
             }],
         });
+        // For a browser reading a room's file straight from the bucket (a VTC's
+        // `rooms/blobs/get/0.2` direct mode): the presigned GET is cross-origin, and its
+        // `Range` header makes it a preflighted request. Reads only — no write is ever
+        // presigned for a browser, and the origins are the operator's to fill in.
+        let cors = json!({
+            "CORSRules": [{
+                "AllowedOrigins": ["https://<origin of the community's portal or console>"],
+                "AllowedMethods": ["GET"],
+                "AllowedHeaders": ["Range"],
+                "ExposeHeaders": ["Content-Length", "Content-Range", "ETag"],
+                "MaxAgeSeconds": 300,
+            }],
+        });
         json!({
             "model": "s3-static-presign",
             "artifacts": [{
                 "name": "permissions-policy.json",
                 "mediaType": "application/json",
                 "content": serde_json::to_string_pretty(&policy).unwrap_or_default(),
+            }, {
+                "name": "bucket-cors.json",
+                "mediaType": "application/json",
+                "content": serde_json::to_string_pretty(&cors).unwrap_or_default(),
             }],
             "steps": [
                 {"description": format!(
@@ -308,6 +325,13 @@ impl ExternalAuthDriver for S3StaticPresign {
                     object under the narrowest bound prefix (or the settings' probePrefix before \
                     anything is bound), so the key must allow exactly that. Only a probe that is \
                     ok and complete makes the account usable."},
+                {"description": "Optional, for browsers that read files straight from the bucket \
+                    (a VTC's direct downloads): set bucket-cors.json as the bucket's CORS \
+                    configuration, with AllowedOrigins replaced by the origins your members' \
+                    browsers load the portal from (`aws s3api put-bucket-cors --bucket <bucket> \
+                    --cors-configuration file://bucket-cors.json`; on R2, the bucket's CORS \
+                    policy). Without it a browser's direct read fails and it must ask for a \
+                    proxied one; non-browser clients need nothing."},
             ],
         })
     }

@@ -179,6 +179,17 @@ impl Activity {
             ..Self::default()
         }
     }
+    /// A download served straight from storage: begun, and `bytes` counted as
+    /// served when the target is issued, since no byte passes through the host to
+    /// be counted later. A reader that fetches only some ranges, or fetches twice
+    /// within the target's few minutes, is counted once at the blob's size.
+    pub(super) fn direct_download(bytes: u64) -> Self {
+        Self {
+            downloads: 1,
+            egress_bytes: bytes,
+            ..Self::default()
+        }
+    }
     fn add(&mut self, other: Activity) {
         self.uploads += other.uploads;
         self.downloads += other.downloads;

@@ -313,3 +313,122 @@ async fn an_upload_of_more_large_chunks_than_the_large_document_budget_lands() {
         .await
         .expect("every chunk arrived");
 }
+
+/// A blob of `chunks` chunks of 64 KiB, each past the default document size once encoded.
+fn big_blob(chunks: usize, seed: u8) -> (Vec<u8>, Vec<String>, Manifest) {
+    const BIG: usize = 65_536;
+    let bytes: Vec<u8> = (0..BIG * chunks)
+        .map(|i| ((i % 241) as u8).wrapping_add(seed))
+        .collect();
+    let digests: Vec<String> = bytes
+        .chunks(BIG)
+        .map(|c| sha256_digest_multibase(&Sha256::digest(c).into()))
+        .collect();
+    let manifest = Manifest::parse(&json!({
+        "size": bytes.len(),
+        "chunks": { "chunkSize": BIG, "chunkCount": chunks, "chunkDigests": digests },
+        "digest": sha256_digest_multibase(&Sha256::digest(&bytes).into()),
+    }))
+    .unwrap();
+    (bytes, digests, manifest)
+}
+
+const UPLOAD_CHUNK_V2: &str = "https://trusttasks.org/spec/rooms/blobs/upload/chunk/0.2";
+
+/// A `rooms/blobs/upload/chunk/0.2` document, signed by the upload's key.
+async fn key_chunk(key: &Party, upload_id: &str, i: usize, data: &[u8], digest: &str) -> Value {
+    let doc = signed(
+        key,
+        UPLOAD_CHUNK_V2,
+        json!({
+            "uploadId": upload_id,
+            "index": i,
+            "data": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, data),
+            "digestMultibase": digest,
+        }),
+    )
+    .await;
+    assert!(serde_json::to_vec(&doc).unwrap().len() > 64 * 1024);
+    doc
+}
+
+/// `0.2` upload chunks are signed by the upload's single-use key, which holds no ACL
+/// entry and no budget of its own. They are admitted at their size on the strength of
+/// the open upload that names the key, and charged to the **owner's** transfer budget in
+/// the room — so minting a key per file buys a member no second budget.
+#[tokio::test]
+async fn upload_key_chunks_land_and_are_charged_to_the_owner() {
+    let vtc = TestVtc::builder()
+        .with_room_rate_limits(RoomRateLimitsConfig {
+            transfer_burst: Some(3),
+            transfer_interval_ms: Some(3_600_000),
+            ..Default::default()
+        })
+        .build()
+        .await;
+    let f = hosted(&vtc).await;
+    let owner = f.owner.did.as_str();
+    let files = &vtc.state.room_files;
+
+    let (bytes, digests, manifest) = big_blob(4, 1);
+    let key = Party::new();
+    let begun = files
+        .begin_v2(
+            &f.room,
+            owner,
+            Some(owner),
+            manifest,
+            vti_rooms::blobs::UploadOffer {
+                upload_key_did: Some(key.did.clone()),
+                direct_parts: None,
+            },
+        )
+        .await
+        .unwrap();
+    let id = begun.upload_id.to_string();
+    for (i, c) in bytes.chunks(65_536).take(3).enumerate() {
+        let doc = key_chunk(&key, &id, i, c, &digests[i]).await;
+        let r = post_from(&vtc, NAT, &doc).await;
+        assert_eq!(r.status, StatusCode::OK, "chunk {i}: {}", r.body);
+    }
+    let doc = key_chunk(&key, &id, 3, &bytes[3 * 65_536..], &digests[3]).await;
+    let refused = post_from(&vtc, NAT, &doc).await;
+    assert_eq!(
+        refused.limiter.as_deref(),
+        Some("room-transfer"),
+        "{}",
+        refused.body
+    );
+
+    // A second file, under a fresh key, spends the same member's budget.
+    let (bytes2, digests2, manifest2) = big_blob(1, 2);
+    let key2 = Party::new();
+    let begun2 = files
+        .begin_v2(
+            &f.room,
+            owner,
+            Some(owner),
+            manifest2,
+            vti_rooms::blobs::UploadOffer {
+                upload_key_did: Some(key2.did.clone()),
+                direct_parts: None,
+            },
+        )
+        .await
+        .unwrap();
+    let doc = key_chunk(
+        &key2,
+        &begun2.upload_id.to_string(),
+        0,
+        &bytes2,
+        &digests2[0],
+    )
+    .await;
+    let refused = post_from(&vtc, NAT, &doc).await;
+    assert_eq!(
+        refused.limiter.as_deref(),
+        Some("room-transfer"),
+        "a fresh upload key bought a fresh budget: {}",
+        refused.body
+    );
+}

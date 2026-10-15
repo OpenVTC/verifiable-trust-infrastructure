@@ -186,6 +186,32 @@ pub struct Health {
     pub detail: Option<String>,
 }
 
+/// One presigned request: one method on one object, until it expires. What a
+/// [`presigned`] store's presigner hands over, and what [`BlobStore::read_target`]
+/// issues for a reader to fetch a blob straight from storage.
+///
+/// A bearer credential for its lifetime: its URL carries its signature, so it is
+/// never logged (its `Debug` redacts the URL).
+#[derive(Clone)]
+pub struct PresignedRequest {
+    pub method: String,
+    pub url: String,
+    /// Headers the request must carry for its signature to verify.
+    pub headers: std::collections::BTreeMap<String, String>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl std::fmt::Debug for PresignedRequest {
+    // The URL carries its signature: never in a log line.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PresignedRequest")
+            .field("method", &self.method)
+            .field("url", &"<redacted>")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
 /// A store of opaque blobs, one instance per storage configuration.
 ///
 /// # Contract
@@ -217,6 +243,18 @@ pub trait BlobStore: Send + Sync {
 
     /// Whether the store is reachable and writable.
     async fn health(&self) -> Health;
+
+    /// A time-limited `GET` of the whole blob at `at`, for a reader to fetch it
+    /// straight from storage (`rooms/blobs/get/0.2`, direct mode), ranged
+    /// requests included. `None` when this store cannot issue one, which is the
+    /// default: only a store reached through presigned requests can.
+    ///
+    /// The request is a bearer credential: the caller hands it to the one reader
+    /// it authorized and never logs it.
+    async fn read_target(&self, at: &BackendRef) -> Result<Option<PresignedRequest>, AppError> {
+        let _ = at;
+        Ok(None)
+    }
 }
 
 /// Refuse a [`BackendRef`] written by a different kind of store. A blob index

@@ -501,6 +501,11 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         files::DOWNLOAD_CHUNK_TYPE => files::download_chunk(state, &doc, payload).await,
         files::INFO_TYPE => files::info(state, &doc, payload).await,
         files::USAGE_TYPE => files::usage(state, &doc, payload).await,
+        files::UPLOAD_BEGIN_V2_TYPE => files::begin_v2(state, &doc, payload).await,
+        files::UPLOAD_CHUNK_V2_TYPE => files::upload_chunk_v2(state, &doc, payload).await,
+        files::UPLOAD_COMMIT_V2_TYPE => files::commit_v2(state, &doc, payload).await,
+        files::UPLOAD_ABORT_V2_TYPE => files::abort_v2(state, &doc, payload).await,
+        files::BLOB_GET_V2_TYPE => files::get_blob_v2(state, &doc, payload).await,
         other => reject(
             &doc,
             // The framework's own code for this: a host that does not implement a task
@@ -527,6 +532,7 @@ fn is_consequential(type_uri: &str) -> bool {
             | ROOMS_EPOCH_CHAIN_TYPE
             | ROOMS_EPOCH_COMMITS_TYPE
             | files::BLOB_GET_TYPE
+            | files::BLOB_GET_V2_TYPE
             | files::DOWNLOAD_CHUNK_TYPE
             | files::INFO_TYPE
             | files::USAGE_TYPE

@@ -17,10 +17,15 @@ use serde_json::{Value, json};
 use trust_tasks_rs::DeclaredErrorCode;
 use trust_tasks_rs::specs::rooms::blobs::chunk::v0_1 as download_chunk_spec;
 use trust_tasks_rs::specs::rooms::blobs::get::v0_1 as blob_get;
+use trust_tasks_rs::specs::rooms::blobs::get::v0_2 as blob_get_v2;
 use trust_tasks_rs::specs::rooms::blobs::upload::abort::v0_1 as upload_abort;
+use trust_tasks_rs::specs::rooms::blobs::upload::abort::v0_2 as upload_abort_v2;
 use trust_tasks_rs::specs::rooms::blobs::upload::begin::v0_1 as upload_begin;
+use trust_tasks_rs::specs::rooms::blobs::upload::begin::v0_2 as upload_begin_v2;
 use trust_tasks_rs::specs::rooms::blobs::upload::chunk::v0_1 as upload_chunk_spec;
+use trust_tasks_rs::specs::rooms::blobs::upload::chunk::v0_2 as upload_chunk_v2;
 use trust_tasks_rs::specs::rooms::blobs::upload::commit::v0_1 as upload_commit;
+use trust_tasks_rs::specs::rooms::blobs::upload::commit::v0_2 as upload_commit_v2;
 use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
 use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2;
 use trust_tasks_rs::specs::rooms::records::list::v0_2 as list_v2;
@@ -29,7 +34,10 @@ use trust_tasks_rs::specs::rooms::usage::v0_1 as rooms_usage;
 use vti_common::error::AppError;
 
 use crate::authz::{Action, AuthorizedAction};
-use crate::blobs::{BlobError, BlobHost, Manifest, ReadSnapshot};
+use crate::blobs::{
+    BlobError, BlobHost, DownloadV2, Manifest, PartPlan, ReadSnapshot, TransferMode, UploadCaller,
+    UploadOffer,
+};
 use crate::{Room, Visibility};
 
 /// The URIs these tasks are dispatched under, from [`crate::wire`].
@@ -41,6 +49,13 @@ pub use crate::wire::{
     ROOMS_BLOBS_UPLOAD_COMMIT_TYPE as UPLOAD_COMMIT_TYPE, ROOMS_INFO_TYPE as INFO_TYPE,
     ROOMS_RECORDS_GET_V2_TYPE as GET_V2_TYPE, ROOMS_RECORDS_LIST_V2_TYPE as LIST_V2_TYPE,
     ROOMS_RECORDS_PUT_V2_TYPE as PUT_V2_TYPE, ROOMS_USAGE_TYPE as USAGE_TYPE,
+};
+pub use crate::wire::{
+    ROOMS_BLOBS_GET_V2_TYPE as BLOB_GET_V2_TYPE,
+    ROOMS_BLOBS_UPLOAD_ABORT_V2_TYPE as UPLOAD_ABORT_V2_TYPE,
+    ROOMS_BLOBS_UPLOAD_BEGIN_V2_TYPE as UPLOAD_BEGIN_V2_TYPE,
+    ROOMS_BLOBS_UPLOAD_CHUNK_V2_TYPE as UPLOAD_CHUNK_V2_TYPE,
+    ROOMS_BLOBS_UPLOAD_COMMIT_V2_TYPE as UPLOAD_COMMIT_V2_TYPE,
 };
 
 /// A `rooms/usage` page when the caller names no `limit`, and the most one holds.
@@ -284,6 +299,217 @@ pub async fn download_chunk(files: &BlobHost, presenter: &str, payload: &Value) 
     }
 }
 
+// ─── 0.2: direct-to-storage transfer, and the single-use upload key ─────────
+//
+// The member begins and (in direct mode) commits and aborts; a proxied transfer's
+// chunk, commit and abort documents are signed by the `uploadKey` the begin named,
+// so the member's key holder never signs over a file's bytes. The host records,
+// charges and reports the member — the begin's authenticated presenter — and
+// never the upload key (`rooms/blobs/upload/begin/0.2` items 14–15).
+
+/// `rooms/blobs/upload/begin/0.2`, once the chain has been verified for `write`.
+pub async fn begin_v2(
+    files: &BlobHost,
+    room: &Room,
+    presenter: &str,
+    authorized: &AuthorizedAction,
+    payload: &Value,
+) -> TaskResult {
+    use upload_begin_v2::error_codes as codes;
+    let req: upload_begin_v2::Payload = parse(payload)?;
+    let manifest = Manifest::parse(&payload["manifest"])
+        .map_err(|e| declared(codes::INVALID_MANIFEST, e.to_string(), None))?;
+    let offer = UploadOffer {
+        upload_key_did: req.upload_key.as_ref().map(|k| k.to_string()),
+        direct_parts: req.direct_parts.as_ref().map(|p| PartPlan {
+            part_size: p.part_size.get(),
+            part_count: p.part_count.get(),
+            part_digests: p.part_digests.iter().map(|d| d.to_string()).collect(),
+        }),
+    };
+    match files
+        .begin_v2(room, presenter, authorized.member(), manifest, offer)
+        .await
+    {
+        Ok(b) => {
+            let mut body = json!({
+                "uploadId": b.upload_id.to_string(),
+                "mode": b.mode.as_str(),
+                "missing": b.missing,
+                "expiresAt": b.expires_at,
+            });
+            if b.already_committed {
+                body["alreadyCommitted"] = json!(true);
+            }
+            checked::<upload_begin_v2::Response>(body)
+        }
+        Err(e @ BlobError::TooManyUploads { max_open }) => Err(declared(
+            codes::TOO_MANY_UPLOADS,
+            e.to_string(),
+            Some(json!({ "maxOpen": max_open })),
+        )),
+        Err(BlobError::FilesDisabled) => Err(declared(
+            codes::FILES_DISABLED,
+            BlobError::FilesDisabled.to_string(),
+            None,
+        )),
+        Err(BlobError::InvalidManifest(why)) => Err(declared(codes::INVALID_MANIFEST, why, None)),
+        Err(BlobError::LimitExceeded(l)) => Err(declared(
+            codes::LIMIT_EXCEEDED,
+            BlobError::LimitExceeded(l.clone()).to_string(),
+            Some(l.details()),
+        )),
+        Err(e @ BlobError::NoTransferMode { .. }) => {
+            let BlobError::NoTransferMode { modes } = &e else {
+                unreachable!()
+            };
+            let modes: Vec<&str> = modes.iter().map(|m| m.as_str()).collect();
+            Err(declared(
+                codes::NO_TRANSFER_MODE,
+                e.to_string(),
+                Some(json!({ "modes": modes })),
+            ))
+        }
+        Err(BlobError::InvalidParts(why)) => Err(declared(codes::INVALID_PARTS, why, None)),
+        Err(e @ BlobError::UploadKeyInUse) => {
+            Err(declared(codes::UPLOAD_KEY_IN_USE, e.to_string(), None))
+        }
+        Err(e) => Err(general(e)),
+    }
+}
+
+/// `rooms/blobs/upload/chunk/0.2`, from the authenticated `signer`: the upload's key,
+/// or `notFound` to anybody else — its owner included.
+pub async fn upload_chunk_v2(files: &BlobHost, signer: &str, payload: &Value) -> TaskResult {
+    use upload_chunk_v2::error_codes as codes;
+    let req: upload_chunk_v2::Payload = parse(payload)?;
+    let data = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(req.data.as_str())
+        .map_err(|e| Refusal::Malformed(format!("`data` is not base64url: {e}")))?;
+    let index = (*req.index).max(0) as u64;
+    match files
+        .put_chunk_as(
+            UploadCaller::V2(signer),
+            req.upload_id.as_str(),
+            index,
+            req.digest_multibase.as_str(),
+            &data,
+        )
+        .await
+    {
+        Ok(o) => checked::<upload_chunk_v2::Response>(json!({
+            "uploadId": req.upload_id.as_str(),
+            "index": index,
+            "stored": o.stored,
+            "remainingCount": o.remaining_count,
+            "expiresAt": o.expires_at,
+        })),
+        Err(BlobError::NotFound) => Err(declared(
+            codes::NOT_FOUND,
+            "no open upload with that id",
+            None,
+        )),
+        Err(e @ BlobError::ChunkOutOfRange { .. }) => {
+            Err(declared(codes::CHUNK_OUT_OF_RANGE, e.to_string(), None))
+        }
+        Err(BlobError::ChunkMismatch(why)) => Err(declared(codes::CHUNK_MISMATCH, why, None)),
+        Err(e) => Err(general(e)),
+    }
+}
+
+/// `rooms/blobs/upload/commit/0.2`, from the authenticated `signer`.
+pub async fn commit_v2(files: &BlobHost, signer: &str, payload: &Value) -> TaskResult {
+    use upload_commit_v2::error_codes as codes;
+    let req: upload_commit_v2::Payload = parse(payload)?;
+    match files
+        .commit_as(UploadCaller::V2(signer), req.upload_id.as_str())
+        .await
+    {
+        Ok(c) => {
+            checked::<upload_commit_v2::Response>(json!({ "blobRef": c.blob_ref, "size": c.size }))
+        }
+        Err(BlobError::NotFound) => Err(declared(codes::NOT_FOUND, "no upload with that id", None)),
+        Err(BlobError::Incomplete { remaining_count }) => Err(declared(
+            codes::INCOMPLETE,
+            format!("{remaining_count} chunk(s) have not been sent"),
+            Some(json!({ "remainingCount": remaining_count })),
+        )),
+        Err(e @ BlobError::DigestMismatch) => {
+            Err(declared(codes::DIGEST_MISMATCH, e.to_string(), None))
+        }
+        Err(e) => Err(general(e)),
+    }
+}
+
+/// `rooms/blobs/upload/abort/0.2`, from the authenticated `signer`.
+pub async fn abort_v2(files: &BlobHost, signer: &str, payload: &Value) -> TaskResult {
+    use upload_abort_v2::error_codes as codes;
+    let req: upload_abort_v2::Payload = parse(payload)?;
+    match files
+        .abort_as(UploadCaller::V2(signer), req.upload_id.as_str())
+        .await
+    {
+        Ok(aborted) => checked::<upload_abort_v2::Response>(
+            json!({ "uploadId": req.upload_id.as_str(), "aborted": aborted }),
+        ),
+        Err(BlobError::NotFound) => Err(declared(codes::NOT_FOUND, "no upload with that id", None)),
+        Err(e) => Err(general(e)),
+    }
+}
+
+/// `rooms/blobs/get/0.2`, once the chain has been verified for `read`. Direct when the
+/// reader asks for it and the host can and may answer so; proxied otherwise.
+pub async fn get_v2(
+    files: &BlobHost,
+    room: &Room,
+    presenter: &str,
+    authorized: &AuthorizedAction,
+    payload: &Value,
+) -> TaskResult {
+    use blob_get_v2::error_codes as codes;
+    let req: blob_get_v2::Payload = parse(payload)?;
+    match files
+        .open_download_v2(
+            room,
+            presenter,
+            authorized.member(),
+            req.blob_ref.as_str(),
+            req.direct == Some(true),
+        )
+        .await
+    {
+        Ok(DownloadV2::Proxied(d)) => checked::<blob_get_v2::Response>(json!({
+            "mode": TransferMode::Proxied.as_str(),
+            "manifest": d.manifest,
+            "downloadId": d.download_id.to_string(),
+            "expiresAt": d.expires_at,
+        })),
+        Ok(DownloadV2::Direct { manifest, target }) => {
+            let mut t = json!({
+                "index": 0,
+                "method": "GET",
+                "url": target.url,
+                "expiresAt": target.expires_at,
+            });
+            if !target.headers.is_empty() {
+                t["headers"] = json!(target.headers);
+            }
+            checked::<blob_get_v2::Response>(json!({
+                "mode": TransferMode::Direct.as_str(),
+                "manifest": manifest,
+                "target": t,
+                "expiresAt": target.expires_at,
+            }))
+        }
+        Err(BlobError::NotFound) => Err(declared(
+            codes::NOT_FOUND,
+            "no blob with that BlobRef is committed in this room",
+            None,
+        )),
+        Err(e) => Err(general(e)),
+    }
+}
+
 /// `rooms/info/0.1`, once the chain has been verified for `read`.
 pub async fn info(
     files: &BlobHost,
@@ -504,6 +730,11 @@ pub fn is_file_task(type_uri: &str) -> bool {
         DOWNLOAD_CHUNK_TYPE,
         INFO_TYPE,
         USAGE_TYPE,
+        UPLOAD_BEGIN_V2_TYPE,
+        UPLOAD_CHUNK_V2_TYPE,
+        UPLOAD_COMMIT_V2_TYPE,
+        UPLOAD_ABORT_V2_TYPE,
+        BLOB_GET_V2_TYPE,
     ]
     .contains(&type_uri)
 }

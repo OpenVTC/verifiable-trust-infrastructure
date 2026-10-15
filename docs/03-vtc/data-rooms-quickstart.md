@@ -142,6 +142,11 @@ local_storage_bases = ["/tmp/vdr/vtc/room-storage"]
 blob_dir            = "/tmp/vdr/vtc/room-storage/local"
 ```
 
+A `local` config keeps every transfer proxied: file bytes move through the VTC
+as chunk documents, at `rooms/blobs/*` 0.1 or 0.2 alike. Only an `s3` config
+through the community's VTA can answer a `0.2` read directly from the bucket
+(`docs/02-vta/data-rooms.md` §8.2).
+
 ```bash
 vtc --config /tmp/vdr/vtc/config.toml &
 curl -s http://localhost:8200/health

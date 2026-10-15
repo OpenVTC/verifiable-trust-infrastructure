@@ -265,14 +265,49 @@ moves a site in chunked Trust Tasks over `vti_common::backup_transfer`.
 - **The ceiling** is `backup_transfer`'s: chunks of 16–256 KiB, at most 4096 of
   them, so 1 GiB per blob. A room's limit (§6) may be lower, never higher.
 
-### 5.2 Optional direct-to-store transfer
+### 5.2 Direct-to-store transfer (`rooms/blobs/*` 0.2)
 
-For S3, a later phase can let `begin` and `get` return **presigned URLs** in
-place of chunk tasks, so bulk bytes skip the VTC. The authorization is
-unchanged: the signed task is what mints the URL. The manifest digests let the
-client verify what it fetched without trusting the bucket. Same for Walrus reads
-(§5.4). Not in the first cut. It is an optimisation, and it puts a second origin
-in the browser's path.
+`rooms/blobs/upload/{begin,chunk,commit,abort}/0.2` and `rooms/blobs/get/0.2`
+(trust-tasks-tf #771) are served beside 0.1. Two things change:
+
+- **The upload key.** A `0.2` begin is the member's act, signed through their
+  VTA. A proxied transfer's chunk, commit and abort documents are signed by the
+  `uploadKey` the begin named: a `did:key` minted for that one upload, so the
+  member's key holder never signs over a file's bytes. The host binds the key to
+  the upload (`UploadRecord.uploadKey`, indexed by `upload-signer:` in
+  `room_blobs`), refuses it on any other open upload (`uploadKeyInUse`), and
+  records, charges and rate-limits the **member**: the blob's `chargedTo` is the
+  member, the key appears in no blob entry, usage row or audit line, and its
+  chunks are charged to the member's transfer budget in the room. A resumed
+  begin rebinds the upload to its new key and the old one is refused; a `0.1`
+  document never reaches a `0.2` upload, nor the reverse.
+- **Direct mode.** `get` with `direct: true` answers a presigned `GET` of the one
+  object (`BlobStore::read_target`), expiring within five minutes, where the
+  room's tier and `[rooms.files] direct_transfer` allow (default: not on
+  `private` rooms, where the storage provider would learn which address reads
+  which object) and the store can issue one. A target that is not an HTTPS `GET`
+  within five minutes, or a failure to issue one, answers proxied. The download
+  is counted when the target is issued — one download, the blob's whole size as
+  egress — because no byte passes through the host to be counted later (§6.3).
+
+  **Direct uploads are not chosen yet.** `begin/0.2` item 17 requires each part's
+  target to bind the part's exact length and SHA-256 into its signature (for S3,
+  `Content-Length` and `x-amz-checksum-sha256` as signed headers), and commit
+  (item 3) to verify the object at storage (each part's length and checksum, the
+  assembled size and the composite checksum) before recording anything. The only
+  presigning store here is a VTA's `s3-static-presign` account, and
+  `external/credentials/issue/0.1` can ask it for one `put`, `get` or `delete`
+  of one object: no signed headers, no `CreateMultipartUpload` / `UploadPart` /
+  `CompleteMultipartUpload` / `AbortMultipartUpload`, no `HEAD` or
+  `GetObjectAttributes`. Such storage "cannot issue the targets item 17
+  requires", so a begin offering only `directParts` is `noTransferMode` naming
+  `proxied`, and one also naming an `uploadKey` is proxied. Enabling it needs the
+  external-accounts specification to grow a scope that carries the part's
+  length and checksum, the multipart operations and an object read of
+  attributes; until then nothing here diverges from either specification.
+
+The manifest digests let a reader check what it fetched without trusting the
+bucket, in either mode. Walrus reads (§5.4) would answer direct the same way.
 
 ### 5.3 The `BlobStore` trait
 
@@ -479,7 +514,10 @@ today's row for every room and member that has one, so a quiet day still has a
 level, and drops rows older than 400 days. A year can be compared with the one
 before. **Egress is counted**, because on S3 reads are what cost money, and a
 room whose files are downloaded a thousand times a day is a different
-conversation from one that is merely large. "Uploads in the last 30 days" is a
+conversation from one that is merely large. A direct read (§5.2) is counted
+when its target is issued, at the blob's whole size, since its bytes never pass
+through the host; a direct upload would be counted at its verified commit, as a
+proxied one is. "Uploads in the last 30 days" is a
 sum over these rows, not a counter of its own.
 
 Limit overrides (§6.2 item 2) live beside them: `limits:room:<room>` (the

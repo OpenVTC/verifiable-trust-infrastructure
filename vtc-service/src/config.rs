@@ -287,6 +287,19 @@ pub struct RoomFilesConfig {
     /// How often deleted and abandoned files are collected. Default 600.
     #[serde(default = "default_blob_sweep_interval_secs")]
     pub sweep_interval_secs: u64,
+    /// Which rooms a `rooms/blobs/*/0.2` transfer may go straight between the member
+    /// and the room's storage, where that storage can issue time-limited URLs (an
+    /// `s3` config through the community's VTA) and the member asks for it:
+    /// `"not_private"` (the default) for `open` and `attributed` rooms; `"all"` to
+    /// include `private` rooms, whose readers' network addresses the storage
+    /// provider then sees; `"off"` to keep every transfer through this service.
+    /// Browsers need the bucket's CORS set for it (`docs/02-vta/data-rooms.md` §8.2).
+    #[serde(default, skip_serializing_if = "is_default_direct")]
+    pub direct_transfer: vti_rooms::blobs::DirectTransfer,
+}
+
+fn is_default_direct(d: &vti_rooms::blobs::DirectTransfer) -> bool {
+    *d == vti_rooms::blobs::DirectTransfer::default()
 }
 
 /// Limits at one scope; an absent measure keeps its default.
@@ -325,6 +338,7 @@ impl Default for RoomFilesConfig {
             storage_capacity_bytes: None,
             orphan_grace_hours: default_orphan_grace_hours(),
             sweep_interval_secs: default_blob_sweep_interval_secs(),
+            direct_transfer: Default::default(),
         }
     }
 }

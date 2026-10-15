@@ -370,12 +370,8 @@ pub(crate) async fn check_for_known_issuer_with(
         return Ok(None);
     }
     if room_precharged
-        && peek_type(body).as_deref() == Some(vti_rooms::blob_tasks::UPLOAD_CHUNK_TYPE)
         && let Some(issuer) = peek_issuer(body)
-        && state
-            .room_files
-            .holds_open_upload(issuer.split('#').next().unwrap_or(&issuer))
-            .await
+        && holds_upload_for(state, peek_type(body).as_deref(), &issuer).await
     {
         check_with(body, max_document_bytes)?;
         return Ok(None);
@@ -449,17 +445,32 @@ async fn has_standing(state: &AppState, body: &[u8], issuer: &str) -> bool {
     }
     let files = &state.room_files;
     match peek_type(body).as_deref() {
+        t @ Some(
+            vti_rooms::blob_tasks::UPLOAD_CHUNK_TYPE | vti_rooms::blob_tasks::UPLOAD_CHUNK_V2_TYPE,
+        ) => holds_upload_for(state, t, issuer).await,
+        Some(
+            vti_rooms::blob_tasks::UPLOAD_BEGIN_TYPE | vti_rooms::blob_tasks::UPLOAD_BEGIN_V2_TYPE,
+        ) if files.files_enabled() => match peek_room_id(body) {
+            Some(room_id) => vti_rooms::storage::get_room(&state.rooms_ks, &room_id)
+                .await
+                .is_ok(),
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+/// Whether the claimed `issuer` of an upload chunk of type `type_uri` holds the open
+/// upload such a chunk needs: for `0.1`, an upload it began; for `0.2`, an upload whose
+/// single-use key it is (`rooms/blobs/upload/begin/0.2` item 12). Any other type: no.
+async fn holds_upload_for(state: &AppState, type_uri: Option<&str>, issuer: &str) -> bool {
+    let did = issuer.split('#').next().unwrap_or(issuer);
+    match type_uri {
         Some(vti_rooms::blob_tasks::UPLOAD_CHUNK_TYPE) => {
-            let did = issuer.split('#').next().unwrap_or(issuer);
-            files.holds_open_upload(did).await
+            state.room_files.holds_open_upload(did).await
         }
-        Some(vti_rooms::blob_tasks::UPLOAD_BEGIN_TYPE) if files.files_enabled() => {
-            match peek_room_id(body) {
-                Some(room_id) => vti_rooms::storage::get_room(&state.rooms_ks, &room_id)
-                    .await
-                    .is_ok(),
-                None => false,
-            }
+        Some(vti_rooms::blob_tasks::UPLOAD_CHUNK_V2_TYPE) => {
+            state.room_files.holds_open_upload_key(did).await
         }
         _ => false,
     }

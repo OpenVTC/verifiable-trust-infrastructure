@@ -8958,6 +8958,7 @@ dependencies = [
  "affinidi-secrets-resolver",
  "affinidi-tdk",
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.23.1",
  "chrono",

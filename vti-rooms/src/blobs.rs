@@ -43,7 +43,9 @@ use vti_common::backup_transfer::chunked::{
     self, ChunkRateLimiter, ChunkWrite, ChunkedError, TransferTerms,
 };
 use vti_common::backup_transfer::{self, MAX_OPEN_BUNDLES_PER_DID};
-use vti_common::blob_store::{self, BackendRef, BlobKey, BlobStore, Deletion, MAX_BLOB_BYTES};
+use vti_common::blob_store::{
+    self, BackendRef, BlobKey, BlobStore, Deletion, MAX_BLOB_BYTES, PresignedRequest,
+};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -240,6 +242,15 @@ pub enum BlobError {
     RateLimited {
         retry_after_secs: u64,
     },
+    /// `0.2`: the producer offered no mode this host will use for this upload.
+    /// `modes` names those it would.
+    NoTransferMode {
+        modes: Vec<TransferMode>,
+    },
+    /// `0.2`: the part plan is inconsistent with the manifest.
+    InvalidParts(String),
+    /// `0.2`: the upload key is already bound to another open upload.
+    UploadKeyInUse,
     App(AppError),
 }
 
@@ -285,6 +296,20 @@ impl std::fmt::Display for BlobError {
             Self::RateLimited { retry_after_secs } => {
                 write!(f, "too many chunk requests; retry in {retry_after_secs}s")
             }
+            Self::NoTransferMode { modes } => write!(
+                f,
+                "no transfer mode is open to both sides; this host would use: {}",
+                modes
+                    .iter()
+                    .map(|m| m.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::InvalidParts(why) => write!(f, "invalid part plan: {why}"),
+            Self::UploadKeyInUse => write!(
+                f,
+                "the upload key is already bound to another open upload; generate a fresh one"
+            ),
             Self::App(e) => write!(f, "{e}"),
         }
     }
@@ -460,7 +485,178 @@ struct UploadRecord {
     /// room's config then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     config_id: Option<String>,
+    /// The version of the transfer tasks it was opened, or last resumed, under. A
+    /// `0.1` chunk, commit or abort never reaches a `0.2` upload, nor the reverse
+    /// (`rooms/blobs/upload/begin/0.2`, "What changed from 0.1"). Absent on an
+    /// upload begun before `0.2` existed, which is `0.1`.
+    #[serde(default)]
+    protocol: TransferProtocol,
+    /// `0.2`, proxied: the single-use `did:key` that alone sends this upload's
+    /// chunk, commit and abort documents. Never the owner, never recorded as one,
+    /// never charged or reported (`begin/0.2` items 14–15).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    upload_key_did: Option<String>,
 }
+
+/// Which version of the `rooms/blobs/upload/*` tasks an upload belongs to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum TransferProtocol {
+    /// Every document signed by the party that began it.
+    #[default]
+    V1,
+    /// Begun by the member; a proxied transfer's documents signed by its upload key.
+    V2,
+}
+
+/// How a blob's bytes move (`TransferMode` of `rooms/_shared/0.1/blobs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TransferMode {
+    /// Straight between the member and the room's storage, over time-limited
+    /// URLs this host issues for one object and one method each.
+    Direct,
+    /// Through this host, as chunk documents.
+    Proxied,
+}
+
+impl TransferMode {
+    /// The mode as the wire names it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Proxied => "proxied",
+        }
+    }
+}
+
+/// Which rooms this host may answer with a direct transfer, where the room's
+/// storage can issue one (`rooms/blobs/get/0.2` item 6, `upload/begin/0.2` item 16).
+///
+/// Direct transfer shows the member's network address, and which object they
+/// read or wrote, to the storage provider. On a `private` room that is exactly
+/// the link the tier exists to deny anyone, so the specifications say a host
+/// SHOULD NOT offer it there unless its policy explicitly allows it — and this
+/// is that policy: the default leaves `private` rooms proxied.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectTransfer {
+    /// Never: every transfer goes through this host.
+    Off,
+    /// `open` and `attributed` rooms; `private` rooms stay proxied.
+    #[default]
+    NotPrivate,
+    /// Every room, `private` included: the operator accepts that the storage
+    /// provider sees which network address reads and writes a private room's
+    /// objects.
+    All,
+}
+
+impl DirectTransfer {
+    /// Whether a room of `visibility` may be answered directly.
+    pub fn allows(self, visibility: Visibility) -> bool {
+        match self {
+            Self::Off => false,
+            Self::NotPrivate => visibility != Visibility::Private,
+            Self::All => true,
+        }
+    }
+}
+
+/// What the producer of a `rooms/blobs/upload/begin/0.2` accepts.
+#[derive(Debug, Clone, Default)]
+pub struct UploadOffer {
+    /// The single-use `did:key` for a proxied transfer; absent, it accepts only
+    /// direct transfer.
+    pub upload_key_did: Option<String>,
+    /// How it will cut the blob for a direct transfer; absent, it accepts only
+    /// proxied transfer.
+    pub direct_parts: Option<PartPlan>,
+}
+
+/// A `PartPlan`: how the producer will cut a blob for a direct transfer.
+#[derive(Debug, Clone)]
+pub struct PartPlan {
+    pub part_size: u64,
+    pub part_count: u64,
+    /// Each part's sha2-256 digest, as `DigestMultibase`.
+    pub part_digests: Vec<String>,
+}
+
+impl PartPlan {
+    /// Refuse a plan inconsistent with `manifest` (`invalidParts`): a part count
+    /// that does not follow from the size, a digest list of the wrong length, or
+    /// a digest that is not sha2-256 — what storage itself checks a part against.
+    fn check(&self, manifest: &Manifest) -> Result<(), BlobError> {
+        let bad = |why: String| Err(BlobError::InvalidParts(why));
+        if self.part_size == 0 {
+            return bad("partSize is 0".into());
+        }
+        let count = manifest.size.div_ceil(self.part_size);
+        if count != self.part_count {
+            return bad(format!(
+                "partCount is {}; {} bytes at {} is {count}",
+                self.part_count, manifest.size, self.part_size
+            ));
+        }
+        if self.part_digests.len() as u64 != count {
+            return bad(format!(
+                "partDigests has {} entries; the plan has {count} parts",
+                self.part_digests.len()
+            ));
+        }
+        if let Some(i) = self
+            .part_digests
+            .iter()
+            .position(|d| blob_store::sha256_from_digest_multibase(d).is_none())
+        {
+            return bad(format!("partDigests[{i}] is not a sha2-256 multihash"));
+        }
+        Ok(())
+    }
+}
+
+/// Who sent an upload's chunk, commit or abort document, and in which version.
+#[derive(Debug, Clone, Copy)]
+pub enum UploadCaller<'a> {
+    /// A `0.1` document: authenticated as the party that began the upload.
+    V1(&'a str),
+    /// A `0.2` document, authenticated as this party: for a proxied upload, its
+    /// upload key and nobody else — not its owner (`chunk/0.2` item 2).
+    V2(&'a str),
+}
+
+impl UploadCaller<'_> {
+    /// Whether this caller may act on `rec`. Anything else is `notFound`, which
+    /// conflates an unknown id with somebody else's upload.
+    fn admits(&self, rec: &UploadRecord) -> bool {
+        match *self {
+            Self::V1(opener) => rec.protocol == TransferProtocol::V1 && rec.opener == opener,
+            Self::V2(signer) => {
+                rec.protocol == TransferProtocol::V2
+                    && rec.upload_key_did.as_deref() == Some(signer)
+            }
+        }
+    }
+}
+
+/// What `rooms/blobs/get/0.2` answers.
+#[derive(Debug, Clone)]
+pub enum DownloadV2 {
+    /// Fetch the chunks through this host under a download handle.
+    Proxied(Download),
+    /// Fetch the object straight from storage.
+    Direct {
+        manifest: Value,
+        /// A `GET` of the one object: a bearer credential, never logged.
+        target: PresignedRequest,
+    },
+}
+
+/// The longest a direct target may live (`TransferTarget`: never more than 5
+/// minutes), with a few seconds for the clocks of this host and the party that
+/// presigned it to disagree.
+const MAX_TARGET_LIFETIME: Duration = Duration::seconds(5 * 60 + 10);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -493,6 +689,8 @@ pub struct Begun {
     pub expires_at: DateTime<Utc>,
     /// The BlobRef is already committed in this room; commit answers with it.
     pub already_committed: bool,
+    /// How the bytes move. Always [`TransferMode::Proxied`] for a `0.1` upload.
+    pub mode: TransferMode,
 }
 
 /// What a stored chunk answers.
@@ -663,6 +861,8 @@ pub struct BlobHost {
     /// Serialises the activity counters and daily rows, apart from `lock`: a
     /// chunk served must not wait behind a commit writing to a store.
     activity: tokio::sync::Mutex<()>,
+    /// Which rooms may be answered with a direct transfer.
+    direct: DirectTransfer,
 }
 
 fn room_hash(room_id: &str) -> String {
@@ -688,11 +888,15 @@ fn blob_key(room_id: &str, blob_ref: &str) -> String {
 fn refs_key(room_id: &str, record_key: &str) -> String {
     format!("refs:{}:{record_key}", room_hash(room_id))
 }
-fn upload_key(id: &Uuid) -> String {
+fn upload_key_record(id: &Uuid) -> String {
     format!("upload:{id}")
 }
 fn upload_index_key(opener: &str, room_id: &str, blob_ref: &str) -> String {
     format!("upload-by:{}", short_hash(&[opener, room_id, blob_ref]))
+}
+/// The open `0.2` upload an upload key is bound to.
+fn signer_index_key(upload_key_did: &str) -> String {
+    format!("upload-signer:{}", short_hash(&[upload_key_did]))
 }
 fn download_key(id: &Uuid) -> String {
     format!("download:{id}")
@@ -727,6 +931,16 @@ fn storage_keys(config_id: Option<&str>) -> Vec<String> {
     keys
 }
 
+/// Whether a read target may be handed to a reader: one `GET`, over HTTPS,
+/// unexpired and expiring within [`MAX_TARGET_LIFETIME`].
+fn fit_read_target(t: &PresignedRequest) -> bool {
+    let now = Utc::now();
+    t.method.eq_ignore_ascii_case("GET")
+        && t.url.starts_with("https://")
+        && t.expires_at > now
+        && t.expires_at <= now + MAX_TARGET_LIFETIME
+}
+
 fn now_secs() -> u64 {
     Utc::now().timestamp().max(0) as u64
 }
@@ -758,7 +972,16 @@ impl BlobHost {
             limits,
             lock: tokio::sync::Mutex::new(()),
             activity: tokio::sync::Mutex::new(()),
+            direct: DirectTransfer::default(),
         }
+    }
+
+    /// This host with `direct` as its policy on direct transfer. The default
+    /// ([`DirectTransfer::NotPrivate`]) answers `open` and `attributed` rooms
+    /// directly where their storage can, and keeps `private` rooms proxied.
+    pub fn with_direct_transfer(mut self, direct: DirectTransfer) -> Self {
+        self.direct = direct;
+        self
     }
 
     /// What each storage config holds now, from the blob index. A scan of every
@@ -842,16 +1065,48 @@ impl BlobHost {
     /// (`rooms/blobs/chunk`) `transfer_id` names, when `opener` is the party that opened
     /// it. `None` for anyone else's transfer, a closed one, or an id that names nothing.
     ///
+    /// Whether `signer` is the upload key of a `0.2` upload that is open and
+    /// unexpired: the standing of a `rooms/blobs/upload/chunk/0.2` document, which
+    /// that key signs and which owns no slot of its own. The upload exists only
+    /// because a verified chain opened it and named the key (`begin/0.2` item 12).
+    /// A failed read counts as no.
+    pub async fn holds_open_upload_key(&self, signer: &str) -> bool {
+        match self.blobs.get::<Uuid>(signer_index_key(signer)).await {
+            Ok(Some(id)) => matches!(self.open_upload_for_key(&id, signer).await, Ok(Some(_))),
+            _ => false,
+        }
+    }
+
     /// What a host needs to charge a chunk to the room and party it belongs to before
     /// doing the work: the same ownership check [`Self::put_chunk`] and
     /// [`Self::read_chunk`] make, without the work. A failed read answers `None`.
     pub async fn transfer_room(&self, opener: &str, transfer_id: &str) -> Option<String> {
-        if let Ok(rec) = self.owned_open_upload(opener, transfer_id).await {
+        if let Ok(rec) = self
+            .owned_open_upload(UploadCaller::V1(opener), transfer_id)
+            .await
+        {
             return Some(rec.room_id);
         }
         let id = Uuid::parse_str(transfer_id).ok()?;
         match self.blobs.get::<DownloadRecord>(download_key(&id)).await {
             Ok(Some(r)) if r.opener == opener && r.expires_at > Utc::now() => Some(r.room_id),
+            _ => None,
+        }
+    }
+
+    /// As [`Self::transfer_room`], for an upload's `0.2` chunk, commit or abort from
+    /// `caller`: the room and the upload's **owner**, so a host charges the document
+    /// to the member's budget in that room — an upload key is minted per upload, and
+    /// a budget of its own would be a fresh one for every file. `None` when `caller`
+    /// may not act on it.
+    pub async fn upload_owner_room(
+        &self,
+        caller: UploadCaller<'_>,
+        upload_id: &str,
+    ) -> Option<(String, String)> {
+        let id = Uuid::parse_str(upload_id).ok()?;
+        match self.blobs.get::<UploadRecord>(upload_key_record(&id)).await {
+            Ok(Some(rec)) if caller.admits(&rec) => Some((rec.room_id, rec.opener)),
             _ => None,
         }
     }
@@ -881,7 +1136,7 @@ impl BlobHost {
 
     // ─── upload ──────────────────────────────────────────────────────────
 
-    /// `rooms/blobs/upload/begin`: check the upload against every limit,
+    /// `rooms/blobs/upload/begin/0.1`: check the upload against every limit,
     /// reserve, and open a staging slot — or answer the open slot this opener
     /// already has for this manifest in this room.
     ///
@@ -894,8 +1149,142 @@ impl BlobHost {
         member: Option<&str>,
         manifest: Manifest,
     ) -> Result<Begun, BlobError> {
+        self.begin_with(room, opener, member, manifest, None).await
+    }
+
+    /// `rooms/blobs/upload/begin/0.2`: as [`Self::begin`], and then the transfer
+    /// mode, from what the producer `offer`s, what the room's storage can do and
+    /// this host's [`DirectTransfer`] policy (item 16).
+    ///
+    /// **Direct uploads are never chosen yet.** Item 17 requires each part's
+    /// target to bind the part's exact length and SHA-256 into the URL's signature
+    /// (for S3, `Content-Length` and `x-amz-checksum-sha256` as signed headers),
+    /// and the only presigning storage a host here has — a community VTA's
+    /// `s3-static-presign` account — issues one `put`, `get` or `delete` of one
+    /// object with no signed headers and no multipart operations, which is all
+    /// `external/credentials/issue/0.1` can ask for. Such storage "cannot issue
+    /// the targets item 17 requires", so a producer offering only `directParts`
+    /// is refused `noTransferMode` naming `proxied`, as the specification says.
+    /// A plan it sends is still checked (`invalidParts`).
+    pub async fn begin_v2(
+        &self,
+        room: &Room,
+        opener: &str,
+        member: Option<&str>,
+        manifest: Manifest,
+        offer: UploadOffer,
+    ) -> Result<Begun, BlobError> {
+        self.begin_with(room, opener, member, manifest, Some(offer))
+            .await
+    }
+
+    /// The mode a `0.2` begin is answered in, or why none (item 16). `None` is a
+    /// `0.1` begin, which is always proxied.
+    fn choose_mode(offer: Option<&UploadOffer>) -> Result<TransferMode, BlobError> {
+        match offer {
+            None => Ok(TransferMode::Proxied),
+            // See `begin_v2`: no store here can bind a part's length and checksum.
+            Some(o) if o.upload_key_did.is_some() => Ok(TransferMode::Proxied),
+            Some(_) => Err(BlobError::NoTransferMode {
+                modes: vec![TransferMode::Proxied],
+            }),
+        }
+    }
+
+    /// Bind `rec` to the version and upload key of the begin that opened or
+    /// resumed it, keeping the key's index in step. A key bound to another open
+    /// upload is refused (item 14); the key this one held before is dropped, so it
+    /// is refused from now on (item 8).
+    async fn bind(
+        &self,
+        rec: &mut UploadRecord,
+        offer: Option<&UploadOffer>,
+    ) -> Result<(), BlobError> {
+        let key = offer.and_then(|o| o.upload_key_did.clone());
+        if let Some(k) = &key
+            && self.key_bound_elsewhere(k, rec.upload_id).await?
+        {
+            return Err(BlobError::UploadKeyInUse);
+        }
+        if let Some(old) = rec.upload_key_did.take()
+            && Some(&old) != key.as_ref()
+        {
+            let index = signer_index_key(&old);
+            if self.blobs.get::<Uuid>(index.clone()).await? == Some(rec.upload_id) {
+                self.blobs.remove(index).await?;
+            }
+        }
+        rec.protocol = match offer {
+            None => TransferProtocol::V1,
+            Some(_) => TransferProtocol::V2,
+        };
+        if let Some(k) = &key {
+            self.blobs
+                .insert(signer_index_key(k), &rec.upload_id)
+                .await?;
+        }
+        rec.upload_key_did = key;
+        Ok(())
+    }
+
+    /// Whether `upload_key` is bound to an open upload other than `this`.
+    async fn key_bound_elsewhere(
+        &self,
+        upload_key_did: &str,
+        this: Uuid,
+    ) -> Result<bool, AppError> {
+        let Some(id) = self
+            .blobs
+            .get::<Uuid>(signer_index_key(upload_key_did))
+            .await?
+        else {
+            return Ok(false);
+        };
+        if id == this {
+            return Ok(false);
+        }
+        self.open_upload_for_key(&id, upload_key_did)
+            .await
+            .map(|r| r.is_some())
+    }
+
+    /// The upload `id`, while it is open, unexpired and bound to `upload_key`.
+    async fn open_upload_for_key(
+        &self,
+        id: &Uuid,
+        upload_key_did: &str,
+    ) -> Result<Option<UploadRecord>, AppError> {
+        let Some(rec) = self
+            .blobs
+            .get::<UploadRecord>(upload_key_record(id))
+            .await?
+        else {
+            return Ok(None);
+        };
+        if rec.phase != UploadPhase::Open || rec.upload_key_did.as_deref() != Some(upload_key_did) {
+            return Ok(None);
+        }
+        let live = if rec.already_committed {
+            rec.created_at + ALREADY_COMMITTED_TTL_SECS > now_secs()
+        } else {
+            self.live_slot(id).await?.is_some()
+        };
+        Ok(live.then_some(rec))
+    }
+
+    async fn begin_with(
+        &self,
+        room: &Room,
+        opener: &str,
+        member: Option<&str>,
+        manifest: Manifest,
+        offer: Option<UploadOffer>,
+    ) -> Result<Begun, BlobError> {
         if !self.limits.files_enabled {
             return Err(BlobError::FilesDisabled);
+        }
+        if let Some(plan) = offer.as_ref().and_then(|o| o.direct_parts.as_ref()) {
+            plan.check(&manifest)?;
         }
         let member = match room.visibility {
             Visibility::Private => None,
@@ -908,25 +1297,36 @@ impl BlobHost {
         if !limits.files_enabled {
             return Err(BlobError::FilesDisabled);
         }
+        // Chosen now and refused only where the specification places it: after
+        // every check that applies to this begin, before anything is reserved.
+        let mode = Self::choose_mode(offer.as_ref());
 
         // Resume: the same opener, room and manifest, while its slot is open.
         let index = upload_index_key(opener, &room.room_id, &manifest.blob_ref);
         if let Some(id) = self.blobs.get::<Uuid>(index.clone()).await?
-            && let Some(mut rec) = self.blobs.get::<UploadRecord>(upload_key(&id)).await?
+            && let Some(mut rec) = self
+                .blobs
+                .get::<UploadRecord>(upload_key_record(&id))
+                .await?
             && rec.phase == UploadPhase::Open
         {
             if rec.already_committed {
                 if rec.created_at + ALREADY_COMMITTED_TTL_SECS > now_secs()
                     && self.blob(&room.room_id, &rec.blob_ref).await?.is_some()
                 {
+                    let mode = mode?;
+                    self.bind(&mut rec, offer.as_ref()).await?;
+                    self.blobs.insert(upload_key_record(&id), &rec).await?;
                     return Ok(Begun {
                         upload_id: id,
                         missing: Vec::new(),
                         expires_at: already_expiry(&rec),
                         already_committed: true,
+                        mode,
                     });
                 }
             } else if let Some(slot) = self.live_slot(&id).await? {
+                let mode = mode?;
                 let plan = chunked::get_plan(&self.transfers, &id)
                     .await?
                     .ok_or(BlobError::NotFound)?;
@@ -937,11 +1337,16 @@ impl BlobHost {
                     .filter(|(_, d)| !**d)
                     .map(|(i, _)| i as u64)
                     .collect();
+                // Rebound to this begin's key, so a client that lost its upload
+                // key can resume; the key it held is refused from now on.
+                self.bind(&mut rec, offer.as_ref()).await?;
+                self.blobs.insert(upload_key_record(&id), &rec).await?;
                 return Ok(Begun {
                     upload_id: id,
                     missing,
                     expires_at: slot.expires_at,
                     already_committed: false,
+                    mode,
                 });
             }
             // Its slot lapsed: give its reservation back and open a new one.
@@ -950,7 +1355,7 @@ impl BlobHost {
             }
             rec.phase = UploadPhase::Released;
             rec.finished_at = Some(now_secs());
-            self.blobs.insert(upload_key(&id), &rec).await?;
+            self.blobs.insert(upload_key_record(&id), &rec).await?;
         }
 
         // Already committed in this room: nothing to send, nothing to reserve.
@@ -960,7 +1365,8 @@ impl BlobHost {
             .await?
             .is_some()
         {
-            let rec = UploadRecord {
+            let mode = mode?;
+            let mut rec = UploadRecord {
                 upload_id: Uuid::new_v4(),
                 room_id: room.room_id.clone(),
                 opener: opener.to_string(),
@@ -973,20 +1379,32 @@ impl BlobHost {
                 finished_at: None,
                 already_committed: true,
                 config_id: None,
+                protocol: TransferProtocol::V1,
+                upload_key_did: None,
             };
-            self.blobs.insert(upload_key(&rec.upload_id), &rec).await?;
+            self.bind(&mut rec, offer.as_ref()).await?;
+            self.blobs
+                .insert(upload_key_record(&rec.upload_id), &rec)
+                .await?;
             self.blobs.insert(index, &rec.upload_id).await?;
             return Ok(Begun {
                 upload_id: rec.upload_id,
                 missing: Vec::new(),
                 expires_at: already_expiry(&rec),
                 already_committed: true,
+                mode,
             });
         }
 
         let target = self.stores.upload_target(&room.room_id).await?;
         self.check_limits(&room.room_id, member, manifest.size, &target, &limits)
             .await?;
+        let mode = mode?;
+        if let Some(k) = offer.as_ref().and_then(|o| o.upload_key_did.as_deref())
+            && self.key_bound_elsewhere(k, Uuid::nil()).await?
+        {
+            return Err(BlobError::UploadKeyInUse);
+        }
 
         let slot = match chunked::initiate_import_with(
             &self.transfers,
@@ -1012,7 +1430,7 @@ impl BlobHost {
             Err(e) => return Err(chunked_error(e)),
         };
 
-        let rec = UploadRecord {
+        let mut rec = UploadRecord {
             upload_id: slot.bundle_id,
             room_id: room.room_id.clone(),
             opener: opener.to_string(),
@@ -1025,19 +1443,25 @@ impl BlobHost {
             finished_at: None,
             already_committed: false,
             config_id: Some(target.config_id),
+            protocol: TransferProtocol::V1,
+            upload_key_did: None,
         };
         self.reserve(&rec).await?;
-        self.blobs.insert(upload_key(&rec.upload_id), &rec).await?;
+        self.bind(&mut rec, offer.as_ref()).await?;
+        self.blobs
+            .insert(upload_key_record(&rec.upload_id), &rec)
+            .await?;
         self.blobs.insert(index, &rec.upload_id).await?;
         Ok(Begun {
             upload_id: slot.bundle_id,
             missing: (0..slot.chunk_count).collect(),
             expires_at: slot.expires_at,
             already_committed: false,
+            mode,
         })
     }
 
-    /// `rooms/blobs/upload/chunk`.
+    /// `rooms/blobs/upload/chunk/0.1`, from the party that began the upload.
     pub async fn put_chunk(
         &self,
         opener: &str,
@@ -1046,12 +1470,33 @@ impl BlobHost {
         digest_multibase: &str,
         data: &[u8],
     ) -> Result<ChunkStored, BlobError> {
-        let rec = self.owned_open_upload(opener, upload_id).await?;
+        self.put_chunk_as(
+            UploadCaller::V1(opener),
+            upload_id,
+            index,
+            digest_multibase,
+            data,
+        )
+        .await
+    }
+
+    /// `rooms/blobs/upload/chunk`, from `caller`. The slot belongs to the upload's
+    /// owner whoever sends its chunks, so the per-party chunk rate is the owner's:
+    /// minting upload keys does not buy a member more of it.
+    pub async fn put_chunk_as(
+        &self,
+        caller: UploadCaller<'_>,
+        upload_id: &str,
+        index: u64,
+        digest_multibase: &str,
+        data: &[u8],
+    ) -> Result<ChunkStored, BlobError> {
+        let rec = self.owned_open_upload(caller, upload_id).await?;
         let result = chunked::put_chunk_for(
             &self.transfers,
             &self.staging_dir,
             ChunkRateLimiter::global(),
-            opener,
+            &rec.opener,
             ChunkWrite {
                 bundle_id: &rec.upload_id.to_string(),
                 index,
@@ -1070,16 +1515,33 @@ impl BlobHost {
         }
     }
 
-    /// `rooms/blobs/upload/commit`.
+    /// `rooms/blobs/upload/commit/0.1`, from the party that began the upload.
     pub async fn commit(&self, opener: &str, upload_id: &str) -> Result<Committed, BlobError> {
+        self.commit_as(UploadCaller::V1(opener), upload_id).await
+    }
+
+    /// `rooms/blobs/upload/commit`, from `caller`. Whoever commits, the blob is
+    /// recorded and charged as the owner's — never the upload key's (`commit/0.2`
+    /// item 5).
+    pub async fn commit_as(
+        &self,
+        caller: UploadCaller<'_>,
+        upload_id: &str,
+    ) -> Result<Committed, BlobError> {
         let Ok(id) = Uuid::parse_str(upload_id) else {
             return Err(BlobError::NotFound);
         };
         let _guard = self.lock.lock().await;
-        let mut rec = match self.blobs.get::<UploadRecord>(upload_key(&id)).await? {
-            Some(r) if r.opener == opener => r,
+        let mut rec = match self
+            .blobs
+            .get::<UploadRecord>(upload_key_record(&id))
+            .await?
+        {
+            Some(r) if caller.admits(&r) => r,
             _ => return Err(BlobError::NotFound),
         };
+        // The slot is the owner's, whoever signed this document.
+        let owner = rec.opener.clone();
         match rec.phase {
             UploadPhase::Open => {}
             // Answered again, storing and charging nothing a second time.
@@ -1100,14 +1562,14 @@ impl BlobHost {
             };
             rec.phase = UploadPhase::Committed;
             rec.finished_at = Some(now_secs());
-            self.blobs.insert(upload_key(&id), &rec).await?;
+            self.blobs.insert(upload_key_record(&id), &rec).await?;
             return Ok(Committed {
                 blob_ref: entry.blob_ref,
                 size: entry.size,
             });
         }
 
-        match chunked::finalize_precheck_for(&self.transfers, opener, upload_id).await {
+        match chunked::finalize_precheck_for(&self.transfers, &owner, upload_id).await {
             Ok(()) => {}
             Err(ChunkedError::IncompleteUpload { missing_count, .. }) => {
                 return Err(BlobError::Incomplete {
@@ -1115,11 +1577,11 @@ impl BlobHost {
                 });
             }
             Err(ChunkedError::BundleDigestMismatch) => {
-                let _ = backup_transfer::abort(&self.transfers, opener, &id).await;
+                let _ = backup_transfer::abort(&self.transfers, &owner, &id).await;
                 self.release_reservation(&rec).await?;
                 rec.phase = UploadPhase::Released;
                 rec.finished_at = Some(now_secs());
-                self.blobs.insert(upload_key(&id), &rec).await?;
+                self.blobs.insert(upload_key_record(&id), &rec).await?;
                 return Err(BlobError::DigestMismatch);
             }
             Err(e) => return Err(chunked_error(e)),
@@ -1131,7 +1593,7 @@ impl BlobHost {
             self.close_slot(&id).await?;
             rec.phase = UploadPhase::Committed;
             rec.finished_at = Some(now_secs());
-            self.blobs.insert(upload_key(&id), &rec).await?;
+            self.blobs.insert(upload_key_record(&id), &rec).await?;
             return Ok(Committed {
                 blob_ref: rec.blob_ref,
                 size: rec.size,
@@ -1172,7 +1634,7 @@ impl BlobHost {
             .await?;
         rec.phase = UploadPhase::Committed;
         rec.finished_at = Some(now_secs());
-        self.blobs.insert(upload_key(&id), &rec).await?;
+        self.blobs.insert(upload_key_record(&id), &rec).await?;
         self.close_slot(&id).await?;
         Ok(Committed {
             blob_ref: entry.blob_ref,
@@ -1180,17 +1642,32 @@ impl BlobHost {
         })
     }
 
-    /// `rooms/blobs/upload/abort`. `Ok(true)` when this call aborted it,
+    /// `rooms/blobs/upload/abort/0.1`. `Ok(true)` when this call aborted it,
     /// `Ok(false)` when it already was.
     pub async fn abort(&self, opener: &str, upload_id: &str) -> Result<bool, BlobError> {
+        self.abort_as(UploadCaller::V1(opener), upload_id).await
+    }
+
+    /// `rooms/blobs/upload/abort`, from `caller`.
+    pub async fn abort_as(
+        &self,
+        caller: UploadCaller<'_>,
+        upload_id: &str,
+    ) -> Result<bool, BlobError> {
         let Ok(id) = Uuid::parse_str(upload_id) else {
             return Err(BlobError::NotFound);
         };
         let _guard = self.lock.lock().await;
-        let mut rec = match self.blobs.get::<UploadRecord>(upload_key(&id)).await? {
-            Some(r) if r.opener == opener => r,
+        let mut rec = match self
+            .blobs
+            .get::<UploadRecord>(upload_key_record(&id))
+            .await?
+        {
+            Some(r) if caller.admits(&r) => r,
             _ => return Err(BlobError::NotFound),
         };
+        // The slot is the owner's, whoever signed this document.
+        let owner = rec.opener.clone();
         match rec.phase {
             UploadPhase::Open => {}
             UploadPhase::Aborted => return Ok(false),
@@ -1199,7 +1676,7 @@ impl BlobHost {
             UploadPhase::Committed | UploadPhase::Released => return Err(BlobError::NotFound),
         }
         if !rec.already_committed {
-            if let Err(e) = backup_transfer::abort(&self.transfers, opener, &id).await
+            if let Err(e) = backup_transfer::abort(&self.transfers, &owner, &id).await
                 && !matches!(e, AppError::NotFound(_))
             {
                 return Err(e.into());
@@ -1208,7 +1685,7 @@ impl BlobHost {
         }
         rec.phase = UploadPhase::Aborted;
         rec.finished_at = Some(now_secs());
-        self.blobs.insert(upload_key(&id), &rec).await?;
+        self.blobs.insert(upload_key_record(&id), &rec).await?;
         Ok(true)
     }
 
@@ -1258,6 +1735,74 @@ impl BlobHost {
             manifest: entry.manifest,
             expires_at: rec.expires_at,
         })
+    }
+
+    /// `rooms/blobs/get/0.2`: the manifest as committed, and either a storage
+    /// target for the one object (`want_direct`, where this host's policy allows
+    /// it for the room's tier and the blob's store can issue one) or, as
+    /// [`Self::open_download`], a download handle.
+    ///
+    /// A target is checked before it is handed out: a `GET`, over HTTPS, expiring
+    /// within five minutes (`TransferTarget`). One that is not, or a store that
+    /// fails to issue one, answers proxied instead — the mode is the host's
+    /// choice, and the reader is told which it got. The target is never logged.
+    ///
+    /// A direct download is counted when the target is issued, as a download and
+    /// the blob's size served, since its bytes never pass through this host.
+    pub async fn open_download_v2(
+        &self,
+        room: &Room,
+        opener: &str,
+        member: Option<&str>,
+        blob_ref: &str,
+        want_direct: bool,
+    ) -> Result<DownloadV2, BlobError> {
+        if want_direct && self.direct.allows(room.visibility) {
+            let entry = self
+                .blob(&room.room_id, blob_ref)
+                .await?
+                .ok_or(BlobError::NotFound)?;
+            let issued = match self
+                .stores
+                .store_for(&entry.config_id, &entry.room_id)
+                .await
+            {
+                Ok(store) => store.read_target(&entry.backend_ref).await,
+                Err(e) => Err(e),
+            };
+            match issued {
+                Ok(Some(target)) if fit_read_target(&target) => {
+                    let member = match room.visibility {
+                        Visibility::Private => None,
+                        _ => member,
+                    };
+                    self.record_activity(
+                        &room.room_id,
+                        member,
+                        usage::Activity::direct_download(entry.size),
+                    )
+                    .await?;
+                    return Ok(DownloadV2::Direct {
+                        manifest: entry.manifest,
+                        target,
+                    });
+                }
+                Ok(Some(_)) => tracing::warn!(
+                    blob = %entry.blob_ref,
+                    "storage issued a read target that is not an HTTPS GET within five minutes; \
+                     serving through this host"
+                ),
+                Ok(None) => {}
+                Err(e) => tracing::warn!(
+                    blob = %entry.blob_ref,
+                    error = %e,
+                    "storage could not issue a read target; serving through this host"
+                ),
+            }
+        }
+        self.open_download(room, opener, member, blob_ref)
+            .await
+            .map(DownloadV2::Proxied)
     }
 
     /// `rooms/blobs/chunk`: chunk `index` of an open download, checked against
@@ -1597,6 +2142,12 @@ impl BlobHost {
                     if self.blobs.get::<Uuid>(index.clone()).await? == Some(rec.upload_id) {
                         self.blobs.remove(index).await?;
                     }
+                    if let Some(k) = &rec.upload_key_did {
+                        let index = signer_index_key(k);
+                        if self.blobs.get::<Uuid>(index.clone()).await? == Some(rec.upload_id) {
+                            self.blobs.remove(index).await?;
+                        }
+                    }
                     stats.forgotten += 1;
                 }
                 _ => {}
@@ -1620,14 +2171,18 @@ impl BlobHost {
 
     async fn owned_open_upload(
         &self,
-        opener: &str,
+        caller: UploadCaller<'_>,
         upload_id: &str,
     ) -> Result<UploadRecord, BlobError> {
         let Ok(id) = Uuid::parse_str(upload_id) else {
             return Err(BlobError::NotFound);
         };
-        match self.blobs.get::<UploadRecord>(upload_key(&id)).await? {
-            Some(r) if r.opener == opener && r.phase == UploadPhase::Open => Ok(r),
+        match self
+            .blobs
+            .get::<UploadRecord>(upload_key_record(&id))
+            .await?
+        {
+            Some(r) if caller.admits(&r) && r.phase == UploadPhase::Open => Ok(r),
             _ => Err(BlobError::NotFound),
         }
     }
@@ -1968,5 +2523,66 @@ fn chunked_error(e: ChunkedError) -> BlobError {
             BlobError::InvalidManifest(format!("{size_bytes} bytes exceed the transfer ceiling"))
         }
         ChunkedError::App(e) => BlobError::App(e),
+    }
+}
+
+#[cfg(test)]
+mod direct_tests {
+    use super::*;
+
+    /// A `private` room is proxied unless the host's policy explicitly says otherwise
+    /// (`rooms/blobs/get/0.2` item 6, `upload/begin/0.2` item 16).
+    #[test]
+    fn private_rooms_are_proxied_by_default() {
+        let d = DirectTransfer::default();
+        assert!(d.allows(Visibility::Open));
+        assert!(d.allows(Visibility::Attributed));
+        assert!(!d.allows(Visibility::Private));
+        assert!(DirectTransfer::All.allows(Visibility::Private));
+        assert!(!DirectTransfer::Off.allows(Visibility::Open));
+    }
+
+    /// A `0.1` begin is always proxied; a `0.2` one needs a key until some store can
+    /// bind a part's length and checksum, and then names what it would use.
+    #[test]
+    fn a_direct_only_offer_has_no_mode_yet() {
+        assert_eq!(BlobHost::choose_mode(None).unwrap(), TransferMode::Proxied);
+        let keyed = UploadOffer {
+            upload_key_did: Some("did:key:z6Mk".into()),
+            direct_parts: None,
+        };
+        assert_eq!(
+            BlobHost::choose_mode(Some(&keyed)).unwrap(),
+            TransferMode::Proxied
+        );
+        match BlobHost::choose_mode(Some(&UploadOffer::default())) {
+            Err(BlobError::NoTransferMode { modes }) => {
+                assert_eq!(modes, vec![TransferMode::Proxied])
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_part_plan_must_follow_from_the_manifest() {
+        let d = blob_store::sha256_digest_multibase(&[1; 32]);
+        let manifest = Manifest::parse(&serde_json::json!({
+            "size": 40_000,
+            "chunks": { "chunkSize": 16_384, "chunkCount": 3, "chunkDigests": [d, d, d] },
+            "digest": d,
+        }))
+        .unwrap();
+        let plan = |size, count, n: usize| PartPlan {
+            part_size: size,
+            part_count: count,
+            part_digests: vec![d.clone(); n],
+        };
+        plan(40_000, 1, 1).check(&manifest).unwrap();
+        plan(20_000, 2, 2).check(&manifest).unwrap();
+        assert!(plan(20_000, 3, 3).check(&manifest).is_err());
+        assert!(plan(20_000, 2, 1).check(&manifest).is_err());
+        let mut not_sha = plan(40_000, 1, 1);
+        not_sha.part_digests = vec!["zNotAHash".into()];
+        assert!(not_sha.check(&manifest).is_err());
     }
 }

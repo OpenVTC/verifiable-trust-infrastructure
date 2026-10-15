@@ -28,13 +28,13 @@
 //! shortly before it expires and reused for every range. Writes and deletes are
 //! asked for each time: each happens once per blob.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use reqwest::StatusCode;
 
 use super::{BackendRef, BlobKey, BlobStore, Deletion, Health, PROBE_PREFIX, check_kind};
@@ -77,26 +77,7 @@ impl PresignAction {
     }
 }
 
-/// One presigned request, as a presigner hands it over.
-#[derive(Clone)]
-pub struct PresignedRequest {
-    pub method: String,
-    pub url: String,
-    /// Headers the request must carry for its signature to verify.
-    pub headers: BTreeMap<String, String>,
-    pub expires_at: DateTime<Utc>,
-}
-
-impl std::fmt::Debug for PresignedRequest {
-    // The URL carries its signature: never in a log line.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PresignedRequest")
-            .field("method", &self.method)
-            .field("url", &"<redacted>")
-            .field("expires_at", &self.expires_at)
-            .finish()
-    }
-}
+pub use super::PresignedRequest;
 
 /// Where presigned requests come from.
 ///
@@ -384,6 +365,20 @@ impl BlobStore for PresignedBlobs {
         }
     }
 
+    /// A fresh `GET` for a reader, presigned for this one blob — never the request
+    /// this store keeps for its own reads, so the reader gets the request's whole
+    /// lifetime and the store's cached one is never handed out.
+    async fn read_target(&self, at: &BackendRef) -> Result<Option<PresignedRequest>, AppError> {
+        check_kind(self, at)?;
+        let (prefix, object) = self.split(&at.key)?;
+        let req = self
+            .presigner
+            .presign(PresignAction::Get, &prefix, object)
+            .await?;
+        self.check(&req, PresignAction::Get, &format!("{prefix}{object}"))?;
+        Ok(Some(req))
+    }
+
     /// Whether a request can be presigned now: the presigner answers, and for
     /// an object in this store's layout. The store itself is exercised by a
     /// probe, which writes, reads and deletes.
@@ -419,6 +414,7 @@ mod tests {
     use axum::extract::{Path as AxPath, State};
     use axum::http::{HeaderMap, StatusCode as Ax};
     use axum::routing::put;
+    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     type Objects = Arc<Mutex<HashMap<String, Vec<u8>>>>;
@@ -570,6 +566,43 @@ mod tests {
         assert!(err.contains("different object"), "{err}");
         assert!(objects.lock().unwrap().is_empty());
         assert!(!s.health().await.ok);
+    }
+
+    /// A reader's target is presigned for it alone: a fresh `GET` of the one blob, never
+    /// the request this store keeps for its own ranged reads.
+    #[tokio::test]
+    async fn a_read_target_is_a_fresh_get_of_the_one_blob() {
+        let (base, _) = bucket().await;
+        let (s, fake) = store(&base, None);
+        let dir = tempfile::tempdir().unwrap();
+        let staged = dir.path().join("b");
+        tokio::fs::write(&staged, vec![9u8; 40]).await.unwrap();
+        let key = BlobKey::for_room(
+            "did:key:zRoom",
+            &super::super::sha256_digest_multibase(&[4; 32]),
+        )
+        .unwrap();
+        let at = s.put(&key, &staged, 40).await.unwrap();
+        s.get_range(&at, 0, 10).await.unwrap();
+        let before = fake.calls.load(Ordering::SeqCst);
+        let target = s
+            .read_target(&at)
+            .await
+            .unwrap()
+            .expect("a presigned store issues one");
+        assert_eq!(
+            fake.calls.load(Ordering::SeqCst) - before,
+            1,
+            "presigned afresh"
+        );
+        assert_eq!(target.method, "GET");
+        assert!(target.url.contains(&format!("community/{}", key.as_str())));
+
+        let (other, _) = store(&base, Some("elsewhere/x".into()));
+        assert!(
+            other.read_target(&at).await.is_err(),
+            "another object is refused"
+        );
     }
 
     #[tokio::test]

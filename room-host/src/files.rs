@@ -25,8 +25,9 @@ use vti_rooms::wire::AuthorityPresentation;
 use super::{Answer, HostState, from_app_error, now, reject, respond};
 
 pub(crate) use vti_rooms::blob_tasks::{
-    BLOB_GET_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, INFO_TYPE, LIST_V2_TYPE, PUT_V2_TYPE,
-    UPLOAD_ABORT_TYPE, UPLOAD_BEGIN_TYPE, UPLOAD_CHUNK_TYPE, UPLOAD_COMMIT_TYPE, USAGE_TYPE,
+    BLOB_GET_TYPE, BLOB_GET_V2_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, INFO_TYPE, LIST_V2_TYPE,
+    PUT_V2_TYPE, UPLOAD_ABORT_TYPE, UPLOAD_ABORT_V2_TYPE, UPLOAD_BEGIN_TYPE, UPLOAD_BEGIN_V2_TYPE,
+    UPLOAD_CHUNK_TYPE, UPLOAD_CHUNK_V2_TYPE, UPLOAD_COMMIT_TYPE, UPLOAD_COMMIT_V2_TYPE, USAGE_TYPE,
 };
 
 /// Refuse with a code the task's specification declares.
@@ -211,6 +212,78 @@ pub(crate) async fn download_chunk(
         ),
         Err(a) => a,
     }
+}
+
+/// `rooms/blobs/upload/begin/0.2`. This host stores blobs in a local directory, which
+/// cannot issue storage URLs, so every upload is proxied: a producer offering only
+/// `directParts` is refused `noTransferMode`.
+pub(crate) async fn begin_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    if let Err(r) = blob_tasks::parse::<
+        trust_tasks_rs::specs::rooms::blobs::upload::begin::v0_2::Payload,
+    >(&payload)
+    {
+        return refused(doc, r);
+    }
+    let (room, presenter, authorized) = match authorize(state, doc, &payload, Action::Write).await {
+        Ok(r) => r,
+        Err(a) => return a,
+    };
+    render(
+        doc,
+        blob_tasks::begin_v2(&state.files, &room, &presenter, &authorized, &payload).await,
+    )
+}
+
+/// `rooms/blobs/upload/chunk/0.2`, signed by the upload's key.
+pub(crate) async fn upload_chunk_v2(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> Answer {
+    match presenter(state, doc).await {
+        Ok(p) => render(
+            doc,
+            blob_tasks::upload_chunk_v2(&state.files, &p, &payload).await,
+        ),
+        Err(a) => a,
+    }
+}
+
+/// `rooms/blobs/upload/commit/0.2`, signed by the upload's key.
+pub(crate) async fn commit_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    match presenter(state, doc).await {
+        Ok(p) => render(doc, blob_tasks::commit_v2(&state.files, &p, &payload).await),
+        Err(a) => a,
+    }
+}
+
+/// `rooms/blobs/upload/abort/0.2`, signed by the upload's key.
+pub(crate) async fn abort_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    match presenter(state, doc).await {
+        Ok(p) => render(doc, blob_tasks::abort_v2(&state.files, &p, &payload).await),
+        Err(a) => a,
+    }
+}
+
+/// `rooms/blobs/get/0.2`. Always proxied here: local storage issues no URLs.
+pub(crate) async fn get_blob_v2(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> Answer {
+    if let Err(r) =
+        blob_tasks::parse::<trust_tasks_rs::specs::rooms::blobs::get::v0_2::Payload>(&payload)
+    {
+        return refused(doc, r);
+    }
+    let (room, presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
+        Ok(r) => r,
+        Err(a) => return a,
+    };
+    render(
+        doc,
+        blob_tasks::get_v2(&state.files, &room, &presenter, &authorized, &payload).await,
+    )
 }
 
 pub(crate) async fn info(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
@@ -518,6 +591,479 @@ mod tests {
 
     fn code(out: &Value) -> String {
         out["code"].as_str().unwrap_or_default().to_string()
+    }
+
+    // ─── 0.2: the single-use upload key, and direct reads ──────────────────
+
+    fn begin_v2_doc(f: &RoomFixture, b: &Blob, upload_key_did: Option<&str>) -> Value {
+        let mut p = json!({
+            "roomId": f.room.room_id,
+            "presentation": f.as_owner(),
+            "manifest": b.manifest,
+        });
+        if let Some(k) = upload_key_did {
+            p["uploadKey"] = json!(k);
+        }
+        p
+    }
+
+    fn whole_part_plan(b: &Blob) -> Value {
+        json!({
+            "partSize": b.bytes.len(),
+            "partCount": 1,
+            "partDigests": [b.manifest["digest"]],
+        })
+    }
+
+    /// A proxied 0.2 upload: the member begins, naming a single-use key; only that key
+    /// sends the chunks and commits. The member signing as itself is `notFound`, a 0.1
+    /// document never reaches the upload, and the blob is the member's — the upload key
+    /// is charged, recorded and reported nowhere (begin/0.2 items 14–15).
+    #[tokio::test]
+    async fn a_proxied_upload_is_sent_by_its_upload_key_and_charged_to_the_member() {
+        let h = host(Default::default());
+        let f = room(&h).await;
+        let b = blob(CHUNK + 100, 1);
+        let key = Party::new();
+        let (status, begun) = call(
+            &h.app,
+            UPLOAD_BEGIN_V2_TYPE,
+            begin_v2_doc(&f, &b, Some(&key.did)),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{begun}");
+        assert_eq!(begun["mode"], "proxied");
+        assert!(begun.get("targets").is_none());
+        let id = begun["uploadId"].as_str().unwrap().to_string();
+
+        // The owner does not send the transfer it named a key for, in either version.
+        let (_, out) = call(
+            &h.app,
+            UPLOAD_CHUNK_V2_TYPE,
+            chunk_doc(&id, &b, 0),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(code(&out), "rooms/blobs/upload/chunk:notFound");
+        let (_, out) = call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, &b, 0), &f.owner).await;
+        assert_eq!(code(&out), "rooms/blobs/upload/chunk:notFound");
+        // Nor does the key send a 0.1 document.
+        let (_, out) = call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, &b, 0), &key).await;
+        assert_eq!(code(&out), "rooms/blobs/upload/chunk:notFound");
+
+        for i in 0..2 {
+            let (status, out) =
+                call(&h.app, UPLOAD_CHUNK_V2_TYPE, chunk_doc(&id, &b, i), &key).await;
+            assert_eq!(status, StatusCode::OK, "{out}");
+        }
+        let (_, out) = call(
+            &h.app,
+            UPLOAD_COMMIT_V2_TYPE,
+            json!({ "uploadId": id }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(code(&out), "rooms/blobs/upload/commit:notFound");
+        let (status, out) = call(
+            &h.app,
+            UPLOAD_COMMIT_V2_TYPE,
+            json!({ "uploadId": id }),
+            &key,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(out["blobRef"], b.blob_ref);
+        // An idempotent repeat of the commit that ended it is the only thing the key
+        // may still do.
+        let (status, again) = call(
+            &h.app,
+            UPLOAD_COMMIT_V2_TYPE,
+            json!({ "uploadId": id }),
+            &key,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{again}");
+        let (_, out) = call(&h.app, UPLOAD_CHUNK_V2_TYPE, chunk_doc(&id, &b, 0), &key).await;
+        assert_eq!(code(&out), "rooms/blobs/upload/chunk:notFound");
+
+        let entry = h
+            .state
+            .files
+            .blob(&f.room.room_id, &b.blob_ref)
+            .await
+            .unwrap()
+            .expect("committed");
+        assert_eq!(entry.charged_to.as_deref(), Some(f.room.owner_did.as_str()));
+        let member = h
+            .state
+            .files
+            .member_usage(&f.room.room_id, &f.room.owner_did)
+            .await
+            .unwrap();
+        assert_eq!(member.files, 1);
+        let key_usage = h
+            .state
+            .files
+            .member_usage(&f.room.room_id, &key.did)
+            .await
+            .unwrap();
+        assert_eq!(key_usage.files + key_usage.reserved_files, 0);
+        let raw = serde_json::to_string(&entry).unwrap();
+        assert!(
+            !raw.contains(&key.did),
+            "the upload key is recorded nowhere"
+        );
+    }
+
+    /// Resume rebinds the slot to the key the new begin names, so a client that lost its
+    /// key can finish; the old key is refused from then on, and the reservation is not
+    /// taken twice (begin/0.2 item 8). A key bound to another open upload is refused.
+    #[tokio::test]
+    async fn resume_rebinds_the_upload_key_and_refuses_the_old_one() {
+        let h = host(Default::default());
+        let f = room(&h).await;
+        let b = blob(CHUNK * 2, 2);
+        let (old, new) = (Party::new(), Party::new());
+        let (_, first) = call(
+            &h.app,
+            UPLOAD_BEGIN_V2_TYPE,
+            begin_v2_doc(&f, &b, Some(&old.did)),
+            &f.owner,
+        )
+        .await;
+        let id = first["uploadId"].as_str().unwrap().to_string();
+        let (status, _) = call(&h.app, UPLOAD_CHUNK_V2_TYPE, chunk_doc(&id, &b, 0), &old).await;
+        assert_eq!(status, StatusCode::OK);
+        let reserved = info(&h, &f).await["usage"]["room"]["reservedBytes"].clone();
+
+        // Another upload may not take a key that is bound to an open one.
+        let other = blob(CHUNK, 3);
+        let (_, out) = call(
+            &h.app,
+            UPLOAD_BEGIN_V2_TYPE,
+            begin_v2_doc(&f, &other, Some(&old.did)),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(code(&out), "rooms/blobs/upload/begin:uploadKeyInUse");
+
+        let (status, resumed) = call(
+            &h.app,
+            UPLOAD_BEGIN_V2_TYPE,
+            begin_v2_doc(&f, &b, Some(&new.did)),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{resumed}");
+        assert_eq!(resumed["uploadId"], id.as_str());
+        assert_eq!(resumed["missing"], json!([1]));
+        assert_eq!(
+            info(&h, &f).await["usage"]["room"]["reservedBytes"],
+            reserved
+        );
+
+        let (_, out) = call(&h.app, UPLOAD_CHUNK_V2_TYPE, chunk_doc(&id, &b, 1), &old).await;
+        assert_eq!(code(&out), "rooms/blobs/upload/chunk:notFound");
+        let (status, _) = call(&h.app, UPLOAD_CHUNK_V2_TYPE, chunk_doc(&id, &b, 1), &new).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, out) = call(
+            &h.app,
+            UPLOAD_ABORT_V2_TYPE,
+            json!({ "uploadId": id }),
+            &old,
+        )
+        .await;
+        assert_eq!(code(&out), "rooms/blobs/upload/abort:notFound");
+        let (status, out) = call(
+            &h.app,
+            UPLOAD_ABORT_V2_TYPE,
+            json!({ "uploadId": id }),
+            &new,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(out["aborted"], true);
+        assert_eq!(info(&h, &f).await["usage"]["room"]["reservedBytes"], 0);
+    }
+
+    /// Local storage issues no URLs, so a producer that offers only a part plan has no
+    /// mode in common with this host; an inconsistent plan is refused as such.
+    #[tokio::test]
+    async fn direct_only_is_no_transfer_mode_on_storage_that_cannot_presign() {
+        let h = host(Default::default());
+        let f = room(&h).await;
+        let b = blob(CHUNK, 4);
+        let mut p = begin_v2_doc(&f, &b, None);
+        p["directParts"] = whole_part_plan(&b);
+        let (_, out) = call(&h.app, UPLOAD_BEGIN_V2_TYPE, p.clone(), &f.owner).await;
+        assert_eq!(
+            code(&out),
+            "rooms/blobs/upload/begin:noTransferMode",
+            "{out}"
+        );
+        assert_eq!(out["details"]["modes"], json!(["proxied"]));
+        assert_eq!(info(&h, &f).await["usage"]["room"]["reservedBytes"], 0);
+
+        // Offering a key as well, it is proxied.
+        let key = Party::new();
+        p["uploadKey"] = json!(key.did);
+        let (status, begun) = call(&h.app, UPLOAD_BEGIN_V2_TYPE, p.clone(), &f.owner).await;
+        assert_eq!(status, StatusCode::OK, "{begun}");
+        assert_eq!(begun["mode"], "proxied");
+
+        p["directParts"]["partCount"] = json!(2);
+        p["directParts"]["partDigests"] = json!([b.manifest["digest"], b.manifest["digest"]]);
+        let (_, out) = call(&h.app, UPLOAD_BEGIN_V2_TYPE, p, &f.owner).await;
+        assert_eq!(code(&out), "rooms/blobs/upload/begin:invalidParts", "{out}");
+    }
+
+    /// Local storage, wrapped so it presigns reads: what a store reached through
+    /// presigned requests answers [`BlobStore::read_target`] with.
+    struct Presigning {
+        inner: vti_common::blob_store::local::LocalDirStore,
+        lifetime: chrono::Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl vti_common::blob_store::BlobStore for Presigning {
+        fn kind(&self) -> &'static str {
+            self.inner.kind()
+        }
+        async fn put(
+            &self,
+            key: &vti_common::blob_store::BlobKey,
+            staged: &std::path::Path,
+            size: u64,
+        ) -> Result<vti_common::blob_store::BackendRef, vti_common::error::AppError> {
+            self.inner.put(key, staged, size).await
+        }
+        async fn get_range(
+            &self,
+            at: &vti_common::blob_store::BackendRef,
+            start: u64,
+            end: u64,
+        ) -> Result<Vec<u8>, vti_common::error::AppError> {
+            self.inner.get_range(at, start, end).await
+        }
+        async fn delete(
+            &self,
+            at: &vti_common::blob_store::BackendRef,
+        ) -> Result<vti_common::blob_store::Deletion, vti_common::error::AppError> {
+            self.inner.delete(at).await
+        }
+        async fn health(&self) -> vti_common::blob_store::Health {
+            self.inner.health().await
+        }
+        async fn read_target(
+            &self,
+            at: &vti_common::blob_store::BackendRef,
+        ) -> Result<Option<vti_common::blob_store::PresignedRequest>, vti_common::error::AppError>
+        {
+            Ok(Some(vti_common::blob_store::PresignedRequest {
+                method: "GET".into(),
+                url: format!(
+                    "https://bucket.example/{}?X-Amz-Signature=secret",
+                    at.key.as_str()
+                ),
+                headers: Default::default(),
+                expires_at: chrono::Utc::now() + self.lifetime,
+            }))
+        }
+    }
+
+    fn presigning_host(lifetime: chrono::Duration) -> Host {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Presigning {
+            inner: vti_common::blob_store::local::LocalDirStore::new(dir.path().join("b")),
+            lifetime,
+        });
+        let state = open_state_with_files(
+            dir.path(),
+            vti_common::auth::TrustTaskVmResolver::did_key_only(),
+            FilesConfig {
+                store: Some(store),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let app = router(state.clone());
+        Host {
+            _dir: dir,
+            state,
+            app,
+        }
+    }
+
+    async fn get_v2(h: &Host, f: &RoomFixture, blob_ref: &str, direct: bool) -> Value {
+        let (status, out) = call(
+            &h.app,
+            BLOB_GET_V2_TYPE,
+            json!({
+                "roomId": f.room.room_id,
+                "presentation": f.as_owner(),
+                "blobRef": blob_ref,
+                "direct": direct,
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        out
+    }
+
+    /// A reader who accepts a storage URL, on storage that issues one, gets a GET for
+    /// the one object, expiring within five minutes; the download is counted when it is
+    /// issued, at the blob's size, since its bytes never pass through the host.
+    #[tokio::test]
+    async fn get_v2_is_direct_where_storage_presigns_and_counts_the_download() {
+        let h = presigning_host(chrono::Duration::minutes(5));
+        let f = room(&h).await;
+        let b = blob(CHUNK + 7, 5);
+        let blob_ref = upload(&h, &f, &b).await;
+
+        let out = get_v2(&h, &f, &blob_ref, true).await;
+        assert_eq!(out["mode"], "direct", "{out}");
+        assert_eq!(out["manifest"], b.manifest);
+        assert!(out.get("downloadId").is_none());
+        assert_eq!(out["target"]["method"], "GET");
+        assert_eq!(out["target"]["index"], 0);
+        assert!(
+            out["target"]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("https://")
+        );
+        let expires: chrono::DateTime<chrono::Utc> =
+            serde_json::from_value(out["expiresAt"].clone()).unwrap();
+        assert!(expires <= chrono::Utc::now() + chrono::Duration::seconds(301));
+        assert_eq!(out["expiresAt"], out["target"]["expiresAt"]);
+
+        let today = chrono::Utc::now().date_naive();
+        let a = h
+            .state
+            .files
+            .room_activity(&f.room.room_id, today, today)
+            .await
+            .unwrap();
+        assert_eq!(a.downloads, 1);
+        assert_eq!(a.egress_bytes, b.bytes.len() as u64);
+
+        // Not asked for: proxied, with a download handle.
+        let out = get_v2(&h, &f, &blob_ref, false).await;
+        assert_eq!(out["mode"], "proxied");
+        assert!(out["downloadId"].is_string() && out.get("target").is_none());
+    }
+
+    /// A target that would outlive five minutes is never handed out: the host answers
+    /// through itself instead.
+    #[tokio::test]
+    async fn a_long_lived_read_target_is_never_issued() {
+        let h = presigning_host(chrono::Duration::hours(1));
+        let f = room(&h).await;
+        let b = blob(CHUNK, 6);
+        let blob_ref = upload(&h, &f, &b).await;
+        let out = get_v2(&h, &f, &blob_ref, true).await;
+        assert_eq!(out["mode"], "proxied", "{out}");
+    }
+
+    /// Local storage issues no URLs: a 0.2 read there is proxied and its chunks come
+    /// through the host as for 0.1.
+    #[tokio::test]
+    async fn get_v2_on_local_storage_is_proxied() {
+        let h = host(Default::default());
+        let f = room(&h).await;
+        let b = blob(CHUNK, 7);
+        let blob_ref = upload(&h, &f, &b).await;
+        let out = get_v2(&h, &f, &blob_ref, true).await;
+        assert_eq!(out["mode"], "proxied");
+        let (status, c) = call(
+            &h.app,
+            DOWNLOAD_CHUNK_TYPE,
+            json!({ "downloadId": out["downloadId"], "index": 0 }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{c}");
+    }
+
+    /// The client's 0.2 path: the member begins and reads, a fresh upload key sends and
+    /// commits, and the bytes come back through the host where storage cannot presign.
+    #[tokio::test]
+    async fn a_file_round_trips_through_the_client_at_0_2() {
+        use vtc_client::VtcClient;
+        use vtc_client::rooms::RoomSession;
+        use vti_rooms::files::{self, FileBinding, Padding};
+
+        let h = host(eager());
+        let f = room(&h).await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let app = h.app.clone();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let client = VtcClient::anonymous(&url, "did:key:zHost");
+        let owner = f.as_owner();
+        let session =
+            RoomSession::new(&f.room.room_id, &owner.membership, owner.authority.clone()).unwrap();
+        let (did, secret) = (f.owner.did.as_str(), f.owner.secret_multibase.as_str());
+        let plaintext: Vec<u8> = (0..30_000u32).map(|i| (i % 249) as u8).collect();
+        let sealed = files::seal_file(
+            &[3u8; 32],
+            FileBinding {
+                room_id: f.room.room_id.clone(),
+                file_id: files::new_file_id(),
+                epoch: 1,
+                segment_size: 16_384 - files::TAG_LEN,
+            },
+            "notes.txt",
+            None,
+            &plaintext,
+            Padding::None,
+        )
+        .unwrap();
+
+        let key = Party::new();
+        let begun = client
+            .begin_upload_v2::<_, Value>(&session, &sealed.blob, Some(&key.did), None, did, secret)
+            .await
+            .expect("begin");
+        assert_eq!(begun.mode.to_string(), "proxied");
+        let upload_id = begun.upload_id.to_string();
+        for index in &begun.missing {
+            let i = index.0 as usize;
+            client
+                .upload_chunk_v2(
+                    &upload_id,
+                    i as u64,
+                    &sealed.chunks[i],
+                    &key.did,
+                    &key.secret_multibase,
+                )
+                .await
+                .expect("chunk, signed by the upload key");
+        }
+        let committed = client
+            .commit_upload_v2(&upload_id, &key.did, &key.secret_multibase)
+            .await
+            .expect("commit, signed by the upload key");
+        let blob_ref = committed.blob_ref.to_string();
+        assert!(files::same_digest(&blob_ref, &sealed.file.blob_ref));
+
+        let got = client
+            .get_blob_v2(&session, &blob_ref, true, did, secret)
+            .await
+            .expect("get");
+        assert_eq!(got.mode.to_string(), "proxied");
+        let download_id = got.download_id.expect("a handle").to_string();
+        for i in 0..sealed.chunks.len() {
+            let chunk = client
+                .download_chunk(&download_id, i as u64, did, secret)
+                .await
+                .unwrap();
+            assert_eq!(chunk, sealed.chunks[i]);
+        }
     }
 
     /// The owner's read of who is using the room: one entry per member who has

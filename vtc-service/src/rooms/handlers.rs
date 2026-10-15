@@ -147,6 +147,11 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
         .on_async(super::files::handle_download_chunk)
         .on_async(super::files::handle_info)
         .on_async(super::files::handle_usage)
+        .on_async(super::files::handle_upload_begin_v2)
+        .on_async(super::files::handle_upload_chunk_v2)
+        .on_async(super::files::handle_upload_commit_v2)
+        .on_async(super::files::handle_upload_abort_v2)
+        .on_async(super::files::handle_blob_get_v2)
 }
 
 /// Charge an operation the room has just authorized to the presenter's budget in that

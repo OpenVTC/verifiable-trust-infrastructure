@@ -982,6 +982,26 @@ fn every_dispatched_uri_is_the_published_one() {
             ROOMS_USAGE_TYPE,
             <rooms::usage::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
+        (
+            ROOMS_BLOBS_UPLOAD_BEGIN_V2_TYPE,
+            <rooms::blobs::upload::begin::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_BLOBS_UPLOAD_CHUNK_V2_TYPE,
+            <rooms::blobs::upload::chunk::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_BLOBS_UPLOAD_COMMIT_V2_TYPE,
+            <rooms::blobs::upload::commit::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_BLOBS_UPLOAD_ABORT_V2_TYPE,
+            <rooms::blobs::upload::abort::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_BLOBS_GET_V2_TYPE,
+            <rooms::blobs::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
     ];
 
     for (ours, registry) in &published {

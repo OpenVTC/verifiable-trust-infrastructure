@@ -770,6 +770,8 @@ community's ACL or a session.
   # storage_capacity_bytes = 107374182400
   # orphan_grace_hours = 168               # a released file is deleted after this
   # sweep_interval_secs = 600
+  # direct_transfer = "not_private"        # 0.2 reads straight from storage:
+  #                                        # "off" | "not_private" | "all"
   [rooms.files.room]                       # per room; defaults: 10 000 files,
   # max_files = 10000                      #   100 MiB a file, 5 GiB in all
   # max_bytes = 5368709120
@@ -870,6 +872,46 @@ community's ACL or a session.
      presigned request for a different bucket or endpoint than the config's is
      refused before it is sent. Through a VTA account, `prefix` is lowercase
      segments only, as the VTA's scope accepts.
+  4. *Optional, for browsers:* set the bucket's CORS so a browser may read files
+     straight from it (direct transfer, below). `pnm external setup` prints the
+     rule as `bucket-cors.json`: `GET` only, the `Range` request header allowed,
+     `Content-Length`, `Content-Range` and `ETag` exposed, and `AllowedOrigins`
+     for you to set to the origins your members' browsers load the portal from.
+     Non-browser clients (`pnm`, `vtc-client`) need nothing.
+- **Direct transfer** (`rooms/blobs/*` 0.2, served beside 0.1). A member may
+  ask for a file's bytes to move straight between them and the room's storage,
+  rather than through the VTC as chunk documents. The VTC still authorizes
+  every object against the room's chain and limits, and counts it.
+  - **Reads** (`rooms/blobs/get/0.2` with `direct: true`): on an `s3` config
+    through the community's VTA, the answer is `mode: direct` with a target — a
+    presigned `GET` of that one object, ranged requests allowed, expiring within
+    five minutes, asked of the VTA afresh for this reader and never logged. A
+    target that is not an HTTPS `GET` within five minutes, or a VTA that cannot
+    issue one, is answered `mode: proxied` instead. A direct read is counted when
+    the target is issued — a download, and the blob's whole size served — since
+    its bytes never pass through the VTC. `local` storage always answers
+    proxied.
+  - **`private` rooms stay proxied** unless `[rooms.files] direct_transfer =
+    "all"`. Direct transfer shows the storage provider which network address
+    reads which object: on a `private` room that is the link between a member
+    and their activity the tier exists to deny anyone. The default,
+    `"not_private"`, allows it for `open` and `attributed` rooms; `"off"` keeps
+    every transfer through the VTC.
+  - **Uploads are proxied in this build.** `rooms/blobs/upload/begin/0.2`
+    requires each direct part's URL to bind the part's exact length and SHA-256
+    as signed headers, and a VTA's `s3-static-presign` account presigns one
+    `put`, `get` or `delete` with no signed headers and no multipart operations
+    — all `external/credentials/issue/0.1` can ask for. So a `0.2` begin is
+    answered `mode: proxied` when it names an `uploadKey`, and
+    `noTransferMode` (naming `proxied`) when it offers only `directParts`.
+  - **The upload key.** A `0.2` proxied upload's chunk, commit and abort are
+    signed by the `uploadKey` the begin named — a `did:key` generated for that
+    one upload — so the member's VTA signs the begin and never sees a byte. The
+    VTC records, charges and rate-limits the member, never the key: a chunk from
+    the key is admitted at its size because an open upload names it, and charged
+    to the member's transfer budget in the room, so a key minted per file buys no
+    second budget. The member signing a chunk as themselves is `notFound`; a
+    begin resumed with a new key rebinds the upload and the old key is refused.
 - **Usage and limits** (`data-rooms-files.md` §6.3). The VTC keeps one row per
   room per UTC day (and one per member per room, on rooms that are not
   `private`) for 400 days: space held at the day's close, uploads, downloads

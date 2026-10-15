@@ -15,9 +15,14 @@ use std::sync::Arc;
 use serde_json::Value;
 use trust_tasks_rs::specs::rooms::blobs::chunk::v0_1 as download_chunk;
 use trust_tasks_rs::specs::rooms::blobs::get::v0_1 as blob_get;
+use trust_tasks_rs::specs::rooms::blobs::get::v0_2 as blob_get_v2;
 use trust_tasks_rs::specs::rooms::blobs::upload::{
     abort::v0_1 as upload_abort, begin::v0_1 as upload_begin, chunk::v0_1 as upload_chunk,
     commit::v0_1 as upload_commit,
+};
+use trust_tasks_rs::specs::rooms::blobs::upload::{
+    abort::v0_2 as upload_abort_v2, begin::v0_2 as upload_begin_v2, chunk::v0_2 as upload_chunk_v2,
+    commit::v0_2 as upload_commit_v2,
 };
 use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
 use trust_tasks_rs::specs::rooms::records::{
@@ -29,7 +34,7 @@ use vti_common::error::AppError;
 use vti_common::store::Store;
 use vti_rooms::authz::{self, Action, AuthorizedAction};
 use vti_rooms::blob_tasks::{self, Refusal, TaskResult};
-use vti_rooms::blobs::BlobHost;
+use vti_rooms::blobs::{BlobHost, UploadCaller};
 use vti_rooms::wire::{AuthorityPresentation, GetRecordBody, ListRecordsBody, PutRecordBody};
 use vti_rooms::{Room, storage};
 
@@ -132,7 +137,8 @@ pub fn open_blob_host(
         data_dir.join("room-blob-staging"),
         storage,
         limits,
-    ))
+    )
+    .with_direct_transfer(config.map(|c| c.direct_transfer).unwrap_or_default()))
 }
 
 /// Collect deleted, orphaned-past-grace and abandoned files every `interval_secs`, and
@@ -265,6 +271,31 @@ async fn charge_transfer(
     };
     match ctx.state.room_files.transfer_room(&ctx.presenter, id).await {
         Some(room_id) => charged(&room_id, &ctx.presenter, traffic),
+        None => Ok(()),
+    }
+}
+
+/// Charge a `0.2` upload document to the budget of the upload's **owner** in its room,
+/// once its signer is shown to be the one the upload admits (its upload key, for a
+/// proxied upload). An upload key is minted per upload; charged as itself it would be
+/// a fresh, anonymous budget for every file, which is exactly what the per-presenter
+/// budget exists to deny. Not admitted: not charged here, refused `notFound` by the
+/// task, and paid for out of the address's room ceiling.
+async fn charge_upload_v2(
+    ctx: &RoomCtx,
+    payload: &Value,
+    traffic: RoomTraffic,
+) -> Result<(), TrustTaskOutcome> {
+    let Some(id) = payload["uploadId"].as_str() else {
+        return Ok(());
+    };
+    match ctx
+        .state
+        .room_files
+        .upload_owner_room(UploadCaller::V2(&ctx.presenter), id)
+        .await
+    {
+        Some((room_id, owner)) => charged(&room_id, &owner, traffic),
         None => Ok(()),
     }
 }
@@ -449,6 +480,113 @@ pub(crate) async fn handle_download_chunk(
     render(
         &doc,
         blob_tasks::download_chunk(&ctx.state.room_files, &ctx.presenter, &p).await,
+    )
+}
+
+/// `rooms/blobs/upload/begin/0.2`. Needs `write`; answers how the bytes move.
+pub(crate) async fn handle_upload_begin_v2(
+    doc: TrustTask<upload_begin_v2::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Write).await {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    render(
+        &doc,
+        blob_tasks::begin_v2(
+            &ctx.state.room_files,
+            &room,
+            &ctx.presenter,
+            &authorized,
+            &payload,
+        )
+        .await,
+    )
+}
+
+/// `rooms/blobs/upload/chunk/0.2`. Authorized by being the upload's key.
+pub(crate) async fn handle_upload_chunk_v2(
+    doc: TrustTask<upload_chunk_v2::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let p = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    if let Err(o) = charge_upload_v2(&ctx, &p, RoomTraffic::Transfer).await {
+        return o;
+    }
+    render(
+        &doc,
+        blob_tasks::upload_chunk_v2(&ctx.state.room_files, &ctx.presenter, &p).await,
+    )
+}
+
+/// `rooms/blobs/upload/commit/0.2`. Authorized by being the upload's key.
+pub(crate) async fn handle_upload_commit_v2(
+    doc: TrustTask<upload_commit_v2::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let p = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    if let Err(o) = charge_upload_v2(&ctx, &p, RoomTraffic::Operation).await {
+        return o;
+    }
+    render(
+        &doc,
+        blob_tasks::commit_v2(&ctx.state.room_files, &ctx.presenter, &p).await,
+    )
+}
+
+/// `rooms/blobs/upload/abort/0.2`. Authorized by being the upload's key.
+pub(crate) async fn handle_upload_abort_v2(
+    doc: TrustTask<upload_abort_v2::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let p = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    if let Err(o) = charge_upload_v2(&ctx, &p, RoomTraffic::Operation).await {
+        return o;
+    }
+    render(
+        &doc,
+        blob_tasks::abort_v2(&ctx.state.room_files, &ctx.presenter, &p).await,
+    )
+}
+
+/// `rooms/blobs/get/0.2`. Needs `read`; direct from storage where the room's tier,
+/// `[rooms.files] direct_transfer` and the blob's store allow, else proxied.
+pub(crate) async fn handle_blob_get_v2(
+    doc: TrustTask<blob_get_v2::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Read).await {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    render(
+        &doc,
+        blob_tasks::get_v2(
+            &ctx.state.room_files,
+            &room,
+            &ctx.presenter,
+            &authorized,
+            &payload,
+        )
+        .await,
     )
 }
 
