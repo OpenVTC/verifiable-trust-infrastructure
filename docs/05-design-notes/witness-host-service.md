@@ -1,6 +1,6 @@
 # The witness as a host service
 
-Status: **proposed** — for review before implementation. Tracks #1068.
+Status: **accepted** (2026-10-15). Tracks #1068.
 
 ## 1. What is being decided
 
@@ -196,13 +196,20 @@ with, it goes in Appendix F before any code.
 5. The witness is **a host service of its own**, not a role of the VTA or VTC
    (§2), because it must be independent and most deployments don't need it.
 
-## 6. Open questions
+## 6. Resolved after review
 
-1. **Where `vti-witness` lives.** It could be this workspace, beside
-   `vtc-service`, sharing `vti-common` and `vta-sdk`, or a repository of its own
-   like the push gateway. The workspace is proposed: it reuses the transport and
-   proof code directly and is covered by the same CI.
-2. **Membership evidence.** Is a VMC in the same VP right, or should the witness
-   ask the community (a VTC membership check over TSP)? The VP keeps the witness
-   from contacting the community, and so from telling the community who is being
-   witnessed, which is why it is proposed.
+1. **`vti-witness` lives in this workspace**, beside `vtc-service`, sharing
+   `vti-common` and `vta-sdk` and covered by the same CI.
+2. **What the witness sees depends on what it witnesses, and v1 has no
+   zero-knowledge path.** The witness reads the presentation it is given in
+   full: the relationship credential and, under §3.3, the membership evidence.
+   The specification gives it no way to verify less (`vp` is an opaque object),
+   and no ZKP presentation is implemented. A deployment therefore either
+   **trusts the witness** with what it is shown, or designs a flow in which the
+   witness adds value without seeing specifics: what is presented, and which
+   eligibility evidence is asked for, are deployment decisions. The operator
+   documentation states this plainly, and §3.3's community-membership check is
+   the default policy, not a requirement the service imposes on every
+   deployment. A witness may be configured with no membership requirement
+   (`communities = ["*"]`), for a deployment that would rather trust the witness
+   less with what it learns than gate who it serves.
