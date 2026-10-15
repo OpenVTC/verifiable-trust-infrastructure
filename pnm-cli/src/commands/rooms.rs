@@ -298,7 +298,6 @@ pub(crate) async fn run(
                     host_did: host_did.as_deref(),
                     room_id: &room_id,
                 },
-                signer,
                 prefix.as_deref(),
                 since_version,
                 limit,
@@ -318,7 +317,6 @@ pub(crate) async fn run(
                     host_did: host_did.as_deref(),
                     room_id: &room_id,
                 },
-                signer,
                 &key,
             )
             .await
@@ -339,7 +337,6 @@ pub(crate) async fn run(
                     host_did: host_did.as_deref(),
                     room_id: &room_id,
                 },
-                signer,
                 &key,
                 title,
                 body,
@@ -365,7 +362,6 @@ pub(crate) async fn run(
                     host_did: host_did.as_deref(),
                     room_id: &room_id,
                 },
-                signer,
                 &key,
                 status,
                 pinned,
@@ -407,7 +403,6 @@ pub(crate) async fn run(
                         host_did: host_did.as_deref(),
                         room_id: &room_id,
                     },
-                    signer,
                 )
                 .await
             }

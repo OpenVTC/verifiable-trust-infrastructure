@@ -260,15 +260,13 @@ pub async fn send_room_task_typed(
     response_task: &str,
     payload: Value,
 ) -> Result<Value, RoomTaskError> {
-    // Before anything leaves. Threaded through the seam rather than left to each
-    // caller: a write task added later inherits the refusal instead of having to
-    // remember it, which is the difference between a rule and a convention.
+    let mut document = build_room_task(task, host, issuer, payload);
+    let signer = VtaKeySigner::new(ctx, signing_key_id, verification_method);
+    // Refused before anything is signed, as well as before anything leaves: a signature
+    // over a write this agent will not send is a signature nobody needed.
     refuse_if_caught(groups, member, task)
         .await
         .map_err(RoomTaskError::Unknown)?;
-
-    let mut document = build_room_task(task, host, issuer, payload);
-    let signer = VtaKeySigner::new(ctx, signing_key_id, verification_method);
     let proof = affinidi_data_integrity::DataIntegrityProof::sign(
         &document,
         &signer,
@@ -293,6 +291,34 @@ pub async fn send_room_task_typed(
     document["proof"] = serde_json::to_value(proof).map_err(|e| {
         RoomTaskError::Unknown(AppError::Internal(format!("serialise the proof: {e}")))
     })?;
+
+    send_signed_room_task_typed(groups, member, out, host, document, response_task).await
+}
+
+/// Send a room request that is **already signed** — by the member, through
+/// [`crate::operations::room_act`] — to `host`, and return the response's `payload`.
+///
+/// The same seam as [`send_room_task_typed`] after its signature: the refusal to write to
+/// a host caught contradicting itself, the transport chosen from what the host advertises,
+/// and a reply that must be the host's own signed answer.
+pub async fn send_signed_room_task_typed(
+    groups: &vti_common::store::KeyspaceHandle,
+    member: &crate::operations::room_groups::Member,
+    out: &Outbound<'_>,
+    host: &str,
+    document: Value,
+    response_task: &str,
+) -> Result<Value, RoomTaskError> {
+    // Before anything leaves. Threaded through the seam rather than left to each
+    // caller: a write task added later inherits the refusal instead of having to
+    // remember it, which is the difference between a rule and a convention.
+    let task = document
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    refuse_if_caught(groups, member, task)
+        .await
+        .map_err(RoomTaskError::Unknown)?;
 
     // `SignedByRecipient`, and not because a room host is special: a reply that
     // is acted on has to be evidence, and everything this returns is acted on.

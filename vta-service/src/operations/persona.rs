@@ -82,6 +82,31 @@ impl<'a> PersonaStores<'a> {
     }
 }
 
+/// The verification relationship a persona's key is wanted for.
+///
+/// A credential the persona issues, or a record body it authors, is an attestation
+/// (`assertionMethod`); a room request it sends as itself — `rooms/keys/act/0.1`, and the
+/// documents `read` / `browse` / `backfill` send — proves control of the identifier
+/// (`authentication`). A verifier checks the key against the relationship the proof
+/// declares (VTI-KEY-022), so the method a proof names must be listed under that one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relationship {
+    /// `assertionMethod`.
+    AssertionMethod,
+    /// `authentication`.
+    Authentication,
+}
+
+impl Relationship {
+    /// The DID-document property, which is also the `proofPurpose` value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AssertionMethod => "assertionMethod",
+            Self::Authentication => "authentication",
+        }
+    }
+}
+
 /// The key this agent signs with as persona `did`, if `did` is a persona `auth` may act as.
 ///
 /// `None` for a DID this agent does not hold **and** for one it holds in a context the
@@ -90,6 +115,19 @@ pub async fn persona_signing_key(
     stores: PersonaStores<'_>,
     auth: &AuthClaims,
     did: &str,
+) -> Result<Option<PersonaKey>, AppError> {
+    persona_key_for(stores, auth, did, Relationship::AssertionMethod).await
+}
+
+/// [`persona_signing_key`], for the key the persona's document lists under `relationship`.
+///
+/// Whether `did` is a persona the caller may act as does not depend on the relationship:
+/// the context rules are the same, and only which method a proof names differs.
+pub async fn persona_key_for(
+    stores: PersonaStores<'_>,
+    auth: &AuthClaims,
+    did: &str,
+    relationship: Relationship,
 ) -> Result<Option<PersonaKey>, AppError> {
     // A DID URL is not a DID. Accepting `did#fragment` here would let a caller name a
     // persona by a string no credential or leaf carries.
@@ -111,9 +149,11 @@ pub async fn persona_signing_key(
 
     #[cfg(feature = "webvh")]
     if did.starts_with("did:webvh:") {
-        return webvh_persona_key(stores.keys_ks, stores.webvh_ks, auth, did).await;
+        return webvh_persona_key(stores.keys_ks, stores.webvh_ks, auth, did, relationship).await;
     }
 
+    #[cfg(not(feature = "webvh"))]
+    let _ = relationship;
     Ok(None)
 }
 
@@ -124,7 +164,9 @@ async fn webvh_persona_key(
     webvh_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     did: &str,
+    relationship: Relationship,
 ) -> Result<Option<PersonaKey>, AppError> {
+    let rel = relationship.as_str();
     let Some(record) = crate::webvh_store::get_did(webvh_ks, did).await? else {
         return Ok(None);
     };
@@ -137,8 +179,8 @@ async fn webvh_persona_key(
     let document = crate::operations::protocol::document::current_document_from_log(&log)
         .map_err(|e| AppError::Internal(format!("read the current document of {did}: {e}")))?;
 
-    // Every method, by id, with its public key — `assertionMethod` may list ids or embed
-    // the method itself.
+    // Every method, by id, with its public key — a relationship may list ids or embed the
+    // method itself.
     let mut methods: Vec<(String, String)> = Vec::new();
     let mut add = |m: &Value| {
         if let (Some(id), Some(pk)) = (
@@ -155,7 +197,7 @@ async fn webvh_persona_key(
     {
         add(m);
     }
-    for m in document["assertionMethod"].as_array().into_iter().flatten() {
+    for m in document[rel].as_array().into_iter().flatten() {
         add(m);
     }
     let absolute = |id: &str| {
@@ -165,7 +207,7 @@ async fn webvh_persona_key(
             id.to_string()
         }
     };
-    for entry in document["assertionMethod"].as_array().into_iter().flatten() {
+    for entry in document[rel].as_array().into_iter().flatten() {
         let id = match entry {
             Value::String(s) => s.as_str(),
             other => match other.get("id").and_then(Value::as_str) {

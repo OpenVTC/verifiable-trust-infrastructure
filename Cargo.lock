@@ -10775,9 +10775,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.31.2"
+version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42bda718b02d28163fcb91149d9f95d567209f9d0b7fabe7c9013308762c25d3"
+checksum = "446076e1a771c2440e142231a183b54ea51eba78d7b4a56d51b9471a2022a078"
 dependencies = [
  "async-trait",
  "chrono",
@@ -11799,6 +11799,7 @@ dependencies = [
  "rcgen 0.14.10",
  "regorus",
  "reqwest",
+ "room-host",
  "serde",
  "serde_ignored",
  "serde_json",

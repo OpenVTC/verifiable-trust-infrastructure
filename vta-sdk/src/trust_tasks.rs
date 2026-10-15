@@ -1038,6 +1038,21 @@ pub const TASK_ROOMS_KEYS_BROWSE_0_1: &str = "https://trusttasks.org/spec/rooms/
 /// to a host and presents its own authority there.
 pub const TASK_ROOMS_KEYS_SEAL_0_1: &str = "https://trusttasks.org/spec/rooms/keys/seal/0.1";
 
+/// `spec/rooms/keys/seal/0.2` — `seal` 0.1, plus `signAsPrincipal`: the VTA signs the
+/// record body as its `author` (a member the caller acts as) before sealing it, so the
+/// record is attributed to the member rather than to the client that wrote it. Auth:
+/// `roomOpen` capability; `signAsPrincipal` is refused to a delegate.
+pub const TASK_ROOMS_KEYS_SEAL_0_2: &str =
+    <trust_tasks_rs::specs::rooms::keys::seal::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/act/0.1` — the member's own client hands the VTA an unsigned
+/// host-bound room request; the VTA completes it **as the member** (the member's own
+/// authority narrowed to the one action the type needs and granted to the member, issuer
+/// = member, the member's `authentication` proof) and returns it to send unchanged. Auth:
+/// `roomPresent` capability; refused to a delegate, which uses `present`.
+pub const TASK_ROOMS_KEYS_ACT_0_1: &str =
+    <trust_tasks_rs::specs::rooms::keys::act::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/keys/file-key/0.1` — one file's key, for the member's own client
 /// to seal or open that file itself, so file bytes never pass through the VTA.
 /// Unlike `open`, a key crosses — one bound to the room, the epoch and the file,
@@ -2553,6 +2568,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_READ_0_1,
     TASK_ROOMS_KEYS_BROWSE_0_1,
     TASK_ROOMS_KEYS_SEAL_0_1,
+    TASK_ROOMS_KEYS_SEAL_0_2,
+    TASK_ROOMS_KEYS_ACT_0_1,
     TASK_ROOMS_KEYS_FILE_KEY_0_1,
     TASK_ROOMS_KEYS_LIST_0_1,
     TASK_ROOMS_OWNER_INVITE_0_1,

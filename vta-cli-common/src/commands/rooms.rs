@@ -4,10 +4,22 @@
 //!
 //! Every command here talks to **two** services, and never confuses them:
 //!
-//! - the operator's **VTA**, over the client's existing session, to mint a
-//!   presentation ([`VtaClient::room_present`]) and to open a sealed record
+//! - the operator's **VTA**, over the client's existing session, to complete each
+//!   host-bound request **as the member** ([`VtaClient::room_act`],
+//!   `rooms/keys/act/0.1`), to seal a record body signed as the member
+//!   ([`VtaClient::room_seal_as_principal`]) and to open a sealed record
 //!   ([`VtaClient::room_open`]);
-//! - the room's **host**, unauthenticated, carrying that presentation.
+//! - the room's **host**, unauthenticated, receiving the completed document unchanged.
+//!
+//! # The member is the persona, never this client
+//!
+//! A room admitted the operator's **persona** — a DID their VTA holds — not this CLI's
+//! session key. So the record verbs (`list`, `get`, `put`, `curate`, the `rooms/info`
+//! lookup and `keys commit --host`) build the request unsigned and have the VTA complete
+//! it as the persona: the persona's own authority narrowed to the one action, the persona
+//! as `issuer` and signer. The host records the persona, and this client's DID reaches it
+//! nowhere. File transfer and `renew` still present for this client
+//! ([`VtaClient::room_present`]) and sign with its own key; they move separately.
 //!
 //! The credentials the presentation is derived from, and the group key that
 //! opens a record, stay inside the VTA. This CLI holds neither at any point,
@@ -130,6 +142,61 @@ pub fn session_from_minted(
     Ok(session)
 }
 
+/// Send one room request to the host **as the member**: built here without presentation
+/// or proof, completed by the VTA with `rooms/keys/act/0.1`, sent unchanged. Returns the
+/// member the VTA acted as and the host's response payload.
+///
+/// Nothing this client holds goes to the host: not its DID, not its key.
+async fn act_and_send(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    type_uri: &str,
+    payload: Value,
+) -> Result<(String, Value), Box<dyn std::error::Error>> {
+    let host_did = target.host_did.unwrap_or("did:key:zHost");
+    let document = vta_sdk::client::unsigned_room_request(type_uri, host_did, None, payload)?;
+    let completed = client.room_act(&document).await.map_err(|e| {
+        let text = e.to_string();
+        let hint = if text.contains("principalAmbiguous") {
+            "\n\nYou may act as more than one member of this room: act from the context of \
+             the one you mean."
+        } else if text.contains("notAMember") {
+            "\n\nYour VTA holds no credential this room issued to a persona you may act as. \
+             The owner issues them with `pnm rooms owner issue-membership` and \
+             `issue-authority --store`."
+        } else if text.contains("actionNotHeld") {
+            "\n\nYour own credentials for this room do not confer that action."
+        } else {
+            ""
+        };
+        format!("{e}{hint}")
+    })?;
+    let principal = completed.principal.to_string();
+    let document = serde_json::to_value(&completed.document)?;
+    let reply = target.client().send_signed_room_document(&document).await?;
+    Ok((principal, reply))
+}
+
+/// [`act_and_send`], with the response parsed into its wire type.
+pub(crate) async fn act_and_send_parsed<T: serde::de::DeserializeOwned>(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    type_uri: &str,
+    payload: Value,
+) -> Result<T, Box<dyn std::error::Error>> {
+    let (_, reply) = act_and_send(client, target, type_uri, payload).await?;
+    parse_reply(type_uri, reply)
+}
+
+/// Parse a host's response payload into its wire type, naming the task when it does not fit.
+fn parse_reply<T: serde::de::DeserializeOwned>(
+    what: &str,
+    value: Value,
+) -> Result<T, Box<dyn std::error::Error>> {
+    serde_json::from_value(value)
+        .map_err(|e| format!("the host's {what} response is not one this client reads: {e}").into())
+}
+
 /// Resolve `--pin` / `--unpin` into the wire value.
 ///
 /// Three states from two flags: pinned, unpinned, and **unchanged**. Absence has
@@ -156,45 +223,22 @@ pub struct RoomSigner<'a> {
     pub key_multibase: &'a str,
 }
 
-/// `rooms list` — the room's records, metadata only.
+/// `rooms list` — the room's records, metadata only, read as the member.
 pub async fn cmd_rooms_list(
     client: &VtaClient,
     target: RoomTarget<'_>,
-    signer: RoomSigner<'_>,
     prefix: Option<&str>,
     since_version: Option<u64>,
     limit: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let session = present(client, &target, "read").await?;
-
     // Read the listing to its END, then let `limit` decide how much to PRINT.
     // A host pages, and absence of the cursor is the only end-of-listing signal
     // — taking the first page would print "3 record(s)" over a room holding
     // three hundred, which is the failure this whole member exists to prevent.
-    let mut listing = target
-        .client()
-        .list_records(
-            &session,
-            prefix,
-            since_version,
-            None,
-            signer.did,
-            signer.key_multibase,
-        )
-        .await?;
+    let mut listing = list_page(client, &target, prefix, since_version, None).await?;
     let mut cursor = listing.cursor.clone();
     while let Some(c) = cursor {
-        let next = target
-            .client()
-            .list_records(
-                &session,
-                prefix,
-                since_version,
-                Some(&c),
-                signer.did,
-                signer.key_multibase,
-            )
-            .await?;
+        let next = list_page(client, &target, prefix, since_version, Some(&c)).await?;
         cursor = next.cursor.clone();
         listing.records.extend(next.records);
     }
@@ -236,22 +280,53 @@ pub async fn cmd_rooms_list(
     Ok(())
 }
 
-/// `rooms get` — one record, opened through the VTA when it is sealed.
+/// One page of `rooms/records/list`, as the member.
+async fn list_page(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    prefix: Option<&str>,
+    since_version: Option<u64>,
+    cursor: Option<&str>,
+) -> Result<vti_rooms::wire::ListRecordsResponse, Box<dyn std::error::Error>> {
+    let mut payload = serde_json::json!({ "roomId": target.room_id });
+    if let Some(p) = prefix {
+        payload["prefix"] = serde_json::json!(p);
+    }
+    if let Some(v) = since_version {
+        payload["sinceVersion"] = serde_json::json!(v);
+    }
+    if let Some(c) = cursor {
+        payload["cursor"] = serde_json::json!(c);
+    }
+    let (_, reply) = act_and_send(
+        client,
+        target,
+        vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
+        payload,
+    )
+    .await?;
+    parse_reply("rooms/records/list", reply)
+}
+
+/// `rooms get` — one record, read as the member and opened through the VTA when it is
+/// sealed.
 ///
 /// A sealed record is shown only after its body checks out: the author's signature, the
-/// location it was signed for, and on `attributed` the author the host recorded
-/// ([`verify_record_body`]). One that fails is refused, never shown with a warning.
+/// location it was signed for, and on `attributed` that the body's signer is the author the
+/// host recorded ([`verify_record_body`]) — the persona, for a record a member's own client
+/// wrote. One that fails is refused, never shown with a warning.
 pub async fn cmd_rooms_get(
     client: &VtaClient,
     target: RoomTarget<'_>,
-    signer: RoomSigner<'_>,
     key: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let session = present(client, &target, "read").await?;
-    let record = target
-        .client()
-        .get_record(&session, key, signer.did, signer.key_multibase)
-        .await?;
+    let (_, record) = act_and_send(
+        client,
+        &target,
+        vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+        serde_json::json!({ "roomId": target.room_id, "key": key }),
+    )
+    .await?;
 
     // An `open`-tier record arrives readable. A sealed one arrives as
     // ciphertext this process cannot decrypt, and must not try to: the group
@@ -305,43 +380,40 @@ pub async fn cmd_rooms_get(
     Ok(())
 }
 
-/// `rooms put` — write a record.
+/// `rooms put` — write a record, as the member.
 ///
 /// On an `open` room the record goes in the clear. On `attributed` and `private` it is a
-/// [`SealedRecordBody`] the operator signs, sealed by their VTA (`rooms/keys/seal`), so the
-/// host never sees it and every reader can check who wrote it.
-#[allow(clippy::too_many_arguments)]
+/// [`SealedRecordBody`] naming the member as author, which the VTA signs **as the member**
+/// and seals (`rooms/keys/seal/0.2`, `signAsPrincipal`), so the host never sees it and
+/// every reader can check that the member wrote it.
 pub async fn cmd_rooms_put(
     client: &VtaClient,
     target: RoomTarget<'_>,
-    signer: RoomSigner<'_>,
     key: &str,
     title: Option<String>,
     body: String,
     expected_version: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let read = present(client, &target, "read").await?;
-    let sealed_tier = is_sealed_tier(&target, &signer, &read).await?;
-    let write = present(client, &target, "write").await?;
+    let (sealed_tier, member) = room_tier(client, &target).await?;
 
     if !sealed_tier {
-        let put = target
-            .client()
-            .put_record(
-                &write,
-                key,
-                None,
-                Some(CleartextContent {
-                    title,
-                    body,
-                    ..Default::default()
-                }),
-                expected_version,
-                signer.did,
-                signer.key_multibase,
-            )
-            .await?;
-        println!("Wrote {} at version {}", put.key, put.version);
+        let mut payload = serde_json::json!({
+            "roomId": target.room_id,
+            "key": key,
+            "cleartext": CleartextContent { title, body, ..Default::default() },
+        });
+        if let Some(v) = expected_version {
+            payload["expectedVersion"] = serde_json::json!(v);
+        }
+        let (_, reply) = act_and_send(
+            client,
+            &target,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+            payload,
+        )
+        .await?;
+        let put: vti_rooms::wire::PutRecordResponse = parse_reply("rooms/records/put", reply)?;
+        println!("Wrote {} at version {} as {member}", put.key, put.version);
         return Ok(());
     }
 
@@ -351,25 +423,12 @@ pub async fn cmd_rooms_put(
             key,
             version: 1,
         },
-        signer.did,
+        &member,
     );
     content.title = title;
     content.body = Some(body);
-    let version = write_sealed(
-        client,
-        &target,
-        &signer,
-        &read,
-        &write,
-        content,
-        None,
-        expected_version,
-    )
-    .await?;
-    println!(
-        "Wrote {key} at version {version}, sealed and signed by {}",
-        signer.did
-    );
+    let version = write_sealed(client, &target, content, expected_version).await?;
+    println!("Wrote {key} at version {version}, sealed and signed by {member}");
     Ok(())
 }
 
@@ -377,7 +436,6 @@ pub async fn cmd_rooms_put(
 pub async fn cmd_rooms_curate(
     client: &VtaClient,
     target: RoomTarget<'_>,
-    signer: RoomSigner<'_>,
     key: &str,
     status: Option<String>,
     pinned: Option<bool>,
@@ -388,22 +446,26 @@ pub async fn cmd_rooms_curate(
     }
     // `curate` is its own grant, deliberately not implied by `write`: deciding
     // what a room's shared knowledge is worth is a different act from adding to
-    // it. So the presentation is minted for `curate`, and a member who only
-    // writes is refused here rather than at the host.
-    let session = present(client, &target, "curate").await?;
-
-    let out = target
-        .client()
-        .curate_record(
-            &session,
-            key,
-            status,
-            pinned,
-            reason,
-            signer.did,
-            signer.key_multibase,
-        )
-        .await?;
+    // it. So the request is completed for `curate`, and a member who only
+    // writes is refused by their own VTA rather than at the host.
+    let mut payload = serde_json::json!({ "roomId": target.room_id, "key": key });
+    if let Some(s) = status {
+        payload["status"] = serde_json::json!(s);
+    }
+    if let Some(p) = pinned {
+        payload["pinned"] = serde_json::json!(p);
+    }
+    if let Some(r) = reason {
+        payload["reason"] = serde_json::json!(r);
+    }
+    let (_, reply) = act_and_send(
+        client,
+        &target,
+        vti_rooms::wire::ROOMS_RECORDS_CURATE_TYPE,
+        payload,
+    )
+    .await?;
+    let out: vti_rooms::wire::CurateRecordResponse = parse_reply("rooms/records/curate", reply)?;
     println!(
         "{} is now {} at version {}{}",
         out.key,
@@ -663,7 +725,30 @@ fn wire_str<T: serde::Serialize>(value: &T) -> String {
         .unwrap_or_default()
 }
 
-/// Whether the room seals its records, from `rooms/info`.
+/// Whether the room seals its records, from `rooms/info` read as the member — and which
+/// member the VTA acted as, which is the author a sealed body names.
+async fn room_tier(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+) -> Result<(bool, String), Box<dyn std::error::Error>> {
+    use trust_tasks_rs::Payload as _;
+    let (member, reply) = act_and_send(
+        client,
+        target,
+        trust_tasks_rs::specs::rooms::info::v0_1::Payload::TYPE_URI,
+        serde_json::json!({ "roomId": target.room_id }),
+    )
+    .await
+    .map_err(|e| format!("could not read the room's tier (rooms/info): {e}"))?;
+    let visibility = reply
+        .get("visibility")
+        .and_then(Value::as_str)
+        .ok_or("the host's rooms/info response names no visibility")?;
+    Ok((visibility != "open", member))
+}
+
+/// Whether the room seals its records, from `rooms/info`, presented for this client — the
+/// file commands' path until their transfer moves to acting as the member.
 async fn is_sealed_tier(
     target: &RoomTarget<'_>,
     signer: &RoomSigner<'_>,
@@ -677,6 +762,73 @@ async fn is_sealed_tier(
     Ok(wire_str(&info.visibility) != "open")
 }
 
+/// Have the VTA sign `content` **as the member** and seal it (`rooms/keys/seal/0.2`), and
+/// put it as the member (`rooms/keys/act/0.1`), re-sealing at the version the host assigned
+/// whenever that is not the one sealed for. Returns the version written.
+///
+/// The record's associated data and its signed body both name the version, and the host
+/// assigns it from a room-wide counter, so the version is predicted from the room's head and
+/// a miss is corrected by a rewrite. Until that rewrite lands the record does not open,
+/// which is why a write that runs out of attempts says so and names the key.
+async fn write_sealed(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    content: SealedRecordBody,
+    expected_version: Option<u64>,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let head = list_page(client, target, None, None, None)
+        .await?
+        .head_version
+        .unwrap_or(0);
+
+    let key = content.key.clone();
+    let mut intended = head + 1;
+    let mut expected = expected_version;
+    let mut landed = 0;
+    for _ in 0..SEALED_WRITE_ATTEMPTS {
+        // Unsigned: the VTA signs it as its author, the member, before sealing.
+        let unsigned = serde_json::to_vec(&content.clone().at_version(intended))?;
+        let sealed = client
+            .room_seal_as_principal(target.room_id, &key, intended, &unsigned)
+            .await?
+            .sealed;
+        let mut payload = serde_json::json!({
+            "roomId": target.room_id,
+            "key": key,
+            "sealed": {
+                "ciphertext": sealed.ciphertext,
+                "nonce": sealed.nonce,
+                "epoch": sealed.epoch.get(),
+            },
+        });
+        if let Some(v) = expected {
+            payload["expectedVersion"] = serde_json::json!(v);
+        }
+        let (_, reply) = act_and_send(
+            client,
+            target,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+            payload,
+        )
+        .await?;
+        let put: vti_rooms::wire::PutRecordResponse = parse_reply("rooms/records/put", reply)?;
+        landed = put.version;
+        if landed == intended {
+            return Ok(landed);
+        }
+        // Another write took the predicted version. The record is stored but sealed for the
+        // wrong one, so it does not open; rewrite it, and only over what just landed.
+        expected = Some(landed);
+        intended = landed + 1;
+    }
+    Err(format!(
+        "{key} is stored at version {landed} but sealed for another version, so it does not \
+         open: the room kept moving under {SEALED_WRITE_ATTEMPTS} attempts. Write it again \
+         with --expected-version {landed}."
+    )
+    .into())
+}
+
 /// Sign `content`, seal it through the VTA and put it, re-sealing at the version the host
 /// assigned whenever that is not the one sealed for. Returns the version written.
 ///
@@ -685,7 +837,7 @@ async fn is_sealed_tier(
 /// a miss is corrected by a rewrite. Until that rewrite lands the record does not open,
 /// which is why a write that runs out of attempts says so and names the key.
 #[allow(clippy::too_many_arguments)]
-async fn write_sealed(
+async fn write_sealed_as_client(
     client: &VtaClient,
     target: &RoomTarget<'_>,
     signer: &RoomSigner<'_>,
@@ -937,7 +1089,7 @@ pub async fn cmd_rooms_file_put(
     content.description = description;
     content.tags = tags;
     content.file = Some(sealed.file.clone());
-    let version = write_sealed(
+    let version = write_sealed_as_client(
         client,
         &target,
         &signer,

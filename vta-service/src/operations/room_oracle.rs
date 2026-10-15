@@ -112,6 +112,99 @@ pub struct Principal {
     vmc: Value,
 }
 
+impl Principal {
+    /// Whether the room's grant to this persona confers `action` — what
+    /// `rooms/keys/act/0.1` checks before narrowing to it, so a member who does not hold
+    /// the action is told so in the task's own words (`actionNotHeld`) rather than in the
+    /// credential library's.
+    pub fn confers(&self, action: &str) -> Result<bool, AppError> {
+        let root: DTGCredential = serde_json::from_value(self.vac.clone())
+            .map_err(|e| AppError::Internal(format!("stored authority credential: {e}")))?;
+        Ok(root
+            .credential()
+            .authority()
+            .is_some_and(|grant| grant.actions.iter().any(|a| a == action)))
+    }
+}
+
+/// Every persona the caller may act as that holds credentials issued by `room_id`, with
+/// those credentials.
+///
+/// The candidates [`principal`] chooses from, and what `rooms/keys/act/0.1` resolves its
+/// `issuer` against. Empty when there are none — a room nobody here holds anything from and
+/// a room only somebody the caller cannot act as holds read alike. A persona holding two
+/// authority credentials, or two membership credentials, from one room is refused rather
+/// than guessed between, as it always was.
+pub async fn principals(
+    state: &AppState,
+    auth: &AuthClaims,
+    room_id: &str,
+) -> Result<Vec<Principal>, AppError> {
+    let scope = auth.act_scope();
+    let stores = crate::operations::persona::PersonaStores::from_state(state);
+
+    let mut held: Vec<(DTGCredential, Value, crate::operations::persona::PersonaKey)> = Vec::new();
+    for vac in room_credentials(&state.vault_ks, room_id, AUTHORITY_TYPE, &scope).await? {
+        let parsed: DTGCredential = serde_json::from_value(vac.clone()).map_err(|e| {
+            AppError::Internal(format!("stored authority credential for `{room_id}`: {e}"))
+        })?;
+        if let Some(key) =
+            crate::operations::persona::persona_signing_key(stores, auth, parsed.subject()).await?
+        {
+            held.push((parsed, vac, key));
+        }
+    }
+
+    // Two credentials for one persona is the ambiguity this always refused.
+    let mut subjects: Vec<String> = held
+        .iter()
+        .map(|(c, _, _)| c.subject().to_string())
+        .collect();
+    subjects.sort_unstable();
+    let total = subjects.len();
+    subjects.dedup();
+    if subjects.len() != total {
+        return Err(AppError::Conflict(format!(
+            "this VTA holds more than one {AUTHORITY_TYPE} issued by room `{room_id}` to one \
+             persona; which one to attenuate from is not a question this can answer safely"
+        )));
+    }
+
+    let vmcs = room_credentials(&state.vault_ks, room_id, MEMBERSHIP_TYPE, &scope).await?;
+    let mut out = Vec::with_capacity(held.len());
+    for (root, vac, key) in held {
+        let did = root.subject().to_string();
+        // The membership credential of the same persona — never another's, which would pair
+        // one member's authority with somebody else's membership.
+        let mut mine = Vec::new();
+        for vmc in &vmcs {
+            let parsed: DTGCredential = serde_json::from_value(vmc.clone()).map_err(|e| {
+                AppError::Internal(format!("stored membership credential for `{room_id}`: {e}"))
+            })?;
+            if parsed.subject() == did {
+                mine.push(vmc.clone());
+            }
+        }
+        let vmc = match mine.len() {
+            0 => {
+                return Err(AppError::NotFound(format!(
+                    "this VTA holds no {MEMBERSHIP_TYPE} issued by room `{room_id}` to the \
+                     persona its {AUTHORITY_TYPE} names"
+                )));
+            }
+            1 => mine.remove(0),
+            n => {
+                return Err(AppError::Conflict(format!(
+                    "this VTA holds {n} {MEMBERSHIP_TYPE}s issued by room `{room_id}` to one \
+                     persona; which one to present is not a question this can answer safely"
+                )));
+            }
+        };
+        out.push(Principal { did, key, vac, vmc });
+    }
+    Ok(out)
+}
+
 /// The persona the caller acts as in `room_id`, and the credentials the room issued it.
 ///
 /// # Selection is by persona, never by "whatever is in the vault"
@@ -133,81 +226,19 @@ pub async fn principal(
     auth: &AuthClaims,
     room_id: &str,
 ) -> Result<Principal, AppError> {
-    let scope = auth.act_scope();
-    let stores = crate::operations::persona::PersonaStores::from_state(state);
-
-    let mut held: Vec<(DTGCredential, Value, crate::operations::persona::PersonaKey)> = Vec::new();
-    for vac in room_credentials(&state.vault_ks, room_id, AUTHORITY_TYPE, &scope).await? {
-        let parsed: DTGCredential = serde_json::from_value(vac.clone()).map_err(|e| {
-            AppError::Internal(format!("stored authority credential for `{room_id}`: {e}"))
-        })?;
-        if let Some(key) =
-            crate::operations::persona::persona_signing_key(stores, auth, parsed.subject()).await?
-        {
-            held.push((parsed, vac, key));
-        }
+    let mut held = principals(state, auth, room_id).await?;
+    match held.len() {
+        0 => Err(AppError::NotFound(format!(
+            "this VTA holds no {AUTHORITY_TYPE} issued by room `{room_id}` to a persona \
+             you may act as"
+        ))),
+        1 => Ok(held.remove(0)),
+        n => Err(AppError::Conflict(format!(
+            "you may act as {n} personas holding a {AUTHORITY_TYPE} issued by room \
+             `{room_id}`; which one is acting is not a question this can answer \
+             safely — act from the context of the one you mean"
+        ))),
     }
-
-    let (root, vac, key) = match held.len() {
-        0 => {
-            return Err(AppError::NotFound(format!(
-                "this VTA holds no {AUTHORITY_TYPE} issued by room `{room_id}` to a persona \
-                 you may act as"
-            )));
-        }
-        1 => held.remove(0),
-        n => {
-            // Two credentials for one persona is the ambiguity this always refused; two
-            // personas is new, and naming that is what tells the caller how to resolve it.
-            let mut subjects: Vec<&str> = held.iter().map(|(c, _, _)| c.subject()).collect();
-            subjects.sort_unstable();
-            subjects.dedup();
-            return Err(AppError::Conflict(if subjects.len() > 1 {
-                format!(
-                    "you may act as {} personas holding a {AUTHORITY_TYPE} issued by room \
-                     `{room_id}`; which one is acting is not a question this can answer \
-                     safely — act from the context of the one you mean",
-                    subjects.len()
-                )
-            } else {
-                format!(
-                    "this VTA holds {n} {AUTHORITY_TYPE}s issued by room `{room_id}` to one \
-                     persona; which one to attenuate from is not a question this can answer \
-                     safely"
-                )
-            }));
-        }
-    };
-    let did = root.subject().to_string();
-
-    // The membership credential of the same persona — never another's, which would pair one
-    // member's authority with somebody else's membership.
-    let mut vmcs = Vec::new();
-    for vmc in room_credentials(&state.vault_ks, room_id, MEMBERSHIP_TYPE, &scope).await? {
-        let parsed: DTGCredential = serde_json::from_value(vmc.clone()).map_err(|e| {
-            AppError::Internal(format!("stored membership credential for `{room_id}`: {e}"))
-        })?;
-        if parsed.subject() == did {
-            vmcs.push(vmc);
-        }
-    }
-    let vmc = match vmcs.len() {
-        0 => {
-            return Err(AppError::NotFound(format!(
-                "this VTA holds no {MEMBERSHIP_TYPE} issued by room `{room_id}` to the persona \
-                 its {AUTHORITY_TYPE} names"
-            )));
-        }
-        1 => vmcs.remove(0),
-        n => {
-            return Err(AppError::Conflict(format!(
-                "this VTA holds {n} {MEMBERSHIP_TYPE}s issued by room `{room_id}` to one \
-                 persona; which one to present is not a question this can answer safely"
-            )));
-        }
-    };
-
-    Ok(Principal { did, key, vac, vmc })
 }
 
 /// Mint a presentation for `agent_did` to perform `action` on `room_id`.

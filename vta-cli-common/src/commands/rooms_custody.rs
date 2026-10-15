@@ -20,9 +20,8 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use vta_sdk::client::{RoomAction, RoomRegistration, VtaClient};
-use vtc_client::VtcClient;
 
-use super::rooms::{RoomSigner, RoomTarget, session_from_minted};
+use super::rooms::RoomTarget;
 
 type CmdResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -525,26 +524,25 @@ fn commit_hint(e: impl std::fmt::Display) -> String {
 }
 
 /// `rooms keys commit --host <url>` — fetch the commits this VTA missed from the
-/// host's relay (`rooms/epoch/commits`) and apply them in order.
+/// host's relay (`rooms/epoch/commits`), read as the member, and apply them in order.
 pub async fn cmd_rooms_keys_commit_from_host(
     client: &VtaClient,
     target: RoomTarget<'_>,
-    signer: RoomSigner<'_>,
 ) -> CmdResult {
     let room_id = target.room_id;
     let held = held_epoch(client, room_id).await?;
-
-    let minted = client.room_present(room_id, "read").await?;
-    let session = session_from_minted(room_id, &minted)?;
-    let host = VtcClient::anonymous(target.host_url, target.host_did.unwrap_or("did:key:zHost"));
 
     let mut at = held;
     let mut applied = 0usize;
     let room_epoch = loop {
         let since = u32::try_from(at).map_err(|_| format!("room epoch {at} is out of range"))?;
-        let page = host
-            .epoch_commits(&session, since, None, signer.did, signer.key_multibase)
-            .await?;
+        let page: vti_rooms::wire::CommitsResponse = super::rooms::act_and_send_parsed(
+            client,
+            &target,
+            vti_rooms::wire::ROOMS_EPOCH_COMMITS_TYPE,
+            serde_json::json!({ "roomId": room_id, "sinceEpoch": since }),
+        )
+        .await?;
         if page.commits.is_empty() {
             break u64::from(page.room_epoch);
         }

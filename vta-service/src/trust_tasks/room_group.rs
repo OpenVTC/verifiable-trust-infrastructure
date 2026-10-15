@@ -469,13 +469,13 @@ pub(super) fn signing_context<'a>(
 /// member could do the first and third and not the second — a browser reaches its
 /// own agent and no third party — which is the whole reason this task exists.
 ///
-/// **The presentation is minted for this VTA's own DID**, not the caller's, and
-/// that is load-bearing rather than incidental. `room_oracle::present` attenuates
-/// the principal's authority to whichever agent is named, and a host binds the
-/// presentation to the DID that signed the request envelope. This VTA is what
-/// signs the outbound document, so a presentation minted for anyone else is one
-/// the host is right to refuse — and the refusal would read as the member lacking
-/// authority rather than as an agent presenting somebody else's grant.
+/// **This VTA acts as its principal** (`rooms/keys/backfill/0.1`, *What the recipient
+/// presents, and to whom*): the `read` grant is the principal persona's own, narrowed
+/// to `read` and granted to the persona, and the `rooms/epoch/chain` document is
+/// issued and signed by the persona ([`send_as_member`]). This VTA's own DID never
+/// reaches the host — it used to be the leaf's subject, the document's issuer and its
+/// signer, which named an identity no room admitted and, for a context-scoped caller,
+/// failed outright: the caller may not sign with the VTA's `#key-0`.
 pub(super) async fn handle_backfill(
     state: &AppState,
     auth: &AuthClaims,
@@ -499,7 +499,7 @@ pub(super) async fn handle_backfill(
         Err(resp) => return resp,
     };
 
-    let (vta_did, resolver) = match outbound_identity(state, &doc).await {
+    let resolver = match outbound_resolver(state, &doc) {
         Ok(v) => v,
         Err(resp) => return resp,
     };
@@ -508,24 +508,18 @@ pub(super) async fn handle_backfill(
     // written earlier are the same act, so they take the same grant; asking for
     // more would hand the host authority the operation never needed.
     //
-    // The caller-named `host` is NOT bound into the presentation, and used to be
-    // — passed as the leaf's `audience`, which named the party that had to
-    // present the credential rather than the one it was sent to, so every
-    // backfill this VTA attempted was refused. What makes a caller-named host
-    // safe is that the leaf grants to `vta_did`: a host of the caller's
-    // choosing receives something only this agent can act with, so naming one
-    // transfers no standing. What it does gain is sight of the principal's
-    // credentials, which is a disclosure rather than an escalation — see
-    // `rooms/keys/backfill/0.1`.
-    let (member, minted) = match presenting_member(state, auth, &vta_did, &req.room_id).await {
+    // The caller-named `host` is not bound into the presentation. What makes a
+    // caller-named host safe is that the leaf grants to the principal and is
+    // usable only by a party that can sign as the principal: a host of the
+    // caller's choosing receives something it cannot act with. What it does gain
+    // is sight of the principal's credentials, which is a disclosure rather than
+    // an escalation — see `rooms/keys/backfill/0.1`.
+    let member = match presenting_member(state, auth, &req.room_id).await {
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, e),
     };
 
-    let mut payload = serde_json::json!({
-        "roomId": req.room_id,
-        "presentation": minted.presentation,
-    });
+    let mut payload = serde_json::json!({ "roomId": req.room_id });
     if let Some(from) = req.from_epoch {
         payload["fromEpoch"] = serde_json::json!(u64::from(from));
     }
@@ -533,18 +527,13 @@ pub(super) async fn handle_backfill(
         payload["limit"] = serde_json::json!(u64::from(limit));
     }
 
-    let key = format!("{vta_did}#key-0");
-    let reply = match crate::operations::room_host::send_room_task(
-        signing_context(state, auth),
-        &state.room_groups_ks,
+    let reply = match send_as_member(
+        state,
+        auth,
         &member,
-        &crate::operations::outbound::Outbound::from_app_state(state, &resolver),
+        &resolver,
         &req.host,
-        &key,
-        &vta_did,
-        &crate::operations::credentials::vta_signing_vm(&vta_did),
         vti_rooms::wire::ROOMS_EPOCH_CHAIN_TYPE,
-        &format!("{}#response", vti_rooms::wire::ROOMS_EPOCH_CHAIN_TYPE),
         payload,
     )
     .await
@@ -552,6 +541,7 @@ pub(super) async fn handle_backfill(
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, e),
     };
+    let member = member.member;
 
     let links: Vec<vti_rooms::wire::EpochLink> =
         match serde_json::from_value(reply.get("links").cloned().unwrap_or(Value::Array(vec![]))) {
@@ -596,25 +586,86 @@ pub(super) async fn handle_backfill(
 /// ([`crate::operations::room_oracle::principal`]) is the member whose group opens what
 /// comes back and whose root memory the host's answer is compared against. Resolving them
 /// separately could pair one persona's authority with another's keys.
+pub(super) struct PresentingMember {
+    /// The member — the persona, in this room — whose group state is used.
+    pub member: room_groups::Member,
+    /// The persona's DID: the documents' issuer and signer, and the leaf's subject.
+    pub did: String,
+    /// The persona's own `read` authority, narrowed to `read` and granted to the persona.
+    pub presentation: Value,
+}
+
+/// [`PresentingMember`] for `room_id`: the principal persona, and their own `read` grant.
+///
+/// The grant is made out to **the persona**, never to this VTA: the host authenticates
+/// the persona as presenter, because the persona signs what it receives
+/// ([`send_as_member`]). `rooms/keys/{read,browse,backfill}/0.1` require exactly this, and
+/// that this VTA's own identifier never reach the host.
 pub(super) async fn presenting_member(
     state: &AppState,
     auth: &AuthClaims,
-    agent_did: &str,
     room_id: &str,
-) -> Result<
-    (
-        room_groups::Member,
-        crate::operations::room_oracle::MintedPresentation,
-    ),
-    vti_common::error::AppError,
-> {
+) -> Result<PresentingMember, vti_common::error::AppError> {
     let principal = crate::operations::room_oracle::principal(state, auth, room_id).await?;
     let member = room_member::member_as(state, auth, room_id, &principal.did).await?;
     let minted = crate::operations::room_oracle::present_as(
-        state, auth, &principal, agent_did, room_id, "read",
+        state,
+        auth,
+        &principal,
+        &principal.did,
+        room_id,
+        "read",
     )
     .await?;
-    Ok((member, minted))
+    Ok(PresentingMember {
+        member,
+        did: principal.did,
+        presentation: minted.presentation,
+    })
+}
+
+/// Send one room request to `host` **as the member**: the member's presentation in the
+/// payload, the member as `issuer`, the member's `authentication` proof
+/// ([`crate::operations::room_act::sign_as`]) — and return the response's `payload`.
+pub(super) async fn send_as_member(
+    state: &AppState,
+    auth: &AuthClaims,
+    member: &PresentingMember,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    host: &str,
+    task: &str,
+    mut payload: Value,
+) -> Result<Value, vti_common::error::AppError> {
+    payload["presentation"] = member.presentation.clone();
+    let document = crate::operations::room_host::build_room_task(task, host, &member.did, payload);
+    crate::operations::room_act::check_schema(&document)?;
+    let document = crate::operations::room_act::sign_as(state, auth, &member.did, document).await?;
+    crate::operations::room_host::send_signed_room_task_typed(
+        &state.room_groups_ks,
+        &member.member,
+        &crate::operations::outbound::Outbound::from_app_state(state, resolver),
+        host,
+        document,
+        &format!("{task}#response"),
+    )
+    .await
+    .map_err(crate::operations::room_host::RoomTaskError::into_app_error)
+}
+
+/// A resolver, or the refusal that says there is none — every task that speaks to a host
+/// has to find it.
+pub(super) fn outbound_resolver(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+) -> Result<affinidi_did_resolver_cache_sdk::DIDCacheClient, TrustTaskOutcome> {
+    state.did_resolver.clone().ok_or_else(|| {
+        app_error_to_reject(
+            doc,
+            vti_common::error::AppError::Validation(
+                "this agent has no DID resolver configured, so it cannot find the host".into(),
+            ),
+        )
+    })
 }
 
 /// This agent's own DID and a resolver, or the refusal that says which is missing.
@@ -801,44 +852,37 @@ pub(super) async fn handle_read(
         Err(resp) => return resp,
     };
 
-    let (vta_did, resolver) = match outbound_identity(state, &doc).await {
+    let resolver = match outbound_resolver(state, &doc) {
         Ok(v) => v,
         Err(resp) => return resp,
     };
 
-    // `read`, and only `read`. The caller-named host is not bound into the
-    // presentation: what makes naming one safe is that the leaf grants to
-    // `vta_did`, so a host of the caller's choosing receives something only this
-    // agent can act with. What it gains is sight of the credentials, which is a
-    // disclosure rather than an escalation.
-    let (member, minted) = match presenting_member(state, auth, &vta_did, &req.room_id).await {
+    // `read`, and only `read`, granted to the principal and sent as the principal
+    // (`rooms/keys/read/0.1`, *What the recipient presents, and to whom*). The
+    // caller-named host is not bound into the presentation: what makes naming one safe
+    // is that the leaf grants to the principal, usable only by a party that can sign as
+    // the principal. What it gains is sight of the credentials, which is a disclosure
+    // rather than an escalation.
+    let presenting = match presenting_member(state, auth, &req.room_id).await {
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, e),
     };
 
-    let key = format!("{vta_did}#key-0");
-    let reply = match crate::operations::room_host::send_room_task(
-        signing_context(state, auth),
-        &state.room_groups_ks,
-        &member,
-        &crate::operations::outbound::Outbound::from_app_state(state, &resolver),
+    let reply = match send_as_member(
+        state,
+        auth,
+        &presenting,
+        &resolver,
         &req.host,
-        &key,
-        &vta_did,
-        &crate::operations::credentials::vta_signing_vm(&vta_did),
         vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
-        &format!("{}#response", vti_rooms::wire::ROOMS_RECORDS_GET_TYPE),
-        serde_json::json!({
-            "roomId": req.room_id,
-            "key": req.key,
-            "presentation": minted.presentation,
-        }),
+        serde_json::json!({ "roomId": req.room_id, "key": req.key }),
     )
     .await
     {
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, e),
     };
+    let member = presenting.member;
 
     // `send_room_task` has already verified the reply's proof AND bound the
     // proven signer to the host that was addressed — a proof that verifies
@@ -935,17 +979,17 @@ pub(super) async fn handle_browse(
         Err(resp) => return resp,
     };
 
-    let (vta_did, resolver) = match outbound_identity(state, &doc).await {
+    let resolver = match outbound_resolver(state, &doc) {
         Ok(v) => v,
         Err(resp) => return resp,
     };
 
-    let (member, minted) = match presenting_member(state, auth, &vta_did, &req.room_id).await {
+    // As the principal, with the principal's own `read` grant — as `read` does.
+    let presenting = match presenting_member(state, auth, &req.room_id).await {
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, e),
     };
 
-    let key = format!("{vta_did}#key-0");
     let mut records: Vec<Value> = Vec::new();
     let mut cursor: Option<String> = None;
     let mut head: Option<Value> = None;
@@ -955,10 +999,7 @@ pub(super) async fn handle_browse(
     // check below is conditioned on having reached the end.
     const MAX_PAGES: usize = 64;
     for page in 0..MAX_PAGES {
-        let mut payload = serde_json::json!({
-            "roomId": req.room_id,
-            "presentation": minted.presentation,
-        });
+        let mut payload = serde_json::json!({ "roomId": req.room_id });
         if let Some(p) = &req.prefix {
             payload["prefix"] = serde_json::json!(p);
         }
@@ -972,17 +1013,13 @@ pub(super) async fn handle_browse(
             payload["cursor"] = serde_json::json!(c);
         }
 
-        let reply = match crate::operations::room_host::send_room_task(
-            signing_context(state, auth),
-            &state.room_groups_ks,
-            &member,
-            &crate::operations::outbound::Outbound::from_app_state(state, &resolver),
+        let reply = match send_as_member(
+            state,
+            auth,
+            &presenting,
+            &resolver,
             &req.host,
-            &key,
-            &vta_did,
-            &crate::operations::credentials::vta_signing_vm(&vta_did),
             vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
-            &format!("{}#response", vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE),
             payload,
         )
         .await
@@ -1046,6 +1083,7 @@ pub(super) async fn handle_browse(
         }
     };
 
+    let member = presenting.member;
     let mut verification = serde_json::json!({
         "priorRoots": compare_head(state, &member, head.as_ref()).await,
         "anchor": compare_anchor(state, &req.room_id, head.as_ref()).await,

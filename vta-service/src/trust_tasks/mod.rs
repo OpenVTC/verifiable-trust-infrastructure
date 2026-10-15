@@ -93,6 +93,7 @@ mod produced_census;
 #[cfg(feature = "webvh")]
 mod provision_integration;
 pub(crate) mod received;
+mod room_act;
 mod room_group;
 mod room_keys;
 mod room_owner;
@@ -2672,6 +2673,13 @@ dispatch_table! {
         [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1 => room_group::handle_seal
         [ None Metadata false ],
+    // `actsAsSubject`: under `signAsPrincipal` it signs the record body as the member.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2 => room_act::handle_seal_v0_2
+        [ None Metadata true ],
+    // Signs a host-bound document as the member and presents their authority; stores
+    // nothing and sends nothing — the caller sends what comes back.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_1 => room_act::handle_act
+        [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1 => room_group::handle_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_INVITE_0_1 => room_owner::handle_invite

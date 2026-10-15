@@ -601,13 +601,7 @@ impl VtcClient {
             .await
             .map_err(|e| VtcError::Signing(e.to_string()))?;
 
-            let resp = self
-                .http
-                .post(format!("{}/trust-tasks", self.base_url))
-                .header("content-type", "application/json")
-                .body(doc)
-                .send()
-                .await?;
+            let resp = self.post_room_document(doc).await?;
             if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
                 && attempt < retries
                 && let Some(wait) = rate_limit_wait(resp.headers())
@@ -618,6 +612,56 @@ impl VtcClient {
             }
             break resp;
         };
+        Self::room_response_payload(resp).await
+    }
+
+    /// Send a `rooms/*` document that is **already signed** — one the member's own VTA
+    /// completed as the member with `rooms/keys/act` — and return its response payload.
+    ///
+    /// The document goes as it is: nothing here signs, and nothing here adds a credential.
+    /// A read refused for its rate is sent again unchanged, which is sound because the host
+    /// refused it before it ran, so its `id` is not spent.
+    pub async fn send_signed_room_document(
+        &self,
+        document: &serde_json::Value,
+    ) -> Result<serde_json::Value, VtcError> {
+        let type_uri = document
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let retries = if is_room_read(type_uri) {
+            READ_RATE_LIMIT_ATTEMPTS - 1
+        } else {
+            0
+        };
+        let body = serde_json::to_string(document).map_err(|e| VtcError::Url(e.to_string()))?;
+        let mut attempt = 0;
+        let resp = loop {
+            let resp = self.post_room_document(body.clone()).await?;
+            if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+                && attempt < retries
+                && let Some(wait) = rate_limit_wait(resp.headers())
+            {
+                attempt += 1;
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+            break resp;
+        };
+        Self::room_response_payload(resp).await
+    }
+
+    async fn post_room_document(&self, body: String) -> Result<reqwest::Response, VtcError> {
+        Ok(self
+            .http
+            .post(format!("{}/trust-tasks", self.base_url))
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await?)
+    }
+
+    async fn room_response_payload(resp: reqwest::Response) -> Result<serde_json::Value, VtcError> {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();

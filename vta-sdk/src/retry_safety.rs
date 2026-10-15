@@ -615,6 +615,17 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // a lost reply costs the caller a round trip, never any state. Re-sealing the
     // same body yields a different nonce, which is correct and changes nothing.
     (trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1, RetrySafe),
+    // 0.2 is 0.1 with an optional signature over the body. The signature is a pure
+    // function of the body and the key, and nothing is stored: a retry signs and seals
+    // again, under a fresh nonce, and leaves this VTA's state as it was.
+    (trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2, RetrySafe),
+    // `sideEffects: none` — the VTA completes, signs and returns one document and keeps
+    // neither it nor the presentation. A retry mints a second short-lived leaf and a second
+    // signature over the SAME document `id`, so whichever copy reaches the host is the one
+    // operation the host's duplicate-execution record keys on. Not `Keyed`: caching the
+    // answer would buy nothing a host does not already dedupe, and the client that lost
+    // the reply legitimately needs it again.
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_1, RetrySafe),
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_1, RetrySafe),
     // Issuance mints a NEW credential with a fresh id on every call, so a retry
     // without a key leaves a second durable artefact that persists and matters —

@@ -194,10 +194,12 @@ as a room nobody here holds. A store written before this keying moves its rows
 under the persona its group's own leaf identifies, the first time that
 persona's caller touches the room.
 
-The one place a client DID does appear is as a *presenter* (§7): an agent your
-VTA equips with a four-hour, one-action leaf narrowed **from** your persona's
-grant. That leaf is a delegation, signed by your persona; the agent is never a
-member of the room.
+Your own client never reaches a host as itself: it builds each room request
+unsigned and your VTA completes it **as the persona** (`rooms/keys/act/0.1`,
+§9). The one place a client DID does appear is as a *presenter* (§7): an
+agent your VTA equips with a four-hour, one-action leaf narrowed **from** your
+persona's grant. That leaf is a delegation, signed by your persona; the agent
+is never a member of the room.
 
 ### 5.1 Mint the room's identity
 
@@ -631,6 +633,16 @@ then they can still present it for whatever their old epochs' keys suffice for.
 
 ## 7. Give an agent access
 
+**Two different parties reach a host, and they use two different tasks.** Your
+own client — `pnm`, the browser extension, your phone — *is* you, and acts as
+your persona through `rooms/keys/act/0.1` (§9): the host records the persona.
+An **agent** you equip is a different party, rightly recorded as itself: it
+asks for a presentation with `rooms/keys/present/0.2`, signs its own requests
+and its own record bodies, and is refused `act` and `seal`'s `signAsPrincipal`
+with `permissionDenied`. Your VTA tells the two apart by the consumer kind on
+the caller's ACL entry: one registered as an AI agent (or a mediator) is a
+delegate.
+
 The case rooms were designed for: a member holds `read`/`write`, and their agent
 runs on a chain one link longer whose leaf confers only `read`, expires in
 hours, and is bound to the agent. The agent never holds the member's
@@ -991,9 +1003,9 @@ sign as themselves: put it behind a proxy you control.
 ### From the CLI
 
 ```bash
-# Every command needs both parties: your VTA (for the presentation) and the
-# room's host (which stores the bytes). --host-did binds the presentation to
-# that host; omit it and anyone who observes it can replay it for four hours.
+# Every command needs both parties: your VTA (which completes each request as your
+# persona) and the room's host (which stores the bytes). --host-did names the
+# host the request is addressed to; the proof covers it.
 pnm rooms list  --room <room-did> --host https://rooms.example.org --host-did <host-did>
 pnm rooms get   decision/pricing-2026 --room <room-did> --host https://rooms.example.org
 pnm rooms put   decision/pricing-2026 "Agreed not to reprice." --room <room-did> \
@@ -1006,21 +1018,45 @@ pnm rooms file put ./term-sheet.pdf --room <room-did> --host … --title "Term s
 pnm rooms file get <record-key> --room <room-did> --host … [--out ./term-sheet.pdf]
 ```
 
-The CLI **never holds a room credential or a group key**. Each command asks your
-VTA to mint a presentation for exactly the action it performs (`read`, `write`,
-`curate`, `admin`), sends that to the host, and — on a sealed record — hands the
-ciphertext back to the VTA to open. A member who holds less than the action
-needs is refused by their own VTA rather than by the host, which is the earlier
-and clearer of the two.
+The CLI **never holds a room credential, a group key or a key of your
+persona's**. For `list`, `get`, `put`, `curate`, the `rooms/info` lookup and
+`keys commit --host`, it builds the room request **unsigned** — no
+presentation, no proof — and hands it to your VTA with `rooms/keys/act/0.1`.
+The VTA completes it **as your persona**: it inserts the persona's own
+authority narrowed to exactly the action the request's type needs (`read`,
+`write`, `curate`, `admin`, from the specification's closed table) and granted
+to the persona, sets the persona as `issuer`, and signs for `authentication`
+with the persona's key. The CLI sends that document to the host unchanged. The
+host sees the persona — as presenter, signer and, on `attributed`, author —
+and nothing of the CLI or of the VTA. On a sealed record the ciphertext goes
+back to the VTA to open. A member who holds less than the action needs is
+refused by their own VTA (`actionNotHeld`) rather than by the host; one who
+may act as several members of the room names the one they mean (`issuer`), or
+is asked to (`principalAmbiguous`).
 
-**On a sealed room, every record is signed by its writer.** `pnm rooms put`
-reads the room's tier (`rooms/info`) and, on `attributed` or `private`, writes a
-`SealedRecordBody` (`rooms/_shared/0.1/room.schema.json`): the title, body and
-any file manifest, plus the room, key and version it is for, signed by your DID.
-Your VTA seals it (`rooms/keys/seal`) and signs nothing; attribution is yours.
-`pnm rooms get` refuses a sealed record whose signature does not hold, which
-was signed for another key or version, or, on `attributed`, whose signer is not
-the author the host recorded. It never shows such a record with a warning.
+`act` is not a signing oracle: only the table's host-bound room requests are
+completed, never `rooms/epoch/prune`, ownership changes, `rooms/create` or a
+chunk upload, and a delegate (§7) is refused. `renew` and the file transfers
+still present for the CLI itself (`rooms/keys/present`) for now.
+
+**On a sealed room, every record is signed by your persona.** `pnm rooms put`
+reads the room's tier (`rooms/info`) and, on `attributed` or `private`, builds
+a `SealedRecordBody` (`rooms/_shared/0.1/room.schema.json`): the title, body
+and any file manifest, the room, key and version it is for, and your persona
+as `author` — without a proof. Your VTA signs it **as the persona**, for
+`assertionMethod`, and seals it (`rooms/keys/seal/0.2` with
+`signAsPrincipal`), after checking the author is a member you may act as
+(`authorNotPrincipal`) and the location matches the seal's
+(`locationMismatch`). `pnm rooms get` refuses a sealed record whose signature
+does not hold, which was signed for another key or version, or, on
+`attributed`, whose signer is not the author the host recorded. It never shows
+such a record with a warning.
+
+**Your VTA's own reads go out as your persona too.** `rooms/keys/read`,
+`browse`, `backfill` and `rooms/owner/anchor` present your persona's own grant
+narrowed to `read` and sign as the persona; the VTA's own DID never reaches a
+host. Any client allowed to act in the persona's context can run them — they
+no longer need a super-admin.
 
 **The version is predicted, and corrected if it is wrong.** The seal binds the
 version, and the host assigns versions from a room-wide counter. The CLI seals

@@ -147,6 +147,77 @@ impl VtaClient {
         })
     }
 
+    /// `rooms/keys/seal/0.2` — [`VtaClient::room_seal`], with `signAsPrincipal`.
+    ///
+    /// For the member's **own** client, which holds no key of the member's: `body` is a
+    /// `SealedRecordBody` **without** `proof` whose `author` is the member (the persona the
+    /// room admitted) and whose `roomId`, `key` and `version` equal these. The VTA signs it
+    /// as the member, for `assertionMethod`, then seals the signed body — so the record is
+    /// attributed to the member rather than to this client. An agent acting under an
+    /// attenuated chain signs its own body and uses [`VtaClient::room_seal`] instead; the
+    /// VTA refuses it this flag.
+    pub async fn room_seal_as_principal(
+        &self,
+        room_id: &str,
+        key: &str,
+        version: u64,
+        body: &[u8],
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::seal::v0_2::Response, VtaError> {
+        let payload = json!({
+            "roomId": room_id,
+            "key": key,
+            "version": version,
+            "plaintext": base64::Engine::encode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                body,
+            ),
+            "signAsPrincipal": true,
+        });
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2,
+                payload,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| {
+            VtaError::Protocol(format!(
+                "rooms/keys/seal/0.2 response does not match its schema: {e}"
+            ))
+        })
+    }
+
+    /// `rooms/keys/act/0.1` — have the VTA complete one host-bound room request **as the
+    /// member**, and get it back to send.
+    ///
+    /// `document` is the room request this client means to send — `id`, `type`, `recipient`
+    /// (the host), `issuedAt` and `payload` — with no `proof` and no `presentation` in the
+    /// payload; build it with [`unsigned_room_request`]. Set `issuer` only to name which
+    /// member to act as, where the caller may act as more than one in the room. The VTA
+    /// inserts the member's own authority narrowed to the one action the type needs and
+    /// granted to the member, sets `issuer` to the member and signs for `authentication`.
+    ///
+    /// **Send the returned `document` to its `recipient` unaltered**, and to nobody else.
+    /// Nothing in it names this client: the host records the member.
+    pub async fn room_act(
+        &self,
+        document: &trust_tasks_rs::specs::rooms::keys::act::v0_1::UnsignedRoomRequest,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_1::Response, VtaError> {
+        let payload = json!({ "document": document });
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_ACT_0_1,
+                payload,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| {
+            VtaError::Protocol(format!(
+                "rooms/keys/act response does not match its schema: {e}"
+            ))
+        })
+    }
+
     /// `rooms/keys/file-key/0.1` — one file's key, so the caller seals or opens
     /// that file itself and its bytes never pass through the VTA.
     ///
@@ -714,5 +785,93 @@ mod tests {
         }
         assert!("all".parse::<RoomAction>().is_err());
         assert!("Admin".parse::<RoomAction>().is_err());
+    }
+}
+
+/// An unsigned host-bound room request for [`VtaClient::room_act`]: a fresh `id`, `issuedAt`
+/// now, addressed to `host`, carrying `payload` (without `presentation`). `issuer` names the
+/// member to act as, and is needed only where the caller may act as more than one member of
+/// the room — never this client's own DID.
+///
+/// # Errors
+///
+/// [`VtaError::Validation`] when a member does not fit the generated type (a `type` that is
+/// not a room type, a `recipient` or `issuer` that is not a DID).
+pub fn unsigned_room_request(
+    type_uri: &str,
+    host: &str,
+    issuer: Option<&str>,
+    payload: Value,
+) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_1::UnsignedRoomRequest, VtaError> {
+    let mut doc = json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": type_uri,
+        "recipient": host,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "payload": payload,
+    });
+    if let Some(i) = issuer {
+        doc["issuer"] = json!(i);
+    }
+    serde_json::from_value(doc)
+        .map_err(|e| VtaError::Validation(format!("not a room request this can complete: {e}")))
+}
+
+#[cfg(test)]
+mod act_tests {
+    use super::*;
+
+    /// What a member's client hands `rooms/keys/act`: no proof, no presentation, and its
+    /// own DID nowhere — `issuer` only when it names a member.
+    #[test]
+    fn an_unsigned_room_request_names_no_one_but_the_host() {
+        let doc = unsigned_room_request(
+            "https://trusttasks.org/spec/rooms/records/get/0.1",
+            "did:key:zHost",
+            None,
+            json!({ "roomId": "did:key:zRoom", "key": "k" }),
+        )
+        .expect("a room request");
+        let v = serde_json::to_value(&doc).unwrap();
+        assert_eq!(v["recipient"], "did:key:zHost");
+        assert!(v.get("issuer").is_none());
+        assert!(v.get("proof").is_none());
+        assert!(v["id"].as_str().unwrap().starts_with("urn:uuid:"));
+
+        let named = unsigned_room_request(
+            "https://trusttasks.org/spec/rooms/records/get/0.1",
+            "did:key:zHost",
+            Some("did:webvh:example.com:people:alice"),
+            json!({ "roomId": "did:key:zRoom", "key": "k" }),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&named).unwrap()["issuer"],
+            "did:webvh:example.com:people:alice"
+        );
+    }
+
+    /// The schema's envelope rules hold here, before the VTA is asked: a non-room type and
+    /// a recipient that is not a DID are refused.
+    #[test]
+    fn a_request_that_is_not_a_room_request_is_refused() {
+        assert!(
+            unsigned_room_request(
+                "https://trusttasks.org/spec/keys/sign/0.1",
+                "did:key:zHost",
+                None,
+                json!({}),
+            )
+            .is_err()
+        );
+        assert!(
+            unsigned_room_request(
+                "https://trusttasks.org/spec/rooms/info/0.1",
+                "https://host.example",
+                None,
+                json!({}),
+            )
+            .is_err()
+        );
     }
 }

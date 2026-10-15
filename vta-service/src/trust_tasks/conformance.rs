@@ -2887,6 +2887,60 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_SEAL_0_2,
+            checked!(
+                specs::rooms::keys::seal::v0_2::Payload,
+                specs::rooms::keys::seal::v0_2::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "key": "giXFLTGBdnnQJRoIsktuIg",
+                    "version": 1,
+                    "plaintext": "eyJyb29tSWQiOiJkaWQ6d2Vidmg6ZXhhbXBsZS5jb206cm9vbXM6bm9ydGh3aW5kIn0",
+                    "signAsPrincipal": true
+                }),
+                json!({
+                    "sealed": {
+                        "ciphertext": "3QhV1sVvR0m5xAqZ7Aw2mQnR4vBk8QLp3wXc9TgYw",
+                        "nonce": "b0Zt8Qm2Yq1sVvR0",
+                        "epoch": 4
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_ACT_0_1,
+            checked!(
+                specs::rooms::keys::act::v0_1::Payload,
+                specs::rooms::keys::act::v0_1::Response,
+                json!({
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a1",
+                        "type": "https://trusttasks.org/spec/rooms/records/put/0.2",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:00:00Z",
+                        "payload": {
+                            "roomId": "did:webvh:example.com:rooms:northwind",
+                            "key": "giXFLTGBdnnQJRoIsktuIg",
+                            "expectedVersion": 0
+                        }
+                    }
+                }),
+                json!({
+                    "principal": "did:webvh:example.com:people:alice",
+                    "expiresAt": "2026-01-01T01:00:01Z",
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a1",
+                        "type": "https://trusttasks.org/spec/rooms/records/put/0.2",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:00:00Z",
+                        "payload": { "roomId": "did:webvh:example.com:rooms:northwind" },
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_LIST_0_1,
             checked!(
                 specs::rooms::keys::list::v0_1::Payload,

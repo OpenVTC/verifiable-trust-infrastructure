@@ -290,20 +290,12 @@ delivered"*.
 
 Found in this run; each is being fixed.
 
-- **Records are attributed to the client, not the persona.** `pnm rooms put`
-  signs the record with the CLI's own key, and the VTC records that key as the
-  author. The fix needs a specification change (a task through which the VTA
-  signs a room request as the persona) and is in progress in
-  dtgwg-trust-tasks-tf.
-- **The VTC rate-limits room traffic as anonymous traffic.** Every room request
-  shares one per-IP bucket — 10 requests, then one every 5 s. Expect `429`s
-  after a few commands, and a multi-chunk file download to fail; wait a minute
-  and retry. A fix that charges room traffic to its verified presenter is in
-  progress.
-- **`keys backfill` needs a super-admin client on the member's VTA.** The VTA
-  signs that request with its own DID, which a context-scoped client may not
-  use; it fails with an internal error. That is why each person here has their
-  own VTA and is its administrator. The same specification change fixes it.
+- **Files are still attributed to the client.** `pnm rooms put`, `get`, `list`,
+  `curate` and `keys commit --host` now act as the persona (`rooms/keys/act`,
+  `rooms/keys/seal` 0.2), and `keys backfill` / `read` / `browse` present as the
+  persona from any client allowed to act in its context. `pnm rooms file put/get`
+  still sign their transfer with the CLI's own key until they move to the
+  `rooms/blobs/*` 0.2 tasks.
 - **Making a member needs the console.** No CLI until `vtc/members/admit` is
   specified.
 - **`private` rooms are not served yet** — use `attributed`.

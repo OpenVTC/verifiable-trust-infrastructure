@@ -643,6 +643,10 @@ mod tests {
     /// this — `classify` defaults to `Mutating` without consulting it, so a
     /// runtime miss is safe and a compile-time miss is loud.
     const MUTATING_VERBS: &[&str] = &[
+        // `rooms/keys/act`: signs a host-bound room request as the member — a write or a
+        // curation as readily as a read. It changes nothing here itself, but what it signs
+        // can change a room, so it is never a read.
+        "act",
         // `persona/profile/compose`: makes a face, may pool a value and bind
         // it. Creates; removes nothing.
         "compose",

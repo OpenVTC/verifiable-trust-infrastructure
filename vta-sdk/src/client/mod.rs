@@ -423,7 +423,9 @@ mod pcs;
 mod persona;
 mod policy;
 mod rooms;
-pub use rooms::{RoomAction, RoomRegistration, RoomRetentionPolicy, RoomVisibility};
+pub use rooms::{
+    RoomAction, RoomRegistration, RoomRetentionPolicy, RoomVisibility, unsigned_room_request,
+};
 mod secrets;
 mod vault;
 mod vta_management;

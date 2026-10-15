@@ -418,6 +418,11 @@ vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.17", features = ["test
 # An in-process community (`vtc::Vtc`) for driving the PCS engine end to end:
 # enrolment, the drip, attestation, the proof and the community's decision.
 vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.1", features = ["harness"] }
+# A real room host, dispatched in process, for the end-to-end check that a record a
+# member's own client writes through `rooms/keys/act` is recorded as the persona's.
+# Path-only (no version): `room-host` is `publish = false`, and a dev-dependency
+# without a version is dropped when this crate is packaged.
+room-host = { path = "../room-host" }
 tempfile = "3"
 # The exact parser the DID-hosting server uses to read `alsoKnownAs` off a
 # published log. Dev-only: it lets the agent-name contract test assert that
