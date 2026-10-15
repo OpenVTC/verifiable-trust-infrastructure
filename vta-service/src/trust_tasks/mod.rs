@@ -116,6 +116,7 @@ mod vault;
 #[cfg(feature = "webvh")]
 pub(crate) mod webvh;
 pub(crate) mod wire_v0_2;
+mod witness;
 
 /// The transport-neutral dispatch result — see [`helpers::TrustTaskOutcome`].
 /// Re-exported so both transports (`routes`-mounted REST handler + DIDComm
@@ -2625,6 +2626,15 @@ dispatch_table! {
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VETTER_SHOW_0_1 => pcs::handle_vetter_show
         [ None Metadata false ],
+    // ─── Witnessed party (`vta/witness/*`) ─────────────────────────
+    // Classes match each specification's own declarations: the VTA acts as the
+    // relationship DID at open and present; accept stores what the witness said.
+    vta_sdk::trust_tasks::TASK_VTA_WITNESS_OPEN_0_1 => witness::handle_open
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_WITNESS_PRESENT_0_1 => witness::handle_present
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_WITNESS_ACCEPT_0_1 => witness::handle_accept
+        [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_PUT_0_1 => memory::handle_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_LIST_0_1 => memory::handle_list

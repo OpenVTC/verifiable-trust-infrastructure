@@ -633,6 +633,28 @@ fn pcs_vetter() -> Value {
     })
 }
 
+// ─── vta/witness fixtures ────────────────────────────────────────────────
+
+const WITNESS_DID: &str = "did:webvh:QmWitness:witness.example.org:a";
+
+/// A carried document: opaque to the schema, checked by the VTA against its session record.
+fn witness_session_doc() -> Value {
+    json!({
+        "id": "urn:uuid:session", "type": "https://trusttasks.org/spec/witness/session/0.1",
+        "issuer": SUBJECT, "recipient": WITNESS_DID, "issuedAt": TS,
+        "threadId": "urn:uuid:session", "parentThreadId": "urn:uuid:thread",
+        "payload": { "parties": [SUBJECT, "did:key:z6MkCounterparty"] },
+    })
+}
+
+fn witness_answer() -> Value {
+    json!({
+        "id": "urn:uuid:answer", "type": "https://trusttasks.org/spec/witness/session/0.1#response",
+        "issuer": WITNESS_DID, "recipient": SUBJECT, "threadId": "urn:uuid:session",
+        "payload": { "challenge": "00112233445566778899aabbccddeeff", "domain": WITNESS_DID },
+    })
+}
+
 /// The account as the slice renders it: `AccountRecord::to_wire`, with the
 /// egress hosts the driver derives.
 fn external_account() -> Value {
@@ -2363,6 +2385,44 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::vta::pcs::vetter::show::v0_1::Response,
                 json!({ "contextId": "personal", "community": PCS_COMMUNITY }),
                 json!({ "vetter": pcs_vetter() })
+            ),
+        ),
+        // ─── vta/witness — the witnessed party ───────────────────
+        (
+            uris::TASK_VTA_WITNESS_OPEN_0_1,
+            checked!(
+                specs::vta::witness::open::v0_1::Payload,
+                specs::vta::witness::open::v0_1::Response,
+                json!({
+                    "witness": WITNESS_DID, "relationshipDid": SUBJECT,
+                    "counterpartyDid": "did:key:z6MkCounterparty",
+                    "relationshipThreadId": "urn:uuid:thread", "relationshipCredentialId": "vrc-1",
+                    "membership": { "credentialId": "vmc-1", "memberDid": "did:key:z6MkMember" },
+                    "storeAs": "vwc-1",
+                }),
+                json!({ "sessionId": "urn:uuid:session", "document": witness_session_doc(), "expiresAt": TS })
+            ),
+        ),
+        (
+            uris::TASK_VTA_WITNESS_PRESENT_0_1,
+            checked!(
+                specs::vta::witness::present::v0_1::Payload,
+                specs::vta::witness::present::v0_1::Response,
+                json!({ "sessionId": "urn:uuid:session", "response": witness_answer() }),
+                json!({ "sessionId": "urn:uuid:session", "document": witness_session_doc() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_WITNESS_ACCEPT_0_1,
+            checked!(
+                specs::vta::witness::accept::v0_1::Payload,
+                specs::vta::witness::accept::v0_1::Response,
+                json!({ "sessionId": "urn:uuid:session", "response": witness_answer() }),
+                json!({
+                    "sessionId": "urn:uuid:session", "credentialId": "vwc-1", "witness": WITNESS_DID,
+                    "vwcDigestMultibase": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                    "evidence": { "session": witness_session_doc(), "outcome": witness_answer() },
+                })
             ),
         ),
         // ─── vta/memory ──────────────────────────────────────────

@@ -85,6 +85,9 @@ pub mod seeds;
 pub mod sign_formats;
 pub mod step_up_approval;
 pub mod vault;
+/// The VTA as its principal's witnessed party (`vta/witness/*`): it builds and signs every
+/// document of a `witness/session` as the relationship DID, and the client carries them.
+pub mod witness;
 
 /// Shared keyspace handles passed to operations that need multiple keyspaces.
 /// The struct itself lives in `vta-keyspaces` (a pure field bundle with no

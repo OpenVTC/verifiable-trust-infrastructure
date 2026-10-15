@@ -26,6 +26,12 @@
 //!   public key is an active Ed25519 key record **of that same context**.
 //! - **A `did:key`**: an active Ed25519 key record with that public key, in a context the
 //!   caller may act in (or, for a record with no context, a caller who is super-admin).
+//! - **A `did:peer`**: its document is derived from the identifier with no I/O, exactly as a
+//!   verifier derives it. The method is the first entry of the wanted relationship, under
+//!   the DID itself, whose public key is an active Ed25519 key record in a context the caller
+//!   may act in — the `did:key` rule, applied per method. This is the shape of a pairwise
+//!   **relationship DID** (`did:peer:2`, its signing key `V`, its key-agreement key `E`),
+//!   whose keys a client may keep at its VTA.
 //!
 //! Anything else is `None`, and `None` deliberately does not say why: an unknown DID and one
 //! held in a context the caller cannot reach answer alike, so a refusal never tells a caller
@@ -44,7 +50,6 @@
 //! oracle ([`crate::operations::keys::sign_payload`]), which re-checks the key's context, the
 //! caller's key scope and the context's signing policy. No key material is derived here.
 
-#[cfg(feature = "webvh")]
 use serde_json::Value;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
@@ -136,7 +141,7 @@ pub async fn persona_key_for(
     }
 
     if let Some(id) = did.strip_prefix("did:key:") {
-        let record = held_ed25519(stores.keys_ks, id, |ctx| match ctx {
+        let record = held_ed25519(stores.keys_ks, id, &|ctx| match ctx {
             Some(ctx) => auth.has_context_access(ctx),
             None => auth.is_super_admin(),
         })
@@ -147,14 +152,41 @@ pub async fn persona_key_for(
         }));
     }
 
+    if did.starts_with("did:peer:") {
+        return peer_persona_key(stores.keys_ks, auth, did, relationship).await;
+    }
+
     #[cfg(feature = "webvh")]
     if did.starts_with("did:webvh:") {
         return webvh_persona_key(stores.keys_ks, stores.webvh_ks, auth, did, relationship).await;
     }
 
-    #[cfg(not(feature = "webvh"))]
-    let _ = relationship;
     Ok(None)
+}
+
+/// The `did:peer` arm of [`persona_key_for`]: the document is derived from the identifier —
+/// "pure computation", as the verifier's own `did:peer` path does — and each method of the
+/// relationship is matched against the caller's key records as a `did:key` is.
+async fn peer_persona_key(
+    keys_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    did: &str,
+    relationship: Relationship,
+) -> Result<Option<PersonaKey>, AppError> {
+    use affinidi_did_resolver_traits::{PeerResolver, Resolver};
+    let Ok(parsed) = affinidi_did_common::DID::try_from(did) else {
+        return Ok(None);
+    };
+    let Some(Ok(document)) = PeerResolver.resolve(&parsed) else {
+        return Ok(None);
+    };
+    let document = serde_json::to_value(&document)
+        .map_err(|e| AppError::Internal(format!("encode the document of {did}: {e}")))?;
+    held_method(keys_ks, did, &document, relationship, |ctx| match ctx {
+        Some(ctx) => auth.has_context_access(ctx),
+        None => auth.is_super_admin(),
+    })
+    .await
 }
 
 /// The `did:webvh` arm of [`persona_signing_key`].
@@ -166,7 +198,6 @@ async fn webvh_persona_key(
     did: &str,
     relationship: Relationship,
 ) -> Result<Option<PersonaKey>, AppError> {
-    let rel = relationship.as_str();
     let Some(record) = crate::webvh_store::get_did(webvh_ks, did).await? else {
         return Ok(None);
     };
@@ -178,7 +209,24 @@ async fn webvh_persona_key(
     };
     let document = crate::operations::protocol::document::current_document_from_log(&log)
         .map_err(|e| AppError::Internal(format!("read the current document of {did}: {e}")))?;
+    // Of the DID's own context only: a public key someone copied into their document must
+    // not reach a record another context holds.
+    held_method(keys_ks, did, &document, relationship, |ctx| {
+        ctx == Some(record.context_id.as_str())
+    })
+    .await
+}
 
+/// The first method `document` lists under `relationship`, under `did` itself, whose public
+/// key is an active Ed25519 key record in a context `in_scope` accepts.
+async fn held_method(
+    keys_ks: &KeyspaceHandle,
+    did: &str,
+    document: &Value,
+    relationship: Relationship,
+    in_scope: impl Fn(Option<&str>) -> bool + Sync,
+) -> Result<Option<PersonaKey>, AppError> {
+    let rel = relationship.as_str();
     // Every method, by id, with its public key — a relationship may list ids or embed the
     // method itself.
     let mut methods: Vec<(String, String)> = Vec::new();
@@ -223,13 +271,7 @@ async fn webvh_persona_key(
         let Some((_, public_key)) = methods.iter().find(|(m, _)| absolute(m) == id) else {
             continue;
         };
-        // Of the DID's own context only: a public key someone copied into their document
-        // must not reach a record another context holds.
-        if let Some(held) = held_ed25519(keys_ks, public_key, |ctx| {
-            ctx == Some(record.context_id.as_str())
-        })
-        .await?
-        {
+        if let Some(held) = held_ed25519(keys_ks, public_key, &in_scope).await? {
             return Ok(Some(PersonaKey {
                 key_id: held.key_id,
                 verification_method: id,
@@ -246,7 +288,7 @@ async fn webvh_persona_key(
 async fn held_ed25519(
     keys_ks: &KeyspaceHandle,
     public_key: &str,
-    in_scope: impl Fn(Option<&str>) -> bool,
+    in_scope: &(dyn Fn(Option<&str>) -> bool + Sync),
 ) -> Result<Option<vta_sdk::keys::KeyRecord>, AppError> {
     use vta_sdk::did_key::decode_ed25519_public_key_multibase as decode;
     let Ok(wanted) = decode(public_key) else {

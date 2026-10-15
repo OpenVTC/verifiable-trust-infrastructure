@@ -10776,9 +10776,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.31.5"
+version = "0.31.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d5c5cdd9ac20a0cf6bb7ec5cc74cd3b9c7505a4529624ebb298080c14eb6681"
+checksum = "ba5def5d59ce35b44f324e4b91050f00aa622c18aa7b46500834ffd9d64e2ff0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -11750,7 +11750,9 @@ dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
  "affinidi-data-integrity",
+ "affinidi-did-common",
  "affinidi-did-resolver-cache-sdk",
+ "affinidi-did-resolver-traits",
  "affinidi-mdoc",
  "affinidi-messaging-core",
  "affinidi-messaging-delivery",
@@ -11852,6 +11854,7 @@ dependencies = [
  "vti-secrets",
  "vti-vetting-pcs",
  "vti-webauthn",
+ "vti-witness",
  "webauthn-rs",
  "webauthn-rs-proto",
  "wiremock",

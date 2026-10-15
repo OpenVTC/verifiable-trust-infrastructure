@@ -266,6 +266,9 @@ pub struct AppState {
     /// The hidden-vetting PCS engine (`vta/pcs/*`): vetter and applicant
     /// engines, their secret state wrapped under the seed-derived KEK.
     pub pcs_engine_ks: KeyspaceHandle,
+    /// Witnessed sessions in flight (`vta/witness/*`), one record per session —
+    /// see [`crate::keyspaces::WITNESS_SESSIONS`].
+    pub witness_sessions_ks: KeyspaceHandle,
     /// A member's MLS group for each room they belong to. Group secrets — see
     /// [`crate::keyspaces::ROOM_GROUPS`].
     pub room_groups_ks: KeyspaceHandle,
@@ -602,6 +605,9 @@ pub async fn build_app_state(
     // PCS engine state: wrapped under the seed-derived KEK, like the provider
     // secrets above, on top of the keyspace's own at-rest encryption.
     let pcs_engine_ks = apply_encryption(store.keyspace(crate::keyspaces::PCS_ENGINE)?);
+    // Witnessed sessions: a session record holds the session document, which names
+    // both relationship DIDs — encrypted at rest like the rest of the vault's state.
+    let witness_sessions_ks = apply_encryption(store.keyspace(crate::keyspaces::WITNESS_SESSIONS)?);
     // Encrypted alongside the key store where a TEE deployment provides a storage key: a
     // group snapshot decrypts every record its room holds, which is the same class of
     // material as a derived key and deserves the same treatment.
@@ -709,6 +715,7 @@ pub async fn build_app_state(
         external_secrets_ks,
         external_rate: Arc::new(vta_external::rate::BindingRateLimiter::new()),
         pcs_engine_ks,
+        witness_sessions_ks,
         room_groups_ks,
         room_invitations_ks,
         app_state_ks,
@@ -1194,6 +1201,8 @@ pub async fn run(
         let storage_idempotency_ks = idempotency_ks.clone();
         let storage_task_consent_ks = task_consent_ks.clone();
         let storage_vault_ks = vault_ks.clone();
+        let storage_witness_sessions_ks =
+            apply_encryption(store.keyspace(crate::keyspaces::WITNESS_SESSIONS)?);
         let storage_app_state_ks = apply_encryption(store.keyspace(crate::keyspaces::APP_STATE)?);
         let storage_app_state_retention_days = config.app_state.tombstone_retention_days;
         let storage_backup_bundles_ks = backup_bundles_ks.clone();
@@ -1652,6 +1661,7 @@ pub async fn run(
                     storage_idempotency_ks,
                     storage_task_consent_ks,
                     storage_vault_ks,
+                    storage_witness_sessions_ks,
                     storage_app_state_ks,
                     storage_app_state_locks,
                     storage_app_state_retention_days,
@@ -1836,6 +1846,7 @@ fn run_storage_thread(
     idempotency_ks: KeyspaceHandle,
     task_consent_ks: KeyspaceHandle,
     vault_ks: KeyspaceHandle,
+    witness_sessions_ks: KeyspaceHandle,
     app_state_ks: KeyspaceHandle,
     app_state_locks: crate::operations::app_state::NamespaceLocks,
     app_state_retention_days: u32,
@@ -1980,6 +1991,21 @@ fn run_storage_thread(
                             crate::vault_sweeper::sweep_expired(&vault_ks, &audit_sink).await
                         {
                             warn!("vault sweeper error: {e}");
+                        }
+                        // Delete witnessed-session records past their expiry
+                        // (`vta/_shared/0.5/CONVENTIONS.md` §3 item 4). Reads
+                        // already treat an expired record as unknown; this keeps
+                        // the keyspace from holding abandoned sessions — their
+                        // session documents name both relationship DIDs.
+                        match crate::operations::witness::sweep_expired(
+                            &witness_sessions_ks,
+                            chrono::Utc::now(),
+                        )
+                        .await
+                        {
+                            Ok(n) if n > 0 => debug!(removed = n, "witness session sweeper"),
+                            Ok(_) => {}
+                            Err(e) => warn!("witness session sweeper error: {e}"),
                         }
                         // Reap application-state tombstones past their retention
                         // window. This is what makes the window real rather than

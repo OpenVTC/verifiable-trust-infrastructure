@@ -113,6 +113,15 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     ("external/accounts/suspend", Risk::Destructive),
     ("external/accounts/archive", Risk::Destructive),
     ("external/accounts/restore", Risk::Mutating),
+    // The witnessed party (`vta/witness/*`). `open` and `present` sign as the
+    // principal's relationship DID, and `present` puts the principal's
+    // credentials — under the member link, its member DID too — in a document
+    // addressed to a third party: disclosure on the principal's behalf, so a
+    // blanket `vta_call` approval must not cover it. `accept` stores a VWC the
+    // session's own witness issued, and discloses nothing.
+    ("vta/witness/open", Risk::Sensitive),
+    ("vta/witness/present", Risk::Sensitive),
+    ("vta/witness/accept", Risk::Mutating),
     // Key authority, exercised.
     ("keys/sign", Risk::Sensitive),
     ("keys/sign-sshsig", Risk::Sensitive),

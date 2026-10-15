@@ -623,7 +623,10 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # 0.2 (trust-tasks-tf #771, #773).
 # 0.31.5 is the FLOOR: external/credentials/issue 0.2 — batched presigns for
 # direct uploads (trust-tasks-tf #775).
-trust-tasks-rs = { version = "0.31.5", default-features = false, features = [
+# 0.31.7 is the FLOOR: `vta/witness/{open,present,accept}` and the
+# `witness-request` capability (trust-tasks-tf #779), which `trust_tasks::witness`
+# serves.
+trust-tasks-rs = { version = "0.31.7", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
@@ -908,3 +911,4 @@ type_complexity = "allow"
 # ever reports one, the fix is the same choice we faced here: patch it (fast,
 # and it will break again on the next minor bump) or cut the dependency edge
 # upstream (slower, permanent).
+

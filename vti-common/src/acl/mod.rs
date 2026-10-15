@@ -303,6 +303,20 @@ pub enum Capability {
     /// Registered upstream as `pcsApplicant`. Not [`Capability::Sign`], for the
     /// same reason as [`Capability::PcsVetter`], and derived by the same roles.
     PcsApplicant,
+    /// Being the principal's **witnessed party** — `vta/witness/{open,present,accept}`:
+    /// the VTA builds and signs, as the principal's relationship DID (and, under the member
+    /// link, its member DID), every document of a `witness/session`, verifies the witness's
+    /// answers, and stores the Verifiable Witness Credential; the caller carries the
+    /// documents (`vta/_shared/0.5/CONVENTIONS.md` §4).
+    ///
+    /// Registered upstream as `witnessRequest`. Deliberately **not** [`Capability::Sign`]
+    /// and not conferred by it: these tasks sign only documents and presentations the VTA
+    /// builds itself, bound to one session with one witness, and they read and write the
+    /// credential vault, which `sign` does not confer. Witnessing discloses the principal's
+    /// credentials to a third party, so it is derived only by the roles that act as the
+    /// principal — [`Role::Admin`] and [`Role::Initiator`] — and never by
+    /// [`Role::Application`], as for [`Capability::PcsVetter`].
+    WitnessRequest,
 }
 
 /// Capabilities that no role derives, and that an entry therefore holds only
@@ -440,6 +454,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::ExternalAuthUse,
             Capability::PcsVetter,
             Capability::PcsApplicant,
+            Capability::WitnessRequest,
         ],
         Role::Initiator => vec![
             Capability::VaultRead,
@@ -461,6 +476,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::ExternalAuthUse,
             Capability::PcsVetter,
             Capability::PcsApplicant,
+            Capability::WitnessRequest,
         ],
         // `application` is the role a memory agent runs as — `vta-agent-memory`
         // grants exactly it, deliberately, so the memory service is not the
@@ -1943,6 +1959,21 @@ mod tests {
             serde_json::to_value(Capability::PcsApplicant).unwrap(),
             "pcs-applicant"
         );
+    }
+
+    /// `witness-request` is the principal's, like the PCS capabilities: derived by the
+    /// roles that act as the principal, never by `application`, never implied by `sign`
+    /// (`vta/_shared/0.5/CONVENTIONS.md` §4), and spelled as `device/_shared` 0.1 registers it.
+    #[test]
+    fn witness_request_is_the_principals_and_not_sign() {
+        let cap = Capability::WitnessRequest;
+        assert!(role_has_capability(&Role::Admin, cap));
+        assert!(role_has_capability(&Role::Initiator, cap));
+        assert!(!role_has_capability(&Role::Application, cap));
+        assert!(!role_has_capability(&Role::Reader, cap));
+        assert!(!role_has_capability(&Role::Monitor, cap));
+        assert!(!is_additive(cap));
+        assert_eq!(serde_json::to_value(cap).unwrap(), "witness-request");
     }
 
     #[test]

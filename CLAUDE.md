@@ -974,6 +974,31 @@ new flow, update both this section and the relevant `docs/*.md`.
   `vta_sdk::client::pcs`, `vta-mobile-core/src/pcs.rs`.
 - **Docs**: `docs/02-vta/pcs-engine.md`.
 
+### Witnessed party (`vta/witness/*`)
+- **What**: The VTA is the participating party of a `witness/session` for its
+  principal: `open` returns the `witness/session` document signed as the
+  relationship DID, `present` verifies the witness's session answer and returns
+  the signed `witness/session/submit` (relationship presentation, and under the
+  member link the member presentation in `ext["org.openvtc.witness"]`), `accept`
+  verifies the VWC and stores it with its evidence. **The client carries every
+  document** from the relationship DID — the witness checks the transport-proven
+  sender against `issuer`, and that DID's one mediator socket is the client's.
+- **Invariants to preserve**: the VTA never contacts the witness and never signs
+  as itself; keys come through `operations::persona::persona_key_for` (a
+  `did:peer` relationship DID included) plus `keys::require_key_nameable`, and
+  every signature is `ProtocolDefined` through the oracle — `witness-request`,
+  never `sign`. Every handed-back document is checked against the session record
+  (type, issuer = witness, recipient = relationship DID, thread, witness proof)
+  before it is read — `VerifiedWitnessAnswer` / `VerifiedWitnessOutcome` are the
+  only way in. `sessionUnknown` is one answer whatever the cause. The record
+  (`witness_sessions`, not backed up, swept) holds no presentation or challenge;
+  audit never names a member DID. A member presentation is built only for a
+  witness in `[witness] member_link_witnesses`.
+- **Code**: `vta-service/src/operations/witness.rs`,
+  `vta-service/src/trust_tasks/{witness,witness_tests}.rs`,
+  `vta_sdk::client::witness`.
+- **Docs**: `docs/02-vta/witness-party.md`, `docs/06-witness/README.md`.
+
 ### Vault archival lifecycle (archive / soft-delete / restore / purge)
 - **What**: Full lifecycle for **both** VTA stores — the password
   vault (`vault:` keyspace, `vti_common::vault::VaultEntry`) and the

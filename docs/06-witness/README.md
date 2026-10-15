@@ -11,11 +11,12 @@ never witness anything; and a witness is public by design, so its identity must
 never be a node's own (VTI-KEY-007). The reasoning is in the design note,
 [the witness as a host service](../05-design-notes/witness-host-service.md).
 
-> **Status: P2, witnessing.** An enabled identity opens witness sessions,
-> verifies the party's presentation and issues a VWC
-> ([The protocol](#the-protocol)). The party side — the VTA task that runs a
-> witnessed session for its principal, and the VTC's list of trusted witnesses
-> — is phase P3.
+> **Status: P2, witnessing; P3 party side in the VTA.** An enabled identity
+> opens witness sessions, verifies the party's presentation and issues a VWC
+> ([The protocol](#the-protocol)). A VTA can be the party for its principal —
+> `vta/witness/{open,present,accept}`, the client carrying the documents
+> ([the VTA as a witnessed party](../02-vta/witness-party.md)). The VTC's list
+> of trusted witnesses is still to come.
 
 ## What it is
 
@@ -398,6 +399,11 @@ wanting stronger independence runs its witness under a separate operator.
    session and submit protocol and VWC issuance (§3.4), session storage (excluded
    from backup) and attestation records, a sweeper, and an end-to-end test
    against the VTC's VWC verifier.
-3. **P3 — the party side**: the VTA Trust Task that runs a witnessed session for
-   its principal; the VTC's list of trusted witnesses.
+3. **P3 — the party side**: the VTA side is done — `vta/witness/open`,
+   `vta/witness/present` and `vta/witness/accept` (trust-tasks-tf #779), in which
+   the VTA builds and signs every document as the principal's relationship DID
+   and the client carries them, because the relationship DID's one mediator
+   connection is the client's ([the VTA as a witnessed party](../02-vta/witness-party.md)).
+   The end-to-end test drives this service's dispatch core as the witness. The
+   VTC's list of trusted witnesses remains.
 4. **Later**: VWC revocation through a status list.

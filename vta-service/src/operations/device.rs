@@ -923,6 +923,7 @@ mod tests {
             "external-auth-use",
             "pcs-vetter",
             "pcs-applicant",
+            "witness-request",
         ] {
             assert!(
                 p.contains(&cap.to_string()),

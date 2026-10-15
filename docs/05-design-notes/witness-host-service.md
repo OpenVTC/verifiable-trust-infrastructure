@@ -268,13 +268,20 @@ None is built.
 
 They are **parties**, never witnesses:
 
-- **The VTA as a participating party.** It opens a session with a chosen witness
-  on behalf of its principal's relationship DID; submits a VP of the
-  relationship credential plus the membership credential; and stores the
-  returned VWC in the vault together with the session document and the
-  `submit#response` (the outcome evidence the spec requires a holder to retain
-  and ship). This is a Trust Task the VTA's client asks for, in the VTA's own
-  surface.
+- **The VTA as a participating party.** It acts for its principal's
+  relationship DID with a chosen witness: it builds and signs the session
+  document and the submission (a VP of the relationship credential, plus the
+  membership evidence) as the relationship DID, and stores the returned VWC in
+  the vault together with the session document and the `submit#response` (the
+  outcome evidence the spec requires a holder to retain and ship). **The client
+  carries the documents** (`vta/witness/{open,present,accept}`, trust-tasks-tf
+  #779): the witness checks that each document's transport-proven sender is its
+  issuer and replies to that sender, and the relationship DID's one mediator
+  connection belongs to the client that holds the relationship. A first draft,
+  `vta/witness/request/0.1`, had the VTA make both round trips itself; it would
+  have needed a second socket for a DID the client already speaks for, and is
+  retired unimplemented. Operator guide: [the VTA as a witnessed
+  party](../02-vta/witness-party.md).
 - **The VTC** already verifies VWCs. It gains a configured list of witness DIDs
   it trusts, for its criteria to reference.
 - **The `dtg-witness` DID template** ships with the other built-ins, so any operator
@@ -300,10 +307,9 @@ They are **parties**, never witnesses:
 2. **P2 — witnessing.** §3.2–§3.4, with storage (sessions excluded from backup;
    attestations kept), a sweeper, and an end-to-end test against the VTC's
    existing VWC verifier.
-3. **P3 — the party side.** The VTA Trust Task that runs a witnessed session for
-   its principal and stores the VWC with its evidence; the VTC's list of trusted
-   witnesses. That is a new VTA task family, so its specification goes to
-   dtgwg-trust-tasks-tf first.
+3. **P3 — the party side.** The VTA tasks that make it the party for its
+   principal and store the VWC with its evidence (`vta/witness/*`,
+   trust-tasks-tf #779 — done); the VTC's list of trusted witnesses (to come).
 4. **Later.** VWC revocation through a status list.
 
 No VTI specification change is expected: this implements the host-service role

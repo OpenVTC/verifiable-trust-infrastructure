@@ -68,6 +68,7 @@ VTA via the `vtc-host` DID template.
 | Host a public community website | [VTC website + admin UX](03-vtc/website-and-admin.md) |
 | Deploy a trust registry and wire a VTC to it | [Trust-registry deployment](03-vtc/trust-registry-deployment.md) |
 | Run a witness (issue Verifiable Witness Credentials) | [The witness host service](06-witness/README.md) |
+| Get a relationship witnessed, as a principal whose keys a VTA holds | [The VTA as a witnessed party](02-vta/witness-party.md) |
 | Look up a BIP-32 path | [BIP-32 paths](04-reference/bip32-paths.md) |
 | Read the threat model | [Security model](01-concepts/security-model.md) |
 

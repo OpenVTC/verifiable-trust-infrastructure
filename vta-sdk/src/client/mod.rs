@@ -423,6 +423,7 @@ mod pcs;
 mod persona;
 mod policy;
 mod rooms;
+mod witness;
 pub use rooms::{
     RoomAction, RoomRegistration, RoomRetentionPolicy, RoomVisibility, unsigned_room_request,
 };
