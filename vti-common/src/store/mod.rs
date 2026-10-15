@@ -533,6 +533,28 @@ fn lock_writes(lock: &std::sync::Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Write `value` at `new` and delete `old` as one fjall write batch.
+///
+/// One batch is one journal record under one sequence number, so recovery
+/// after a crash replays both or neither. As two writes, a crash between
+/// them would leave both rows — the moved-from row still live beside its
+/// replacement (an old ACL DID keeping its authority, `routes::members::
+/// rotate`). The enclave proxy's `move_locked` commits the same way, so the
+/// local and vsock backends make the same crash guarantee.
+fn commit_move(
+    db: &fjall::Database,
+    ks: &fjall::Keyspace,
+    old: &[u8],
+    new: &[u8],
+    value: Vec<u8>,
+) -> Result<(), AppError> {
+    let mut batch = db.batch();
+    batch.insert(ks, new, value);
+    batch.remove(ks, old);
+    batch.commit()?;
+    Ok(())
+}
+
 impl LocalStore {
     /// [`Store::open`] for the local backend directly — fjall's own
     /// memory tuning left at its defaults.
@@ -870,6 +892,7 @@ impl LocalKeyspaceHandle {
         let bytes = serde_json::to_vec(value)?;
         // The value lands at `new_key`, so bind the AAD to `new_key`.
         let bytes = self.maybe_encrypt(&new_key, bytes)?;
+        let db = self.db.clone();
         let ks = self.keyspace.clone();
         let lock = self.write_lock.clone();
         let write = self.writes.begin().known_on_drop();
@@ -880,8 +903,7 @@ impl LocalKeyspaceHandle {
             if ks.contains_key(&new_key)? {
                 return Ok(false);
             }
-            ks.insert(&new_key, bytes)?;
-            ks.remove(&old_key)?;
+            commit_move(&db, &ks, &old_key, &new_key, bytes)?;
             Ok(true)
         })
         .await
@@ -904,6 +926,7 @@ impl LocalKeyspaceHandle {
         let new_key = new_key.into();
         let bytes = serde_json::to_vec(value)?;
         let bytes = self.maybe_encrypt(&new_key, bytes)?;
+        let db = self.db.clone();
         let ks = self.keyspace.clone();
         let lock = self.write_lock.clone();
         let write = self.writes.begin().known_on_drop();
@@ -931,8 +954,7 @@ impl LocalKeyspaceHandle {
             if ks.contains_key(&new_key)? {
                 return Ok(MoveOutcome::TargetExists);
             }
-            ks.insert(&new_key, bytes)?;
-            ks.remove(&old_key)?;
+            commit_move(&db, &ks, &old_key, &new_key, bytes)?;
             Ok(MoveOutcome::Moved)
         })
         .await
@@ -1174,6 +1196,48 @@ mod tests {
         }
         assert_eq!(moved, 1, "exactly one concurrent move may land");
         assert!(ks.get_raw("src").await.unwrap().is_none());
+    }
+
+    /// The local store's journal sequence number — one per journal record.
+    fn journal_seqno(store: &Store) -> fjall::SeqNo {
+        match store {
+            Store::Local(s) => s.db.seqno(),
+            #[cfg(feature = "vsock-store")]
+            Store::Vsock(_) => unreachable!("local-store tests only"),
+        }
+    }
+
+    /// A move is one journal record: the insert and the delete share one
+    /// sequence number, so crash recovery replays both or neither. Two
+    /// separate writes would take two, and a crash between them would leave
+    /// both rows live — the old row keeping its authority beside the new one.
+    #[tokio::test]
+    async fn moves_commit_as_one_journal_record() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("test").unwrap();
+        ks.insert("a", &"row".to_string()).await.unwrap();
+
+        let before = journal_seqno(&store);
+        assert!(ks.swap("a", "b", &"row".to_string()).await.unwrap());
+        assert_eq!(journal_seqno(&store) - before, 1, "swap is one record");
+
+        let expected = ks.get_raw("b").await.unwrap().unwrap();
+        let before = journal_seqno(&store);
+        assert_eq!(
+            ks.move_if_unchanged("b", expected, "c", &"row".to_string())
+                .await
+                .unwrap(),
+            MoveOutcome::Moved
+        );
+        assert_eq!(journal_seqno(&store) - before, 1, "move is one record");
+        assert!(ks.get_raw("b").await.unwrap().is_none());
+        assert!(ks.get_raw("c").await.unwrap().is_some());
+
+        // A refused move writes nothing at all.
+        ks.insert("d", &"taken".to_string()).await.unwrap();
+        let before = journal_seqno(&store);
+        assert!(!ks.swap("c", "d", &"row".to_string()).await.unwrap());
+        assert_eq!(journal_seqno(&store), before, "refusal writes nothing");
     }
 
     #[tokio::test]

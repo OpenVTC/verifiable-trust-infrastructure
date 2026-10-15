@@ -410,21 +410,12 @@ pub(crate) async fn rotate_inner(
         .into());
     }
 
-    // 7. Move the ACL row. `KeyspaceHandle::swap` runs the
-    // insert-new + remove-old pair inside a single blocking closure
-    // so no async yield can land between them — the previous
+    // 7. Move the ACL row. `KeyspaceHandle::swap` commits the
+    // insert-new + remove-old pair as one write batch — one journal
+    // record, so a crash replays both or neither. The previous
     // sequential store/delete pattern had a window where a crash or
     // a competing handler could observe both rows live and treat
     // the rotated member as having two valid identities.
-    //
-    // A process crash between the two fjall calls inside `swap` is
-    // still observable on next boot (fjall's WAL persists each call
-    // individually, not as a batch). That residual gap is a
-    // `fjall::WriteBatch` upgrade in `vti-common` away from being
-    // fully atomic; until then, a reconciliation step at boot would
-    // need to look for `(old_did, new_did)` pairs and complete the
-    // rotation. Tracked as a follow-up since the window shrinks
-    // from milliseconds to microseconds here.
     let mut acl = get_acl_entry(&state.acl_ks, &body.old_did)
         .await?
         .ok_or_else(|| {
