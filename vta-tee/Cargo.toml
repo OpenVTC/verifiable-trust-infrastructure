@@ -31,7 +31,7 @@ vti-common = { path = "../vti-common", version = "0.45", features = ["encryption
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.18" }
 vta-config = { path = "../vta-config", version = "0.22", features = ["tee"] }
 vta-keys = { path = "../vta-keys", version = "0.22" }
-vta-support = { path = "../vta-support", version = "0.18" }
+vta-support = { path = "../vta-support", version = "0.19" }
 aes-gcm = { workspace = true }
 utoipa = { workspace = true }
 rand = { workspace = true }

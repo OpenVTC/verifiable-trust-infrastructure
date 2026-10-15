@@ -36,7 +36,7 @@ vta-sdk = { path = "../vta-sdk", version = "0.69" }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.18" }
 vta-keys = { path = "../vta-keys", version = "0.22" }
 vta-config = { path = "../vta-config", version = "0.22", features = ["tee"] }
-vta-support = { path = "../vta-support", version = "0.18" }
+vta-support = { path = "../vta-support", version = "0.19" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
