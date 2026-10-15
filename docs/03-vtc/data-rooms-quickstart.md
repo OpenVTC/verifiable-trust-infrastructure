@@ -393,8 +393,9 @@ storage credential: for every object it asks the community's VTA (C) for a
 presigned request, over messaging
 ([§8.2 of the guide](../02-vta/data-rooms.md#82-t2--a-community-vtc),
 [external accounts](../02-vta/external-accounts.md)). That needs the VTC and VTA
-C on a mediator, and today a fix this run applied locally (the private-address
-probe under *What does not work yet*); without it, stop at §9.
+C on a mediator (§10.1). This workspace's binaries need no local fix: run them
+as built, with `VTA_ALLOW_PRIVATE_ENDPOINTS=1` set as above so VTA C may probe
+a bucket on loopback (§10.2).
 
 ### 10.1 A local mediator
 
@@ -431,6 +432,10 @@ aws --endpoint-url http://localhost:4566 s3api create-bucket --bucket vdr-rooms
 The VTA presigns only `https://` endpoints. LocalStack answers TLS on the same
 port as `https://localhost.localstack.cloud:4566`, a public name for
 `127.0.0.1` with a valid certificate, so that is the endpoint, path-style.
+Because it resolves to loopback, VTA C probes it only with
+`VTA_ALLOW_PRIVATE_ENDPOINTS=1` in its environment (set above); without it the
+probe stops at `sign`, naming that switch. The same goes for a MinIO on your
+network. Link-local and cloud-metadata addresses are refused either way.
 
 ### 10.3 The account at the community's VTA
 
@@ -450,17 +455,13 @@ echo test | pnm external secret-set localstack-rooms --context vtc   # LocalStac
 pnm external probe localstack-rooms --context vtc     # "ok": true, "complete": true
 ```
 
-`setup` prints `bucket-lifecycle.json` and `bucket-cors.json`. Its lifecycle
-rule names only the first bound prefix (`probe/`), so write the rule for
-`rooms/` yourself, then set both:
+`setup` prints `bucket-lifecycle.json` and `bucket-cors.json`. The lifecycle
+configuration has one rule per bound prefix (`probe/` and `rooms/` here). Set
+both:
 
 ```bash
-cat > lifecycle.json <<'EOF'
-{"Rules":[{"ID":"abort-incomplete-room-uploads","Status":"Enabled","Filter":{"Prefix":"rooms/"},
-           "AbortIncompleteMultipartUpload":{"DaysAfterInitiation":2}}]}
-EOF
 aws --endpoint-url http://localhost:4566 s3api put-bucket-lifecycle-configuration \
-    --bucket vdr-rooms --lifecycle-configuration file://lifecycle.json
+    --bucket vdr-rooms --lifecycle-configuration file://bucket-lifecycle.json
 aws --endpoint-url http://localhost:4566 s3api put-bucket-cors \
     --bucket vdr-rooms --cors-configuration file://bucket-cors.json   # AllowedOrigins set to yours
 ```
@@ -552,12 +553,6 @@ write is not retried:
 
 Found in this run; each is being fixed.
 
-- **A VTA cannot probe a bucket on a private address.** The probe uses the
-  public-only HTTP client whatever `VTA_ALLOW_PRIVATE_ENDPOINTS` says, so an
-  account at LocalStack, or a MinIO on your network, never passes a complete
-  probe and never issues.
-- **`pnm external setup`'s lifecycle rule** covers only the first bound prefix;
-  write it for `rooms/` yourself (§10.3).
 - **Making a member needs the console.** No CLI until `vtc/members/admit` is
   specified.
 - **Storage configs need the console too** — or an approver device and a

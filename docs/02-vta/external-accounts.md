@@ -44,6 +44,16 @@ pnm external secret-set r2-rooms --context community
 pnm external probe r2-rooms --context community
 ```
 
+**A store on a private network or loopback** (MinIO on a LAN, LocalStack) is
+refused by default: `create`/`update` answer `external:invalidSettings`
+(`details.member: "endpoint"`) for a private or loopback IP literal or a local
+name, and the probe's resolver refuses a name that resolves to one, so the probe
+stops at `sign` and the account stays `providerSetupRequired`. Set
+`VTA_ALLOW_PRIVATE_ENDPOINTS=1` in the VTA's environment — the same switch that
+lets it resolve a DID on such a host — to admit them. Link-local and
+cloud-metadata targets are refused either way, and the probe never follows a
+redirect. The endpoint must be `https://` in both modes.
+
 The consumer (here the VTC) holds `external-auth-use` in the context — every
 role that holds `sign` derives it — and calls `external/credentials/issue/0.1`.
 The credential comes back sealed to its own key-agreement key (the X25519
