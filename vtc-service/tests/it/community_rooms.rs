@@ -360,6 +360,7 @@ fn config() -> CommunityRoomsConfig {
         webvh_server: Some("hosting".into()),
         mediator_did: Some("did:example:mediator".into()),
         authority_valid_days: None,
+        authority_renew_within_days: None,
     }
 }
 

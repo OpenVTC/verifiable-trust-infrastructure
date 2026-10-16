@@ -34,6 +34,7 @@ import {
   createCommunityRoom,
   daysUntil,
   fetchCommunityRooms,
+  type AuthorityRenewal,
   type CommunityRoomsSetting,
 } from "@/lib/community-rooms-api";
 import { formatIso, shorten } from "@/lib/format";
@@ -89,6 +90,23 @@ function CommunityRoomsOff({ setting }: { setting: CommunityRoomsSetting }) {
   );
 }
 
+/** A renewal of the community's own authority that is failing, and why. The
+ *  VTC renews it itself; this is what an administrator sees when it cannot. */
+export function RenewalFailing({ renewal }: { renewal?: AuthorityRenewal | null }) {
+  if (renewal?.state !== "failing") return null;
+  return (
+    <div className="rooms-sub">
+      <span className="chip danger" title={renewal.lastError}>
+        renewal failing{renewal.attempts ? ` (${renewal.attempts}×)` : ""}
+      </span>
+      {renewal.lastError && <div className="muted">{renewal.lastError}</div>}
+      {renewal.nextAttemptAt && (
+        <div className="muted">Next attempt {formatIso(renewal.nextAttemptAt)}.</div>
+      )}
+    </div>
+  );
+}
+
 /** When the community's own authority over a room lapses, said as a warning
  *  once it is near. */
 export function AuthorityExpiry({ until }: { until?: string }) {
@@ -109,7 +127,13 @@ export function AuthorityExpiry({ until }: { until?: string }) {
   );
 }
 
-function CommunityRoomsTable({ rooms }: { rooms: CommunityRoom[] }) {
+function CommunityRoomsTable({
+  rooms,
+  renewal,
+}: {
+  rooms: CommunityRoom[];
+  renewal: Record<string, AuthorityRenewal>;
+}) {
   return (
     <DataTable
       columns={[
@@ -141,6 +165,7 @@ function CommunityRoomsTable({ rooms }: { rooms: CommunityRoom[] }) {
           </td>
           <td>
             <AuthorityExpiry until={r.ownerAuthorityValidUntil} />
+            <RenewalFailing renewal={renewal[r.room.roomId]} />
           </td>
           <td>{new Date(r.room.createdAt * 1000).toLocaleDateString()}</td>
         </tr>
@@ -352,7 +377,7 @@ export function CommunityRoomsList() {
 
       {rooms.length > 0 && (
         <section className="card">
-          <CommunityRoomsTable rooms={rooms} />
+          <CommunityRoomsTable rooms={rooms} renewal={q.data?.renewal ?? {}} />
           {q.data?.truncated && (
             <p className="muted rooms-sub">More rooms exist than this page reads.</p>
           )}

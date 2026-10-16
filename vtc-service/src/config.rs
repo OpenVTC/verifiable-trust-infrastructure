@@ -155,7 +155,8 @@ pub struct RoomsConfig {
 /// community's place in a sealed room's group. This community holds no room key. It
 /// reaches the VTA over the messaging link it already keeps, so `vta_did` and
 /// `[messaging]` are needed too, and this community's DID needs an entry at the VTA in
-/// `context` with `key-mint`, `credential-write` and `vault-write`.
+/// `context` with `key-mint`, `credential-write` and `vault-write` (and `vault-read` to
+/// renew the authority over a room created before renewal recorded where it is kept).
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CommunityRoomsConfig {
@@ -177,12 +178,30 @@ pub struct CommunityRoomsConfig {
     /// admit or remove anyone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authority_valid_days: Option<u32>,
+    /// How long before the community's own authority over a room lapses this
+    /// community asks its VTA to renew it, in days. Default 30. Bounded by half of
+    /// [`Self::authority_valid_days`], so a renewal is never due again the moment it
+    /// lands (`rooms::community_renewal`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_renew_within_days: Option<u32>,
 }
 
 impl CommunityRoomsConfig {
     /// [`Self::authority_valid_days`], defaulted and at least one day.
     pub fn authority_valid_days(&self) -> u32 {
         self.authority_valid_days.unwrap_or(365).max(1)
+    }
+
+    /// [`Self::authority_renew_within_days`], defaulted, and never more than half the
+    /// authority's own life: a renewal that was due again as soon as it landed would ask
+    /// the VTA for a fresh credential on every pass.
+    pub fn authority_renew_within(&self) -> chrono::Duration {
+        let configured = chrono::Duration::days(i64::from(
+            self.authority_renew_within_days
+                .unwrap_or(crate::rooms::community_renewal::DEFAULT_RENEW_WITHIN_DAYS),
+        ));
+        let half_life = chrono::Duration::days(i64::from(self.authority_valid_days())) / 2;
+        configured.min(half_life)
     }
 }
 

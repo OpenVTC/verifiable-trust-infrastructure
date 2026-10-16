@@ -901,8 +901,8 @@ pub struct RoomLimitsChangedData {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CommunityRoomChangedData {
-    /// `created`, `memberOffered`, `memberAdmitted`, `memberRemoved` or
-    /// `offerWithdrawn`.
+    /// `created`, `memberOffered`, `memberAdmitted`, `memberRemoved`,
+    /// `offerWithdrawn`, `authorityRenewed` or `authorityRenewalFailed`.
     pub event: String,
     /// The room: its DID.
     pub room_id: String,

@@ -1222,6 +1222,17 @@ new flow, update both this section and the relevant `docs/*.md`.
   answer only the proven signer, and only an active member. Never log or audit
   a Welcome, a KeyPackage or a credential. Absent `[rooms.community]` = off.
   Serverless room identities are served at `/room-dids/<id>/did.jsonl`.
+- **Renewal** (`rooms::community_renewal`, create item 6's SHOULD): a sweeper
+  reissues the community's own VMC + `admin` VAC within `[rooms.community]
+  authority_renew_within_days` (default 30, ≤ half the life) and stores each
+  **under the vault handle it replaces** — the VTA refuses to choose between
+  two VACs for one persona, so never add one beside the other. Handles are
+  recorded at create (`authority-renewal:<room>`), else found by
+  `vault/credentials/query` + `get` (needs `vault-read`). Remote first: the
+  owner's record's `ownerAuthorityValidUntil` is written last; the sweeper is
+  the only retry owner (capped backoff + jitter); failures are `warn`ed,
+  audited at the start of a run, and shown in `get`/`list`'s
+  `ext["org.openvtc"].authorityRenewal`. No "renew now" task exists.
 - **Code**: `vtc-service/src/rooms/community.rs`,
   `vtc-service/src/trust_tasks/community_room_tasks.rs`,
   `cnm-cli/src/rooms.rs` (`cnm rooms …`).

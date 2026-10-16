@@ -10,6 +10,7 @@
 //! module had to move when the subsystem did.
 
 pub mod community;
+pub mod community_renewal;
 pub mod files;
 pub mod handlers;
 pub mod policy;

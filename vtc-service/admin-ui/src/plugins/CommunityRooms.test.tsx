@@ -132,6 +132,33 @@ describe("Community rooms tab", () => {
     ]);
   });
 
+  it("says when the VTC cannot renew the community's own authority", async () => {
+    mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_LIST_TASK, {
+        items: [communityRoom()],
+        ext: {
+          "org.openvtc": {
+            authorityRenewal: {
+              renewWithinDays: 30,
+              rooms: {
+                [ROOM]: {
+                  state: "failing",
+                  attempts: 2,
+                  lastError: "the community's VTA could not be reached",
+                  nextAttemptAt: "2026-10-16T12:00:00Z",
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+    mount("/rooms/community");
+    expect(await screen.findByText("renewal failing (2×)")).toBeTruthy();
+    expect(screen.getByText("the community's VTA could not be reached")).toBeTruthy();
+  });
+
   it("shows what to add when community rooms are off", async () => {
     mockFetch([
       ...NAME_BOOK_ROUTES,
@@ -204,6 +231,25 @@ describe("a community room's page", () => {
     }),
   ];
   const page = `/rooms/community/${encodeURIComponent(ROOM)}`;
+
+  it("says the VTC renews the community's authority, and when it last did", async () => {
+    mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_GET_TASK, {
+        room: communityRoom(),
+        ext: {
+          "org.openvtc": {
+            authorityRenewal: { state: "ok", renewWithinDays: 30, lastRenewedAt: "2026-10-01T00:00:00Z" },
+          },
+        },
+      }),
+      taskRoute(COMMUNITY_ROOMS_MEMBERS_LIST_TASK, { items: [] }),
+    ]);
+    mount(page);
+    expect(await screen.findByText(/The VTC renews it at/)).toBeTruthy();
+    expect(screen.getByText(/from 30 days before it lapses/)).toBeTruthy();
+    expect(screen.queryByText(/renewal failing/)).toBeNull();
+  });
 
   it("lists who was offered and who is admitted", async () => {
     const requests = mockFetch(routes());

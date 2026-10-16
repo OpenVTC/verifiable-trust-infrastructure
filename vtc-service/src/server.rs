@@ -1532,6 +1532,10 @@ pub async fn run(
     crate::admin_actions::spawn_sweeper(state.clone(), shutdown_rx.clone());
     // A refreshed GeoIP database is picked up without a restart.
     state.geoip.spawn_reloader(shutdown_rx.clone());
+    // The community's own authority over each room it owns, renewed at its VTA before it
+    // lapses. Always spawned: it reads `[rooms.community]` on every pass and does nothing
+    // while community rooms are off or there is no VTA link.
+    crate::rooms::community_renewal::spawn(state.clone(), shutdown_rx.clone());
     // Room files deleted, orphaned past their grace, or abandoned mid-transfer.
     crate::rooms::files::spawn_sweeper(
         state.room_files.clone(),

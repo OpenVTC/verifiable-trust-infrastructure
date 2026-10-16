@@ -35,6 +35,7 @@ import {
   MEMBER_ACTIONS,
   addCommunityRoomMember,
   fetchCommunityRoom,
+  roomRenewalOf,
   fetchCommunityRoomMembers,
   removalOutcome,
   removalPreview,
@@ -55,7 +56,7 @@ import type {
 } from "@/lib/wire-types";
 
 import { RefusalCard } from "./CommunityRefusal";
-import { AuthorityExpiry, COMMUNITY_ROOMS_KEY } from "./CommunityRooms";
+import { AuthorityExpiry, COMMUNITY_ROOMS_KEY, RenewalFailing } from "./CommunityRooms";
 import { COMMUNITY_PATH, LifecyclePill, TIER_BLURB, roomPath, type Tier } from "./shared";
 
 type StateFilter = "all" | CommunityRoomMemberState;
@@ -110,13 +111,19 @@ export function CommunityRoomDetail() {
         trail={trail}
         lead="A room this community owns. Its VTA holds the room's keys; the community admits and removes its members."
       />
-      <RoomFacts room={room} />
+      <RoomFacts room={room} renewal={roomRenewalOf(q.data.ext)} />
       <Members room={room} />
     </section>
   );
 }
 
-function RoomFacts({ room }: { room: CommunityRoom }) {
+function RoomFacts({
+  room,
+  renewal,
+}: {
+  room: CommunityRoom;
+  renewal: ReturnType<typeof roomRenewalOf>;
+}) {
   const nameBook = useNameBook();
   const hostAdmin = useCan("vtc.rooms.admin", "*");
   const r = room.room;
@@ -144,9 +151,12 @@ function RoomFacts({ room }: { room: CommunityRoom }) {
         <dt>Community&rsquo;s authority until</dt>
         <dd>
           <AuthorityExpiry until={room.ownerAuthorityValidUntil} />
+          <RenewalFailing renewal={renewal} />
           <div className="muted rooms-sub">
-            After this the community can no longer admit or remove anyone here. Renew it at the
-            community&rsquo;s VTA with <code>pnm rooms owner issue-authority</code> before it lapses.
+            After this the community can no longer admit or remove anyone here. The VTC renews it at
+            the community&rsquo;s VTA
+            {renewal?.renewWithinDays ? ` from ${renewal.renewWithinDays} days before it lapses` : " before it lapses"}
+            {renewal?.lastRenewedAt ? `; last renewed ${formatIso(renewal.lastRenewedAt)}` : ""}.
           </div>
         </dd>
         {room.storageConfig && (

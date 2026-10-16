@@ -513,7 +513,7 @@ async fn handle_create(
     }
 
     let authority_until = now() + chrono::Duration::days(i64::from(setup.authority_days));
-    let (room_id, signing_key_id, did_path) =
+    let (room_id, signing_key_id, did_path, vault_ids) =
         match mint_and_equip(&setup, &label, visibility, authority_until, state).await {
             Ok(v) => v,
             Err(CreateFailure::Holder(HolderError::Unavailable(why), minted)) => {
@@ -579,6 +579,19 @@ async fn handle_create(
     if let Err(e) = state.community_rooms.put_room(&owned).await {
         return app_error_to_reject(&doc, &e);
     }
+    // Where the VTA keeps the community's own credentials, so their renewal replaces them
+    // (`rooms::community_renewal`). Without it a renewal finds them in the VTA's vault.
+    let (membership_id, authority_id) = vault_ids;
+    if let Err(e) = crate::rooms::community_renewal::record_vault_ids(
+        &state.community_rooms,
+        &room_id,
+        membership_id,
+        authority_id,
+    )
+    .await
+    {
+        tracing::warn!(room = %room_id, error = %e, "could not record where the community's room credentials are kept");
+    }
 
     let mut row = change("created", &owned);
     row.reason = Some(checked.reason.to_string());
@@ -593,15 +606,16 @@ async fn handle_create(
 
 /// Steps 1–3 of `vtc/rooms/community/create`, all at the community's VTA: mint the room's
 /// DID, found its group on a sealed tier, and issue and store the community's own
-/// membership and `admin` authority. Answers the room's DID, its signing key, and the
-/// path its log is served under when this service serves it.
+/// membership and `admin` authority. Answers the room's DID, its signing key, the path its
+/// log is served under when this service serves it, and the VTA vault handles of the
+/// membership and the authority.
 async fn mint_and_equip(
     setup: &Setup,
     label: &str,
     visibility: vti_rooms::Visibility,
     authority_until: DateTime<Utc>,
     state: &AppState,
-) -> Result<(String, String, Option<String>), CreateFailure> {
+) -> Result<(String, String, Option<String>, (String, String)), CreateFailure> {
     let holder = &setup.holder;
     let local = CreateFailure::Local;
 
@@ -674,25 +688,28 @@ async fn mint_and_equip(
         authority_until,
     )
     .await;
-    if let Err(e) = rest {
-        // Nothing is stored for a room that failed; a log served for it would name an
-        // identity nobody uses.
-        if let Some(path) = &did_path {
-            let _ = state.community_rooms.remove_did_log(path).await;
+    let vault_ids = match rest {
+        Ok(ids) => ids,
+        Err(e) => {
+            // Nothing is stored for a room that failed; a log served for it would name an
+            // identity nobody uses.
+            if let Some(path) = &did_path {
+                let _ = state.community_rooms.remove_did_log(path).await;
+            }
+            return Err(CreateFailure::Holder(e, Some(room_id)));
         }
-        return Err(CreateFailure::Holder(e, Some(room_id)));
-    }
-    Ok((room_id, signing_key_id, did_path))
+    };
+    Ok((room_id, signing_key_id, did_path, vault_ids))
 }
 
-/// Steps 2 and 3.
+/// Steps 2 and 3. Answers the VTA vault handles of the membership and the authority.
 async fn equip(
     setup: &Setup,
     room_id: &str,
     signing_key_id: &str,
     visibility: vti_rooms::Visibility,
     authority_until: DateTime<Utc>,
-) -> Result<(), HolderError> {
+) -> Result<(String, String), HolderError> {
     let holder = &setup.holder;
     let internal = |e: AppError| HolderError::Unavailable(e.to_string());
     // Step 2: the room's group, with the community as its only member.
@@ -723,6 +740,7 @@ async fn equip(
         "validUntil": until,
     }))
     .map_err(internal)?;
+    let mut stored = Vec::with_capacity(2);
     for (task, request, name) in [
         (OWNER_MEMBERSHIP, membership, "rooms/owner/issue-membership"),
         (OWNER_AUTHORITY, authority, "rooms/owner/issue-authority"),
@@ -740,9 +758,15 @@ async fn equip(
         }))
         .map_err(internal)?;
         let answer = ask(holder, VAULT_RECEIVE, store, SIGN_TIMEOUT).await?;
-        read::<vault_receive::Response>("vault/credentials/receive", answer)?;
+        stored.push(
+            read::<vault_receive::Response>("vault/credentials/receive", answer)?
+                .id
+                .to_string(),
+        );
     }
-    Ok(())
+    let authority_id = stored.pop().unwrap_or_default();
+    let membership_id = stored.pop().unwrap_or_default();
+    Ok((membership_id, authority_id))
 }
 
 // ─── vtc/rooms/community/{list,get} ──────────────────────────────────────
@@ -774,6 +798,7 @@ async fn handle_list(
         Ok(p) => p,
         Err(reject) => return reject,
     };
+    let listed: Vec<String> = rooms.iter().map(|r| r.room_id.clone()).collect();
     let mut items = Vec::with_capacity(rooms.len());
     for room in &rooms {
         match community_room(state, room).await {
@@ -791,6 +816,13 @@ async fn handle_list(
             "enabled": false,
             "configure": "[rooms.community]\ncontext = \"<the context at the community's VTA the rooms' keys are minted in>\"",
         } } });
+    }
+    // How the renewal of the community's own authority stands, per room
+    // (`rooms::community_renewal`): the shared `CommunityRoom` has no member for it.
+    match crate::rooms::community_renewal::list_ext(state, &listed).await {
+        Ok(Some(renewal)) => body["ext"]["org.openvtc"]["authorityRenewal"] = renewal,
+        Ok(None) => {}
+        Err(e) => return app_error_to_reject(&doc, &e),
     }
     respond::<list::Response>(&doc, body)
 }
@@ -812,10 +844,18 @@ async fn handle_get(
         Ok(r) => r,
         Err(reject) => return reject,
     };
-    match community_room(state, &room).await {
-        Ok(room) => respond::<get::Response>(&doc, json!({ "room": room })),
-        Err(e) => app_error_to_reject(&doc, &e),
+    let mut body = match community_room(state, &room).await {
+        Ok(room) => json!({ "room": room }),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    match crate::rooms::community_renewal::room_ext(state, &room.room_id).await {
+        Ok(Some(renewal)) => {
+            body["ext"] = json!({ "org.openvtc": { "authorityRenewal": renewal } });
+        }
+        Ok(None) => {}
+        Err(e) => return app_error_to_reject(&doc, &e),
     }
+    respond::<get::Response>(&doc, body)
 }
 
 // ─── vtc/rooms/community/members/* ───────────────────────────────────────

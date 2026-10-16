@@ -45,6 +45,7 @@ context = "vtc"                             # the VTA context the rooms' keys ar
 # webvh_server = "<hosting server id at the VTA>"   # absent: this VTC serves each room's log
 # mediator_did = "<DID>"                    # the rooms' DIDComm mediator; default [messaging]
 # authority_valid_days = 365                # the community's own admin authority per room
+# authority_renew_within_days = 30          # renew it this long before it lapses
 ```
 
 **Where a room's DID is published.** A room's DID must resolve before its credentials
@@ -76,6 +77,8 @@ The VTC's DID is itself a persona the VTA holds in that context, minted there by
 `vtc setup`; that is what lets the VTA sign the room's group changes **as the
 community**. Its `admin` authority over each room expires (`authority_valid_days`,
 default 365); a room whose owner's authority has lapsed can no longer admit or remove.
+The VTC renews it before then ([below](#renewing-the-communitys-own-authority)); for a
+room created before renewal shipped, that also takes `vault-read` on this entry.
 
 **The `rooms` policy** decides which tiers the community may own a room at
 (`input.room.communityOwned` is `true`, `input.actor` is the administrator). The shipped
@@ -158,6 +161,50 @@ cnm rooms members remove <room DID> --member <DID> --reason "left the board"
   though on a sealed room it opens nothing written afterwards. On an `open` room it
   withdraws nothing cryptographically, so admit with short `--valid-for` there.
 
+## Renewing the community's own authority
+
+The community's membership and `admin` authority in each room it owns are issued with an
+expiry (`authority_valid_days`), and `vtc/rooms/community/create` says a community SHOULD
+renew them well before they lapse. The VTC does that itself: a sweeper looks every five
+minutes for a room whose `ownerAuthorityValidUntil` falls within
+`authority_renew_within_days` (default 30, and never more than half of
+`authority_valid_days`), and for each asks the community's VTA for a fresh membership
+(`rooms/owner/issue-membership`) and a fresh `admin` authority
+(`rooms/owner/issue-authority`, the same `read`, `write`, `curate`, `admin`), each valid
+`authority_valid_days` from then. Both are renewed because the room issued them with the
+same expiry.
+
+**Each replaces the one before it, in the VTA's vault.** The VTA acts for a persona only
+when it holds one authority from the room to that persona — two is a refusal, not a guess —
+so each new credential is stored (`vault/credentials/receive`) under the handle of the one
+it renews. A room created by this release records those handles when it is created. For a
+room created before, the VTC finds them in the VTA's vault (`vault/credentials/query`,
+`vault/credentials/get`), which takes **`vault-read`** on the community's entry there:
+
+```bash
+pnm acl update "$VTC" --capabilities key-mint,credential-write,vault-write,vault-read,external-auth-use
+```
+
+Without it, those rooms' renewals fail saying so, and the room can still be renewed by
+hand (`pnm rooms owner issue-authority … --store` at the community's VTA, and the same for
+`issue-membership`).
+
+**Only then** does the VTC record the new `ownerAuthorityValidUntil`. A VTC stopped
+mid-way finds the room still due on its next pass and renews again under the same handles,
+so the VTA ends with one of each either way.
+
+**When it fails** — the VTA unreachable, a refusal — the VTC tries again after a backoff
+(about a minute, doubling to six hours, with jitter), logs every failure at `warn`, audits
+the first of a run (`CommunityRoomChanged`, `authorityRenewalFailed`; a success is
+`authorityRenewed`), and the console shows **renewal failing** with the reason and the next
+attempt on the room's line and its page (from `vtc/rooms/community/{get,list}`'s
+`ext["org.openvtc"].authorityRenewal`). An authority that has already lapsed is still
+renewed: the room's key, which the VTA holds, is what issues.
+
+Nothing is renewed while `[rooms.community]` is absent or the VTC has no link to its VTA,
+nor for a room this VTC no longer hosts, no longer owns at its host, or that is past its
+retention (`reclaimable`). There is no "renew now": no specification defines one.
+
 ## The member's half — `vtc/rooms/offers/*`
 
 The member, signed with **their own DID** (the persona named in the offer):
@@ -206,8 +253,6 @@ identical request and answers with the same Welcome.
   host's (`vtc.rooms.admin`, rooms registered, lifecycle, usage bands). An offer,
   admission or removal is in no topic, so the console's Community rooms pages poll for
   it; a topic for `vtc.rooms.manage` holders is a specification change.
-- **Renewing the community's own authority** before `ownerAuthorityValidUntil`: reissue
-  with `pnm rooms owner issue-authority` at the community's VTA for now.
 - **Removing a departing member from every room the community owns** when they leave
   the community (`members/add` item 6, a SHOULD): today an administrator removes them
   room by room.

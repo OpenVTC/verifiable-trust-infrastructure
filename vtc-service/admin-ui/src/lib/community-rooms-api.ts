@@ -71,9 +71,52 @@ export interface CommunityRoomsSetting {
   configure?: string;
 }
 
+/** How the renewal of the community's own authority over a room stands — the
+ *  VTC's `ext["org.openvtc"].authorityRenewal` (the shared `CommunityRoom`
+ *  has no member for it). The VTC renews it itself, from `renewWithinDays`
+ *  before it lapses. */
+export interface AuthorityRenewal {
+  state: "ok" | "failing";
+  attempts?: number;
+  lastAttemptAt?: string;
+  nextAttemptAt?: string;
+  lastError?: string;
+  lastRenewedAt?: string;
+}
+
+function renewalStatus(v: unknown): AuthorityRenewal | null {
+  const r = v as Record<string, unknown> | undefined;
+  if (!r || (r.state !== "ok" && r.state !== "failing")) return null;
+  const str = (k: string) => (typeof r[k] === "string" ? { [k]: r[k] as string } : {});
+  return {
+    state: r.state,
+    ...(typeof r.attempts === "number" ? { attempts: r.attempts } : {}),
+    ...str("lastAttemptAt"),
+    ...str("nextAttemptAt"),
+    ...str("lastError"),
+    ...str("lastRenewedAt"),
+  };
+}
+
+function renewalExt(ext: unknown): Record<string, unknown> | undefined {
+  return (ext as { "org.openvtc"?: { authorityRenewal?: Record<string, unknown> } } | undefined)?.[
+    "org.openvtc"
+  ]?.authorityRenewal;
+}
+
+/** One room's renewal, from a `get`'s `ext`, and the window it renews in. */
+export function roomRenewalOf(ext: unknown): (AuthorityRenewal & { renewWithinDays?: number }) | null {
+  const r = renewalExt(ext);
+  const status = renewalStatus(r);
+  if (!status) return null;
+  return typeof r?.renewWithinDays === "number" ? { ...status, renewWithinDays: r.renewWithinDays } : status;
+}
+
 export interface CommunityRoomsListing {
   rooms: CommunityRoom[];
   setting: CommunityRoomsSetting;
+  /** Each listed room's renewal, by room DID, where the VTC has one to report. */
+  renewal: Record<string, AuthorityRenewal>;
   /** More rooms exist than the pages read hold. */
   truncated: boolean;
 }
@@ -92,6 +135,7 @@ function settingOf(ext: unknown): CommunityRoomsSetting | null {
 /** Every room the community owns, page by page, and whether the feature is on. */
 export async function fetchCommunityRooms(): Promise<CommunityRoomsListing> {
   const rooms: CommunityRoom[] = [];
+  const renewal: Record<string, AuthorityRenewal> = {};
   let setting: CommunityRoomsSetting | null = null;
   let cursor: string | undefined;
   for (let page = 0; page < MAX_COMMUNITY_PAGES; page++) {
@@ -101,10 +145,15 @@ export async function fetchCommunityRooms(): Promise<CommunityRoomsListing> {
     });
     rooms.push(...body.items);
     setting ??= settingOf(body.ext);
+    const perRoom = renewalExt(body.ext)?.rooms as Record<string, unknown> | undefined;
+    for (const [id, v] of Object.entries(perRoom ?? {})) {
+      const status = renewalStatus(v);
+      if (status) renewal[id] = status;
+    }
     cursor = body.nextCursor;
-    if (!cursor) return { rooms, setting: setting ?? { enabled: true }, truncated: false };
+    if (!cursor) return { rooms, setting: setting ?? { enabled: true }, renewal, truncated: false };
   }
-  return { rooms, setting: setting ?? { enabled: true }, truncated: true };
+  return { rooms, setting: setting ?? { enabled: true }, renewal, truncated: true };
 }
 
 export function fetchCommunityRoom(roomId: string): Promise<CommunityRoomGetResponse> {
