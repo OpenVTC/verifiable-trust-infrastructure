@@ -17,6 +17,7 @@ import {
   adverseVerification,
   fileWontFit,
   formatBytes,
+  roomName,
   shareRefusalHint,
   walletRooms,
   type PageRoom,
@@ -129,9 +130,10 @@ function RoomList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: s
           <ul>
             {refused.map((r) => {
               const hint = shareRefusalHint(r.reason);
+              const name = roomName(list.data?.find((s) => s.roomId === r.roomId));
               return (
                 <li key={r.roomId}>
-                  <code className="wrap">{shortDid(r.roomId)}</code>: {hint ?? r.reason}
+                  {name ? <b>{name}</b> : <code className="wrap">{shortDid(r.roomId)}</code>}: {hint ?? r.reason}
                   {hint && <span className="muted small"> ({r.reason})</span>}
                 </li>
               );
@@ -154,11 +156,19 @@ function RoomList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: s
 }
 
 function RoomRow({ room, me }: { room: PageRoom; me?: string }) {
+  // A community room by the name its administrators gave it, the DID beneath;
+  // any other room by its DID.
+  const name = roomName(room);
   return (
     <li>
       <a href={roomHref(room.roomId)} className="room-link">
-        <code className="wrap">{shortDid(room.roomId)}</code>
+        {name ? <span className="room-name">{name}</span> : <code className="wrap">{shortDid(room.roomId)}</code>}
       </a>
+      {name && (
+        <code className="wrap muted small" title={room.roomId}>
+          {shortDid(room.roomId)}
+        </code>
+      )}
       <span className="muted small">
         {room.held
           ? `epoch ${room.epoch ?? "?"}${room.earliestReadableEpoch && room.earliestReadableEpoch > 1 ? ` · history from epoch ${room.earliestReadableEpoch}` : ""}`
@@ -184,10 +194,34 @@ export function RoomPage({ hostDid, roomId }: { hostDid: string; roomId: string 
       </p>
       <section className="welcome">
         <p className="eyebrow">Data room</p>
-        <h1 className="wrap room-title">{shortDid(roomId)}</h1>
+        {wallet ? (
+          <RoomHeading wallet={wallet} hostDid={hostDid} roomId={roomId} />
+        ) : (
+          <h1 className="wrap room-title">{shortDid(roomId)}</h1>
+        )}
       </section>
       {wallet ? <Room wallet={wallet} hostDid={hostDid} roomId={roomId} /> : <NoWallet />}
     </main>
+  );
+}
+
+/** The room's name over its DID when the wallet knows one — from the same list the rooms page reads. */
+function RoomHeading({ wallet, hostDid, roomId }: { wallet: WalletRooms; hostDid: string; roomId: string }) {
+  const list = useQuery({
+    queryKey: ["member-rooms", hostDid],
+    queryFn: async () => (await wallet.list({ hostDid })).rooms,
+  });
+  const name = roomName(list.data?.find((r) => r.roomId === roomId));
+  if (!name) return <h1 className="wrap room-title">{shortDid(roomId)}</h1>;
+  return (
+    <>
+      <h1 className="wrap">{name}</h1>
+      <p className="muted small">
+        <code className="wrap" title={roomId}>
+          {roomId}
+        </code>
+      </p>
+    </>
   );
 }
 

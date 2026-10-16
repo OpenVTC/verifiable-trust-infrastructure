@@ -1032,6 +1032,17 @@ handed the member's whole listing would learn every room they are in — on a
   It lasts 30 days, is listed and revocable in the extension's manager, and
   `rooms.forget` lets the page drop one. `rooms.list` returns the live grants
   and never prompts.
+- **A community's own room has a name.** Its administrators labelled it
+  (`vtc/rooms/community/create` / `update`), and the community's offer to the
+  member carries the label. The wallet reads the member's offers
+  (`vtc/rooms/offers/list`, completed as the member by `rooms/keys/act/0.3` and
+  sent to this community only) and returns `label` and `visibility` on a
+  `rooms.list` entry and in the share window; it remembers a name past the days
+  the community keeps listing an accepted offer. The portal shows the name with
+  the DID beneath, and the DID alone for any other room. A label is the
+  community's metadata, not room content, and it reaches the page from the
+  wallet — no `/v1/member/*` route carries it. Rooms a member owns get a name
+  from a sealed in-room profile, later, behind the same lookup.
 - **A `private` room is never shared with a portal.** Its tier hides from the
   host which member acts; the portal is the host's own page and knows who is
   signed in, so using the room from it would tell the host exactly what the tier

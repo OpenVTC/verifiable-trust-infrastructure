@@ -26,6 +26,23 @@ export interface PageRoom {
   held: boolean;
   sharedAt: string;
   expiresAt: string;
+  /** The room's name, for a room this community owns: the label its
+   *  administrators gave it, which the wallet learns from the community's offer
+   *  to the member. Absent for a room a member owns, when the wallet has not
+   *  learned it, and from a wallet older than room names. */
+  label?: string;
+  /** The room's tier, as the same offer gave it. */
+  visibility?: string;
+}
+
+/**
+ * What to call a room: its name when the wallet knows one, else `null` and the
+ * page shows the room's DID. The one place the portal decides a room's title —
+ * a name from a sealed in-room profile, when rooms have one, comes in here.
+ */
+export function roomName(room: Pick<PageRoom, "label"> | undefined): string | null {
+  const label = room?.label?.trim();
+  return label ? label : null;
 }
 
 export interface ScopeLimits {

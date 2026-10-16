@@ -199,6 +199,10 @@ body {
   color: var(--text);
   text-decoration: none;
 }
+.room-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
 .room-link:hover {
   color: var(--brand);
 }

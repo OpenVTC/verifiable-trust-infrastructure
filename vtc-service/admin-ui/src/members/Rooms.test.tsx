@@ -150,6 +150,41 @@ describe("data rooms in the portal", () => {
     expect(screen.getByText(/tick the room as the identity you signed in here with/)).toBeTruthy();
   });
 
+  it("a community's room is titled by its name, its DID beneath; a member's own room by its DID", async () => {
+    const OWN = "did:webvh:QmMine:rooms.example";
+    const shared = { held: true, epoch: 3, earliestReadableEpoch: 1, sharedAt: "2026-10-16T00:00:00Z", expiresAt: "2026-11-15T00:00:00Z" };
+    const wallet = fakeWallet({
+      list: vi.fn(async () => ({
+        rooms: [
+          { roomId: ROOM, member: MEMBER, label: "Board pack", visibility: "attributed", ...shared },
+          { roomId: OWN, member: MEMBER, ...shared },
+        ],
+      })),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    const name = await screen.findByText("Board pack");
+    expect(name.closest("a")?.getAttribute("href")).toBe(`#/rooms/${encodeURIComponent(ROOM)}`);
+    expect(screen.getByTitle(ROOM)).toBeTruthy();
+    expect(screen.getByText("did:webvh:QmMine:rooms.example")).toBeTruthy();
+  });
+
+  it("a community room's page is headed by its name, and a wallet without names leaves the DID", async () => {
+    const shared = { held: true, sharedAt: "2026-10-16T00:00:00Z", expiresAt: "2026-11-15T00:00:00Z" };
+    const named = fakeWallet({ list: vi.fn(async () => ({ rooms: [{ roomId: ROOM, label: "Board pack", ...shared }] })) });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: named };
+    const { unmount } = renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    expect((await screen.findByRole("heading", { level: 1, name: "Board pack" })).textContent).toBe("Board pack");
+    expect(screen.getByTitle(ROOM).textContent).toBe(ROOM);
+    unmount();
+
+    const older = fakeWallet({ list: vi.fn(async () => ({ rooms: [{ roomId: ROOM, ...shared }] })) });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: older };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByText("Term sheet");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(ROOM);
+  });
+
   it("a room shows its records, opens one as text, and never renders a member's words as markup", async () => {
     const wallet = fakeWallet();
     (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
