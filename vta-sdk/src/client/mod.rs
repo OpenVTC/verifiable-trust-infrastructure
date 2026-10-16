@@ -2569,6 +2569,14 @@ impl VtaClient {
                         body: message.to_string(),
                     });
                 }
+                r::NO_MATCHING_PROTOCOL => {
+                    if let Some(e) = payload
+                        .get("details")
+                        .and_then(VtaError::no_matching_protocol_from)
+                    {
+                        return Some(e);
+                    }
+                }
                 _ => {}
             }
         }
@@ -3261,6 +3269,60 @@ mod tests {
             }
             other => panic!("expected Server {{ status: 502 }}, got {other:?}"),
         }
+    }
+
+    /// A VTA that shares no transport with a peer it had to reach says so as
+    /// `taskFailed` + `no_matching_protocol`, and that comes back as the typed
+    /// variant — both sets intact — rather than `malformedRequest`, which told
+    /// the caller its own document was wrong.
+    #[test]
+    fn no_matching_protocol_arrives_typed_with_both_sets() {
+        use crate::protocol::matching::Protocol;
+        let payload = serde_json::json!({
+            "code": "taskFailed",
+            "message": "no transport in common with `did:webvh:vtc`",
+            "details": {
+                "reason": "no_matching_protocol",
+                "counterpartyDid": "did:webvh:vtc",
+                "ours": ["rest"],
+                "theirs": ["didcomm", "carrier-pigeon"]
+            }
+        });
+        match VtaClient::trust_task_error(&payload) {
+            Some(VtaError::NoMatchingProtocol {
+                counterparty_did,
+                ours,
+                theirs,
+            }) => {
+                assert_eq!(counterparty_did, "did:webvh:vtc");
+                assert_eq!(ours, vec![Protocol::Rest]);
+                // An unknown name is skipped, not fatal.
+                assert_eq!(theirs, vec![Protocol::Didcomm]);
+            }
+            other => panic!("expected NoMatchingProtocol, got {other:?}"),
+        }
+    }
+
+    /// The REST arm of the same refusal: a 502 whose body names it.
+    #[test]
+    fn no_matching_protocol_over_rest_is_typed_too() {
+        let body = serde_json::json!({
+            "error": "no_matching_protocol",
+            "message": "no transport in common",
+            "counterpartyDid": "did:webvh:vtc",
+            "ours": ["rest"],
+            "theirs": ["tsp"],
+        })
+        .to_string();
+        assert!(matches!(
+            VtaError::from_http(reqwest::StatusCode::BAD_GATEWAY, body),
+            VtaError::NoMatchingProtocol { .. }
+        ));
+        // A 502 that is not this one stays a server error.
+        assert!(matches!(
+            VtaError::from_http(reqwest::StatusCode::BAD_GATEWAY, "{\"error\":\"x\"}".into()),
+            VtaError::Server { status: 502, .. }
+        ));
     }
 
     /// A `taskFailed` carrying no `details` is a genuine failure and must stay

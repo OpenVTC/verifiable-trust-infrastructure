@@ -929,19 +929,60 @@ fn put_refusal_hint(code: &str, message: &str, target: &RoomTarget<'_>) -> Optio
 }
 
 /// The operator-facing text for a `rooms/keys/open` refusal.
-///
-/// The two epoch cases have opposite remedies, so they are told apart by the declared
-/// `unknownEpoch` and its `details.reason` — `notDelivered` (catch up) and `removed` (no
-/// commit will help) — never by the message. The text checks are for a VTA that predates
-/// those reasons.
 fn open_refusal_hint(e: &VtaError, target: &RoomTarget<'_>) -> String {
     use trust_tasks_rs::specs::rooms::keys::open::v0_1::error_codes::UNKNOWN_EPOCH;
-    let reason = (e.rejection_code() == Some(UNKNOWN_EPOCH.code))
+    epoch_refusal_hint(e, target, UNKNOWN_EPOCH.code, Sealed::Record)
+}
+
+/// The operator-facing text for a `rooms/keys/file-key` refusal, as `pnm rooms file
+/// get` and `file open` print it — the same remedies a record's refusal names.
+fn file_key_refusal_hint(e: &VtaError, target: &RoomTarget<'_>) -> String {
+    use trust_tasks_rs::specs::rooms::keys::file_key::v0_1::error_codes::UNKNOWN_EPOCH;
+    epoch_refusal_hint(e, target, UNKNOWN_EPOCH.code, Sealed::File)
+}
+
+/// What a refused epoch had sealed, for the wording of [`epoch_refusal_hint`].
+#[derive(Clone, Copy)]
+enum Sealed {
+    Record,
+    File,
+}
+
+impl Sealed {
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Record => "record",
+            Self::File => "file",
+        }
+    }
+}
+
+/// The remedy for a refused epoch, from the declared `unknownEpoch` (`code`) and its
+/// `details.reason`.
+///
+/// The epoch cases have opposite remedies, so they are told apart by reason —
+/// `notDelivered` (catch up), `beyondChain` (backfill) and, where the task's
+/// specification declares it, `removed` (no commit will help) — never by the message.
+/// `rooms/keys/file-key/0.1` declares only the first two, so a removed member's file
+/// arrives as `notDelivered`, with the VTA's message saying it was a removal; the hint
+/// says to look for that. The text checks are for a VTA that predates the reasons.
+fn epoch_refusal_hint(e: &VtaError, target: &RoomTarget<'_>, code: &str, sealed: Sealed) -> String {
+    let noun = sealed.noun();
+    let reason = (e.rejection_code() == Some(code))
         .then(|| e.rejection_details())
         .flatten()
         .and_then(|d| d.get("reason"))
         .and_then(Value::as_str);
     let text = e.to_string();
+    let backfill = || {
+        format!(
+            "The {noun} is older than any key this VTA holds — it was written before you \
+             joined. Fetch the room's history: `pnm rooms keys backfill --room {} --host-did \
+             {}`.",
+            target.room_id,
+            target.host_did.unwrap_or("<host-did>")
+        )
+    };
     let hint = match reason {
         Some("removed") => {
             let at = e
@@ -951,32 +992,46 @@ fn open_refusal_hint(e: &VtaError, target: &RoomTarget<'_>) -> String {
                 .map(|n| format!(" at epoch {n}"))
                 .unwrap_or_default();
             format!(
-                "You were removed from this room's group{at}. Records sealed since then will \
+                "You were removed from this room's group{at}. {}s sealed since then will \
                  never open for you, and no commit will change that; what was sealed before \
                  your removal still opens. Rejoining takes a fresh invitation from the room's \
-                 owner."
+                 owner.",
+                capitalised(noun)
             )
         }
         Some("notDelivered") => format!(
-            "The record is newer than this VTA's group: a commit has not been applied here. \
-             Catch up, then read it again:\n\n  {}",
-            keys_commit_command(target)
+            "The {noun} is newer than this VTA's group: a commit has not been applied here. \
+             Catch up, then try again:\n\n  {}{}",
+            keys_commit_command(target),
+            match sealed {
+                // `removed` has a reason of its own for a record.
+                Sealed::Record => "",
+                Sealed::File => {
+                    "\n\nIf the VTA says above that you were removed from the room's group, \
+                     catching up will not help: files sealed since your removal will never \
+                     open for you, and what was sealed before it still opens. Rejoining takes \
+                     a fresh invitation from the room's owner."
+                }
+            }
         ),
-        _ if text.contains("cannot reach") => format!(
-            "The record is older than any key this VTA holds — it was written before you \
-             joined. Fetch the room's history: `pnm rooms keys backfill --room {} --host-did \
-             {}`.",
-            target.room_id,
-            target.host_did.unwrap_or("<host-did>")
-        ),
+        Some("beyondChain") => backfill(),
+        _ if text.contains("cannot reach") => backfill(),
         _ if text.contains("has not been delivered") => format!(
-            "The record is newer than this VTA's group. Catch up with `{}`; if that says you \
+            "The {noun} is newer than this VTA's group. Catch up with `{}`; if that says you \
              were removed, nothing sealed after your removal will open.",
             keys_commit_command(target)
         ),
-        _ => "The record did not open with any key this VTA holds.".to_string(),
+        _ => format!("The {noun} did not open with any key this VTA holds."),
     };
     format!("{e}\n\n{hint}")
+}
+
+fn capitalised(word: &str) -> String {
+    let mut chars = word.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// Open a sealed record through the VTA and check its body before anything in it is used.
@@ -1401,7 +1456,8 @@ pub async fn cmd_rooms_file_get(
 
     let resp = client
         .room_file_key(target.room_id, &file.file_id, Some(file.epoch))
-        .await?;
+        .await
+        .map_err(|e| file_key_refusal_hint(&e, &target))?;
     let file_key = file_key_bytes(&resp)?;
     let plaintext = files::open_file(&file_key, target.room_id, &file, &blob, &chunks)?;
 
@@ -1678,6 +1734,49 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("keys commit"), "{text}");
+    }
+
+    fn file_key_rejected(reason: &str, message: &str) -> VtaError {
+        VtaError::Rejected {
+            code: "rooms/keys/file-key:unknownEpoch".into(),
+            message: message.into(),
+            details: Some(json!({ "reason": reason })),
+        }
+    }
+
+    /// `pnm rooms file get` names the same remedies a record's refusal does. A removed
+    /// member's file comes as `notDelivered` (`rooms/keys/file-key/0.1` declares no
+    /// `removed`), with the VTA's message saying so — and the hint tells the operator that
+    /// catching up will not help then.
+    #[test]
+    fn a_file_key_refusal_names_the_remedy() {
+        let removed = file_key_rejected(
+            "notDelivered",
+            "the file is sealed under epoch 4, and this member was removed from room `r`'s \
+             group at epoch 3: no commit will make its key derivable here",
+        );
+        let text = file_key_refusal_hint(&removed, &vtc_target());
+        assert!(text.contains("was removed from room"), "{text}");
+        assert!(text.contains(CATCH_UP), "{text}");
+        assert!(text.contains("catching up will not help"), "{text}");
+        assert!(text.contains("files sealed since your removal"), "{text}");
+
+        let behind = file_key_refusal_hint(
+            &file_key_rejected("beyondChain", "sealed under epoch 1"),
+            &vtc_target(),
+        );
+        assert!(behind.contains("pnm rooms keys backfill"), "{behind}");
+        assert!(behind.contains("The file is older"), "{behind}");
+
+        // An `open` code is not a file-key one: the reason is not read across tasks.
+        let wrong_task = VtaError::Rejected {
+            code: "rooms/keys/open:unknownEpoch".into(),
+            message: "x".into(),
+            details: Some(json!({ "reason": "beyondChain" })),
+        };
+        assert!(
+            file_key_refusal_hint(&wrong_task, &vtc_target()).contains("did not open with any key")
+        );
     }
 
     /// A member who is only behind gets the catch-up command with the real values.

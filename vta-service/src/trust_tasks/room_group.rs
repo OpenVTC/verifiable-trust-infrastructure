@@ -1276,6 +1276,27 @@ pub(super) async fn handle_file_key(
                     Some(serde_json::json!({ "reason": "notDelivered", "heldEpoch": held })),
                 );
             }
+            // `rooms/keys/file-key/0.1` oracle item 4 gives `unknownEpoch` exactly two
+            // reasons, and its `detailsSchema` is closed (`additionalProperties: false`,
+            // `reason` ∈ {notDelivered, beyondChain}) — so unlike `rooms/keys/open`, whose
+            // `unknownEpoch` declares no schema, there is no `removed` to send. An epoch
+            // later than any the oracle holds is `notDelivered` by the item's own
+            // definition; the message says what the reason cannot, and `heldEpoch` is left
+            // out because no epoch this VTA could reach would open the file. A `removed`
+            // reason here waits on the specification.
+            Err(room_groups::FileKeyError::Removed { epoch, removed_at }) => {
+                return super::helpers::reject_with_code(
+                    &doc,
+                    declared(spec::error_codes::UNKNOWN_EPOCH),
+                    format!(
+                        "the file is sealed under epoch {epoch}, and this member was removed \
+                         from room `{}`'s group at epoch {removed_at}: no commit will make its \
+                         key derivable here",
+                        req.room_id
+                    ),
+                    Some(serde_json::json!({ "reason": "notDelivered" })),
+                );
+            }
             Err(room_groups::FileKeyError::BeyondChain { epoch, earliest }) => {
                 return super::helpers::reject_with_code(
                     &doc,

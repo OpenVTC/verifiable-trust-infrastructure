@@ -409,7 +409,11 @@ pub async fn seal_record(
 }
 
 /// Why a file key could not be derived.
+///
+/// `#[non_exhaustive]` because it has already grown once ([`Self::Removed`]) and the
+/// epoch cases are exactly where a new remedy would add another.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum FileKeyError {
     /// This VTA holds no group for the room.
     NoGroup,
@@ -421,6 +425,11 @@ pub enum FileKeyError {
     NotDelivered { epoch: u32, held: u32 },
     /// The epoch chain reaches back only to `earliest`.
     BeyondChain { epoch: u32, earliest: u32 },
+    /// A commit this VTA applied removed the member from the group at `removed_at`, and
+    /// the file is sealed under `epoch`, at or after it: its key will never be derivable
+    /// here. Apart from [`Self::NotDelivered`] for the reason [`OpenError::Removed`] is:
+    /// that one's remedy, applying commits, cannot work for this one.
+    Removed { epoch: u32, removed_at: u32 },
 }
 
 /// One file's key — `rooms/keys/file-key/0.1`.
@@ -456,10 +465,24 @@ pub async fn file_key(
     room.add_links(record.links);
     match room.file_key_for_open(file_id, epoch) {
         Ok(key) => Ok((key, epoch)),
-        Err(RoomKeyError::EpochAhead { sealed, held }) => Err(FileKeyError::NotDelivered {
-            epoch: sealed,
-            held,
-        }),
+        Err(RoomKeyError::EpochAhead { sealed, held }) => {
+            // A removal leaves the group where it was, so a file sealed after it is also
+            // "ahead of the group". The row says which — as `open_record_detailed` reads it.
+            if let Some(removed_at) = removed_at(groups, member)
+                .await
+                .map_err(FileKeyError::App)?
+                && sealed >= removed_at
+            {
+                return Err(FileKeyError::Removed {
+                    epoch: sealed,
+                    removed_at,
+                });
+            }
+            Err(FileKeyError::NotDelivered {
+                epoch: sealed,
+                held,
+            })
+        }
         Err(RoomKeyError::EpochUnreachable { sealed, earliest }) => {
             Err(FileKeyError::BeyondChain {
                 epoch: sealed,
@@ -2069,6 +2092,11 @@ mod removal_tests {
             .await,
             Err(OpenError::NotDelivered { .. })
         ));
+        let file = [7u8; 32];
+        assert!(matches!(
+            file_key(&ks, &bob, &file, Some(after.epoch)).await.err(),
+            Some(FileKeyError::NotDelivered { .. })
+        ));
 
         let err = apply_commit(&ks, &bob, &removal.commit, removal.epoch, 5)
             .await
@@ -2092,6 +2120,18 @@ mod removal_tests {
             }
             other => panic!("expected Removed, got {other:?}"),
         }
+        // A file's key is the same question (`rooms/keys/file-key`): sealed at or after
+        // the removal is `Removed`, never `NotDelivered`, whose remedy cannot work.
+        match file_key(&ks, &bob, &file, Some(after.epoch)).await.err() {
+            Some(FileKeyError::Removed { epoch, removed_at }) => {
+                assert_eq!((epoch, removed_at), (after.epoch, after.epoch))
+            }
+            other => panic!("expected FileKeyError::Removed, got {other:?}"),
+        }
+        assert!(
+            file_key(&ks, &bob, &file, Some(before.epoch)).await.is_ok(),
+            "a file sealed before the removal still derives"
+        );
         assert_eq!(
             open_record(
                 &ks,

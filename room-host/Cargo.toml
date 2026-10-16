@@ -3,6 +3,9 @@ name = "room-host"
 description = "Stores data-room records for rooms it does not govern — a delivery service, not a community"
 version = "0.1.0"
 edition.workspace = true
+# Not published. A deployable service binary, like `vtc-service`: nothing depends
+# on it as a library except `vta-service`'s tests, which take it as a path-only
+# dev-dependency, so a crates.io artifact would carry an API nobody consumes.
 publish = false
 rust-version.workspace = true
 license.workspace = true

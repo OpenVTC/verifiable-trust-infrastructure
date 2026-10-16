@@ -209,7 +209,10 @@ pub enum VtaError {
     /// advertised set (in preference order) so the CLI can show the operator
     /// what each offers and which transport to enable. Determined locally by
     /// [`crate::protocol::matching::select_protocol`] after resolving the
-    /// peer's DID document — never a server-returned wire error.
+    /// peer's DID document — or returned by a VTA that could not reach a peer
+    /// of its own on the client's behalf (`details.reason`
+    /// `no_matching_protocol`, or a REST 502 carrying it), in which case
+    /// `ours` is what that VTA can initiate and `counterparty_did` its peer.
     #[error(
         "no transport protocol in common with {counterparty_did}: \
          we advertise {ours:?}, they advertise {theirs:?}"
@@ -362,6 +365,34 @@ pub enum TypedErrorPayload {
 pub(crate) const TSP_REPLY_TIMEOUT_PREFIX: &str = "timed out waiting for the TSP reply";
 
 impl VtaError {
+    /// [`Self::NoMatchingProtocol`] from the members a VTA puts beside
+    /// `no_matching_protocol` — a Trust Task rejection's `details`, or a REST
+    /// 502 body: `counterpartyDid`, `ours`, `theirs`.
+    ///
+    /// `None` when `counterpartyDid` is absent. An unknown protocol name is
+    /// skipped rather than refusing the whole: a newer peer naming a transport
+    /// this SDK does not know still tells the operator about the ones it does.
+    pub fn no_matching_protocol_from(fields: &serde_json::Value) -> Option<Self> {
+        let counterparty_did = fields.get("counterpartyDid")?.as_str()?.to_string();
+        let set = |k: &str| -> Vec<crate::protocol::matching::Protocol> {
+            fields
+                .get(k)
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|p| serde_json::from_value(p.clone()).ok())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        Some(Self::NoMatchingProtocol {
+            counterparty_did,
+            ours: set("ours"),
+            theirs: set("theirs"),
+        })
+    }
+
     /// True for a TSP request that timed out waiting for its reply — the
     /// signature of a §7.2.2 silent drop (the peer dropped our frame because it
     /// holds no relationship with us). The self-repair path in
@@ -383,6 +414,17 @@ impl VtaError {
     /// should call [`Self::from_http_with_headers`].
     #[cfg(feature = "client")]
     pub fn from_http(status: reqwest::StatusCode, body: String) -> Self {
+        // A VTA that could not reach a peer on any shared transport answers
+        // 502 with the two sets in the body; the status alone would read as
+        // "the VTA broke".
+        if status == reqwest::StatusCode::BAD_GATEWAY
+            && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body)
+            && parsed.get("error").and_then(|e| e.as_str())
+                == Some(crate::protocols::trust_task_reject_reasons::NO_MATCHING_PROTOCOL)
+            && let Some(e) = Self::no_matching_protocol_from(&parsed)
+        {
+            return e;
+        }
         match status.as_u16() {
             429 => Self::RateLimited {
                 limited_by: RateLimitSource::Upstream,

@@ -84,7 +84,7 @@
 
 use serde_json::Value;
 use vta_sdk::protocol::matching::{Protocol, ServiceCapabilities};
-use vti_common::error::{AppError, bad_gateway_error};
+use vti_common::error::{AppError, NoMatchingProtocol, bad_gateway_error};
 
 #[cfg(feature = "didcomm")]
 use crate::didcomm_bridge::DIDCommBridge;
@@ -770,30 +770,23 @@ pub fn pick_transport(
         return Ok((protocol, endpoint.to_string()));
     }
 
-    let advertised: Vec<&str> = Protocol::PREFERENCE_ORDER
-        .iter()
-        .filter(|p| caps.endpoint(**p).is_some())
-        .map(|p| p.as_str())
-        .collect();
-    let ours: Vec<&str> = initiable.iter().map(|p| p.as_str()).collect();
-
-    Err(AppError::Validation(format!(
-        "no transport in common with `{peer}`: it advertises [{}] and this agent can \
-         initiate [{}].{} This is not a peer that cannot be reached — it is one this agent cannot \
-         yet start a conversation with, which is a gap in the agent rather than in the peer.",
-        if advertised.is_empty() {
-            "nothing".to_string()
-        } else {
-            advertised.join(", ")
-        },
-        ours.join(", "),
-        if rest_refused_plaintext {
-            " Its REST endpoint is plaintext http:// to a non-loopback host, so it was not \
-             usable."
-        } else {
-            ""
-        },
-    )))
+    // Typed, never `Validation`: that is `malformedRequest` on the wire, which
+    // tells the producer its document was wrong when nothing in it was
+    // (CLAUDE.md, "Prefer TSP, then DIDComm, then REST": an empty intersection
+    // is the typed "no matching protocol").
+    Err(NoMatchingProtocol {
+        peer: peer.to_string(),
+        ours: initiable.to_vec(),
+        theirs: Protocol::PREFERENCE_ORDER
+            .into_iter()
+            .filter(|p| caps.endpoint(*p).is_some())
+            .collect(),
+        note: rest_refused_plaintext.then(|| {
+            "Its REST endpoint is plaintext http:// to a non-loopback host, so it was not usable"
+                .to_string()
+        }),
+    }
+    .into())
 }
 
 /// Who this agent is authenticated as on each messaging transport that is
@@ -962,15 +955,20 @@ impl Outbound<'_> {
                 // Say why a messaging transport this agent has wired was left
                 // out, or an operator reads "can initiate [rest]" on a VTA with
                 // a live mediator session and goes looking for a fault in it.
-                (AppError::Validation(m), Some(issuer))
+                (AppError::NoMatchingProtocol(mut refusal), Some(issuer))
                     if initiable.len() < self.initiable_protocols(None).len() =>
                 {
-                    AppError::Validation(format!(
-                        "{m} The document is issued by `{issuer}`, and TSP and DIDComm authenticate \
+                    let why = format!(
+                        "The document is issued by `{issuer}`, and TSP and DIDComm authenticate \
                          this agent as its own DID, so the peer would refuse it as \
                          `identityMismatch`; only a Trust-Task HTTPS endpoint, where the \
-                         document's proof is the authentication, can carry it."
-                    ))
+                         document's proof is the authentication, can carry it"
+                    );
+                    refusal.note = Some(match refusal.note.take() {
+                        Some(n) => format!("{n}. {why}"),
+                        None => why,
+                    });
+                    AppError::NoMatchingProtocol(refusal)
                 }
                 (e, _) => e,
             })?;
@@ -1517,8 +1515,11 @@ mod tests {
             "must name everything this agent can do, not just one: {msg}"
         );
         assert!(
-            msg.contains("gap in the agent"),
-            "must say whose limitation it is: {msg}"
+            matches!(
+                pick_transport(&caps, OUTBOUND_SUPPORTED, "did:example:peer"),
+                Err(AppError::NoMatchingProtocol(_))
+            ),
+            "must be the typed refusal the client can switch on"
         );
     }
 
@@ -1637,11 +1638,18 @@ mod tests {
         )
         .expect_err("nothing in common");
         let msg = err.to_string();
-        assert!(matches!(err, AppError::Validation(_)), "{msg}");
         assert!(
             msg.contains("advertises [didcomm]") && msg.contains("initiate [rest]"),
             "must name what each side has: {msg}"
         );
+        match err {
+            AppError::NoMatchingProtocol(refusal) => {
+                assert_eq!(refusal.peer, "did:example:vtc");
+                assert_eq!(refusal.ours, vec![Protocol::Rest]);
+                assert_eq!(refusal.theirs, vec![Protocol::Didcomm]);
+            }
+            other => panic!("must be the typed refusal, never `Validation`: {other:?}"),
+        }
     }
 
     /// Bug 2, at the gate. TSP and DIDComm authenticate this VTA's own DID; the
@@ -1737,8 +1745,8 @@ mod tests {
         .expect_err("TSP is the only shared transport and this sender cannot start it");
         let msg = err.to_string();
         assert!(
-            matches!(err, AppError::Validation(_)),
-            "must be a caller-facing validation refusal, not an internal error: {msg}"
+            matches!(err, AppError::NoMatchingProtocol(_)),
+            "must be the typed refusal, not an internal error or `Validation`: {msg}"
         );
         assert!(
             msg.contains("tsp") && msg.contains("didcomm") && msg.contains("rest"),

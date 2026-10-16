@@ -419,6 +419,18 @@ pub fn print_cli_error(err: &(dyn std::error::Error + 'static)) {
                      enough for the response).{RESET}"
                 );
             }
+            VtaError::NoMatchingProtocol {
+                counterparty_did,
+                ours,
+                theirs,
+            } => {
+                let (headline, hints) =
+                    no_matching_protocol_message(counterparty_did, ours, theirs, bin_name());
+                eprintln!("{RED}\u{2717}{RESET} {headline}");
+                for hint in hints {
+                    eprintln!("  {DIM}{hint}{RESET}");
+                }
+            }
             VtaError::NoPriorMutation => {
                 let bin = bin_name();
                 eprintln!("{RED}\u{2717}{RESET} No prior mutation to roll back.");
@@ -437,6 +449,69 @@ pub fn print_cli_error(err: &(dyn std::error::Error + 'static)) {
         eprintln!("  {DIM}caused by: {s}{RESET}");
         source = s.source();
     }
+}
+
+/// The operator-facing text for [`VtaError::NoMatchingProtocol`]: a headline,
+/// then the transports that would close the gap. Pure, like
+/// [`rate_limit_message`], so the wording is testable.
+///
+/// `ours` is the sender's set — this CLI's, or, when a VTA refused on the
+/// client's behalf, what that VTA can start for the document it was sending.
+/// The fix is a transport in both sets, and which side can add one is what the
+/// hints name.
+///
+/// [`VtaError::NoMatchingProtocol`]: vta_sdk::error::VtaError::NoMatchingProtocol
+fn no_matching_protocol_message(
+    peer: &str,
+    ours: &[vta_sdk::protocol::matching::Protocol],
+    theirs: &[vta_sdk::protocol::matching::Protocol],
+    bin: &str,
+) -> (String, Vec<String>) {
+    use vta_sdk::protocol::matching::Protocol;
+    let list = |set: &[Protocol]| {
+        if set.is_empty() {
+            "nothing".to_string()
+        } else {
+            set.iter()
+                .map(|p| p.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    };
+    let headline = format!(
+        "No transport in common with `{peer}`: it advertises [{}], and the sender can start [{}].",
+        list(theirs),
+        list(ours)
+    );
+    let mut hints = Vec::new();
+    if theirs.is_empty() {
+        hints.push(format!(
+            "`{peer}` advertises no TSP, DIDComm or Trust-Task HTTPS service in its DID \
+             document; nobody can reach it until it publishes one."
+        ));
+        return (headline, hints);
+    }
+    if !theirs.contains(&Protocol::Rest) {
+        hints.push(format!(
+            "Ask `{peer}`'s operator to publish a Trust-Task HTTPS service (`TrustTaskHTTPS`) \
+             in its DID document. It carries any signed document, including one signed as a \
+             room persona, which TSP and DIDComm cannot carry for a VTA."
+        ));
+    }
+    if theirs.contains(&Protocol::Didcomm) && !ours.contains(&Protocol::Didcomm) {
+        hints.push(format!(
+            "If the sending VTA has no DIDComm session, `{bin} services didcomm enable \
+             --mediator-did <did>` gives it one. That does not help a document signed as a \
+             room persona: DIDComm authenticates the VTA's own DID."
+        ));
+    }
+    if theirs.contains(&Protocol::Tsp) && !ours.contains(&Protocol::Tsp) {
+        hints.push(format!(
+            "If the sending VTA has no TSP session, `{bin} services tsp enable \
+             --mediator-did <did>` gives it one (same caveat for a persona-signed document)."
+        ));
+    }
+    (headline, hints)
 }
 
 /// The operator-facing text for a rate-limit refusal: a headline, then hint
@@ -777,7 +852,37 @@ mod rate_limit_render_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_human_message, render_widget};
+    use super::{extract_human_message, no_matching_protocol_message, render_widget};
+
+    /// The live case: a persona-signed room request from a VTA that can only
+    /// use REST for it, to a host advertising DIDComm alone. The operator is
+    /// told both sets and that the host needs a Trust-Task HTTPS service.
+    #[test]
+    fn no_matching_protocol_names_both_sets_and_the_missing_service() {
+        use vta_sdk::protocol::matching::Protocol;
+        let (headline, hints) = no_matching_protocol_message(
+            "did:webvh:vtc",
+            &[Protocol::Rest],
+            &[Protocol::Didcomm],
+            "pnm",
+        );
+        assert!(
+            headline.contains("advertises [didcomm]") && headline.contains("start [rest]"),
+            "{headline}"
+        );
+        let all = hints.join("\n");
+        assert!(all.contains("TrustTaskHTTPS"), "{all}");
+        assert!(all.contains("pnm services didcomm enable"), "{all}");
+        assert!(!all.contains("services tsp"), "TSP is not on offer: {all}");
+    }
+
+    #[test]
+    fn no_matching_protocol_with_nothing_advertised_says_so() {
+        let (headline, hints) = no_matching_protocol_message("did:example:p", &[], &[], "pnm");
+        assert!(headline.contains("advertises [nothing]"), "{headline}");
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("no TSP, DIDComm or Trust-Task HTTPS"));
+    }
 
     #[test]
     fn prefers_message_field() {
