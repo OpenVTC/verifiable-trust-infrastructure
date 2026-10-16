@@ -53,6 +53,7 @@ import type {
 } from "./wire-types";
 
 export type {
+  BackingOff,
   DiagnosticsExt,
   DiagnosticsResponse,
   DriftEntry,

@@ -189,6 +189,7 @@ export type TransportFindingCode = Schemas["FindingCode"];
 export type DiagnosticsExt = Schemas["DiagnosticsExt"];
 export type RegistryTransport = Schemas["RegistryTransport"];
 export type FailedSyncJob = Schemas["FailedSyncJob"];
+export type BackingOff = Schemas["BackingOff"];
 export type DriftSnapshot = Schemas["DriftSnapshot"];
 export type DriftEntry = Schemas["DriftEntry"];
 

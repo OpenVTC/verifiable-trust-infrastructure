@@ -648,6 +648,16 @@ export interface components {
              */
             revoked: number;
         };
+        /** @description Pending jobs scheduled for a later attempt after a failure. */
+        BackingOff: {
+            /** Format: int64 */
+            count: number;
+            /**
+             * Format: date-time
+             * @description When the soonest of them is next attempted. Absent when `count` is 0.
+             */
+            nextAttemptAt?: string | null;
+        };
         /**
          * @description `{ ceremonies: […] }` — the shape `vtc/ceremonies/list/0.1` publishes. The
          *     handler sent a top-level array until #1094. An array cannot grow a sibling
@@ -2239,6 +2249,17 @@ export interface components {
         };
         /** @description What OpenVTC adds to the standard diagnostics payload. */
         OpenVtcDiagnostics: {
+            /**
+             * @description The pending jobs that are waiting out a retry backoff, and when the
+             *     first of them is next due.
+             *
+             *     [`DiagnosticsResponse::oldest_pending_age_seconds`] counts only jobs
+             *     that are due now, so a queue whose every job had failed once read as
+             *     a depth beside "nothing waiting" — true of the dispatcher, and no
+             *     answer to an operator asking when the queue will move. Jobs parked
+             *     for the RTBF window are excluded; they have their own count.
+             */
+            backingOff: components["schemas"]["BackingOff"];
             /**
              * @description The `Failed` sync jobs behind [`DiagnosticsResponse::failed_count`],
              *     in full.

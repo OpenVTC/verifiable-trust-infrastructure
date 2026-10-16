@@ -239,6 +239,42 @@ pub struct OpenVtcDiagnostics {
     /// service could then say the member was still unpublished.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub registry_drift: Option<crate::registry::DriftSnapshot>,
+    /// The pending jobs that are waiting out a retry backoff, and when the
+    /// first of them is next due.
+    ///
+    /// [`DiagnosticsResponse::oldest_pending_age_seconds`] counts only jobs
+    /// that are due now, so a queue whose every job had failed once read as
+    /// a depth beside "nothing waiting" — true of the dispatcher, and no
+    /// answer to an operator asking when the queue will move. Jobs parked
+    /// for the RTBF window are excluded; they have their own count.
+    pub backing_off: BackingOff,
+}
+
+/// Pending jobs scheduled for a later attempt after a failure.
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackingOff {
+    pub count: u64,
+    /// When the soonest of them is next attempted. Absent when `count` is 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_attempt_at: Option<DateTime<Utc>>,
+}
+
+impl BackingOff {
+    fn of(jobs: &[crate::registry::SyncJob], now: DateTime<Utc>) -> Self {
+        let waiting: Vec<_> = jobs
+            .iter()
+            .filter(|j| {
+                j.state == crate::registry::SyncJobState::Pending
+                    && !j.rtbf_batched
+                    && j.next_attempt_at > now
+            })
+            .collect();
+        Self {
+            count: waiting.len() as u64,
+            next_attempt_at: waiting.iter().map(|j| j.next_attempt_at).min(),
+        }
+    }
 }
 
 /// How many `Failed` rows [`OpenVtcDiagnostics::failed_jobs`] will carry.
@@ -345,6 +381,7 @@ pub(crate) async fn diagnostics(state: &AppState) -> Result<DiagnosticsResponse,
         .map(|j| (now - j.created_at).num_seconds())
         .max();
 
+    let backing_off = BackingOff::of(&jobs, now);
     let registry_drift = state.registry_drift.snapshot().await;
     let snapshot = state.registry_health.snapshot().await;
     let registry_status = match snapshot.status {
@@ -441,6 +478,7 @@ pub(crate) async fn diagnostics(state: &AppState) -> Result<DiagnosticsResponse,
                 transport_findings,
                 failed_jobs,
                 registry_drift,
+                backing_off,
             },
         },
     })

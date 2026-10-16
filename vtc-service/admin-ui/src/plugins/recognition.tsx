@@ -29,8 +29,9 @@ import { PageHeader } from "@/components/PageHeader";
 import { Tabs } from "@/components/Tabs";
 import { InfoTip } from "@/components/InfoTip";
 import { fetchAllRegistryRecords } from "@/plugins/recognition/records";
+import { pendingFoot } from "@/plugins/recognition/pending";
 import { TrustRecords } from "@/plugins/recognition/TrustRecords";
-import { formatDuration, formatIso } from "@/lib/format";
+import { formatIso } from "@/lib/format";
 
 /** Protocol names as the specs write them, not as the wire encodes them. */
 function protocolName(protocol: string): string {
@@ -253,13 +254,15 @@ export function Recognition() {
               <QueueTile
                 label="Pending"
                 value={diagnostics.data.queueDepth}
-                // `null` (empty queue) and `undefined` (no response yet) both
-                // mean nothing is waiting; `== null` covers both.
-                foot={
-                  oldestPending == null
-                    ? "nothing waiting"
-                    : `oldest ${formatDuration(oldestPending)}`
-                }
+                // `oldestPending` counts only jobs due now (`null` when none
+                // is). A job waiting out a retry backoff is not due, so a
+                // queue whose jobs all failed once used to read "4 — nothing
+                // waiting"; `backingOff` says how many are waiting and when
+                // the first moves.
+                foot={pendingFoot(
+                  oldestPending,
+                  diagnostics.data.ext["org.openvtc"].backingOff,
+                )}
                 // A queue an hour behind is the spec's degraded SLI. Rising
                 // depth on its own is normal (a burst of joins drains); depth
                 // that stays *old* is the shape of a stuck reconciler.

@@ -1021,6 +1021,28 @@
           }
         }
       },
+      "BackingOff": {
+        "type": "object",
+        "description": "Pending jobs scheduled for a later attempt after a failure.",
+        "required": [
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "nextAttemptAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the soonest of them is next attempted. Absent when `count` is 0."
+          }
+        }
+      },
       "CeremonyListResponse": {
         "type": "object",
         "description": "`{ ceremonies: […] }` — the shape `vtc/ceremonies/list/0.1` publishes. The\nhandler sent a top-level array until #1094. An array cannot grow a sibling\nmember later without breaking every reader; the envelope is why the spec\nasks for one.",
@@ -4187,9 +4209,14 @@
         "description": "What OpenVTC adds to the standard diagnostics payload.",
         "required": [
           "transportFindings",
-          "failedJobs"
+          "failedJobs",
+          "backingOff"
         ],
         "properties": {
+          "backingOff": {
+            "$ref": "#/components/schemas/BackingOff",
+            "description": "The pending jobs that are waiting out a retry backoff, and when the\nfirst of them is next due.\n\n[`DiagnosticsResponse::oldest_pending_age_seconds`] counts only jobs\nthat are due now, so a queue whose every job had failed once read as\na depth beside \"nothing waiting\" — true of the dispatcher, and no\nanswer to an operator asking when the queue will move. Jobs parked\nfor the RTBF window are excluded; they have their own count."
+          },
           "failedJobs": {
             "type": "array",
             "items": {

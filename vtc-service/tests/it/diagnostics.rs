@@ -300,3 +300,45 @@ async fn failed_jobs_is_an_empty_list_when_nothing_failed() {
         "{v}"
     );
 }
+
+/// A queue whose jobs all failed once has depth but nothing due, so
+/// `oldestPendingAgeSeconds` is absent. `backingOff` is what says the queue
+/// is waiting, and when it next moves; an RTBF-parked job is not part of it.
+#[tokio::test]
+async fn backing_off_names_the_waiting_jobs_and_the_soonest_retry() {
+    let fix = build().await;
+    let now = chrono::Utc::now();
+
+    let mut soon = SyncJob::fresh(SyncJobKind::PublishMember, "did:key:zSoon");
+    soon.record_failure("registry timed out");
+    soon.next_attempt_at = now + chrono::Duration::minutes(3);
+    let mut later = SyncJob::fresh(SyncJobKind::PublishMember, "did:key:zLater");
+    later.record_failure("registry timed out");
+    later.next_attempt_at = now + chrono::Duration::minutes(40);
+    let mut rtbf = SyncJob::fresh(SyncJobKind::DeleteMember, "did:key:zR");
+    rtbf.next_attempt_at = now + chrono::Duration::minutes(1);
+    rtbf.rtbf_batched = true;
+    for job in [&soon, &later, &rtbf] {
+        store_sync_job(&fix.state.sync_queue_ks, job).await.unwrap();
+    }
+
+    let (status, v) = send(&fix.vtc).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["queueDepth"], 3);
+    assert!(v.get("oldestPendingAgeSeconds").is_none_or(|x| x.is_null()));
+    let backing_off = &v["ext"]["org.openvtc"]["backingOff"];
+    assert_eq!(backing_off["count"], 2, "{v}");
+    let next: chrono::DateTime<chrono::Utc> =
+        serde_json::from_value(backing_off["nextAttemptAt"].clone()).unwrap();
+    assert_eq!(next, soon.next_attempt_at);
+}
+
+#[tokio::test]
+async fn backing_off_is_zero_with_no_due_time_on_an_empty_queue() {
+    let fix = build().await;
+    let (status, v) = send(&fix.vtc).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let backing_off = &v["ext"]["org.openvtc"]["backingOff"];
+    assert_eq!(backing_off["count"], 0, "{v}");
+    assert!(backing_off.get("nextAttemptAt").is_none());
+}
