@@ -3168,6 +3168,58 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_PROFILE_READ_0_1,
+            checked!(
+                specs::rooms::keys::profile::read::v0_1::Payload,
+                specs::rooms::keys::profile::read::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:board",
+                    "host": "did:webvh:example.com:community"
+                }),
+                // Found one epoch down, below a rename by a member holding only `write`
+                // — what `resolve` answers when somebody tried.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:board",
+                    "status": "found",
+                    "profile": { "name": "Board pack — 2027", "tags": ["board"], "emoji": "📋" },
+                    "author": "did:example:community",
+                    "issuedAt": "2026-10-15T09:30:02Z",
+                    "epoch": 4,
+                    "version": 87,
+                    "stale": true,
+                    "searched": { "fromEpoch": 5, "toEpoch": 4 },
+                    "rejected": [
+                        { "epoch": 5, "version": 93, "reason": "noAuthority", "author": "did:example:mallory" }
+                    ],
+                    "verification": { "trace": "verified", "priorRoots": "agree", "anchor": "notChecked" }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_PROFILE_WRITE_0_1,
+            checked!(
+                specs::rooms::keys::profile::write::v0_1::Payload,
+                specs::rooms::keys::profile::write::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:community",
+                    "profile": {
+                        "name": "Northwind renewal",
+                        "description": "Everything for the 2027 Northwind contract renewal.",
+                        "tags": ["deal", "renewal"],
+                        "emoji": "🤝"
+                    }
+                }),
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "outcome": "written",
+                    "key": "Qm4c8XkR2pVt7sLw0aJbYg",
+                    "version": 214,
+                    "epoch": 6
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_OWNER_INVITE_0_1,
             checked!(
                 specs::rooms::owner::invite::v0_1::Payload,

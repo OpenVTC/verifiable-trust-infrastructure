@@ -790,7 +790,7 @@ pub(super) async fn outbound_identity(
 /// All three or none: a root without the state it describes is not comparable
 /// to another root, which is the whole of `headVersion` — see
 /// `trust-tasks-tf#422`.
-fn head_of(
+pub(super) fn head_of(
     commitment: Option<&String>,
     record_count: Option<u64>,
     head_version: Option<u64>,
@@ -830,7 +830,11 @@ fn head_of(
 /// A resolver failure answers `notChecked` rather than a verdict. An agent that
 /// could not resolve the room has learned nothing about the host, and saying
 /// otherwise would put a network failure in the same sentence as a finding.
-async fn compare_anchor(state: &AppState, room_id: &str, head: Option<&Value>) -> &'static str {
+pub(super) async fn compare_anchor(
+    state: &AppState,
+    room_id: &str,
+    head: Option<&Value>,
+) -> &'static str {
     use crate::operations::room_anchor::{AnchorVerdict, compare_to_anchor};
 
     let Some(head) = head else {
@@ -851,7 +855,7 @@ async fn compare_anchor(state: &AppState, room_id: &str, head: Option<&Value>) -
     compare_to_anchor(&document, version, head["dataCommitment"].as_str()).as_wire()
 }
 
-async fn compare_head(
+pub(super) async fn compare_head(
     state: &AppState,
     member: &room_groups::Member,
     head: Option<&Value>,
@@ -892,7 +896,7 @@ async fn compare_head(
 ///
 /// Never a root from an earlier read. A trace is a statement about the tree it
 /// was cut from, and a room moves.
-fn verify_trace(reply: &vti_rooms::wire::GetRecordResponse) -> &'static str {
+pub(super) fn verify_trace(reply: &vti_rooms::wire::GetRecordResponse) -> &'static str {
     let (Some(commitment), Some(trace)) = (&reply.data_commitment, &reply.trace) else {
         // A host that maintains no tree must not invent a root, so its silence
         // is legal and informative rather than a failure.
@@ -1019,6 +1023,17 @@ pub(super) async fn handle_read(
         payload["verification"]["head"] = head;
     }
 
+    // The room's own profile is how the room describes itself, not a record a member wrote
+    // into it (`SealedRecordBody`, *A profile record*): it is not opened here, and the
+    // answer says where to read it.
+    if is_profile_location(state, &member, &served.record).await {
+        payload["ext"] = serde_json::json!({
+            room_member::MEMBER_EXT: { "roomProfile": true },
+        });
+        record(state, "rooms.keys.read", auth, &req.room_id).await;
+        return success_response(&doc, payload);
+    }
+
     if let Some(sealed) = &served.record.sealed {
         let plaintext = match room_groups::open_record(
             &state.room_groups_ks,
@@ -1045,6 +1060,47 @@ pub(super) async fn handle_read(
 
     record(state, "rooms.keys.read", auth, &req.room_id).await;
     success_response(&doc, payload)
+}
+
+/// Every key the room's profile can be at for `member`: `profile_key(E)` for each epoch its
+/// chain reaches on a sealed tier, and `room-profile` on an `open` room (where this VTA holds
+/// no group). A location this VTA cannot compute is not one it can tell apart, so it is not
+/// in the set.
+async fn profile_keys(
+    state: &AppState,
+    member: &room_groups::Member,
+) -> std::collections::HashSet<String> {
+    let mut keys = std::collections::HashSet::new();
+    match room_groups::load(&state.room_groups_ks, member).await {
+        Ok(Some(_)) => {
+            if let Ok(found) =
+                room_groups::profile_locations(&state.room_groups_ks, member, usize::MAX).await
+            {
+                keys.extend(found.into_iter().map(|(_, k)| k));
+            }
+        }
+        _ => {
+            keys.insert(vti_rooms::profile::OPEN_PROFILE_KEY.to_string());
+        }
+    }
+    keys
+}
+
+/// Whether `record` sits at the room's profile location for the epoch it was sealed under
+/// (or, on an `open` room, at `room-profile`).
+async fn is_profile_location(
+    state: &AppState,
+    member: &room_groups::Member,
+    record: &vti_rooms::wire::CommittedRecord,
+) -> bool {
+    match &record.sealed {
+        Some(sealed) => {
+            room_groups::profile_location(&state.room_groups_ks, member, Some(sealed.epoch))
+                .await
+                .is_ok_and(|(key, _)| key == record.key)
+        }
+        None => record.key == vti_rooms::profile::OPEN_PROFILE_KEY,
+    }
 }
 
 /// `rooms/keys/browse/0.1`.
@@ -1183,6 +1239,15 @@ pub(super) async fn handle_browse(
     };
 
     let member = presenting.member;
+    // Counted above against everything the host listed; the room's own profile records are
+    // then left out — they are how the room describes itself, not records of it
+    // (`SealedRecordBody`, *A profile record*; `rooms/keys/profile/read`).
+    let profile_keys = profile_keys(state, &member).await;
+    records.retain(|r| {
+        r.get("key")
+            .and_then(Value::as_str)
+            .is_none_or(|k| !profile_keys.contains(k))
+    });
     let mut verification = serde_json::json!({
         "priorRoots": compare_head(state, &member, head.as_ref()).await,
         "anchor": compare_anchor(state, &req.room_id, head.as_ref()).await,

@@ -180,6 +180,10 @@ pub const RELAYS_ONWARD: &[&str] = &[
     trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1,
     trust_tasks::TASK_ROOMS_KEYS_READ_0_1,
     trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1,
+    // The profile walk fetches one location per epoch down to where it finds one, and a
+    // write lists, seals and puts — each a call to the room's host.
+    trust_tasks::TASK_ROOMS_KEYS_PROFILE_READ_0_1,
+    trust_tasks::TASK_ROOMS_KEYS_PROFILE_WRITE_0_1,
     // ── Vault ───────────────────────────────────────────────────────────
     // A `password` entry logs in to the third-party site and waits on it. The
     // `did-self-issued` driver mints locally, but the URI cannot say which.

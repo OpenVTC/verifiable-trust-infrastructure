@@ -662,6 +662,14 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // replaced, not appended, so a repeat leaves the label as the first left it and answers
     // `changed: false`. No key needed — there is nothing a repeat could duplicate.
     (trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1, RetrySafe),
+    // A read, as `rooms/keys/read` is: the host serves the same records and this agent
+    // opens and judges them again. A retry costs another disclosure of the presentation.
+    (trust_tasks::TASK_ROOMS_KEYS_PROFILE_READ_0_1, RetrySafe),
+    // Convergent: the profile is one record per epoch, so a second write replaces the
+    // first at the same key with the same profile (one more version, the same end state),
+    // and a second clear finds the record already retracted and changes nothing. The
+    // specification says as much of `contended`: retrying is safe.
+    (trust_tasks::TASK_ROOMS_KEYS_PROFILE_WRITE_0_1, RetrySafe),
     // Issuance mints a NEW credential with a fresh id on every call, so a retry
     // without a key leaves a second durable artefact that persists and matters —
     // two memberships for one member, or two grants where the owner meant one.

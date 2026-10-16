@@ -576,6 +576,18 @@ pub(crate) enum RoomCommands {
         command: RoomKeysCommands,
     },
 
+    /// The room's own profile — its name, description, tags and emoji, as every
+    /// member sees it. Kept inside the room, sealed on `attributed` and `private`
+    /// rooms where the host cannot read it or tell it from any other record.
+    ///
+    /// Every verb is a call to your own VTA, which finds the profile (only a key
+    /// holder can compute where it is), checks who wrote it, and reaches the host
+    /// as you (`rooms/keys/profile/{read,write}`).
+    Profile {
+        #[command(subcommand)]
+        command: RoomProfileCommands,
+    },
+
     /// The owner's verbs, run by your VTA: register the room with a host, issue
     /// its credentials in the room's name, and hold the owner's half of its
     /// group. Neither the room's signing key nor any group key leaves it.
@@ -1098,7 +1110,13 @@ pub(crate) enum RoomKeysCommands {
     /// Which rooms your VTA holds a group for, each with the member it holds it
     /// as, its room epoch, how far back it reads, and your own name for it
     /// (`rooms/keys/list`). Key custody, not membership.
-    List,
+    List {
+        /// Also show the name each room gives itself, read from this host
+        /// (`rooms/keys/profile/read`). A community's rooms are all on the
+        /// community's host, so its DID names them all.
+        #[arg(long)]
+        host_did: Option<String>,
+    },
     /// Your own private name, description, notes and tags for a room you hold
     /// (`rooms/keys/label`). Kept by your VTA for you alone: never sent to the
     /// room, its host or a community.
@@ -1145,6 +1163,66 @@ pub(crate) enum RoomKeysCommands {
         /// Remove every tag.
         #[arg(long)]
         remove_tags: bool,
+    },
+}
+
+/// `pnm rooms profile …` — the room's own profile.
+#[derive(Subcommand)]
+pub(crate) enum RoomProfileCommands {
+    /// Show what the room calls itself, and whether somebody without the standing
+    /// to tried to rename it.
+    Show {
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room host's DID. Your VTA resolves it and reads as you.
+        #[arg(long)]
+        host_did: String,
+        /// Which of your members to read as, where you hold more than one in the room.
+        #[arg(long)]
+        member: Option<String>,
+    },
+    /// Set the room's profile. Takes `write` and `curate` or `admin` in the room.
+    ///
+    /// What you do not give is carried over from the current profile; the
+    /// `--no-*` flags drop it.
+    Set {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host_did: String,
+        /// The room's name: one line, up to 128 characters.
+        #[arg(long)]
+        name: Option<String>,
+        /// What the room is for, up to 1000 characters.
+        #[arg(long, conflicts_with = "no_description")]
+        description: Option<String>,
+        /// Drop the description.
+        #[arg(long)]
+        no_description: bool,
+        /// A tag the room files itself under (`a-z0-9-`, up to 32). Repeat; replaces
+        /// the current tags.
+        #[arg(long = "tag", conflicts_with = "no_tags")]
+        tags: Vec<String>,
+        /// Drop every tag.
+        #[arg(long)]
+        no_tags: bool,
+        /// One emoji shown beside the name.
+        #[arg(long, conflicts_with = "no_emoji")]
+        emoji: Option<String>,
+        /// Drop the emoji.
+        #[arg(long)]
+        no_emoji: bool,
+        #[arg(long)]
+        member: Option<String>,
+    },
+    /// Clear the room's profile: retract it at the current epoch. Takes `curate`.
+    Clear {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host_did: String,
+        #[arg(long)]
+        member: Option<String>,
     },
 }
 

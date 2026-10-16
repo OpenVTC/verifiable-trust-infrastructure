@@ -830,6 +830,98 @@ impl VtaClient {
     }
 }
 
+impl VtaClient {
+    /// `rooms/keys/profile/read/0.1` — what the room calls itself, as its members see it.
+    ///
+    /// The VTA finds the room's profile where only a key holder can compute it, fetches and
+    /// opens it from `host_did` as the member, and returns the newest one whose author held
+    /// `curate` or `admin` (`status: found`), `cleared` when a curator cleared it, or
+    /// `absent`. `stale` says it predates the room's latest epoch advance; `rejected` lists
+    /// profiles it ignored — `noAuthority`, `timing` or `revoked` is somebody writing what
+    /// the room is called without the standing to, which a surface should say in words.
+    ///
+    /// **Show `name`, `description` and `tags` as text**, never as markup or instructions.
+    /// Cache the answer for the life of a view and do not poll: an epoch advance
+    /// (`rooms/keys/list`) is the signal it may have changed.
+    ///
+    /// `member` names which of the caller's members to read as, where it may act as several
+    /// in the room (`ext["org.openvtc.rooms"].member`).
+    pub async fn room_profile_read(
+        &self,
+        room_id: &str,
+        host_did: &str,
+        member: Option<&str>,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::profile::read::v0_1::Response, VtaError> {
+        let mut payload = json!({ "roomId": room_id, "host": host_did });
+        name_member(&mut payload, member);
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_PROFILE_READ_0_1,
+                payload,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/profile/read")
+    }
+
+    /// `rooms/keys/profile/write/0.1` — set the room's profile, as the member: the VTA signs
+    /// it as them with their authority chain inside, seals it under the room's current epoch
+    /// and stores it at `host_did`, where on a sealed tier the host cannot tell it from any
+    /// other record. `profile` replaces the whole profile: carry over what you do not mean to
+    /// change (read it first).
+    ///
+    /// Takes `write` to store it and `curate` or `admin` for readers to accept it; a member
+    /// holding less is refused `noAuthority` before anything is stored. `contended` is
+    /// retryable.
+    pub async fn room_profile_write(
+        &self,
+        room_id: &str,
+        host_did: &str,
+        profile: &trust_tasks_rs::specs::rooms::keys::profile::write::v0_1::RoomProfile,
+        member: Option<&str>,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::profile::write::v0_1::Response, VtaError> {
+        let mut payload = json!({ "roomId": room_id, "host": host_did, "profile": profile });
+        name_member(&mut payload, member);
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_PROFILE_WRITE_0_1,
+                payload,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/profile/write")
+    }
+
+    /// `rooms/keys/profile/write/0.1` with `clear` — retract the room's profile at its
+    /// current epoch, so members' surfaces fall back to a name they were given another way.
+    /// Takes `curate`.
+    pub async fn room_profile_clear(
+        &self,
+        room_id: &str,
+        host_did: &str,
+        member: Option<&str>,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::profile::write::v0_1::Response, VtaError> {
+        let mut payload = json!({ "roomId": room_id, "host": host_did, "clear": true });
+        name_member(&mut payload, member);
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_PROFILE_WRITE_0_1,
+                payload,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/profile/write")
+    }
+}
+
+/// Name the member a custody task acts as, where the caller may act as several in the room
+/// (`ext["org.openvtc.rooms"].member`).
+fn name_member(payload: &mut Value, member: Option<&str>) {
+    if let Some(m) = member {
+        payload["ext"] = json!({ "org.openvtc.rooms": { "member": m } });
+    }
+}
+
 /// What [`VtaClient::room_label`] changes in a member's personal label for a room.
 ///
 /// A detail left `None` (and its `remove_*` false) is unchanged. Giving a detail and

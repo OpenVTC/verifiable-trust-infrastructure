@@ -1029,13 +1029,89 @@ mod tests {
         assert!(matches!(
             rooms(&["keys", "list"]),
             RoomCommands::Keys {
-                command: RoomKeysCommands::List
+                command: RoomKeysCommands::List { .. }
             }
         ));
         assert!(matches!(
             rooms(&["keys", "backfill", "--room", "r", "--host-did", "did:web:h"]),
             RoomCommands::Keys {
                 command: RoomKeysCommands::Backfill { .. }
+            }
+        ));
+        assert!(matches!(
+            rooms(&["keys", "list", "--host-did", "did:web:h"]),
+            RoomCommands::Keys {
+                command: RoomKeysCommands::List { host_did: Some(_) }
+            }
+        ));
+    }
+
+    /// `pnm rooms profile {show,set,clear}`: the room and its host are required, and a
+    /// value and its `--no-*` cannot both be given.
+    #[test]
+    fn rooms_profile_parses() {
+        use crate::cli::{RoomCommands, RoomProfileCommands};
+        let base = ["profile"];
+        let with = |rest: &[&str]| {
+            let mut args = base.to_vec();
+            args.extend_from_slice(rest);
+            rooms(&args)
+        };
+        assert!(matches!(
+            with(&["show", "--room", "r", "--host-did", "did:web:h"]),
+            RoomCommands::Profile {
+                command: RoomProfileCommands::Show { .. }
+            }
+        ));
+        match with(&[
+            "set",
+            "--room",
+            "r",
+            "--host-did",
+            "did:web:h",
+            "--name",
+            "Board",
+            "--tag",
+            "a",
+            "--tag",
+            "b",
+            "--no-emoji",
+        ]) {
+            RoomCommands::Profile {
+                command:
+                    RoomProfileCommands::Set {
+                        name,
+                        tags,
+                        no_emoji,
+                        ..
+                    },
+            } => {
+                assert_eq!(name.as_deref(), Some("Board"));
+                assert_eq!(tags, vec!["a".to_string(), "b".to_string()]);
+                assert!(no_emoji);
+            }
+            _ => panic!("profile set"),
+        }
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "rooms",
+                "profile",
+                "set",
+                "--room",
+                "r",
+                "--host-did",
+                "h",
+                "--emoji",
+                "x",
+                "--no-emoji"
+            ])
+            .is_err()
+        );
+        assert!(matches!(
+            with(&["clear", "--room", "r", "--host-did", "did:web:h"]),
+            RoomCommands::Profile {
+                command: RoomProfileCommands::Clear { .. }
             }
         ));
     }

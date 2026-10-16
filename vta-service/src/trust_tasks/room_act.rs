@@ -99,7 +99,7 @@ fn refuse_delegate(doc: &TrustTask<Value>) -> TrustTaskOutcome {
 }
 
 /// The delegate gate as an outcome.
-async fn require_not_delegate(
+pub(super) async fn require_not_delegate(
     state: &AppState,
     auth: &AuthClaims,
     doc: &TrustTask<Value>,
@@ -829,7 +829,7 @@ fn unsigned_body(plaintext: &[u8]) -> Result<Value, String> {
 
 /// Sign `body` for `assertionMethod` with `key`, through the gated oracle, and return the
 /// signed body's UTF-8 JSON — what is sealed.
-async fn sign_body(
+pub(super) async fn sign_body(
     state: &AppState,
     auth: &AuthClaims,
     key: crate::operations::persona::PersonaKey,

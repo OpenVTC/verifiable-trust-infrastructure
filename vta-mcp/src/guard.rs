@@ -225,6 +225,12 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // VTA refuses it from a delegate — an agent is never the member — so a host approving
     // `vta_call` gains nothing here; named so the class is a decision.
     ("rooms/keys/label", Risk::Mutating),
+    // The room's own profile. `read` returns what a sealed room withholds from its host
+    // after an outbound call to a host the caller names, as `rooms/keys/read` does.
+    // `write` signs, as the member, what every member of the room is shown the room is
+    // called — and an agent reading it back must treat it as text, never instructions.
+    ("rooms/keys/profile/read", Risk::Sensitive),
+    ("rooms/keys/profile/write", Risk::Sensitive),
     // Issuance, signed as the room. `invite` and `issue-membership` decide who
     // may enter and remain; `issue-authority` decides what they may do, and an
     // `admin` grant is the authority to mint epochs and transfer the room. The

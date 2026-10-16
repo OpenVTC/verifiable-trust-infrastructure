@@ -99,6 +99,7 @@ mod room_keys;
 mod room_label;
 mod room_owner;
 mod room_owner_group;
+mod room_profile;
 mod seeds;
 // `operations::protocol` — every service operation these handlers call — is
 // `#[cfg(feature = "webvh")]`, because advertising a transport means editing
@@ -2741,6 +2742,13 @@ dispatch_table! {
     // nowhere, its text never logged or audited (`rooms/keys/label/0.1` items 9–10).
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1 => room_label::handle_label
         [ Mutating Metadata false ],
+    // The room's own profile. `actsAsSubject` both ways: the reads and writes reach the
+    // room's host as the member, presenting their grant. `read` returns what a sealed room
+    // withholds from its host, so `Secret`, as `rooms/keys/read` is.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_PROFILE_READ_0_1 => room_profile::handle_read
+        [ None Secret true ],
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_PROFILE_WRITE_0_1 => room_profile::handle_write
+        [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_INVITE_0_1 => room_owner::handle_invite
         [ Mutating Metadata false ],
     // `actsAsSubject`, unlike the issuance verbs beside it: those sign as the

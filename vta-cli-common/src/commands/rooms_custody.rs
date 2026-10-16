@@ -630,6 +630,12 @@ pub async fn cmd_rooms_keys_backfill(
 /// The labels are the operator's own and go only to this terminal. A VTA that does not
 /// serve 0.2 is listed as 0.1 answers, with no labels.
 pub async fn cmd_rooms_keys_list(client: &VtaClient) -> CmdResult {
+    cmd_rooms_keys_list_named(client, None).await
+}
+
+/// `rooms keys list --host-did` — [`cmd_rooms_keys_list`], with each room's own name read
+/// from that host (`rooms/keys/profile/read`), as the member each entry is held as.
+pub async fn cmd_rooms_keys_list_named(client: &VtaClient, host_did: Option<&str>) -> CmdResult {
     let list = match client.room_list(true).await {
         Ok(list) => list,
         Err(vta_sdk::error::VtaError::UnsupportedTaskType { .. }) => {
@@ -648,13 +654,33 @@ pub async fn cmd_rooms_keys_list(client: &VtaClient) -> CmdResult {
     // The trust context each member's key lives in rides in `ext["org.openvtc.rooms"].held`,
     // index for index.
     let held = held_ext(&list.ext);
+    // The room's own name, where a host was named: read once per entry, as that entry's
+    // member. A room the host does not serve, or that has no profile, simply has none.
+    let mut names: Vec<Option<String>> = Vec::with_capacity(list.rooms.len());
+    for r in &list.rooms {
+        names.push(match host_did {
+            Some(host) => client
+                .room_profile_read(r.room_id.as_str(), host, Some(r.member.as_str()))
+                .await
+                .ok()
+                .and_then(|p| p.profile.map(|p| inert_line(p.name.as_str()))),
+            None => None,
+        });
+    }
     println!("{} room(s):", list.rooms.len());
     for (i, r) in list.rooms.iter().enumerate() {
         let personal = r.personal.as_ref();
-        // Your own name first (rooms/keys/label's display order), the room's DID beside it.
-        match personal.and_then(|p| p.label.as_ref()) {
-            Some(name) => println!("  {}  ({})", as_text(name), r.room_id.as_str()),
-            None => println!("  {}", r.room_id.as_str()),
+        // Your own name first (rooms/keys/label's display order), then the name the room
+        // gives itself, then its DID.
+        match (personal.and_then(|p| p.label.as_ref()), &names[i]) {
+            (Some(name), _) => println!("  {}  ({})", as_text(name), r.room_id.as_str()),
+            (None, Some(name)) => println!("  {name}  ({})", r.room_id.as_str()),
+            (None, None) => println!("  {}", r.room_id.as_str()),
+        }
+        if personal.and_then(|p| p.label.as_ref()).is_some()
+            && let Some(name) = &names[i]
+        {
+            println!("    the room calls itself: {name}");
         }
         let context = held
             .get(i)
@@ -678,6 +704,9 @@ pub async fn cmd_rooms_keys_list(client: &VtaClient) -> CmdResult {
                 println!("    your notes: {}", indent(&as_text(n)));
             }
         }
+    }
+    if host_did.is_none() {
+        println!("\nAdd --host-did <host> to show the name each room gives itself.");
     }
     Ok(())
 }
@@ -794,9 +823,301 @@ pub async fn cmd_rooms_keys_label(
     Ok(())
 }
 
+// ─── The room's own profile ──────────────────────────────────────────────
+
+/// Text another member wrote, made safe to print: control characters (terminal escapes
+/// among them) removed, newlines and tabs kept.
+fn inert(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect()
+}
+
+/// [`inert`], on one line.
+fn inert_line(text: &str) -> String {
+    inert(text).replace(['\n', '\t'], " ")
+}
+
+/// One field of `rooms profile set`: keep what the room has, replace it, or drop it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Change<T> {
+    Keep,
+    Set(T),
+    Drop,
+}
+
+/// What `rooms profile set` changes. The name is kept when not given.
+#[derive(Debug, Clone)]
+pub struct ProfileEdit {
+    pub name: Option<String>,
+    pub description: Change<String>,
+    pub tags: Change<Vec<String>>,
+    pub emoji: Change<String>,
+}
+
+/// The profile `edit` makes of `current` (the room's profile now, as JSON, if it has one):
+/// a write replaces the whole profile, so what the operator did not touch is carried over.
+fn edited_profile(
+    current: Option<&serde_json::Value>,
+    edit: ProfileEdit,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let mut p = current.cloned().unwrap_or_else(|| serde_json::json!({}));
+    let Some(obj) = p.as_object_mut() else {
+        return Err("the room's current profile is not an object".into());
+    };
+    if let Some(name) = edit.name {
+        obj.insert("name".into(), serde_json::Value::String(name));
+    }
+    if !obj.contains_key("name") {
+        return Err(
+            "the room has no profile yet, so give it a name: --name \"<the room's name>\"".into(),
+        );
+    }
+    let mut apply = |key: &str, change: Change<serde_json::Value>| match change {
+        Change::Keep => {}
+        Change::Set(v) => {
+            obj.insert(key.into(), v);
+        }
+        Change::Drop => {
+            obj.remove(key);
+        }
+    };
+    let map = |c: Change<String>| match c {
+        Change::Keep => Change::Keep,
+        Change::Set(v) => Change::Set(serde_json::Value::String(v)),
+        Change::Drop => Change::Drop,
+    };
+    apply("description", map(edit.description));
+    apply("emoji", map(edit.emoji));
+    apply(
+        "tags",
+        match edit.tags {
+            Change::Keep => Change::Keep,
+            Change::Set(t) => Change::Set(serde_json::json!(t)),
+            Change::Drop => Change::Drop,
+        },
+    );
+    Ok(p)
+}
+
+/// Print a `rooms/keys/profile/read` answer: the profile as text, and — in words — anybody
+/// who tried to rename the room without the standing to.
+fn print_profile(room_id: &str, resp: &serde_json::Value) {
+    match resp["status"].as_str().unwrap_or_default() {
+        "found" => {
+            let p = &resp["profile"];
+            let emoji = p["emoji"]
+                .as_str()
+                .map(|e| format!("{} ", inert_line(e)))
+                .unwrap_or_default();
+            println!(
+                "{emoji}{}",
+                inert_line(p["name"].as_str().unwrap_or_default())
+            );
+            if let Some(d) = p["description"].as_str() {
+                println!("  {}", inert(d).replace('\n', "\n  "));
+            }
+            if let Some(tags) = p["tags"].as_array().filter(|t| !t.is_empty()) {
+                let tags: Vec<String> = tags
+                    .iter()
+                    .filter_map(|t| t.as_str().map(inert_line))
+                    .collect();
+                println!("  tags: {}", tags.join(", "));
+            }
+            println!(
+                "  named by {} at {}{}",
+                resp["author"].as_str().unwrap_or("?"),
+                resp["issuedAt"].as_str().unwrap_or("?"),
+                resp["epoch"]
+                    .as_u64()
+                    .map(|e| format!(", under epoch {e}"))
+                    .unwrap_or_default()
+            );
+            if resp["stale"].as_bool() == Some(true) {
+                println!(
+                    "  This profile predates the room's latest epoch and was not written again \
+                     since; it may be out of date."
+                );
+            }
+        }
+        "cleared" => println!("Room {room_id} has no profile: a curator cleared it."),
+        _ => println!(
+            "Room {room_id} has not given itself a name you can read{}.",
+            resp["searched"]["toEpoch"]
+                .as_u64()
+                .map(|e| format!(" (looked down to epoch {e})"))
+                .unwrap_or_default()
+        ),
+    }
+    for r in resp["rejected"].as_array().into_iter().flatten() {
+        let reason = r["reason"].as_str().unwrap_or_default();
+        let who = r["author"].as_str().unwrap_or("somebody");
+        let at = r["epoch"]
+            .as_u64()
+            .map(|e| format!(" under epoch {e}"))
+            .unwrap_or_default();
+        match reason {
+            "noAuthority" | "timing" | "revoked" => println!(
+                "  ! {who} wrote a newer profile{at} without the standing to name the room \
+                 ({reason}); it is ignored."
+            ),
+            _ => println!("  ! a newer profile record{at} was ignored ({reason})."),
+        }
+    }
+}
+
+/// `rooms profile show` — what the room calls itself.
+pub async fn cmd_rooms_profile_show(
+    client: &VtaClient,
+    room_id: &str,
+    host_did: &str,
+    member: Option<&str>,
+) -> CmdResult {
+    let resp = client.room_profile_read(room_id, host_did, member).await?;
+    let resp = serde_json::to_value(&resp)?;
+    if crate::render::is_json_output() {
+        crate::render::print_json(&resp)?;
+        return Ok(());
+    }
+    print_profile(room_id, &resp);
+    Ok(())
+}
+
+/// `rooms profile set` — set the room's profile, carrying over what the operator did not
+/// change from the profile it has now.
+pub async fn cmd_rooms_profile_set(
+    client: &VtaClient,
+    room_id: &str,
+    host_did: &str,
+    edit: ProfileEdit,
+    member: Option<&str>,
+) -> CmdResult {
+    let current = client.room_profile_read(room_id, host_did, member).await?;
+    let current = current.profile.map(serde_json::to_value).transpose()?;
+    let profile = edited_profile(current.as_ref(), edit)?;
+    let profile =
+        serde_json::from_value(profile).map_err(|e| format!("that is not a room profile: {e}"))?;
+    let out = client
+        .room_profile_write(room_id, host_did, &profile, member)
+        .await
+        .map_err(|e| profile_refusal(e, room_id))?;
+    let out = serde_json::to_value(&out)?;
+    if crate::render::is_json_output() {
+        crate::render::print_json(&out)?;
+        return Ok(());
+    }
+    println!(
+        "Named room {room_id}{}. Every member reads it with `pnm rooms profile show`.",
+        out["epoch"]
+            .as_u64()
+            .map(|e| format!(" under epoch {e}"))
+            .unwrap_or_default()
+    );
+    Ok(())
+}
+
+/// `rooms profile clear` — retract the room's profile.
+pub async fn cmd_rooms_profile_clear(
+    client: &VtaClient,
+    room_id: &str,
+    host_did: &str,
+    member: Option<&str>,
+) -> CmdResult {
+    let out = client
+        .room_profile_clear(room_id, host_did, member)
+        .await
+        .map_err(|e| profile_refusal(e, room_id))?;
+    let out = serde_json::to_value(&out)?;
+    if crate::render::is_json_output() {
+        crate::render::print_json(&out)?;
+        return Ok(());
+    }
+    println!("Cleared room {room_id}'s profile.");
+    Ok(())
+}
+
+/// A `rooms/keys/profile/write` refusal, with what to do about the two an operator meets.
+fn profile_refusal(e: vta_sdk::error::VtaError, room_id: &str) -> Box<dyn std::error::Error> {
+    let text = e.to_string();
+    if text.contains("noAuthority") {
+        return format!(
+            "{text}\n\nNaming a room takes `write` and `curate` or `admin` in it; clearing takes \
+             `curate`. The room's owner grants them with `pnm rooms owner issue-authority --room \
+             {room_id} --subject <your persona DID> --action write,curate --valid-for 90d --store`."
+        )
+        .into();
+    }
+    if text.contains("contended") {
+        return format!(
+            "{text}\n\nOther writes kept landing in the room; run the same command again."
+        )
+        .into();
+    }
+    e.into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `rooms profile set` replaces the whole profile, so what is not given is carried over
+    /// and `--no-*` drops it.
+    #[test]
+    fn a_profile_edit_carries_over_what_it_does_not_touch() {
+        let current = serde_json::json!({
+            "name": "Board", "description": "Papers", "tags": ["board"], "emoji": "📋",
+        });
+        let renamed = edited_profile(
+            Some(&current),
+            ProfileEdit {
+                name: Some("Board pack".into()),
+                description: Change::Keep,
+                tags: Change::Keep,
+                emoji: Change::Drop,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            renamed,
+            serde_json::json!({ "name": "Board pack", "description": "Papers", "tags": ["board"] })
+        );
+        let retagged = edited_profile(
+            Some(&current),
+            ProfileEdit {
+                name: None,
+                description: Change::Drop,
+                tags: Change::Set(vec!["a".into(), "b".into()]),
+                emoji: Change::Keep,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            retagged,
+            serde_json::json!({ "name": "Board", "tags": ["a", "b"], "emoji": "📋" })
+        );
+        assert!(
+            edited_profile(
+                None,
+                ProfileEdit {
+                    name: None,
+                    description: Change::Set("x".into()),
+                    tags: Change::Keep,
+                    emoji: Change::Keep,
+                },
+            )
+            .is_err(),
+            "a room with no profile needs a name"
+        );
+    }
+
+    /// Another member's text never drives the terminal.
+    #[test]
+    fn profile_text_is_inert() {
+        assert_eq!(
+            inert_line("Board\u{1b}[31m pack\nnext"),
+            "Board[31m pack next"
+        );
+    }
 
     #[test]
     fn validity_takes_either_form_and_refuses_the_past() {

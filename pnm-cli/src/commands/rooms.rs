@@ -20,6 +20,7 @@ use vta_sdk::client::VtaClient;
 
 use crate::cli::{
     RoomCommands, RoomFileCommands, RoomKeysCommands, RoomOffersCommands, RoomOwnerCommands,
+    RoomProfileCommands,
 };
 
 /// The operator's DID and key, from the session this CLI authenticates with.
@@ -243,6 +244,65 @@ pub(crate) async fn run(
                 }
             };
         }
+        // The room's profile: calls to this VTA alone, which reaches the host as the member.
+        RoomCommands::Profile { command } => {
+            return match command {
+                RoomProfileCommands::Show {
+                    room_id,
+                    host_did,
+                    member,
+                } => {
+                    custody::cmd_rooms_profile_show(client, &room_id, &host_did, member.as_deref())
+                        .await
+                }
+                RoomProfileCommands::Set {
+                    room_id,
+                    host_did,
+                    name,
+                    description,
+                    no_description,
+                    tags,
+                    no_tags,
+                    emoji,
+                    no_emoji,
+                    member,
+                } => {
+                    custody::cmd_rooms_profile_set(
+                        client,
+                        &room_id,
+                        &host_did,
+                        custody::ProfileEdit {
+                            name,
+                            description: match (description, no_description) {
+                                (_, true) => custody::Change::Drop,
+                                (Some(d), false) => custody::Change::Set(d),
+                                (None, false) => custody::Change::Keep,
+                            },
+                            tags: match (tags.is_empty(), no_tags) {
+                                (_, true) => custody::Change::Drop,
+                                (false, false) => custody::Change::Set(tags),
+                                (true, false) => custody::Change::Keep,
+                            },
+                            emoji: match (emoji, no_emoji) {
+                                (_, true) => custody::Change::Drop,
+                                (Some(e), false) => custody::Change::Set(e),
+                                (None, false) => custody::Change::Keep,
+                            },
+                        },
+                        member.as_deref(),
+                    )
+                    .await
+                }
+                RoomProfileCommands::Clear {
+                    room_id,
+                    host_did,
+                    member,
+                } => {
+                    custody::cmd_rooms_profile_clear(client, &room_id, &host_did, member.as_deref())
+                        .await
+                }
+            };
+        }
         // The key holder's verbs are calls to this VTA alone, all but one: fetching
         // commits from a host signs a request there, so it needs the session below.
         RoomCommands::Keys { command } => match command {
@@ -274,7 +334,9 @@ pub(crate) async fn run(
             RoomKeysCommands::Backfill { room_id, host_did } => {
                 return custody::cmd_rooms_keys_backfill(client, &room_id, &host_did).await;
             }
-            RoomKeysCommands::List => return custody::cmd_rooms_keys_list(client).await,
+            RoomKeysCommands::List { host_did } => {
+                return custody::cmd_rooms_keys_list_named(client, host_did.as_deref()).await;
+            }
             RoomKeysCommands::Label {
                 room_id,
                 member,
@@ -493,6 +555,9 @@ pub(crate) async fn run(
         }
         RoomCommands::Offers { .. } => {
             unreachable!("the offer verbs are answered above, before the session is read")
+        }
+        RoomCommands::Profile { .. } => {
+            unreachable!("the profile verbs are answered above, before the session is read")
         }
         RoomCommands::Create {
             room_id,

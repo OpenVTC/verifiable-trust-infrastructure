@@ -610,6 +610,68 @@ pub async fn file_key(
     }
 }
 
+/// Where the room's profile is stored — `profile_key(E)` (`rooms/_shared/0.1`
+/// `RoomProfileStatement`) — for `epoch`, or for the current epoch when `epoch` is `None`;
+/// with the epoch it is for.
+///
+/// Computed here and only here because it is derived from the epoch's storage key, which
+/// never leaves this VTA: a member's surface cannot find the room's profile without it, and
+/// the location itself is all this returns — never the key it is derived from.
+pub async fn profile_location(
+    groups: &KeyspaceHandle,
+    member: &Member,
+    epoch: Option<u32>,
+) -> Result<(String, u32), AppError> {
+    let room_id = member.room_id();
+    let record = load(groups, member)
+        .await?
+        .ok_or_else(|| no_group(member))?;
+    let group = RoomGroup::restore(&record.snapshot)
+        .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?;
+    let mut room = SealedRoom::new(room_id, group);
+    match epoch {
+        None => room
+            .profile_key_for_seal()
+            .map_err(|e| AppError::Internal(e.to_string())),
+        Some(epoch) => {
+            room.add_links(record.links);
+            room.profile_key_for_open(epoch)
+                .map(|key| (key, epoch))
+                .map_err(|e| AppError::Validation(e.to_string()))
+        }
+    }
+}
+
+/// Every profile location `member` can compute, newest epoch first, down to the earliest
+/// epoch its chain reaches and at most `bound` of them — the walk `rooms/keys/profile/read`
+/// item 2 makes, and the set `rooms/keys/{read,browse}` keep the profile out of.
+pub async fn profile_locations(
+    groups: &KeyspaceHandle,
+    member: &Member,
+    bound: usize,
+) -> Result<Vec<(u32, String)>, AppError> {
+    let room_id = member.room_id();
+    let record = load(groups, member)
+        .await?
+        .ok_or_else(|| no_group(member))?;
+    let group = RoomGroup::restore(&record.snapshot)
+        .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?;
+    let mut room = SealedRoom::new(room_id, group);
+    room.add_links(record.links);
+    let current = room.room_epoch();
+    let earliest = room
+        .earliest_readable_epoch()
+        .map_err(|e| AppError::Internal(format!("walk the chain for `{room_id}`: {e}")))?;
+    let mut out = Vec::new();
+    for epoch in (earliest.max(1)..=current).rev().take(bound) {
+        let key = room
+            .profile_key_for_open(epoch)
+            .map_err(|e| AppError::Internal(format!("the profile location at {epoch}: {e}")))?;
+        out.push((epoch, key));
+    }
+    Ok(out)
+}
+
 /// Every member this VTA holds group state for, by room — keys only, nothing decrypted.
 ///
 /// **Not an answer to give a caller.** It names every persona of every principal this VTA

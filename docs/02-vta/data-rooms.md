@@ -1269,6 +1269,58 @@ to your own VTA, which holds the room's signing key and the group; the CLI never
 holds either. Every party they name — owner, subject, member — is a persona
 DID.
 
+### The room's own name: its profile
+
+A room's DID says nothing about it. Its **profile** — a name, and optionally a
+description, a few tags and one emoji (`RoomProfile`, `rooms/_shared/0.1`) — is
+what the room calls itself, and it lives **inside the room**: one record per
+epoch, sealed like every other on `attributed` and `private`, at a key derived
+from that epoch's storage key (`profile_key(E)`, `vti_rooms::profile`). To the
+host it is one more opaque record; it cannot tell which record names the room.
+On an `open` room it is the record at `room-profile`, in the clear.
+
+```bash
+pnm rooms profile show  --room <room-did> --host-did <host-did>
+pnm rooms profile set   --room <room-did> --host-did <host-did> \
+                        --name "Board pack — 2027" --description "Papers for the board" \
+                        --tag board --emoji 📋
+pnm rooms profile clear --room <room-did> --host-did <host-did>
+pnm rooms keys list --host-did <host-did>      # each room's name beside its DID
+```
+
+Your VTA does all of it (`rooms/keys/profile/{read,write}/0.1`), because only a
+key holder can compute where the profile is and open it. It reads and writes as
+your persona, under your own `read` and `write` (or `curate`, to clear) grants.
+
+**Who may name a room is decided by readers.** The host stores the profile
+under `write` like any record, so any member who can write can overwrite it.
+What they cannot do is rename the room: the statement carries its author's
+authority chain, and every reader accepts it only if that chain confers
+`curate` or `admin` on the author, valid at the statement's own `issuedAt`,
+with `issuedAt` no earlier than an hour before and no later than five minutes
+after the host's `updatedAt`. A profile that fails is ignored — the room keeps
+the one before it — and **reported** (`rejected`, with its author and the
+reason). `pnm rooms profile show` says in words when somebody wrote a newer
+profile without the standing to. Your own VTA refuses such a write before it
+reaches the host (`noAuthority`). Setting takes `write` and `curate` or
+`admin`; clearing takes `curate`.
+
+**The newest accepted profile wins.** The read walks down from the current
+epoch and takes the first profile it accepts, or stops at a retracted one
+(`cleared`). A profile found below the current epoch is `stale`.
+
+**Every advance re-writes it.** On a `fromJoin` room a member cannot read below
+the epoch they joined at. So your VTA, as a sealed room's owner, reads the
+profile before each `group-add`, `group-remove` or `group-renew` and writes it
+again under the new epoch, as you, once the host accepts the advance. A
+re-write that fails never fails, delays or undoes the advance; it is retried a
+few times and logged. A room with no profile, or a cleared one, gets none.
+
+`rooms/keys/read` of the profile's key does not open it (its answer says
+`ext["org.openvtc.rooms"].roomProfile`), and `rooms/keys/browse` leaves it out of
+the records. Show `name`, `description` and `tags` as **text**: they are free
+text another member wrote.
+
 ### From Rust
 
 All record verbs carry a presentation and no token. `RoomSession` holds the

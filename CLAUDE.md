@@ -1202,6 +1202,33 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Docs**: `docs/06-witness/README.md`,
   `docs/05-design-notes/witness-host-service.md`.
 
+### A room's own profile (`rooms/keys/profile/{read,write}`)
+- **What**: a room's name / description / tags / emoji (`RoomProfile`), kept
+  **inside the room** — one record per epoch at `profile_key(E)` (HKDF over the
+  epoch's storage key, `vti_rooms::profile`; `room-profile` on `open`), sealed
+  like any record, so the host cannot tell it from any other. The member's VTA
+  finds, fetches, opens and judges it, and writes it, as the member's persona.
+- **Invariants to preserve**: the **reader** decides who may name the room
+  (`operations::room_profile::check_statement`): the statement's own chain
+  must confer `curate` or `admin` on its `author`, valid at its `issuedAt`
+  (`vti_rooms_dtg::profile`), and `issuedAt` must sit in `[updatedAt − 1h,
+  updatedAt + 5m]` — a host stores it under `write`, so never treat "the host
+  accepted it" as authority. A refused profile is ignored and **reported**
+  (`rejected`), never shown. The walk takes the newest accepted, stops at a
+  retraction (`cleared`). A write is refused `noAuthority` before the host
+  without `write` + (`curate`|`admin`); version races re-seal, then
+  `contended`. The owner's key holder reads the profile **before** every
+  `group/{add,remove,renew}` and re-writes it after the host accepts — never
+  failing, delaying or undoing the advance. `keys/read` does not open a profile
+  location and `keys/browse` leaves it out. Never put a profile in a
+  credential, a host record or `register`.
+- **Code**: `vti-rooms/src/profile.rs`, `vti-rooms-dtg/src/profile.rs`,
+  `vta-service/src/operations/room_profile.rs`,
+  `vta-service/src/trust_tasks/room_profile.rs` (+ `_tests.rs`, against a real
+  `room-host`), `vta_sdk::client::rooms` (`room_profile_*`),
+  `pnm rooms profile {show,set,clear}`.
+- **Docs**: `docs/02-vta/data-rooms.md` (*The room's own name*).
+
 ### VTC community-owned rooms (`vtc/rooms/community/*`, `vtc/rooms/offers/*`)
 - **What**: Data rooms the community itself owns (design §8.4). The VTC is the
   owner (`ownerDid` = its DID) and host; **its own VTA is the key holder**,

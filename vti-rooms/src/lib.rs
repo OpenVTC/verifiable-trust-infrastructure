@@ -110,6 +110,9 @@ pub mod mls;
 /// behind the `host` feature.
 #[cfg(feature = "host")]
 pub mod observe;
+/// A room's own profile — where it is stored (`profile_key(E)`), how it is padded and the
+/// window its `issuedAt` must fall in (`rooms/_shared/0.1` `RoomProfileStatement`).
+pub mod profile;
 /// The epoch key chain that keeps a room readable across a membership change.
 #[cfg(feature = "mls")]
 pub mod retention;

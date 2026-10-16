@@ -126,6 +126,16 @@ impl Principal {
             .is_some_and(|grant| grant.actions.iter().any(|a| a == action)))
     }
 
+    /// The persona's authority chain as a room profile statement carries it: the credential
+    /// the room issued, alone — the shortest chain this VTA holds, leaf first, as the
+    /// credential itself (`rooms/keys/profile/write/0.1` item 3). A reader verifies it at the
+    /// statement's `issuedAt`, so nothing is attenuated or minted for it.
+    pub fn authority_chain(&self) -> Result<Vec<String>, AppError> {
+        serde_json::to_string(&self.vac)
+            .map(|c| vec![c])
+            .map_err(|e| AppError::Internal(format!("serialise the authority credential: {e}")))
+    }
+
     /// The actions the room's grant to this persona confers — what `rooms/keys/list`
     /// reports beside each member, so a client can say which place in the room a persona
     /// holds (one that administers it, or a member). Empty for an unreadable credential:

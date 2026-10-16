@@ -361,6 +361,31 @@ impl SealedRoom {
         ))
     }
 
+    /// Where the room's profile written under the **current** epoch is stored, and that
+    /// epoch — what a writer seals a profile for (`rooms/keys/profile/write`).
+    pub fn profile_key_for_seal(&self) -> Result<(String, u32), RoomKeyError> {
+        let epoch = self.room_epoch();
+        let storage_key = self.group.storage_key()?;
+        Ok((
+            crate::profile::derive_profile_key(&storage_key, &self.room_id, u64::from(epoch)),
+            epoch,
+        ))
+    }
+
+    /// Where the room's profile written under `epoch` is stored, walked out of the chain as
+    /// a record's key is — what a reader looks at, epoch by epoch, from the current one down
+    /// (`rooms/keys/profile/read`). Fails as [`Self::open_record`] does for an epoch this
+    /// holder cannot reach.
+    pub fn profile_key_for_open(&mut self, epoch: u32) -> Result<String, RoomKeyError> {
+        self.reanchor()?;
+        let storage_key = self.chain.key_for(epoch)?;
+        Ok(crate::profile::derive_profile_key(
+            &storage_key,
+            &self.room_id,
+            u64::from(epoch),
+        ))
+    }
+
     /// The value to anchor in the room's witnessed DID log for this epoch.
     ///
     /// A host that forks the group shows different members different commit sequences.
@@ -387,6 +412,27 @@ mod tests {
     fn room(did: &str) -> SealedRoom {
         let group = RoomGroup::create("did:key:zAlice").expect("group");
         SealedRoom::new(did, group)
+    }
+
+    /// The profile's location for an epoch is the same whether it is computed to write
+    /// (at that epoch) or to read (walked back to it from a later one), and it moves with
+    /// every epoch.
+    #[test]
+    fn the_profile_location_is_the_same_to_writer_and_later_reader() {
+        let mut r = room("did:webvh:zRoom");
+        let (at_1, epoch) = r.profile_key_for_seal().expect("location");
+        assert_eq!(epoch, 1);
+        assert_eq!(r.profile_key_for_open(1).expect("same epoch"), at_1);
+
+        r.renew().expect("advance");
+        let (at_2, epoch) = r.profile_key_for_seal().expect("location");
+        assert_eq!(epoch, 2);
+        assert_ne!(at_1, at_2, "one record per epoch, at a different key");
+        assert_eq!(
+            r.profile_key_for_open(1)
+                .expect("walked back through the chain"),
+            at_1
+        );
     }
 
     #[test]

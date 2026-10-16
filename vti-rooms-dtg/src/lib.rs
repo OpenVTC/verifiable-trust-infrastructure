@@ -57,6 +57,7 @@ use vti_rooms::wire::AuthorityPresentation;
 use vti_rooms::{Room, Visibility};
 
 pub mod nomination;
+pub mod profile;
 
 pub use vti_rooms::authz::ACTION_SUCCEED;
 

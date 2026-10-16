@@ -1106,6 +1106,20 @@ pub const TASK_ROOMS_KEYS_LIST_0_2: &str =
 pub const TASK_ROOMS_KEYS_LABEL_0_1: &str =
     <trust_tasks_rs::specs::rooms::keys::label::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `spec/rooms/keys/profile/read/0.1` — what a room calls itself: the agent finds the
+/// room's profile where only a key holder can compute it (`profile_key(E)`, from the epoch's
+/// storage key), fetches and opens it as the member, and returns the newest one whose
+/// author held `curate` or `admin` — reporting any it ignored. Auth: `roomOpen` capability.
+pub const TASK_ROOMS_KEYS_PROFILE_READ_0_1: &str =
+    <trust_tasks_rs::specs::rooms::keys::profile::read::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/profile/write/0.1` — name a room for its members: the agent signs the
+/// profile as the member, with their authority chain inside it, seals it under the current
+/// epoch and stores it at the host as the member; or retracts it (`clear`). Auth:
+/// `roomOpen` capability, and never a delegate — it signs as the principal.
+pub const TASK_ROOMS_KEYS_PROFILE_WRITE_0_1: &str =
+    <trust_tasks_rs::specs::rooms::keys::profile::write::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/owner/invite/0.1` — mint a Verifiable Invitation Credential in the
 /// room's own name. Joining is consent, and this is the artefact.
 /// Auth: `credentialWrite` capability, plus whatever the key oracle says about
@@ -2667,6 +2681,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_LIST_0_1,
     TASK_ROOMS_KEYS_LIST_0_2,
     TASK_ROOMS_KEYS_LABEL_0_1,
+    TASK_ROOMS_KEYS_PROFILE_READ_0_1,
+    TASK_ROOMS_KEYS_PROFILE_WRITE_0_1,
     TASK_ROOMS_OWNER_INVITE_0_1,
     TASK_ROOMS_OWNER_REGISTER_0_1,
     TASK_ROOMS_OWNER_ANCHOR_0_1,

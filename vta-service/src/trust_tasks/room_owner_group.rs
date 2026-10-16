@@ -271,6 +271,12 @@ async fn add_at(
         }
     }
 
+    // The room's profile, read before the advance: after it, a key holder of a `fromJoin`
+    // room can no longer open what was sealed under the epoch it left
+    // (`rooms/keys/profile/write/0.1`, *Keeping the profile readable across epochs*).
+    let profile = host_call.profile_speaker(&host);
+    let carried = super::room_profile::carry_before_advance(&profile).await;
+
     // Items 2 and 3: built on a copy and retained durably before the host is contacted.
     let pending = match room_groups::prepare_add(
         &state.room_groups_ks,
@@ -337,6 +343,9 @@ async fn add_at(
     {
         return r;
     }
+
+    // ... and written again under the new epoch, as the owner. Never the advance's to fail.
+    super::room_profile::rewrite_after_advance(&profile, carried).await;
 
     // The member's DID and the room, never the Welcome or the KeyPackage.
     record(state, "rooms.owner.group.add", auth, &room_id).await;
@@ -416,6 +425,10 @@ pub(super) async fn handle_remove(
         Err(r) => return r,
     };
 
+    // The profile, read before the advance, to write again after it.
+    let profile = host_call.profile_speaker(&host);
+    let carried = super::room_profile::carry_before_advance(&profile).await;
+
     // Items 1 to 3: refused, or built on a copy and retained durably before the host is
     // contacted.
     let pending = match room_groups::prepare_remove(
@@ -462,6 +475,10 @@ pub(super) async fn handle_remove(
     {
         return r;
     }
+
+    // The removed member cannot open what is sealed from here on, the profile included —
+    // and the re-write supersedes whatever they wrote under the epoch they left.
+    super::room_profile::rewrite_after_advance(&profile, carried).await;
 
     // The room only. The audit row is this agent's; who left is the owner's business and
     // the host never learns it either (it sees an opaque commit).
@@ -535,6 +552,10 @@ pub(super) async fn handle_renew(
         Err(r) => return r,
     };
 
+    // The profile, read before the advance, to write again after it.
+    let profile = host_call.profile_speaker(&host);
+    let carried = super::room_profile::carry_before_advance(&profile).await;
+
     // Items 2, 3 and 7: a commit that adds and removes nobody, and its link, built on a
     // copy and retained durably before the host is contacted.
     let pending = match room_groups::prepare_renew(
@@ -571,6 +592,8 @@ pub(super) async fn handle_renew(
     {
         return r;
     }
+
+    super::room_profile::rewrite_after_advance(&profile, carried).await;
 
     record(state, "rooms.owner.group.renew", auth, &room_id).await;
     success_response(
@@ -745,6 +768,20 @@ impl<'a> HostCall<'a> {
             resolver,
             room_id,
         })
+    }
+
+    /// The owner persona as `rooms/keys/profile/*` speaks for it: the profile read before an
+    /// advance and written again after it go to `host` as the owner, under the owner's own
+    /// `read` and `write` grants.
+    fn profile_speaker<'h>(&'h self, host: &'h str) -> super::room_profile::Speaker<'h> {
+        super::room_profile::Speaker::for_owner(
+            self.state,
+            self.auth,
+            self.resolver,
+            host,
+            self.owner.clone(),
+            self.owner_member.clone(),
+        )
     }
 
     async fn send(&self, host: &str, task: &str, payload: Value) -> Result<Value, RoomTaskError> {
