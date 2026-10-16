@@ -1746,13 +1746,37 @@ pub async fn cmd_rooms_offers_list(
             o.state,
             o.valid_until.to_rfc3339(),
         );
+        if o.state == trust_tasks_rs::specs::vtc::rooms::offers::list::v0_1::OfferState::Open {
+            println!("  accept: {}", accept_command(o.room_id.as_str(), &target));
+        }
     }
-    println!(
-        "  Accept one with `pnm rooms offers accept --room <room-did> --vtc {} --vtc-did {} \
-         --member {}`.",
-        target.vtc_url, target.vtc_did, target.member
-    );
     Ok(())
+}
+
+/// The `pnm rooms offers accept` line for one offer, ready to paste: every value filled in,
+/// so the operator never types a `<placeholder>` a shell reads as a redirect.
+fn accept_command(room_id: &str, target: &OfferTarget<'_>) -> String {
+    format!(
+        "pnm rooms offers accept --room {} --vtc {} --vtc-did {} --member {}",
+        shell_word(room_id),
+        shell_word(target.vtc_url),
+        shell_word(target.vtc_did),
+        shell_word(target.member),
+    )
+}
+
+/// `value` as one shell word. The room DID comes from the community, so it is quoted
+/// unless every character is one no POSIX shell or fish treats specially.
+fn shell_word(value: &str) -> String {
+    let plain = !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ":/._%@+=,-".contains(c));
+    if plain {
+        value.to_string()
+    } else {
+        format!("'{}'", inert(value).replace('\'', r"'\''"))
+    }
 }
 
 /// `pnm rooms offers accept` — take up an offer: store its credentials in your VTA, mint a
@@ -1895,6 +1919,32 @@ mod tests {
 
     const CATCH_UP: &str = "pnm rooms keys commit --room did:webvh:example.com:rooms:northwind \
                             --host https://community.example/v1 --host-did did:webvh:community.example";
+
+    /// An offer's accept line carries the offer's own room DID and runs as pasted.
+    #[test]
+    fn an_offer_prints_its_accept_command_with_the_room_filled_in() {
+        let target = OfferTarget {
+            vtc_url: "https://vtc.example/v1",
+            vtc_did: "did:webvh:Qm1:vtc.example",
+            member: "did:webvh:Qm2:alice.example",
+        };
+        assert_eq!(
+            accept_command("did:webvh:Qm3:vtc.example:room-dids:ab12", &target),
+            "pnm rooms offers accept --room did:webvh:Qm3:vtc.example:room-dids:ab12 \
+             --vtc https://vtc.example/v1 --vtc-did did:webvh:Qm1:vtc.example \
+             --member did:webvh:Qm2:alice.example"
+        );
+    }
+
+    /// A room DID is the community's text: anything a shell would act on is quoted.
+    #[test]
+    fn a_room_id_a_shell_would_read_is_quoted() {
+        assert_eq!(shell_word("did:web:x"), "did:web:x");
+        assert_eq!(shell_word("a;rm -rf ~"), "'a;rm -rf ~'");
+        assert_eq!(shell_word("it's"), r"'it'\''s'");
+        assert_eq!(shell_word("$(x)"), "'$(x)'");
+        assert_eq!(shell_word(""), "''");
+    }
 
     /// A put sealed under a superseded epoch (`epochMismatch`, read off the host's
     /// `trust-task-error` document) names the catch-up command with the real values, not
