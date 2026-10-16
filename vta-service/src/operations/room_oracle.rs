@@ -125,6 +125,17 @@ impl Principal {
             .authority()
             .is_some_and(|grant| grant.actions.iter().any(|a| a == action)))
     }
+
+    /// The actions the room's grant to this persona confers — what `rooms/keys/list`
+    /// reports beside each member, so a client can say which place in the room a persona
+    /// holds (one that administers it, or a member). Empty for an unreadable credential:
+    /// this is a description, never a gate.
+    pub fn actions(&self) -> Vec<String> {
+        serde_json::from_value::<DTGCredential>(self.vac.clone())
+            .ok()
+            .and_then(|root| root.credential().authority().map(|g| g.actions.clone()))
+            .unwrap_or_default()
+    }
 }
 
 /// Every persona the caller may act as that holds credentials issued by `room_id`, with
@@ -226,7 +237,28 @@ pub async fn principal(
     auth: &AuthClaims,
     room_id: &str,
 ) -> Result<Principal, AppError> {
+    principal_named(state, auth, room_id, None).await
+}
+
+/// [`principal`], or — where the request names the member
+/// ([`crate::operations::room_member::named_member`]) — exactly that persona, if it is one
+/// the caller may act as holding the room's credentials. Naming only narrows: a persona the
+/// caller may not act as is the same `NotFound` as one nobody here holds.
+pub async fn principal_named(
+    state: &AppState,
+    auth: &AuthClaims,
+    room_id: &str,
+    named: Option<&str>,
+) -> Result<Principal, AppError> {
     let mut held = principals(state, auth, room_id).await?;
+    if let Some(named) = named {
+        return held.into_iter().find(|p| p.did == named).ok_or_else(|| {
+            AppError::NotFound(format!(
+                "this VTA holds no {AUTHORITY_TYPE} issued by room `{room_id}` to `{named}` \
+                 as a persona you may act as"
+            ))
+        });
+    }
     match held.len() {
         0 => Err(AppError::NotFound(format!(
             "this VTA holds no {AUTHORITY_TYPE} issued by room `{room_id}` to a persona \

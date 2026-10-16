@@ -1027,7 +1027,8 @@ handed the member's whole listing would learn every room they are in — on a
   community. Each ticked room is then confirmed with the host, as the member
   (`rooms/info` through `act`); a room the host does not hold is reported and
   not shared. The page learns only the rooms shared.
-- A share is one **grant**: (page origin, `hostDid`, the active VTA, room).
+- A share is one **grant**: (page origin, `hostDid`, the active VTA, room),
+  and the member it acts as.
   It lasts 30 days, is listed and revocable in the extension's manager, and
   `rooms.forget` lets the page drop one. `rooms.list` returns the live grants
   and never prompts.
@@ -1038,6 +1039,21 @@ handed the member's whole listing would learn every room they are in — on a
 - A page may pass `suggest: roomId` to pre-tick a room it links to. A room the
   member does not hold is simply not in the window; the page cannot tell that
   from a member who declined.
+- **As whom.** One VTA can hold two members of one room: an administrator whose
+  VTA is also the community's holds the community's own place in a room the
+  community owns *and* their own membership. `rooms/keys/list` lists the room
+  once per member (`ext["org.openvtc.rooms"].held` says whose), and the VTA
+  refuses to pick one (`rooms/keys/act` 0.3 recipient item 2), so a share
+  names its member and every request for the page names it (`issuer` on
+  `act`, `ext["org.openvtc.rooms"].member` on the custody tasks). The window
+  offers one row per (room, member), and only as an identity the member uses
+  at this community — the principals of their `didSelfIssued` vault entries
+  naming `hostDid`, which is how the wallet signs in there — **never as
+  `hostDid` itself**: acting on the portal as the community would hand the
+  page the community's standing in the room. The portal passes the signed-in
+  member as `choose({ hostDid, member })`, which only picks among those; where
+  two remain the member picks, one member per room. A grant made before shares
+  named a member is not in force, and the page asks again.
 
 **Reads ride the grant; every write is confirmed.** `info`, `browse`, `read`
 and `getFile` on a granted room run without a prompt — the member already

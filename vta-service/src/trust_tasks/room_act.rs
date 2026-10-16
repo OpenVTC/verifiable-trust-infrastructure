@@ -714,15 +714,27 @@ pub(super) async fn handle_seal_v0_2(
         };
         (member, signed)
     } else {
-        let member = match room_member::require_acting(state, auth, &req.room_id).await {
-            Ok(m) => m,
-            Err(e) => {
-                if matches!(e, AppError::NotFound(_)) {
-                    return reject_declared(&doc, spec::error_codes::NOT_A_MEMBER, e.to_string());
-                }
-                return app_error_to_reject(&doc, e);
-            }
+        // Not signing as the member, so nothing in the body names whose group seals it:
+        // `ext["org.openvtc.rooms"].member` does, where the caller may act as several.
+        let named = match room_member::named_member(&doc.payload) {
+            Ok(n) => n,
+            Err(e) => return malformed_request_response(e),
         };
+        let member =
+            match room_member::require_acting_as(state, auth, &req.room_id, named.as_deref()).await
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    if matches!(e, AppError::NotFound(_)) {
+                        return reject_declared(
+                            &doc,
+                            spec::error_codes::NOT_A_MEMBER,
+                            e.to_string(),
+                        );
+                    }
+                    return app_error_to_reject(&doc, e);
+                }
+            };
         (member, plaintext)
     };
 

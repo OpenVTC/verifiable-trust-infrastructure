@@ -135,7 +135,7 @@ function SignedIn({ me }: { me: MemberMe }) {
     );
   }
   return route.page === "rooms" ? (
-    <RoomsPage hostDid={host.data} />
+    <RoomsPage hostDid={host.data} member={me.did} />
   ) : (
     <RoomPage hostDid={host.data} roomId={route.roomId} />
   );

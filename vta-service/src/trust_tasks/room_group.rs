@@ -219,10 +219,15 @@ pub(super) async fn handle_commit(
     //
     // *Which* group is ours to decide, though: the one member the caller acts as. A caller
     // in another context reaches no group here, and is told what a room nobody holds is.
-    let member = match room_member::require_acting(state, auth, &req.room_id).await {
-        Ok(m) => m,
-        Err(e) => return app_error_to_reject(&doc, e),
+    let named = match named_member(&doc) {
+        Ok(n) => n,
+        Err(resp) => return resp,
     };
+    let member =
+        match room_member::require_acting_as(state, auth, &req.room_id, named.as_deref()).await {
+            Ok(m) => m,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
     let epoch = match room_groups::apply_commit(
         &state.room_groups_ks,
         &member,
@@ -284,10 +289,15 @@ pub(super) async fn handle_seal(
         }
     };
 
-    let member = match room_member::require_acting(state, auth, &req.room_id).await {
-        Ok(m) => m,
-        Err(e) => return app_error_to_reject(&doc, e),
+    let named = match named_member(&doc) {
+        Ok(n) => n,
+        Err(resp) => return resp,
     };
+    let member =
+        match room_member::require_acting_as(state, auth, &req.room_id, named.as_deref()).await {
+            Ok(m) => m,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
     let sealed = match room_groups::seal_record(
         &state.room_groups_ks,
         &member,
@@ -348,14 +358,65 @@ pub(super) async fn handle_list(
     let mut rooms = Vec::with_capacity(members.len());
     for m in &members {
         match room_groups::held_room(&state.room_groups_ks, m).await {
-            Ok(r) => rooms.push(r),
+            Ok(r) => rooms.push((r, held_by(state, auth, m).await)),
             Err(e) => return app_error_to_reject(&doc, e),
         }
     }
-    rooms.sort_by(|a, b| a.room_id.cmp(&b.room_id));
+    rooms.sort_by(|(a, pa), (b, pb)| {
+        a.room_id
+            .cmp(&b.room_id)
+            .then_with(|| pa["member"].as_str().cmp(&pb["member"].as_str()))
+    });
+    let (rooms, held): (Vec<_>, Vec<_>) = rooms.into_iter().unzip();
 
     record(state, "rooms.keys.list", auth, "").await;
-    success_response(&doc, serde_json::json!({ "rooms": rooms }))
+    // One entry per (room, member): a caller who may act as two members of one room — an
+    // administrator whose VTA also holds the community's own place in it — gets the room
+    // twice. The specification's entry has no member of its own and forbids extra ones, so
+    // whose each entry is rides in `ext`, index for index (`held[i]` is `rooms[i]`'s).
+    // Without it the two entries are indistinguishable, and a client cannot name the member
+    // its next request acts as ([`room_member::MEMBER_EXT`]).
+    success_response(
+        &doc,
+        serde_json::json!({
+            "rooms": rooms,
+            "ext": { room_member::MEMBER_EXT: { "held": held } },
+        }),
+    )
+}
+
+/// What `rooms/keys/list` says about whose an entry is: the member (persona DID), the
+/// trust context its key lives in, and the actions the room's grant to it confers — so a
+/// client can tell the community's own place in a room (one that administers it) from a
+/// member's. `context` and `actions` are descriptions, never gates, and are left out
+/// where they cannot be read rather than failing the listing.
+async fn held_by(state: &AppState, auth: &AuthClaims, m: &room_groups::Member) -> Value {
+    let mut out = serde_json::json!({ "member": m.persona() });
+    let stores = crate::operations::persona::PersonaStores::from_state(state);
+    if let Ok(Some(key)) =
+        crate::operations::persona::persona_signing_key(stores, auth, m.persona()).await
+        && let Ok(Some(record)) = state
+            .keys_ks
+            .get::<vta_sdk::keys::KeyRecord>(vta_keys::store_key(&key.key_id))
+            .await
+        && let Some(context) = record.context_id
+    {
+        out["context"] = Value::String(context);
+    }
+    if let Ok(principals) =
+        crate::operations::room_oracle::principals(state, auth, m.room_id()).await
+        && let Some(p) = principals.iter().find(|p| p.did == m.persona())
+    {
+        out["actions"] = serde_json::json!(p.actions());
+    }
+    out
+}
+
+/// The member the request names in `ext["org.openvtc.rooms"].member`
+/// ([`room_member::named_member`]), or a malformed-request refusal.
+#[allow(clippy::result_large_err)]
+fn named_member(doc: &TrustTask<Value>) -> Result<Option<String>, TrustTaskOutcome> {
+    room_member::named_member(&doc.payload).map_err(super::helpers::malformed_request_response)
 }
 
 /// `rooms/keys/chain/0.1`.
@@ -421,10 +482,15 @@ pub(super) async fn handle_chain(
         }
     };
 
-    let member = match room_member::require_acting(state, auth, &req.room_id).await {
-        Ok(m) => m,
-        Err(e) => return app_error_to_reject(&doc, e),
+    let named = match named_member(&doc) {
+        Ok(n) => n,
+        Err(resp) => return resp,
     };
+    let member =
+        match room_member::require_acting_as(state, auth, &req.room_id, named.as_deref()).await {
+            Ok(m) => m,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
     let (earliest, stored) =
         match room_groups::store_links(&state.room_groups_ks, &member, links, now()).await {
             Ok(r) => r,
@@ -514,7 +580,11 @@ pub(super) async fn handle_backfill(
     // caller's choosing receives something it cannot act with. What it does gain
     // is sight of the principal's credentials, which is a disclosure rather than
     // an escalation — see `rooms/keys/backfill/0.1`.
-    let member = match presenting_member(state, auth, &req.room_id).await {
+    let named = match named_member(&doc) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let member = match presenting_member(state, auth, &req.room_id, named.as_deref()).await {
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, e),
     };
@@ -601,12 +671,17 @@ pub(super) struct PresentingMember {
 /// the persona as presenter, because the persona signs what it receives
 /// ([`send_as_member`]). `rooms/keys/{read,browse,backfill}/0.1` require exactly this, and
 /// that this VTA's own identifier never reach the host.
+///
+/// `named` is the member the request names ([`room_member::named_member`]); `None` keeps the
+/// rule that a caller who may act as several members of the room is refused.
 pub(super) async fn presenting_member(
     state: &AppState,
     auth: &AuthClaims,
     room_id: &str,
+    named: Option<&str>,
 ) -> Result<PresentingMember, vti_common::error::AppError> {
-    let principal = crate::operations::room_oracle::principal(state, auth, room_id).await?;
+    let principal =
+        crate::operations::room_oracle::principal_named(state, auth, room_id, named).await?;
     let member = room_member::member_as(state, auth, room_id, &principal.did).await?;
     let minted = crate::operations::room_oracle::present_as(
         state,
@@ -863,7 +938,11 @@ pub(super) async fn handle_read(
     // is that the leaf grants to the principal, usable only by a party that can sign as
     // the principal. What it gains is sight of the credentials, which is a disclosure
     // rather than an escalation.
-    let presenting = match presenting_member(state, auth, &req.room_id).await {
+    let named = match named_member(&doc) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let presenting = match presenting_member(state, auth, &req.room_id, named.as_deref()).await {
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, e),
     };
@@ -985,7 +1064,11 @@ pub(super) async fn handle_browse(
     };
 
     // As the principal, with the principal's own `read` grant — as `read` does.
-    let presenting = match presenting_member(state, auth, &req.room_id).await {
+    let named = match named_member(&doc) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let presenting = match presenting_member(state, auth, &req.room_id, named.as_deref()).await {
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, e),
     };
@@ -1192,10 +1275,15 @@ async fn open_at(
         Err(resp) => return resp,
     };
 
-    let member = match room_member::require_acting(state, auth, &req.room_id).await {
-        Ok(m) => m,
-        Err(e) => return app_error_to_reject(&doc, e),
+    let named = match named_member(&doc) {
+        Ok(n) => n,
+        Err(resp) => return resp,
     };
+    let member =
+        match room_member::require_acting_as(state, auth, &req.room_id, named.as_deref()).await {
+            Ok(m) => m,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
     let plaintext = match room_groups::open_record_detailed(
         &state.room_groups_ks,
         &member,
@@ -1327,7 +1415,11 @@ async fn file_key_at(
         Err(e) => return super::helpers::malformed_request_response(e.to_string()),
     };
 
-    let member = match room_member::acting(state, auth, &req.room_id).await {
+    let named = match named_member(&doc) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let member = match room_member::acting_as(state, auth, &req.room_id, named.as_deref()).await {
         Ok(Some(m)) => m,
         Ok(None) => {
             return super::helpers::reject_declared(
@@ -2722,6 +2814,108 @@ mod per_member_tests {
         assert_eq!(
             plaintext(&open(&state, &alice_caller(), &room.did, &from_owner).await),
             b"one"
+        );
+    }
+
+    async fn open_as(
+        state: &AppState,
+        caller: &AuthClaims,
+        room: &str,
+        rec: &SealedContent,
+        member: &str,
+    ) -> Value {
+        body(
+            handle_open(
+                state,
+                caller,
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1,
+                    serde_json::json!({
+                        "roomId": room, "key": "notes/1", "version": 1,
+                        "sealed": {
+                            "ciphertext": rec.ciphertext, "nonce": rec.nonce, "epoch": rec.epoch,
+                        },
+                        "ext": { "org.openvtc.rooms": { "member": member } },
+                    }),
+                ),
+            )
+            .await,
+        )
+    }
+
+    /// A caller who may act as two members of one room — an administrator whose VTA also
+    /// holds the community's own place in it — is listed the room once per member, each
+    /// entry saying whose it is, and names the one it means in
+    /// `ext["org.openvtc.rooms"].member` instead of being refused.
+    #[tokio::test]
+    async fn two_members_of_one_room_are_listed_apart_and_named_to_act() {
+        let (state, _d, alice, bob) = shared_vta().await;
+        let room = Party::new();
+        let (owner_state, _od, owner) = owner(&room.did).await;
+        let everywhere = crate::test_support::super_admin_claims();
+        join(
+            &state,
+            &alice_caller(),
+            &room,
+            &alice.did,
+            &owner_state,
+            &owner,
+        )
+        .await;
+        let (to_bob, _) = join(&state, &bob_caller(), &room, &bob.did, &owner_state, &owner).await;
+        commit(&state, &alice_caller(), &room.did, &to_bob).await;
+
+        let listed = list(&state, &everywhere).await;
+        let rooms = listed["payload"]["rooms"].as_array().expect("rooms");
+        let held = listed["payload"]["ext"]["org.openvtc.rooms"]["held"]
+            .as_array()
+            .unwrap_or_else(|| panic!("whose each entry is: {listed}"));
+        assert_eq!(rooms.len(), 2, "one entry per member: {listed}");
+        assert_eq!(held.len(), rooms.len(), "index for index: {listed}");
+        let mut members: Vec<&str> = held.iter().map(|h| h["member"].as_str().unwrap()).collect();
+        members.sort_unstable();
+        let mut want = vec![alice.did.as_str(), bob.did.as_str()];
+        want.sort_unstable();
+        assert_eq!(members, want, "{listed}");
+        assert!(rooms.iter().all(|r| r["roomId"] == room.did));
+        assert!(
+            held.iter().all(|h| h["context"].is_string()),
+            "each member's context: {listed}"
+        );
+
+        // A caller in one context is listed only its own member.
+        let mine = list(&state, &alice_caller()).await;
+        let held = mine["payload"]["ext"]["org.openvtc.rooms"]["held"]
+            .as_array()
+            .expect("held");
+        assert_eq!(held.len(), 1, "{mine}");
+        assert_eq!(held[0]["member"], alice.did);
+
+        let from_owner =
+            room_groups::seal_record(&owner_state.room_groups_ks, &owner, "notes/1", 1, b"one")
+                .await
+                .unwrap();
+        for persona in [&alice.did, &bob.did] {
+            let opened = open_as(&state, &everywhere, &room.did, &from_owner, persona).await;
+            assert_eq!(plaintext(&opened), b"one", "as {persona}: {opened}");
+        }
+        // Naming only narrows: a member the caller may not act as is not one it gets.
+        let refused = open_as(&state, &alice_caller(), &room.did, &from_owner, &bob.did).await;
+        assert!(
+            refused["payload"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no group state"),
+            "{refused}"
+        );
+        // A member that is not a DID is malformed, never ignored.
+        let malformed = open_as(&state, &everywhere, &room.did, &from_owner, "alice").await;
+        assert!(
+            malformed["payload"]["code"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("malformed"),
+            "{malformed}"
         );
     }
 

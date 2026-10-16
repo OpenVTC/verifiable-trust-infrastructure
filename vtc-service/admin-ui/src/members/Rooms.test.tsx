@@ -103,6 +103,53 @@ describe("data rooms in the portal", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("asks the wallet to share as the member signed in here, and says whom each room is shared as", async () => {
+    const wallet = fakeWallet({
+      choose: vi.fn(async () => ({
+        rooms: [
+          {
+            roomId: ROOM,
+            member: MEMBER,
+            held: true,
+            epoch: 3,
+            earliestReadableEpoch: 3,
+            sharedAt: "2026-10-16T00:00:00Z",
+            expiresAt: "2026-11-15T00:00:00Z",
+          },
+        ],
+        refused: [],
+      })),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    await screen.findByText(/You have not shared any rooms/);
+    fireEvent.click(screen.getByRole("button", { name: /Share rooms/ }));
+    await screen.findByText(/as you/);
+    expect(wallet.choose).toHaveBeenCalledWith({ hostDid: HOST, member: MEMBER });
+  });
+
+  it("a refusal for a room held as two identities says how to fix it", async () => {
+    const wallet = fakeWallet({
+      choose: vi.fn(async () => ({
+        rooms: [],
+        refused: [
+          {
+            roomId: ROOM,
+            reason:
+              "the community could not confirm it holds this room: you may act as 2 members of room; " +
+              "name the one you mean in the document's `issuer` (rooms/keys/act:principalAmbiguous)",
+          },
+        ],
+      })),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    await screen.findByText(/You have not shared any rooms/);
+    fireEvent.click(screen.getByRole("button", { name: /Share rooms/ }));
+    await screen.findByText(/holds this room as more than one identity/);
+    expect(screen.getByText(/tick the room as the identity you signed in here with/)).toBeTruthy();
+  });
+
   it("a room shows its records, opens one as text, and never renders a member's words as markup", async () => {
     const wallet = fakeWallet();
     (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };

@@ -313,10 +313,11 @@ async fn anchor_inner(
     // The owner's, as the persona whose `read` grant is presented below: one resolution for
     // both, so the authenticator anchored and the head it is anchored beside come from the
     // same member. The read goes to the host as that persona — never as this agent.
-    let presenting = match super::room_group::presenting_member(state, auth, &req.room_id).await {
-        Ok(v) => v,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
+    let presenting =
+        match super::room_group::presenting_member(state, auth, &req.room_id, None).await {
+            Ok(v) => v,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
     let (epoch, epoch_authenticator) = match crate::operations::room_groups::epoch_authenticator(
         &state.room_groups_ks,
         &presenting.member,

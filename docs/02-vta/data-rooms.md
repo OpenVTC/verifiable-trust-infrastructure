@@ -189,7 +189,18 @@ presented for `read` / `browse` / `backfill` / `anchor` and the owner group
 tasks — and otherwise is the **one** persona you may act as that holds the
 room (`open`, `seal`, `file-key`, `commit`, `chain`, `list`). If you act in
 several contexts each holding the room, act from the context of the one you
-mean. A persona in a context you cannot act in is invisible: its group answers
+mean, or **name it**: `ext["org.openvtc.rooms"].member` on `read`, `browse`,
+`backfill`, `open`, `seal` 0.1, `file-key`, `commit` and `chain` names the
+persona to act as (it only narrows: a persona you may not act as is the same
+"no group state" as one nobody here holds), and `rooms/keys/act` takes it as
+the document's `issuer`. `rooms/keys/list` lists a room once per member and
+says whose each entry is in `ext["org.openvtc.rooms"].held`, index for index
+with `rooms` (`member`, the persona's `context`, and the `actions` its grant
+confers), since the specification's entry has no member of its own. This is
+the ordinary case for an administrator whose VTA is also the community's: it
+holds the community's own place in a room the community owns **and** their
+own membership in it, so `pnm rooms keys list` shows the room twice, each
+with `as <persona>`. A persona in a context you cannot act in is invisible: its group answers
 as a room nobody here holds. A store written before this keying moves its rows
 under the persona its group's own leaf identifies, the first time that
 persona's caller touches the room.

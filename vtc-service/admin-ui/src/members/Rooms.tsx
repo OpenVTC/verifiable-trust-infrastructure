@@ -17,6 +17,7 @@ import {
   adverseVerification,
   fileWontFit,
   formatBytes,
+  shareRefusalHint,
   walletRooms,
   type PageRoom,
   type RoomInfo,
@@ -57,7 +58,8 @@ function NoWallet() {
 
 // ── The list ────────────────────────────────────────────────────────────────
 
-export function RoomsPage({ hostDid }: { hostDid: string }) {
+/** `member`: the DID signed in to this portal — who the wallet should act as here. */
+export function RoomsPage({ hostDid, member }: { hostDid: string; member?: string }) {
   const wallet = walletRooms();
   return (
     <main className="home" id="main">
@@ -74,12 +76,12 @@ export function RoomsPage({ hostDid }: { hostDid: string }) {
           site shows them only through your wallet.
         </p>
       </section>
-      {wallet ? <RoomList wallet={wallet} hostDid={hostDid} /> : <NoWallet />}
+      {wallet ? <RoomList wallet={wallet} hostDid={hostDid} member={member} /> : <NoWallet />}
     </main>
   );
 }
 
-function RoomList({ wallet, hostDid }: { wallet: WalletRooms; hostDid: string }) {
+function RoomList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: string; member?: string }) {
   const qc = useQueryClient();
   const [refused, setRefused] = useState<{ roomId: string; reason: string }[]>([]);
   const list = useQuery({
@@ -87,7 +89,9 @@ function RoomList({ wallet, hostDid }: { wallet: WalletRooms; hostDid: string })
     queryFn: async () => (await wallet.list({ hostDid })).rooms,
   });
   const choose = useMutation({
-    mutationFn: () => wallet.choose({ hostDid }),
+    // Who is signed in here, so the wallet picks that identity among the ones it
+    // holds for this community. It never adds one on the page's word.
+    mutationFn: () => wallet.choose({ hostDid, ...(member ? { member } : {}) }),
     onSuccess: (r) => {
       setRefused(r.refused);
       qc.setQueryData(["member-rooms", hostDid], r.rooms);
@@ -115,7 +119,7 @@ function RoomList({ wallet, hostDid }: { wallet: WalletRooms; hostDid: string })
       ) : (
         <ul className="room-list">
           {list.data.map((r) => (
-            <RoomRow key={r.roomId} room={r} />
+            <RoomRow key={`${r.roomId}|${r.member ?? ""}`} room={r} me={member} />
           ))}
         </ul>
       )}
@@ -123,11 +127,15 @@ function RoomList({ wallet, hostDid }: { wallet: WalletRooms; hostDid: string })
         <div className="alert" role="status">
           <p className="alert-title">Not shared</p>
           <ul>
-            {refused.map((r) => (
-              <li key={r.roomId}>
-                <code className="wrap">{shortDid(r.roomId)}</code>: {r.reason}
-              </li>
-            ))}
+            {refused.map((r) => {
+              const hint = shareRefusalHint(r.reason);
+              return (
+                <li key={r.roomId}>
+                  <code className="wrap">{shortDid(r.roomId)}</code>: {hint ?? r.reason}
+                  {hint && <span className="muted small"> ({r.reason})</span>}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
@@ -145,7 +153,7 @@ function RoomList({ wallet, hostDid }: { wallet: WalletRooms; hostDid: string })
   );
 }
 
-function RoomRow({ room }: { room: PageRoom }) {
+function RoomRow({ room, me }: { room: PageRoom; me?: string }) {
   return (
     <li>
       <a href={roomHref(room.roomId)} className="room-link">
@@ -155,6 +163,7 @@ function RoomRow({ room }: { room: PageRoom }) {
         {room.held
           ? `epoch ${room.epoch ?? "?"}${room.earliestReadableEpoch && room.earliestReadableEpoch > 1 ? ` · history from epoch ${room.earliestReadableEpoch}` : ""}`
           : "your agent no longer holds this room's keys"}
+        {room.member ? (room.member === me ? " · as you" : ` · as ${shortDid(room.member)}`) : ""}
         {" · shared until "}
         {new Date(room.expiresAt).toLocaleDateString()}
       </span>

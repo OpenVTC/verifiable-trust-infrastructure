@@ -17,6 +17,9 @@
 /** A room the member shared with this portal. */
 export interface PageRoom {
   roomId: string;
+  /** The member (persona DID) the wallet acts as in this room for this portal.
+   *  Absent from a wallet older than per-member shares. */
+  member?: string;
   epoch?: number;
   earliestReadableEpoch?: number;
   /** False when the member's VTA no longer holds keys for it. */
@@ -88,7 +91,9 @@ export interface TransferProgress {
 
 export interface WalletRooms {
   list(p: { hostDid: string }): Promise<{ rooms: PageRoom[] }>;
-  choose(p: { hostDid: string; suggest?: string }): Promise<{
+  /** `member`: who is signed in here. The wallet offers only identities it
+   *  holds for this community, and uses this to pick among them. */
+  choose(p: { hostDid: string; suggest?: string; member?: string }): Promise<{
     rooms: PageRoom[];
     refused: { roomId: string; reason: string }[];
   }>;
@@ -132,6 +137,27 @@ export interface WalletRooms {
 export function walletRooms(): WalletRooms | null {
   const w = (window as { vtaWallet?: { rooms?: WalletRooms } }).vtaWallet;
   return w?.rooms && typeof w.rooms.list === "function" ? w.rooms : null;
+}
+
+/**
+ * A wallet's reason for not sharing a room, with the fix in plain words where
+ * the reason is one a member can act on. The wallet's own words stay beside it.
+ */
+export function shareRefusalHint(reason: string): string | null {
+  if (/principalAmbiguous|more than one member|as more than one/.test(reason)) {
+    return (
+      "Your agent holds this room as more than one identity — for example as the community itself and as you — " +
+      "and your wallet did not say which to use. Update your VTA Wallet extension, then choose Share rooms… again " +
+      "and tick the room as the identity you signed in here with."
+    );
+  }
+  if (/notAMember|no credential|no group state/.test(reason)) {
+    return (
+      "Your agent holds no membership in this room for the identity you signed in with. Accept the room's offer " +
+      "as that identity first, or sign in here as the identity that holds it."
+    );
+  }
+  return null;
 }
 
 /** Whether a listing's verification says the host contradicted itself. */

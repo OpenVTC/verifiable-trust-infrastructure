@@ -635,12 +635,27 @@ pub async fn cmd_rooms_keys_list(client: &VtaClient) -> CmdResult {
         println!("This VTA holds no room's group.");
         return Ok(());
     }
+    // Whose each entry is rides in `ext["org.openvtc.rooms"].held`, index for index: a VTA
+    // holding two members of one room (the community's own place and an administrator's
+    // own membership) lists the room twice, and only this tells the two apart.
+    let held = serde_json::to_value(&list.ext)
+        .ok()
+        .and_then(|e| e.get("org.openvtc.rooms")?.get("held").cloned())
+        .and_then(|h| h.as_array().cloned())
+        .unwrap_or_default();
     println!("{} room(s):", list.rooms.len());
-    for r in &list.rooms {
+    for (i, r) in list.rooms.iter().enumerate() {
         println!(
             "  {}  epoch {}  reads back to epoch {}",
             r.room_id, r.epoch, r.earliest_readable_epoch
         );
+        if let Some(member) = held.get(i).and_then(|h| h["member"].as_str()) {
+            let context = held[i]["context"]
+                .as_str()
+                .map(|c| format!(" (context {c})"))
+                .unwrap_or_default();
+            println!("    as {member}{context}");
+        }
     }
     Ok(())
 }

@@ -144,11 +144,80 @@ pub async fn require_acting(
     auth: &AuthClaims,
     room_id: &str,
 ) -> Result<Member, AppError> {
-    acting(state, auth, room_id).await?.ok_or_else(|| {
-        AppError::NotFound(format!(
-            "this VTA holds no group state for room `{room_id}`"
-        ))
-    })
+    require_acting_as(state, auth, room_id, None).await
+}
+
+/// The `ext` namespace in which a member's own client names the member a `rooms/keys/*`
+/// request acts as: `ext["org.openvtc.rooms"].member`, a persona DID.
+///
+/// `rooms/keys/act` names the member in its document's `issuer`; the custody tasks
+/// (`browse`, `read`, `open`, `file-key`, `backfill`, `chain`, `seal` 0.1) carry no member
+/// of their own, and their specifications say the recipient "acts as the one its caller
+/// acts as, and refuses rather than choose" (`rooms/keys/read/0.1`). This is how a caller
+/// that may act as several members of one room — an administrator whose VTA also holds
+/// the community's own place in it — says which one it acts as. It only ever narrows:
+/// the named persona must be one [`acting`] would have considered, and naming none keeps
+/// the refusal for two.
+pub const MEMBER_EXT: &str = "org.openvtc.rooms";
+
+/// The member a request's payload names in `ext["org.openvtc.rooms"].member`, if any.
+///
+/// `Err` is a malformed request: the member is present but is not a DID (a DID URL is not
+/// one — no credential or leaf carries `did#fragment`).
+pub fn named_member(payload: &serde_json::Value) -> Result<Option<String>, String> {
+    let Some(ns) = payload.get("ext").and_then(|e| e.get(MEMBER_EXT)) else {
+        return Ok(None);
+    };
+    match ns.get("member") {
+        None => Ok(None),
+        Some(serde_json::Value::String(did)) if did.starts_with("did:") && !did.contains('#') => {
+            Ok(Some(did.clone()))
+        }
+        Some(_) => Err(format!(
+            "`ext[\"{MEMBER_EXT}\"].member` must be the DID of the member to act as"
+        )),
+    }
+}
+
+/// [`acting`], or — where the request names the member ([`named_member`]) — exactly that
+/// member, if it is a persona the caller may act as holding group state for `room_id`, and
+/// `None` otherwise. A named member nobody here holds and one the caller may not act as get
+/// the same `None`: naming a persona must not tell a caller who else this VTA serves.
+pub async fn acting_as(
+    state: &AppState,
+    auth: &AuthClaims,
+    room_id: &str,
+    named: Option<&str>,
+) -> Result<Option<Member>, AppError> {
+    let Some(named) = named else {
+        return acting(state, auth, room_id).await;
+    };
+    migrate_for(state, auth, room_id).await?;
+    for m in room_groups::holders(&state.room_groups_ks, room_id).await? {
+        if m.persona() == named && may_act_as(state, auth, named).await? {
+            return Ok(Some(m));
+        }
+    }
+    Ok(None)
+}
+
+/// [`acting_as`], with "none" as the refusal [`require_acting`] gives.
+pub async fn require_acting_as(
+    state: &AppState,
+    auth: &AuthClaims,
+    room_id: &str,
+    named: Option<&str>,
+) -> Result<Member, AppError> {
+    acting_as(state, auth, room_id, named)
+        .await?
+        .ok_or_else(|| match named {
+            Some(did) => AppError::NotFound(format!(
+                "this VTA holds no group state for room `{room_id}` as `{did}`"
+            )),
+            None => AppError::NotFound(format!(
+                "this VTA holds no group state for room `{room_id}`"
+            )),
+        })
 }
 
 /// Every member the caller may act as, across rooms — what `rooms/keys/list` reports.
