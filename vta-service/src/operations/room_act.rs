@@ -1,5 +1,6 @@
-//! Completing a host-bound room request **as the member** — `rooms/keys/act/{0.1,0.2}`, and the
-//! documents `rooms/keys/{read,browse,backfill}` send on the member's behalf.
+//! Completing a host-bound room request **as the member** — `rooms/keys/act/{0.1,0.2,0.3}`,
+//! and the documents `rooms/keys/{read,browse,backfill}` send on the member's behalf. At 0.3
+//! also a member's reply to a community's offer of a room ([`OFFER_TYPES`]).
 //!
 //! # Why this exists
 //!
@@ -81,6 +82,28 @@ pub const ACT_TABLE: &[ActRow] = &[
     (spec::blobs::upload::commit::v0_2::Payload::TYPE_URI, None),
     (spec::blobs::upload::abort::v0_2::Payload::TYPE_URI, None),
 ];
+
+/// The two offer types `rooms/keys/act/0.3` adds to the table: a member's reply to a
+/// community's offer of a room, addressed to the community rather than to a room's host,
+/// by a party the room has not yet admitted. Neither takes a presentation — there is no
+/// room credential to insert — and the member is the document's `issuer`, required
+/// (producer item 2) and resolved by recipient item 2b. Not in [`ACT_TABLE`]: 0.1 and 0.2
+/// do not complete them, and nothing else of the `vtc` family is actable at any version.
+pub const OFFER_TYPES: &[&str] = &[
+    <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+    <trust_tasks_rs::specs::vtc::rooms::offers::accept::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+];
+
+/// Whether `type_uri` is one of [`OFFER_TYPES`].
+pub fn is_offer_type(type_uri: &str) -> bool {
+    OFFER_TYPES.contains(&bare_type(type_uri))
+}
+
+/// Whether `type_uri` is `vtc/rooms/offers/accept/0.1` — the one offer type that can carry
+/// key material, and so the one `rooms/keys/act/0.3` recipient item 10 checks.
+pub fn is_offer_accept(type_uri: &str) -> bool {
+    bare_type(type_uri) == OFFER_TYPES[1]
+}
 
 /// The bare type URI a document names — `#request` is the same type.
 pub fn bare_type(type_uri: &str) -> &str {
@@ -255,6 +278,25 @@ mod tests {
                 "{t} has no schema"
             );
         }
+    }
+
+    /// The offer types are actable at 0.3 only, apart from the host-bound table, and they
+    /// are the only `vtc` types that are: an administrator's `members/add` is not.
+    #[test]
+    fn the_offer_types_are_apart_from_the_host_bound_table() {
+        for t in OFFER_TYPES {
+            assert!(is_offer_type(t), "{t}");
+            assert_eq!(actable(t), None, "{t} is not in the 0.1/0.2 table");
+            assert!(
+                trust_tasks_rs::schema_index::schema_for(t).is_some(),
+                "{t} has no schema"
+            );
+        }
+        assert!(is_offer_accept(&format!("{}#request", OFFER_TYPES[1])));
+        assert!(!is_offer_accept(OFFER_TYPES[0]));
+        assert!(!is_offer_type(
+            "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1"
+        ));
     }
 
     /// The deliberate absences: chunk uploads (bytes never pass through the key holder),

@@ -6,7 +6,7 @@
 //!
 //! - the operator's **VTA**, over the client's existing session, to complete each
 //!   host-bound request **as the member** ([`VtaClient::room_act`],
-//!   `rooms/keys/act/0.2`), to seal a record body signed as the member
+//!   `rooms/keys/act/0.3`), to seal a record body signed as the member
 //!   ([`VtaClient::room_seal_as_principal`]) and to open a sealed record
 //!   ([`VtaClient::room_open`]);
 //! - the room's **host**, unauthenticated, receiving the completed document unchanged.
@@ -146,7 +146,7 @@ pub fn session_from_minted(
 }
 
 /// Send one room request to the host **as the member**: built here without presentation
-/// or proof, completed by the VTA with `rooms/keys/act/0.2`, sent unchanged. Returns the
+/// or proof, completed by the VTA with `rooms/keys/act/0.3`, sent unchanged. Returns the
 /// member the VTA acted as and the host's response payload.
 ///
 /// Nothing this client holds goes to the host: not its DID, not its key.
@@ -796,7 +796,7 @@ async fn room_tier(
 }
 
 /// Have the VTA sign `content` **as the member** and seal it (`rooms/keys/seal/0.2`), and
-/// put it as the member (`rooms/keys/act/0.2`), re-sealing at the version the host assigned
+/// put it as the member (`rooms/keys/act/0.3`), re-sealing at the version the host assigned
 /// whenever that is not the one sealed for. Returns the version written.
 ///
 /// The record's associated data and its signed body both name the version, and the host
@@ -1573,7 +1573,8 @@ pub async fn cmd_rooms_owner_group_renew(
 }
 
 /// `rooms owner group-add` — admit a member from their KeyPackage
-/// (`rooms/owner/group/add/0.1`) and write the Welcome to `out` for delivery.
+/// (`rooms/owner/group/add/0.2`, or 0.1 against an older VTA) and write the Welcome to
+/// `out` for delivery.
 pub async fn cmd_rooms_owner_group_add(
     client: &VtaClient,
     room_id: &str,
@@ -1624,6 +1625,247 @@ pub async fn cmd_rooms_owner_group_add(
         "  Deliver {} to the member's key holder (rooms/keys/welcome) directly — never \
          through the host.",
         out.display()
+    );
+    Ok(())
+}
+
+// ─── A community's offers ────────────────────────────────────────────────
+//
+// A community that owns a room offers its members admission
+// (`vtc/rooms/community/members/add`). The member lists their offers and accepts one with
+// documents signed as the DID the offer is addressed to — a persona their VTA holds — so
+// this client builds each request unsigned and has the VTA complete it as that DID with
+// `rooms/keys/act/0.3`, which inserts no presentation for these types. The completed
+// document goes to the community over its Trust Task HTTPS endpoint, unchanged: a
+// persona-signed document rides HTTPS, never this client's own DIDComm session.
+//
+// On a sealed tier the acceptance carries a KeyPackage, and the VTA completes it only with
+// one it minted itself for that member and room (act 0.3 recipient item 10) — so this
+// client mints it there (`rooms/keys/key-package`, against the offer's invitation), never
+// itself.
+
+/// The community an offer came from, and the DID it is addressed to.
+pub struct OfferTarget<'a> {
+    /// Base URL of the community's Trust Task endpoint (e.g. `https://vtc.example.com/v1`).
+    pub vtc_url: &'a str,
+    /// The community's DID — the `recipient` of every document.
+    pub vtc_did: &'a str,
+    /// The DID the community addressed its offers to: a persona your VTA holds.
+    pub member: &'a str,
+}
+
+/// Have the VTA complete an offer document as `target.member` (`rooms/keys/act/0.3`) and
+/// send it to the community. Returns the community's response payload.
+async fn act_and_send_offer(
+    client: &VtaClient,
+    target: &OfferTarget<'_>,
+    type_uri: &str,
+    payload: Value,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let document = vta_sdk::client::unsigned_room_request(
+        type_uri,
+        target.vtc_did,
+        Some(target.member),
+        payload,
+    )?;
+    let completed = client.room_act(&document).await.map_err(|e| {
+        let text = e.to_string();
+        let hint = if matches!(e, VtaError::UnsupportedTaskType { .. }) {
+            "\n\nYour VTA does not serve rooms/keys/act/0.3, the version that signs a reply to \
+             a community's offer: upgrade it."
+                .to_string()
+        } else if text.contains("issuerNotPrincipal") {
+            format!(
+                "\n\nYour VTA holds no `authentication` key of `{}` that you may act as. Pass \
+                 the persona DID the community knows you by as --member.",
+                target.member
+            )
+        } else if text.contains("keyPackageNotHeld") {
+            "\n\nThe KeyPackage was not minted by your VTA for this member and room, or it \
+             has been used or has expired: run this again without --key-package to mint one."
+                .to_string()
+        } else {
+            String::new()
+        };
+        format!("{e}{hint}")
+    })?;
+    let document = serde_json::to_value(&completed.document)?;
+    Ok(VtcClient::anonymous(target.vtc_url, target.vtc_did)
+        .send_signed_room_document(&document)
+        .await?)
+}
+
+/// `vtc/rooms/offers/list/0.1`, signed as the member: every offer (one page at a time).
+async fn list_offers(
+    client: &VtaClient,
+    target: &OfferTarget<'_>,
+) -> Result<
+    Vec<trust_tasks_rs::specs::vtc::rooms::offers::list::v0_1::Offer>,
+    Box<dyn std::error::Error>,
+> {
+    use trust_tasks_rs::Payload as _;
+    use trust_tasks_rs::specs::vtc::rooms::offers::list::v0_1 as list;
+    let mut items = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let payload = match &cursor {
+            Some(c) => serde_json::json!({ "cursor": c }),
+            None => serde_json::json!({}),
+        };
+        let reply = act_and_send_offer(client, target, list::Payload::TYPE_URI, payload).await?;
+        let page: list::Response = parse_reply("vtc/rooms/offers/list", reply)?;
+        items.extend(page.items);
+        match page.next_cursor {
+            Some(next) => cursor = Some(next.to_string()),
+            None => return Ok(items),
+        }
+    }
+}
+
+/// `pnm rooms offers list` — the rooms the community has offered you.
+pub async fn cmd_rooms_offers_list(
+    client: &VtaClient,
+    target: OfferTarget<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let offers = list_offers(client, &target).await?;
+    if offers.is_empty() {
+        println!(
+            "No offers from {} are addressed to {}.",
+            target.vtc_did, target.member
+        );
+        return Ok(());
+    }
+    for o in &offers {
+        let actions: Vec<String> = o.actions.0.iter().map(ToString::to_string).collect();
+        println!(
+            "{}  {}  [{}]  {}  {}  until {}",
+            o.room_id.as_str(),
+            inert(o.label.as_str()),
+            o.visibility,
+            actions.join(","),
+            o.state,
+            o.valid_until.to_rfc3339(),
+        );
+    }
+    println!(
+        "  Accept one with `pnm rooms offers accept --room <room-did> --vtc {} --vtc-did {} \
+         --member {}`.",
+        target.vtc_url, target.vtc_did, target.member
+    );
+    Ok(())
+}
+
+/// `pnm rooms offers accept` — take up an offer: store its credentials in your VTA, mint a
+/// KeyPackage there on a sealed tier, accept as the member, and join with the Welcome.
+///
+/// `key_package` reuses a KeyPackage your VTA minted for this member and room — for a run
+/// whose answer was lost after the community admitted you, so the retry is the identical
+/// acceptance the community (and its VTA) answers with the same Welcome.
+pub async fn cmd_rooms_offers_accept(
+    client: &VtaClient,
+    target: OfferTarget<'_>,
+    room_id: &str,
+    key_package: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use trust_tasks_rs::Payload as _;
+    use trust_tasks_rs::specs::vtc::rooms::offers::accept::v0_1 as accept;
+
+    let offers = list_offers(client, &target).await?;
+    let offer = offers
+        .into_iter()
+        .find(|o| o.room_id.as_str() == room_id)
+        .ok_or_else(|| {
+            format!(
+                "{} has no open offer to {room_id} addressed to {}: `pnm rooms offers list` \
+                 shows what it has offered you",
+                target.vtc_did, target.member
+            )
+        })?;
+    let sealed = offer.visibility.to_string() != "open";
+
+    // The membership and authority credentials the room issued the member, into the VTA's
+    // vault, where its presentation oracle finds them for every later room request. Stored
+    // under their own ids, so a second run replaces rather than duplicates.
+    for (what, credential) in [
+        ("membership", offer.credentials.membership.as_str()),
+        ("authority", offer.credentials.authority.as_str()),
+    ] {
+        let body: Value = serde_json::from_str(credential)
+            .map_err(|e| format!("the offer's {what} credential is not JSON: {e}"))?;
+        client.cred_vault_receive(body, None).await.map_err(|e| {
+            format!("your VTA's credential vault refused the {what} credential: {e}")
+        })?;
+    }
+    let invitation = offer.credentials.invitation.as_str();
+
+    let key_package = match (sealed, key_package) {
+        (false, _) => None,
+        (true, Some(src)) => Some(std::fs::read_to_string(src)?.trim().to_string()),
+        // Minted by the VTA, never here: act 0.3 completes an acceptance only with a
+        // KeyPackage the same key holder minted for this member and room.
+        (true, None) => {
+            let minted = client
+                .idempotent(|| client.room_key_package(room_id, invitation))
+                .await?;
+            Some(minted.key_package.to_string())
+        }
+    };
+
+    let mut payload = serde_json::json!({ "roomId": room_id });
+    if let Some(kp) = &key_package {
+        payload["keyPackage"] = Value::String(kp.clone());
+    }
+    let reply = act_and_send_offer(client, &target, accept::Payload::TYPE_URI, payload)
+        .await
+        .map_err(|e| match &key_package {
+            Some(kp) => format!(
+                "{e}\n\nIf the community may have admitted you, retry the identical acceptance \
+                 with this KeyPackage (save it to a file and pass --key-package <file>):\n{kp}"
+            ),
+            None => e.to_string(),
+        })?;
+    let accepted: accept::Response = parse_reply("vtc/rooms/offers/accept", reply)?;
+
+    match &accepted.welcome {
+        Some(welcome) => {
+            let joined = client
+                .idempotent(|| {
+                    client.room_welcome(
+                        room_id,
+                        invitation,
+                        welcome.as_str(),
+                        accepted.ratchet_tree.as_ref().map(|t| t.as_str()),
+                    )
+                })
+                .await
+                .map_err(|e| {
+                    format!(
+                        "admitted at room epoch {}, but your VTA did not join from the Welcome: \
+                         {e}",
+                        accepted.epoch
+                    )
+                })?;
+            println!(
+                "Accepted {room_id} as {} and joined its group at room epoch {}.",
+                target.member,
+                joined.epoch + 1
+            );
+        }
+        None if sealed => {
+            return Err(format!(
+                "the community admitted you to sealed room {room_id} but sent no Welcome"
+            )
+            .into());
+        }
+        None => println!(
+            "Accepted {room_id} as {}; the room is open, at epoch {}.",
+            target.member, accepted.epoch
+        ),
+    }
+    println!(
+        "  Read it with `pnm rooms list --room {room_id} --host {} --host-did {}`.",
+        target.vtc_url,
+        offer.host.as_str()
     );
     Ok(())
 }
@@ -1807,7 +2049,7 @@ mod tests {
     }
 
     /// `pnm rooms renew` refuses a sealed room and names the command that renews it
-    /// (rooms/keys/act/0.2 producer item 4); an open room renews as before.
+    /// (rooms/keys/act/0.3 producer item 4); an open room renews as before.
     #[test]
     fn renew_refuses_a_sealed_room_and_names_group_renew() {
         let target = RoomTarget {

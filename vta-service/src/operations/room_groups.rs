@@ -272,6 +272,40 @@ pub async fn mint_key_package(
     Ok(pending)
 }
 
+/// Whether `key_package` is one this VTA minted for `member` with
+/// [`mint_key_package`] and still holds the private half of — not yet used (a Welcome
+/// consumes it, [`join`]) and not expired. `rooms/keys/act/0.3` recipient item 10.
+///
+/// **Compared by `KeyPackageRef`, never by the leaf credential.** A leaf credential is
+/// signed by the leaf's own key, so anybody can make one naming the member; only the
+/// reference names the exact KeyPackage — and so the init and signature keys — this VTA
+/// minted. A KeyPackage that does not parse, or that this VTA never minted for this room
+/// and member, is not held.
+pub async fn holds_key_package(
+    groups: &KeyspaceHandle,
+    member: &Member,
+    key_package: &[u8],
+    now: u64,
+) -> Result<bool, AppError> {
+    let Ok(asked) = vti_rooms::mls::key_package_ref(key_package) else {
+        return Ok(false);
+    };
+    let pending: Option<PendingKeyPackage> = groups
+        .get(member.key(KEY_PACKAGE))
+        .await
+        .map_err(|e| AppError::Internal(format!("read the pending key package: {e}")))?;
+    let Some(pending) = pending else {
+        return Ok(false);
+    };
+    if pending.expires_at <= now || pending.snapshot.member_did() != member.persona() {
+        return Ok(false);
+    }
+    let Ok(minted) = B64.decode(pending.key_package.as_bytes()) else {
+        return Ok(false);
+    };
+    Ok(vti_rooms::mls::key_package_ref(&minted).is_ok_and(|r| r == asked))
+}
+
 /// A KeyPackage the per-room build minted for `member` before an upgrade, moved under
 /// them — so a Welcome arriving after the upgrade still joins. Only when its leaf
 /// identifies `member`: a package minted for anybody else is not theirs to join with.

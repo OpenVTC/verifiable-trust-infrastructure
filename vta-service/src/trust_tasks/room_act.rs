@@ -1,4 +1,4 @@
-//! Acting **as** the member — `rooms/keys/act/{0.1,0.2}` and `rooms/keys/seal/0.2`.
+//! Acting **as** the member — `rooms/keys/act/{0.1,0.2,0.3}` and `rooms/keys/seal/0.2`.
 //!
 //! The member's own client (a `pnm` session, a wallet extension, a phone) holds no key of
 //! the persona the room admitted. These two tasks are how it writes and reads as that
@@ -30,6 +30,17 @@
 //! members) the subject is the member recipient item 2 resolves — [`act_subject`] for the
 //! policy gate, which runs before this handler, and the completed document's `issuer` for
 //! the audit row. 0.1 keeps the room as its row's resource, as it always has.
+//!
+//! # A community's offer (`rooms/keys/act/0.3`)
+//!
+//! 0.3 adds `vtc/rooms/offers/{list,accept}/0.1`: a member's reply to a community's offer of
+//! a room, signed as the DID the offer is addressed to. No presentation is inserted and no
+//! room credential is required — the member is not in the room yet — so the member is the
+//! named `issuer`, acted as only where this VTA holds a key its DID document lists for
+//! `authentication` and the caller may act as it (recipient item 2b). An acceptance's
+//! `keyPackage` is completed only when this VTA minted it for that room and member and still
+//! holds its private half (item 10, `keyPackageNotHeld`): a KeyPackage minted anywhere else
+//! would become the member's leaf with keys somebody else holds.
 
 use chrono::Utc;
 use serde_json::Value;
@@ -142,12 +153,14 @@ pub(super) async fn act_subject(
     }
 }
 
-/// Which `rooms/keys/act` is being answered. The request and response schemas are the same;
-/// 0.2 names the member as the subject, which this VTA records as the audit row's resource.
+/// Which `rooms/keys/act` is being answered. 0.2 names the member as the subject, which
+/// this VTA records as the audit row's resource; 0.3 also completes the offer types
+/// ([`room_act::OFFER_TYPES`]), which 0.1 and 0.2's schema refuses.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ActVersion {
     V0_1,
     V0_2,
+    V0_3,
 }
 
 /// `rooms/keys/act/0.1`.
@@ -170,16 +183,28 @@ pub(super) async fn handle_act_v0_2(
     act_at(state, auth, doc, ActVersion::V0_2).await
 }
 
-/// `rooms/keys/act`, at either version. The request is parsed through 0.2's generated type
-/// at both — its schema is 0.1's unchanged — and the answer is checked against the asked
-/// version's response type.
+/// `rooms/keys/act/0.3`: 0.2, and a member's reply to a community's offer of a room —
+/// `vtc/rooms/offers/{list,accept}/0.1` — completed as the DID the offer is addressed to
+/// (recipient item 2b), an acceptance only with a KeyPackage this VTA minted (item 10).
+pub(super) async fn handle_act_v0_3(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    act_at(state, auth, doc, ActVersion::V0_3).await
+}
+
+/// `rooms/keys/act`, at any version. The request is checked against the asked version's
+/// schema — 0.1 and 0.2 share one, which refuses the offer types — and read through 0.3's
+/// generated type, whose schema differs only in admitting them. The answer is checked
+/// against the asked version's response type.
 async fn act_at(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
     at: ActVersion,
 ) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::rooms::keys::act::v0_2 as spec;
+    use trust_tasks_rs::specs::rooms::keys::act::v0_3 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -196,6 +221,12 @@ async fn act_at(
         return r;
     }
 
+    if at != ActVersion::V0_3
+        && let Err(resp) =
+            parse_payload::<trust_tasks_rs::specs::rooms::keys::act::v0_2::Payload>(&doc)
+    {
+        return resp;
+    }
     let req: spec::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -205,9 +236,15 @@ async fn act_at(
     // rewrite the timestamps the client chose.
     let mut document = doc.payload.get("document").cloned().unwrap_or(Value::Null);
 
-    // Item 1: the closed table, before anything is resolved.
+    // Item 1: the closed table, before anything is resolved. At 0.3 the offer types are in
+    // it too, with no action: they take no presentation.
     let type_uri = req.document.type_.as_str();
-    let Some(action) = room_act::actable(type_uri) else {
+    let offer = at == ActVersion::V0_3 && room_act::is_offer_type(type_uri);
+    let Some(action) = (if offer {
+        Some(None)
+    } else {
+        room_act::actable(type_uri)
+    }) else {
         return reject_with_code(
             &doc,
             declared(spec::error_codes::TYPE_NOT_ACTABLE),
@@ -268,6 +305,24 @@ async fn act_at(
 
     // Item 2: whom to act as.
     let completed = match &room_id {
+        // Item 2b: the offer types, before any room credential is looked for — the member
+        // is not in the room yet.
+        _ if offer => {
+            match complete_offer(
+                state,
+                auth,
+                &doc,
+                type_uri,
+                issuer,
+                room_id.as_deref(),
+                document,
+            )
+            .await
+            {
+                Ok(c) => Ok(c),
+                Err(refused) => return refused,
+            }
+        }
         Some(room_id) => {
             let candidates = match room_oracle::principals(state, auth, room_id).await {
                 Ok(c) => c,
@@ -392,7 +447,7 @@ async fn act_at(
     let bare = room_act::bare_type(type_uri);
     let (resource, detail) = match at {
         ActVersion::V0_1 => (room_id.clone(), format!("type={bare}")),
-        ActVersion::V0_2 => (
+        ActVersion::V0_2 | ActVersion::V0_3 => (
             Some(principal.clone()),
             match &room_id {
                 Some(room) => format!("type={bare} roomId={room}"),
@@ -427,7 +482,11 @@ async fn act_at(
             trust_tasks_rs::specs::rooms::keys::act::v0_1::Response,
         >(response)
         .and_then(serde_json::to_value),
-        ActVersion::V0_2 => {
+        ActVersion::V0_2 => serde_json::from_value::<
+            trust_tasks_rs::specs::rooms::keys::act::v0_2::Response,
+        >(response)
+        .and_then(serde_json::to_value),
+        ActVersion::V0_3 => {
             serde_json::from_value::<spec::Response>(response).and_then(serde_json::to_value)
         }
     };
@@ -440,6 +499,103 @@ async fn act_at(
             )),
         ),
     }
+}
+
+/// Complete one of the offer types as its `issuer` — `rooms/keys/act/0.3` recipient items 2b
+/// and 10. `Err` is the refusal to answer with.
+async fn complete_offer(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+    type_uri: &str,
+    issuer: Option<String>,
+    room_id: Option<&str>,
+    document: Value,
+) -> Result<room_act::Completed, TrustTaskOutcome> {
+    use trust_tasks_rs::specs::rooms::keys::act::v0_3::error_codes as codes;
+
+    // Item 2b: the named `issuer`, never one picked for the caller — not the only persona
+    // held, not one inferred from the offer.
+    let Some(named) = issuer else {
+        return Err(reject_declared(
+            doc,
+            codes::PRINCIPAL_AMBIGUOUS,
+            "a reply to a community's offer is signed as the DID the offer is addressed to: \
+             name it in the document's `issuer`",
+        ));
+    };
+    // A key `issuer`'s DID document lists for `authentication`, which the caller may act as.
+    // No room credential is asked for: whether `issuer` is the party the offer names is the
+    // community's check, against the proof.
+    let held = crate::operations::persona::persona_key_for(
+        crate::operations::persona::PersonaStores::from_state(state),
+        auth,
+        &named,
+        crate::operations::persona::Relationship::Authentication,
+    )
+    .await
+    .map(|k| k.is_some())
+    .unwrap_or(false);
+    if !held {
+        return Err(reject_with_code(
+            doc,
+            declared(codes::ISSUER_NOT_PRINCIPAL),
+            format!(
+                "this VTA holds no key `{named}` lists for `authentication` that you may act as, \
+                 so it cannot reply to an offer as that DID"
+            ),
+            Some(serde_json::json!({ "issuer": named })),
+        ));
+    }
+
+    // Item 10: an acceptance's KeyPackage is completed only when this VTA minted it, for
+    // this room and this member, and still holds its unused, unexpired private half —
+    // compared by KeyPackageRef, never by what its leaf credential claims.
+    if room_act::is_offer_accept(type_uri)
+        && let Some(kp) = document
+            .get("payload")
+            .and_then(|p| p.get("keyPackage"))
+            .and_then(Value::as_str)
+    {
+        let held = match (decode_b64(kp), room_id) {
+            (Ok(bytes), Some(room_id)) => {
+                let member = room_groups::Member::new(room_id, &named)
+                    .map_err(|e| app_error_to_reject(doc, e))?;
+                room_groups::holds_key_package(
+                    &state.room_groups_ks,
+                    &member,
+                    &bytes,
+                    u64::try_from(Utc::now().timestamp()).unwrap_or(0),
+                )
+                .await
+                .map_err(|e| app_error_to_reject(doc, e))?
+            }
+            _ => false,
+        };
+        if !held {
+            return Err(reject_declared(
+                doc,
+                codes::KEY_PACKAGE_NOT_HELD,
+                "this KeyPackage was not minted here for this room and member, or its private \
+                 half is no longer held (used, or expired): mint one with \
+                 rooms/keys/key-package and build the acceptance with it",
+            ));
+        }
+    }
+
+    room_act::check_schema(&document).map_err(|e| app_error_to_reject(doc, e))?;
+    room_act::sign_as(state, auth, &named, document)
+        .await
+        .map(|document| room_act::Completed {
+            document,
+            expires_at: None,
+        })
+        .map_err(|e| app_error_to_reject(doc, e))
+}
+
+fn decode_b64(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s.trim())
 }
 
 /// `rooms/keys/seal/0.2`. Without `signAsPrincipal` it is 0.1; with it, the body is signed
@@ -709,6 +865,10 @@ mod tests {
 
     const ACT: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_1;
     const ACT_0_2: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_2;
+    const ACT_0_3: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_3;
+    const OFFERS_LIST: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1";
+    const OFFERS_ACCEPT: &str = "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1";
+    const COMMUNITY: &str = "did:webvh:example.com:northwind-community";
     const SEAL: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2;
     const KEY: &str = "giXFLTGBdnnQJRoIsktuIg";
 
@@ -865,6 +1025,255 @@ mod tests {
 
     async fn act(state: &AppState, auth: &AuthClaims, document: Value) -> Value {
         body(handle_act(state, auth, request(ACT, json!({ "document": document }))).await)
+    }
+
+    async fn act_v0_3(state: &AppState, auth: &AuthClaims, document: Value) -> Value {
+        body(
+            handle_act_v0_3(
+                state,
+                auth,
+                request(ACT_0_3, json!({ "document": document })),
+            )
+            .await,
+        )
+    }
+
+    /// A reply to a community's offer, as a member's client builds one: addressed to the
+    /// community, `issuer` the DID the offer names (when given).
+    fn offer(type_uri: &str, issuer: Option<&str>, payload: Value) -> Value {
+        let mut d = unsigned(type_uri, COMMUNITY, payload);
+        if let Some(i) = issuer {
+            d["issuer"] = json!(i);
+        }
+        d
+    }
+
+    /// A KeyPackage this VTA mints for `persona` in `room`, as `rooms/keys/key-package`
+    /// does, living `lifetime` seconds from `now`.
+    async fn minted(f: &Fx, room: &str, persona: &str, lifetime: u64, now: u64) -> String {
+        room_groups::mint_key_package(
+            &f.state.room_groups_ks,
+            &Member::new(room, persona).unwrap(),
+            lifetime,
+            now,
+        )
+        .await
+        .expect("mint a key package")
+        .key_package
+    }
+
+    fn unix_now() -> u64 {
+        u64::try_from(Utc::now().timestamp()).unwrap()
+    }
+
+    /// `rooms/keys/act/0.3`: an offer type is completed as its named `issuer`, with no
+    /// presentation inserted and no room credential needed — the member is not in the room
+    /// yet — signed for `authentication`. The document goes back otherwise unchanged.
+    #[tokio::test]
+    async fn act_0_3_completes_an_offer_type_as_its_issuer_without_a_presentation() {
+        let f = fixture(&["read"]).await;
+        let board = Party::new(); // a room alice holds nothing from
+        for (type_uri, payload) in [
+            (OFFERS_LIST, json!({})),
+            (OFFERS_ACCEPT, json!({ "roomId": board.did })),
+        ] {
+            let document = offer(type_uri, Some(&f.alice.did), payload.clone());
+            let out = act_v0_3(&f.state, &alice_client(), document.clone()).await;
+            assert_eq!(
+                out["payload"]["principal"], f.alice.did,
+                "{type_uri}: {out}"
+            );
+            let completed = &out["payload"]["document"];
+            assert_eq!(completed["issuer"], f.alice.did, "{out}");
+            assert_eq!(completed["recipient"], COMMUNITY, "{out}");
+            assert_eq!(completed["id"], document["id"], "{out}");
+            assert_eq!(completed["payload"], payload, "nothing inserted: {out}");
+            assert_eq!(
+                completed["proof"]["proofPurpose"], "authentication",
+                "{out}"
+            );
+            assert!(out["payload"].get("expiresAt").is_none(), "{out}");
+            serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_3::Response>(
+                out["payload"].clone(),
+            )
+            .expect("a 0.3 response");
+        }
+    }
+
+    /// Producer item 2 / recipient item 2b: an offer type names its member in `issuer`, and
+    /// the VTA never picks one — `principalAmbiguous` without it, even where the caller may
+    /// act as exactly one persona. A DID the caller may not act as, or one this VTA holds no
+    /// `authentication` key for, is `issuerNotPrincipal`.
+    #[tokio::test]
+    async fn act_0_3_an_offer_type_is_completed_only_as_a_named_issuer_the_caller_acts_as() {
+        let f = fixture(&["read"]).await;
+        for type_uri in [OFFERS_LIST, OFFERS_ACCEPT] {
+            let payload = if type_uri == OFFERS_LIST {
+                json!({})
+            } else {
+                json!({ "roomId": f.room.did })
+            };
+            let out = act_v0_3(
+                &f.state,
+                &alice_client(),
+                offer(type_uri, None, payload.clone()),
+            )
+            .await;
+            assert_eq!(code(&out), "rooms/keys/act:principalAmbiguous", "{out}");
+
+            let out = act_v0_3(
+                &f.state,
+                &alice_client(),
+                offer(type_uri, Some(&f.bob.did), payload.clone()),
+            )
+            .await;
+            assert_eq!(code(&out), "rooms/keys/act:issuerNotPrincipal", "{out}");
+            assert_eq!(out["payload"]["details"]["issuer"], f.bob.did, "{out}");
+
+            let stranger = Party::new().did;
+            let out = act_v0_3(
+                &f.state,
+                &alice_client(),
+                offer(type_uri, Some(&stranger), payload),
+            )
+            .await;
+            assert_eq!(code(&out), "rooms/keys/act:issuerNotPrincipal", "{out}");
+        }
+    }
+
+    /// 0.1 and 0.2 do not complete the offer types: their schema refuses the `type`.
+    #[tokio::test]
+    async fn act_0_2_does_not_complete_an_offer_type() {
+        let f = fixture(&["read"]).await;
+        let document = offer(OFFERS_LIST, Some(&f.alice.did), json!({}));
+        for out in [
+            act_v0_2(&f.state, &alice_client(), document.clone()).await,
+            act(&f.state, &alice_client(), document.clone()).await,
+        ] {
+            assert!(out["payload"].get("principal").is_none(), "{out}");
+            assert!(!code(&out).is_empty(), "{out}");
+        }
+        // And at 0.3 an administrator's task is still not actable: only the offer types are.
+        let out = act_v0_3(
+            &f.state,
+            &alice_client(),
+            offer(
+                "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1",
+                Some(&f.alice.did),
+                json!({ "roomId": f.room.did, "member": f.bob.did }),
+            ),
+        )
+        .await;
+        assert!(out["payload"].get("principal").is_none(), "{out}");
+    }
+
+    /// Recipient item 10: an acceptance's `keyPackage` is completed only when this VTA
+    /// minted it for that room and that member and still holds its private half. A
+    /// KeyPackage made anywhere else — even one whose leaf names the member — one minted
+    /// for another room or another member, one already used by a Welcome, and one expired
+    /// are all `keyPackageNotHeld`, and nothing is signed.
+    #[tokio::test]
+    async fn act_0_3_an_acceptance_carries_only_a_key_package_this_vta_minted() {
+        let f = fixture(&["read"]).await;
+        let board = Party::new().did;
+        let accept = |kp: &str| {
+            offer(
+                OFFERS_ACCEPT,
+                Some(&f.alice.did),
+                json!({ "roomId": board, "keyPackage": kp }),
+            )
+        };
+        let not_held = |out: &Value| {
+            assert_eq!(code(out), "rooms/keys/act:keyPackageNotHeld", "{out}");
+            assert!(out["payload"].get("document").is_none(), "{out}");
+        };
+
+        // Foreign: made by somebody else, its leaf naming alice.
+        let (_, foreign) = vti_rooms::mls::IdentitySnapshot::mint(&f.alice.did).unwrap();
+        let foreign = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(foreign);
+        not_held(&act_v0_3(&f.state, &alice_client(), accept(&foreign)).await);
+        // Not a KeyPackage at all.
+        not_held(&act_v0_3(&f.state, &alice_client(), accept("AAEAAgADAAQ")).await);
+
+        // Minted here, for another room.
+        let other_room = minted(&f, &Party::new().did, &f.alice.did, 3600, unix_now()).await;
+        not_held(&act_v0_3(&f.state, &alice_client(), accept(&other_room)).await);
+
+        // Minted here, for this room, for another member.
+        let bobs = minted(&f, &board, &f.bob.did, 3600, unix_now()).await;
+        not_held(&act_v0_3(&f.state, &alice_client(), accept(&bobs)).await);
+
+        // Expired.
+        let expired = minted(&f, &board, &f.alice.did, 60, unix_now() - 120).await;
+        not_held(&act_v0_3(&f.state, &alice_client(), accept(&expired)).await);
+
+        // Held: completed — and still held, so a retry after a lost answer completes again.
+        let held = minted(&f, &board, &f.alice.did, 3600, unix_now()).await;
+        for _ in 0..2 {
+            let out = act_v0_3(&f.state, &alice_client(), accept(&held)).await;
+            assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
+            assert_eq!(
+                out["payload"]["document"]["payload"]["keyPackage"], held,
+                "{out}"
+            );
+        }
+
+        // Used: a Welcome consumed it.
+        let mut owner = vti_rooms::mls::RoomGroup::create("did:example:owner").unwrap();
+        let change = owner
+            .add_member_from_bytes(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(&held)
+                    .unwrap(),
+            )
+            .unwrap();
+        room_groups::join(
+            &f.state.room_groups_ks,
+            &Member::new(&board, &f.alice.did).unwrap(),
+            &change.welcome.unwrap(),
+            0,
+        )
+        .await
+        .expect("joins");
+        not_held(&act_v0_3(&f.state, &alice_client(), accept(&held)).await);
+    }
+
+    /// An open room's acceptance carries no KeyPackage, and item 10 has nothing to check.
+    #[tokio::test]
+    async fn act_0_3_an_open_rooms_acceptance_needs_no_key_package() {
+        let f = fixture(&["read"]).await;
+        let out = act_v0_3(
+            &f.state,
+            &alice_client(),
+            offer(
+                OFFERS_ACCEPT,
+                Some(&f.alice.did),
+                json!({ "roomId": Party::new().did }),
+            ),
+        )
+        .await;
+        assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
+    }
+
+    /// 0.3 completes a host-bound room request as 0.2 did.
+    #[tokio::test]
+    async fn act_0_3_completes_a_room_request_as_0_2_did() {
+        let f = fixture(&["read"]).await;
+        let out = act_v0_3(
+            &f.state,
+            &alice_client(),
+            unsigned(
+                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                "did:key:zHost",
+                json!({ "roomId": f.room.did, "key": KEY }),
+            ),
+        )
+        .await;
+        assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
+        assert!(
+            out["payload"]["document"]["payload"]["presentation"].is_object(),
+            "{out}"
+        );
     }
 
     async fn act_v0_2(state: &AppState, auth: &AuthClaims, document: Value) -> Value {

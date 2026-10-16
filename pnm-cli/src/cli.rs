@@ -584,6 +584,17 @@ pub(crate) enum RoomCommands {
         command: RoomOwnerCommands,
     },
 
+    /// A community's offers of its rooms to you: list them, and accept one.
+    ///
+    /// Each request is signed as the DID the community addressed its offer to — a
+    /// persona your VTA holds — by your VTA (`rooms/keys/act/0.3`), and sent to the
+    /// community unchanged. On a sealed room your VTA mints the KeyPackage and joins
+    /// with the Welcome the community answers with.
+    Offers {
+        #[command(subcommand)]
+        command: RoomOffersCommands,
+    },
+
     /// Register a room with a host, signed with this CLI's own key — for a
     /// standalone `room-host` or testing.
     ///
@@ -962,6 +973,45 @@ pub(crate) enum RoomOwnerCommands {
         /// Why, carried to the host's epoch advance.
         #[arg(long)]
         reason: Option<String>,
+    },
+}
+
+/// `pnm rooms offers …` — rooms a community has offered you.
+#[derive(Subcommand)]
+pub(crate) enum RoomOffersCommands {
+    /// List the rooms the community has offered you (`vtc/rooms/offers/list`).
+    List {
+        /// Base URL of the community's Trust Task endpoint (e.g.
+        /// `https://vtc.example.com/v1`).
+        #[arg(long)]
+        vtc: String,
+        /// The community's DID.
+        #[arg(long)]
+        vtc_did: String,
+        /// The DID the community addressed its offers to: a persona your VTA holds.
+        #[arg(long)]
+        member: String,
+    },
+    /// Accept an offer (`vtc/rooms/offers/accept`): store its credentials in your
+    /// VTA, have it mint a KeyPackage on a sealed room, and join with the Welcome.
+    Accept {
+        /// The offered room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// Base URL of the community's Trust Task endpoint.
+        #[arg(long)]
+        vtc: String,
+        /// The community's DID.
+        #[arg(long)]
+        vtc_did: String,
+        /// The DID the community addressed the offer to: a persona your VTA holds.
+        #[arg(long)]
+        member: String,
+        /// Retry an acceptance whose answer was lost with the KeyPackage it carried
+        /// (a file): the identical request is answered with the same Welcome. Your
+        /// VTA must have minted it for this member and room.
+        #[arg(long)]
+        key_package: Option<String>,
     },
 }
 

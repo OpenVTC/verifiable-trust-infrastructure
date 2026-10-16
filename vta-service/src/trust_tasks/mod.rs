@@ -2704,6 +2704,10 @@ dispatch_table! {
     // 0.2: the member is the subject (`/document/issuer`), for policy and audit.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_2 => room_act::handle_act_v0_2
         [ None Metadata true ],
+    // 0.3: a member's reply to a community's offer of a room, as the DID it is
+    // addressed to; an acceptance only with a KeyPackage this VTA minted.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_3 => room_act::handle_act_v0_3
+        [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1 => room_group::handle_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_INVITE_0_1 => room_owner::handle_invite

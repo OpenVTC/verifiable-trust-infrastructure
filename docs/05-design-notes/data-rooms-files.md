@@ -1156,6 +1156,8 @@ bump, per the workspace rule.
 | `rooms/keys/file-key/0.1` | new |
 | `rooms/keys/file-key/0.1` → **0.2**, `rooms/keys/open/0.1` → **0.2** | `unknownEpoch` reason `removed` with `removedAtEpoch`; `open` declares the same closed `details` (trust-tasks-tf #786, `trust-tasks-rs` 0.31.10). Served beside 0.1 |
 | `rooms/keys/act/0.1` → **0.2** | the member is the subject (`subjectPath: /document/issuer`); a room-less type (`rooms/blobs/chunk/0.1`, `rooms/blobs/upload/{commit,abort}/0.2`) names its member in `issuer`, and the recipient never picks one (trust-tasks-tf #787). Served beside 0.1 |
+| `rooms/keys/act/0.2` → **0.3** | the table gains `vtc/rooms/offers/{list,accept}/0.1` (no presentation, `issuer` required, recipient item 2b), and an acceptance's `keyPackage` must be one the key holder minted and still holds — `keyPackageNotHeld` (trust-tasks-tf #797, `trust-tasks-rs` 0.31.11). Served beside 0.1 and 0.2 |
+| `rooms/owner/group/add/0.1` → **0.2** | a repeat of the last applied admission (same member, same `KeyPackageRef`) is answered with its Welcome, kept until the next advance or 24 hours (trust-tasks-tf #795). Served beside 0.1 |
 | `rooms/usage/0.1` | new: per-member usage for a room's `admin` chain |
 | `vtc/rooms/get/0.1`, `vtc/rooms/limits/set/0.1`, `vtc/rooms/usage/0.1` | new, VTC-only: room detail, limit overrides at all three scopes, usage reports |
 | `vtc/storage/configs/{list,get,create,update,retire}/0.1` | new, VTC-only: storage configs (§7.1) |

@@ -113,7 +113,9 @@ async fn task_subject(
     payload: &Value,
 ) -> Option<String> {
     let bare = type_uri.split('#').next().unwrap_or(type_uri);
-    if bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_2 {
+    if bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_2
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_3
+    {
         return super::room_act::act_subject(state, auth, payload).await;
     }
     crate::policy::input::subject_of(payload)

@@ -1067,6 +1067,14 @@ pub const TASK_ROOMS_KEYS_ACT_0_1: &str =
 pub const TASK_ROOMS_KEYS_ACT_0_2: &str =
     <trust_tasks_rs::specs::rooms::keys::act::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `spec/rooms/keys/act/0.3` — `act` 0.2, and a member's reply to a community's offer of a
+/// room (`vtc/rooms/offers/{list,accept}/0.1`): completed as the DID the offer is addressed
+/// to, which the document names in `issuer` (required), with no presentation; an acceptance
+/// only with a KeyPackage the same VTA minted for that room and member
+/// (`keyPackageNotHeld` otherwise). Auth: as 0.1.
+pub const TASK_ROOMS_KEYS_ACT_0_3: &str =
+    <trust_tasks_rs::specs::rooms::keys::act::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/keys/file-key/0.1` — one file's key, for the member's own client
 /// to seal or open that file itself, so file bytes never pass through the VTA.
 /// Unlike `open`, a key crosses — one bound to the room, the epoch and the file,
@@ -2635,6 +2643,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_SEAL_0_2,
     TASK_ROOMS_KEYS_ACT_0_1,
     TASK_ROOMS_KEYS_ACT_0_2,
+    TASK_ROOMS_KEYS_ACT_0_3,
     TASK_ROOMS_KEYS_FILE_KEY_0_1,
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
     TASK_ROOMS_KEYS_LIST_0_1,

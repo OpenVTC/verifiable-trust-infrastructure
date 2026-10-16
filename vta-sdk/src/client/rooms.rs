@@ -217,10 +217,20 @@ impl VtaClient {
         })
     }
 
-    /// `rooms/keys/act/0.2` — have the VTA complete one host-bound room request **as the
-    /// member**, and get it back to send. A VTA that does not serve 0.2
-    /// (`unsupportedType` / `unsupportedVersion`) is asked at 0.1 with the same document,
-    /// and its answer read as 0.2's.
+    /// `rooms/keys/act/0.3` — have the VTA complete one host-bound room request, or a reply
+    /// to a community's offer of a room, **as the member**, and get it back to send. For a
+    /// room request, a VTA that does not serve 0.3 (`unsupportedType` /
+    /// `unsupportedVersion`) is asked at 0.2, and one that does not serve that at 0.1, with
+    /// the same document, and the answer read as 0.3's. An offer type
+    /// (`vtc/rooms/offers/{list,accept}/0.1`) is completed at 0.3 or not at all: the earlier
+    /// versions' schema refuses it, so a VTA without 0.3 is reported as
+    /// [`VtaError::UnsupportedTaskType`].
+    ///
+    /// For an offer type, `issuer` is required — the DID the offer is addressed to — and an
+    /// acceptance's `keyPackage` must be the one this VTA minted for the member and the room
+    /// with [`VtaClient::room_key_package`], unaltered (act 0.3 producer item 5); any other
+    /// is refused `keyPackageNotHeld`. The returned document goes to the community, over its
+    /// Trust Task HTTPS endpoint.
     ///
     /// `document` is the room request this client means to send — `id`, `type`, `recipient`
     /// (the host), `issuedAt` and `payload` — with no `proof` and no `presentation` in the
@@ -236,19 +246,33 @@ impl VtaClient {
     /// Nothing in it names this client: the host records the member.
     pub async fn room_act(
         &self,
-        document: &trust_tasks_rs::specs::rooms::keys::act::v0_2::UnsignedRoomRequest,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_2::Response, VtaError> {
-        // The two versions' request and response schemas are identical (act 0.2 *What
-        // changed from 0.1*), so the same JSON goes at either and either answer reads as
-        // 0.2's.
+        document: &trust_tasks_rs::specs::rooms::keys::act::v0_3::UnsignedRoomRequest,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_3::Response, VtaError> {
+        // For a room request the three versions' schemas are the same (0.3 widens only the
+        // `type` pattern, to admit the offer types), so the same JSON goes at any of them
+        // and any answer reads as 0.3's. Asking again at an older version is not a retry:
+        // the first ask was never routed.
         let payload = json!({ "document": document });
-        let value = self
-            .dispatch_at_or_before(
-                trust_tasks::TASK_ROOMS_KEYS_ACT_0_2,
-                trust_tasks::TASK_ROOMS_KEYS_ACT_0_1,
-                payload,
+        let value = match self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_ACT_0_3,
+                payload.clone(),
+                ROOM_TT_TIMEOUT,
             )
-            .await?;
+            .await
+        {
+            Err(VtaError::UnsupportedTaskType { .. })
+                if !is_offer_type(document.type_.as_str()) =>
+            {
+                self.dispatch_at_or_before(
+                    trust_tasks::TASK_ROOMS_KEYS_ACT_0_2,
+                    trust_tasks::TASK_ROOMS_KEYS_ACT_0_1,
+                    payload,
+                )
+                .await?
+            }
+            other => other?,
+        };
         serde_json::from_value(value).map_err(|e| {
             VtaError::Protocol(format!(
                 "rooms/keys/act response does not match its schema: {e}"
@@ -894,17 +918,28 @@ mod tests {
 /// chunk, a direct upload's commit or abort): there it is the member whose request opened
 /// the transfer (`rooms/keys/act/0.2` producer item 2).
 ///
+/// A reply to a community's offer (`vtc/rooms/offers/{list,accept}/0.1`) is built the same
+/// way, with the community as `host` and `issuer` — always — the DID the offer is addressed
+/// to (`rooms/keys/act/0.3` producer item 2).
+///
 /// # Errors
 ///
 /// [`VtaError::Validation`] when a member does not fit the generated type (a `type` that is
-/// not a room type, a `recipient` or `issuer` that is not a DID), or when `payload` names
-/// no `roomId` and `issuer` is absent.
+/// neither a room type nor an offer type, a `recipient` or `issuer` that is not a DID), when
+/// `payload` names no `roomId` and `issuer` is absent, or when an offer type has no
+/// `issuer`.
 pub fn unsigned_room_request(
     type_uri: &str,
     host: &str,
     issuer: Option<&str>,
     payload: Value,
-) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_2::UnsignedRoomRequest, VtaError> {
+) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_3::UnsignedRoomRequest, VtaError> {
+    if issuer.is_none() && is_offer_type(type_uri) {
+        return Err(VtaError::Validation(format!(
+            "`{type_uri}` is a reply to a community's offer: name the DID the offer is \
+             addressed to as `issuer`"
+        )));
+    }
     if issuer.is_none() && payload.get("roomId").is_none() {
         return Err(VtaError::Validation(format!(
             "`{type_uri}` names no room, so the member to act as is the document's `issuer`: \
@@ -923,6 +958,15 @@ pub fn unsigned_room_request(
     }
     serde_json::from_value(doc)
         .map_err(|e| VtaError::Validation(format!("not a room request this can complete: {e}")))
+}
+
+/// Whether `type_uri` is one of the two offer types `rooms/keys/act/0.3` completes —
+/// `vtc/rooms/offers/{list,accept}/0.1`, with or without `#request`.
+pub fn is_offer_type(type_uri: &str) -> bool {
+    use trust_tasks_rs::Payload as _;
+    use trust_tasks_rs::specs::vtc::rooms::offers::{accept, list};
+    let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
+    bare == list::v0_1::Payload::TYPE_URI || bare == accept::v0_1::Payload::TYPE_URI
 }
 
 #[cfg(test)]
@@ -977,6 +1021,38 @@ mod act_tests {
                 "https://trusttasks.org/spec/rooms/info/0.1",
                 "https://host.example",
                 None,
+                json!({ "roomId": "did:key:zRoom" }),
+            )
+            .is_err()
+        );
+    }
+
+    /// `rooms/keys/act/0.3` producer item 2: an offer type names the DID the offer is
+    /// addressed to in `issuer`, always.
+    #[test]
+    fn an_offer_names_its_member() {
+        for t in [
+            "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1",
+            "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1",
+        ] {
+            let payload = if t.ends_with("accept/0.1") {
+                json!({ "roomId": "did:key:zRoom" })
+            } else {
+                json!({})
+            };
+            assert!(is_offer_type(t));
+            let err = unsigned_room_request(t, "did:key:zVtc", None, payload.clone())
+                .expect_err("no issuer");
+            assert!(matches!(err, VtaError::Validation(_)), "{t}: {err}");
+            unsigned_room_request(t, "did:key:zVtc", Some("did:key:zAlice"), payload)
+                .expect("named");
+        }
+        // Nothing else of the vtc family is a room request act completes.
+        assert!(
+            unsigned_room_request(
+                "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1",
+                "did:key:zVtc",
+                Some("did:key:zAlice"),
                 json!({ "roomId": "did:key:zRoom" }),
             )
             .is_err()

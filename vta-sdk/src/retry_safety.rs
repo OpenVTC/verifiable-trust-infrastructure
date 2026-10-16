@@ -649,6 +649,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // 0.2 changes whom the VTA acts as for a room-less type (always the named
     // `issuer`) and what the subject is, not what a completion stores: still nothing.
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_2, RetrySafe),
+    // 0.3 adds the offer types, which also store nothing: completing an acceptance checks
+    // the KeyPackage this VTA minted and leaves it unused — a Welcome consumes it — so a
+    // repeat completes it again, as the lost-answer retry of the acceptance needs.
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_3, RetrySafe),
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_1, RetrySafe),
     // Issuance mints a NEW credential with a fresh id on every call, so a retry
     // without a key leaves a second durable artefact that persists and matters —

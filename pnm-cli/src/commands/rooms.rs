@@ -18,7 +18,9 @@ use vta_cli_common::commands::rooms::{self, RoomSigner, RoomTarget};
 use vta_cli_common::commands::rooms_custody as custody;
 use vta_sdk::client::VtaClient;
 
-use crate::cli::{RoomCommands, RoomFileCommands, RoomKeysCommands, RoomOwnerCommands};
+use crate::cli::{
+    RoomCommands, RoomFileCommands, RoomKeysCommands, RoomOffersCommands, RoomOwnerCommands,
+};
 
 /// The operator's DID and key, from the session this CLI authenticates with.
 fn signer(keyring_key: &str) -> Result<vta_sdk::session::SessionInfo, Box<dyn std::error::Error>> {
@@ -196,6 +198,46 @@ pub(crate) async fn run(
                         &room_id,
                         &host_did,
                         reason.as_deref(),
+                    )
+                    .await
+                }
+            };
+        }
+        // A community's offers: this VTA signs each request as the member and this
+        // client only carries it, so no session key of its own is used.
+        RoomCommands::Offers { command } => {
+            return match command {
+                RoomOffersCommands::List {
+                    vtc,
+                    vtc_did,
+                    member,
+                } => {
+                    rooms::cmd_rooms_offers_list(
+                        client,
+                        rooms::OfferTarget {
+                            vtc_url: &vtc,
+                            vtc_did: &vtc_did,
+                            member: &member,
+                        },
+                    )
+                    .await
+                }
+                RoomOffersCommands::Accept {
+                    room_id,
+                    vtc,
+                    vtc_did,
+                    member,
+                    key_package,
+                } => {
+                    rooms::cmd_rooms_offers_accept(
+                        client,
+                        rooms::OfferTarget {
+                            vtc_url: &vtc,
+                            vtc_did: &vtc_did,
+                            member: &member,
+                        },
+                        &room_id,
+                        key_package.as_deref(),
                     )
                     .await
                 }
@@ -424,6 +466,9 @@ pub(crate) async fn run(
         },
         RoomCommands::Owner { .. } => {
             unreachable!("the owner's group verbs are answered above, before the session is read")
+        }
+        RoomCommands::Offers { .. } => {
+            unreachable!("the offer verbs are answered above, before the session is read")
         }
         RoomCommands::Create {
             room_id,

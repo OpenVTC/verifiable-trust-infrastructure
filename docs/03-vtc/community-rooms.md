@@ -135,13 +135,30 @@ The member, signed with **their own DID** (the persona named in the offer):
 
 A repeated accept with the same KeyPackage gets the same Welcome for seven days. When the
 community's VTA does not answer, the answer is `admissionPending` and nothing is recorded;
-retrying the identical request is safe.
+retrying the identical request is safe. If the VTA did admit the member and only its answer
+was lost, the retry reaches the VTA again, and a VTA serving `rooms/owner/group/add/0.2`
+answers it with the Welcome it kept (until its next advance of the room or 24 hours);
+against a VTA that serves only 0.1 that retry is `alreadyAccepted`.
 
-**Not yet:** no client signs these as a member's persona. A member's persona key is held
-by their VTA, and `rooms/keys/act` — the task through which a member's client acts as
-their persona — completes only room-host requests, not `vtc/rooms/offers/*`. Until the
-specification adds them there (or the portal grows its own path, P8), the member half is
-served and tested but has no CLI.
+### From `pnm`
+
+The persona an offer names is held by the member's VTA, so `pnm` builds each request and
+has the VTA sign it as that persona with `rooms/keys/act/0.3` — no presentation inserted,
+and an acceptance completed only with a KeyPackage that VTA minted itself for that member
+and room (`keyPackageNotHeld` otherwise). The signed document goes to the VTC over its
+Trust Task HTTPS endpoint, unchanged:
+
+```bash
+pnm rooms offers list   --vtc https://vtc.example.com/v1 --vtc-did <vtc-did> --member <persona-did>
+pnm rooms offers accept --vtc https://vtc.example.com/v1 --vtc-did <vtc-did> --member <persona-did> \
+    --room <room-did>
+```
+
+`accept` stores the offer's membership and authority credentials in the VTA's vault, has
+the VTA mint the KeyPackage against the offer's invitation on a sealed room, accepts, and
+joins the room's group from the Welcome. If an acceptance's answer is lost, it prints the
+KeyPackage it carried; retry with `--key-package <file>` so the community sees the
+identical request and answers with the same Welcome.
 
 ## What is not here yet
 
