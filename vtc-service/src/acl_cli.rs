@@ -268,9 +268,27 @@ pub async fn run_acl_remove(config_path: Option<PathBuf>, did: String) -> CliRes
         return Ok(());
     }
     delete_acl_entry(&acl_ks, &did).await?;
+    // Their admissions to the community's rooms are owed a removal, which the daemon's
+    // departure worker drives when it next runs (`crate::rooms::departures`).
+    let owed = crate::rooms::community::CommunityRooms::new(
+        store.keyspace(keyspaces::COMMUNITY_ROOMS)?,
+        None,
+    )
+    .record_departure(
+        &did,
+        crate::rooms::community::DepartureCause::AclRemoved,
+        chrono::Utc::now(),
+    )
+    .await?;
     crate::install::record_offline_acl_write(&store, "vtc acl remove", "remove", &did, None, &[])
         .await?;
     store.persist().await?;
     println!("Removed ACL entry for {did}.");
+    if owed > 0 {
+        println!(
+            "{did} is owed removal from {owed} room(s) the community owns; the daemon removes \
+             them when it next runs."
+        );
+    }
     Ok(())
 }

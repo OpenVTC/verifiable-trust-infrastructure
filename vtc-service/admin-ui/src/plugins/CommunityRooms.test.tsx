@@ -387,6 +387,39 @@ describe("a community room's page", () => {
     expect(screen.getByRole("button", { name: /Remove/ })).toBeTruthy();
   });
 
+  it("shows who is being removed because they left the community", async () => {
+    // First match wins: this members answer before the shared one.
+    mockFetch([
+      taskRoute(COMMUNITY_ROOMS_MEMBERS_LIST_TASK, {
+        items: [offered, admitted],
+        ext: {
+          "org.openvtc": {
+            departureRemovals: [
+              {
+                roomId: ROOM,
+                member: admitted.member,
+                cause: "left",
+                departedAt: "2026-10-16T12:00:00Z",
+                status: "retrying",
+                attempts: 2,
+                nextAttemptAt: "2026-10-16T12:02:00Z",
+                lastError: "the community's VTA could not be reached",
+              },
+            ],
+          },
+        },
+      }),
+      ...routes(),
+    ]);
+    mount(page);
+    const notice = await screen.findByRole("status", { name: "Leaving" });
+    const row = within(notice).getByRole("listitem").textContent ?? "";
+    expect(row).toMatch(/left the community/);
+    expect(row).toMatch(/2 attempts so far/);
+    expect(row).toMatch(/could not be reached/);
+    expect(screen.getByText("leaving", { selector: ".chip" })).toBeTruthy();
+  });
+
   it("offers a member a place with actions, an expiry and a reason", async () => {
     const requests = mockFetch(routes());
     mount(page);

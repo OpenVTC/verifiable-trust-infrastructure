@@ -939,3 +939,45 @@ async fn landed_cooling_off_leaves_nothing_to_withdraw_twice() {
     );
     assert!(!registry.trust_records().await.contains_key(&key));
 }
+
+/// A suspended subject is no active member, so a cooling-off that suspends them records,
+/// as it is raised, the removal they are owed from each room the community owns
+/// (`vtc/rooms/community/members/add` item 6; `rooms::departures` drives it).
+#[tokio::test]
+async fn a_suspension_records_the_removals_owed_from_community_rooms() {
+    use vtc_service::rooms::community::{DepartureCause, MemberRecord};
+    let mut fix = fixture(false).await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let room = "did:example:board-room";
+    fix.vtc
+        .state
+        .community_rooms
+        .put_member(&MemberRecord {
+            room_id: room.into(),
+            member: b.did.clone(),
+            actions: vec!["read".into()],
+            valid_until: "2099-01-01T00:00:00Z".into(),
+            state: MemberRecord::ADMITTED.into(),
+            offered_at: "2026-01-01T00:00:00Z".into(),
+            admitted_at: Some("2026-01-01T00:00:00Z".into()),
+            removed_at: None,
+            credentials: None,
+            welcome: None,
+            admitted_epoch: Some(2),
+        })
+        .await
+        .unwrap();
+    cool_off(&mut fix, &a, &b).await;
+    let owed = fix
+        .vtc
+        .state
+        .community_rooms
+        .pending_removals()
+        .await
+        .unwrap();
+    assert_eq!(owed.len(), 1, "{owed:?}");
+    assert_eq!(owed[0].room_id, room);
+    assert_eq!(owed[0].member, b.did);
+    assert_eq!(owed[0].cause, DepartureCause::Suspended);
+}

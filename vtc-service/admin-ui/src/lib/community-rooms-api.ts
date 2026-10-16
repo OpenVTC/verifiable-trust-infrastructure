@@ -231,13 +231,44 @@ export function fetchCommunityRoom(roomId: string): Promise<CommunityRoomGetResp
   return postSignedRead<CommunityRoomGetResponse>(COMMUNITY_ROOMS_GET_TASK, { roomId });
 }
 
+/** A removal the community owes a member who left it, until its worker completes it —
+ *  `ext["org.openvtc"].departureRemovals` on the community-room reads. */
+export interface DepartureRemoval {
+  roomId: string;
+  member: string;
+  /** `left`, `removed`, `aclRemoved`, `expired` or `suspended`. */
+  cause: string;
+  departedAt: string;
+  /** `pending`, or `retrying` once an attempt has failed. */
+  status: string;
+  attempts: number;
+  nextAttemptAt: string;
+  lastAttemptAt?: string;
+  lastError?: string;
+}
+
+export function departureRemovalsOf(ext: unknown): DepartureRemoval[] {
+  const rows = (ext as { "org.openvtc"?: { departureRemovals?: unknown } } | undefined)?.[
+    "org.openvtc"
+  ]?.departureRemovals;
+  if (!Array.isArray(rows)) return [];
+  return rows.filter(
+    (r): r is DepartureRemoval =>
+      typeof r === "object" &&
+      r !== null &&
+      typeof (r as DepartureRemoval).member === "string" &&
+      typeof (r as DepartureRemoval).roomId === "string",
+  );
+}
+
 /** Every member record of one room — offered, admitted and removed, or only
- *  those in `state`. */
+ *  those in `state` — and the removals owed to those who left the community. */
 export async function fetchCommunityRoomMembers(
   roomId: string,
   state?: CommunityRoomMemberState,
-): Promise<{ items: CommunityRoomMember[]; truncated: boolean }> {
+): Promise<{ items: CommunityRoomMember[]; truncated: boolean; departures: DepartureRemoval[] }> {
   const items: CommunityRoomMember[] = [];
+  let departures: DepartureRemoval[] | null = null;
   let cursor: string | undefined;
   for (let page = 0; page < MAX_COMMUNITY_PAGES; page++) {
     const payload: CommunityRoomMembersListPayload = {
@@ -251,10 +282,11 @@ export async function fetchCommunityRoomMembers(
       payload,
     );
     items.push(...body.items);
+    departures ??= departureRemovalsOf(body.ext);
     cursor = body.nextCursor;
-    if (!cursor) return { items, truncated: false };
+    if (!cursor) return { items, truncated: false, departures };
   }
-  return { items, truncated: true };
+  return { items, truncated: true, departures: departures ?? [] };
 }
 
 /** `vtc/rooms/community/create/0.1`, after the requester's bound gesture. */

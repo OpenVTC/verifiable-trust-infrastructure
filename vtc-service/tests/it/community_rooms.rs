@@ -1277,3 +1277,382 @@ async fn vtc_rooms_offers_refuse_with_their_declared_codes() {
     let r = call_as(&fix, &bob, ACCEPT, json!({ "roomId": open })).await;
     assert_eq!(tt_error_code(&r), Some(ACCEPT_OFFER_EXPIRED), "{r}");
 }
+
+// ─── a member who leaves the community leaves its rooms (members/add item 6) ──
+
+const SELF_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/self-remove/0.1";
+const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
+
+use vtc_service::rooms::community::{CommunityRooms, DepartureCause};
+use vtc_service::rooms::departures;
+
+/// `who` admitted to a sealed room and an open room, and offered a third (open) room.
+/// Answers the three rooms: sealed, open, offered.
+async fn in_three_rooms(fix: &mut Fixture, who: &Party) -> (String, String, String) {
+    let sealed = create_room(fix, "attributed").await;
+    let open = create_room(fix, "open").await;
+    let offered = create_room(fix, "open").await;
+    for room in [&sealed, &open, &offered] {
+        add_member(fix, room, &who.did, &in_a_year()).await;
+    }
+    let a = call_as(
+        fix,
+        who,
+        ACCEPT,
+        json!({ "roomId": sealed, "keyPackage": "S1A" }),
+    )
+    .await;
+    assert_eq!(a["payload"]["state"], "admitted", "{a}");
+    let a = call_as(fix, who, ACCEPT, json!({ "roomId": open })).await;
+    assert_eq!(a["payload"]["state"], "admitted", "{a}");
+    (sealed, open, offered)
+}
+
+async fn state_in(fix: &Fixture, room: &str, did: &str) -> String {
+    fix.vtc
+        .state
+        .community_rooms
+        .member(room, did)
+        .await
+        .unwrap()
+        .expect("a record")
+        .state
+}
+
+async fn owed(fix: &Fixture) -> Vec<(String, String, DepartureCause)> {
+    fix.vtc
+        .state
+        .community_rooms
+        .pending_removals()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|p| (p.room_id, p.member, p.cause))
+        .collect()
+}
+
+/// A member who leaves is owed a removal from every room the community owns, recorded at
+/// the departure itself — before the VTA is asked anything. The worker withdraws the offer,
+/// records the open room's removal, and removes them from the sealed room's group at the
+/// VTA before recording it; each is audited as the community's own act, naming the
+/// departure. Rejoining re-adds nothing.
+#[tokio::test]
+async fn a_member_who_leaves_is_removed_from_every_community_room() {
+    let mut fix = fixture().await;
+    let alice = member(&fix).await;
+    let (sealed, open, offered) = in_three_rooms(&mut fix, &alice).await;
+    let bob = member(&fix).await;
+    add_member(&mut fix, &open, &bob.did, &in_a_year()).await;
+
+    fix.vta.clear_calls();
+    let left = call_as(&fix, &alice, SELF_REMOVE, json!({})).await;
+    assert_eq!(left["payload"]["removed"], true, "{left}");
+    // Recorded at the departure; the VTA not yet asked.
+    let mut want = vec![
+        (sealed.clone(), alice.did.clone(), DepartureCause::Left),
+        (open.clone(), alice.did.clone(), DepartureCause::Left),
+        (offered.clone(), alice.did.clone(), DepartureCause::Left),
+    ];
+    want.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut got = owed(&fix).await;
+    got.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(got, want);
+    assert!(fix.vta.calls().is_empty());
+
+    // Administrators see what is owed, where they read the room.
+    let got = call_as(&fix, &fix.admin, GET, json!({ "roomId": sealed })).await;
+    let ext = &got["payload"]["ext"]["org.openvtc"]["departureRemovals"];
+    assert_eq!(ext[0]["member"], alice.did, "{got}");
+    assert_eq!(ext[0]["cause"], "left");
+    assert_eq!(ext[0]["status"], "pending");
+
+    let report = departures::run_once(&fix.vtc.state, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(report.removed, 3, "{report:?}");
+    for room in [&sealed, &open, &offered] {
+        assert_eq!(state_in(&fix, room, &alice.did).await, "removed");
+        let r = fix
+            .vtc
+            .state
+            .community_rooms
+            .member(room, &alice.did)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(r.credentials.is_none(), "the offer's credentials are gone");
+    }
+    assert_eq!(
+        state_in(&fix, &open, &bob.did).await,
+        "offered",
+        "nobody else moves"
+    );
+    assert!(owed(&fix).await.is_empty());
+    // Only the sealed room's group was asked, once.
+    assert_eq!(fix.vta.types_called(), vec![GROUP_REMOVE]);
+    let call = &fix.vta.calls()[0].1;
+    assert_eq!(call["member"], alice.did);
+    assert_eq!(call["host"], TEST_VTC_DID);
+    assert_eq!(call["reason"], DepartureCause::Left.reason());
+    let (members, _) = fix.vta.group(&sealed).unwrap();
+    assert!(!members.contains(&alice.did));
+    let got = call_as(&fix, &fix.admin, GET, json!({ "roomId": sealed })).await;
+    assert!(
+        got["payload"]["ext"]["org.openvtc"]
+            .get("departureRemovals")
+            .is_none(),
+        "{got}"
+    );
+
+    let audit = audit_rows(&fix).await;
+    assert!(audit.contains(DepartureCause::Left.reason()), "{audit}");
+    assert!(audit.contains("offerWithdrawn"));
+
+    // Idempotent: a second departure of the same member owes nothing more.
+    assert_eq!(
+        fix.vtc
+            .state
+            .community_rooms
+            .record_departure(&alice.did, DepartureCause::Left, Utc::now())
+            .await
+            .unwrap(),
+        0
+    );
+
+    // They rejoin: an active member again, and in no room.
+    seed_role(&fix.vtc, &alice.did, VtcRole::Member, &[]).await;
+    store_member(&fix.vtc.state.members_ks, &Member::fresh(&alice.did))
+        .await
+        .unwrap();
+    fix.vta.clear_calls();
+    for later in [5, 10] {
+        let report = departures::run_once(
+            &fix.vtc.state,
+            Utc::now() + chrono::Duration::minutes(later),
+        )
+        .await
+        .unwrap();
+        assert_eq!(report, departures::DriveReport::default());
+    }
+    for room in [&sealed, &open, &offered] {
+        assert_eq!(state_in(&fix, room, &alice.did).await, "removed");
+    }
+    assert!(fix.vta.calls().is_empty());
+    let offers = call_as(&fix, &alice, OFFERS, json!({})).await;
+    assert_eq!(offers["payload"]["items"], json!([]), "{offers}");
+}
+
+/// An administrator's removal of a member from the community is a departure too.
+#[tokio::test]
+async fn a_member_removed_from_the_community_is_owed_removal_from_its_rooms() {
+    let mut fix = fixture().await;
+    let alice = member(&fix).await;
+    let open = create_room(&mut fix, "open").await;
+    add_member(&mut fix, &open, &alice.did, &in_a_year()).await;
+    let (status, reply) = admin_call(
+        &mut fix,
+        ADMIN_REMOVE,
+        json!({ "did": alice.did, "reason": "conduct" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(
+        owed(&fix).await,
+        vec![(open.clone(), alice.did.clone(), DepartureCause::Removed)]
+    );
+    departures::run_once(&fix.vtc.state, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(state_in(&fix, &open, &alice.did).await, "removed");
+}
+
+/// What no event announces — an entry that expired — and what a crash could cut off before
+/// it was recorded — a suspended entry, an entry revoked with the member row still in place —
+/// the reconciler finds, once it has seen it for the grace period. An active member is
+/// left alone.
+#[tokio::test]
+async fn the_reconciler_finds_expired_suspended_and_revoked_entries() {
+    let mut fix = fixture().await;
+    let open = create_room(&mut fix, "open").await;
+    let (bob, carol, dave, erin) = (
+        member(&fix).await,
+        member(&fix).await,
+        member(&fix).await,
+        member(&fix).await,
+    );
+    for p in [&bob, &carol, &dave, &erin] {
+        add_member(&mut fix, &open, &p.did, &in_a_year()).await;
+    }
+    let acl = &fix.vtc.state.acl_ks;
+    let mut entry = vtc_service::acl::get_acl_entry(acl, &bob.did)
+        .await
+        .unwrap()
+        .unwrap();
+    entry.expires_at = Some(1);
+    vtc_service::acl::store_acl_entry(acl, &entry)
+        .await
+        .unwrap();
+    vtc_service::acl::storage::put_suspension(
+        acl,
+        &carol.did,
+        &vtc_service::acl::Suspension {
+            action_id: "a1".into(),
+            lands_at: u64::MAX,
+            requester: fix.admin.did.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    vtc_service::acl::delete_acl_entry(acl, &dave.did)
+        .await
+        .unwrap();
+
+    let now = Utc::now();
+    assert_eq!(
+        departures::reconcile(&fix.vtc.state, now).await.unwrap(),
+        0,
+        "nothing is acted on before the grace period"
+    );
+    assert_eq!(
+        departures::reconcile(&fix.vtc.state, now + departures::GRACE)
+            .await
+            .unwrap(),
+        3
+    );
+    let mut got = owed(&fix).await;
+    got.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut want = vec![
+        (open.clone(), bob.did.clone(), DepartureCause::Expired),
+        (open.clone(), carol.did.clone(), DepartureCause::Suspended),
+        (open.clone(), dave.did.clone(), DepartureCause::AclRemoved),
+    ];
+    want.sort_by(|a, b| a.1.cmp(&b.1));
+    assert_eq!(got, want);
+    departures::drive(&fix.vtc.state, now + departures::GRACE)
+        .await
+        .unwrap();
+    for p in [&bob, &carol, &dave] {
+        assert_eq!(state_in(&fix, &open, &p.did).await, "removed");
+    }
+    assert_eq!(state_in(&fix, &open, &erin.did).await, "offered");
+}
+
+/// A departure does not wait on the community's VTA. One that does not answer is retried
+/// with backoff — and the room's reads say so — until it does; an attempt whose answer was
+/// lost is settled by the next, which the VTA answers `notMember`.
+#[tokio::test]
+async fn an_unreachable_vta_is_retried_until_the_removal_completes() {
+    let mut fix = fixture().await;
+    let alice = member(&fix).await;
+    let room = create_room(&mut fix, "attributed").await;
+    add_member(&mut fix, &room, &alice.did, &in_a_year()).await;
+    call_as(
+        &fix,
+        &alice,
+        ACCEPT,
+        json!({ "roomId": room, "keyPackage": "S1A" }),
+    )
+    .await;
+
+    fix.vta.script(GROUP_REMOVE, Script::Silent);
+    let left = call_as(&fix, &alice, SELF_REMOVE, json!({})).await;
+    assert_eq!(
+        left["payload"]["removed"], true,
+        "the departure is not held up: {left}"
+    );
+
+    let t0 = Utc::now();
+    let report = departures::run_once(&fix.vtc.state, t0).await.unwrap();
+    assert_eq!(report.retrying, 1, "{report:?}");
+    assert_eq!(state_in(&fix, &room, &alice.did).await, "admitted");
+    let listed = call_as(&fix, &fix.admin, MEMBERS, json!({ "roomId": room })).await;
+    let owed_row = &listed["payload"]["ext"]["org.openvtc"]["departureRemovals"][0];
+    assert_eq!(owed_row["status"], "retrying", "{listed}");
+    assert_eq!(owed_row["attempts"], 1);
+    assert!(
+        owed_row["lastError"]
+            .as_str()
+            .unwrap()
+            .contains("could not be reached")
+    );
+
+    // Not due yet: the VTA is not asked again.
+    fix.vta.clear_calls();
+    departures::run_once(&fix.vtc.state, t0 + chrono::Duration::seconds(10))
+        .await
+        .unwrap();
+    assert!(fix.vta.calls().is_empty());
+
+    // Due: the VTA removes them, and the answer is lost.
+    fix.vta.script(GROUP_REMOVE, Script::ServeThenSilent);
+    let t1 = t0 + departures::backoff(1);
+    let report = departures::run_once(&fix.vtc.state, t1).await.unwrap();
+    assert_eq!(report.retrying, 1, "{report:?}");
+    let (members, epoch) = fix.vta.group(&room).unwrap();
+    assert!(!members.contains(&alice.did), "the VTA did remove them");
+    assert_eq!(state_in(&fix, &room, &alice.did).await, "admitted");
+
+    // The next attempt is answered `notMember`: removed is what is true.
+    let report = departures::run_once(&fix.vtc.state, t1 + departures::backoff(2))
+        .await
+        .unwrap();
+    assert_eq!(report.removed, 1, "{report:?}");
+    assert_eq!(state_in(&fix, &room, &alice.did).await, "removed");
+    assert_eq!(fix.vta.group(&room).unwrap().1, epoch, "advanced once");
+    assert!(owed(&fix).await.is_empty());
+}
+
+/// Owed removals are durable: a restarted service — nothing in memory — resumes them from
+/// the keyspace. And an administrator who removes the member by hand meanwhile settles the
+/// one owed in that room.
+#[tokio::test]
+async fn owed_removals_survive_a_restart_and_yield_to_a_manual_removal() {
+    let mut fix = fixture().await;
+    let alice = member(&fix).await;
+    let (sealed, open, offered) = in_three_rooms(&mut fix, &alice).await;
+    fix.vta.script(GROUP_REMOVE, Script::Silent);
+    call_as(&fix, &alice, SELF_REMOVE, json!({})).await;
+    // Withdraws the offer and the open room; the sealed room's VTA does not answer.
+    departures::run_once(&fix.vtc.state, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(state_in(&fix, &offered, &alice.did).await, "removed");
+    assert_eq!(state_in(&fix, &open, &alice.did).await, "removed");
+    assert_eq!(owed(&fix).await.len(), 1);
+
+    // A restart: the same keyspace, a fresh service around it.
+    let mut restarted = fix.vtc.state.clone();
+    restarted.community_rooms = CommunityRooms::new(
+        fix.vtc.state.community_rooms.keyspace().clone(),
+        Some(Arc::new(fix.vta.clone())),
+    );
+    let report = departures::run_once(&restarted, Utc::now() + chrono::Duration::hours(2))
+        .await
+        .unwrap();
+    assert_eq!(report.removed, 1, "{report:?}");
+    assert_eq!(state_in(&fix, &sealed, &alice.did).await, "removed");
+
+    // By hand: an owed removal is settled by the administrator's.
+    let bob = member(&fix).await;
+    add_member(&mut fix, &open, &bob.did, &in_a_year()).await;
+    vtc_service::acl::delete_acl_entry(&fix.vtc.state.acl_ks, &bob.did)
+        .await
+        .unwrap();
+    fix.vtc
+        .state
+        .community_rooms
+        .record_departure(&bob.did, DepartureCause::AclRemoved, Utc::now())
+        .await
+        .unwrap();
+    let (_, removed) = admin_call(
+        &mut fix,
+        REMOVE,
+        json!({ "roomId": open, "member": bob.did, "reason": "left" }),
+    )
+    .await;
+    assert_eq!(
+        removed["payload"]["member"]["state"], "removed",
+        "{removed}"
+    );
+    assert!(owed(&fix).await.is_empty());
+}

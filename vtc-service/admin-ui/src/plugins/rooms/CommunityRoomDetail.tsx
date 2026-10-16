@@ -37,6 +37,7 @@ import {
   fetchCommunityRoom,
   roomRenewalOf,
   fetchCommunityRoomMembers,
+  type DepartureRemoval,
   removalOutcome,
   removalPreview,
   removeCommunityRoomMember,
@@ -217,6 +218,7 @@ function Members({ room }: { room: CommunityRoom }) {
     refetchInterval: OFFLINE_POLL_MS,
   });
   const items = q.data?.items ?? [];
+  const departures = q.data?.departures ?? [];
 
   return (
     <section className="card" aria-labelledby="community-room-members">
@@ -246,10 +248,12 @@ function Members({ room }: { room: CommunityRoom }) {
         </p>
       )}
       <RefusalCard title="Not removed" error={removed.error} />
+      {departures.length > 0 && <DepartureNotice departures={departures} />}
       {items.length > 0 && (
         <MembersTable
           room={room}
           members={items}
+          leaving={new Set(departures.map((d) => d.member))}
           onRemoved={(outcome, error) => setRemoved({ outcome, error })}
         />
       )}
@@ -263,13 +267,52 @@ function stateChip(state: CommunityRoomMemberState) {
   return <span className={`chip ${tone}`}>{state}</span>;
 }
 
+const CAUSES: Record<string, string> = {
+  left: "left the community",
+  removed: "was removed from the community",
+  aclRemoved: "no longer has an entry at the community",
+  expired: "has an entry that expired",
+  suspended: "has a suspended entry",
+};
+
+/** Members who left the community, whom its worker is removing from this room. A
+ *  removal the VTA has not yet answered is retried; the last error says why. */
+function DepartureNotice({ departures }: { departures: DepartureRemoval[] }) {
+  const nameBook = useNameBook();
+  return (
+    <div className="list-note" role="status" aria-label="Leaving">
+      <p>
+        Being removed because they left the community — no action needed; a removal the
+        community&rsquo;s VTA has not answered is retried.
+      </p>
+      <ul>
+        {departures.map((d) => (
+          <li key={d.member}>
+            <NamedDid did={d.member} book={nameBook} /> {CAUSES[d.cause] ?? d.cause} (
+            {formatIso(d.departedAt)}).
+            {d.status === "retrying" && (
+              <span className="muted">
+                {" "}
+                {d.attempts} attempt{d.attempts === 1 ? "" : "s"} so far; next {formatIso(d.nextAttemptAt)}
+                {d.lastError ? ` — ${d.lastError}` : ""}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function MembersTable({
   room,
   members,
+  leaving,
   onRemoved,
 }: {
   room: CommunityRoom;
   members: CommunityRoomMember[];
+  leaving: Set<string>;
   onRemoved: (outcome: string | null, err: unknown) => void;
 }) {
   const nameBook = useNameBook();
@@ -289,7 +332,14 @@ function MembersTable({
           <td>
             <NamedDid did={m.member} book={nameBook} />
           </td>
-          <td>{stateChip(m.state)}</td>
+          <td>
+            {stateChip(m.state)}
+            {leaving.has(m.member) && m.state !== "removed" && (
+              <span className="chip warning" title="Left the community: being removed">
+                leaving
+              </span>
+            )}
+          </td>
           <td>{m.actions.join(", ")}</td>
           <td>{formatIso(m.validUntil)}</td>
           <td className="muted">

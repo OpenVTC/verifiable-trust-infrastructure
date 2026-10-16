@@ -562,6 +562,21 @@ async fn depart(
     let slot = member.as_ref().and_then(|m| m.status_list_index);
 
     delete_acl_entry(&state.acl_ks, subject_did).await?;
+    // They leave the rooms the community owns too (`vtc/rooms/community/members/add` item
+    // 6). Recorded now, durably, and driven by `rooms::departures` — never waiting on the
+    // community's VTA. Here, before the member row changes, so a crash between the two
+    // leaves an entry gone and a row in place, which the departure reconciler reads as a
+    // departure.
+    crate::rooms::departures::on_departure(
+        state,
+        subject_did,
+        if actor_did == subject_did {
+            crate::rooms::community::DepartureCause::Left
+        } else {
+            crate::rooms::community::DepartureCause::Removed
+        },
+    )
+    .await?;
     // The departed member's own grants go to review (vtc-admin-roles.md §6.3).
     crate::acl::delegation::clear(state, subject_did).await?;
     crate::acl::delegation::on_granter_changed(state, subject_did, None).await?;

@@ -215,6 +215,88 @@ pub fn key_package_digest(key_package: &str) -> String {
     hex::encode(Sha256::digest(key_package.as_bytes()))
 }
 
+/// Why a member's admissions to the community's rooms are being removed without an
+/// administrator asking (`vtc/rooms/community/members/add` item 6: a member who leaves the
+/// community **SHOULD** be removed from every room it owns).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DepartureCause {
+    /// They left, through `vtc/members/self-remove`.
+    Left,
+    /// An administrator removed them from the community (`vtc/members/admin-remove`), or
+    /// their member record says they were removed.
+    Removed,
+    /// Their ACL entry was removed while their member record remained (an ACL revocation,
+    /// or `vtc acl remove` offline).
+    AclRemoved,
+    /// Their ACL entry expired.
+    Expired,
+    /// Their ACL entry is suspended (an open cooling-off reduction of their authority).
+    Suspended,
+}
+
+impl DepartureCause {
+    /// The reason recorded with each automatic removal, naming the departure.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::Left => "Left the community.",
+            Self::Removed => "Removed from the community.",
+            Self::AclRemoved => "Their access-control entry at the community was removed.",
+            Self::Expired => "Their access-control entry at the community expired.",
+            Self::Suspended => "Their access-control entry at the community was suspended.",
+        }
+    }
+}
+
+/// A removal from one room the community owns, owed because the member left the community,
+/// recorded durably at the departure and driven to completion by
+/// [`crate::rooms::departures`] — the one retry owner. Kept in this keyspace (backed up), so
+/// a restart, or a restore, resumes it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingRemoval {
+    pub room_id: String,
+    pub member: String,
+    pub cause: DepartureCause,
+    /// RFC 3339: when the departure was recorded.
+    pub departed_at: String,
+    /// Attempts made at the community's VTA so far.
+    #[serde(default)]
+    pub attempts: u32,
+    /// RFC 3339: not attempted before this.
+    pub next_attempt_at: String,
+    /// RFC 3339 of the last attempt that did not complete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attempt_at: Option<String>,
+    /// Why the last attempt did not complete: the VTA's own code and message, or that it did
+    /// not answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+impl PendingRemoval {
+    /// As an administrator's read shows it, under `ext["org.openvtc"].departureRemovals`:
+    /// `pending` until an attempt fails, `retrying` after.
+    pub fn wire(&self) -> Value {
+        let mut v = serde_json::json!({
+            "roomId": self.room_id,
+            "member": self.member,
+            "cause": self.cause,
+            "departedAt": self.departed_at,
+            "status": if self.last_error.is_some() { "retrying" } else { "pending" },
+            "attempts": self.attempts,
+            "nextAttemptAt": self.next_attempt_at,
+        });
+        if let Some(at) = &self.last_attempt_at {
+            v["lastAttemptAt"] = Value::from(at.clone());
+        }
+        if let Some(e) = &self.last_error {
+            v["lastError"] = Value::from(e.clone());
+        }
+        v
+    }
+}
+
 /// A served room identity's log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -302,6 +384,25 @@ pub struct CommunityRooms {
     /// to the community's rooms never race each other at the VTA, which holds one pending
     /// advance per room.
     write_lock: tokio::sync::Mutex<()>,
+    /// When each member holding an admission was first seen no longer active by the
+    /// departure reconciler. In memory only: it guards against reading a write in flight
+    /// (a key rotation moves the entry, then the member row) as a departure, and a restart
+    /// only delays a removal by one grace period.
+    pub(crate) seen_inactive:
+        std::sync::Mutex<std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>>,
+}
+
+/// Wakes the departure worker: a departure was recorded.
+static DEPARTURES: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// Tell the departure worker there is work.
+pub fn departure_hint() {
+    DEPARTURES.notify_one();
+}
+
+/// Wait for [`departure_hint`].
+pub async fn departure_hinted() {
+    DEPARTURES.notified().await
 }
 
 fn room_key(room_id: &str) -> Vec<u8> {
@@ -328,6 +429,18 @@ fn holder_key(member: &str, room_id: &str) -> Vec<u8> {
     k
 }
 
+const DEPARTURE_PREFIX: &str = "departure:";
+
+fn departure_room_prefix(room_id: &str) -> Vec<u8> {
+    format!("{DEPARTURE_PREFIX}{room_id}\u{0}").into_bytes()
+}
+
+fn departure_key(room_id: &str, member: &str) -> Vec<u8> {
+    let mut k = departure_room_prefix(room_id);
+    k.extend_from_slice(member.as_bytes());
+    k
+}
+
 fn did_log_key(id: &str) -> Vec<u8> {
     format!("didlog:{id}").into_bytes()
 }
@@ -338,6 +451,7 @@ impl CommunityRooms {
             ks,
             holder: std::sync::RwLock::new(holder.map(KeyHolder)),
             write_lock: tokio::sync::Mutex::new(()),
+            seen_inactive: Default::default(),
         })
     }
 
@@ -434,6 +548,110 @@ impl CommunityRooms {
         let members = self.members(room_id).await?;
         let count = |s: &str| members.iter().filter(|m| m.state == s).count() as u64;
         Ok((count(MemberRecord::ADMITTED), count(MemberRecord::OFFERED)))
+    }
+
+    /// Record that `member` left the community: a [`PendingRemoval`] for every room the
+    /// community owns in which they hold an admission or an open offer, unless one is
+    /// already owed. Answers how many were recorded. Asks nothing of the VTA — a departure
+    /// is never held up by it — and wakes the worker that does.
+    ///
+    /// The member is named verbatim, as their records are keyed.
+    pub async fn record_departure(
+        &self,
+        member: &str,
+        cause: DepartureCause,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<usize, AppError> {
+        let at = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let mut recorded = 0;
+        for r in self.records_of(member).await? {
+            if r.state == MemberRecord::REMOVED
+                || self.pending_removal(&r.room_id, member).await?.is_some()
+            {
+                continue;
+            }
+            let pending = PendingRemoval {
+                room_id: r.room_id.clone(),
+                member: member.to_string(),
+                cause,
+                departed_at: at.clone(),
+                attempts: 0,
+                next_attempt_at: at.clone(),
+                last_attempt_at: None,
+                last_error: None,
+            };
+            self.ks
+                .insert(departure_key(&r.room_id, member), &pending)
+                .await?;
+            recorded += 1;
+        }
+        if recorded > 0 {
+            tracing::info!(
+                member,
+                ?cause,
+                rooms = recorded,
+                "a departing member's community-room admissions are queued for removal"
+            );
+            crate::admin_events::notify(crate::admin_events::Topic::Rooms);
+            departure_hint();
+        }
+        Ok(recorded)
+    }
+
+    pub async fn pending_removal(
+        &self,
+        room_id: &str,
+        member: &str,
+    ) -> Result<Option<PendingRemoval>, AppError> {
+        self.ks.get(departure_key(room_id, member)).await
+    }
+
+    pub async fn put_pending_removal(&self, p: &PendingRemoval) -> Result<(), AppError> {
+        self.ks
+            .insert(departure_key(&p.room_id, &p.member), p)
+            .await
+    }
+
+    pub async fn drop_pending_removal(&self, room_id: &str, member: &str) -> Result<(), AppError> {
+        self.ks.remove(departure_key(room_id, member)).await
+    }
+
+    /// Every removal owed on departure, by room then member.
+    pub async fn pending_removals(&self) -> Result<Vec<PendingRemoval>, AppError> {
+        self.pending_under(DEPARTURE_PREFIX.as_bytes().to_vec())
+            .await
+    }
+
+    /// The removals owed on departure in one room, by member.
+    pub async fn pending_removals_in(
+        &self,
+        room_id: &str,
+    ) -> Result<Vec<PendingRemoval>, AppError> {
+        self.pending_under(departure_room_prefix(room_id)).await
+    }
+
+    async fn pending_under(&self, prefix: Vec<u8>) -> Result<Vec<PendingRemoval>, AppError> {
+        let mut out = Vec::new();
+        for (_, raw) in self.ks.prefix_iter_raw(prefix).await? {
+            match serde_json::from_slice::<PendingRemoval>(&raw) {
+                Ok(p) => out.push(p),
+                Err(e) => tracing::warn!(error = %e, "skipping an unreadable pending removal"),
+            }
+        }
+        out.sort_by(|a, b| (&a.room_id, &a.member).cmp(&(&b.room_id, &b.member)));
+        Ok(out)
+    }
+
+    /// Write a member's record as removed and drop the removal owed on their departure, as
+    /// one batch: a crash leaves either both or neither.
+    pub async fn settle_removal(&self, record: &MemberRecord) -> Result<(), AppError> {
+        let mut batch = vti_common::store::Batch::new();
+        batch.insert(member_key(&record.room_id, &record.member), record)?;
+        batch.insert(holder_key(&record.member, &record.room_id), &true)?;
+        batch.remove(departure_key(&record.room_id, &record.member));
+        self.ks.apply_batch(batch).await?;
+        crate::admin_events::notify(crate::admin_events::Topic::Rooms);
+        Ok(())
     }
 
     /// Serve `log` as the `did.jsonl` of `did` under `id`.

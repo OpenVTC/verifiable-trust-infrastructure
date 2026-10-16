@@ -489,6 +489,15 @@ async fn save(state: &AppState, rec: &ActionRecord) -> Result<(), AppError> {
     if suspends {
         crate::acl::storage::put_suspension(&state.acl_ks, &rec.subject, &suspension_of(rec))
             .await?;
+        // A suspended entry is no active member's: their admissions to the community's
+        // rooms are owed a removal (`crate::rooms::departures`). Idempotent across the
+        // action's later saves.
+        crate::rooms::departures::on_departure(
+            state,
+            &rec.subject,
+            crate::rooms::community::DepartureCause::Suspended,
+        )
+        .await?;
     }
     state
         .admin_actions_ks

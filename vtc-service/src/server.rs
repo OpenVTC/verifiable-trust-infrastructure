@@ -1530,6 +1530,9 @@ pub async fn run(
     // is settled from the effect it recorded.
     // (Suspensions were reconciled above, before the git-ns projector.)
     crate::admin_actions::spawn_sweeper(state.clone(), shutdown_rx.clone());
+    // Members who left the community leave the rooms it owns (`members/add` item 6): the
+    // one owner of those removals, resuming at start whatever a restart interrupted.
+    crate::rooms::departures::spawn(state.clone(), shutdown_rx.clone());
     // A refreshed GeoIP database is picked up without a restart.
     state.geoip.spawn_reloader(shutdown_rx.clone());
     // The community's own authority over each room it owns, renewed at its VTA before it

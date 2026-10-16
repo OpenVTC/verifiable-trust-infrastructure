@@ -38,7 +38,6 @@ use serde_json::{Value, json};
 use trust_tasks_rs::specs::rooms::owner::{
     group::{
         add::v0_1 as owner_add_v0_1, add::v0_2 as owner_add, create::v0_1 as owner_group_create,
-        remove::v0_1 as owner_remove,
     },
     invite::v0_1 as owner_invite,
     issue_authority::v0_2 as owner_authority,
@@ -94,7 +93,6 @@ const OWNER_GROUP_ADD: &str = <owner_add::Payload as Payload>::TYPE_URI;
 /// For a VTA that does not serve `rooms/owner/group/add/0.2`: same request, same response,
 /// but a repeated admission is refused `alreadyMember` rather than answered (0.2 item 8).
 const OWNER_GROUP_ADD_V0_1: &str = <owner_add_v0_1::Payload as Payload>::TYPE_URI;
-const OWNER_GROUP_REMOVE: &str = <owner_remove::Payload as Payload>::TYPE_URI;
 const OWNER_INVITE: &str = <owner_invite::Payload as Payload>::TYPE_URI;
 const OWNER_MEMBERSHIP: &str = <owner_membership::Payload as Payload>::TYPE_URI;
 const OWNER_AUTHORITY: &str = <owner_authority::Payload as Payload>::TYPE_URI;
@@ -107,15 +105,7 @@ const ROOMS_CURSOR: &str = "community-rooms:";
 const MEMBERS_CURSOR: &str = "community-room-members:";
 const OFFERS_CURSOR: &str = "community-room-offers:";
 
-/// What removal does not do — said in the audit row, and in the answer's `ext` only as a
-/// courtesy. `vtc/rooms/community/members/remove` item 4 (clarified in place,
-/// trust-tasks-tf #796) requires only that neither represent a removal as recalling what
-/// was read, re-sealing what was written or revoking the authority credential: the answer
-/// says what removal did in its structured members (`member.state`, `member.validUntil`,
-/// `epoch`), and a caller must not depend on this notice.
-const REMOVAL_NOTICE: &str = "Removal ends access to what is written from now on. It recalls \
-     nothing the member already read, and their authority credential is not revoked: a host \
-     honours it until it expires, though on a sealed room it opens nothing written after this.";
+use crate::rooms::departures::REMOVAL_NOTICE;
 
 pub(super) async fn dispatch(
     state: &AppState,
@@ -853,6 +843,14 @@ async fn handle_list(
         setting["vtaAccess"] = vta_access::list_ext(&facts);
     }
     body["ext"] = json!({ "org.openvtc": { "communityRooms": setting } });
+    // Removals owed on members' departures from the community, in this page's rooms, until
+    // the worker completes them (`crate::rooms::departures`).
+    let ids: Vec<&str> = rooms.iter().map(|r| r.room_id.as_str()).collect();
+    match crate::rooms::departures::ext_for(state, &ids).await {
+        Ok(Some(owed)) => body["ext"]["org.openvtc"]["departureRemovals"] = owed,
+        Ok(None) => {}
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
     // How the renewal of the community's own authority stands, per room
     // (`rooms::community_renewal`): the shared `CommunityRoom` has no member for it.
     match crate::rooms::community_renewal::list_ext(state, &listed).await {
@@ -881,13 +879,18 @@ async fn handle_get(
         Err(reject) => return reject,
     };
     let mut body = match community_room(state, &room).await {
-        Ok(room) => json!({ "room": room }),
+        Ok(v) => json!({ "room": v }),
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    // How the renewal of the community's own authority stands (`rooms::community_renewal`).
     match crate::rooms::community_renewal::room_ext(state, &room.room_id).await {
-        Ok(Some(renewal)) => {
-            body["ext"] = json!({ "org.openvtc": { "authorityRenewal": renewal } });
-        }
+        Ok(Some(renewal)) => body["ext"]["org.openvtc"]["authorityRenewal"] = renewal,
+        Ok(None) => {}
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    // Removals owed on members' departures, while the worker drives them.
+    match crate::rooms::departures::ext_for(state, &[room.room_id.as_str()]).await {
+        Ok(Some(owed)) => body["ext"]["org.openvtc"]["departureRemovals"] = owed,
         Ok(None) => {}
         Err(e) => return app_error_to_reject(&doc, &e),
     }
@@ -1123,37 +1126,18 @@ async fn handle_members_remove(
             .vtc_did
             .clone()
             .unwrap_or_default();
-        let request = match typed::<owner_remove::Payload>(json!({
-            "roomId": room_id,
-            "host": community_did,
-            "member": member,
-            "reason": reason,
-        })) {
-            Ok(r) => r,
-            Err(e) => return app_error_to_reject(&doc, &e),
-        };
-        match ask(&holder, OWNER_GROUP_REMOVE, request, ADVANCE_TIMEOUT).await {
-            Ok(answer) => {
-                match read::<owner_remove::Response>("rooms/owner/group/remove", answer) {
-                    Ok(r) => epoch = u64::try_from(r.epoch).ok(),
-                    Err(
-                        HolderError::Unavailable(why) | HolderError::Refused { message: why, .. },
-                    ) => {
-                        return refuse(&doc, c::REMOVE_KEY_HOLDER_UNAVAILABLE, why, None);
-                    }
-                }
-            }
-            // The member holds no leaf: nothing to advance past, and recording the
-            // removal says what is true.
-            Err(HolderError::Refused { code, .. })
-                if code == owner_remove::error_codes::NOT_MEMBER.code => {}
-            // The host — this community — did not answer the VTA: the outcome is unknown,
-            // and the VTA settles it on the next request.
-            Err(HolderError::Refused { code, message })
-                if code == owner_remove::error_codes::HOST_UNREACHABLE.code =>
-            {
-                return refuse(&doc, c::REMOVE_KEY_HOLDER_UNAVAILABLE, message, None);
-            }
+        match crate::rooms::departures::remove_from_group(
+            &holder,
+            &room_id,
+            &community_did,
+            &member,
+            &reason,
+        )
+        .await
+        {
+            Ok(e) => epoch = e,
+            // Not answered, or the host — this community — did not answer the VTA: the
+            // outcome is unknown, and the VTA settles it on the next request.
             Err(HolderError::Unavailable(why)) => {
                 return refuse(&doc, c::REMOVE_KEY_HOLDER_UNAVAILABLE, why, None);
             }
@@ -1175,7 +1159,9 @@ async fn handle_members_remove(
     record.removed_at = Some(rfc3339(now()));
     record.credentials = None;
     record.welcome = None;
-    if let Err(e) = state.community_rooms.put_member(&record).await {
+    // A removal owed on the member's departure from the community, if one is, is settled
+    // by this one (`crate::rooms::departures`).
+    if let Err(e) = state.community_rooms.settle_removal(&record).await {
         return app_error_to_reject(&doc, &e);
     }
     drop(_guard);
@@ -1247,6 +1233,13 @@ async fn handle_members_list(
     let mut body = json!({ "items": members.iter().map(MemberRecord::wire).collect::<Vec<_>>() });
     if let Some(n) = next {
         body["nextCursor"] = json!(n);
+    }
+    // A member whose removal is owed on their departure is still listed as they were until
+    // it completes; this says which, and why it has not yet.
+    match crate::rooms::departures::ext_for(state, &[room_id.as_str()]).await {
+        Ok(Some(owed)) => body["ext"]["org.openvtc"]["departureRemovals"] = owed,
+        Ok(None) => {}
+        Err(e) => return app_error_to_reject(&doc, &e),
     }
     respond::<members_list::Response>(&doc, body)
 }

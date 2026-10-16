@@ -1917,6 +1917,14 @@ pub(crate) async fn remove_entry(
     delete_acl_entry(&acl, &did).await?;
     crate::admin_actions::record_effect(state).await;
     drop(_admin_set);
+    // Whatever admissions to the community's rooms the entry's holder still has are owed a
+    // removal (`crate::rooms::departures`).
+    crate::rooms::departures::on_departure(
+        state,
+        &did,
+        crate::rooms::community::DepartureCause::AclRemoved,
+    )
+    .await?;
 
     let revoked = super::auth::revoke_sessions_for_did(&state.sessions_ks, &did).await?;
     delegation::clear(state, &did).await?;

@@ -329,9 +329,14 @@ async fn legacy_key_package(
 
 /// Why a Welcome could not be accepted.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum JoinError {
     /// This member already holds group state for the room — `alreadyJoined`.
     AlreadyJoined,
+    /// The KeyPackage the Welcome is sealed to expired before it arrived. Its private half
+    /// has been discarded (`rooms/keys/key-package/0.1` *Retention*: it **MUST** be
+    /// discarded at expiry), so the Welcome can never process — `welcomeInvalid`.
+    KeyPackageExpired,
     App(AppError),
 }
 
@@ -376,6 +381,17 @@ pub async fn join(
              against the package the owner was given"
         ))
     })?;
+    // The same bound `holds_key_package` applies (act 0.3 item 10): a package past its
+    // expiry is not held. Its private half is discarded here rather than used — retaining
+    // it past expiry keeps a key alive for a join nobody is still expecting, and accepting
+    // a Welcome against it would make the expiry decorative.
+    if pending.expires_at <= now {
+        groups
+            .remove(member.key(KEY_PACKAGE))
+            .await
+            .map_err(|e| AppError::Internal(format!("discard an expired key package: {e}")))?;
+        return Err(JoinError::KeyPackageExpired);
+    }
 
     let group = RoomGroup::join_from_identity(&pending.snapshot, welcome)
         .map_err(|e| AppError::Validation(format!("the welcome did not process: {e}")))?;

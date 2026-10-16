@@ -11,6 +11,7 @@
 
 pub mod community;
 pub mod community_renewal;
+pub mod departures;
 pub mod files;
 pub mod handlers;
 pub mod policy;

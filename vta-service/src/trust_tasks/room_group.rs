@@ -178,6 +178,18 @@ pub(super) async fn handle_welcome(
                 ),
             );
         }
+        Err(room_groups::JoinError::KeyPackageExpired) => {
+            return super::helpers::reject_declared(
+                &doc,
+                trust_tasks_rs::specs::rooms::keys::welcome::v0_1::error_codes::WELCOME_INVALID,
+                format!(
+                    "the key package this welcome is sealed to expired and has been discarded; \
+                     mint a fresh one for room `{}` (rooms/keys/key-package) and have the owner \
+                     add that",
+                    req.room_id
+                ),
+            );
+        }
         Err(room_groups::JoinError::App(e)) => return app_error_to_reject(&doc, e),
     };
 
@@ -2683,6 +2695,71 @@ mod per_member_tests {
         assert_eq!(
             again["payload"]["code"], "rooms/keys/welcome:alreadyJoined",
             "{again}"
+        );
+    }
+
+    /// A Welcome sealed to a KeyPackage past its expiry is refused `welcomeInvalid`, as
+    /// `rooms/keys/act/0.3`'s `holds_key_package` already treats that package as not held —
+    /// and the expired private half is discarded rather than used
+    /// (`rooms/keys/key-package/0.1` *Retention*). Nothing is joined, and the invitation is
+    /// not spent, so a fresh package can still be added under it.
+    #[tokio::test]
+    async fn a_welcome_to_an_expired_key_package_is_refused_and_the_package_discarded() {
+        use base64::Engine as _;
+        let (state, _d, alice, _bob) = shared_vta().await;
+        let room = Party::new();
+        let groups = &state.room_groups_ks;
+        let member = Member::new(&room.did, &alice.did).unwrap();
+        // Minted at the epoch's start with a one-second life: long expired by now.
+        let pending = room_groups::mint_key_package(groups, &member, 1, 0)
+            .await
+            .unwrap();
+        let mut owner = vti_rooms::mls::RoomGroup::create("did:example:owner").unwrap();
+        let change = owner
+            .add_member_from_bytes(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(&pending.key_package)
+                    .unwrap(),
+            )
+            .unwrap();
+        let welcome =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(change.welcome.unwrap());
+
+        let refused = body(
+            handle_welcome(
+                &state,
+                &alice_caller(),
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WELCOME_0_1,
+                    serde_json::json!({
+                        "roomId": room.did, "welcome": welcome,
+                        "invitation": invitation(&room, &alice.did).await,
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(
+            refused["payload"]["code"],
+            trust_tasks_rs::specs::rooms::keys::welcome::v0_1::error_codes::WELCOME_INVALID.code,
+            "{refused}"
+        );
+        assert!(
+            room_groups::load(groups, &member).await.unwrap().is_none(),
+            "nothing joined"
+        );
+        assert!(
+            !room_groups::holds_key_package(
+                groups,
+                &member,
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(&pending.key_package)
+                    .unwrap(),
+                0,
+            )
+            .await
+            .unwrap(),
+            "the expired private half is gone, whatever the clock says"
         );
     }
 

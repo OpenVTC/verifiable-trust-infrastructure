@@ -230,6 +230,52 @@ Nothing is renewed while `[rooms.community]` is absent or the VTC has no link to
 nor for a room this VTC no longer hosts, no longer owns at its host, or that is past its
 retention (`reclaimable`). There is no "renew now": no specification defines one.
 
+## When a member leaves the community
+
+A member who leaves the community leaves every room it owns (`members/add` item 6). Nobody
+has to remove them room by room, and nobody can forget to.
+
+**What counts as leaving.** They leave (`vtc/members/self-remove`), an administrator
+removes them (`vtc/members/admin-remove`), their ACL entry is revoked (online, or
+`vtc acl remove` offline), it **expires**, or it is **suspended** by a cooling-off reduction
+of their authority. A key rotation (`acl/swap-key`) is not a departure.
+
+**Recorded at once, never waiting on the VTA.** At the departure the VTC records a removal
+owed for each room in which the member holds an admission or an open offer, in the
+`community_rooms` keyspace (backed up, so a restart or a restore resumes it). A background
+worker — the one owner of these removals — then completes each, exactly as an
+administrator's **Remove** would:
+
+- an open offer is **withdrawn**;
+- an admission to an `open` room is recorded removed;
+- on a sealed room the VTA removes them from the group and the room advances past them
+  (`rooms/owner/group/remove`) **before** it is recorded.
+
+Each is audited as `memberRemoved` / `offerWithdrawn` with actor `vtc:member-departure` and
+a reason naming the departure ("Left the community.", "Their access-control entry at the
+community expired.", …). What removal does and does not do is unchanged.
+
+**When the VTA does not answer**, or refuses, the departure itself has already happened;
+the removal is tried again with backoff (30 s, doubling, at most hourly). A retry after an
+answer that was lost is answered `notMember` by the VTA, which counts as done. An
+administrator removing the member by hand settles the owed removal too.
+
+**Where to see it.** Until a removal completes, `vtc/rooms/community/get`,
+`vtc/rooms/community/list` and `vtc/rooms/community/members/list` carry it under
+`ext["org.openvtc"].departureRemovals` — one entry per member and room, with `cause`
+(`left`, `removed`, `aclRemoved`, `expired`, `suspended`), `departedAt`, `status`
+(`pending`, or `retrying` once an attempt has failed), `attempts`, `nextAttemptAt` and the
+last attempt's `lastError`. The member's record keeps its state until the removal is done.
+The console's room page lists them above its members, and marks each one **leaving**.
+
+**Found even when nothing announced it.** An entry that expires has no event; the worker
+looks every 30 seconds at everyone holding an admission and records a departure for
+anyone no longer an active member — after seeing it for a minute, so a write in progress is
+never mistaken for one. The same pass catches a departure whose recording a crash cut off.
+
+**Rejoining re-adds nothing.** A removal already owed is completed even if they come back,
+and a returning member is admitted to a room again only by an administrator.
+
 ## The member's half — `vtc/rooms/offers/*`
 
 The member, signed with **their own DID** (the persona named in the offer):
@@ -314,6 +360,3 @@ already created can also mean the community's own authority over it has lapsed
   host's (`vtc.rooms.admin`, rooms registered, lifecycle, usage bands). An offer,
   admission or removal is in no topic, so the console's Community rooms pages poll for
   it; a topic for `vtc.rooms.manage` holders is a specification change.
-- **Removing a departing member from every room the community owns** when they leave
-  the community (`members/add` item 6, a SHOULD): today an administrator removes them
-  room by room.

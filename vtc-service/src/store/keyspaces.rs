@@ -78,13 +78,15 @@ pub const STORAGE_CONFIGS: &str = "storage_configs";
 /// The rooms this community **owns** (`crate::rooms::community`): one row per room
 /// (its label, the signing key the community's VTA holds for it, who created it), one per
 /// member admitted or offered admission, with the offer's credentials and, for a while
-/// after acceptance, the Welcome a repeated accept is answered with, and the `did.jsonl`
-/// of each room whose identity this community publishes itself.
+/// after acceptance, the Welcome a repeated accept is answered with, the `did.jsonl`
+/// of each room whose identity this community publishes itself, and one row per removal
+/// owed to a member who left the community (`crate::rooms::departures`).
 ///
 /// The owner's record, **never read on the host path**: a community room's records are
 /// authorized by credential chains exactly as a member's room's are (invariant I5).
 /// **Backed up**: a restored community that forgot whom it admitted could not remove
-/// them, and a room whose log it no longer served would stop resolving.
+/// them, one that forgot a removal owed on a departure would leave the departed member in
+/// the room, and a room whose log it no longer served would stop resolving.
 pub const COMMUNITY_ROOMS: &str = "community_rooms";
 
 /// Uploads and downloads in flight. Hours long at most, so **not backed up**: a restored
@@ -314,7 +316,8 @@ pub const BACKED_UP: &[&str] = &[
     // restore without them would hold blobs it could not find.
     STORAGE_CONFIGS,
     // The owner's record of the rooms this community owns, whom it admitted to
-    // them, and the logs of the room identities it publishes.
+    // them, the removals owed on members' departures, and the logs of the room
+    // identities it publishes.
     COMMUNITY_ROOMS,
     AUDIT,
     AUDIT_KEY,
