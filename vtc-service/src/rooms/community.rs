@@ -366,7 +366,10 @@ impl CommunityRooms {
     }
 
     pub async fn put_room(&self, room: &OwnedRoom) -> Result<(), AppError> {
-        self.ks.insert(room_key(&room.room_id), room).await
+        self.ks.insert(room_key(&room.room_id), room).await?;
+        // A hint only: an open console re-reads what it shows (`admin_events`).
+        crate::admin_events::notify(crate::admin_events::Topic::Rooms);
+        Ok(())
     }
 
     /// Every room the community owns, by identifier.
@@ -394,7 +397,9 @@ impl CommunityRooms {
             .await?;
         self.ks
             .insert(holder_key(&record.member, &record.room_id), &true)
-            .await
+            .await?;
+        crate::admin_events::notify(crate::admin_events::Topic::Rooms);
+        Ok(())
     }
 
     /// Every member record of a room, by member DID.
