@@ -625,9 +625,12 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # direct uploads (trust-tasks-tf #775).
 # 0.31.7: `vta/witness/{open,present,accept}` and the `witness-request`
 # capability (trust-tasks-tf #779), which `trust_tasks::witness` serves.
-# 0.31.8 is the FLOOR: external/credentials/issue 0.3 — at most 64 presigns a
-# batch, `responseTooLarge` (trust-tasks-tf #781).
-trust-tasks-rs = { version = "0.31.8", default-features = false, features = [
+# 0.31.8: external/credentials/issue 0.3 — at most 64 presigns a batch,
+# `responseTooLarge` (trust-tasks-tf #781).
+# 0.31.9 is the FLOOR: `vtc/members/admit` and `vtc/members/make-membership`
+# (trust-tasks-tf #784), whose generated types `trust_tasks::admission_tasks`
+# serves.
+trust-tasks-rs = { version = "0.31.9", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
