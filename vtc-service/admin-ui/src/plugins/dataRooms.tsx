@@ -1,12 +1,15 @@
 // Data rooms — one page for everything this community does about the rooms it
 // hosts, with a tab per part: the rooms themselves, how much they store and
-// read back, and where their files are kept.
+// read back, where their files are kept — and the rooms it owns itself.
 //
 //   /rooms                      Rooms tab   (`rooms.tsx`)
 //   /rooms/usage                Usage tab   (`roomUsage.tsx`)
 //   /rooms/storage              Storage tab (`storage.tsx`)
 //   /rooms/storage/<configId>   one storage location
 //   /rooms/r/<roomId>           one room    (`rooms/RoomDetail.tsx`)
+//   /rooms/community            Community rooms tab (`rooms/CommunityRooms.tsx`)
+//   /rooms/community/<roomId>   one room the community owns
+//                               (`rooms/CommunityRoomDetail.tsx`)
 //
 // A room's page sits under `r/` because a room's identifier is whatever its
 // owner minted — nothing makes it a DID, so a bare `/rooms/<roomId>` could be
@@ -20,10 +23,11 @@
 // only to a viewer holding one of them; a room's page and a storage location's
 // page are gated as their tab is. The menu entry is visible to a holder of any
 // tab's capability (`DATA_ROOMS_CAPABILITIES`, which `plugins/index.ts`
-// registers), so a tab for a different authority — community-owned rooms, on
-// `vtc.rooms.manage` — is one entry in `DATA_ROOMS_TABS` and a route here, and
-// its holders get the menu entry without being shown the others. As with the
-// nav, this is a hint: the VTC decides every operation.
+// registers), so a tab for a different authority — Community rooms, on
+// `vtc.rooms.manage` (the owner's authority, not the host's) — is one entry in
+// `DATA_ROOMS_TABS` and a route here, and its holders get the menu entry
+// without being shown the others. As with the nav, this is a hint: the VTC
+// decides every operation.
 
 import type { ComponentType, ReactNode } from "react";
 import { Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
@@ -33,12 +37,14 @@ import { TabLinks } from "@/components/Tabs";
 import { holds, useCapabilities } from "@/lib/viewer";
 
 import { RoomsList } from "./rooms";
+import { CommunityRoomDetail } from "./rooms/CommunityRoomDetail";
+import { CommunityRoomsList, NewCommunityRoomButton } from "./rooms/CommunityRooms";
 import { RoomDetail } from "./rooms/RoomDetail";
-import { ROOMS_PATH, STORAGE_PATH, USAGE_PATH } from "./rooms/shared";
+import { COMMUNITY_PATH, ROOMS_PATH, STORAGE_PATH, USAGE_PATH } from "./rooms/shared";
 import { RoomUsage } from "./roomUsage";
 import { ConfigDetail, NewStorageButton, StorageList } from "./storage";
 
-export type DataRoomsTabId = "rooms" | "usage" | "storage";
+export type DataRoomsTabId = "rooms" | "usage" | "storage" | "community";
 
 export interface DataRoomsTab {
   readonly id: DataRoomsTabId;
@@ -91,6 +97,16 @@ export const DATA_ROOMS_TABS: readonly DataRoomsTab[] = [
     actions: NewStorageButton,
     body: StorageList,
   },
+  {
+    id: "community",
+    label: "Community rooms",
+    path: COMMUNITY_PATH,
+    // The owner's authority over the rooms the community itself owns.
+    capabilities: ["vtc.rooms.manage"],
+    lead: "Rooms this community owns — the board's papers, a working group's drafts, a members' library — run by its administrators and outliving any of them. The community's VTA holds each room's keys; you decide who is offered a place.",
+    actions: NewCommunityRoomButton,
+    body: CommunityRoomsList,
+  },
 ];
 
 /** What the Data rooms menu entry is gated on: any tab's capabilities. */
@@ -119,7 +135,16 @@ export function DataRooms() {
         <Route index element={<TabBody id="rooms" />} />
         <Route path="usage" element={<TabBody id="usage" />} />
         <Route path="storage" element={<TabBody id="storage" />} />
+        <Route path="community" element={<TabBody id="community" />} />
       </Route>
+      <Route
+        path="community/:roomId"
+        element={
+          <Gated id="community">
+            <CommunityRoomDetail />
+          </Gated>
+        }
+      />
       <Route
         path="storage/:configId"
         element={
@@ -147,6 +172,7 @@ export function DataRooms() {
 function currentTab(pathname: string): DataRoomsTab {
   if (pathname === USAGE_PATH) return tabOf("usage");
   if (pathname === STORAGE_PATH) return tabOf("storage");
+  if (pathname === COMMUNITY_PATH) return tabOf("community");
   return tabOf("rooms");
 }
 

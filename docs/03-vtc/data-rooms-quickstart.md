@@ -556,8 +556,8 @@ write is not retried:
 ## 12. A room the community owns
 
 Everything above is a room **Alice** owns. The community can own rooms too — run by its
-administrators with `cnm`, with VTA C holding their keys ([Rooms the community
-owns](community-rooms.md)). It needs the VTC on a mediator with VTA C (§10.1), as
+administrators with `cnm` or from the console's **Data rooms → Community rooms** tab, with
+VTA C holding their keys ([Rooms the community owns](community-rooms.md)). It needs the VTC on a mediator with VTA C (§10.1), as
 storage does.
 
 > Unlike §1–§11, this section has not yet been run end to end against live services;
@@ -587,6 +587,11 @@ cnm rooms members add "$CROOM" --member "$ALICE" --action read --action write \
     --valid-for 90d --reason "joins the board"
 cnm rooms members list "$CROOM"
 ```
+
+Or, in the console (`http://localhost:8200/admin/rooms/community`): **New community
+room** with the same label, tier and reason, then on the room's page **Add a member**
+with `$ALICE`, `read` and `write`, 90 days and a reason. Each asks for your passkey for
+that one request.
 
 Alice then lists her offers and accepts one. Her VTA signs each request as `$ALICE`
 (`rooms/keys/act` 0.3) and `pnm` carries it to the VTC (`vtc/rooms/offers/{list,accept}/0.1`):

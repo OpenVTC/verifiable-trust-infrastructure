@@ -35,9 +35,10 @@ export function LifecyclePill({ value }: { value: string }) {
 
 // ── Where things are on the Data rooms page (`plugins/dataRooms.tsx`) ──
 //
-// One page with three tabs: the rooms list at `/rooms`, usage at
+// One page with four tabs: the rooms list at `/rooms`, usage at
 // `/rooms/usage`, storage at `/rooms/storage` (a config at
-// `/rooms/storage/<configId>`). A room's own page is `/rooms/r/<roomId>`, not
+// `/rooms/storage/<configId>`), and the rooms the community owns at
+// `/rooms/community` (one at `/rooms/community/<roomId>`). A room's own page is `/rooms/r/<roomId>`, not
 // `/rooms/<roomId>`: a room's identifier is whatever its owner minted (the
 // `rooms/create` schema says only "string", and the host does not assign or
 // constrain it), so a bare segment could be `usage` or `storage` and land on a
@@ -49,10 +50,18 @@ export const ROOMS_PATH = "/rooms";
 export const USAGE_PATH = `${ROOMS_PATH}/usage`;
 /** The Storage tab. */
 export const STORAGE_PATH = `${ROOMS_PATH}/storage`;
+/** The Community rooms tab: rooms this community owns. */
+export const COMMUNITY_PATH = `${ROOMS_PATH}/community`;
 
 /** Where a room's own page is. */
 export function roomPath(roomId: string): string {
   return `${ROOMS_PATH}/r/${encodeURIComponent(roomId)}`;
+}
+
+/** Where a room the community owns is run from. Its identifier is a DID the
+ *  community's VTA minted, so it can never be mistaken for a sub-path. */
+export function communityRoomPath(roomId: string): string {
+  return `${COMMUNITY_PATH}/${encodeURIComponent(roomId)}`;
 }
 
 /** Where one storage config's page is. */

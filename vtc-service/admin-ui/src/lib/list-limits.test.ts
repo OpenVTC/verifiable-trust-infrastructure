@@ -46,6 +46,8 @@ const ENDORSEMENTS = `${T}/vtc/endorsements/list/0.1`;
 const ENDORSEMENT_TYPES = `${T}/vtc/endorsement-types/list/0.1`;
 const ROOMS = `${T}/vtc/rooms/list/0.1`;
 const ROOMS_USAGE = `${T}/vtc/rooms/usage/0.1`;
+const COMMUNITY_ROOMS = `${T}/vtc/rooms/community/list/0.1`;
+const COMMUNITY_ROOM_MEMBERS = `${T}/vtc/rooms/community/members/list/0.1`;
 const STORAGE_CONFIGS = `${T}/vtc/storage/configs/list/0.1`;
 const ACCEPTS = `${T}/vtc/schemas/accepts/list/0.2`;
 const GRANTS = `${T}/vtc/vetting/vetters/grants/list/0.1`;
@@ -95,6 +97,9 @@ const SITES: Site[] = [
   { file: "plugins/vetting/api.ts", site: "{ limit: 200, ...(cursor ? { cursor } : {}) }", uri: ENDORSEMENT_TYPES, from: ["200"] },
   // Rooms.
   { file: "plugins/rooms.tsx", site: "{ limit: 100, ...(cursor ? { cursor } : {}) }", uri: ROOMS, from: ["100"] },
+  // Rooms the community owns, and one room's members, every page.
+  { file: "lib/community-rooms-api.ts", site: "COMMUNITY_ROOMS_LIST_TASK, {\n      limit: COMMUNITY_PAGE", uri: COMMUNITY_ROOMS, from: ["COMMUNITY_PAGE"] },
+  { file: "lib/community-rooms-api.ts", site: "roomId,\n      limit: COMMUNITY_PAGE", uri: COMMUNITY_ROOM_MEMBERS, from: ["COMMUNITY_PAGE"] },
   // Room usage, every page (room detail, Room usage).
   { file: "lib/rooms-api.ts", site: "limit: USAGE_PAGE", uri: ROOMS_USAGE, from: ["USAGE_PAGE"] },
   // Storage configs, every page (Storage, a room's "other storage").

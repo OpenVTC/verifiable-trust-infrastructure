@@ -456,7 +456,7 @@ badge topics the viewer's count:
 | `members` | the Members page and tile | — | every administrator |
 | `singleAdminMode` | the single-administrator banner | — | every administrator |
 | `config` | the configuration and profile screens | — | holders of `vtc.config.admin` |
-| `rooms` (0.2) | the Data rooms page (its Rooms, Usage and Storage tabs) and a room's page | — | holders of `vtc.rooms.admin` |
+| `rooms` (0.2) | the Data rooms page (its Rooms, Usage, Storage and Community rooms tabs) and a room's page | — | holders of `vtc.rooms.admin` |
 
 `rooms` is hinted when a room is registered (or removed), when a room's
 lifecycle state changes — which happens with the clock, so the VTC wakes the
@@ -467,7 +467,11 @@ created, changed or changes state. Holdings moving inside a band, or a live
 room renewing, send nothing: the VTC digests exactly those facts, as the rooms
 reads report them, and hints only when the digest moves. The pages also poll
 (60 s, 5 min while the stream carries `rooms`), so a 0.1 VTC or an
-administrator without the topic still sees changes.
+administrator without the topic still sees changes. The Community rooms tab
+(rooms the community owns, [`community-rooms.md`](community-rooms.md)) polls at
+60 s regardless: the topic hints when a community room is created, but not when
+one is offered to, accepted by or removed from a member, and it goes only to
+holders of `vtc.rooms.admin`, not of `vtc.rooms.manage`.
 
 The console reacts to a hint only by invalidating the react-query keys of that
 topic's own signed read, so authorization stays on every read: a hint can

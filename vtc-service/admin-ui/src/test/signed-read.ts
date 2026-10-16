@@ -27,6 +27,8 @@ export async function unsignedRead<T>(typeUri: string, payload: unknown): Promis
       message: body?.payload?.message ?? body?.payload?.code ?? `${res.status}`,
     };
     if (typeof body?.payload?.code === "string") err.code = body.payload.code;
+    const details = body?.payload?.details;
+    if (details && typeof details === "object") err.details = details as Record<string, unknown>;
     throw err;
   }
   // A parked act, as the signed door throws it (`lib/parked-action.ts`).

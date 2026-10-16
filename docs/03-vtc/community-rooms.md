@@ -87,6 +87,44 @@ operator's own `rooms` policy is left alone and must allow `communityOwned` room
 from `vtc.rooms.admin` (hosting: storage, limits, usage): a community may let someone run
 its board room without letting them reassign every room's storage, and the reverse.
 
+## Run a room — the console
+
+**Data rooms → Community rooms** (`/admin/rooms/community`) is the same surface as
+`cnm rooms` below, shown to an administrator holding `vtc.rooms.manage` (a viewer who
+holds only `vtc.rooms.admin` sees the host's tabs and not this one). Every read and
+change is a signed `vtc/rooms/community/*` document through the console's key; there is
+no REST route.
+
+- **The list**: each room's label, tier, lifecycle, how many members are admitted and
+  offered, and when the community's own authority over it lapses (flagged 30 days
+  before). When `[rooms.community]` is absent the tab says so and shows the section to
+  add, from the list's `ext["org.openvtc"].communityRooms`.
+- **New community room**: label, tier (`attributed` by default; `open`; `private` is
+  shown but not offered — it is not served for community rooms yet and the shipped
+  `rooms` policy refuses it), history (`chained` / `fromJoin`), retention days,
+  storage location (listed only to a holder of `vtc.rooms.admin`; otherwise the
+  default), and a reason.
+- **A room's page** (`/admin/rooms/community/<room DID>`): its facts, and its members
+  filtered by offered / admitted / removed. **Add a member** takes the member's DID,
+  actions (`read`, `write`, `curate`), how many days the admission is valid and a
+  reason, and makes an **offer**. **Remove** (or **Withdraw**, for an open offer) says
+  what removal does on the room's tier and until when the member's authority is
+  honoured **before** anything is signed, takes a reason, and reports the answer's
+  `validUntil` and, on a sealed tier, the first epoch sealed without them.
+
+Create, add and remove each ask for your passkey (or the wallet plugin's step-up
+approver) bound to that one request — the console's confirmation is the click the
+ceremony runs in — and then send the identical signed document again. A refusal is shown
+with what fixes it: `noKeyHolder` with the configuration and the VTA entry to add,
+`visibilityNotPermitted` with the policy to change, `notAMember`, `alreadyMember`, a VTA
+that did not answer (and, for a create, the DID it may have minted).
+
+The pages re-read after every change made from them and poll once a minute. A create
+also reaches other open consoles through the live channel's `rooms` topic, which hints
+when a room is registered; that topic goes to holders of `vtc.rooms.admin` and does not
+cover the owner's record (offers, admissions, removals), so for those the minute's poll
+is what another administrator's console waits for.
+
 ## Run a room — `cnm rooms`
 
 Each change takes a passkey gesture bound to that one request (answered in a browser,
@@ -162,8 +200,12 @@ identical request and answers with the same Welcome.
 
 ## What is not here yet
 
-- **Console pages** (create, members, offers in the portal) — the tasks are served;
-  the screens are follow-up work.
+- **Offers in the member portal**: a member lists and accepts their offers with `pnm
+  rooms offers` (below); the portal has no screen for them yet.
+- **Live updates for the owner's record**: `vtc/admin/events` 0.2's `rooms` topic is the
+  host's (`vtc.rooms.admin`, rooms registered, lifecycle, usage bands). An offer,
+  admission or removal is in no topic, so the console's Community rooms pages poll for
+  it; a topic for `vtc.rooms.manage` holders is a specification change.
 - **Renewing the community's own authority** before `ownerAuthorityValidUntil`: reissue
   with `pnm rooms owner issue-authority` at the community's VTA for now.
 - **Removing a departing member from every room the community owns** when they leave

@@ -119,6 +119,18 @@ use crate::server::AppState;
         vta_sdk::openapi::RoomsUsage01Response,
         vta_sdk::openapi::RoomsLimitsSet01Payload,
         vta_sdk::openapi::RoomsLimitsSet01Response,
+        // Rooms the community itself owns (`trust_tasks::community_room_tasks`),
+        // signed documents only.
+        vta_sdk::openapi::RoomsCommunityCreate01Payload,
+        vta_sdk::openapi::RoomsCommunityCreate01Response,
+        vta_sdk::openapi::RoomsCommunityList01Response,
+        vta_sdk::openapi::RoomsCommunityGet01Response,
+        vta_sdk::openapi::RoomsCommunityMembersAdd01Payload,
+        vta_sdk::openapi::RoomsCommunityMembersAdd01Response,
+        vta_sdk::openapi::RoomsCommunityMembersRemove01Payload,
+        vta_sdk::openapi::RoomsCommunityMembersRemove01Response,
+        vta_sdk::openapi::RoomsCommunityMembersList01Payload,
+        vta_sdk::openapi::RoomsCommunityMembersList01Response,
         // Where rooms' files are kept (`trust_tasks::storage_tasks`), signed
         // documents only.
         vta_sdk::openapi::RoomsStorageAssign01Payload,

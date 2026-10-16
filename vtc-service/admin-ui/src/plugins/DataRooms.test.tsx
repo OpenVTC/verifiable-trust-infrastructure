@@ -57,7 +57,7 @@ const routes = () => [
   taskRoute(ROOMS_GET, { code: "vtc/rooms/get:notFound", message: "no such room" }, 404),
 ];
 
-describe("Data rooms — one menu entry, three tabs", () => {
+describe("Data rooms — one menu entry, four tabs", () => {
   it("registers a single Data rooms entry, gated on what its tabs need", () => {
     registerBuiltinPlugins();
     const all = getPlugins();
@@ -66,8 +66,13 @@ describe("Data rooms — one menu entry, three tabs", () => {
     expect(rooms.label).toBe("Data rooms");
     expect(rooms.path).toBe("/rooms");
     expect(rooms.capabilities).toEqual(DATA_ROOMS_CAPABILITIES);
-    expect(DATA_ROOMS_CAPABILITIES).toEqual(["vtc.rooms.admin"]);
-    expect(DATA_ROOMS_TABS.map((t) => t.label)).toEqual(["Rooms", "Usage", "Storage"]);
+    expect(DATA_ROOMS_CAPABILITIES).toEqual(["vtc.rooms.admin", "vtc.rooms.manage"]);
+    expect(DATA_ROOMS_TABS.map((t) => t.label)).toEqual([
+      "Rooms",
+      "Usage",
+      "Storage",
+      "Community rooms",
+    ]);
   });
 
   it("shows the tabs as links, the open one current", async () => {

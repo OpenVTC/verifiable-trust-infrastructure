@@ -13,6 +13,8 @@
   "https://trusttasks.org/spec/vtc/registry/records/list/0.1": 200,
   "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1": 200,
   "https://trusttasks.org/spec/vtc/relationships/list/0.2": 200,
+  "https://trusttasks.org/spec/vtc/rooms/community/list/0.1": 100,
+  "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1": 100,
   "https://trusttasks.org/spec/vtc/rooms/list/0.1": 100,
   "https://trusttasks.org/spec/vtc/rooms/usage/0.1": 100,
   "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.2": 50,

@@ -58,8 +58,8 @@ use trust_tasks_rs::specs::vtc::join_requests::manifest;
 use trust_tasks_rs::specs::vtc::members::credentials as member_credentials;
 use trust_tasks_rs::specs::vtc::registry::{records, sync_jobs};
 use trust_tasks_rs::specs::vtc::rooms::{
-    get as rooms_get, limits::set as rooms_limits_set, storage::assign as rooms_storage_assign,
-    usage as rooms_usage,
+    community as rooms_community, get as rooms_get, limits::set as rooms_limits_set,
+    storage::assign as rooms_storage_assign, usage as rooms_usage,
 };
 use trust_tasks_rs::specs::vtc::schemas::accepts;
 use trust_tasks_rs::specs::vtc::storage::configs as storage_configs;
@@ -222,6 +222,32 @@ spec_types! {
     RoomsStorageAssign01Payload(rooms_storage_assign::v0_1::Payload);
     /// `vtc/rooms/storage/assign/0.1#response`.
     RoomsStorageAssign01Response(rooms_storage_assign::v0_1::Response);
+    /// `vtc/rooms/community/create/0.1` payload — a room the community itself
+    /// owns: its label, tier, retention and the reason recorded with it.
+    RoomsCommunityCreate01Payload(rooms_community::create::v0_1::Payload);
+    /// `vtc/rooms/community/create/0.1#response` — the room as the community
+    /// owns it.
+    RoomsCommunityCreate01Response(rooms_community::create::v0_1::Response);
+    /// `vtc/rooms/community/list/0.1#response` — one page of the rooms the
+    /// community owns.
+    RoomsCommunityList01Response(rooms_community::list::v0_1::Response);
+    /// `vtc/rooms/community/get/0.1#response` — one room the community owns.
+    RoomsCommunityGet01Response(rooms_community::get::v0_1::Response);
+    /// `vtc/rooms/community/members/add/0.1` payload — admit an active member
+    /// with actions, an expiry and a reason.
+    RoomsCommunityMembersAdd01Payload(rooms_community::members::add::v0_1::Payload);
+    /// `vtc/rooms/community/members/add/0.1#response` — the member's record.
+    RoomsCommunityMembersAdd01Response(rooms_community::members::add::v0_1::Response);
+    /// `vtc/rooms/community/members/remove/0.1` payload.
+    RoomsCommunityMembersRemove01Payload(rooms_community::members::remove::v0_1::Payload);
+    /// `vtc/rooms/community/members/remove/0.1#response` — the member's record,
+    /// and on a sealed tier the first epoch sealed without them.
+    RoomsCommunityMembersRemove01Response(rooms_community::members::remove::v0_1::Response);
+    /// `vtc/rooms/community/members/list/0.1` payload.
+    RoomsCommunityMembersList01Payload(rooms_community::members::list::v0_1::Payload);
+    /// `vtc/rooms/community/members/list/0.1#response` — one page of a room's
+    /// members, offered, admitted or removed.
+    RoomsCommunityMembersList01Response(rooms_community::members::list::v0_1::Response);
     /// `vtc/storage/configs/list/0.1#response` — each config and what it holds.
     StorageConfigsList01Response(storage_configs::list::v0_1::Response);
     /// `vtc/storage/configs/get/0.1#response` — one config, its facts and rooms.

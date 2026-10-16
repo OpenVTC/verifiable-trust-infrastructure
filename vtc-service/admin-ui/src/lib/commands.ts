@@ -59,7 +59,7 @@ const SCREEN_KEYWORDS: Record<string, readonly string[]> = {
   profile: ["branding", "name", "logo", "website"],
   recognition: ["registry", "cross-community", "trust registry"],
   // Usage and Storage are tabs of Data rooms (`plugins/dataRooms.tsx`).
-  rooms: ["data rooms", "files", "storage", "usage", "room usage", "quota", "s3"],
+  rooms: ["data rooms", "files", "storage", "usage", "room usage", "quota", "s3", "community rooms"],
   repos: ["git", "repositories", "forge", "github"],
   "my-passkeys": ["passkey", "webauthn", "security key"],
   "console-keys": ["signing key", "renew", "browser key"],
@@ -156,6 +156,14 @@ export const NAVIGATION_ACTIONS: readonly ActionSpec[] = [
     keywords: ["storage", "s3", "bucket", "new storage"],
     requires: "rooms",
     to: "/rooms/storage",
+  },
+  {
+    id: "community-room-create",
+    label: "Create a community room",
+    hint: "Data rooms · Community rooms",
+    keywords: ["community room", "board room", "new room", "owned room"],
+    requires: "rooms",
+    to: "/rooms/community?create=1",
   },
   {
     id: "renew-signing-key",

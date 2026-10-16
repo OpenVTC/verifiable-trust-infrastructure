@@ -270,3 +270,23 @@ export type StorageConfigProbeResponse = Schemas["VtcStorageConfigsProbeV0_1Resp
 export type StorageSettings = Schemas["VtcStorageConfigsCreateV0_1StorageSettings"];
 export type StorageAuth = Schemas["VtcStorageConfigsCreateV0_1StorageAuth"];
 export type RoomStorageAssignResponse = Schemas["VtcRoomsStorageAssignV0_1Response"];
+
+// ── Data rooms the community itself owns ────────────────────────────────
+//
+// The published `vtc/rooms/community/*` shapes (`lib/community-rooms-api.ts`),
+// answered from `vtc.rooms.manage` — the owner's authority, not the host's.
+// Signed documents only; no REST route.
+export type CommunityRoom = Schemas["VtcRoomsCommunityListV0_1CommunityRoom"];
+export type CommunityRoomsListResponse = Schemas["VtcRoomsCommunityListV0_1Response"];
+export type CommunityRoomGetResponse = Schemas["VtcRoomsCommunityGetV0_1Response"];
+export type CommunityRoomCreatePayload = Schemas["VtcRoomsCommunityCreateV0_1Payload"];
+export type CommunityRoomCreateResponse = Schemas["VtcRoomsCommunityCreateV0_1Response"];
+export type CommunityRoomMember = Schemas["VtcRoomsCommunityMembersListV0_1RoomMember"];
+export type CommunityRoomMemberState = Schemas["VtcRoomsCommunityMembersListV0_1MemberState"];
+export type CommunityRoomMemberAction = Schemas["VtcRoomsCommunityMembersAddV0_1MemberAction"];
+export type CommunityRoomMembersListPayload = Schemas["VtcRoomsCommunityMembersListV0_1Payload"];
+export type CommunityRoomMembersListResponse = Schemas["VtcRoomsCommunityMembersListV0_1Response"];
+export type CommunityRoomMembersAddPayload = Schemas["VtcRoomsCommunityMembersAddV0_1Payload"];
+export type CommunityRoomMembersAddResponse = Schemas["VtcRoomsCommunityMembersAddV0_1Response"];
+export type CommunityRoomMembersRemovePayload = Schemas["VtcRoomsCommunityMembersRemoveV0_1Payload"];
+export type CommunityRoomMembersRemoveResponse = Schemas["VtcRoomsCommunityMembersRemoveV0_1Response"];
