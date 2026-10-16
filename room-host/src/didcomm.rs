@@ -269,6 +269,10 @@ pub async fn serve(
     identity: HostIdentity,
     mediator_did: String,
 ) -> anyhow::Result<()> {
+    // Reachable by DID from here on, so a document must be addressed to this DID
+    // (framework SPEC §7.2 item 5) — over this socket and over HTTP alike.
+    state.set_host_did(&identity.did)?;
+
     let tdk = TDKSharedState::new(TDKConfig::builder().build()?).await?;
     for secret in &identity.secrets {
         tdk.secrets_resolver().insert(secret.clone()).await;

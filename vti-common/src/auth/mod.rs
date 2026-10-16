@@ -4,6 +4,7 @@ pub mod backend;
 pub mod didcomm;
 pub mod extractor;
 pub mod handlers;
+pub mod issuer_binding;
 pub mod jwt;
 #[cfg(feature = "passkey")]
 pub mod passkey;
@@ -23,6 +24,7 @@ pub use extractor::{
     AdminAuth, AuthClaims, AuthState, ManageAuth, StepUpAuth, SuperAdminAuth, WriteAuth,
     touch_cookie_session_for,
 };
+pub use issuer_binding::check_issuer_binding;
 pub use siop::{SiopError, VerifiedSiopIdToken, parse_unverified_iss, verify_siop_id_token};
 pub use vta_sdk::trust_task_proof::TrustTaskVmResolver;
 pub use vta_sdk::trust_task_proof::{

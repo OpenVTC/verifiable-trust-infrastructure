@@ -115,9 +115,33 @@ pub struct HostState {
     /// no resolver is configured: refusing what it cannot verify is correct, and quietly
     /// resolving over the network for an unauthenticated caller is not.
     resolver: vti_common::auth::TrustTaskVmResolver,
+    /// This host's own DID, once it has one — the `recipient` a document addressed to it
+    /// must carry (framework SPEC §7.2 items 4–5). Set when the host becomes reachable by
+    /// DID ([`HostState::set_host_did`]); an HTTP-only host with no identity has nothing to
+    /// compare against, exactly as a VTC with no DID configured skips the check.
+    host_did: Arc<std::sync::OnceLock<String>>,
 }
 
 impl HostState {
+    /// Bind this host to its DID, so a document addressed to anyone else is refused as
+    /// `wrongRecipient`. First call wins: a host has one identity for its lifetime, and a
+    /// second, different one is refused rather than silently swapped in.
+    pub fn set_host_did(&self, did: &str) -> Result<(), AppError> {
+        let set = self.host_did.get_or_init(|| did.to_string());
+        if set == did {
+            Ok(())
+        } else {
+            Err(AppError::Conflict(format!(
+                "this host already serves as `{set}`; it cannot also be `{did}`"
+            )))
+        }
+    }
+
+    /// This host's DID, when it has one.
+    pub fn host_did(&self) -> Option<&str> {
+        self.host_did.get().map(String::as_str)
+    }
+
     /// The room keyspace.
     ///
     /// This crate already exports `open_state` and `router` so a host can be embedded; this
@@ -160,13 +184,32 @@ impl HostState {
             serde_json::from_value::<TrustTask<Value>>((**received).clone())
                 .is_ok_and(|parsed| &parsed == doc)
         });
-        match received {
+        let signer = match received {
             Some(received) => {
                 vti_common::auth::verify_trust_task_proof_value(&received, &self.resolver).await
             }
             None => vti_common::auth::verify_trust_task_proof_with(doc, &self.resolver).await,
         }
-        .map_err(|e| AppError::Forbidden(format!("request proof: {e}")))
+        .map_err(|e| AppError::Forbidden(format!("request proof: {e}")))?;
+
+        // The proof must be the document's **issuer**'s (framework SPEC §4.7). A proof
+        // that verifies under some other DID's key is a valid signature by somebody else,
+        // and the issuer the document names — which a reply is addressed to — is then a
+        // claim nobody proved. The same refusal the VTC's spine makes.
+        if doc.issuer.as_deref() != Some(signer.as_str()) {
+            tracing::warn!(
+                security_alert = true,
+                issuer = ?doc.issuer,
+                %signer,
+                "request proof verifies under a key the document's issuer does not control"
+            );
+            return Err(AppError::Forbidden(
+                "request proof: the proof's verificationMethod does not belong to the \
+                 document's issuer (SPEC §4.7)"
+                    .into(),
+            ));
+        }
+        Ok(signer)
     }
 
     /// The presenter — proven, not claimed — and the verifier to judge their chain with.
@@ -371,6 +414,31 @@ async fn dispatch_received(state: &Arc<HostState>, body: &[u8]) -> Answer {
         );
     }
 
+    // One instant for every temporal decision in this dispatch: the acceptance window and
+    // the replay record's retention are the same bound (SPEC §7.2, *Bounding the record*).
+    let now = chrono::Utc::now();
+
+    // SPEC §7.2 item 13 — the timestamp bounds and the acceptance window, the VTC's own
+    // (`VTI_ACCEPTANCE_WINDOW`, `issuedAt` required). Decided from the document alone, so
+    // before any resolution or verification work. Without it a captured request was good
+    // forever: the replay record below only remembers a document for its window.
+    if let Err(reason) = doc.validate_freshness(now, &freshness_policy()) {
+        return reject(&doc, reason);
+    }
+
+    // SPEC §7.2 items 4 + 5 — expiry, and the recipient binding: a document addressed to
+    // another host is not this host's to execute. A host with no DID yet has nothing to
+    // compare a `recipient` against, so only the expiry half applies — expressed as the
+    // same check against the document's own recipient, which it trivially matches.
+    let my_vid = state
+        .host_did()
+        .map(str::to_string)
+        .or_else(|| doc.recipient.clone())
+        .unwrap_or_default();
+    if let Err(reason) = doc.validate_basic(now, &my_vid) {
+        return reject(&doc, reason);
+    }
+
     // SPEC §7.2 item 11 — the duplicate-execution record.
     //
     // Every carrier that reaches here is at-least-once. The mediator re-pushes a
@@ -381,13 +449,13 @@ async fn dispatch_received(state: &Arc<HostState>, body: &[u8]) -> Answer {
     //
     // The document's proof does not close this: a redelivered copy carries the same valid
     // proof the first did. It *is* the first document.
-    if !is_consequential(&doc.type_uri.to_string()) {
-        // `ReplayPolicy::NotConsequential` — item 11's narrow disapplication, and a
-        // property of the operation rather than of this host's convenience. The read tasks
-        // return what is there and change nothing, so a record would buy no correctness
-        // and cost a slot that a write needs.
-        return route(state, doc).await;
-    }
+    //
+    // Every document is recorded, reads included. A read changes nothing, but a captured
+    // read replayed inside its window would otherwise be answered afresh — with whatever
+    // the room holds *now*, to whoever replays it. What differs for a read is only what is
+    // kept: its answer is not retained (a chunk download is large, and a replay is owed
+    // nothing), so a duplicate read is answered `204` with no body.
+    let keep_response = is_consequential(&doc.type_uri.to_string());
 
     let doc_id = doc.id.clone();
     let digest = match trust_tasks_rs::document_digest(&doc) {
@@ -403,8 +471,7 @@ async fn dispatch_received(state: &Arc<HostState>, body: &[u8]) -> Answer {
             );
         }
     };
-    let now = chrono::Utc::now();
-    let retain_until = retention_policy().record_expiry(&doc, now);
+    let retain_until = retain_until(&doc, now);
     match trust_tasks_rs::ReplayGuard::claim(&*REPLAY_GUARD, &doc_id, &digest, retain_until, now)
         .await
     {
@@ -463,7 +530,8 @@ async fn dispatch_received(state: &Arc<HostState>, body: &[u8]) -> Answer {
     {
         let guard: &dyn trust_tasks_rs::ReplayGuard = &*REPLAY_GUARD;
         if (200..300).contains(&answer.status) {
-            if let Err(e) = guard.record_response(&doc_id, Some(&answer.document)).await {
+            let kept = keep_response.then_some(&answer.document);
+            if let Err(e) = guard.record_response(&doc_id, kept).await {
                 tracing::warn!(error = %e, id = %doc_id, "replay guard: response not recorded");
             }
         } else if let Err(e) = guard.release(&doc_id, &digest).await {
@@ -518,12 +586,13 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
     }
 }
 
-/// Whether a task changes room state, and so needs a duplicate-execution record.
+/// Whether a task changes room state, and so has its answer kept in the duplicate-execution
+/// record — a redelivered write is answered with the result it already had.
 ///
-/// Listed positively, by type, rather than derived from a naming convention: a new task
-/// whose URI nobody thought about must land on the **safe** side, and an unknown type here
-/// is guarded. The cost of guarding a read by mistake is one map slot; the cost of missing
-/// a write is a record written twice or an epoch minted twice.
+/// Every document is *recorded*; this decides only whether the answer is retained. Listed
+/// positively, by type, rather than derived from a naming convention: a new task whose URI
+/// nobody thought about lands on the side that keeps its answer, so a retried write is never
+/// told `204` when it should have been told what happened.
 fn is_consequential(type_uri: &str) -> bool {
     !matches!(
         type_uri,
@@ -549,11 +618,34 @@ fn is_consequential(type_uri: &str) -> bool {
 static REPLAY_GUARD: std::sync::LazyLock<trust_tasks_rs::InMemoryReplayGuard> =
     std::sync::LazyLock::new(trust_tasks_rs::InMemoryReplayGuard::default);
 
-/// How long a duplicate-execution record is kept. **Retention only** — this is not an
-/// acceptance policy, and a document carrying its own `expiresAt` uses that; the window
-/// here is the fallback for one that carries none.
-fn retention_policy() -> trust_tasks_rs::FreshnessPolicy {
-    trust_tasks_rs::FreshnessPolicy::consequential()
+/// The acceptance window: the VTC's (`VTI_ACCEPTANCE_WINDOW`, `issuedAt` required), so a
+/// document a VTC host would accept is accepted here and one it would refuse is refused.
+fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
+    vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW
+        .freshness_policy()
+        .requiring_issued_at()
+}
+
+/// How long the duplicate-execution record for `doc` is kept: until this host would stop
+/// accepting it, which SPEC §7.2 makes the same instant. That is the earlier of the
+/// producer's `expiresAt` and the end of the acceptance window (`issuedAt + max_age +
+/// skew`) — never later, or a producer stamping a distant `expiresAt` pins its id for that
+/// long, and never earlier, or a replay arriving while still acceptable executes twice.
+fn retain_until(
+    doc: &TrustTask<Value>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let policy = freshness_policy();
+    let window_end = doc
+        .issued_at
+        .zip(policy.max_age)
+        .map(|(issued_at, max_age)| issued_at + max_age + policy.skew);
+    match (doc.expires_at, window_end) {
+        (Some(expires_at), Some(end)) => Some(expires_at.min(end)),
+        (expires_at, end) => expires_at
+            .or(end)
+            .or_else(|| policy.record_expiry(doc, now)),
+    }
 }
 
 async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
@@ -1612,6 +1704,7 @@ pub fn open_state_with_files(
             files.limits,
         )),
         resolver,
+        host_did: Arc::new(std::sync::OnceLock::new()),
     }))
 }
 
@@ -1958,18 +2051,32 @@ mod tests {
         let f = RoomFixture::new(Visibility::Open).await;
         register(&app, &f).await;
 
-        let document = vta_sdk::trust_task_sign::build_signed(
-            ROOMS_RECORDS_LIST_TYPE,
-            serde_json::json!({
-                "roomId": f.room.room_id,
-                "presentation": f.as_owner(),
-            }),
-            &f.owner.did,
-            &f.owner.secret_multibase,
-            "did:key:zHost",
-        )
-        .await
-        .expect("sign the request");
+        // One request, as two documents. Not the same bytes twice: those are spent on first
+        // delivery, and a replay is refused whichever carrier brings it
+        // (`a_replayed_read_is_refused`). Everything a reply is derived from is shared,
+        // the thread included; only the per-document `id` differs.
+        let request = async || {
+            let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+                ROOMS_RECORDS_LIST_TYPE,
+                serde_json::json!({
+                    "roomId": f.room.room_id,
+                    "presentation": f.as_owner(),
+                }),
+                &f.owner.did,
+                "did:key:zHost",
+            )
+            .expect("build the request");
+            doc.thread_id = Some("urn:uuid:00000000-0000-4000-8000-0000000000aa".into());
+            vta_sdk::trust_task_sign::sign_in_place(
+                &mut doc,
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await
+            .expect("sign the request");
+            serde_json::to_string(&doc).expect("serialise")
+        };
+        let document = request().await;
 
         // Over HTTP, through the router.
         let http = app
@@ -1991,6 +2098,7 @@ mod tests {
         .unwrap();
 
         // Straight into `dispatch`, which is what a mediator listener does.
+        let document = request().await;
         let carried = dispatch(&st, document.as_bytes()).await;
 
         assert_eq!(http_status, StatusCode::OK, "{http_body}");
@@ -2306,10 +2414,12 @@ mod tests {
         );
     }
 
-    /// Reads take no record. They change nothing, so a slot spent on one is a slot a write
-    /// cannot have — and two identical reads must both be answered, not absorbed.
+    /// Every document is recorded, reads included (SPEC §7.2 item 11, as the VTC's spine
+    /// applies it). A captured read replayed inside its window is not answered again — with
+    /// the room as it is *now*, to whoever replays it — and its first answer is not kept to
+    /// be handed back either: a duplicate read is `204`, with nothing in it.
     #[tokio::test]
-    async fn a_repeated_read_is_answered_every_time() {
+    async fn a_replayed_read_is_refused() {
         let (_d, st) = state();
         let app = router(st);
         let f = RoomFixture::new(Visibility::Open).await;
@@ -2331,8 +2441,117 @@ mod tests {
         assert_eq!(first_status, StatusCode::OK, "{first}");
         assert_eq!(
             second_status,
-            StatusCode::OK,
-            "a repeated read must be answered, not treated as a duplicate: {second}"
+            StatusCode::NO_CONTENT,
+            "a replayed read must not be answered: {second}"
+        );
+        assert_eq!(second, Value::Null, "and must carry nothing: {second}");
+
+        // A fresh document for the same read is answered: the record is per document,
+        // not per question.
+        let (status, again) = call(
+            &app,
+            ROOMS_RECORDS_LIST_TYPE,
+            serde_json::json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{again}");
+    }
+
+    /// A list request from the owner, built unsigned so a test can set what `build_signed`
+    /// fixes, then signed as `signer`.
+    async fn list_doc(
+        f: &RoomFixture,
+        signer: &Party,
+        edit: impl FnOnce(&mut TrustTask<Value>),
+    ) -> Vec<u8> {
+        let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+            ROOMS_RECORDS_LIST_TYPE,
+            serde_json::json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f.owner.did,
+            "did:key:zHost",
+        )
+        .expect("build");
+        edit(&mut doc);
+        vta_sdk::trust_task_sign::sign_in_place(&mut doc, &signer.did, &signer.secret_multibase)
+            .await
+            .expect("sign");
+        serde_json::to_vec(&doc).expect("serialise")
+    }
+
+    /// The spine checks the VTC applies to every document, applied here too (framework
+    /// SPEC §7.2 items 4, 5 and 13). Each document is otherwise one the host answers.
+    #[tokio::test]
+    async fn stale_expired_and_misaddressed_documents_are_refused() {
+        let (_d, st) = state();
+        st.set_host_did("did:key:zHost").expect("bind the host DID");
+        let app = router(st);
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+        let now = chrono::Utc::now();
+
+        // The control: in its window, addressed to this host.
+        let ok = list_doc(&f, &f.owner, |_| {}).await;
+        let (status, body) = post_raw(&app, &ok).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        type Edit = Box<dyn FnOnce(&mut TrustTask<Value>)>;
+        let cases: [(&str, Edit); 4] = [
+            (
+                "stale: issued an hour ago",
+                Box::new(move |d| d.issued_at = Some(now - chrono::Duration::hours(1))),
+            ),
+            (
+                "expired",
+                Box::new(move |d| {
+                    d.issued_at = Some(now - chrono::Duration::minutes(1));
+                    d.expires_at = Some(now - chrono::Duration::seconds(10));
+                }),
+            ),
+            ("no issuedAt", Box::new(|d| d.issued_at = None)),
+            (
+                "addressed to another host",
+                Box::new(|d| d.recipient = Some("did:key:zSomeOtherHost".into())),
+            ),
+        ];
+        for (why, edit) in cases {
+            let doc = list_doc(&f, &f.owner, edit).await;
+            let (status, body) = post_raw(&app, &doc).await;
+            assert!(
+                status.is_client_error(),
+                "{why}: must be refused, got {status}: {body}"
+            );
+            assert!(
+                body.get("code").is_some(),
+                "{why}: a routed refusal: {body}"
+            );
+        }
+    }
+
+    /// A document whose proof verifies under a key its `issuer` does not control is
+    /// refused (SPEC §4.7): the agent signs a document that names the owner as issuer.
+    #[tokio::test]
+    async fn a_document_signed_by_anyone_but_its_issuer_is_refused() {
+        let (_d, st) = state();
+        let app = router(st);
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+
+        let doc = list_doc(&f, &f.agent, |d| {
+            if let Value::Object(p) = &mut d.payload {
+                p.insert(
+                    "presentation".into(),
+                    serde_json::to_value(f.as_agent()).unwrap(),
+                );
+            }
+        })
+        .await;
+        let (status, body) = post_raw(&app, &doc).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(
+            body.to_string()
+                .contains("does not belong to the document's issuer"),
+            "{body}"
         );
     }
 
