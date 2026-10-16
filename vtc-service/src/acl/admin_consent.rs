@@ -111,6 +111,10 @@
 //!   deleting a join criterion (`vtc/schemas/accepts/*`), approved by the other
 //!   holders of `vtc.surface.admin`. Who may become a member is decided by the
 //!   criteria; one administrator should not change what admission means alone.
+//! - [`Act::ChangeHiddenVetting`] — **VTI-APV-023**: publishing or withdrawing
+//!   hidden vetting on a join criterion (`vtc/vetting/hidden/{publish,withdraw}`),
+//!   approved by the other holders of `vtc.vetting.manage` — the capability
+//!   those tasks take. A further way to meet a criterion is a change to it.
 //! - [`Act::ChangeRecognitionPolicy`] — **VTI-APV-023**: replacing or
 //!   activating the personhood policy, approved by the other holders of
 //!   `vtc.policy.admin @ policy:personhood`. Not authority — the capability is
@@ -246,6 +250,15 @@ pub enum Act {
     /// criteria decide who may become a member. The subject is the criterion's
     /// id; the consent is pinned to the criterion as stored (or its absence).
     ChangeJoinCriteria,
+    /// **VTI-APV-023** — publishing, changing or withdrawing hidden vetting on
+    /// a join criterion (`vtc/vetting/hidden/publish` / `withdraw`): another
+    /// way of meeting the criterion, so a change to the criteria. A sibling of
+    /// [`Self::ChangeJoinCriteria`] rather than the same act because those
+    /// tasks are `vtc.vetting.manage`'s, not `vtc.surface.admin`'s: the
+    /// approvers, and what the requester must still hold at execution, follow
+    /// the capability that makes the change. The subject is the criterion's
+    /// id; the consent is pinned to the criterion as stored.
+    ChangeHiddenVetting,
     /// **VTI-APV-023** — replacing or activating a policy that decides who this
     /// community recognises as a person
     /// ([`crate::policy::PolicyPurpose::decides_recognition`]). Kept apart from
@@ -277,7 +290,9 @@ impl Act {
             Self::DirectAdmission => "the admission policy",
             Self::ChangeStorage => "the storage tasks' consent",
             Self::ChangeTrustedWitnesses => "VTI-CMP-090",
-            Self::ChangeJoinCriteria | Self::ChangeRecognitionPolicy(_) => "VTI-APV-023",
+            Self::ChangeJoinCriteria
+            | Self::ChangeHiddenVetting
+            | Self::ChangeRecognitionPolicy(_) => "VTI-APV-023",
         }
     }
 
@@ -349,6 +364,7 @@ impl Act {
             Self::ChangeStorage => vec![CapRef::all(Capability::RoomsAdmin)],
             Self::ChangeTrustedWitnesses => vec![CapRef::all(Capability::ConfigAdmin)],
             Self::ChangeJoinCriteria => vec![CapRef::all(Capability::SurfaceAdmin)],
+            Self::ChangeHiddenVetting => vec![CapRef::all(Capability::VettingManage)],
             Self::ChangeRecognitionPolicy(purpose) => vec![CapRef::new(
                 Capability::PolicyAdmin,
                 Some(ResourceQualifier::Policy(purpose)),
@@ -403,6 +419,7 @@ impl Act {
             },
             Self::ChangeTrustedWitnesses => s::KIND_WITNESSES_CHANGE,
             Self::ChangeJoinCriteria => s::KIND_CRITERIA_CHANGE,
+            Self::ChangeHiddenVetting => s::KIND_HIDDEN_VETTING_CHANGE,
             Self::ChangeRecognitionPolicy(_) => s::KIND_POLICY_RECOGNITION,
         }
     }
@@ -1550,6 +1567,7 @@ pub(crate) fn requester_still_authorized(
         Act::ChangeStorage => entry.admin.can(Capability::RoomsAdmin, None),
         Act::ChangeTrustedWitnesses => entry.admin.can(Capability::ConfigAdmin, None),
         Act::ChangeJoinCriteria => entry.admin.can(Capability::SurfaceAdmin, None),
+        Act::ChangeHiddenVetting => entry.admin.can(Capability::VettingManage, None),
         Act::ChangeRecognitionPolicy(p) => entry
             .admin
             .can(Capability::PolicyAdmin, Some(&ResourceQualifier::Policy(p))),
@@ -1615,7 +1633,7 @@ pub(crate) async fn pin_for(
         // The approvers were shown a change to *this* criterion (none, for a
         // new one). Any write to it in the meantime — another replacement, a
         // deletion, hidden vetting turned on or off — voids the action.
-        Act::ChangeJoinCriteria => {
+        Act::ChangeJoinCriteria | Act::ChangeHiddenVetting => {
             json!(crate::schemas::get_accepts(&state.schemas_ks, subject).await?)
         }
     };
@@ -1780,6 +1798,7 @@ mod tests {
             Act::GrantsReview,
             Act::ChangeTrustedWitnesses,
             Act::ChangeJoinCriteria,
+            Act::ChangeHiddenVetting,
             Act::ChangeRecognitionPolicy(PolicyPurpose::Personhood),
         ] {
             assert!(may_approve(&approver, &act.default_stake(), now), "{act:?}");
@@ -1844,6 +1863,14 @@ mod tests {
             (
                 Act::ChangeJoinCriteria,
                 tt::surface_tasks::ACCEPTS_DELETE_TYPE,
+            ),
+            (
+                Act::ChangeHiddenVetting,
+                crate::admin_actions::summary::HIDDEN_PUBLISH,
+            ),
+            (
+                Act::ChangeHiddenVetting,
+                crate::admin_actions::summary::HIDDEN_WITHDRAW,
             ),
             (
                 Act::ChangeRecognitionPolicy(PolicyPurpose::Personhood),

@@ -53,9 +53,16 @@ fn identity(seed: u8) -> (String, Secret) {
     (did, secret)
 }
 
+/// A community run in single-administrator mode (VTI-APV-022), so the tasks that change a join
+/// criterion — `vtc/vetting/hidden/{publish,withdraw}` among them (VTI-APV-023) — go through
+/// their gate here: [`Harness::post`] answers the bound step-up each asks for with the signer's
+/// passkey and re-sends the same document, and the change applies on that gesture. Parking for a
+/// second administrator is `vti_apv_023_*` below.
 struct Harness {
     tv: TestVtc,
     community: String,
+    gesturer: tokio::sync::Mutex<crate::common::second_party::Gesturer>,
+    enrolled: tokio::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl Harness {
@@ -64,10 +71,17 @@ impl Harness {
             .vtc_did(COMMUNITY)
             .with_signers(true)
             .with_audit(true)
+            .with_public_url("https://vtc.example.com")
             .build()
             .await;
+        tv.state.config.write().await.acl.single_admin_mode = true;
         let community = COMMUNITY.to_string();
-        Self { tv, community }
+        Self {
+            tv,
+            community,
+            gesturer: tokio::sync::Mutex::new(crate::common::second_party::Gesturer::new()),
+            enrolled: Default::default(),
+        }
     }
 
     /// Publish this community's hidden-vetting parameters on a criterion, the way an operator
@@ -172,7 +186,32 @@ impl Harness {
     }
 
     /// Post a signed Trust Task document, as an agent would.
+    /// `payload` as a `typ` document signed by `secret`, sent; a step-up the gate asks for is
+    /// answered with the signer's passkey and the same document sent again.
     async fn post(&self, secret: &Secret, typ: &str, payload: Value) -> (StatusCode, Value) {
+        let did = secret.id.split('#').next().unwrap().to_string();
+        if self.enrolled.lock().await.insert(did.clone()) {
+            self.gesturer.lock().await.enrol(&self.tv, &did).await;
+        }
+        let doc = self.sign(secret, typ, payload).await;
+        let (status, body) = self.send(&doc).await;
+        if crate::common::second_party::step_up_request(&body).is_none() {
+            return (status, body);
+        }
+        let approval = self.gesturer.lock().await.approval(&self.tv, &body).await;
+        let answer = self
+            .sign(
+                secret,
+                crate::common::second_party::APPROVE_RESPONSE_TYPE,
+                approval,
+            )
+            .await;
+        let (status, ack) = self.send(&answer).await;
+        assert_eq!(status, StatusCode::OK, "the gesture is recorded: {ack}");
+        self.send(&doc).await
+    }
+
+    async fn sign(&self, secret: &Secret, typ: &str, payload: Value) -> Value {
         let did = secret.id.split('#').next().unwrap().to_string();
         let now = Utc::now();
         let stamp = |t: chrono::DateTime<Utc>| t.format("%Y-%m-%dT%H:%M:%SZ").to_string();
@@ -189,6 +228,10 @@ impl Harness {
             .await
             .expect("sign");
         doc["proof"] = serde_json::to_value(proof).unwrap();
+        doc
+    }
+
+    async fn send(&self, doc: &Value) -> (StatusCode, Value) {
         let req = Request::builder()
             .method("POST")
             .uri("/v1/trust-tasks")
@@ -1102,16 +1145,20 @@ async fn saving_a_criterion_keeps_its_hidden_vetting_until_it_stops_asking_for_v
 
     let (status, body) = register(&tv, &mut gesturer, &a, &b, criterion(1)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (status, body) = post(
-        &tv,
-        &signed(
+    // Turning hidden vetting on is a change to the criterion too (VTI-APV-023).
+    let (status, body) = gesturer
+        .send_through(
+            &tv,
             &a,
-            pcs_tasks::HIDDEN_PUBLISH_TYPE,
-            json!({ "criterionId": "vetted-member" }),
+            &[&b],
+            &signed(
+                &a,
+                pcs_tasks::HIDDEN_PUBLISH_TYPE,
+                json!({ "criterionId": "vetted-member" }),
+            )
+            .await,
         )
-        .await,
-    )
-    .await;
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     // An ordinary edit: the requirements change, hidden vetting stays on.
@@ -1618,4 +1665,182 @@ async fn publish_refuses_a_second_criterion_and_keys_its_signer_no_longer_derive
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+// ─── VTI-APV-023: hidden vetting is a change to the join criteria ───────────────────────────
+
+/// Two administrators, the first holding a passkey for the gesture, and a criterion that asks
+/// for vetting. Not single-administrator mode: a change parks for the second.
+async fn two_admins() -> (
+    TestVtc,
+    crate::common::second_party::Gesturer,
+    vti_rooms_dtg::test_support::Party,
+    vti_rooms_dtg::test_support::Party,
+) {
+    let tv = TestVtc::builder()
+        .with_signers(true)
+        .with_audit(true)
+        .with_public_url("https://vtc.example.com")
+        .build()
+        .await;
+    vtc_service::endorsement_types::seed_defaults(&tv.state.endorsement_types_ks)
+        .await
+        .expect("seed the default predicates");
+    crate::common::signed::seed_criterion(
+        &tv,
+        json!({
+            "id": "vetted-member",
+            "admission": "automatic",
+            "vetting": {
+                "version": "0.1",
+                "statementType": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
+                "minStatements": 1,
+                "acceptedMethods": ["inPerson", "video"],
+                "eligibleVetters": { "role": "vetter" },
+            },
+        }),
+    )
+    .await;
+    let a = crate::common::signed::admin(&tv).await;
+    let b = crate::common::signed::admin(&tv).await;
+    let mut gesturer = crate::common::second_party::Gesturer::new();
+    gesturer.enrol(&tv, &a.did).await;
+    (tv, gesturer, a, b)
+}
+
+async fn hidden_on(tv: &TestVtc) -> bool {
+    vtc_service::schemas::accepts::get_accepts(&tv.state.schemas_ks, "vetted-member")
+        .await
+        .unwrap()
+        .expect("the criterion")
+        .hidden_vetting
+        .is_some()
+}
+
+/// Publish the requester's document, answer the gesture, and return the id it parked as.
+async fn park_as(
+    tv: &TestVtc,
+    g: &mut crate::common::second_party::Gesturer,
+    a: &vti_rooms_dtg::test_support::Party,
+    typ: &str,
+    payload: Value,
+) -> String {
+    use crate::common::second_party::{parked_action, step_up_request};
+    use crate::common::signed::{post, signed};
+    let doc = signed(a, typ, payload).await;
+    let (status, reply) = post(tv, &doc).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "the gesture first: {reply}");
+    assert!(step_up_request(&reply).is_some(), "{reply}");
+    g.gesture(tv, a, &reply).await;
+    let (status, reply) = post(tv, &doc).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{reply}");
+    parked_action(&reply).unwrap_or_else(|| panic!("parked: {reply}"))
+}
+
+/// VTI-APV-023: turning hidden vetting on parks as `join.criteria.hiddenVetting` for the other
+/// holders of `vtc.vetting.manage`, and is applied by the approval; publishing exactly what is
+/// stored again asks nothing.
+#[tokio::test]
+async fn vti_apv_023_publishing_hidden_vetting_parks_and_completes() {
+    use crate::common::second_party::{decide, show_action};
+    use crate::common::signed::{post, signed};
+    let (tv, mut g, a, b) = two_admins().await;
+    let body = json!({ "criterionId": "vetted-member", "livePeriods": [PERIOD], "liveTokenLabels": [TOKEN_LABEL] });
+    let id = park_as(
+        &tv,
+        &mut g,
+        &a,
+        pcs_tasks::HIDDEN_PUBLISH_TYPE,
+        body.clone(),
+    )
+    .await;
+    assert!(!hidden_on(&tv).await, "parked, not published");
+
+    let (_, shown) = show_action(&tv, &b, &id).await;
+    let action = &shown["payload"]["action"];
+    assert_eq!(action["kind"], "join.criteria.hiddenVetting", "{shown}");
+    assert_eq!(
+        action["summary"]["fields"]["criterionId"]["value"],
+        "vetted-member"
+    );
+    let (status, ack) = decide(&tv, &b, &id, "approve").await;
+    assert_eq!(status, StatusCode::OK, "{ack}");
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    assert!(hidden_on(&tv).await, "published on the approval");
+
+    // The same parameters again: no change, nothing asked.
+    let (status, reply) = post(&tv, &signed(&a, pcs_tasks::HIDDEN_PUBLISH_TYPE, body).await).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an unchanged publish applies at once: {reply}"
+    );
+}
+
+/// VTI-APV-023: turning it off parks too, and one decline keeps it on. A criterion with nothing
+/// to withdraw asks nothing.
+#[tokio::test]
+async fn vti_apv_023_withdrawing_hidden_vetting_parks_and_a_decline_keeps_it() {
+    use crate::common::second_party::decide;
+    use crate::common::signed::{post, signed};
+    let (tv, mut g, a, b) = two_admins().await;
+    let withdraw = json!({ "criterionId": "vetted-member" });
+    let (status, reply) = post(
+        &tv,
+        &signed(&a, pcs_tasks::HIDDEN_WITHDRAW_TYPE, withdraw.clone()).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "nothing to withdraw: {reply}");
+    assert_eq!(reply["payload"]["withdrawn"], false, "{reply}");
+
+    let id = park_as(
+        &tv,
+        &mut g,
+        &a,
+        pcs_tasks::HIDDEN_PUBLISH_TYPE,
+        json!({ "criterionId": "vetted-member" }),
+    )
+    .await;
+    decide(&tv, &b, &id, "approve").await;
+    assert!(hidden_on(&tv).await);
+
+    let id = park_as(&tv, &mut g, &a, pcs_tasks::HIDDEN_WITHDRAW_TYPE, withdraw).await;
+    assert!(hidden_on(&tv).await, "still on while it waits");
+    let (_, ack) = decide(&tv, &b, &id, "deny").await;
+    assert_eq!(ack["payload"]["status"], "denied", "{ack}");
+    assert!(hidden_on(&tv).await, "a decline withdraws nothing");
+}
+
+/// VTI-APV-022 / VTI-APV-023: in single-administrator mode the publish applies on the
+/// requester's gesture, and the waiver is audited at `Critical` naming VTI-APV-023.
+#[tokio::test]
+async fn vti_apv_022_a_sole_admin_publishes_hidden_vetting_on_the_gesture() {
+    let h = Harness::start().await;
+    let (_, a) = vetted_criterion(&h, 0x7a).await;
+    let (status, body) = h
+        .post(
+            &a,
+            pcs_tasks::HIDDEN_PUBLISH_TYPE,
+            json!({ "criterionId": "vetted-member" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let waived: Vec<_> = h
+        .tv
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|env| match env.event {
+            vti_common::audit::AuditEvent::SingleAdminMode(d) if d.event == "consentWaived" => {
+                Some(d)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(waived.len(), 1, "{waived:?}");
+    assert_eq!(waived[0].requirement.as_deref(), Some("VTI-APV-023"));
 }

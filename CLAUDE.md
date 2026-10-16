@@ -1228,7 +1228,8 @@ new flow, update both this section and the relevant `docs/*.md`.
   consent threshold (APV-020), authority policy (VTI-VTC-022), a custom role
   define/delete, a restore's commit, any change to the trusted-witness list
   (VTI-CMP-090), to a join criterion (`vtc/schemas/accepts/{register,delete}`,
-  kind `join.criteria.change`) or to the personhood policy (kind
+  kind `join.criteria.change`; hidden vetting's `vtc/vetting/hidden/{publish,withdraw}`,
+  kind `join.criteria.hiddenVetting`) or to the personhood policy (kind
   `policy.recognition.change`; VTI-APV-023) — is **parked** after the requester's
   operation-bound step-up (202 + `trust-task-next-step` naming the action) and
   **runs itself on the N-th approval**, every check re-run against the

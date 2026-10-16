@@ -3692,8 +3692,9 @@ async fn handle_hidden_publish(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    // The signer is kept: an event approval it adds must name it (publish/0.1 item 9).
-    let signer = match capable_signer(
+    // The signer is kept: an event approval it adds must name it (publish/0.1 item 9), and the
+    // consent gate (VTI-APV-023) is the signer's.
+    let actor = match capable_signer(
         state,
         ctx,
         &doc,
@@ -3702,7 +3703,7 @@ async fn handle_hidden_publish(
     )
     .await
     {
-        Ok(claims) => claims.did,
+        Ok(claims) => claims,
         Err(reject) => return reject,
     };
     let payload: trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::Payload =
@@ -3735,7 +3736,8 @@ async fn handle_hidden_publish(
     };
     match crate::routes::vetting_hidden::publish_hidden_vetting_core(
         state,
-        &signer,
+        &actor,
+        &doc,
         payload.criterion_id.to_string(),
         if live_periods.is_empty() {
             None
@@ -3754,7 +3756,8 @@ async fn handle_hidden_publish(
     .await
     {
         Ok(response) => success_response(&doc, response),
-        Err(e) => task_error_to_reject(&doc, &e),
+        Err(crate::routes::vetting_hidden::Halted::Refused(e)) => task_error_to_reject(&doc, &e),
+        Err(crate::routes::vetting_hidden::Halted::Gate(outcome)) => outcome,
     }
 }
 
@@ -3766,7 +3769,7 @@ async fn handle_hidden_withdraw(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let signer = match capable_signer(
+    let actor = match capable_signer(
         state,
         ctx,
         &doc,
@@ -3775,7 +3778,7 @@ async fn handle_hidden_withdraw(
     )
     .await
     {
-        Ok(claims) => claims.did,
+        Ok(claims) => claims,
         Err(reject) => return reject,
     };
     let payload: trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Payload =
@@ -3785,13 +3788,15 @@ async fn handle_hidden_withdraw(
         };
     match crate::routes::vetting_hidden::withdraw_hidden_vetting_core(
         state,
-        &signer,
+        &actor,
+        &doc,
         payload.criterion_id.to_string(),
     )
     .await
     {
         Ok(response) => success_response(&doc, response),
-        Err(e) => task_error_to_reject(&doc, &e),
+        Err(crate::routes::vetting_hidden::Halted::Refused(e)) => task_error_to_reject(&doc, &e),
+        Err(crate::routes::vetting_hidden::Halted::Gate(outcome)) => outcome,
     }
 }
 

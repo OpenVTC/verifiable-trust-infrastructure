@@ -550,6 +550,20 @@ vetting (PCS)** section on its card under **Vetting → Requirements**:
 
 Each publish and withdrawal is audited as `HiddenVettingChanged`.
 
+Every publish that changes what is stored — turning hidden vetting on, rolling
+labels, changing the drip rate or tick length, adding, approving or removing an
+event — and every withdrawal is a change to the join criteria
+(**VTI-APV-023**). It takes the requester's passkey gesture (or step-up
+approver) bound to that one document and the approval of the community's other
+holders of `vtc.vetting.manage`, through the administrator action list (kind
+`join.criteria.hiddenVetting`); the section shows a parked change as *Sent for
+approval*, and the approval that reaches the threshold runs it, every check
+re-run. An event approval is still recorded in the requester's name — the
+second administrator consents to it, and does not become its approver. In
+single-administrator mode the gesture alone applies it, audited at `Critical`.
+Publishing exactly what is stored, or withdrawing from a criterion with nothing
+to withdraw, asks nothing. See [join-criteria.md](join-criteria.md#who-may-change-them).
+
 ## What the community checks at submit
 
 For every Vetting Statement in the join presentation — every credential whose

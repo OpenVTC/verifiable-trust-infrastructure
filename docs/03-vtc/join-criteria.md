@@ -156,8 +156,14 @@ not a change and take no consent.
 The console's **Vetting → Requirements** asks for the gesture where the VTC
 wants one and shows a parked change as *Sent for approval*.
 
-Hidden vetting (`vtc/vetting/hidden/{publish,withdraw}`) writes its parameters
-onto a criterion through its own tasks and is not gated here.
+Hidden vetting is a way of meeting a criterion, so turning it on, changing
+what it publishes, and turning it off are changes to the criteria too
+(`vtc/vetting/hidden/{publish,withdraw}`, kind `join.criteria.hiddenVetting`).
+They take `vtc.vetting.manage`, the bound gesture and the approval of the
+other holders of `vtc.vetting.manage` — the capability those tasks take —
+on the same terms: a publish of exactly what is stored, or a withdrawal from
+a criterion with nothing to withdraw, asks nothing. See
+[vetting.md](vetting.md).
 
 ## The join policy
 

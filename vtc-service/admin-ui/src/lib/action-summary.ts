@@ -127,6 +127,11 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmT4hA8bE6Z1G2PDPPTvzH9ZTGrKdnyS3UBhhEXZkeDLhm",
   [pinKey("policy.recognition.change", `${SPEC}/policy/activate/0.1`)]:
     "zQmSdYoQSJ79w1Di8LMr3QJKcjLt47c2DdH2F9gbfoLF6hv",
+  // Publishing or withdrawing hidden vetting on a join criterion (VTI-APV-023).
+  [pinKey("join.criteria.hiddenVetting", `${SPEC}/vtc/vetting/hidden/publish/0.1`)]:
+    "zQmfB8sMNE5otp8D7uYDLeBuWhHfLHQUe3BPCVrwqNWyRDi",
+  [pinKey("join.criteria.hiddenVetting", `${SPEC}/vtc/vetting/hidden/withdraw/0.1`)]:
+    "zQmcN7gkKudstTLhhf5kKTrS6eoxNyS5hBkjSGzoK8nYcKL",
   // Registering, replacing or removing a join criterion (VTI-APV-023).
   [pinKey("join.criteria.change", `${SPEC}/vtc/schemas/accepts/register/0.2`)]:
     "zQmbgGnKd4rpcj5dPZsKGTrL48wFiL5jGnyyUe9o3JcP5mr",

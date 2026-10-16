@@ -55,6 +55,9 @@ pub const KIND_POLICY_AUTHORITY: &str = "policy.authority.change";
 pub const KIND_CRITERIA_CHANGE: &str = "join.criteria.change";
 /// Replacing or activating the personhood policy (VTI-APV-023).
 pub const KIND_POLICY_RECOGNITION: &str = "policy.recognition.change";
+/// Publishing, changing or withdrawing hidden vetting on a join criterion
+/// (VTI-APV-023).
+pub const KIND_HIDDEN_VETTING_CHANGE: &str = "join.criteria.hiddenVetting";
 pub const KIND_INVITE_CREATE: &str = "admin.invite.create";
 /// An operator's offline write, raised for acknowledgement (VTI-VTC-023).
 pub const KIND_OPERATOR_WRITE: &str = "operator.offlineWrite";
@@ -132,6 +135,14 @@ const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
 const POLICY_ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 const ACCEPTS_REGISTER: &str = crate::trust_tasks::surface_tasks::ACCEPTS_REGISTER_TYPE;
 const ACCEPTS_DELETE: &str = crate::trust_tasks::surface_tasks::ACCEPTS_DELETE_TYPE;
+/// `vtc/vetting/hidden/publish/0.1`, off the generated type rather than
+/// `vetting::pcs_tasks`, which is compiled only with `vetting-pcs`: a build
+/// without the feature still pins the template the console holds.
+pub(crate) const HIDDEN_PUBLISH: &str =
+    <trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `vtc/vetting/hidden/withdraw/0.1`.
+pub(crate) const HIDDEN_WITHDRAW: &str =
+    <trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const ROLES_DEFINE: &str = "https://trusttasks.org/spec/vtc/roles/define/0.1";
 const ROLES_DELETE: &str = "https://trusttasks.org/spec/vtc/roles/delete/0.1";
 const BACKUP_FINALIZE_IMPORT: &str = "https://trusttasks.org/spec/backup/finalize-import/0.1";
@@ -188,6 +199,15 @@ const CRITERION_REGISTER_EFFECT: &str = "Who may become a member of this communi
                                          it, review refers them to an administrator. It replaces \
                                          any criterion of that name, keeping its place in the \
                                          order.";
+const HIDDEN_PUBLISH_EFFECT: &str = "Who may become a member of this community changes: the \
+                                     criterion {criterionId} can also be met by a hidden vetting \
+                                     proof, which shows an applicant was vetted without naming \
+                                     their vetters, under the vetter periods {livePeriods} and the \
+                                     events shown. Publishing again replaces the parameters.";
+const HIDDEN_WITHDRAW_EFFECT: &str = "Who may become a member of this community changes: the \
+                                      criterion {criterionId} stops accepting a hidden vetting \
+                                      proof. Its named vetting is unchanged, and vetters' \
+                                      enrolments are kept for a later publish.";
 const CRITERION_DELETE_EFFECT: &str = "Who may become a member of this community changes: \
                                        applicants can no longer join through {id}. Members \
                                        admitted through it keep their membership.";
@@ -493,6 +513,27 @@ pub const TEMPLATES: &[Template] = &[
         fields: &[f("id", "/id", "text")],
     },
     Template {
+        kind: KIND_HIDDEN_VETTING_CHANGE,
+        type_uri: HIDDEN_PUBLISH,
+        title: "Turn on hidden vetting for the join criterion {criterionId}",
+        effect: HIDDEN_PUBLISH_EFFECT,
+        fields: &[
+            f("criterionId", "/criterionId", "text"),
+            f("livePeriods", "/livePeriods", "text"),
+            f("liveTokenLabels", "/liveTokenLabels", "text"),
+            f("dripPerTick", "/dripPerTick", "text"),
+            f("tickLength", "/tickLength", "text"),
+            f("events", "/events", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_HIDDEN_VETTING_CHANGE,
+        type_uri: HIDDEN_WITHDRAW,
+        title: "Turn off hidden vetting for the join criterion {criterionId}",
+        effect: HIDDEN_WITHDRAW_EFFECT,
+        fields: &[f("criterionId", "/criterionId", "text")],
+    },
+    Template {
         kind: KIND_OPERATOR_WRITE,
         type_uri: OFFLINE_WRITE,
         title: "The operator ran {command} on {host}, changing access for {dids}",
@@ -776,6 +817,16 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_POLICY_RECOGNITION,
         POLICY_ACTIVATE,
         "zQmSdYoQSJ79w1Di8LMr3QJKcjLt47c2DdH2F9gbfoLF6hv",
+    ),
+    (
+        KIND_HIDDEN_VETTING_CHANGE,
+        HIDDEN_PUBLISH,
+        "zQmfB8sMNE5otp8D7uYDLeBuWhHfLHQUe3BPCVrwqNWyRDi",
+    ),
+    (
+        KIND_HIDDEN_VETTING_CHANGE,
+        HIDDEN_WITHDRAW,
+        "zQmcN7gkKudstTLhhf5kKTrS6eoxNyS5hBkjSGzoK8nYcKL",
     ),
     (
         KIND_CRITERIA_CHANGE,

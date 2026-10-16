@@ -338,6 +338,82 @@
     "typeUri": "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1"
   },
   {
+    "kind": "join.criteria.hiddenVetting",
+    "name": "turn on hidden vetting",
+    "payload": {
+      "criterionId": "vetted-member",
+      "dripPerTick": 3,
+      "livePeriods": [
+        "2026-10"
+      ],
+      "liveTokenLabels": [
+        "token/2026-10"
+      ]
+    },
+    "summary": {
+      "effect": "Who may become a member of this community changes: the criterion {criterionId} can also be met by a hidden vetting proof, which shows an applicant was vetted without naming their vetters, under the vetter periods {livePeriods} and the events shown. Publishing again replaces the parameters.",
+      "fields": {
+        "criterionId": {
+          "format": "text",
+          "pointer": "/criterionId",
+          "value": "vetted-member"
+        },
+        "dripPerTick": {
+          "format": "text",
+          "pointer": "/dripPerTick",
+          "value": 3
+        },
+        "events": {
+          "format": "text",
+          "pointer": "/events",
+          "value": null
+        },
+        "livePeriods": {
+          "format": "text",
+          "pointer": "/livePeriods",
+          "value": [
+            "2026-10"
+          ]
+        },
+        "liveTokenLabels": {
+          "format": "text",
+          "pointer": "/liveTokenLabels",
+          "value": [
+            "token/2026-10"
+          ]
+        },
+        "tickLength": {
+          "format": "text",
+          "pointer": "/tickLength",
+          "value": null
+        }
+      },
+      "templateDigest": "zQmfB8sMNE5otp8D7uYDLeBuWhHfLHQUe3BPCVrwqNWyRDi",
+      "title": "Turn on hidden vetting for the join criterion {criterionId}"
+    },
+    "typeUri": "https://trusttasks.org/spec/vtc/vetting/hidden/publish/0.1"
+  },
+  {
+    "kind": "join.criteria.hiddenVetting",
+    "name": "turn off hidden vetting",
+    "payload": {
+      "criterionId": "vetted-member"
+    },
+    "summary": {
+      "effect": "Who may become a member of this community changes: the criterion {criterionId} stops accepting a hidden vetting proof. Its named vetting is unchanged, and vetters' enrolments are kept for a later publish.",
+      "fields": {
+        "criterionId": {
+          "format": "text",
+          "pointer": "/criterionId",
+          "value": "vetted-member"
+        }
+      },
+      "templateDigest": "zQmcN7gkKudstTLhhf5kKTrS6eoxNyS5hBkjSGzoK8nYcKL",
+      "title": "Turn off hidden vetting for the join criterion {criterionId}"
+    },
+    "typeUri": "https://trusttasks.org/spec/vtc/vetting/hidden/withdraw/0.1"
+  },
+  {
     "kind": "operator.offlineWrite",
     "name": "operator added an access control entry offline",
     "payload": {

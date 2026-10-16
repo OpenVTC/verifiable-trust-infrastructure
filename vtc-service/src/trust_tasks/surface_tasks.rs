@@ -279,16 +279,29 @@ async fn settle_criteria_gate(
     id: &str,
     summary: &str,
 ) -> Result<(), TrustTaskOutcome> {
-    super::acl_tasks::settle_consent_gate(
+    settle_criterion_consent(
         state,
         actor,
         doc,
         crate::acl::admin_consent::Act::ChangeJoinCriteria,
         id,
         summary,
-        summary,
     )
     .await
+}
+
+/// [`settle_criteria_gate`] for any act that changes a join criterion —
+/// [`Act::ChangeHiddenVetting`](crate::acl::admin_consent::Act::ChangeHiddenVetting)
+/// too, which `vtc/vetting/hidden/{publish,withdraw}` settle before they write.
+pub(crate) async fn settle_criterion_consent(
+    state: &AppState,
+    actor: &vti_common::auth::extractor::AuthClaims,
+    doc: &TrustTask<Value>,
+    act: crate::acl::admin_consent::Act,
+    id: &str,
+    summary: &str,
+) -> Result<(), TrustTaskOutcome> {
+    super::acl_tasks::settle_consent_gate(state, actor, doc, act, id, summary, summary).await
 }
 
 /// Any signer the community holds an entry for, with its payload held to the

@@ -4113,6 +4113,12 @@ pub(crate) async fn sign_requests(
             "Whose witness credentials count as evidence in this community changes — for \
              personhood and for joining, and for credentials members already hold.",
         ),
+        Act::ChangeHiddenVetting => (
+            "joinCriteriaChange",
+            json!({ "criterion": rec.subject, "hiddenVetting": true }),
+            "Who may become a member of this community changes: whether, and how, an applicant \
+             can meet this criterion with a hidden vetting proof.",
+        ),
         Act::ChangeJoinCriteria => (
             "joinCriteriaChange",
             json!({ "criterion": rec.subject }),

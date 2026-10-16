@@ -25,6 +25,8 @@ use super::signed::{post, signed};
 use super::webauthn_harness::SoftEd25519Authenticator;
 
 const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
+/// The document type a [`Gesturer::approval`] payload is sent as.
+pub const APPROVE_RESPONSE_TYPE: &str = APPROVE_RESPONSE;
 
 /// One soft authenticator holding every passkey it enrols.
 pub struct Gesturer {
@@ -106,25 +108,28 @@ impl Gesturer {
     /// Answer the step-up refusal `refusal` (the whole reply document) with
     /// `requester`'s passkey.
     pub async fn gesture(&mut self, vtc: &TestVtc, requester: &Party, refusal: &Value) {
+        let payload = self.approval(vtc, refusal).await;
+        let doc = signed(requester, APPROVE_RESPONSE, payload).await;
+        let (status, ack) = post(vtc, &doc).await;
+        assert_eq!(status, StatusCode::OK, "{ack}");
+        assert_eq!(ack["payload"]["status"], "recorded", "{ack}");
+    }
+
+    /// The `auth/step-up/approve-response` payload answering the step-up
+    /// refusal `refusal` with the enrolled passkey — for a suite that signs its
+    /// own documents ([`APPROVE_RESPONSE_TYPE`]).
+    pub async fn approval(&mut self, vtc: &TestVtc, refusal: &Value) -> Value {
         let request = step_up_request(refusal)
             .unwrap_or_else(|| panic!("expected a step-up request: {refusal}"))
             .clone();
         let origin = origin(vtc).await;
         let cred = self.authenticator.authenticate(&options(&request), &origin);
-        let doc = signed(
-            requester,
-            APPROVE_RESPONSE,
-            json!({
-                "subject": request["subject"],
-                "challenge": request["challenge"],
-                "decision": "approved",
-                "evidence": { "kind": "webauthn", "assertion": assertion(&cred) },
-            }),
-        )
-        .await;
-        let (status, ack) = post(vtc, &doc).await;
-        assert_eq!(status, StatusCode::OK, "{ack}");
-        assert_eq!(ack["payload"]["status"], "recorded", "{ack}");
+        json!({
+            "subject": request["subject"],
+            "challenge": request["challenge"],
+            "decision": "approved",
+            "evidence": { "kind": "webauthn", "assertion": assertion(&cred) },
+        })
     }
 
     /// Send `doc`, answering each step-up with `requester`'s passkey, until it

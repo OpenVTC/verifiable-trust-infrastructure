@@ -25,6 +25,7 @@ use crate::error::TaskError;
 use crate::schemas::accepts::AcceptsCriterion;
 use crate::schemas::accepts::{get_accepts, store_accepts};
 use crate::server::AppState;
+use crate::trust_tasks::TrustTaskOutcome;
 use crate::vetting::pcs::{HiddenVettingConfig, HiddenVettingEvent};
 use crate::vetting::pcs_tasks::{
     HIDDEN_PUBLISH_ERR_APPROVER_IN_EVENT, HIDDEN_PUBLISH_ERR_APPROVER_NOT_SIGNER,
@@ -32,7 +33,9 @@ use crate::vetting::pcs_tasks::{
     HIDDEN_PUBLISH_ERR_OTHER_CRITERION, HIDDEN_PUBLISH_ERR_SIGNER_CHANGED,
     HIDDEN_SHOW_ERR_NO_SUCH_CRITERION, HIDDEN_WITHDRAW_ERR_NO_SUCH_CRITERION,
 };
+use trust_tasks_rs::TrustTask;
 use vti_common::audit::{AuditEvent, HiddenVettingChangedData};
+use vti_common::auth::extractor::AuthClaims;
 
 /// What an operator asks for when they turn hidden vetting on for a criterion.
 ///
@@ -86,6 +89,56 @@ pub struct PublishHiddenVettingResponse {
     pub requirements_digest: Option<String>,
 }
 
+/// Why a publish or withdraw stopped without answering: refused for its own faults, or held at
+/// its consent gate (VTI-APV-023) — a step-up to answer, a parked action, or a refusal the gate
+/// settled — which the handler returns as it stands.
+pub(crate) enum Halted {
+    Refused(TaskError),
+    Gate(TrustTaskOutcome),
+}
+
+impl Halted {
+    fn declared(code: &'static str, error: AppError) -> Self {
+        Self::Refused(TaskError::declared(code, error))
+    }
+}
+
+impl From<TaskError> for Halted {
+    fn from(e: TaskError) -> Self {
+        Self::Refused(e)
+    }
+}
+
+impl From<AppError> for Halted {
+    fn from(e: AppError) -> Self {
+        Self::Refused(e.into())
+    }
+}
+
+/// The consent a change to hidden vetting on a criterion takes (VTI-APV-023):
+/// [`crate::acl::admin_consent::Act::ChangeHiddenVetting`], approved by the other holders of
+/// `vtc.vetting.manage`; in single-administrator mode the requester's bound gesture alone, at
+/// `Critical`. A parked action re-runs the task on its N-th approval, every check again, against
+/// the criterion as it is then (VTI-APV-017) — pinned to it, so another write voids the action.
+async fn settle(
+    state: &AppState,
+    actor: &AuthClaims,
+    doc: &TrustTask<Value>,
+    criterion_id: &str,
+    summary: &str,
+) -> Result<(), Halted> {
+    crate::trust_tasks::surface_tasks::settle_criterion_consent(
+        state,
+        actor,
+        doc,
+        crate::acl::admin_consent::Act::ChangeHiddenVetting,
+        criterion_id,
+        summary,
+    )
+    .await
+    .map_err(Halted::Gate)
+}
+
 /// `YYYY-MM` for today, which is the period a community starting now wants.
 fn this_month() -> String {
     let now = Utc::now().date_naive();
@@ -101,16 +154,19 @@ fn this_month() -> String {
 /// Shared by the REST route below and `vtc/vetting/hidden/publish/0.1`
 /// (`crate::trust_tasks::handle_hidden_publish`) — one implementation, so the
 /// two doors cannot drift.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn publish_hidden_vetting_core(
     state: &AppState,
-    signer: &str,
+    actor: &AuthClaims,
+    doc: &TrustTask<Value>,
     criterion_id: String,
     live_periods: Option<Vec<String>>,
     live_token_labels: Option<Vec<String>>,
     drip_per_tick: Option<usize>,
     tick_length: Option<String>,
     events: Option<Value>,
-) -> Result<PublishHiddenVettingResponse, TaskError> {
+) -> Result<PublishHiddenVettingResponse, Halted> {
+    let signer = actor.did.as_str();
     let community_did = state
         .config
         .read()
@@ -129,7 +185,7 @@ pub(crate) async fn publish_hidden_vetting_core(
             )
         })?;
     if criterion.vetting.is_none() {
-        return Err(TaskError::declared(
+        return Err(Halted::declared(
             HIDDEN_PUBLISH_ERR_NO_VETTING,
             AppError::Validation(format!(
                 "criterion `{criterion_id}` asks for no vetting, so there is nothing for \
@@ -146,7 +202,7 @@ pub(crate) async fn publish_hidden_vetting_core(
         .into_iter()
         .find(|c| c.id != criterion_id && c.hidden_vetting.is_some())
     {
-        return Err(TaskError::declared(
+        return Err(Halted::declared(
             HIDDEN_PUBLISH_ERR_OTHER_CRITERION,
             AppError::Conflict(format!(
                 "hidden vetting is already on for criterion `{}` — a community runs it on one \
@@ -178,7 +234,7 @@ pub(crate) async fn publish_hidden_vetting_core(
         .and_then(|v| serde_json::from_value::<HiddenVettingConfig>(v.clone()).ok())
         && (stored.hvk != config.hvk || stored.tvk != config.tvk)
     {
-        return Err(TaskError::declared(
+        return Err(Halted::declared(
             HIDDEN_PUBLISH_ERR_SIGNER_CHANGED,
             AppError::Conflict(format!(
                 "criterion `{criterion_id}`'s hidden-vetting keys were derived from a signing key \
@@ -211,6 +267,29 @@ pub(crate) async fn publish_hidden_vetting_core(
 
     let stored = serde_json::to_value(&config)
         .map_err(|e| AppError::Internal(format!("encode hidden-vetting parameters: {e}")))?;
+    // VTI-APV-023: a way of meeting the criterion is part of it, so turning hidden vetting on,
+    // or changing what it publishes, is a change to the join criteria — the requester's bound
+    // gesture and the other `vtc.vetting.manage` holders' consent. Last, after every refusal
+    // above, so a publish the community would refuse asks nobody for anything; and a publish
+    // that leaves the stored parameters exactly as they are is no change and asks nothing.
+    if criterion.hidden_vetting.as_ref() != Some(&stored) {
+        let verb = if criterion.hidden_vetting.is_some() {
+            "Change hidden vetting on"
+        } else {
+            "Turn on hidden vetting for"
+        };
+        settle(
+            state,
+            actor,
+            doc,
+            &criterion_id,
+            &format!(
+                "{verb} the join criterion {criterion_id}, which decides who may become a member \
+                 of this community"
+            ),
+        )
+        .await?;
+    }
     criterion.hidden_vetting = Some(stored.clone());
     store_accepts(&state.schemas_ks, &criterion).await?;
 
@@ -331,9 +410,11 @@ fn served_digest(criterion: AcceptsCriterion) -> Result<Option<String>, AppError
 /// Withdrawing a criterion that has none is a success that says so (`withdrawn: false`).
 pub(crate) async fn withdraw_hidden_vetting_core(
     state: &AppState,
-    signer: &str,
+    actor: &AuthClaims,
+    doc: &TrustTask<Value>,
     criterion_id: String,
-) -> Result<Value, TaskError> {
+) -> Result<Value, Halted> {
+    let signer = actor.did.as_str();
     let mut criterion = get_accepts(&state.schemas_ks, &criterion_id)
         .await?
         .ok_or_else(|| {
@@ -344,6 +425,20 @@ pub(crate) async fn withdraw_hidden_vetting_core(
         })?;
     let withdrawn = criterion.hidden_vetting.take().is_some();
     if withdrawn {
+        // VTI-APV-023: taking a way of meeting the criterion away is as much a change to the
+        // join criteria as adding one. Withdrawing what is not there changes nothing and asks
+        // nothing.
+        settle(
+            state,
+            actor,
+            doc,
+            &criterion_id,
+            &format!(
+                "Turn off hidden vetting for the join criterion {criterion_id}, which decides \
+                 who may become a member of this community"
+            ),
+        )
+        .await?;
         store_accepts(&state.schemas_ks, &criterion).await?;
         audit_change(
             state,

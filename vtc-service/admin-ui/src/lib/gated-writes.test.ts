@@ -19,6 +19,7 @@ import { MEMBERS_ADMIN_REMOVE_TASK, adminRemoveMember } from "./member-removal";
 import { activatePolicy, uploadPolicy } from "./policies-api";
 import { ParkedAction } from "./signed-act";
 import { deleteCriterion, saveCriterion } from "@/plugins/vetting/api";
+import { publishHiddenVetting, withdrawHiddenVetting } from "./hidden-vetting";
 
 vi.mock("./api", async (original) => ({
   ...(await original<typeof import("./api")>()),
@@ -180,6 +181,24 @@ describe("join criteria and the personhood policy (VTI-APV-023)", () => {
     gestureThen("parked");
     const confirm = vi.fn(async () => true);
     await expect(deleteCriterion("open-door", confirm)).rejects.toBeInstanceOf(ParkedAction);
+    expectGestureMade(confirm);
+  });
+
+  it("asks for the gesture publishing hidden vetting on a criterion", async () => {
+    gestureThen("parked");
+    const confirm = vi.fn(async () => true);
+    await expect(
+      publishHiddenVetting({ criterionId: "vetted-member" }, confirm),
+    ).rejects.toBeInstanceOf(ParkedAction);
+    expectGestureMade(confirm);
+  });
+
+  it("asks for the gesture withdrawing hidden vetting", async () => {
+    gestureThen("parked");
+    const confirm = vi.fn(async () => true);
+    await expect(withdrawHiddenVetting("vetted-member", confirm)).rejects.toBeInstanceOf(
+      ParkedAction,
+    );
     expectGestureMade(confirm);
   });
 
