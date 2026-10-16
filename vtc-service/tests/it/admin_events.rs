@@ -16,7 +16,11 @@
 //! - an unknown `since` opens `resumed: false`; a known one resumes;
 //! - heartbeats are SSE comments;
 //! - the stream ends when the caller's readable topics shrink and when the
-//!   credential it was opened on expires.
+//!   credential it was opened on expires;
+//! - 0.2 (`rooms`): served beside 0.1, each answered at its own version; the
+//!   topic is effective only for a holder of `vtc.rooms.admin`, is refused in
+//!   a 0.1 subscribe, follows a room registered, a storage config written and
+//!   a room's lifecycle moving with the clock, and never names a room.
 
 use std::time::Duration;
 
@@ -40,6 +44,8 @@ fn tt_error_code(doc: &Value) -> Option<&str> {
 
 const SUBSCRIBE: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.1";
 const EVENT: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.1";
+const SUBSCRIBE_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.2";
+const EVENT_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.2";
 const STREAM_ACCEPT: &str = "text/event-stream, application/json;q=0.5";
 
 use vtc_service::admin_events::codes::{NOT_ADMINISTRATOR, STREAM_UNAVAILABLE, TOO_MANY_STREAMS};
@@ -95,7 +101,19 @@ async fn subscribe(
     accept: Option<&str>,
     last_event_id: Option<&str>,
 ) -> (Value, axum::response::Response) {
-    let doc = signed_to(from, &vtc_did(vtc).await, SUBSCRIBE, payload).await;
+    subscribe_at(vtc, SUBSCRIBE, from, payload, accept, last_event_id).await
+}
+
+/// [`subscribe`] at the version `task` names.
+async fn subscribe_at(
+    vtc: &TestVtc,
+    task: &str,
+    from: &Party,
+    payload: Value,
+    accept: Option<&str>,
+    last_event_id: Option<&str>,
+) -> (Value, axum::response::Response) {
+    let doc = signed_to(from, &vtc_did(vtc).await, task, payload).await;
     (
         doc.clone(),
         post_raw(vtc, &doc, accept, last_event_id).await,
@@ -255,14 +273,25 @@ async fn open_stream(
     from: &Party,
     payload: Value,
 ) -> (Value, Sse, Option<String>, Value) {
-    let (request, res) = subscribe(vtc, from, payload, Some(STREAM_ACCEPT), None).await;
+    open_stream_at(vtc, SUBSCRIBE, from, payload).await
+}
+
+/// [`open_stream`] at the version `task` names: the `#response` is that
+/// version's.
+async fn open_stream_at(
+    vtc: &TestVtc,
+    task: &str,
+    from: &Party,
+    payload: Value,
+) -> (Value, Sse, Option<String>, Value) {
+    let (request, res) = subscribe_at(vtc, task, from, payload, Some(STREAM_ACCEPT), None).await;
     let mut sse = Sse::open(res);
     let (id, first) = sse
         .next_event(Duration::from_secs(5))
         .await
         .expect("the #response is the first event");
-    assert_eq!(first["type"], format!("{SUBSCRIBE}#response"));
-    crate::common::signed::assert_conforms(SUBSCRIBE, &first);
+    assert_eq!(first["type"], format!("{task}#response"));
+    crate::common::signed::assert_conforms(task, &first);
     assert_eq!(first["threadId"], request["id"]);
     assert_eq!(
         id.as_deref(),
@@ -272,10 +301,16 @@ async fn open_stream(
     (request, sse, id, first)
 }
 
-/// A hint, held to everything event 0.1 says one may carry — and nothing else.
+/// A hint, held to everything its event version says one may carry — and
+/// nothing else. A stream's hints are of the version it was opened at.
 fn assert_hint_shape(hint: &Value, id: Option<&str>, request: &Value, subscriber: &str) {
-    assert_eq!(hint["type"], EVENT);
-    let schema = trust_tasks_rs::schema_index::schema_for(EVENT).expect("event schema");
+    let event = if request["type"] == SUBSCRIBE_V0_2 {
+        EVENT_V0_2
+    } else {
+        EVENT
+    };
+    assert_eq!(hint["type"], event);
+    let schema = trust_tasks_rs::schema_index::schema_for(event).expect("event schema");
     trust_tasks_rs::validate::against_schema(schema, &hint["payload"])
         .unwrap_or_else(|e| panic!("hint does not match its schema: {e}\n{hint}"));
     let payload = hint["payload"].as_object().unwrap();
@@ -703,4 +738,214 @@ async fn streams_past_the_cap_are_refused_too_many_streams() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(reopened, "a closed stream releases its place under the cap");
+}
+
+// ─── 0.2: the `rooms` topic ──────────────────────────────────────────────
+
+/// A room as the host registers it, its epoch expiring at `epoch_expires_at`.
+fn hosted_room(epoch_expires_at: Option<u64>) -> vtc_service::rooms::Room {
+    vtc_service::rooms::Room {
+        room_id: format!("did:key:zRoom{}", uuid::Uuid::new_v4().simple()),
+        owner_did: Party::new().did,
+        visibility: vtc_service::rooms::Visibility::Open,
+        retention_policy: Default::default(),
+        anchor_cadence: Default::default(),
+        epoch: 1,
+        next_version: 1,
+        retention_days: 90,
+        epoch_expires_at,
+        created_at: 0,
+        updated_at: 0,
+        mirror_of: None,
+    }
+}
+
+/// The next `rooms` hint, skipping any other topic's.
+async fn next_rooms_hint(sse: &mut Sse, within: Duration) -> Option<(Option<String>, Value)> {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let (id, hint) = sse.next_event(left).await?;
+        if hint["payload"]["topic"] == "rooms" {
+            return Some((id, hint));
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_room_registered_is_a_countless_rooms_hint_at_0_2() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let (request, mut sse, _, first) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_2,
+        &admin,
+        json!({ "topics": ["rooms", "actions"] }),
+    )
+    .await;
+    assert_eq!(first["payload"]["topics"], json!(["actions", "rooms"]));
+
+    let room = hosted_room(None);
+    vtc_service::rooms::storage::create_room(&vtc.state.rooms_ks, &room)
+        .await
+        .unwrap();
+    let (id, hint) = next_rooms_hint(&mut sse, Duration::from_secs(5))
+        .await
+        .expect("a rooms hint follows the registration");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    assert!(
+        !hint.to_string().contains(&room.room_id) && !hint.to_string().contains(&room.owner_did),
+        "the room is never named"
+    );
+}
+
+#[tokio::test]
+async fn a_storage_config_written_is_a_rooms_hint() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let (request, mut sse, _, _) =
+        open_stream_at(&vtc, SUBSCRIBE_V0_2, &admin, json!({ "topics": ["rooms"] })).await;
+
+    let storage = &vtc.state.room_storage;
+    let mut config = storage.configs().await.unwrap().remove(0);
+    config["label"] = json!("Relabelled");
+    {
+        let _guard = storage.lock().await;
+        storage.put_config(config).await.unwrap();
+    }
+    let (id, hint) = next_rooms_hint(&mut sse, Duration::from_secs(5))
+        .await
+        .expect("a changed storage config is hinted");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+}
+
+/// Lifecycle is computed from the clock and never written, so the stream
+/// looks again when a room's state is due to change (event 0.2 producer rule
+/// 4: "a room's lifecycle state changes").
+#[tokio::test]
+async fn a_room_lapsing_with_the_clock_is_hinted_without_a_write() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let expires = vti_common::auth::session::now_epoch() + 2;
+    vtc_service::rooms::storage::create_room(&vtc.state.rooms_ks, &hosted_room(Some(expires)))
+        .await
+        .unwrap();
+    // Opened after the registration: only the lapse is left to hint.
+    let (request, mut sse, _, _) =
+        open_stream_at(&vtc, SUBSCRIBE_V0_2, &admin, json!({ "topics": ["rooms"] })).await;
+    let (id, hint) = next_rooms_hint(&mut sse, Duration::from_secs(8))
+        .await
+        .expect("the room lapsing is hinted");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+}
+
+/// A rooms signal that moves nothing the reads report — a renewal of a live
+/// room — is no hint: only the changes rule 4 names are.
+#[tokio::test]
+async fn a_renewal_of_a_live_room_is_no_hint() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let now = vti_common::auth::session::now_epoch();
+    let room = hosted_room(Some(now + 86_400));
+    vtc_service::rooms::storage::create_room(&vtc.state.rooms_ks, &room)
+        .await
+        .unwrap();
+    let (_, mut sse, _, _) =
+        open_stream_at(&vtc, SUBSCRIBE_V0_2, &admin, json!({ "topics": ["rooms"] })).await;
+    vtc_service::rooms::storage::advance_epoch(&vtc.state.rooms_ks, &room.room_id, 2, now)
+        .await
+        .unwrap();
+    assert!(
+        next_rooms_hint(&mut sse, Duration::from_secs(3))
+            .await
+            .is_none(),
+        "a live room renewed is still live: nothing a read reports moved"
+    );
+}
+
+#[tokio::test]
+async fn rooms_is_effective_only_for_a_rooms_administrator() {
+    let vtc = vtc().await;
+    // A moderator administers, but holds no `vtc.rooms.admin`: the rooms reads
+    // refuse it, and so does the topic.
+    let moderator = with_role(&vtc, Some(AdminRole::Moderator), None).await;
+    let (_, _sse, _, first) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_2,
+        &moderator,
+        json!({ "topics": ["rooms", "actions"] }),
+    )
+    .await;
+    assert_eq!(first["payload"]["topics"], json!(["actions"]));
+    let (_, refused) = crate::common::signed::call(
+        &vtc,
+        &moderator,
+        "https://trusttasks.org/spec/vtc/rooms/list/0.1",
+        json!({}),
+    )
+    .await;
+    assert_eq!(tt_error_code(&refused), Some("permissionDenied"));
+}
+
+/// The topic set is closed per version: a 0.1 subscribe cannot ask for
+/// `rooms`, and a 0.1 stream is answered at 0.1 throughout.
+#[tokio::test]
+async fn a_0_1_subscribe_cannot_ask_for_rooms_and_stays_at_0_1() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let (_, res) = subscribe(
+        &vtc,
+        &admin,
+        json!({ "topics": ["rooms"] }),
+        Some(STREAM_ACCEPT),
+        None,
+    )
+    .await;
+    let (status, doc) = json_refusal(res).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(tt_error_code(&doc), Some("malformedRequest"));
+
+    let (request, mut sse, _, first) =
+        open_stream(&vtc, &admin, json!({ "topics": ["members"] })).await;
+    assert_eq!(first["payload"]["topics"], json!(["members"]));
+    vtc_service::members::store_member(
+        &vtc.state.members_ks,
+        &vtc_service::members::Member::fresh(&Party::new().did),
+    )
+    .await
+    .unwrap();
+    let (id, hint) = sse.next_event(Duration::from_secs(5)).await.unwrap();
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    assert_eq!(hint["type"], EVENT);
+}
+
+/// A resumed stream hints a fingerprinted topic that changed while away, even
+/// though what the stream observes when it opens already includes the change.
+#[tokio::test]
+async fn a_resumed_rooms_change_is_hinted_after_the_response() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let (_, sse, token, _) =
+        open_stream_at(&vtc, SUBSCRIBE_V0_2, &admin, json!({ "topics": ["rooms"] })).await;
+    drop(sse);
+    vtc_service::rooms::storage::create_room(&vtc.state.rooms_ks, &hosted_room(None))
+        .await
+        .unwrap();
+    let token = token.unwrap();
+    let (request, res) = subscribe_at(
+        &vtc,
+        SUBSCRIBE_V0_2,
+        &admin,
+        json!({ "topics": ["rooms"], "since": token }),
+        Some(STREAM_ACCEPT),
+        Some(&token),
+    )
+    .await;
+    let mut sse = Sse::open(res);
+    let (_, first) = sse.next_event(Duration::from_secs(5)).await.unwrap();
+    assert_eq!(first["payload"]["resumed"], true);
+    let (id, hint) = next_rooms_hint(&mut sse, Duration::from_secs(5))
+        .await
+        .expect("the registration made while away is hinted");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
 }

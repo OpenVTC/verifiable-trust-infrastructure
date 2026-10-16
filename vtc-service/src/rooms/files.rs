@@ -124,6 +124,9 @@ pub fn open_blob_host(
     config: Option<&RoomFilesConfig>,
     storage: Arc<RoomStorage>,
 ) -> Result<BlobHost, AppError> {
+    // Room registrations, renewals and holdings are written inside `vti_rooms`;
+    // its hook feeds the console's live `rooms` topic (`crate::admin_events`).
+    vti_rooms::observe::set_hook(crate::admin_events::notify_rooms);
     let limits = match config {
         Some(c) => c.limits(),
         None => vti_rooms::blobs::HostLimits {

@@ -414,6 +414,9 @@ impl RoomStorage {
         }
         let store = self.build_store(&record).map_err(AppError::Validation)?;
         self.ks.insert(config_key(&id), &record).await?;
+        // A config created, changed or moved to another state: a hint for the
+        // console's rooms pages, never the record (`crate::admin_events`).
+        crate::admin_events::notify(crate::admin_events::Topic::Rooms);
         let mut stores = self.stores.write().expect("stores lock");
         match store {
             Some(s) => {

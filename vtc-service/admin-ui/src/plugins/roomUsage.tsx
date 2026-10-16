@@ -13,6 +13,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { useLivePollMs } from "@/lib/use-live-events";
 import { Download } from "lucide-react";
 
 import { DataTable } from "@/components/DataTable";
@@ -256,14 +257,19 @@ function Days({ rows, from, to }: { rows: RoomsUsageRow[]; from: string; to: str
  */
 function NearLimits() {
   const { from, to } = useMemo(() => rangeEnding(1), []);
+  // A band crossing is what the live `rooms` topic hints about; polled as the
+  // fallback.
+  const pollMs = useLivePollMs("rooms");
   const rooms = useQuery({
     queryKey: ["room-usage", "near-limits", "room", to],
     queryFn: () =>
       fetchUsage({ groupBy: "room", filter: { from, to }, sort: { by: "bytes", order: "desc" } }),
+    refetchInterval: pollMs,
   });
   const configs = useQuery({
     queryKey: ["room-usage", "near-limits", "storageConfig", to],
     queryFn: () => fetchUsage({ groupBy: "storageConfig", filter: { from, to } }),
+    refetchInterval: pollMs,
   });
   const flagged = useMemo(() => {
     const out: { kind: "room" | "storage"; id: string; fraction: number; band: Threshold }[] = [];

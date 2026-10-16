@@ -478,6 +478,8 @@ impl BlobHost {
                 } else {
                     self.blobs.insert(room_override_key(room_id), &o).await?;
                 }
+                // The room's limits moved, so may its band (`crate::observe`).
+                crate::observe::changed();
                 Ok(change)
             }
             LimitTarget::Member(member) => {

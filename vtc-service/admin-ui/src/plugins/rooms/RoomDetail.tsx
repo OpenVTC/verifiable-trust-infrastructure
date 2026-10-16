@@ -12,6 +12,7 @@
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useLivePollMs } from "@/lib/use-live-events";
 
 import { useConfirm } from "@/components/ConfirmDialog";
 import { CopyButton } from "@/components/CopyButton";
@@ -54,10 +55,12 @@ export function RoomDetail() {
   // Already decoded by the router. Decoding again would turn a `did:web` port's
   // `%3A` into `:` and ask for a different room.
   const { roomId = "" } = useParams();
+  const pollMs = useLivePollMs("rooms");
   const roomQuery = useQuery({
     queryKey: ["rooms", "get", roomId],
     queryFn: () => fetchRoom(roomId),
     enabled: roomId !== "",
+    refetchInterval: pollMs,
   });
   const trail = [{ label: shorten(roomId) }];
 

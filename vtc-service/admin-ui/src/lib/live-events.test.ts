@@ -9,11 +9,17 @@ import { QueryClient } from "@tanstack/react-query";
 import {
   ALL_TOPICS,
   EVENT_TASK,
+  EVENT_TASK_V0_2,
+  LIVE_V0_1,
+  LIVE_V0_2,
   LiveEvents,
+  liveVersionFor,
+  SUBSCRIBE_TASK_V0_2,
   SseParser,
   STREAM_ACCEPT,
   SUBSCRIBE_TASK,
   type LiveStatus,
+  type LiveVersion,
   type SignedSubscribe,
   type Topic,
 } from "./live-events";
@@ -101,7 +107,10 @@ interface Harness {
   fetch: ReturnType<typeof vi.fn>;
 }
 
-function harness(responses: Array<() => Response>): Harness {
+function harness(
+  responses: Array<() => Response>,
+  version: LiveVersion = LIVE_V0_1,
+): Harness {
   const h: Omit<Harness, "client" | "fetch"> = {
     hints: [],
     resyncs: [],
@@ -132,6 +141,7 @@ function harness(responses: Array<() => Response>): Harness {
       csrf: () => "csrf-token",
       random: () => 0.5,
     },
+    version,
   );
   return { ...h, client, fetch } as Harness;
 }
@@ -172,7 +182,9 @@ describe("LiveEvents", () => {
     expect(headers.Accept).toBe(STREAM_ACCEPT);
     expect(headers["X-CSRF-Token"]).toBe("csrf-token");
     expect((init as RequestInit).method).toBe("POST");
-    expect(h.signed[0]).toEqual({ topics: [...ALL_TOPICS] });
+    // At 0.1 the topic set has no `rooms`: it is never asked for.
+    expect(h.signed[0]).toEqual({ topics: [...LIVE_V0_1.topics] });
+    expect(h.signed[0]!.topics).not.toContain("rooms");
 
     s.push(sse(response({ topics: ["actions", "members"] }), "tok0"));
     await settle();
@@ -212,7 +224,7 @@ describe("LiveEvents", () => {
 
     await vi.advanceTimersByTimeAsync(2_000);
     expect(h.fetch).toHaveBeenCalledTimes(2);
-    expect(h.signed[1]).toEqual({ topics: [...ALL_TOPICS], since: "tok1" });
+    expect(h.signed[1]).toEqual({ topics: [...LIVE_V0_1.topics], since: "tok1" });
     const [, init] = h.fetch.mock.calls[1]!;
     expect(((init as RequestInit).headers as Record<string, string>)["Last-Event-ID"]).toBe("tok1");
 
@@ -295,6 +307,56 @@ describe("LiveEvents", () => {
   });
 });
 
+describe("0.2 and the rooms topic", () => {
+  it("subscribes at 0.2 only when discovery lists it", () => {
+    expect(liveVersionFor([SUBSCRIBE_TASK_V0_2, SUBSCRIBE_TASK])).toBe(LIVE_V0_2);
+    expect(liveVersionFor([SUBSCRIBE_TASK])).toBe(LIVE_V0_1);
+    expect(liveVersionFor([])).toBe(LIVE_V0_1);
+  });
+
+  it("asks for rooms at 0.2, reads a 0.2 #response and hands on 0.2 rooms hints", async () => {
+    const s = controlledStream();
+    const h = harness([() => streamResponse(s.stream)], LIVE_V0_2);
+    h.client.start();
+    await settle();
+    expect(h.signed[0]).toEqual({ topics: [...ALL_TOPICS] });
+    expect(h.signed[0]!.topics).toContain("rooms");
+
+    s.push(
+      sse(
+        response(
+          { topics: ["actions", "rooms"] },
+          { type: `${SUBSCRIBE_TASK_V0_2}#response` },
+        ),
+        "tok0",
+      ),
+    );
+    await settle();
+    expect(h.client.status).toBe("live");
+    expect(h.client.effectiveTopics).toEqual(["actions", "rooms"]);
+
+    // A 0.1 hint on a 0.2 stream is not one of its hints: discarded.
+    s.push(sse(hint("actions", "tok1", 1), "tok1"));
+    // A count on rooms is ignored: it has none.
+    s.push(sse(hint("rooms", "tok2", 4, { type: EVENT_TASK_V0_2 }), "tok2"));
+    await settle();
+    expect(h.hints).toEqual([["rooms", undefined]]);
+    h.client.stop();
+    expect(h.client.effectiveTopics).toEqual([]);
+  });
+
+  it("closes a stream whose #response is not of the version it subscribed at", async () => {
+    const s = controlledStream();
+    const h = harness([() => streamResponse(s.stream)], LIVE_V0_2);
+    h.client.start();
+    await settle();
+    s.push(sse(response({ topics: ["actions"] }), "tok0")); // a 0.1 #response
+    await settle();
+    expect(h.client.status).not.toBe("live");
+    h.client.stop();
+  });
+});
+
 describe("hint to query keys", () => {
   it("re-reads the badge, page, tile and banner keys each topic names", () => {
     const has = (t: Topic, key: readonly unknown[]) =>
@@ -309,6 +371,10 @@ describe("hint to query keys", () => {
     expect(MEMBER_COUNT_KEY[0]).toBe("members");
     expect(has("members", ["members"])).toBe(true);
     expect(has("config", ["admin-config"])).toBe(true);
+    // The rooms pages: list and room, usage and near-a-limit, storage configs.
+    expect(has("rooms", ["rooms"])).toBe(true);
+    expect(has("rooms", ["room-usage"])).toBe(true);
+    expect(has("rooms", ["storage"])).toBe(true);
   });
 
   it("invalidates each key once", () => {

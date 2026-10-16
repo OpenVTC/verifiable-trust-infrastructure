@@ -106,6 +106,10 @@ pub mod merkle;
 /// substantial dependency to make it carry.
 #[cfg(feature = "mls")]
 pub mod mls;
+/// A host's hook for "what a rooms administrator's reads show may have changed",
+/// behind the `host` feature.
+#[cfg(feature = "host")]
+pub mod observe;
 /// The epoch key chain that keeps a room readable across a membership change.
 #[cfg(feature = "mls")]
 pub mod retention;

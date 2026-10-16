@@ -1,5 +1,9 @@
-//! `vtc/admin/events/subscribe/0.1` — an administrator's console opens its
-//! live channel of hints (`crate::admin_events`).
+//! `vtc/admin/events/subscribe/0.1` and `/0.2` — an administrator's console
+//! opens its live channel of hints (`crate::admin_events`).
+//!
+//! Both versions are served, each answered at its own version: 0.2 adds the
+//! `rooms` topic and nothing else, and a 0.1 console keeps working unchanged
+//! (subscribe 0.2 *What 0.2 adds*).
 //!
 //! The task's success response opens a stream, which only the HTTPS door can
 //! carry (binding 0.3 §2.1). This handler decides everything a refusal could
@@ -33,6 +37,7 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_1 as subscribe;
+use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_2 as subscribe_v0_2;
 use trust_tasks_rs::{ErrorPayload, Payload, RejectReason, TrustTask};
 
 use super::helpers::{
@@ -40,14 +45,15 @@ use super::helpers::{
     success_response,
 };
 use super::{JoinAuthCtx, TrustTaskOutcome, parse_spec_payload};
-use crate::admin_events::{self, Refusal, Topic};
+use crate::admin_events::{self, Refusal, Topic, Version};
 use crate::server::AppState;
 
 pub(crate) const SUBSCRIBE_TYPE: &str = <subscribe::Payload as Payload>::TYPE_URI;
+pub(crate) const SUBSCRIBE_V0_2_TYPE: &str = <subscribe_v0_2::Payload as Payload>::TYPE_URI;
 /// Responses the duplicate-execution record keeps no body for: answering a
 /// replayed subscribe with its old `#response` and no stream behind it would
-/// break subscribe 0.1 consumer rule 3.
-pub(crate) const UNRECORDED_RESPONSES: &[&str] = &[SUBSCRIBE_TYPE];
+/// break subscribe consumer rule 3 (both versions).
+pub(crate) const UNRECORDED_RESPONSES: &[&str] = &[SUBSCRIBE_TYPE, SUBSCRIBE_V0_2_TYPE];
 
 /// The subscribe acceptance window: four minutes of age plus the spine's
 /// 60 seconds of skew — five minutes in all (consumer rule 2).
@@ -62,12 +68,41 @@ pub(super) async fn handle_subscribe(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
+    // 0.1 and 0.2 declare the same codes under the same names.
     use subscribe::error_codes as codes;
 
-    let payload: subscribe::Payload = match parse_spec_payload(&doc) {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
+    // The payload against its version's schema — which is where a `rooms`
+    // topic in a 0.1 subscribe is refused — then one shape for both.
+    let (version, requested, since): (Version, BTreeSet<Topic>, Option<String>) =
+        if doc.type_uri.to_string() == SUBSCRIBE_V0_2_TYPE {
+            let payload: subscribe_v0_2::Payload = match parse_spec_payload(&doc) {
+                Ok(p) => p,
+                Err(reject) => return reject,
+            };
+            (
+                Version::V0_2,
+                payload
+                    .topics
+                    .iter()
+                    .filter_map(Topic::from_subscribe_v0_2)
+                    .collect(),
+                payload.since.as_ref().map(|t| t.as_str().to_string()),
+            )
+        } else {
+            let payload: subscribe::Payload = match parse_spec_payload(&doc) {
+                Ok(p) => p,
+                Err(reject) => return reject,
+            };
+            (
+                Version::V0_1,
+                payload
+                    .topics
+                    .iter()
+                    .filter_map(Topic::from_subscribe)
+                    .collect(),
+                payload.since.as_ref().map(|t| t.as_str().to_string()),
+            )
+        };
 
     let mut window = super::freshness_policy();
     window.max_age = Some(MAX_SUBSCRIBE_AGE);
@@ -108,7 +143,7 @@ pub(super) async fn handle_subscribe(
         Err(e) => return app_error_to_reject(&doc, &e),
     };
 
-    let since = payload.since.as_ref().map(|t| t.as_str());
+    let since = since.as_deref();
     if let (Some(header), Some(since)) = (slot.last_event_id(), since)
         && header != since
     {
@@ -122,16 +157,12 @@ pub(super) async fn handle_subscribe(
         );
     }
 
-    let requested: BTreeSet<Topic> = payload
-        .topics
-        .iter()
-        .filter_map(Topic::from_subscribe)
-        .collect();
     let parent_thread = doc.thread_id.clone().unwrap_or_else(|| doc.id.clone());
     let opened = match admin_events::open(
         state,
         &signer,
         &standing,
+        version,
         &requested,
         since,
         parent_thread,

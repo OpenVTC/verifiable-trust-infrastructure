@@ -435,12 +435,15 @@ once and then dropped from the URL.
 ### Live updates, and polling as the fallback
 
 A signed-in console holds **one live channel** per session:
-`vtc/admin/events/subscribe/0.1`, sent as a signed document to the ordinary
+`vtc/admin/events/subscribe` — at **0.2** when the VTC lists it in
+`trust-task-discovery`, else 0.1 — sent as a signed document to the ordinary
 `POST /v1/trust-tasks` with `Accept: text/event-stream, application/json;q=0.5`
 and answered as a **streamed response** (HTTPS binding 0.3 §2.1): `200
 text/event-stream`, whose first event is the signed `#response` and whose later
-events are `vtc/admin/events/event/0.1` **hints**. There is no other route — no
-`GET`, no WebSocket — and nothing about the door changes for any other task.
+events are `vtc/admin/events/event` **hints** of the same version. There is no
+other route — no `GET`, no WebSocket — and nothing about the door changes for
+any other task. The VTC serves both versions; 0.2 adds the `rooms` topic and
+nothing else, so a 0.1 console (or `cnm actions watch`) is unchanged.
 
 **A hint is never data.** It names a topic, when it changed, and for the three
 badge topics the viewer's count:
@@ -453,6 +456,18 @@ badge topics the viewer's count:
 | `members` | the Members page and tile | — | every administrator |
 | `singleAdminMode` | the single-administrator banner | — | every administrator |
 | `config` | the configuration and profile screens | — | holders of `vtc.config.admin` |
+| `rooms` (0.2) | the Rooms, room, Room usage and Storage pages | — | holders of `vtc.rooms.admin` |
+
+`rooms` is hinted when a room is registered (or removed), when a room's
+lifecycle state changes — which happens with the clock, so the VTC wakes the
+stream at the moment a room is due to lapse, go dormant or become reclaimable —
+when a room's usage or a storage config's held bytes crosses 80, 95 or 100 % of
+its limit or capacity in either direction, and when a storage config is
+created, changed or changes state. Holdings moving inside a band, or a live
+room renewing, send nothing: the VTC digests exactly those facts, as the rooms
+reads report them, and hints only when the digest moves. The pages also poll
+(60 s, 5 min while the stream carries `rooms`), so a 0.1 VTC or an
+administrator without the topic still sees changes.
 
 The console reacts to a hint only by invalidating the react-query keys of that
 topic's own signed read, so authorization stays on every read: a hint can

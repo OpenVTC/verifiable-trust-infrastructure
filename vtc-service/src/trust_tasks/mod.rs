@@ -1453,7 +1453,7 @@ fn dispatch_typed<'a>(
         | crate::acl::admin_consent::DECISION_V0_2_TYPE => {
             Box::pin(async move { action_tasks::handle_decision(state, ctx, doc).await })
         }
-        event_tasks::SUBSCRIBE_TYPE => {
+        event_tasks::SUBSCRIBE_TYPE | event_tasks::SUBSCRIBE_V0_2_TYPE => {
             Box::pin(async move { event_tasks::handle_subscribe(state, ctx, doc).await })
         }
         uri if action_tasks::URIS.contains(&uri) => Box::pin(async move {
@@ -2905,8 +2905,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     action_tasks::ACKNOWLEDGE_V0_2_TYPE,
     // The console's live channel (hints only): its success opens an event
     // stream, which only the HTTPS door can carry — every other transport is
-    // answered `streamUnavailable`.
+    // answered `streamUnavailable`. 0.2 adds the `rooms` topic; 0.1 is still
+    // answered, at its own version.
     event_tasks::SUBSCRIBE_TYPE,
+    event_tasks::SUBSCRIBE_V0_2_TYPE,
     // Members' step-up passkeys: the invite, its redemption, an
     // administrator's revocation for the member, and an administrator's
     // listing of them. No REST route serves them.

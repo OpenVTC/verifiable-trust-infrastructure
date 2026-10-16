@@ -1,6 +1,13 @@
 //! The administrator console's **live channel** — a hint-only event stream
-//! (`vtc/admin/events/subscribe/0.1`, `vtc/admin/events/event/0.1`), carried
-//! over HTTPS as a streamed response (HTTPS binding 0.3 §2.1).
+//! (`vtc/admin/events/subscribe`, `vtc/admin/events/event`), carried over
+//! HTTPS as a streamed response (HTTPS binding 0.3 §2.1).
+//!
+//! ## Versions
+//!
+//! Served at 0.1 and 0.2. The topic set is closed per version (subscribe 0.2
+//! *What 0.2 adds*): 0.2 adds `rooms`, so a console asks for it only at 0.2,
+//! and a stream answers — its `#response` and every hint after it — at the
+//! version it was opened with ([`Version`]). A 0.1 console is unchanged.
 //!
 //! ## What travels on it
 //!
@@ -25,10 +32,21 @@
 //!   state; a VTC is one process, and a stream only ever *reads* through its
 //!   own state, so a signal from elsewhere costs at most a re-read that finds
 //!   nothing changed (see fingerprints below).
+//!   The rooms seams are a configuration's write (`rooms::storage_configs`)
+//!   and, inside `vti_rooms`, a room registered or renewed and a holdings or
+//!   limit write ([`notify_rooms`], through `vti_rooms::observe`).
 //! - **Fingerprints.** "A change the caller's read would not show them
 //!   produces no hint" (subscribe 0.1 §Authorization). For `actions`,
 //!   `acknowledgements` and `joinRequests` each stream keeps a digest of what
 //!   the recipient's read would show and sends a hint only when it moves.
+//!   `rooms` is fingerprinted too, over exactly what event 0.2 producer rule 4
+//!   names: which rooms are hosted, each room's lifecycle state, and the 80 /
+//!   95 / 100 percent band of each room's usage against its limits and of each
+//!   storage config's held bytes against its capacity, beside each config as
+//!   stored. Holdings move on every upload; only a band crossing hints.
+//!   Lifecycle is computed from the clock, never written, so a stream holding
+//!   `rooms` also wakes at the next moment a room's state would change
+//!   (`vti_rooms::Room::next_lifecycle_change`).
 //! - **Resumption.** A bounded, in-memory history of which topic changed at
 //!   which position ([`HISTORY_SECS`], [`HISTORY_MAX`]). A resume token is an
 //!   opaque, MAC'd, per-caller-masked encoding of a position, under a key that
@@ -74,15 +92,16 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, mpsc};
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::vtc::admin::events::{
-    event::v0_1 as event, subscribe::v0_1 as subscribe,
+    event::v0_1 as event, event::v0_2 as event_v0_2, subscribe::v0_1 as subscribe,
+    subscribe::v0_2 as subscribe_v0_2,
 };
 use vti_common::error::AppError;
 
 use crate::server::AppState;
 
-/// The declared error codes of `vtc/admin/events/subscribe/0.1`, read off
-/// the generated specification — what the tests that witness each one compare
-/// against.
+/// The declared error codes of `vtc/admin/events/subscribe`, read off the
+/// generated specification — what the tests that witness each one compare
+/// against. 0.1 and 0.2 declare the same three, under the same codes.
 pub mod codes {
     use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_1::error_codes as e;
 
@@ -93,9 +112,18 @@ pub mod codes {
 
 // ─── topics ──────────────────────────────────────────────────────────────
 
+/// The version a stream was opened at: its `#response` and its hints are
+/// documents of that version, and its topics are that version's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Version {
+    V0_1,
+    V0_2,
+}
+
 /// One kind of change a console can be told about — the shared `Topic` of
-/// `vtc/admin/events/_shared/0.1`. The generated modules each carry their own
-/// copy of that enum; this one is the service's, with a conversion to each.
+/// `vtc/admin/events/_shared/0.2` (0.1's, plus `rooms`). The generated modules
+/// each carry their own copy of that enum; this one is the service's, with a
+/// conversion to each through the wire name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Topic {
     Actions,
@@ -104,17 +132,49 @@ pub enum Topic {
     Members,
     SingleAdminMode,
     Config,
+    /// Added in 0.2: the rooms this community hosts and where their files are
+    /// kept.
+    Rooms,
 }
 
 impl Topic {
-    pub const ALL: [Topic; 6] = [
+    pub const ALL: [Topic; 7] = [
         Topic::Actions,
         Topic::Acknowledgements,
         Topic::JoinRequests,
         Topic::Members,
         Topic::SingleAdminMode,
         Topic::Config,
+        Topic::Rooms,
     ];
+
+    /// The name the shared schema gives it.
+    pub fn wire(self) -> &'static str {
+        match self {
+            Topic::Actions => "actions",
+            Topic::Acknowledgements => "acknowledgements",
+            Topic::JoinRequests => "joinRequests",
+            Topic::Members => "members",
+            Topic::SingleAdminMode => "singleAdminMode",
+            Topic::Config => "config",
+            Topic::Rooms => "rooms",
+        }
+    }
+
+    pub(crate) fn from_wire(name: &str) -> Option<Topic> {
+        Topic::ALL.into_iter().find(|t| t.wire() == name)
+    }
+
+    /// Whether `version`'s closed topic set holds it.
+    pub(crate) fn in_version(self, version: Version) -> bool {
+        version == Version::V0_2 || self != Topic::Rooms
+    }
+
+    /// The topics a stream keeps a digest of, hinting only when it moves: the
+    /// count topics, and `rooms` (event 0.2 producer rule 4).
+    fn is_fingerprinted(self) -> bool {
+        self.is_count() || self == Topic::Rooms
+    }
 
     /// The count topics: their hints carry the recipient's badge count, and
     /// no other topic's may (event 0.1 producer rule 4).
@@ -126,39 +186,13 @@ impl Topic {
     }
 
     pub(crate) fn from_subscribe(t: &subscribe::Topic) -> Option<Topic> {
-        Some(match t {
-            subscribe::Topic::Actions => Topic::Actions,
-            subscribe::Topic::Acknowledgements => Topic::Acknowledgements,
-            subscribe::Topic::JoinRequests => Topic::JoinRequests,
-            subscribe::Topic::Members => Topic::Members,
-            subscribe::Topic::SingleAdminMode => Topic::SingleAdminMode,
-            subscribe::Topic::Config => Topic::Config,
-            // A topic a newer specification adds is one this service cannot
-            // say it reads; it is never effective.
-            _ => return None,
-        })
+        // A topic a newer specification adds is one this service cannot say it
+        // reads; it is never effective.
+        Topic::from_wire(&t.to_string()).filter(|t| t.in_version(Version::V0_1))
     }
 
-    pub(crate) fn to_subscribe(self) -> subscribe::Topic {
-        match self {
-            Topic::Actions => subscribe::Topic::Actions,
-            Topic::Acknowledgements => subscribe::Topic::Acknowledgements,
-            Topic::JoinRequests => subscribe::Topic::JoinRequests,
-            Topic::Members => subscribe::Topic::Members,
-            Topic::SingleAdminMode => subscribe::Topic::SingleAdminMode,
-            Topic::Config => subscribe::Topic::Config,
-        }
-    }
-
-    fn to_event(self) -> event::Topic {
-        match self {
-            Topic::Actions => event::Topic::Actions,
-            Topic::Acknowledgements => event::Topic::Acknowledgements,
-            Topic::JoinRequests => event::Topic::JoinRequests,
-            Topic::Members => event::Topic::Members,
-            Topic::SingleAdminMode => event::Topic::SingleAdminMode,
-            Topic::Config => event::Topic::Config,
-        }
+    pub(crate) fn from_subscribe_v0_2(t: &subscribe_v0_2::Topic) -> Option<Topic> {
+        Topic::from_wire(&t.to_string())
     }
 }
 
@@ -229,6 +263,12 @@ pub fn notify(topic: Topic) {
         let mut h = lock_history();
         h.position += 1;
         let position = h.position;
+        // Only a topic's latest change answers "did it change after `since`",
+        // so an earlier entry for it is dropped rather than kept. That holds the
+        // history at one entry per topic however busy a seam is (a room's
+        // holdings move on every upload), without moving `dropped_through`:
+        // nothing a resume could need is lost.
+        h.entries.retain(|e| e.1 != topic);
         h.entries.push_back((position, topic, at));
         let horizon = at - chrono::TimeDelta::seconds(HISTORY_SECS);
         while h.entries.len() > HISTORY_MAX || h.entries.front().is_some_and(|e| e.2 < horizon) {
@@ -241,6 +281,15 @@ pub fn notify(topic: Topic) {
         signal: Signal::Changed(topic),
         at,
     });
+}
+
+/// [`notify`] for the `rooms` topic — a plain `fn`, so it can be the hook
+/// `vti_rooms::observe` calls after a room is registered or renewed, or a
+/// room's or a storage config's holdings or limits move. A prompt to look,
+/// carrying nothing: each stream re-reads and hints only when what the rooms
+/// reads report crossed a line (event 0.2 producer rule 4).
+pub fn notify_rooms() {
+    notify(Topic::Rooms);
 }
 
 /// [`notify`] for an action record: both topics read the action list.
@@ -451,12 +500,17 @@ fn write_stall() -> Duration {
 /// | `members` | `vtc/members/list` | any administrator |
 /// | `joinRequests` | `vtc/join-requests/list` | any administrator |
 /// | `config` | `vtc/config/export` | `vtc.config.admin` |
+/// | `rooms` | `vtc/rooms/list`, `vtc/rooms/usage`, `vtc/storage/configs/list` | `vtc.rooms.admin` |
 ///
 /// The handlers of `vtc/members/list`, `vtc/join-requests/list` and
-/// `vtc/config/export` (`trust_tasks`) read their capability from here.
+/// `vtc/config/export` (`trust_tasks`) read their capability from here; the
+/// three rooms reads gate on `vtc.rooms.admin` themselves, which a test here
+/// pins (subscribe 0.2 §Authorization: "holders of `vtc.rooms.admin`, who are
+/// answered on all three").
 pub(crate) fn read_capability(topic: Topic) -> Option<crate::acl::Capability> {
     match topic {
         Topic::Config => Some(crate::acl::Capability::ConfigAdmin),
+        Topic::Rooms => Some(crate::acl::Capability::RoomsAdmin),
         Topic::Actions
         | Topic::Acknowledgements
         | Topic::SingleAdminMode
@@ -537,22 +591,37 @@ pub(crate) async fn standing(state: &AppState, signer: &str) -> Result<Option<St
 
 // ─── what the recipient's reads show ─────────────────────────────────────
 
-/// A count topic's count and a digest of what its read would show, for one
-/// recipient. The digest moves when — and only when — something the read
-/// shows them moves.
+/// A fingerprinted topic's count (0 where it has none) and a digest of what
+/// its read would show, for one recipient. The digest moves when — and only
+/// when — something the read shows them, that the topic hints about, moves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Observed {
     count: u64,
     digest: [u8; 32],
 }
 
-/// Observe the count topics among `topics` for `standing`.
+/// What [`observe`] saw.
+#[derive(Debug, Default)]
+struct Observation {
+    topics: HashMap<Topic, Observed>,
+    /// With `rooms`: the next moment a hosted room's lifecycle state changes
+    /// by the clock alone, when the stream must look again unprompted.
+    rooms_wake: Option<DateTime<Utc>>,
+}
+
+/// Observe the fingerprinted topics among `topics` for `standing`.
 async fn observe(
     state: &AppState,
     standing: &Standing,
     topics: &BTreeSet<Topic>,
-) -> Result<HashMap<Topic, Observed>, AppError> {
+) -> Result<Observation, AppError> {
     let mut out = HashMap::new();
+    let mut rooms_wake = None;
+    if topics.contains(&Topic::Rooms) {
+        let (digest, wake) = rooms_fingerprint(state).await?;
+        out.insert(Topic::Rooms, Observed { count: 0, digest });
+        rooms_wake = wake;
+    }
     if topics.contains(&Topic::Actions) || topics.contains(&Topic::Acknowledgements) {
         // The same computation `vtc/admin/actions/list` makes for its
         // `counts` and `ext` (limit 0: no page is rendered).
@@ -629,7 +698,86 @@ async fn observe(
             },
         );
     }
-    Ok(out)
+    Ok(Observation {
+        topics: out,
+        rooms_wake,
+    })
+}
+
+/// The 80 / 95 / 100 percent band `used` has reached of `limit` (0 under
+/// 80), as the console draws it (`admin-ui/src/lib/rooms-api.ts`,
+/// `thresholdOf`): a limit of 0 refuses everything, so it reads as full.
+fn band(used: u64, limit: u64) -> u8 {
+    if limit == 0 {
+        return 100;
+    }
+    let (used, limit) = (u128::from(used) * 100, u128::from(limit));
+    [100u8, 95, 80]
+        .into_iter()
+        .find(|pct| used >= limit * u128::from(*pct))
+        .unwrap_or(0)
+}
+
+/// What the `rooms` topic hints about (event 0.2 producer rule 4), as the
+/// three rooms reads report it, digested — and when a room's lifecycle next
+/// moves by the clock.
+///
+/// - every hosted room (`vtc/rooms/list`) and its lifecycle state;
+/// - each room's band: its holdings — reserved bytes included — against the
+///   room limits `vtc/rooms/usage` reports for it, the larger of bytes and
+///   files, for the rooms that report has rows for (those that have held
+///   files);
+/// - every storage config as stored (`vtc/storage/configs/list`: created,
+///   changed, a new state), and the band of its held bytes against its
+///   capacity.
+///
+/// Nothing finer: a room's or a config's holdings moving inside a band, a
+/// renewal of a live room or a new owner produce no hint.
+async fn rooms_fingerprint(
+    state: &AppState,
+) -> Result<([u8; 32], Option<DateTime<Utc>>), AppError> {
+    let now = Utc::now().timestamp().max(0) as u64;
+    let files = &state.room_files;
+    let with_files: std::collections::HashSet<String> =
+        files.rooms_with_files().await?.into_iter().collect();
+    let mut rooms = vti_rooms::storage::list_rooms(&state.rooms_ks).await?;
+    rooms.sort_by(|a, b| a.room_id.cmp(&b.room_id));
+    let mut shape: Vec<Value> = Vec::with_capacity(rooms.len());
+    let mut wake: Option<u64> = None;
+    for room in &rooms {
+        let room_band = if with_files.contains(&room.room_id) {
+            let usage = files.room_usage(&room.room_id).await?;
+            let limits = files.effective_limits(room).await?.room;
+            let bytes = limits
+                .max_bytes
+                .map_or(0, |l| band(usage.bytes + usage.reserved_bytes, l));
+            let count = limits.max_files.map_or(0, |l| band(usage.files, l));
+            bytes.max(count)
+        } else {
+            0
+        };
+        shape.push(serde_json::json!([
+            room.room_id,
+            room.lifecycle(now).as_str(),
+            room_band
+        ]));
+        if let Some(next) = room.next_lifecycle_change(now) {
+            wake = Some(wake.map_or(next, |w| w.min(next)));
+        }
+    }
+    let holdings = files.config_holdings().await?;
+    let mut configs = state.room_storage.configs().await?;
+    configs.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    for config in configs {
+        let id = config["id"].as_str().unwrap_or_default();
+        let held = holdings.get(id).map_or(0, |h| h.bytes);
+        let config_band = config["capacityBytes"]
+            .as_u64()
+            .map_or(0, |cap| band(held, cap));
+        shape.push(serde_json::json!([config, config_band]));
+    }
+    let wake = wake.and_then(|w| DateTime::<Utc>::from_timestamp(w as i64, 0));
+    Ok((digest(&shape), wake))
 }
 
 fn digest<T: serde::Serialize>(v: &T) -> [u8; 32] {
@@ -743,17 +891,20 @@ pub(crate) struct Grant {
     vtc_did: String,
     parent_thread: String,
     topics: BTreeSet<Topic>,
+    version: Version,
     backlog: Vec<(Topic, DateTime<Utc>)>,
     baseline: HashMap<Topic, Observed>,
+    rooms_wake: Option<DateTime<Utc>>,
     deadline: DateTime<Utc>,
     first_id: String,
     position: u64,
 }
 
-/// What the subscribe handler answers with, the `#response` payload and the
-/// stream behind it.
+/// What the subscribe handler answers with, the `#response` payload — the
+/// generated `Response` of the stream's version, serialised — and the stream
+/// behind it.
 pub(crate) struct Opened {
-    pub response: subscribe::Response,
+    pub response: Value,
     pub grant: Grant,
 }
 
@@ -767,18 +918,24 @@ pub(crate) enum Refusal {
     Internal(AppError),
 }
 
-/// Grant a stream of `requested ∩ standing.topics` to `signer`.
+/// Grant a stream of `requested ∩ standing.topics` to `signer`, at
+/// `version`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn open(
     state: &AppState,
     signer: &str,
     standing: &Standing,
+    version: Version,
     requested: &BTreeSet<Topic>,
     since: Option<&str>,
     parent_thread: String,
     document_expires: Option<DateTime<Utc>>,
 ) -> Result<Opened, Refusal> {
-    let topics: BTreeSet<Topic> = requested.intersection(&standing.topics).copied().collect();
+    let topics: BTreeSet<Topic> = requested
+        .intersection(&standing.topics)
+        .copied()
+        .filter(|t| t.in_version(version))
+        .collect();
     if topics.is_empty() {
         return Err(Refusal::NoTopics);
     }
@@ -804,9 +961,15 @@ pub(crate) async fn open(
         None => (false, Vec::new()),
     };
 
-    let baseline = observe(state, standing, &topics)
+    let observation = observe(state, standing, &topics)
         .await
         .map_err(Refusal::Internal)?;
+    let mut baseline = observation.topics;
+    // A resumed topic changed while the console was away: its hint goes
+    // whatever the stream observes now, so it has no baseline to match.
+    for (topic, _) in &backlog {
+        baseline.remove(topic);
+    }
 
     let now = Utc::now();
     let lifetime =
@@ -818,16 +981,8 @@ pub(crate) async fn open(
         .unwrap_or(now + lifetime);
 
     let first_id = mint_token(signer, position, 0);
-    let response = subscribe::Response::builder()
-        .topics(topics.iter().map(|t| t.to_subscribe()).collect::<Vec<_>>())
-        .heartbeat_seconds(heartbeat().as_secs() as i64)
-        .resumed(resumed)
-        .resume_token(
-            subscribe::ResumeToken::try_from(first_id.as_str())
-                .map_err(|e| Refusal::Internal(AppError::Internal(e.to_string())))?,
-        );
-    let response = subscribe::Response::try_from(response)
-        .map_err(|e| Refusal::Internal(AppError::Internal(e.to_string())))?;
+    let response =
+        subscribe_response(version, &topics, resumed, &first_id).map_err(Refusal::Internal)?;
 
     let vtc_did = state
         .config
@@ -845,13 +1000,80 @@ pub(crate) async fn open(
             vtc_did,
             parent_thread,
             topics,
+            version,
             backlog,
             baseline,
+            rooms_wake: observation.rooms_wake,
             deadline,
             first_id,
             position,
         },
     })
+}
+
+/// The generated `#response` payload of `version`, serialised. The two
+/// versions' shapes are the same; only the topic set differs.
+fn subscribe_response(
+    version: Version,
+    topics: &BTreeSet<Topic>,
+    resumed: bool,
+    token: &str,
+) -> Result<Value, AppError> {
+    let internal = |e: &dyn std::fmt::Display| AppError::Internal(e.to_string());
+    macro_rules! build {
+        ($m:ident) => {{
+            let topics = topics
+                .iter()
+                .map(|t| t.wire().parse::<$m::Topic>().map_err(|e| internal(&e)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let response = $m::Response::builder()
+                .topics(topics)
+                .heartbeat_seconds(heartbeat().as_secs() as i64)
+                .resumed(resumed)
+                .resume_token($m::ResumeToken::try_from(token).map_err(|e| internal(&e))?);
+            let response = $m::Response::try_from(response).map_err(|e| internal(&e))?;
+            serde_json::to_value(response).map_err(|e| internal(&e))
+        }};
+    }
+    match version {
+        Version::V0_1 => build!(subscribe),
+        Version::V0_2 => build!(subscribe_v0_2),
+    }
+}
+
+/// One hint as the generated `event` document of `grant`'s version,
+/// unsigned: the topic, `at`, `count` on a count topic, and the resume token
+/// — nothing else (event 0.2 producer rules 3 and 5).
+fn hint_document(
+    grant: &Grant,
+    topic: Topic,
+    at: DateTime<Utc>,
+    count: Option<u64>,
+    token: &str,
+) -> Option<Value> {
+    macro_rules! build {
+        ($m:ident) => {{
+            let mut builder = $m::Payload::builder()
+                .topic(topic.wire().parse::<$m::Topic>().ok()?)
+                .at(at)
+                .resume_token($m::ResumeToken::try_from(token).ok()?);
+            if let Some(c) = count {
+                builder = builder.count(Some(c));
+            }
+            let payload = $m::Payload::try_from(builder).ok()?;
+            let mut doc =
+                TrustTask::for_payload(format!("urn:uuid:{}", uuid::Uuid::new_v4()), payload);
+            doc.parent_thread_id = Some(grant.parent_thread.clone());
+            doc.issuer = Some(grant.vtc_did.clone());
+            doc.recipient = Some(grant.signer.clone());
+            doc.issued_at = DateTime::<Utc>::from_timestamp(Utc::now().timestamp(), 0);
+            serde_json::to_value(&doc).ok()
+        }};
+    }
+    match grant.version {
+        Version::V0_1 => build!(event),
+        Version::V0_2 => build!(event_v0_2),
+    }
 }
 
 // ─── the stream ──────────────────────────────────────────────────────────
@@ -941,6 +1163,9 @@ struct Stream {
     last_sent: HashMap<Topic, tokio::time::Instant>,
     /// Re-check standing before the next byte.
     recheck: bool,
+    /// When a hosted room's lifecycle next changes by the clock: `rooms` is
+    /// looked at then, unprompted.
+    rooms_wake: Option<tokio::time::Instant>,
     /// This stream's own counter, the second half of every token.
     n: u32,
 }
@@ -948,16 +1173,26 @@ struct Stream {
 async fn run(state: AppState, mut grant: Grant, tx: mpsc::Sender<Bytes>) {
     let mut shutdown = state.shutdown_tx.subscribe();
     let backlog = std::mem::take(&mut grant.backlog);
+    let rooms_wake = grant.rooms_wake.map(wake_instant);
     let mut stream = Stream {
         state,
         grant,
         pending: backlog.into_iter().collect(),
         last_sent: HashMap::new(),
         recheck: false,
+        rooms_wake,
         n: 0,
     };
     let ended = stream.drive(&tx, &mut shutdown).await;
     tracing::debug!(?ended, "admin event stream ended");
+}
+
+/// The instant just after `at`, when the state it names has changed. Further
+/// off than the longest stream lives is as good as never: the stream ends
+/// first, and the next one looks again.
+fn wake_instant(at: DateTime<Utc>) -> tokio::time::Instant {
+    let left = (at - Utc::now()).to_std().unwrap_or(Duration::ZERO);
+    tokio::time::Instant::now() + left.min(STREAM_LIFETIME) + Duration::from_secs(1)
 }
 
 impl Stream {
@@ -1000,6 +1235,7 @@ impl Stream {
             // Re-derived every turn: a re-read standing may pull it in.
             let deadline = self.deadline_instant();
             let flush_at = self.next_flush();
+            let rooms_wake = self.rooms_wake;
             tokio::select! {
                 biased;
                 _ = tx.closed() => return Ended::ClientGone,
@@ -1025,6 +1261,16 @@ impl Stream {
                         Ok(false) => {}
                         Err(ended) => return ended,
                     }
+                }
+                _ = async { tokio::time::sleep_until(rooms_wake.expect("guarded")).await },
+                    if rooms_wake.is_some() =>
+                {
+                    // A room's lifecycle state moves with the clock, with no
+                    // write to say so: look, as a seam would have prompted.
+                    self.rooms_wake = None;
+                    let now = Utc::now();
+                    let at = self.pending.entry(Topic::Rooms).or_insert(now);
+                    *at = (*at).max(now);
                 }
                 _ = tokio::time::sleep_until(beat) => {
                     // Authority is re-read at least once a heartbeat, so a
@@ -1099,14 +1345,23 @@ impl Stream {
         if due.is_empty() {
             return Ok(false);
         }
-        let counted: BTreeSet<Topic> = due.iter().copied().filter(|t| t.is_count()).collect();
-        let observed = if counted.is_empty() {
+        let fingerprinted: BTreeSet<Topic> = due
+            .iter()
+            .copied()
+            .filter(|t| t.is_fingerprinted())
+            .collect();
+        let observed = if fingerprinted.is_empty() {
             HashMap::new()
         } else {
-            match observe(&self.state, &standing, &counted).await {
-                Ok(o) => o,
+            match observe(&self.state, &standing, &fingerprinted).await {
+                Ok(o) => {
+                    if fingerprinted.contains(&Topic::Rooms) {
+                        self.rooms_wake = o.rooms_wake.map(wake_instant);
+                    }
+                    o.topics
+                }
                 Err(e) => {
-                    tracing::warn!(error = %e, "admin event stream: count unreadable; ending");
+                    tracing::warn!(error = %e, "admin event stream: topic unreadable; ending");
                     return Err(Ended::StandingShrank);
                 }
             }
@@ -1116,7 +1371,7 @@ impl Stream {
             let Some(at) = self.pending.remove(&topic) else {
                 continue;
             };
-            let count = if topic.is_count() {
+            let count = if topic.is_fingerprinted() {
                 let Some(seen) = observed.get(&topic).copied() else {
                     continue;
                 };
@@ -1125,7 +1380,7 @@ impl Stream {
                     continue;
                 }
                 self.grant.baseline.insert(topic, seen);
-                Some(seen.count)
+                topic.is_count().then_some(seen.count)
             } else {
                 None
             };
@@ -1145,9 +1400,9 @@ impl Stream {
         Ok(wrote)
     }
 
-    /// One `vtc/admin/events/event/0.1` document, framed. Carries the topic,
-    /// `at`, `count` on a count topic, and the resume token — nothing else
-    /// (event 0.1 producer rules 3 and 4).
+    /// One `vtc/admin/events/event` document of the stream's version,
+    /// framed. Carries the topic, `at`, `count` on a count topic, and the
+    /// resume token — nothing else (event 0.2 producer rules 3 and 5).
     async fn hint(
         &self,
         topic: Topic,
@@ -1155,20 +1410,7 @@ impl Stream {
         count: Option<u64>,
         token: &str,
     ) -> Option<Bytes> {
-        let mut builder = event::Payload::builder()
-            .topic(topic.to_event())
-            .at(at)
-            .resume_token(event::ResumeToken::try_from(token).ok()?);
-        if let Some(c) = count {
-            builder = builder.count(Some(c));
-        }
-        let payload = event::Payload::try_from(builder).ok()?;
-        let mut doc = TrustTask::for_payload(format!("urn:uuid:{}", uuid::Uuid::new_v4()), payload);
-        doc.parent_thread_id = Some(self.grant.parent_thread.clone());
-        doc.issuer = Some(self.grant.vtc_did.clone());
-        doc.recipient = Some(self.grant.signer.clone());
-        doc.issued_at = DateTime::<Utc>::from_timestamp(Utc::now().timestamp(), 0);
-        let mut value = serde_json::to_value(&doc).ok()?;
+        let mut value = hint_document(&self.grant, topic, at, count, token)?;
         // RECOMMENDED: the hint is attributable to this community. A failed
         // signature still sends it — a hint grants nothing either way.
         if let Some(signer) = self.state.credential_signer.as_ref()
@@ -1244,6 +1486,67 @@ mod tests {
         assert!(acquire(&subject).is_none());
         drop(permits);
         assert!(acquire(&subject).is_some());
+    }
+
+    #[test]
+    fn bands_are_the_consoles() {
+        // `admin-ui/src/lib/rooms-api.ts` `thresholdOf(fullness(..))`.
+        assert_eq!(band(0, 100), 0);
+        assert_eq!(band(79, 100), 0);
+        assert_eq!(band(80, 100), 80);
+        assert_eq!(band(94, 100), 80);
+        assert_eq!(band(95, 100), 95);
+        assert_eq!(band(100, 100), 100);
+        assert_eq!(band(250, 100), 100);
+        assert_eq!(band(0, 0), 100, "a limit of 0 refuses everything: full");
+        assert_eq!(band(u64::MAX, u64::MAX), 100);
+    }
+
+    #[test]
+    fn the_topic_set_is_closed_per_version() {
+        for t in Topic::ALL {
+            assert_eq!(Topic::from_wire(t.wire()), Some(t));
+            assert!(t.wire().parse::<subscribe_v0_2::Topic>().is_ok());
+            assert!(t.wire().parse::<event_v0_2::Topic>().is_ok());
+            assert_eq!(
+                t.wire().parse::<subscribe::Topic>().is_ok(),
+                t.in_version(Version::V0_1)
+            );
+            assert_eq!(
+                t.wire().parse::<event::Topic>().is_ok(),
+                t.in_version(Version::V0_1)
+            );
+        }
+        assert!(!Topic::Rooms.in_version(Version::V0_1));
+        assert!(!Topic::Rooms.is_count(), "rooms carries no count");
+    }
+
+    /// Subscribe 0.2 §Authorization: `rooms` goes to holders of
+    /// `vtc.rooms.admin`, who are answered on all three of its reads — which
+    /// gate on that capability themselves (`surface_tasks::handle_rooms_list`,
+    /// `storage_tasks::rooms_admin`).
+    #[test]
+    fn rooms_is_read_with_the_rooms_capability() {
+        assert_eq!(
+            read_capability(Topic::Rooms),
+            Some(crate::acl::Capability::RoomsAdmin)
+        );
+    }
+
+    #[test]
+    fn the_history_keeps_one_entry_per_topic_and_still_resumes() {
+        let before = position();
+        for _ in 0..50 {
+            notify(Topic::Rooms);
+        }
+        let h = lock_history();
+        assert!(
+            h.entries.iter().filter(|e| e.1 == Topic::Rooms).count() <= 1,
+            "a busy seam does not crowd the history"
+        );
+        drop(h);
+        let changed = changed_since(before).expect("still covered");
+        assert!(changed.iter().any(|(t, _)| *t == Topic::Rooms));
     }
 
     #[test]

@@ -61,6 +61,7 @@
 import { useMemo, useState } from "react";
 import { Link, Route, Routes } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { useLivePollMs } from "@/lib/use-live-events";
 import { DoorOpen, RefreshCw } from "lucide-react";
 
 import { postSignedRead } from "@/lib/api";
@@ -484,7 +485,14 @@ export function Rooms() {
 }
 
 function RoomsList() {
-  const roomsQuery = useQuery({ queryKey: ["rooms"], queryFn: fetchRooms });
+  // Re-read on a live `rooms` hint (`lib/use-live-events.ts`); polled as the
+  // fallback, slowly while the stream carries the topic.
+  const pollMs = useLivePollMs("rooms");
+  const roomsQuery = useQuery({
+    queryKey: ["rooms"],
+    queryFn: fetchRooms,
+    refetchInterval: pollMs,
+  });
   const rooms = roomsQuery.data?.rooms ?? [];
   const filesOff = roomsQuery.data?.filesEnabled === false;
 

@@ -269,7 +269,10 @@ pub async fn create_room(rooms: &KeyspaceHandle, room: &Room) -> Result<(), AppE
             room.room_id
         )));
     }
-    rooms.insert(room_key(&room.room_id), room).await
+    rooms.insert(room_key(&room.room_id), room).await?;
+    // A room registered: the host's rooms list moved (`crate::observe`).
+    crate::observe::changed();
+    Ok(())
 }
 
 /// How long a minted epoch is good for, in seconds.
@@ -323,6 +326,8 @@ pub async fn advance_epoch(
     room.epoch_expires_at = Some(now + epoch_lifetime_seconds());
     room.updated_at = now;
     rooms.insert(room_key(room_id), &room).await?;
+    // A renewal may bring the room back from a lapse (`crate::observe`).
+    crate::observe::changed();
     Ok(room)
 }
 

@@ -14,6 +14,7 @@
 import { useState } from "react";
 import { Link, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useLivePollMs } from "@/lib/use-live-events";
 import { HardDrive, Plus } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
@@ -110,7 +111,12 @@ function Health({ facts }: { facts: StorageConfigFacts }) {
 function StorageList() {
   const [params, setParams] = useSearchParams();
   const creating = params.get("create") === "1";
-  const q = useQuery({ queryKey: ["storage", "list"], queryFn: fetchStorageConfigs });
+  const pollMs = useLivePollMs("rooms");
+  const q = useQuery({
+    queryKey: ["storage", "list"],
+    queryFn: fetchStorageConfigs,
+    refetchInterval: pollMs,
+  });
   const items = q.data ?? [];
   const needCredential = items.filter((i) => i.facts.credential.status === "required");
   const others = items.filter((i) => i.facts.credential.status !== "required");

@@ -2484,6 +2484,8 @@ impl BlobHost {
                 self.blobs.insert(usage_key, &storage).await?;
             }
             self.blobs.remove(key).await?;
+            // A storage config's holdings moved (`crate::observe`).
+            crate::observe::changed();
             stats.collected += 1;
         }
 
@@ -2726,7 +2728,10 @@ impl BlobHost {
     async fn update_usage(&self, key: String, f: impl FnOnce(&mut Usage)) -> Result<(), AppError> {
         let mut usage: Usage = self.blobs.get(key.clone()).await?.unwrap_or_default();
         f(&mut usage);
-        self.blobs.insert(key, &usage).await
+        self.blobs.insert(key, &usage).await?;
+        // Holdings moved, perhaps across a band (`crate::observe`).
+        crate::observe::changed();
+        Ok(())
     }
 
     async fn reserve(&self, rec: &UploadRecord) -> Result<(), AppError> {
@@ -2745,6 +2750,7 @@ impl BlobHost {
             storage.reserved_bytes += size;
             self.blobs.insert(key, &storage).await?;
         }
+        crate::observe::changed();
         Ok(())
     }
 
@@ -2764,6 +2770,7 @@ impl BlobHost {
             storage.reserved_bytes = checked_sub(storage.reserved_bytes, size, "storage reserved");
             self.blobs.insert(key, &storage).await?;
         }
+        crate::observe::changed();
         Ok(())
     }
 
@@ -2799,6 +2806,7 @@ impl BlobHost {
             storage.files += 1;
             self.blobs.insert(key, &storage).await?;
         }
+        crate::observe::changed();
         Ok(())
     }
 
