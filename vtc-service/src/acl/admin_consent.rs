@@ -101,6 +101,12 @@
 //!   the policy that decides authority (role change, removal, join,
 //!   cross-community roles, git namespaces), approved by the holders of
 //!   `vtc.policy.admin @ policy:<purpose>`.
+//! - [`Act::ChangeTrustedWitnesses`] — **VTI-CMP-090**: any change to the
+//!   witnesses whose Verifiable Witness Credentials count in this community
+//!   (`witnesses.trusted`) — adding, removing or relabelling one — approved by
+//!   the other holders of `vtc.config.admin`. Whose attestation counts as
+//!   evidence is a major trust change, and the "same review" CMP-090 asks of
+//!   it is a second administrator's (`credentials::trusted_witnesses`).
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -221,6 +227,12 @@ pub enum Act {
     /// what reaches them. The subject is the config or the room; the consent is
     /// pinned to its stored config and assignment.
     ChangeStorage,
+    /// **VTI-CMP-090** — changing the trusted-witness list
+    /// (`witnesses.trusted`): adding, removing or relabelling a witness whose
+    /// VWCs count here. Not conferring, but it decides whose attestations are
+    /// evidence in this community, so a second administrator reviews it. The
+    /// subject is the config key; the consent is pinned to the list in force.
+    ChangeTrustedWitnesses,
 }
 
 impl Act {
@@ -243,6 +255,7 @@ impl Act {
             // `admission` policy referred it.
             Self::DirectAdmission => "the admission policy",
             Self::ChangeStorage => "the storage tasks' consent",
+            Self::ChangeTrustedWitnesses => "VTI-CMP-090",
         }
     }
 
@@ -312,6 +325,7 @@ impl Act {
             Self::VettingReview => vec![CapRef::all(Capability::VettingManage)],
             Self::DirectAdmission => vec![CapRef::all(Capability::MembersManage)],
             Self::ChangeStorage => vec![CapRef::all(Capability::RoomsAdmin)],
+            Self::ChangeTrustedWitnesses => vec![CapRef::all(Capability::ConfigAdmin)],
         }
     }
 
@@ -360,6 +374,7 @@ impl Act {
                 crate::trust_tasks::storage_tasks::ASSIGN_TYPE => s::KIND_ROOM_STORAGE_ASSIGN,
                 _ => s::KIND_STORAGE_CONFIG_UPDATE,
             },
+            Self::ChangeTrustedWitnesses => s::KIND_WITNESSES_CHANGE,
         }
     }
 }
@@ -1504,6 +1519,7 @@ pub(crate) fn requester_still_authorized(
         // re-bounded by the handler when the action executes.
         Act::DirectAdmission => entry.admin.can(Capability::MembersManage, None),
         Act::ChangeStorage => entry.admin.can(Capability::RoomsAdmin, None),
+        Act::ChangeTrustedWitnesses => entry.admin.can(Capability::ConfigAdmin, None),
     }
 }
 
@@ -1557,6 +1573,12 @@ pub(crate) async fn pin_for(
             "config": state.room_storage.config(subject).await?,
             "assignment": state.room_storage.assignment(subject).await?,
         }),
+        // The approvers were shown a change from *this* list. Once it moves —
+        // another change landed first — what they agreed to is not what would
+        // happen.
+        Act::ChangeTrustedWitnesses => {
+            crate::credentials::trusted_witnesses::current_value(state).await?
+        }
     };
     Ok(StatePin {
         resource: subject.to_string(),
@@ -1717,6 +1739,7 @@ mod tests {
             Act::ChangeRoles,
             Act::RestoreBackup,
             Act::GrantsReview,
+            Act::ChangeTrustedWitnesses,
         ] {
             assert!(may_approve(&approver, &act.default_stake(), now), "{act:?}");
         }
@@ -1768,6 +1791,11 @@ mod tests {
             (Act::ReduceUnrestricted, tt::MEMBER_ADMIN_REMOVE_TYPE),
             (Act::LowerThreshold, tt::admin_tasks::CONFIG_PATCH_TYPE),
             (Act::LowerThreshold, tt::CONFIG_IMPORT_TYPE),
+            (
+                Act::ChangeTrustedWitnesses,
+                tt::admin_tasks::CONFIG_PATCH_TYPE,
+            ),
+            (Act::ChangeTrustedWitnesses, tt::CONFIG_IMPORT_TYPE),
             (
                 Act::ChangeAuthorityPolicy(PolicyPurpose::Removal),
                 tt::policy_tasks::POLICY_UPSERT_TYPE,

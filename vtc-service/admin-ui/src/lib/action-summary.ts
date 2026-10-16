@@ -117,6 +117,11 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmeGT7ztnicC5RScp86U5Yjq1s3vhtzZof8yYy6sWi9cYP",
   [pinKey("config.threshold.lower", `${SPEC}/vtc/config/import/0.1`)]:
     "zQmQ6yxgM1HYuJkY4RvQDYiB7NyfsFeAeYzcPnh6d5rrrPc",
+  // Any change to the trusted-witness list (VTI-CMP-090).
+  [pinKey("config.witnesses.change", `${SPEC}/config/patch/0.1`)]:
+    "zQmYGMiMk9SpEJwJ7g4EpxKCourBJVRP6PnmHMzYccbQugH",
+  [pinKey("config.witnesses.change", `${SPEC}/vtc/config/import/0.1`)]:
+    "zQmathdofD8yrXDQ2AuSfsWwjjKdx9RdPkAnC2r7qdU79hc",
   [pinKey("policy.authority.change", `${SPEC}/policy/upsert/0.2`)]:
     "zQma1zFb7cvRpSH7erp14W83wYZW5vP7cke1yLwcwQZdEie",
   [pinKey("policy.authority.change", `${SPEC}/policy/activate/0.1`)]:

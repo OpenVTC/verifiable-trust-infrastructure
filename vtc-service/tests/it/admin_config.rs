@@ -1062,8 +1062,9 @@ async fn vti_apv_022_config_import_refuses_single_admin_mode() {
 // ──────────────────────── trusted witnesses ────────────────────────
 //
 // `witnesses.trusted` (`credentials::trusted_witnesses`): the witnesses whose
-// VWCs count here. Runtime-patchable under `vtc.config.admin`, audited with
-// both lists, read live by every VWC check.
+// VWCs count here. Runtime-patchable under `vtc.config.admin` with other
+// administrators' consent (VTI-CMP-090), audited with both lists, read live by
+// every VWC check.
 
 const WITNESSES_KEY: &str = "witnesses.trusted";
 const WITNESS: &str = "did:webvh:QmScid:witness.independent.example";
@@ -1084,12 +1085,14 @@ async fn trusted_witnesses_default_to_none() {
     );
 }
 
-/// A patch takes effect on the next VWC without a reload, shows in the
-/// effective view, and is audited as a `ConfigChanged` row carrying the list.
+/// Once written, the list is read live — no reload between the write and the
+/// next VWC — and shows in the effective view. A change through `config/patch`
+/// is an action for other administrators' consent (VTI-CMP-090), so a sole
+/// administrator's patch applies nothing; the consent path, the audit and the
+/// single-administrator waiver are in `unrestricted_admin_consent.rs` and
+/// `single_admin_mode.rs`.
 #[tokio::test]
-async fn patching_trusted_witnesses_is_live_and_audited() {
-    use vti_common::audit::{AuditEnvelope, AuditEvent};
-
+async fn the_trusted_witnesses_are_read_live_and_a_lone_patch_applies_nothing() {
     let fix = build_signed(true).await;
     let admin = admin(&fix).await;
     let list = json!([{ "did": WITNESS, "label": "Independent witness" }]);
@@ -1099,47 +1102,26 @@ async fn patching_trusted_witnesses_is_live_and_audited() {
         json!({ "overrides": { WITNESSES_KEY: list } }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["applied"], json!([WITNESSES_KEY]), "{body}");
-
-    assert!(
-        vtc_service::credentials::trusted_witnesses::live_for(&fix.state)
-            .await
-            .contains(WITNESS),
-        "read live: no reload between the patch and the next VWC"
-    );
-    let (_, shown) = show(&fix, &admin).await;
-    assert_eq!(field(&shown, WITNESSES_KEY)["value"], list);
-    assert_eq!(field(&shown, WITNESSES_KEY)["source"], "db");
-
-    let raw = fix
-        .state
-        .audit_ks
-        .prefix_iter_raw(b"2".to_vec())
-        .await
-        .unwrap();
-    let change = raw
-        .iter()
-        .map(|(_, v)| serde_json::from_slice::<AuditEnvelope>(v).unwrap())
-        .find_map(|e| match e.event {
-            AuditEvent::ConfigChanged(data) => {
-                assert_eq!(e.actor_did_plain.as_deref(), Some(admin.did.as_str()));
-                data.changes.into_iter().find(|c| c.key == WITNESSES_KEY)
-            }
-            _ => None,
-        })
-        .expect("the change is audited");
-    assert_eq!(change.new_value, list);
-    assert_eq!(change.old_value, None);
-
-    // Emptying it again is a change like any other, and trusts nobody.
-    let (status, body) = patch(&fix, &admin, json!({ "overrides": { WITNESSES_KEY: [] } })).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!status.is_success(), "{body}");
     assert!(
         vtc_service::credentials::trusted_witnesses::live_for(&fix.state)
             .await
             .is_empty()
     );
+
+    vtc_service::config_store::ConfigStore::new(fix.state.config_ks.clone())
+        .put(WITNESSES_KEY, &list)
+        .await
+        .unwrap();
+    assert!(
+        vtc_service::credentials::trusted_witnesses::live_for(&fix.state)
+            .await
+            .contains(WITNESS),
+        "read live: no reload between the write and the next VWC"
+    );
+    let (_, shown) = show(&fix, &admin).await;
+    assert_eq!(field(&shown, WITNESSES_KEY)["value"], list);
+    assert_eq!(field(&shown, WITNESSES_KEY)["source"], "db");
 }
 
 /// A list the host would not read as written is refused, never stored: not a

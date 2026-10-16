@@ -5018,6 +5018,19 @@ async fn handle_config_import(
     if request.confirm
         && request.document.schema_version == crate::routes::admin::config::EXPORT_SCHEMA_VERSION
     {
+        // VTI-CMP-090: an import that changes the trusted-witness list takes
+        // the gesture and the consent `config/patch` does.
+        if let Err(refusal) = acl_tasks::settle_witness_list_gate(
+            state,
+            &actor,
+            &doc,
+            &request.document.config_overrides,
+            ", by configuration import",
+        )
+        .await
+        {
+            return refusal;
+        }
         match crate::routes::admin::config::lowered_threshold(
             state,
             &request.document.config_overrides,

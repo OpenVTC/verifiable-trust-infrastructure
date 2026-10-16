@@ -454,6 +454,12 @@ that moves into the action list, usually with N = 1.
 | `policy/upsert` and `policy/activate` for the purposes that guard authority (`role_change`, `removal`, `join`, `cross_community_roles`, `git_ns`) | any admin, scoped included | **Default** for those purposes. Separately, policy should become unrestricted-admin only. Hole 3 |
 | `backup/initiate-import` → `finalize-import` (replaces all state, ACL included) | one unrestricted admin | **Default.** A restore can bring back removed admins or remove current ones |
 
+#### Protecting what counts as evidence (default N-of-M)
+
+| Operation | Today | As an action |
+|---|---|---|
+| Any change to the trusted-witness list `witnesses.trusted` — add, remove or relabel — by `config/patch` or `vtc/config/import` (kind `config.witnesses.change`) | was `vtc.config.admin` alone | **Default.** Approvers are the other holders of `vtc.config.admin`; pinned to the list in force; single-administrator mode waives it on the bound step-up at `Critical`. A write that also lowers the threshold is refused, one consent per action. Decided 2026-10-16: whose attestations count is a major trust change, and VTI-CMP-090's "same review" is a second administrator's (`docs/03-vtc/trusted-witnesses.md`) |
+
 **Removal when nobody else is left to approve.** With two unrestricted admins,
 removing one leaves no approver: the requester is excluded and so is the
 subject. The VTC can't tell whether the requester is removing a compromised

@@ -150,6 +150,44 @@
     "typeUri": "https://trusttasks.org/spec/config/patch/0.1"
   },
   {
+    "kind": "config.witnesses.change",
+    "name": "change the trusted witnesses",
+    "payload": {
+      "overrides": {
+        "witnesses.trusted": [
+          {
+            "did": "did:webvh:QmScidExample:witness.independent.example",
+            "label": "Independent witness"
+          },
+          {
+            "did": "did:webvh:QmScidExample:witness.other.example"
+          }
+        ]
+      }
+    },
+    "summary": {
+      "effect": "The witnesses whose Verifiable Witness Credentials count as evidence in this community become exactly {witnesses}. A VWC from any witness not listed counts for nothing here, including ones members already hold.",
+      "fields": {
+        "witnesses": {
+          "format": "text",
+          "pointer": "/overrides/witnesses.trusted",
+          "value": [
+            {
+              "did": "did:webvh:QmScidExample:witness.independent.example",
+              "label": "Independent witness"
+            },
+            {
+              "did": "did:webvh:QmScidExample:witness.other.example"
+            }
+          ]
+        }
+      },
+      "templateDigest": "zQmYGMiMk9SpEJwJ7g4EpxKCourBJVRP6PnmHMzYccbQugH",
+      "title": "Change the witnesses this community trusts"
+    },
+    "typeUri": "https://trusttasks.org/spec/config/patch/0.1"
+  },
+  {
     "kind": "policy.authority.change",
     "name": "activate an authority policy",
     "payload": {

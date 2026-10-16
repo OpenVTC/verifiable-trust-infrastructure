@@ -265,6 +265,76 @@ async fn vti_apv_022_a_sole_admin_lowers_the_threshold() {
     assert_eq!(rows[0].requirement.as_deref(), Some("VTI-APV-020"));
 }
 
+/// VTI-APV-022 / VTI-CMP-090: changing the trusted-witness list applies on the
+/// sole administrator's bound gesture — never without it — and the waiver is
+/// audited at `Critical`.
+#[tokio::test]
+async fn vti_apv_022_a_sole_admin_changes_the_trusted_witnesses() {
+    const KEY: &str = "witnesses.trusted";
+    const WITNESS: &str = "did:webvh:QmScid:witness.independent.example";
+    let mut fix = fixture(true).await;
+    let a = requester(&mut fix).await;
+    let doc = signed(
+        &a,
+        PATCH,
+        json!({ "overrides": { KEY: [{ "did": WITNESS }] } }),
+    )
+    .await;
+    async fn trusted(fix: &Fixture) -> bool {
+        vtc_service::credentials::trusted_witnesses::live_for(&fix.vtc.state)
+            .await
+            .contains(WITNESS)
+    }
+
+    let (status, reply) = post(&fix.vtc, &doc).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert!(
+        step_up_request(&reply).is_some(),
+        "the gesture first: {reply}"
+    );
+    assert!(!trusted(&fix).await, "nothing without the gesture");
+
+    let (status, reply) = submit(&mut fix, &a, &doc).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["payload"]["applied"], json!([KEY]), "{reply}");
+    assert!(trusted(&fix).await);
+    assert_nothing_open(&fix, &a).await;
+    let rows = waived(&fix).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].requirement.as_deref(), Some("VTI-CMP-090"));
+    assert_eq!(rows[0].task.as_deref(), Some(PATCH));
+}
+
+/// Without the mode, a sole administrator cannot change the trusted-witness
+/// list alone: nobody else could approve, so it is refused before the gesture.
+#[tokio::test]
+async fn without_the_mode_a_sole_admin_cannot_change_the_trusted_witnesses() {
+    let mut fix = fixture(false).await;
+    let a = requester(&mut fix).await;
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            PATCH,
+            json!({ "overrides": {
+                "witnesses.trusted": [{ "did": "did:webvh:QmScid:witness.example" }]
+            } }),
+        )
+        .await,
+    )
+    .await;
+    assert!(!status.is_success(), "{reply}");
+    assert!(
+        step_up_request(&reply).is_none(),
+        "no gesture asked: {reply}"
+    );
+    assert!(
+        vtc_service::credentials::trusted_witnesses::live_for(&fix.vtc.state)
+            .await
+            .is_empty()
+    );
+}
+
 /// VTI-APV-022 / VTI-VTC-022: replacing an authority-deciding policy.
 #[tokio::test]
 async fn vti_apv_022_a_sole_admin_changes_an_authority_policy() {

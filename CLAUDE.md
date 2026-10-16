@@ -1201,7 +1201,8 @@ new flow, update both this section and the relevant `docs/*.md`.
   administrators' agreement — an authority-conferring grant or admin invite
   (VTI-APV-018), a reduction of another administrator (APV-019), lowering the
   consent threshold (APV-020), authority policy (VTI-VTC-022), a custom role
-  define/delete, a restore's commit — is **parked** after the requester's
+  define/delete, a restore's commit, any change to the trusted-witness list
+  (VTI-CMP-090) — is **parked** after the requester's
   operation-bound step-up (202 + `trust-task-next-step` naming the action) and
   **runs itself on the N-th approval**, every check re-run against the
   community as it is then (APV-017). The same list holds `coolingOff` items (a
@@ -1312,8 +1313,15 @@ new flow, update both this section and the relevant `docs/*.md`.
   configuration — `[witnesses] trusted` or the runtime key `witnesses.trusted`
   via `config/patch` / `vtc/config/import` (`vtc.config.admin`, audited
   `ConfigChanged`, marked `trust_semantics`) — no Trust Task family of its own.
-- **Invariants to preserve**: empty (the default), unreadable or corrupt means
-  **no** witness is trusted. The host settles one verdict per VWC in a fixed
+- **Invariants to preserve**: **every runtime change parks** — add, remove or
+  relabel (only a reorder is no change) — as `Act::ChangeTrustedWitnesses`
+  (kind `config.witnesses.change`) for the other holders of `vtc.config.admin`,
+  pinned to the list in force; single-administrator mode waives it only on the
+  requester's operation-bound step-up, at `Critical`. Never let a witness-list
+  write reach `patch_config` / `import_inner` past
+  `acl_tasks::settle_witness_list_gate`, and never let it share an action with
+  a threshold lowering (refused). Empty (the default), unreadable or corrupt
+  means **no** witness is trusted. The host settles one verdict per VWC in a fixed
   order — trusted witness (`untrustedWitness`), then outcome evidence of the
   cited session paired by the framework's four checks plus VWC identity
   (`noOutcomeEvidence` / `outcomeInvalid`, VTI-CMP-023), then the digest

@@ -1505,3 +1505,261 @@ async fn a_two_admin_community_can_still_remove_one_at_the_default_threshold() {
         .unwrap();
     assert!(entry(&fix, &b.did).await.is_none());
 }
+
+// ─── VTI-CMP-090: the trusted-witness list ───────────────────────────────
+
+const WITNESSES_KEY: &str = "witnesses.trusted";
+const WITNESS_A: &str = "did:webvh:QmScid:witness-a.independent.example";
+const WITNESS_B: &str = "did:webvh:QmScid:witness-b.independent.example";
+const EXPORT: &str = "https://trusttasks.org/spec/vtc/config/export/0.1";
+const IMPORT: &str = "https://trusttasks.org/spec/vtc/config/import/0.1";
+
+fn witness_patch(list: Value) -> Value {
+    json!({ "overrides": { WITNESSES_KEY: list } })
+}
+
+async fn trusts(fix: &Fixture, did: &str) -> bool {
+    vtc_service::credentials::trusted_witnesses::live_for(&fix.vtc.state)
+        .await
+        .contains(did)
+}
+
+async fn put_witnesses(fix: &Fixture, list: Value) {
+    vtc_service::config_store::ConfigStore::new(fix.vtc.state.config_ks.clone())
+        .put(WITNESSES_KEY, &list)
+        .await
+        .unwrap();
+}
+
+/// Adding a witness takes the gesture, parks for the other holders of
+/// `vtc.config.admin`, and is applied — live and audited, as the requester —
+/// by the approval that meets the threshold. Nothing counts before then.
+#[tokio::test]
+async fn vti_cmp_090_adding_a_witness_parks_and_completes() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let list = json!([{ "did": WITNESS_A, "label": "Independent witness" }]);
+    let doc = signed(&a, PATCH, witness_patch(list.clone())).await;
+
+    // The gesture first, and nothing written before it.
+    let (status, reply) = post(&fix.vtc, &doc).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert!(step_up_request(&reply).is_some(), "{reply}");
+    let id = park(&mut fix, &a, &doc).await;
+    assert!(!trusts(&fix, WITNESS_A).await, "parked, not applied");
+
+    let shown = action(&fix, &b, &id).await;
+    assert_eq!(shown["kind"], "config.witnesses.change");
+    assert_eq!(shown["callerRole"], "approver");
+    assert_eq!(shown["summary"]["fields"]["witnesses"]["value"], list);
+    crate::common::signed::assert_conforms(SHOW, &json!({ "payload": { "action": shown } }));
+
+    let (_, ack) = decide(&fix.vtc, &b, &id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    assert!(trusts(&fix, WITNESS_A).await, "applied on the approval");
+    let done = action(&fix, &a, &id).await;
+    assert_eq!(done["status"], "completed", "{done}");
+    assert_eq!(
+        done["ext"]["org.openvtc"]["result"]["applied"][0], WITNESSES_KEY,
+        "{done}"
+    );
+
+    let changed: Vec<_> = audit_rows(&fix, "ConfigChanged")
+        .await
+        .into_iter()
+        .filter_map(|e| match e.event {
+            vti_common::audit::AuditEvent::ConfigChanged(d) => {
+                assert_eq!(e.actor_did_plain.as_deref(), Some(a.did.as_str()));
+                d.changes.into_iter().find(|c| c.key == WITNESSES_KEY)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changed.len(), 1, "audited once: {changed:?}");
+    assert_eq!(changed[0].new_value, list);
+}
+
+/// Removing a witness parks too, and one decline closes it with the list
+/// untouched. The requester never approves their own change.
+#[tokio::test]
+async fn vti_cmp_090_removing_a_witness_parks_and_a_decline_keeps_it() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    put_witnesses(&fix, json!([{ "did": WITNESS_A }, { "did": WITNESS_B }])).await;
+
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, PATCH, witness_patch(json!([{ "did": WITNESS_A }]))).await,
+    )
+    .await;
+    assert!(
+        trusts(&fix, WITNESS_B).await,
+        "still trusted while it waits"
+    );
+
+    let bs = action(&fix, &b, &id).await;
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&a, DECISION_V0_2, decision_payload(&bs, "approve")).await,
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:requesterExcluded"),
+        "{reply}"
+    );
+
+    let (_, ack) = decide(&fix.vtc, &b, &id, "deny").await;
+    assert_eq!(ack["payload"]["status"], "denied", "{ack}");
+    assert_eq!(action(&fix, &a, &id).await["status"], "declined");
+    assert!(trusts(&fix, WITNESS_B).await, "a decline writes nothing");
+}
+
+/// Relabelling a witness is a change; the same entries in another order are
+/// not, and a list the write would refuse asks for no gesture.
+#[tokio::test]
+async fn vti_cmp_090_a_relabel_parks_a_reorder_does_not() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let _b = admin(&fix).await;
+    put_witnesses(&fix, json!([{ "did": WITNESS_A }, { "did": WITNESS_B }])).await;
+
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            PATCH,
+            witness_patch(json!([{ "did": WITNESS_B }, { "did": WITNESS_A }])),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a reorder applies at once: {reply}");
+
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(&a, PATCH, witness_patch(json!([{ "did": "not-a-did" }]))).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(
+        reply["payload"]["rejected"][0]["key"], WITNESSES_KEY,
+        "{reply}"
+    );
+
+    park(
+        &mut fix,
+        &a,
+        &signed(
+            &a,
+            PATCH,
+            witness_patch(json!([
+                { "did": WITNESS_A, "label": "renamed" },
+                { "did": WITNESS_B }
+            ])),
+        )
+        .await,
+    )
+    .await;
+}
+
+/// Another change landing first voids the action: the approvers saw a change
+/// from a list that is no longer the one in force.
+#[tokio::test]
+async fn vti_cmp_090_the_action_is_void_when_the_list_moves() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, PATCH, witness_patch(json!([{ "did": WITNESS_A }]))).await,
+    )
+    .await;
+    let bs = action(&fix, &b, &id).await;
+    put_witnesses(&fix, json!([{ "did": WITNESS_B }])).await;
+
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&b, DECISION_V0_2, decision_payload(&bs, "approve")).await,
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:noPending"),
+        "{reply}"
+    );
+    assert_eq!(action(&fix, &a, &id).await["closedReason"], "invalidated");
+    assert!(!trusts(&fix, WITNESS_A).await);
+}
+
+/// An applied import that changes the list takes the same gate; a preview asks
+/// nothing.
+#[tokio::test]
+async fn vti_cmp_090_an_import_changing_the_list_parks() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let (status, exported) = post(&fix.vtc, &signed(&a, EXPORT, json!({})).await).await;
+    assert_eq!(status, StatusCode::OK, "{exported}");
+    let mut document = exported["payload"]["document"].clone();
+    document["configOverrides"][WITNESSES_KEY] = json!([{ "did": WITNESS_A }]);
+
+    let (status, preview) = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            IMPORT,
+            json!({ "document": document, "confirm": false }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a preview asks nothing: {preview}");
+
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, IMPORT, json!({ "document": document, "confirm": true })).await,
+    )
+    .await;
+    assert_eq!(
+        action(&fix, &b, &id).await["kind"],
+        "config.witnesses.change"
+    );
+    assert!(!trusts(&fix, WITNESS_A).await);
+    let (_, ack) = decide(&fix.vtc, &b, &id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    assert!(trusts(&fix, WITNESS_A).await);
+}
+
+/// One parked action is one consent: a write that changes the list and lowers
+/// the threshold is refused before any gesture, naming the fix.
+#[tokio::test]
+async fn vti_cmp_090_a_list_change_and_a_threshold_lowering_go_apart() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let _b = admin(&fix).await;
+    let _c = admin(&fix).await;
+    patch_threshold(&fix, &a, 2).await;
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            PATCH,
+            json!({ "overrides": {
+                WITNESSES_KEY: [{ "did": WITNESS_A }],
+                THRESHOLD_KEY: 1,
+            } }),
+        )
+        .await,
+    )
+    .await;
+    assert!(step_up_request(&reply).is_none(), "no gesture: {reply}");
+    assert!(!status.is_success(), "{reply}");
+    assert!(reply.to_string().contains("two config/patch"), "{reply}");
+    assert!(!trusts(&fix, WITNESS_A).await);
+}

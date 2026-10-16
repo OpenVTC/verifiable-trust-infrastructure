@@ -48,6 +48,8 @@ pub struct Template {
 pub const KIND_GRANT_AUTHORITY: &str = "acl.grant.authority";
 pub const KIND_REDUCE_AUTHORITY: &str = "acl.reduce.authority";
 pub const KIND_THRESHOLD_LOWER: &str = "config.threshold.lower";
+/// Changing the trusted-witness list, `witnesses.trusted` (VTI-CMP-090).
+pub const KIND_WITNESSES_CHANGE: &str = "config.witnesses.change";
 pub const KIND_POLICY_AUTHORITY: &str = "policy.authority.change";
 pub const KIND_INVITE_CREATE: &str = "admin.invite.create";
 /// An operator's offline write, raised for acknowledgement (VTI-VTC-023).
@@ -166,6 +168,10 @@ const REDUCE_CAPABILITY_EFFECT: &str = "{subject} loses capabilities that create
                                         decides it.";
 const THRESHOLD_EFFECT: &str = "Fewer administrators will be needed to make an unrestricted \
                                 administrator — including the next one this requester asks for.";
+const WITNESSES_EFFECT: &str = "The witnesses whose Verifiable Witness Credentials count as \
+                                evidence in this community become exactly {witnesses}. A VWC from \
+                                any witness not listed counts for nothing here, including ones \
+                                members already hold.";
 const POLICY_EFFECT: &str = "The rules that decide who holds authority in this community change.";
 const ACL_MIGRATION_EFFECT: &str = "This VTC ran {command} when it started on {host} at {at}. It \
                                     is already in effect: acknowledging records that you have \
@@ -389,6 +395,24 @@ pub const TEMPLATES: &[Template] = &[
         fields: &[f(
             "threshold",
             "/document/configOverrides/acl.unrestricted_admin_consent_threshold",
+            "text",
+        )],
+    },
+    Template {
+        kind: KIND_WITNESSES_CHANGE,
+        type_uri: CONFIG_PATCH,
+        title: "Change the witnesses this community trusts",
+        effect: WITNESSES_EFFECT,
+        fields: &[f("witnesses", "/overrides/witnesses.trusted", "text")],
+    },
+    Template {
+        kind: KIND_WITNESSES_CHANGE,
+        type_uri: CONFIG_IMPORT,
+        title: "Import a configuration that changes the witnesses this community trusts",
+        effect: WITNESSES_EFFECT,
+        fields: &[f(
+            "witnesses",
+            "/document/configOverrides/witnesses.trusted",
             "text",
         )],
     },
@@ -674,6 +698,16 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_THRESHOLD_LOWER,
         CONFIG_IMPORT,
         "zQmQ6yxgM1HYuJkY4RvQDYiB7NyfsFeAeYzcPnh6d5rrrPc",
+    ),
+    (
+        KIND_WITNESSES_CHANGE,
+        CONFIG_PATCH,
+        "zQmYGMiMk9SpEJwJ7g4EpxKCourBJVRP6PnmHMzYccbQugH",
+    ),
+    (
+        KIND_WITNESSES_CHANGE,
+        CONFIG_IMPORT,
+        "zQmathdofD8yrXDQ2AuSfsWwjjKdx9RdPkAnC2r7qdU79hc",
     ),
     (
         KIND_POLICY_AUTHORITY,

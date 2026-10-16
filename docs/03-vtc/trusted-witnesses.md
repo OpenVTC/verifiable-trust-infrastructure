@@ -57,9 +57,10 @@ list as JSON:
 ] } }
 ```
 
-A patch replaces the whole list, and `[]` empties it. It takes effect on the
-next VWC the VTC reads, with no reload. `config/show/0.1` reports the list in
-force and where it came from (`default`, `toml` or `db`).
+A patch replaces the whole list, and `[]` empties it. Once it is applied — which
+takes other administrators' approval, below — it takes effect on the next VWC
+the VTC reads, with no reload. `config/show/0.1` reports the list in force and
+where it came from (`default`, `toml` or `db`).
 
 The VTC refuses a list that is not an array of `{ "did", "label" }` objects, that
 names something other than a bare DID (a `#key` fragment, a path), that lists a
@@ -69,15 +70,46 @@ value that cannot be read is treated as trusting no witness.
 
 ### Who may change it, and how it is recorded
 
-Changing the list takes `vtc.config.admin`, the capability every `config/patch`
-takes. It does not go through the action list. A listed witness confers no
-authority (VTI-VTC-022). It decides which evidence counts toward decisions that
-other settings already make: a join criterion (`vtc.surface.admin`) and the
-personhood policy (`vtc.policy.admin`), neither of which needs a second
-administrator's consent. A criterion with `credentialIssuers: any` admits more
-than any witness list can, so a stricter gate on the list would close nothing.
+Changing which witnesses a community trusts is a major trust change, so no
+administrator makes it alone. Any runtime change to the list — adding a witness,
+removing one, changing a label — goes through the
+[administrator action list](admin-access.md):
 
-Every change is audited as a `ConfigChanged` row that carries the old and new
+1. The requester holds `vtc.config.admin` and sends the `config/patch` (or the
+   confirming `vtc/config/import`).
+2. The VTC asks for the requester's passkey gesture (or step-up approver), bound
+   to that one document.
+3. The patch is **parked** as an action of kind `config.witnesses.change`, and
+   the requester is answered `202` with a `trust-task-next-step` naming it. The
+   list is unchanged.
+4. The community's other holders of `vtc.config.admin` (anyone whose approve
+   scope reaches it, such as a least-privilege `approver`) see the list as it is
+   and as it would be, and decide with `task-consent/decision`. The requester
+   never approves, and one decline closes the action.
+5. The approval that reaches the consent threshold applies the patch, after
+   every check is re-run against the community as it is then. If the list
+   changed in the meantime, the action is void and nothing is written.
+
+Removing a witness parks too. It narrows what counts, but it can also take away
+the evidence members' personhood rests on, and one administrator should not
+decide that alone either. Reordering the same entries is not a change.
+
+A patch that changes the list and also lowers the consent threshold is refused:
+each needs its own consent, so send them as two patches.
+
+In **single-administrator mode** (`[acl] single_admin_mode`, VTI-APV-022) there
+is nobody else to ask. The requester's gesture bound to the patch stands in for
+the consent, the change applies at once, and the waiver is audited at
+`Critical` and shown in the console banner, as every other consent the mode
+waives.
+
+The rule implements VTI-CMP-090: a configuration change that alters trust
+semantics attracts the same review as a code change, and for a community that
+review is another administrator's. Editing `[witnesses]` in `config.toml` is the
+host operator's change, made outside the running VTC, like every other
+host-only setting.
+
+Every applied change is audited as a `ConfigChanged` row that carries the old and new
 lists and the signer. The key is marked as one that alters trust semantics, and
 each change is also logged at `warn` as such (VTI-CMP-090, VTI-CMP-092). The
 audit trail is what reconstructs the list that governed a past decision

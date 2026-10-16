@@ -4107,6 +4107,12 @@ pub(crate) async fn sign_requests(
             "The subject becomes a member with membership credentials, without a join request \
              or the join criteria.",
         ),
+        Act::ChangeTrustedWitnesses => (
+            "configChange",
+            json!({ "key": rec.subject }),
+            "Whose witness credentials count as evidence in this community changes — for \
+             personhood and for joining, and for credentials members already hold.",
+        ),
         Act::ChangeStorage => (
             "storageChange",
             json!({ "subject": rec.subject }),

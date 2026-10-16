@@ -28,24 +28,33 @@
 //! ## Where it is set, and who may change it
 //!
 //! `[witnesses] trusted` in `config.toml`, or the runtime key
-//! `witnesses.trusted` through `config/patch` (and `vtc/config/import`), which
-//! takes `vtc.config.admin` and is audited as a `ConfigChanged` row carrying
-//! the old and new lists. The list is community configuration that the host
-//! reads locally, so it needs no Trust Task family of its own (trust-tasks-tf
-//! #779).
+//! `witnesses.trusted` through `config/patch` (and `vtc/config/import`). The
+//! list is community configuration that the host reads locally, so it needs no
+//! Trust Task family of its own (trust-tasks-tf #779).
 //!
-//! Why `vtc.config.admin` and not the action list: a listed witness confers no
-//! authority (VTI-VTC-022) — it decides which evidence counts toward a decision
-//! some other configuration already makes. Those decisions are a join
-//! criterion (`vtc.surface.admin`) and the personhood policy
-//! (`vtc.policy.admin`), neither of which parks for consent, and a criterion
-//! with `credentialIssuers: any` admits more than any witness list can. Gating
-//! the list harder than what it feeds would add a ceremony without closing
-//! anything. VTI-CMP-090 asks that a change to trust semantics attract the same
-//! review and audit as code; the key is marked as one
-//! ([`crate::config_store::ConfigKeyDef::trust_semantics`]) and every change is
-//! audited with both values, which is also what lets a past decision's
+//! **Every runtime change is a consent-gated action.** Adding a witness,
+//! removing one or changing a label takes `vtc.config.admin`, the requester's
+//! passkey gesture bound to that one patch or import, and then the approval of
+//! the community's other holders of `vtc.config.admin`
+//! ([`crate::acl::admin_consent::Act::ChangeTrustedWitnesses`]): the operation
+//! is parked in the action list and runs itself on the N-th approval, against
+//! the list as it is then. In single-administrator mode (VTI-APV-022) the
+//! requester's bound gesture stands in for the consent and the waiver is
+//! audited at `Critical`, as for every other consent the mode waives.
+//!
+//! Why: whose attestation counts as evidence is a major trust change for a
+//! community — the community's decision (2026-10-16) — and VTI-CMP-090 asks
+//! that a change to trust semantics attract the same review as a code change,
+//! which here means a second administrator's. Removing a witness parks too: it
+//! narrows what counts, but it can also strip the evidence a member's standing
+//! rests on, and one administrator alone should not decide that either. The key
+//! is marked as trust-bearing
+//! ([`crate::config_store::ConfigKeyDef::trust_semantics`]) and every applied
+//! change is audited with both lists, which is what lets a past decision's
 //! effective list be reconstructed (VTI-CMP-091).
+//!
+//! `config.toml` is the host's: an edit there is an operator's offline change,
+//! outside the action list, as every other host-only setting is.
 //!
 //! ## Kept minimal
 //!
@@ -235,6 +244,70 @@ pub async fn live(cfg: &crate::config::AppConfig, db: &ConfigStore) -> TrustedWi
 pub async fn live_for(state: &crate::server::AppState) -> TrustedWitnesses {
     let cfg = state.config.read().await.clone();
     live(&cfg, &ConfigStore::new(state.config_ks.clone())).await
+}
+
+/// The list in force now, as written: the database layer's value when
+/// `config/patch` wrote one — verbatim, even one that no longer parses —
+/// else the in-memory list. What a consent to change the list is pinned to
+/// ([`crate::acl::admin_consent::Act::ChangeTrustedWitnesses`]), so a list
+/// that moves between the ask and the write voids the action.
+pub async fn current_value(state: &crate::server::AppState) -> Result<Value, AppError> {
+    if let Some(value) = ConfigStore::new(state.config_ks.clone())
+        .get(WITNESSES_TRUSTED)
+        .await?
+    {
+        return Ok(value);
+    }
+    let cfg = state.config.read().await;
+    serde_json::to_value(&cfg.witnesses.trusted)
+        .map_err(|e| AppError::Internal(format!("serialising the witness list: {e}")))
+}
+
+/// What a write of `overrides` would change the list from, and to — `None`
+/// when it leaves the list alone, or names a value the write would refuse
+/// anyway (that is refused there, without a gesture). The trigger of the
+/// consent gate on `config/patch` and `vtc/config/import`.
+///
+/// "From" is the list in force ([`current_value`]); one that no longer parses
+/// is shown as empty, which is what it trusts.
+pub async fn change_in<'a>(
+    state: &crate::server::AppState,
+    overrides: impl IntoIterator<Item = (&'a String, &'a Value)>,
+) -> Result<Option<(Vec<TrustedWitness>, Vec<TrustedWitness>)>, AppError> {
+    let Some((_, value)) = overrides
+        .into_iter()
+        .find(|(k, _)| k.as_str() == WITNESSES_TRUSTED)
+    else {
+        return Ok(None);
+    };
+    let own = state.config.read().await.vtc_did.clone();
+    let Ok(next) = parse_list(value, own.as_deref()) else {
+        return Ok(None);
+    };
+    let current = current_value(state).await?;
+    let prev = parse_list(&current, own.as_deref()).unwrap_or_default();
+    // Order carries no meaning (DIDs are unique within a list), so the same
+    // witnesses under the same labels in another order are no change.
+    let sorted = |l: &[TrustedWitness]| {
+        let mut l = l.to_vec();
+        l.sort_by(|a, b| a.did.cmp(&b.did));
+        l
+    };
+    Ok((sorted(&prev) != sorted(&next)).then_some((prev, next)))
+}
+
+/// A list for a person to read: each witness's label and DID, or `none`.
+pub fn describe(list: &[TrustedWitness]) -> String {
+    if list.is_empty() {
+        return "none".into();
+    }
+    list.iter()
+        .map(|w| match &w.label {
+            Some(label) => format!("{label} ({})", w.did),
+            None => w.did.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]

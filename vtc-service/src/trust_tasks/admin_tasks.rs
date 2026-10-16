@@ -354,6 +354,14 @@ async fn handle_config_patch(
     let request = crate::routes::admin::config::PatchRequest {
         overrides: payload.overrides.into_iter().collect(),
     };
+    // VTI-CMP-090: any change to the trusted-witness list takes the gesture
+    // and the consent of the other holders of `vtc.config.admin`.
+    if let Err(refusal) =
+        super::acl_tasks::settle_witness_list_gate(state, &actor, &doc, &request.overrides, "")
+            .await
+    {
+        return refusal;
+    }
     // VTI-APV-020: lowering the consent threshold takes the gesture and the
     // consent of the threshold as it stands. Raising it does not.
     match crate::routes::admin::config::lowered_threshold(state, &request.overrides).await {
