@@ -176,6 +176,7 @@ async fn add_at(
         epoch_conflict: codes::EPOCH_CONFLICT,
         host_unreachable: codes::HOST_UNREACHABLE,
         host_refused: codes::HOST_REFUSED,
+        staged: false,
     };
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -204,7 +205,15 @@ async fn add_at(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let host_call = match HostCall::as_owner(state, auth, &resolver, &room_id, &doc, &ADVANCE).await
+    let host_call = match HostCall::as_owner(
+        state,
+        auth,
+        &resolver,
+        &room_id,
+        &doc,
+        ADVANCE.no_authority,
+    )
+    .await
     {
         Ok(h) => h,
         Err(r) => return r,
@@ -216,7 +225,10 @@ async fn add_at(
     }
     // The owner's `admin` authority, minted before anything is built: a caller without it
     // learns so without leaving a pending admission behind.
-    let presentation = match host_call.admin_presentation(&doc, &ADVANCE).await {
+    let presentation = match host_call
+        .admin_presentation(&doc, ADVANCE.no_authority)
+        .await
+    {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -373,6 +385,7 @@ pub(super) async fn handle_remove(
         epoch_conflict: codes::EPOCH_CONFLICT,
         host_unreachable: codes::HOST_UNREACHABLE,
         host_refused: codes::HOST_REFUSED,
+        staged: false,
     };
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -408,7 +421,15 @@ pub(super) async fn handle_remove(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let host_call = match HostCall::as_owner(state, auth, &resolver, &room_id, &doc, &ADVANCE).await
+    let host_call = match HostCall::as_owner(
+        state,
+        auth,
+        &resolver,
+        &room_id,
+        &doc,
+        ADVANCE.no_authority,
+    )
+    .await
     {
         Ok(h) => h,
         Err(r) => return r,
@@ -420,7 +441,10 @@ pub(super) async fn handle_remove(
     if let Err(r) = host_call.settle_pending(&doc, &ADVANCE).await {
         return r;
     }
-    let presentation = match host_call.admin_presentation(&doc, &ADVANCE).await {
+    let presentation = match host_call
+        .admin_presentation(&doc, ADVANCE.no_authority)
+        .await
+    {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -507,6 +531,7 @@ pub(super) async fn handle_renew(
         epoch_conflict: codes::EPOCH_CONFLICT,
         host_unreachable: codes::HOST_UNREACHABLE,
         host_refused: codes::HOST_REFUSED,
+        staged: false,
     };
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -536,7 +561,15 @@ pub(super) async fn handle_renew(
         Err(resp) => return resp,
     };
     // Item 1: `noAuthority`, before anything is settled or built.
-    let host_call = match HostCall::as_owner(state, auth, &resolver, &room_id, &doc, &ADVANCE).await
+    let host_call = match HostCall::as_owner(
+        state,
+        auth,
+        &resolver,
+        &room_id,
+        &doc,
+        ADVANCE.no_authority,
+    )
+    .await
     {
         Ok(h) => h,
         Err(r) => return r,
@@ -547,7 +580,10 @@ pub(super) async fn handle_renew(
     if let Err(r) = host_call.settle_pending(&doc, &ADVANCE).await {
         return r;
     }
-    let presentation = match host_call.admin_presentation(&doc, &ADVANCE).await {
+    let presentation = match host_call
+        .admin_presentation(&doc, ADVANCE.no_authority)
+        .await
+    {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -645,23 +681,27 @@ async fn require_group(
 
 /// The codes an epoch advance answers with, in the namespace of the task that asked for
 /// it. `add`, `remove` and `renew` declare the same four, each under its own slug.
-struct AdvanceCodes {
-    no_authority: DeclaredErrorCode,
-    epoch_conflict: DeclaredErrorCode,
-    host_unreachable: DeclaredErrorCode,
-    host_refused: DeclaredErrorCode,
+pub(super) struct AdvanceCodes {
+    pub(super) no_authority: DeclaredErrorCode,
+    pub(super) epoch_conflict: DeclaredErrorCode,
+    pub(super) host_unreachable: DeclaredErrorCode,
+    pub(super) host_refused: DeclaredErrorCode,
+    /// `rooms/owner/group/remove/0.2`: `hostUnreachable` and `hostRefused` carry
+    /// `details.stage` (`revocation` or `advance`), and `hostRefused` the host's `code`
+    /// beside it and nothing else.
+    pub(super) staged: bool,
 }
 
 /// `noAuthority`: the caller acts as no persona holding the room's `admin` authority.
-fn no_authority(
+pub(super) fn no_authority(
     doc: &TrustTask<Value>,
-    codes: &AdvanceCodes,
+    code: DeclaredErrorCode,
     room_id: &str,
     e: AppError,
 ) -> TrustTaskOutcome {
     reject_with_code(
         doc,
-        declared(codes.no_authority),
+        declared(code),
         format!(
             "this agent holds no authority credential conferring `admin` on room `{room_id}` \
              for a persona you act as, so it cannot advance the room's epoch: {e}"
@@ -727,13 +767,13 @@ async fn founding_member(
 /// credentials name — the same identity `rooms/owner/register` registered — and never as
 /// this agent, whose DID is shared by every principal it serves and would attribute the
 /// advance to none of them.
-struct HostCall<'a> {
+pub(super) struct HostCall<'a> {
     state: &'a AppState,
     auth: &'a AuthClaims,
     owner: crate::operations::room_oracle::Principal,
     /// The owner persona as a member of the room: whose group is advanced, whose one
     /// pending advance is settled, and whose root memory gates the write.
-    owner_member: Member,
+    pub(super) owner_member: Member,
     resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
     room_id: &'a str,
 }
@@ -741,18 +781,18 @@ struct HostCall<'a> {
 impl<'a> HostCall<'a> {
     /// Resolve the owner persona the caller acts as in `room_id`, or `noAuthority` — before
     /// anything is settled or built, so a caller without it leaves nothing behind.
-    async fn as_owner(
+    pub(super) async fn as_owner(
         state: &'a AppState,
         auth: &'a AuthClaims,
         resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
         room_id: &'a str,
         doc: &TrustTask<Value>,
-        codes: &AdvanceCodes,
+        no_authority_code: DeclaredErrorCode,
     ) -> Result<Self, TrustTaskOutcome> {
         let owner = match crate::operations::room_oracle::principal(state, auth, room_id).await {
             Ok(p) => p,
             Err(e @ (AppError::NotFound(_) | AppError::Forbidden(_) | AppError::Validation(_))) => {
-                return Err(no_authority(doc, codes, room_id, e));
+                return Err(no_authority(doc, no_authority_code, room_id, e));
             }
             Err(e) => return Err(app_error_to_reject(doc, e)),
         };
@@ -784,7 +824,12 @@ impl<'a> HostCall<'a> {
         )
     }
 
-    async fn send(&self, host: &str, task: &str, payload: Value) -> Result<Value, RoomTaskError> {
+    pub(super) async fn send(
+        &self,
+        host: &str,
+        task: &str,
+        payload: Value,
+    ) -> Result<Value, RoomTaskError> {
         send_room_task_typed(
             signing_context(self.state, self.auth),
             &self.state.room_groups_ks,
@@ -834,7 +879,7 @@ impl<'a> HostCall<'a> {
     /// Item 6: settle the room's pending advance, if it has one, against the host it was
     /// sent to — whichever kind it is, so an admission found at a removal is settled as
     /// surely as a removal found at an admission.
-    async fn settle_pending(
+    pub(super) async fn settle_pending(
         &self,
         doc: &TrustTask<Value>,
         codes: &AdvanceCodes,
@@ -850,6 +895,65 @@ impl<'a> HostCall<'a> {
             Ok(None) => return Ok(()),
             Err(e) => return Err(app_error_to_reject(doc, e)),
         };
+        // `rooms/owner/group/remove/0.2` item 8: a removal whose list the host has not
+        // confirmed delivers it again first (a repeat is answered as accepted). Until it is
+        // confirmed the advance was never sent, so the epoch check below discards it —
+        // and the list, once accepted, is the room's and stays.
+        let mut pending = pending;
+        if let Some(rev) = pending.revocation.clone().filter(|r| !r.confirmed) {
+            let list = vti_rooms::revocation::RevocationList::parse(&rev.list, room_id)
+                .map_err(|e| app_error_to_reject(doc, AppError::Internal(e.to_string())))?;
+            let presentation = self.admin_presentation(doc, codes.no_authority).await?;
+            match self.deliver_list(&pending.host, &list, &presentation).await {
+                Delivery::Accepted { .. } => {
+                    if let Some(r) = pending.revocation.as_mut() {
+                        r.confirmed = true;
+                    }
+                    room_groups::update_pending_advance(
+                        &self.state.room_groups_ks,
+                        &self.owner_member,
+                        &pending,
+                    )
+                    .await
+                    .map_err(|e| app_error_to_reject(doc, e))?;
+                }
+                // Refused: no host took the list, so the removal it was for never
+                // happened — discarded whole, list included (item 6).
+                Delivery::Refused { code, .. } => {
+                    tracing::warn!(room = %room_id, %code,
+                        "a pending removal's revocation list was refused; the removal is discarded");
+                    let _lock = crate::operations::room_revocation::signing_lock(room_id).await;
+                    crate::operations::room_revocation::discard_unaccepted(
+                        &self.state.room_groups_ks,
+                        &list,
+                        rev.previous.as_ref(),
+                    )
+                    .await
+                    .map_err(|e| app_error_to_reject(doc, e))?;
+                    room_groups::discard_pending_advance(
+                        &self.state.room_groups_ks,
+                        &self.owner_member,
+                    )
+                    .await
+                    .map_err(|e| app_error_to_reject(doc, e))?;
+                    return Ok(());
+                }
+                Delivery::Unreachable(why) => {
+                    return Err(reject_with_code(
+                        doc,
+                        declared(codes.host_unreachable),
+                        format!(
+                            "an earlier removal in room `{room_id}` is waiting on host `{}` to \
+                             accept its withdrawal, and it did not answer: {why}",
+                            pending.host
+                        ),
+                        codes
+                            .staged
+                            .then(|| serde_json::json!({ "stage": "revocation" })),
+                    ));
+                }
+            }
+        }
         let host_epoch = self.epoch(&pending.host).await.map_err(|e| {
             reject_with_code(
                 doc,
@@ -890,10 +994,10 @@ impl<'a> HostCall<'a> {
     /// The owner persona's `admin` presentation for the room, or `noAuthority` — minted as
     /// `rooms/keys/present` mints it, the leaf granted to the party that signs the request
     /// carrying it, which is the owner persona itself.
-    async fn admin_presentation(
+    pub(super) async fn admin_presentation(
         &self,
         doc: &TrustTask<Value>,
-        codes: &AdvanceCodes,
+        no_authority_code: DeclaredErrorCode,
     ) -> Result<Value, TrustTaskOutcome> {
         let room_id = self.room_id;
         match crate::operations::room_oracle::present_as(
@@ -908,7 +1012,7 @@ impl<'a> HostCall<'a> {
         {
             Ok(m) => Ok(m.presentation),
             Err(e @ (AppError::NotFound(_) | AppError::Forbidden(_) | AppError::Validation(_))) => {
-                Err(no_authority(doc, codes, room_id, e))
+                Err(no_authority(doc, no_authority_code, room_id, e))
             }
             Err(e) => Err(app_error_to_reject(doc, e)),
         }
@@ -917,7 +1021,7 @@ impl<'a> HostCall<'a> {
     /// Items 4 and 5: advance the room at `host` with `rooms/epoch/mint`, then follow the
     /// host's answer — promote the pending advance on acceptance, discard it on refusal,
     /// keep it on an unknown outcome.
-    async fn advance(
+    pub(super) async fn advance(
         &self,
         doc: &TrustTask<Value>,
         codes: &AdvanceCodes,
@@ -970,7 +1074,12 @@ impl<'a> HostCall<'a> {
                     doc,
                     declared(codes.host_refused),
                     format!("host `{host}` declined to advance room `{room_id}`: {code}: {reason}"),
-                    Some(serde_json::json!({ "code": code, "reason": reason })),
+                    Some(if codes.staged {
+                        // 0.2: the withdrawal is in force at the host, and stays.
+                        serde_json::json!({ "stage": "advance", "code": code })
+                    } else {
+                        serde_json::json!({ "code": code, "reason": reason })
+                    }),
                 ));
             }
             // An unknown outcome keeps the pending advance: the host may have accepted, and
@@ -985,7 +1094,9 @@ impl<'a> HostCall<'a> {
                          `{host}`: {e}. Whether it took effect is unknown; the next admission, \
                          removal or renewal in this room settles it with the host first."
                     ),
-                    None,
+                    codes
+                        .staged
+                        .then(|| serde_json::json!({ "stage": "advance" })),
                 ));
             }
         }
@@ -996,6 +1107,467 @@ impl<'a> HostCall<'a> {
             // survives, and the next request promotes it (item 6): a delay, not a loss.
             .map_err(|e| app_error_to_reject(doc, e))
     }
+}
+
+/// What one host did with a delivered revocation list (`rooms/owner/revoke`, `Delivery`).
+pub(super) enum Delivery {
+    /// The host holds the list and enforces it from `in_force_at`: it answered with the
+    /// list's own head (`rooms/owner/revoke` item 5).
+    Accepted { head: Value, in_force_at: String },
+    /// The host answered and declined.
+    Refused { code: String, reason: String },
+    /// No answer this agent can rely on: the outcome is unknown.
+    Unreachable(String),
+}
+
+impl HostCall<'_> {
+    /// Deliver `list` to `host` with `rooms/revocations/put`, presenting the owner
+    /// persona's `admin` authority in a document addressed to that host.
+    pub(super) async fn deliver_list(
+        &self,
+        host: &str,
+        list: &vti_rooms::revocation::RevocationList,
+        presentation: &Value,
+    ) -> Delivery {
+        let payload = serde_json::json!({
+            "roomId": self.room_id,
+            "presentation": presentation,
+            "list": list.raw(),
+        });
+        match self
+            .send(host, vti_rooms::wire::ROOMS_REVOCATIONS_PUT_TYPE, payload)
+            .await
+        {
+            Ok(answer) => {
+                let head = answer.get("head").cloned().unwrap_or(Value::Null);
+                if head == list.head().to_wire() {
+                    Delivery::Accepted {
+                        head,
+                        in_force_at: answer
+                            .get("inForceAt")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    }
+                } else {
+                    // Never reported as accepted unless the host named this list.
+                    Delivery::Unreachable(format!(
+                        "host `{host}` answered with a head that is not this list's"
+                    ))
+                }
+            }
+            Err(RoomTaskError::Refused { code, reason, .. }) => {
+                if code == "rooms/revocations/put:stale" {
+                    // A host ahead of this agent holds a list this agent did not sign —
+                    // or was restored past. Either way the room's key may be in more than
+                    // one party's hands (`rooms/owner/revoke` item 6).
+                    tracing::warn!(room = %self.room_id, %host, security_alert = true,
+                        "a host holds a later revocation list than this key holder");
+                }
+                Delivery::Refused { code, reason }
+            }
+            Err(RoomTaskError::Unknown(e)) => Delivery::Unreachable(e.to_string()),
+        }
+    }
+
+    /// The room's tier: as this agent registered it, else from `rooms/info` at `host`
+    /// under the owner persona's `read` grant (`rooms/owner/revoke` item 2,
+    /// `rooms/owner/group/remove/0.2` item 2).
+    pub(super) async fn tier(&self, host: &str) -> Result<String, AppError> {
+        if let Some(t) =
+            crate::operations::room_revocation::known_tier(&self.state.room_groups_ks, self.room_id)
+                .await?
+        {
+            return Ok(t);
+        }
+        let minted = crate::operations::room_oracle::present_as(
+            self.state,
+            self.auth,
+            &self.owner,
+            &self.owner.did,
+            self.room_id,
+            "read",
+        )
+        .await?;
+        let info = self
+            .send(
+                host,
+                vti_rooms::wire::ROOMS_INFO_TYPE,
+                serde_json::json!({ "roomId": self.room_id, "presentation": minted.presentation }),
+            )
+            .await
+            .map_err(RoomTaskError::into_app_error)?;
+        info.get("visibility")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                AppError::Internal(format!(
+                    "host `{host}` described room `{}` without its tier",
+                    self.room_id
+                ))
+            })
+    }
+
+    /// The list a host holds for the room, from `rooms/revocations/get`, if it answers with
+    /// one.
+    pub(super) async fn fetch_list(&self, host: &str, presentation: &Value) -> Option<Value> {
+        match self
+            .send(
+                host,
+                vti_rooms::wire::ROOMS_REVOCATIONS_GET_TYPE,
+                serde_json::json!({ "roomId": self.room_id, "presentation": presentation }),
+            )
+            .await
+        {
+            Ok(answer) => answer.get("list").cloned(),
+            Err(e) => {
+                tracing::debug!(room = %self.room_id, %host, error = %e.into_app_error(),
+                    "could not read a host's revocation list");
+                None
+            }
+        }
+    }
+}
+
+/// `rooms/owner/group/remove/0.2` — withdraw the member's credentials at the host, then
+/// remove their leaf and advance the room: there is no instant where they are outside the
+/// group but still credentialed (trust-tasks-tf #804).
+pub(super) async fn handle_remove_v0_2(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::operations::room_revocation as revocation;
+    use spec_remove::v0_2::error_codes as codes;
+    const ADVANCE: AdvanceCodes = AdvanceCodes {
+        no_authority: codes::NO_AUTHORITY,
+        epoch_conflict: codes::EPOCH_CONFLICT,
+        host_unreachable: codes::HOST_UNREACHABLE,
+        host_refused: codes::HOST_REFUSED,
+        staged: true,
+    };
+    if let Err(r) = super::helpers::require_capability(
+        state,
+        auth,
+        &doc,
+        Capability::CredentialWrite,
+        "removing a member from a room",
+    )
+    .await
+    {
+        return r;
+    }
+    let req: spec_remove::v0_2::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let room_id = req.room_id.as_str().to_string();
+    let host = req.host.as_str().to_string();
+    let member = req.member.as_str().to_string();
+    let signing_key_id = req.signing_key_id.as_str().to_string();
+    let mirrors: Vec<String> = req
+        .mirrors
+        .iter()
+        .flatten()
+        .map(|m| m.as_str().to_string())
+        .collect();
+
+    // Item 1: noGroup, ownLeaf, noSigningKey, noAuthority — before anything else.
+    match require_group(state, auth, &doc, &room_id, codes::NO_GROUP).await {
+        Err(r) => return r,
+        Ok(Some(held)) if held.persona() == member => return own_leaf(&doc, &room_id, &member),
+        Ok(_) => {}
+    }
+    if let Err(e) = crate::operations::keys::require_key_nameable(
+        &state.keys_ks,
+        &state.acl_ks,
+        auth,
+        &signing_key_id,
+    )
+    .await
+    {
+        return reject_with_code(
+            &doc,
+            declared(codes::NO_SIGNING_KEY),
+            format!(
+                "this agent will not sign as room `{room_id}` with key `{signing_key_id}`: {e}"
+            ),
+            None,
+        );
+    }
+    let (_, resolver) = match outbound_identity(state, &doc).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let host_call = match HostCall::as_owner(
+        state,
+        auth,
+        &resolver,
+        &room_id,
+        &doc,
+        ADVANCE.no_authority,
+    )
+    .await
+    {
+        Ok(h) => h,
+        Err(r) => return r,
+    };
+    let presentation = match host_call
+        .admin_presentation(&doc, ADVANCE.no_authority)
+        .await
+    {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    // Item 8: an earlier advance is settled first, whatever its kind.
+    if let Err(r) = host_call.settle_pending(&doc, &ADVANCE).await {
+        return r;
+    }
+
+    // Item 2: never a private room — its host could not be told whom to refuse without
+    // being told who was a member. Nothing has changed.
+    match host_call.tier(&host).await {
+        Ok(t) if t == "private" => {
+            return reject_with_code(
+                &doc,
+                declared(codes::PRIVATE_ROOM),
+                format!(
+                    "room `{room_id}` is private: a member cannot be withdrawn one at a time \
+                     there. Remove them with rooms/owner/group/remove 0.1, and reset every \
+                     credential with rooms/owner/revoke if the room needs that too"
+                ),
+                None,
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return reject_with_code(
+                &doc,
+                declared(codes::HOST_UNREACHABLE),
+                format!("could not establish room `{room_id}`'s tier from host `{host}`: {e}"),
+                Some(serde_json::json!({ "stage": "revocation" })),
+            );
+        }
+    }
+
+    // The room's profile, read before the advance, to write again after it — as every
+    // advance does (`rooms/keys/profile/write/0.1`, *Keeping the profile readable across
+    // epochs*).
+    let profile = host_call.profile_speaker(&host);
+    let carried = super::room_profile::carry_before_advance(&profile).await;
+
+    // Item 3, and item 5's first half: the commit and link, built on a copy and retained
+    // before anything is sent.
+    let mut pending = match room_groups::prepare_remove(
+        &state.room_groups_ks,
+        &host_call.owner_member,
+        &host,
+        &member,
+        now(),
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(PrepareRemoveError::NoGroup) => {
+            return reject_with_code(
+                &doc,
+                declared(codes::NO_GROUP),
+                format!("this agent holds no group for room `{room_id}`"),
+                None,
+            );
+        }
+        Err(PrepareRemoveError::NotMember) => {
+            return reject_with_code(
+                &doc,
+                declared(codes::NOT_MEMBER),
+                format!("`{member}` has no leaf in room `{room_id}`'s group"),
+                None,
+            );
+        }
+        Err(PrepareRemoveError::OwnLeaf) => return own_leaf(&doc, &room_id, &member),
+        Err(PrepareRemoveError::App(e)) => return app_error_to_reject(&doc, e),
+    };
+
+    // Item 4, and item 5's second half: the room's next list, one `subject` entry for the
+    // member stamped with the time it is signed, kept and retained with the advance.
+    let list = {
+        let _lock = revocation::signing_lock(&room_id).await;
+        let held = match revocation::held(&state.room_groups_ks, &room_id).await {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = room_groups::discard_pending_advance(
+                    &state.room_groups_ks,
+                    &host_call.owner_member,
+                )
+                .await;
+                return app_error_to_reject(&doc, e);
+            }
+        };
+        let signed_at = chrono::Utc::now();
+        let entry = vti_rooms::revocation::Entry::Subject {
+            subject: member.clone(),
+            revoked_at: signed_at,
+            until: req.until,
+        };
+        let signed = match revocation::sign_next(
+            signing_context(state, auth),
+            &signing_key_id,
+            &room_id,
+            held.as_ref(),
+            std::slice::from_ref(&entry),
+            signed_at,
+        )
+        .await
+        {
+            Ok(l) => l,
+            Err(e) => {
+                let _ = room_groups::discard_pending_advance(
+                    &state.room_groups_ks,
+                    &host_call.owner_member,
+                )
+                .await;
+                return reject_with_code(
+                    &doc,
+                    declared(codes::NO_SIGNING_KEY),
+                    format!("this agent could not sign as room `{room_id}`: {e}"),
+                    None,
+                );
+            }
+        };
+        if let Err(e) = revocation::keep(&state.room_groups_ks, &signed).await {
+            let _ = room_groups::discard_pending_advance(
+                &state.room_groups_ks,
+                &host_call.owner_member,
+            )
+            .await;
+            return app_error_to_reject(&doc, e);
+        }
+        pending.revocation = Some(room_groups::PendingRevocation {
+            list: signed.raw().clone(),
+            previous: held.map(|h| h.raw().clone()),
+            // As the entry writes it, sub-second part included.
+            revoked_at: signed_at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
+            confirmed: false,
+        });
+        if let Err(e) = room_groups::update_pending_advance(
+            &state.room_groups_ks,
+            &host_call.owner_member,
+            &pending,
+        )
+        .await
+        {
+            return app_error_to_reject(&doc, e);
+        }
+        signed
+    };
+    let revoked_at = pending
+        .revocation
+        .as_ref()
+        .map(|r| r.revoked_at.clone())
+        .unwrap_or_default();
+
+    // Item 6: the withdrawal reaches the host before the advance, and nothing advances
+    // until the host has accepted it.
+    let head = match host_call.deliver_list(&host, &list, &presentation).await {
+        Delivery::Accepted { head, .. } => head,
+        Delivery::Refused { code, reason } => {
+            // No host took it: the whole pending removal goes, list included.
+            {
+                let _lock = revocation::signing_lock(&room_id).await;
+                let previous = pending.revocation.as_ref().and_then(|r| r.previous.clone());
+                if let Err(e) =
+                    revocation::discard_unaccepted(&state.room_groups_ks, &list, previous.as_ref())
+                        .await
+                {
+                    return app_error_to_reject(&doc, e);
+                }
+            }
+            if let Err(e) =
+                room_groups::discard_pending_advance(&state.room_groups_ks, &host_call.owner_member)
+                    .await
+            {
+                return app_error_to_reject(&doc, e);
+            }
+            return reject_with_code(
+                &doc,
+                declared(codes::HOST_REFUSED),
+                format!(
+                    "host `{host}` declined room `{room_id}`'s revocation list: {code}: {reason}. \
+                     Nothing changed"
+                ),
+                Some(serde_json::json!({ "stage": "revocation", "code": code })),
+            );
+        }
+        Delivery::Unreachable(why) => {
+            return reject_with_code(
+                &doc,
+                declared(codes::HOST_UNREACHABLE),
+                format!(
+                    "host `{host}` did not answer the withdrawal for room `{room_id}`: {why}. \
+                     Whether it took effect is unknown; the next request for this room \
+                     delivers it again first"
+                ),
+                Some(serde_json::json!({ "stage": "revocation" })),
+            );
+        }
+    };
+    if let Some(r) = pending.revocation.as_mut() {
+        r.confirmed = true;
+    }
+    if let Err(e) = room_groups::update_pending_advance(
+        &state.room_groups_ks,
+        &host_call.owner_member,
+        &pending,
+    )
+    .await
+    {
+        return app_error_to_reject(&doc, e);
+    }
+
+    // Item 7: then the advance. A refusal discards the advance and leaves the withdrawal,
+    // which is the room's and in force.
+    if let Err(r) = host_call
+        .advance(
+            &doc,
+            &ADVANCE,
+            &host,
+            &pending,
+            presentation.clone(),
+            req.reason.as_ref().map(|r| r.as_str()),
+        )
+        .await
+    {
+        return r;
+    }
+
+    // The removed member cannot open what is sealed from here on, the profile included.
+    super::room_profile::rewrite_after_advance(&profile, carried).await;
+
+    // Item 9: every mirror is delivered the list too; one that does not confirm is named,
+    // not waited for.
+    let mut mirrors_pending = Vec::new();
+    for mirror in &mirrors {
+        if !matches!(
+            host_call.deliver_list(mirror, &list, &presentation).await,
+            Delivery::Accepted { .. }
+        ) {
+            mirrors_pending.push(mirror.clone());
+        }
+    }
+
+    // The room only: who left is the owner's business.
+    record(state, "rooms.owner.group.remove", auth, &room_id).await;
+    let mut body = serde_json::json!({
+        "roomId": room_id,
+        "member": member,
+        "revocation": head,
+        "revokedAt": revoked_at,
+        "epoch": pending.epoch,
+    });
+    if !mirrors_pending.is_empty() {
+        body["mirrorsPending"] = serde_json::json!(mirrors_pending);
+    }
+    success_response(&doc, body)
 }
 
 fn decode_b64(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
@@ -1036,6 +1608,14 @@ mod tests {
     struct Host {
         epoch: u32,
         mode: Mode,
+        /// What the stub does with the next `rooms/revocations/put`.
+        list_mode: Mode,
+        /// The room's tier, as `rooms/info` reports it.
+        visibility: &'static str,
+        /// Every list the host accepted, in order.
+        lists: Vec<Value>,
+        /// Every task the host received, in order.
+        log: Vec<String>,
         /// The last `rooms/epoch/mint` payload the host took, so a test can relay its
         /// commit to the members who remain.
         last_mint: Option<Value>,
@@ -1053,6 +1633,10 @@ mod tests {
         let state = Arc::new(Mutex::new(Host {
             epoch: 1,
             mode: Mode::Accept,
+            list_mode: Mode::Accept,
+            visibility: "attributed",
+            lists: Vec::new(),
+            log: Vec::new(),
             last_mint: None,
             last_mint_issuer: None,
         }));
@@ -1073,11 +1657,45 @@ mod tests {
                     let room_id = req["payload"]["roomId"].clone();
                     let answer = {
                         let mut h = shared.lock().unwrap();
+                        h.log.push(task.clone());
                         if task == vti_rooms::wire::ROOMS_INFO_TYPE {
                             Ok(serde_json::json!({
-                                "roomId": room_id, "visibility": "attributed",
+                                "roomId": room_id, "visibility": h.visibility,
                                 "retentionPolicy": "chained", "epoch": h.epoch,
                             }))
+                        } else if task == vti_rooms::wire::ROOMS_CREATE_TYPE {
+                            Ok(serde_json::json!({ "roomId": room_id, "epoch": h.epoch }))
+                        } else if task == vti_rooms::wire::ROOMS_REVOCATIONS_GET_TYPE {
+                            let mut body = serde_json::json!({ "roomId": room_id });
+                            if let Some(last) = h.lists.last() {
+                                body["list"] = last.clone();
+                                body["inForceAt"] = serde_json::json!("2026-10-16T09:30:00Z");
+                            }
+                            Ok(body)
+                        } else if task == vti_rooms::wire::ROOMS_REVOCATIONS_PUT_TYPE {
+                            let list = req["payload"]["list"].clone();
+                            match h.list_mode {
+                                Mode::Refuse => {
+                                    Err(("rooms/revocations/put:listInvalid", "not the room's"))
+                                }
+                                mode => {
+                                    h.lists.push(list.clone());
+                                    if mode == Mode::AcceptThenLose {
+                                        return (
+                                            axum::http::StatusCode::BAD_GATEWAY,
+                                            "the reply was lost".to_string(),
+                                        );
+                                    }
+                                    Ok(serde_json::json!({
+                                        "roomId": room_id,
+                                        "head": {
+                                            "sequence": list["sequence"],
+                                            "digest": vti_rooms::revocation::digest_multibase(&list),
+                                        },
+                                        "inForceAt": "2026-10-16T09:30:00Z",
+                                    }))
+                                }
+                            }
                         } else if task == vti_rooms::wire::ROOMS_EPOCH_MINT_TYPE {
                             h.last_mint_issuer = req["issuer"].as_str().map(str::to_string);
                             let asked = req["payload"]["epoch"].as_u64().unwrap_or(0) as u32;
@@ -1338,6 +1956,67 @@ mod tests {
             )
             .await,
         )
+    }
+
+    async fn remove_v0_2(o: &Owner, member: &str, mirrors: &[&str]) -> Value {
+        body(
+            handle_remove_v0_2(
+                &o.state,
+                &crate::test_support::super_admin_claims(),
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_2,
+                    serde_json::json!({
+                        "roomId": o.room.did, "host": o.host.did, "member": member,
+                        "signingKeyId": o.room_key, "mirrors": mirrors,
+                        "reason": "left the deal team",
+                    }),
+                ),
+            )
+            .await,
+        )
+    }
+
+    async fn revoke(o: &Owner, withdraw: Value) -> Value {
+        body(
+            super::super::room_owner_revoke::handle_revoke(
+                &o.state,
+                &crate::test_support::super_admin_claims(),
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REVOKE_0_1,
+                    serde_json::json!({
+                        "roomId": o.room.did, "signingKeyId": o.room_key,
+                        "hosts": [o.host.did], "withdraw": withdraw,
+                    }),
+                ),
+            )
+            .await,
+        )
+    }
+
+    async fn revoke_with(o: &Owner, room: &str, key: &str, hosts: Value, withdraw: Value) -> Value {
+        body(
+            super::super::room_owner_revoke::handle_revoke(
+                &o.state,
+                &crate::test_support::super_admin_claims(),
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REVOKE_0_1,
+                    serde_json::json!({
+                        "roomId": room, "signingKeyId": key, "hosts": hosts, "withdraw": withdraw,
+                    }),
+                ),
+            )
+            .await,
+        )
+    }
+
+    async fn held_list(o: &Owner) -> Option<vti_rooms::revocation::RevocationList> {
+        crate::operations::room_revocation::held(&o.state.room_groups_ks, &o.room.did)
+            .await
+            .unwrap()
+    }
+
+    fn host_log(o: &Owner) -> Vec<String> {
+        o.host.state.lock().unwrap().log.clone()
     }
 
     async fn renew(o: &Owner) -> Value {
@@ -2903,5 +3582,396 @@ mod tests {
         .await
         .expect("and follows the renewal like any member");
         assert_eq!(other_epoch(&o.state).await, 3);
+    }
+
+    // ─── rooms/owner/group/remove/0.2 (trust-tasks-tf #804) ──────────────────────────
+
+    /// Items 4–7: the member is withdrawn at the host first — one `subject` entry, signed as
+    /// the room and kept — and only then does the room advance; the answer carries the
+    /// list's head and the withdrawal's time.
+    #[tokio::test]
+    async fn remove_0_2_withdraws_at_the_host_first_then_advances() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, did) = admitted(&o).await;
+        o.host.state.lock().unwrap().log.clear();
+
+        let out = remove_v0_2(&o, &did, &[]).await;
+        assert_eq!(out["payload"]["epoch"], 3, "{out}");
+        assert_eq!(out["payload"]["revocation"]["sequence"], 1, "{out}");
+        assert!(out["payload"]["revokedAt"].is_string(), "{out}");
+
+        let log = host_log(&o);
+        let put = log
+            .iter()
+            .position(|t| t == vti_rooms::wire::ROOMS_REVOCATIONS_PUT_TYPE)
+            .expect("the withdrawal was delivered");
+        let mint = log
+            .iter()
+            .position(|t| t == vti_rooms::wire::ROOMS_EPOCH_MINT_TYPE)
+            .expect("the room advanced");
+        assert!(put < mint, "withdraw first, then advance: {log:?}");
+
+        let held = held_list(&o).await.expect("the list is kept");
+        assert_eq!(held.sequence(), 1);
+        assert!(matches!(
+            &held.entries()[0],
+            vti_rooms::revocation::Entry::Subject { subject, .. } if *subject == did
+        ));
+        assert_eq!(
+            o.host.state.lock().unwrap().lists.last(),
+            Some(held.raw()),
+            "the host was given exactly the list kept here"
+        );
+        assert!(pending(&o).await.is_none());
+        assert!(live_group(&o).await.leaf_of(&did).is_none());
+    }
+
+    /// Item 6: a host that refuses the list refuses the removal — nothing advanced, the
+    /// whole pending removal discarded, the list included.
+    #[tokio::test]
+    async fn remove_0_2_a_refused_withdrawal_changes_nothing() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, did) = admitted(&o).await;
+        o.host.state.lock().unwrap().list_mode = Mode::Refuse;
+        o.host.state.lock().unwrap().log.clear();
+
+        let out = remove_v0_2(&o, &did, &[]).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/remove:hostRefused",
+            "{out}"
+        );
+        assert_eq!(out["payload"]["details"]["stage"], "revocation", "{out}");
+        assert!(held_list(&o).await.is_none(), "no host took the list");
+        assert!(pending(&o).await.is_none());
+        assert!(live_group(&o).await.leaf_of(&did).is_some());
+        assert!(
+            !host_log(&o)
+                .iter()
+                .any(|t| t == vti_rooms::wire::ROOMS_EPOCH_MINT_TYPE),
+            "nothing advances until the host accepts the withdrawal"
+        );
+    }
+
+    /// Items 6 and 8: an unanswered withdrawal keeps the pending removal; the next request
+    /// delivers the list again first (a repeat is accepted), and the advance that was never
+    /// sent is discarded — the member stays withdrawn, and a repeated removal advances.
+    #[tokio::test]
+    async fn remove_0_2_an_unanswered_withdrawal_is_delivered_again_by_the_next_request() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, did) = admitted(&o).await;
+        o.host.state.lock().unwrap().list_mode = Mode::AcceptThenLose;
+
+        let out = remove_v0_2(&o, &did, &[]).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/remove:hostUnreachable",
+            "{out}"
+        );
+        assert_eq!(out["payload"]["details"]["stage"], "revocation", "{out}");
+        let p = pending(&o).await.expect("kept");
+        assert!(!p.revocation.as_ref().unwrap().confirmed);
+
+        o.host.state.lock().unwrap().list_mode = Mode::Accept;
+        let out = remove_v0_2(&o, &did, &[]).await;
+        assert_eq!(out["payload"]["epoch"], 3, "{out}");
+        assert_eq!(
+            out["payload"]["revocation"]["sequence"], 2,
+            "the first list stayed the room's, and the repeat built on it: {out}"
+        );
+        assert_eq!(held_list(&o).await.unwrap().entries().len(), 2);
+        assert!(live_group(&o).await.leaf_of(&did).is_none());
+    }
+
+    /// Item 7: an advance the host refuses discards the advance, never the withdrawal,
+    /// which is in force at the host and is the room's.
+    #[tokio::test]
+    async fn remove_0_2_a_refused_advance_keeps_the_withdrawal() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, did) = admitted(&o).await;
+        o.host.state.lock().unwrap().mode = Mode::Refuse;
+
+        let out = remove_v0_2(&o, &did, &[]).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/remove:hostRefused",
+            "{out}"
+        );
+        assert_eq!(out["payload"]["details"]["stage"], "advance", "{out}");
+        assert_eq!(held_list(&o).await.unwrap().sequence(), 1);
+        assert!(pending(&o).await.is_none());
+        assert!(live_group(&o).await.leaf_of(&did).is_some());
+    }
+
+    /// Item 2: a private room is refused, changing nothing.
+    #[tokio::test]
+    async fn remove_0_2_refuses_a_private_room() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, did) = admitted(&o).await;
+        o.host.state.lock().unwrap().visibility = "private";
+
+        let out = remove_v0_2(&o, &did, &[]).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/remove:privateRoom",
+            "{out}"
+        );
+        assert!(held_list(&o).await.is_none());
+        assert!(pending(&o).await.is_none());
+        assert!(live_group(&o).await.leaf_of(&did).is_some());
+    }
+
+    /// Item 9: a mirror that does not confirm is named in `mirrorsPending`, not waited for.
+    #[tokio::test]
+    async fn remove_0_2_names_a_mirror_that_did_not_confirm() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, did) = admitted(&o).await;
+        let mirror = Party::new().did;
+        let out = remove_v0_2(&o, &did, &[&mirror]).await;
+        assert_eq!(
+            out["payload"]["mirrorsPending"],
+            serde_json::json!([mirror]),
+            "{out}"
+        );
+        assert_eq!(out["payload"]["epoch"], 3);
+    }
+
+    // ─── rooms/owner/revoke/0.1 (trust-tasks-tf #804) ────────────────────────────────
+
+    /// Items 3–6: the next list is signed, kept and delivered; an empty `withdraw`
+    /// re-delivers it without signing anything new.
+    #[tokio::test]
+    async fn revoke_signs_keeps_and_delivers_and_an_empty_withdraw_redelivers() {
+        let o = owner().await;
+        let gone = Party::new().did;
+        let out = revoke(
+            &o,
+            serde_json::json!([{ "kind": "subject", "subject": gone }]),
+        )
+        .await;
+        let p = &out["payload"];
+        assert_eq!(p["head"]["sequence"], 1, "{out}");
+        assert_eq!(p["deliveries"][0]["outcome"], "accepted", "{out}");
+        assert_eq!(p["deliveries"][0]["head"], p["head"]);
+        let held = held_list(&o).await.expect("kept");
+        assert_eq!(&p["list"], held.raw());
+
+        let again = revoke(&o, serde_json::json!([])).await;
+        assert_eq!(
+            again["payload"]["head"], p["head"],
+            "nothing new signed: {again}"
+        );
+        assert_eq!(o.host.state.lock().unwrap().lists.len(), 2);
+    }
+
+    /// Item 1: `noList`, `roomSubject`; item 2: `entryNotPermitted` on a private room.
+    #[tokio::test]
+    async fn revoke_refuses_before_signing_anything() {
+        let o = owner().await;
+        let out = revoke(&o, serde_json::json!([])).await;
+        assert_eq!(out["payload"]["code"], "rooms/owner/revoke:noList", "{out}");
+        let out = revoke(
+            &o,
+            serde_json::json!([{ "kind": "subject", "subject": o.room.did }]),
+        )
+        .await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/revoke:roomSubject",
+            "{out}"
+        );
+        o.host.state.lock().unwrap().visibility = "private";
+        let out = revoke(
+            &o,
+            serde_json::json!([{ "kind": "credential", "credentialId": "urn:uuid:x" }]),
+        )
+        .await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/revoke:entryNotPermitted",
+            "{out}"
+        );
+        assert!(held_list(&o).await.is_none());
+        // A reset is the one withdrawal a private room takes.
+        let out = revoke(&o, serde_json::json!([{ "kind": "room" }])).await;
+        assert_eq!(out["payload"]["head"]["sequence"], 1, "{out}");
+    }
+
+    /// Item 6: a host that refuses is reported `refused` with its code; the list is kept
+    /// and the request succeeds.
+    #[tokio::test]
+    async fn revoke_reports_a_refusing_host_and_still_keeps_the_list() {
+        let o = owner().await;
+        o.host.state.lock().unwrap().list_mode = Mode::Refuse;
+        let out = revoke(&o, serde_json::json!([{ "kind": "room" }])).await;
+        assert_eq!(
+            out["payload"]["deliveries"][0]["outcome"], "refused",
+            "{out}"
+        );
+        assert_eq!(
+            out["payload"]["deliveries"][0]["code"],
+            "rooms/revocations/put:listInvalid"
+        );
+        assert!(held_list(&o).await.is_some());
+    }
+
+    /// Item 4: a key holder that lost its list (restored from an old backup) recovers the
+    /// host's, signed by the room, and the next list keeps its entries.
+    #[tokio::test]
+    async fn revoke_recovers_a_lost_list_from_a_host() {
+        let o = owner().await;
+        let first = Party::new().did;
+        revoke(
+            &o,
+            serde_json::json!([{ "kind": "subject", "subject": first }]),
+        )
+        .await;
+        // Restored from before the list existed.
+        o.state
+            .room_groups_ks
+            .remove(format!("room-revocations/{}", o.room.did))
+            .await
+            .unwrap();
+
+        let second = Party::new().did;
+        let out = revoke(
+            &o,
+            serde_json::json!([{ "kind": "subject", "subject": second }]),
+        )
+        .await;
+        assert_eq!(out["payload"]["head"]["sequence"], 2, "{out}");
+        assert_eq!(
+            out["payload"]["list"]["entries"].as_array().unwrap().len(),
+            2
+        );
+    }
+
+    /// `rooms/owner/revoke`: registering a room with a host delivers the list held for it
+    /// there before answering — a room moving hosts arrives with its withdrawals.
+    #[tokio::test]
+    async fn registering_a_room_delivers_its_list_before_answering() {
+        let o = owner().await;
+        revoke(&o, serde_json::json!([{ "kind": "room" }])).await;
+        o.host.state.lock().unwrap().log.clear();
+
+        let out = body(
+            super::super::room_owner::handle_register(
+                &o.state,
+                &crate::test_support::super_admin_claims(),
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1,
+                    serde_json::json!({
+                        "roomId": o.room.did, "host": o.host.did,
+                        "visibility": "attributed", "ownerDid": o.member,
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(out["payload"]["epoch"], 1, "{out}");
+        assert_eq!(
+            host_log(&o),
+            vec![
+                vti_rooms::wire::ROOMS_CREATE_TYPE.to_string(),
+                vti_rooms::wire::ROOMS_REVOCATIONS_PUT_TYPE.to_string(),
+            ]
+        );
+    }
+
+    /// `rooms/owner/group/remove/0.2` item 1: a key the caller may not name is
+    /// `noSigningKey`, before anything is built or sent.
+    #[tokio::test]
+    async fn remove_0_2_refuses_a_key_the_caller_cannot_name() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, did) = admitted(&o).await;
+        o.host.state.lock().unwrap().log.clear();
+        let out = body(
+            handle_remove_v0_2(
+                &o.state,
+                &crate::test_support::super_admin_claims(),
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_2,
+                    serde_json::json!({
+                        "roomId": o.room.did, "host": o.host.did, "member": did,
+                        "signingKeyId": "no-such-key",
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/remove:noSigningKey",
+            "{out}"
+        );
+        assert!(host_log(&o).is_empty(), "nothing reaches the host");
+        assert!(pending(&o).await.is_none());
+        assert!(held_list(&o).await.is_none());
+    }
+
+    /// `rooms/owner/revoke/0.1` item 1: an unknown key is `noSigningKey`.
+    #[tokio::test]
+    async fn revoke_refuses_a_key_the_caller_cannot_name() {
+        let o = owner().await;
+        let out = revoke_with(
+            &o,
+            &o.room.did,
+            "no-such-key",
+            serde_json::json!([o.host.did]),
+            serde_json::json!([{ "kind": "room" }]),
+        )
+        .await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/revoke:noSigningKey",
+            "{out}"
+        );
+        assert!(held_list(&o).await.is_none());
+    }
+
+    /// `rooms/owner/revoke/0.1` item 1: a room this agent holds no `admin` grant of, for a
+    /// persona the caller acts as, is `noAuthority` — before anything is signed.
+    #[tokio::test]
+    async fn revoke_without_admin_authority_is_no_authority() {
+        let o = owner().await;
+        let elsewhere = Party::new().did;
+        let out = revoke_with(
+            &o,
+            &elsewhere,
+            &o.room_key,
+            serde_json::json!([o.host.did]),
+            serde_json::json!([{ "kind": "room" }]),
+        )
+        .await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/revoke:noAuthority",
+            "{out}"
+        );
+        assert!(
+            crate::operations::room_revocation::held(&o.state.room_groups_ks, &elsewhere)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// `rooms/owner/revoke/0.1` item 2: a withdrawal naming a party needs the tier, and a
+    /// first host that cannot be reached leaves it unknown — `tierUnknown`, nothing signed.
+    #[tokio::test]
+    async fn revoke_naming_a_party_without_a_reachable_host_is_tier_unknown() {
+        let o = owner().await;
+        let unreachable = Party::new().did;
+        let out = revoke_with(
+            &o,
+            &o.room.did,
+            &o.room_key,
+            serde_json::json!([unreachable]),
+            serde_json::json!([{ "kind": "subject", "subject": Party::new().did }]),
+        )
+        .await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/revoke:tierUnknown",
+            "{out}"
+        );
+        assert!(held_list(&o).await.is_none(), "nothing was signed");
     }
 }

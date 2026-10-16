@@ -713,6 +713,16 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // was named. Replaying the first answer reports what was done. Nothing in
     // the answer is secret.
     (trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1, Keyed),
+    // `Keyed`, like 0.1. A second execution after a lost reply signs nothing new (the
+    // member has no leaf: `notMember`), and reads as though the wrong member was named;
+    // the first answer — the list in force and the epoch — is what happened.
+    (trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_2, Keyed),
+    // `Keyed`. With withdrawals, a second execution signs a second list carrying the same
+    // withdrawals again at a later `revokedAt` — harmless to a host, but a list that grows
+    // with every lost reply and a second sequence the caller asked for once. Replaying the
+    // first answer reports the list and each host's outcome. With nothing to withdraw it is
+    // a re-delivery and could simply run again; the key costs nothing there.
+    (trust_tasks::TASK_ROOMS_OWNER_REVOKE_0_1, Keyed),
     // `Keyed`, like add and remove. A second execution after a lost reply is not
     // refused — it renews again, advancing the room a second epoch the caller
     // asked for once, and every member's key holder then has two commits to

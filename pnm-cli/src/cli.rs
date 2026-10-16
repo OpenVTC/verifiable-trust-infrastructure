@@ -953,20 +953,69 @@ pub(crate) enum RoomOwnerCommands {
         #[arg(long)]
         out: std::path::PathBuf,
     },
-    /// Remove a member from the room's group (`rooms/owner/group/remove`). Your
-    /// VTA advances the room at its host, then its own group: nothing sealed from
-    /// then on is readable to them. It recalls nothing they already read, and
-    /// does not touch their authority credential.
+    /// Remove a member from the room (`rooms/owner/group/remove`). With
+    /// `--signing-key` (0.2) your VTA first withdraws their credentials at the
+    /// host — signed as the room, refused from then on, and anything they
+    /// delegated with them — and then removes their leaf and advances the room. A
+    /// private room cannot withdraw one member, so there it removes the leaf alone
+    /// (0.1), as it does without `--signing-key`. It recalls nothing they
+    /// already read.
     GroupRemove {
         #[arg(long = "room")]
         room_id: String,
-        /// The room host's DID: where the epoch advances.
+        /// The room host's DID: where the withdrawal goes and the epoch advances.
         #[arg(long)]
         host_did: String,
         /// The persona DID being removed — the one its leaf was admitted as.
         #[arg(long)]
         member: String,
-        /// Why, carried to the host's epoch advance.
+        /// The room's signing key id, to withdraw their credentials at the host as
+        /// the room. Without it the removal is group-only and their credentials stay
+        /// valid until they expire.
+        #[arg(long = "signing-key")]
+        signing_key_id: Option<String>,
+        /// Another host serving the room (a mirror), delivered the withdrawal too.
+        /// Repeatable.
+        #[arg(long = "mirror")]
+        mirrors: Vec<String>,
+        /// When the last credential the room issued them expires (RFC 3339), after
+        /// which the withdrawal can be dropped from the room's list.
+        #[arg(long)]
+        until: Option<chrono::DateTime<chrono::Utc>>,
+        /// Why, carried to the host's epoch advance. Never put in the list.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Withdraw credentials the room issued (`rooms/owner/revoke`): your VTA signs
+    /// the room's next revocation list as the room and delivers it to every host
+    /// you name, which refuses what it withdraws from then on. With no withdrawal,
+    /// re-delivers the list your VTA holds — to a host the room moved to, or one
+    /// that did not answer.
+    Revoke {
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room's signing key id, as printed when its DID was minted.
+        #[arg(long = "signing-key")]
+        signing_key_id: String,
+        /// Every host serving the room: primary, mirrors, one it is moving to.
+        /// Repeatable; at least one.
+        #[arg(long = "host", required = true)]
+        hosts: Vec<String>,
+        /// A party to withdraw: every credential naming them as subject or issuer
+        /// issued until now (re-admitting them later works). Repeatable.
+        #[arg(long = "subject")]
+        subjects: Vec<String>,
+        /// One credential to withdraw, by its `id`. Repeatable.
+        #[arg(long = "credential")]
+        credentials: Vec<String>,
+        /// Withdraw every credential the room issued until now, from everyone — the
+        /// only withdrawal a private room can apply. Re-issue to those who remain.
+        #[arg(long)]
+        reset: bool,
+        /// When the withdrawn credentials expire anyway (RFC 3339).
+        #[arg(long)]
+        until: Option<chrono::DateTime<chrono::Utc>>,
+        /// Why, for your own record. Never put in the list.
         #[arg(long)]
         reason: Option<String>,
     },

@@ -101,6 +101,7 @@ mod room_keys;
 mod room_label;
 mod room_owner;
 mod room_owner_group;
+mod room_owner_revoke;
 mod room_profile;
 mod seeds;
 // `operations::protocol` — every service operation these handlers call — is
@@ -2774,6 +2775,14 @@ dispatch_table! {
         [ Mutating Metadata true ],
     // The mirror of add: same host, same authority, the other direction.
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1 => room_owner_group::handle_remove
+        [ Mutating Metadata true ],
+    // 0.2: the member's credentials are withdrawn at the host first, then the room
+    // advances (trust-tasks-tf #804). Same host, same authority, and the room's key.
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_2 => room_owner_group::handle_remove_v0_2
+        [ Mutating Metadata true ],
+    // Signs as the room and delivers to every host serving it, presenting the
+    // principal's `admin` authority — `actsAsSubject`, like the group verbs.
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REVOKE_0_1 => room_owner_revoke::handle_revoke
         [ Mutating Metadata true ],
     // And renewal: same host, same authority, no membership change.
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_1 => room_owner_group::handle_renew

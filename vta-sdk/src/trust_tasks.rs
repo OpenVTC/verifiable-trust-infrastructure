@@ -1181,6 +1181,22 @@ pub const TASK_ROOMS_OWNER_GROUP_ADD_0_2: &str =
 pub const TASK_ROOMS_OWNER_GROUP_REMOVE_0_1: &str =
     "https://trusttasks.org/spec/rooms/owner/group/remove/0.1";
 
+/// `spec/rooms/owner/group/remove/0.2` — 0.1, withdrawing first: the agent signs the
+/// room's next revocation list (a `subject` entry for the member), delivers it to the host
+/// and only then advances the room, so the host refuses the member's credentials at once.
+/// Refuses a `private` room (`privateRoom`), where 0.1 remains the removal.
+/// Auth: as 0.1, plus control of the room's signing key (`signingKeyId`).
+pub const TASK_ROOMS_OWNER_GROUP_REMOVE_0_2: &str =
+    <trust_tasks_rs::specs::rooms::owner::group::remove::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/owner/revoke/0.1` — withdraw credentials a room issued: the agent signs the
+/// room's next revocation list as the room, keeps it, and delivers it to each host serving
+/// the room with `rooms/revocations/put`. With nothing to withdraw, it re-delivers the list
+/// it holds. Auth: `credentialWrite`, control of the room's signing key, and the caller's
+/// `admin` authority credential for the room in this agent's vault.
+pub const TASK_ROOMS_OWNER_REVOKE_0_1: &str =
+    <trust_tasks_rs::specs::rooms::owner::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/owner/group/renew/0.1` — renew a sealed room: advance its group with a
 /// commit that adds and removes nobody, and the room's epoch at its host with that commit
 /// (host first, then this agent's group). The only correct renewal of an `attributed` or
@@ -2692,6 +2708,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_OWNER_GROUP_ADD_0_1,
     TASK_ROOMS_OWNER_GROUP_ADD_0_2,
     TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
+    TASK_ROOMS_OWNER_GROUP_REMOVE_0_2,
+    TASK_ROOMS_OWNER_REVOKE_0_1,
     TASK_ROOMS_OWNER_GROUP_RENEW_0_1,
     TASK_VTA_MEMORY_DELETE_0_1,
     // External accounts (`external/*`)

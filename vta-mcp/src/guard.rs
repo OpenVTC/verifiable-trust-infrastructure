@@ -253,6 +253,9 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // `remove` ends a member's reading from now on and advances the room at
     // its host in the owner's name: the same decision, the other way.
     ("rooms/owner/group/remove", Risk::Sensitive),
+    // `revoke` withdraws credentials the room issued, signed as the room and enforced at
+    // every host at once: the inverse of issuance, the same tier.
+    ("rooms/owner/revoke", Risk::Sensitive),
     // `renew` advances the room at its host in the owner's name, and every
     // member's key holder must then follow it: the owner's decision, not a read.
     ("rooms/owner/group/renew", Risk::Sensitive),

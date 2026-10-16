@@ -1175,6 +1175,30 @@ pub struct PendingAdvance {
     pub key_package_ref: Option<String>,
     /// Unix seconds it was built.
     pub created_at: u64,
+    /// A removal at `rooms/owner/group/remove/0.2`: the revocation list withdrawing the
+    /// member, signed and kept before anything was sent (item 5), and delivered to the host
+    /// **before** the advance (item 6). Absent on every other advance, and on a removal at
+    /// 0.1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation: Option<PendingRevocation>,
+}
+
+/// The withdrawal half of a pending removal (`rooms/owner/group/remove/0.2`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingRevocation {
+    /// The list as signed.
+    pub list: serde_json::Value,
+    /// The list held before it, restored if no host accepts this one (item 6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<serde_json::Value>,
+    /// The withdrawal's `revokedAt`.
+    pub revoked_at: String,
+    /// Whether the host answered the delivery with this list's head. Until it has, the
+    /// advance has not been sent, and a later request delivers the list again first
+    /// (item 8).
+    #[serde(default)]
+    pub confirmed: bool,
 }
 
 /// Why an admission could not be built.
@@ -1284,6 +1308,7 @@ pub async fn prepare_add(
         welcome: Some(B64.encode(&welcome)),
         key_package_ref: Some(B64.encode(&key_package_ref)),
         created_at: now,
+        revocation: None,
     };
     retain(groups, owner, &pending)
         .await
@@ -1356,6 +1381,7 @@ pub async fn prepare_remove(
         welcome: None,
         key_package_ref: None,
         created_at: now,
+        revocation: None,
     };
     retain(groups, owner, &pending)
         .await
@@ -1405,6 +1431,7 @@ pub async fn prepare_renew(
         welcome: None,
         key_package_ref: None,
         created_at: now,
+        revocation: None,
     };
     retain(groups, owner, &pending).await?;
     Ok(Some(pending))
@@ -1544,6 +1571,20 @@ pub async fn discard_pending_advance(
         .remove(owner.key(ADVANCE))
         .await
         .map_err(|e| AppError::Internal(format!("clear the pending advance: {e}")))
+}
+
+/// Record the pending advance as it now stands — a removal's signed list attached (item 5)
+/// or confirmed by its host (item 6) — over the row [`retain`] claimed.
+pub async fn update_pending_advance(
+    groups: &KeyspaceHandle,
+    owner: &Member,
+    pending: &PendingAdvance,
+) -> Result<(), AppError> {
+    groups
+        .insert(owner.key(ADVANCE), pending)
+        .await
+        .map_err(|e| AppError::Internal(format!("record the pending advance: {e}")))?;
+    groups.persist().await
 }
 
 /// What a found pending advance turned out to be, given the host's epoch.

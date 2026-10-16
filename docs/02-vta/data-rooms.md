@@ -83,9 +83,9 @@ knowing which half you are standing on saves an afternoon.
 | VTA custody: `rooms/keys/{key-package,welcome,commit,open,seal,chain,backfill,list}` | **Work.** A member's VTA holds the group, seals and opens records for their agents, and can fetch a room's epoch chain from the host itself |
 | The presentation oracle: `rooms/keys/present` | **Works.** Attenuates the member's own VAC for an agent |
 | Succession: nomination, transfer, claim | **Work**, including the "renewing defeats a pending claim" property |
-| **A CLI** | **`pnm rooms {list,get,put,curate,renew,file}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key; `put` seals on `attributed` and `private` (§9). **`pnm rooms owner {register,invite,issue-membership,issue-authority,group-create,group-add,group-remove,group-renew}`** — the owner's, run by the owner's VTA. **`pnm rooms keys {key-package,welcome,commit,list}`** — the joiner's key holder. A sealed room can be run end to end from the CLI (§5, §6) |
+| **A CLI** | **`pnm rooms {list,get,put,curate,renew,file}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key; `put` seals on `attributed` and `private` (§9). **`pnm rooms owner {register,invite,issue-membership,issue-authority,group-create,group-add,group-remove,group-renew,revoke}`** — the owner's, run by the owner's VTA. **`pnm rooms keys {key-package,welcome,commit,list}`** — the joiner's key holder. A sealed room can be run end to end from the CLI (§5, §6) |
 | **Credential issuance** | **Works, on the owner's own VTA.** `rooms/owner/{invite,issue-membership,issue-authority}` mint the VIC, VMC and VAC in the *room's* name, signing through the gated key oracle so the room's key never materialises (§5.3). `pnm rooms owner {invite,issue-membership,issue-authority}` drive them, over `VtaClient::room_owner_*` |
-| **The owner's MLS half** | **Works, in the owner's VTA.** `rooms/owner/group/create` founds the group with the owner as its only member; `rooms/owner/group/add` admits a member's KeyPackage, advances the room's epoch at its host first, and returns the Welcome to deliver; `rooms/owner/group/remove` drops a member's leaf the same way, host first; `rooms/owner/group/renew` renews a sealed room with a commit that changes no membership, host first. `pnm rooms owner group-create` / `group-add` / `group-remove` / `group-renew` drive them (§5.4, §6, §10.1) |
+| **The owner's MLS half** | **Works, in the owner's VTA.** `rooms/owner/group/create` founds the group with the owner as its only member; `rooms/owner/group/add` admits a member's KeyPackage, advances the room's epoch at its host first, and returns the Welcome to deliver; `rooms/owner/group/remove` (0.2) withdraws the member's credentials at the host and then drops their leaf, host first; `rooms/owner/revoke` withdraws credentials alone, signed as the room; `rooms/owner/group/renew` renews a sealed room with a commit that changes no membership, host first. `pnm rooms owner group-create` / `group-add` / `group-remove` / `group-renew` drive them (§5.4, §6, §10.1) |
 | **A browser as a member** | **Works.** `vti-rooms-wasm` compiles the member half — group custody, sealing, opening, the epoch chain — to WebAssembly; `room-host --allow-origin` is what lets a page reach a host at all. No key ever crosses into JavaScript |
 | **Governance (`rooms.rego`)** | **On a VTC.** A community decides who may create a room on it, in Rego, with the shipped default hosting `open`/`attributed` for its own members. A standalone `room-host` has no policy engine — T1's governance is its owner (§8.4) |
 | **Read mirrors** (T3) | **`room-host --mirror-config`** — a host serves a read-only copy fed by `sinceVersion` pulls and refuses every write, naming the primary. A mirror pulls **as a member**, presenting a room-issued `read` chain |
@@ -654,44 +654,62 @@ serve it.
 
 ### Remove a member
 
-Removal is an epoch advance and nothing else is. A membership credential that
-lapses stops a member *presenting* it, but they still hold the keys to every
-epoch they were in; what stops them reading what is written next is a new epoch
-whose key they do not have. The owner's VTA does it
-(`rooms/owner/group/remove/0.1`):
+Removal is two acts, and at `rooms/owner/group/remove/0.2` the owner's VTA does
+both, **withdrawing first** (trust-tasks-tf #804):
+
+1. **Withdraw their credentials at the host.** A host authorizes from the
+   credentials the room issued and keeps no roster, so without this a removed
+   member's membership and authority credentials stay good there until they
+   expire. The VTA signs the room's next **revocation list** as the room (one
+   `subject` entry for the member, stamped with the time it signs), keeps it,
+   and delivers it with `rooms/revocations/put`. From the moment the host
+   accepts it, it refuses every credential the room issued the member before
+   then — and anything they delegated to an agent — on every task.
+2. **Advance the room.** Only then does it drop their leaf and advance the
+   epoch, so nothing written from now on is sealed to them either.
 
 ```bash
 pnm rooms owner group-remove --room <room-did> --host-did <host-did> \
-    --member <member's persona DID> [--reason "left the deal team"]
+    --member <member's persona DID> --signing-key <room's signing key> \
+    [--mirror <mirror host DID>]... [--until <when their credentials expire>] \
+    [--reason "left the deal team"]
 ```
 
 `--member` is the departing member's **persona** — the DID their leaf carries,
-which is the DID their invitation named, never a client of theirs. It is the
-mirror of `group-add`, on the same machinery, and like it speaks to the host as
-your owner persona:
+which is the DID their invitation named, never a client of theirs. It speaks to
+the host as your owner persona:
 
 - **Refused before anything is built** when the VTA holds no group
-  (`noGroup`), when `--member` has no leaf in it (`notMember`), and when
-  `--member` is the VTA's own leaf (`ownLeaf`) — a key holder does not remove
-  itself; an owner leaving hands the room on with `rooms/owner/transfer`.
-  Without an `admin` grant in the vault naming a persona you act as it is
-  `noAuthority`.
-- **Host first.** The commit dropping the leaf, and the epoch link that keeps
-  the remaining members reading the past, are built on a copy and kept as the
-  room's pending advance; `rooms/epoch/mint` goes to the host; only an accepted
-  advance moves the VTA's own group. The host sees an epoch number, a link and
-  a commit — none of which it can read — so on a `private` room it does not
-  learn who left.
-- **A refusal** (`hostRefused`, or `epochConflict` carrying `hostEpoch` when
-  another admin advanced the room) leaves the group exactly where it was. **An
-  unanswered advance** (`hostUnreachable`) is kept, and the next admission,
-  removal or renewal asks the host its epoch (`rooms/info`) and applies it or
-  discards it first.
-- **One pending advance per room** (per owner persona, on a VTA holding the
-  room for several). An admission, a removal and a renewal (§10.1) share one
-  slot, so whichever is pending is settled before another is built — removing a
-  member whose admission's answer was lost first applies the admission the host
-  took, then removes them.
+  (`noGroup`), when `--member` has no leaf in it (`notMember`), when `--member`
+  is the VTA's own leaf (`ownLeaf`) — an owner leaving hands the room on with
+  `rooms/owner/transfer` — when it will not let you name the room's key
+  (`noSigningKey`), and without an `admin` grant naming a persona you act as
+  (`noAuthority`).
+- **A private room is refused** (`privateRoom`, nothing changed): its host
+  verifies membership in zero knowledge and cannot be told whom to refuse
+  without being told who was a member. `pnm` then removes them from the group
+  alone, at `0.1`; reset every credential with `pnm rooms owner revoke --reset`
+  if the room needs that too.
+- **Withdrawal before advance.** The commit, the epoch link and the signed list
+  are kept as the room's pending advance before anything is sent. If the host
+  **refuses the list**, the whole removal is discarded, list included
+  (`hostRefused`, `details.stage: revocation`). If it **refuses the advance**,
+  the advance is discarded and the withdrawal stays in force — the member is
+  refused at the host and holds keys only to the epoch the room was already at
+  (`hostRefused`, `stage: advance`). Unanswered at either stage
+  (`hostUnreachable` with its `stage`), the removal is kept and the next
+  admission, removal or renewal settles it: it delivers the list again first,
+  then asks the host's epoch.
+- **Mirrors** are delivered the list once the host has accepted it; one that
+  does not answer is named in `mirrorsPending` — deliver it later with
+  `pnm rooms owner revoke` and no withdrawal.
+- **One pending advance per room** (per owner persona). An admission, a
+  removal and a renewal (§10.1) share one slot, so whichever is pending is
+  settled before another is built.
+
+Without `--signing-key`, `group-remove` is `0.1`: the group alone, and the
+member's credentials are **not** withdrawn at the host — they stay valid until
+they expire.
 
 Every remaining member's VTA applies the commit (`rooms/keys/commit/0.1`) as
 for any other change; the host relays it (`rooms/epoch/commits`), and
@@ -700,9 +718,37 @@ fetches and applies it.
 
 **What removal does not do — say so wherever you offer it.** It recalls nothing
 the member already read, and on a `chained` room they keep reading the epochs
-they were in. It ends their access to what is written *from now on*. Their
-authority credential is untouched: let it lapse, or issue none further — until
-then they can still present it for whatever their old epochs' keys suffice for.
+they were in. Re-admitting them later works: fresh credentials are issued after
+the withdrawal, which does not reach them.
+
+### Withdraw credentials without removing anyone
+
+`rooms/owner/revoke/0.1` is the withdrawal alone — for an `open` room, which
+has no group; for an agent's credential, which has no leaf; and for bringing a
+host up to date:
+
+```bash
+# A party: every credential naming them as subject or issuer, issued until now.
+pnm rooms owner revoke --room <room-did> --signing-key <room's key> \
+    --host <host-did> [--host <mirror-did>]... --subject <did>
+# One credential by its id (a leaked agent credential), or a reset of everything.
+pnm rooms owner revoke ... --credential <credential id>
+pnm rooms owner revoke ... --reset
+# No withdrawal: re-deliver the list the VTA holds (a new host, one that missed it).
+pnm rooms owner revoke --room <room-did> --signing-key <room's key> --host <host-did>
+```
+
+The list is the **room's**, so it moves with the room: the VTA keeps it with the
+room's key (in `room_groups`, backed up), signs one list per sequence, and
+delivers the one it holds to a host before answering `rooms/owner/register`.
+Before signing it asks each host for the list it holds (`rooms/revocations/get`)
+and adopts a later one the room signed — a VTA restored from an old backup
+recovers instead of signing a list every host refuses as `stale`. A host that
+answers `stale` holds a list this VTA did not sign: the room's key may be in more
+than one party's hands. The answer reports each host as `accepted` (with the head
+it holds and when it began enforcing it), `refused` (with its code) or
+`unreachable`; only `accepted` means that host refuses what was withdrawn. On a
+`private` room only `--reset` applies (`entryNotPermitted` otherwise).
 
 ---
 
@@ -1263,7 +1309,7 @@ existing file. Files need a host that serves `rooms/records/put` 0.2:
 `room-host` does, and so does a VTC with a `[rooms.files]` section (§8.2).
 
 **The owner's and the key holder's verbs are here too.** `pnm rooms owner
-{register,invite,issue-membership,issue-authority,group-create,group-add,group-remove,group-renew}`
+{register,invite,issue-membership,issue-authority,group-create,group-add,group-remove,group-renew,revoke}`
 (§5, §6, §10.1) and `pnm rooms keys {key-package,welcome,commit,list}` (§6) are calls
 to your own VTA, which holds the room's signing key and the group; the CLI never
 holds either. Every party they name — owner, subject, member — is a persona

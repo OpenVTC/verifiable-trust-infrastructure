@@ -520,6 +520,29 @@ pub(super) async fn handle_register(
         Err(e) => return app_error_to_reject(&doc, e),
     };
 
+    // What `rooms/owner/revoke` item 2 means by knowing the tier "from registering the
+    // room": a later withdrawal naming a party is checked against it without asking a host.
+    if let Some(tier) = serde_json::to_value(req.visibility)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        && let Err(e) = crate::operations::room_revocation::record_tier(
+            &state.room_groups_ks,
+            &req.room_id,
+            &tier,
+        )
+        .await
+    {
+        tracing::warn!(room = %req.room_id, error = %e, "could not record the room's tier");
+    }
+
+    // `rooms/owner/revoke`: a key holder that registers a room with a host delivers the list
+    // it holds for the room to that host **before answering** — a room moving hosts would
+    // otherwise arrive without its withdrawals, and its new host honour what the old one
+    // refused (trust-tasks-tf #804).
+    if let Err(r) = deliver_held_list(state, auth, &doc, &resolver, &req.room_id, &req.host).await {
+        return r;
+    }
+
     // The host's own answer for the epoch, not an assumption that a new room
     // starts at 1: a host that already held this room reports where it actually
     // stands, and a caller recording 1 over a live room would be recording a
@@ -535,4 +558,53 @@ pub(super) async fn handle_register(
             "epoch": epoch,
         }),
     )
+}
+
+/// Deliver the revocation list this agent holds for `room_id`, if any, to `host`, for
+/// `rooms/owner/register`. The room is registered whatever this answers; a failure says so
+/// and names the remedy, which is re-delivering with `rooms/owner/revoke` and no `withdraw`.
+async fn deliver_held_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    room_id: &str,
+    host: &str,
+) -> Result<(), TrustTaskOutcome> {
+    use super::room_owner_group::{Delivery, HostCall};
+    use trust_tasks_rs::specs::rooms::owner::register::v0_1::error_codes as codes;
+    let Some(list) = crate::operations::room_revocation::held(&state.room_groups_ks, room_id)
+        .await
+        .map_err(|e| app_error_to_reject(doc, e))?
+    else {
+        return Ok(());
+    };
+    let remedy = format!(
+        "Room `{room_id}` is registered at `{host}`, but the room's revocation list (sequence \
+         {}) is not in force there yet: deliver it with rooms/owner/revoke naming that host and \
+         no `withdraw`",
+        list.sequence()
+    );
+    let host_call =
+        HostCall::as_owner(state, auth, resolver, room_id, doc, codes::HOST_REFUSED).await?;
+    let presentation = host_call
+        .admin_presentation(doc, codes::HOST_REFUSED)
+        .await?;
+    match host_call.deliver_list(host, &list, &presentation).await {
+        Delivery::Accepted { .. } => Ok(()),
+        Delivery::Refused { code, reason } => Err(super::helpers::reject_with_code(
+            doc,
+            super::room_group::declared(codes::HOST_REFUSED),
+            format!(
+                "host `{host}` declined the room's revocation list: {code}: {reason}. {remedy}"
+            ),
+            Some(serde_json::json!({ "code": code })),
+        )),
+        Delivery::Unreachable(why) => Err(super::helpers::reject_with_code(
+            doc,
+            super::room_group::declared(codes::HOST_UNREACHABLE),
+            format!("host `{host}` did not answer the room's revocation list: {why}. {remedy}"),
+            None,
+        )),
+    }
 }

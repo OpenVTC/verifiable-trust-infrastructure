@@ -1504,37 +1504,171 @@ pub async fn cmd_rooms_owner_group_create(
     Ok(())
 }
 
-/// `rooms owner group-remove` — remove a member's leaf from a room's group
-/// (`rooms/owner/group/remove/0.1`), advancing the room at its host.
+/// `rooms owner group-remove` — remove a member from a room.
+///
+/// With `signing_key_id`, `rooms/owner/group/remove/0.2`: the room's key withdraws the
+/// member's credentials at the host first, and then the room advances — the removal takes
+/// effect at the host at once. On a `private` room, where the host cannot be told whom to
+/// refuse, 0.2 refuses and this falls back to 0.1, which the specification keeps as that
+/// tier's removal. Without `signing_key_id`, 0.1: the group alone, credentials left valid.
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_rooms_owner_group_remove(
     client: &VtaClient,
     room_id: &str,
     host_did: &str,
     member: &str,
+    signing_key_id: Option<&str>,
+    mirrors: &[String],
+    until: Option<chrono::DateTime<chrono::Utc>>,
     reason: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Under one idempotency key, so a retry after a lost reply reports the removal that
-    // happened instead of `notMember`.
+    let hint = |e: VtaError| {
+        format!(
+            "{e}\n\n`epochConflict` means another admin advanced the room: catch up and \
+             retry. `hostUnreachable` leaves the outcome unknown; running this again \
+             settles it with the host before anything else. `ownLeaf` means {member} is \
+             you: hand the room on with rooms/owner/transfer instead. `noSigningKey` means \
+             this VTA will not let you name the room's key — check `pnm keys list`."
+        )
+    };
+    if let Some(key) = signing_key_id {
+        // Under one idempotency key, so a retry after a lost reply reports the removal that
+        // happened instead of `notMember`.
+        match client
+            .idempotent(|| {
+                client
+                    .room_group_remove_v0_2(room_id, host_did, member, key, mirrors, until, reason)
+            })
+            .await
+        {
+            Ok(resp) => {
+                let r = serde_json::to_value(&resp).unwrap_or_default();
+                println!(
+                    "Removed {member} from {room_id}: withdrawn at the host from {} (revocation \
+                     list {}), and the room is now at epoch {}.",
+                    r["revokedAt"].as_str().unwrap_or("now"),
+                    r["revocation"]["sequence"],
+                    r["epoch"]
+                );
+                if let Some(pending) = r["mirrorsPending"].as_array().filter(|p| !p.is_empty()) {
+                    let pending: Vec<&str> = pending.iter().filter_map(Value::as_str).collect();
+                    println!(
+                        "  Not yet withdrawn at: {}. Deliver it with `pnm rooms owner revoke \
+                         --room {room_id} --signing-key {key} --host <did>` (no withdrawal).",
+                        pending.join(", ")
+                    );
+                }
+                println!(
+                    "  The host refuses their credentials, and anything they delegated, from \
+                     now on. Nothing they already read can be recalled."
+                );
+                return Ok(());
+            }
+            // The one case the specification hands to 0.1: a private room's host cannot be
+            // told whom to refuse.
+            Err(VtaError::Rejected { code, .. })
+                if code == "rooms/owner/group/remove:privateRoom" =>
+            {
+                println!(
+                    "{room_id} is private: a member cannot be withdrawn one at a time there. \
+                     Removing them from the group (0.1) instead."
+                );
+            }
+            Err(e) => return Err(hint(e).into()),
+        }
+    }
     let resp = client
         .idempotent(|| client.room_group_remove(room_id, host_did, member, reason))
         .await
-        .map_err(|e| {
-            format!(
-                "{e}\n\n`epochConflict` means another admin advanced the room: catch up and \
-                 retry. `hostUnreachable` leaves the outcome unknown; running this again \
-                 settles it with the host before anything else. `ownLeaf` means {member} is \
-                 you: hand the room on with rooms/owner/transfer instead."
-            )
-        })?;
+        .map_err(hint)?;
     println!(
-        "Removed {member} from {room_id}; the room is now at epoch {}.",
+        "Removed {member} from {room_id}'s group; the room is now at epoch {}.",
         resp.epoch
     );
     println!(
-        "  Nothing sealed from now on is readable to them. What they already read, and on a \
-         `chained` room the epochs they were in, stay theirs. Their authority credential is \
-         untouched: let it lapse, or issue none further."
+        "  Nothing sealed from now on is readable to them. Their credentials are NOT \
+         withdrawn at the host and stay valid until they expire: on an open or attributed \
+         room pass --signing-key to withdraw them, or reset every credential with \
+         `pnm rooms owner revoke --reset`."
     );
+    Ok(())
+}
+
+/// `rooms owner revoke` — withdraw credentials a room issued (`rooms/owner/revoke/0.1`),
+/// signed as the room and delivered to every host serving it. With nothing to withdraw,
+/// re-delivers the list the VTA holds.
+#[allow(clippy::too_many_arguments)]
+pub async fn cmd_rooms_owner_revoke(
+    client: &VtaClient,
+    room_id: &str,
+    signing_key_id: &str,
+    hosts: &[String],
+    subjects: &[String],
+    credentials: &[String],
+    reset: bool,
+    until: Option<chrono::DateTime<chrono::Utc>>,
+    reason: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use trust_tasks_rs::specs::rooms::owner::revoke::v0_1::Withdrawal;
+    let until = until.map(|u| u.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    let mut raw: Vec<serde_json::Value> = Vec::new();
+    for s in subjects {
+        raw.push(serde_json::json!({ "kind": "subject", "subject": s }));
+    }
+    for c in credentials {
+        raw.push(serde_json::json!({ "kind": "credential", "credentialId": c }));
+    }
+    if reset {
+        raw.push(serde_json::json!({ "kind": "room" }));
+    }
+    if let Some(u) = &until {
+        for w in &mut raw {
+            w["until"] = serde_json::json!(u);
+        }
+    }
+    let withdraw: Vec<Withdrawal> = raw
+        .into_iter()
+        .map(serde_json::from_value)
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("a withdrawal is not one rooms/owner/revoke accepts: {e}"))?;
+    let resp = client
+        .idempotent(|| client.room_owner_revoke(room_id, signing_key_id, hosts, &withdraw, reason))
+        .await
+        .map_err(|e| {
+            format!(
+                "{e}\n\n`noList` means there is nothing to re-deliver: name a withdrawal. \
+                 `entryNotPermitted` means the room is private: only --reset applies there. \
+                 `noSigningKey` means this VTA will not let you name `{signing_key_id}` — check \
+                 `pnm keys list`. `noAuthority` means it holds no `admin` grant of the room \
+                 for a persona you act as."
+            )
+        })?;
+    let r = serde_json::to_value(&resp).unwrap_or_default();
+    println!(
+        "{room_id}'s revocation list is at sequence {} ({}).",
+        r["head"]["sequence"],
+        r["head"]["digest"].as_str().unwrap_or_default()
+    );
+    for d in r["deliveries"].as_array().into_iter().flatten() {
+        let host = d["host"].as_str().unwrap_or_default();
+        match d["outcome"].as_str().unwrap_or_default() {
+            "accepted" => println!(
+                "  {host}: in force from {}",
+                d["inForceAt"].as_str().unwrap_or_default()
+            ),
+            "refused" => {
+                let code = d["code"].as_str().unwrap_or_default();
+                println!("  {host}: REFUSED ({code})");
+                if code == "rooms/revocations/put:stale" {
+                    println!(
+                        "    The host holds a later list this VTA did not sign: the room's key \
+                         may be in more than one party's hands."
+                    );
+                }
+            }
+            _ => println!("  {host}: no answer — run this again with no withdrawal to deliver it"),
+        }
+    }
     Ok(())
 }
 
