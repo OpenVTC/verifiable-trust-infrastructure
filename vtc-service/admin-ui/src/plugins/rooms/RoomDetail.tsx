@@ -49,7 +49,8 @@ import type {
 
 import { DayChart, type DayMetric } from "./DayChart";
 import { LimitsForm } from "./LimitsForm";
-import { LifecyclePill, TIER_BLURB, configPath, type Tier } from "./shared";
+import { LifecyclePill, TIER_BLURB, communityRoomPath, configPath, type Tier } from "./shared";
+import { CommunityRoomBadge, MEMBER_NAMED_NOTE, useRoomNames, type RoomName } from "./useRoomNames";
 
 export function RoomDetail() {
   // Already decoded by the router. Decoding again would turn a `did:web` port's
@@ -62,12 +63,17 @@ export function RoomDetail() {
     enabled: roomId !== "",
     refetchInterval: pollMs,
   });
-  const trail = [{ label: shorten(roomId) }];
+  // The label of a room the community owns, for a viewer who may read the
+  // community's rooms; the DID otherwise. A refused or failed read of the
+  // community's list leaves this page as it was (`useRoomNames`).
+  const name = useRoomNames()(roomId);
+  const title = name.kind === "community" ? name.label : "Room";
+  const trail = [{ label: name.kind === "community" ? name.label : shorten(roomId) }];
 
   if (roomQuery.isPending) {
     return (
       <section className="page">
-        <PageHeader title="Room" trail={trail} />
+        <PageHeader title={title} trail={trail} />
         <section className="card">
           <p>Loading the room…</p>
         </section>
@@ -78,7 +84,7 @@ export function RoomDetail() {
     const notFound = (roomQuery.error as unknown as ApiError | null)?.code === "vtc/rooms/get:notFound";
     return (
       <section className="page">
-        <PageHeader title="Room" trail={trail} />
+        <PageHeader title={title} trail={trail} />
         <section className="card">
           <p className="muted">
             {notFound
@@ -93,11 +99,12 @@ export function RoomDetail() {
   return (
     <section className="page">
       <PageHeader
-        title="Room"
+        title={title}
+        actions={name.kind === "community" ? <CommunityRoomBadge roomId={roomId} /> : undefined}
         trail={trail}
         lead="What this community stores for one room: sizes, counts and dates. It cannot read the room's records or file names, so neither appears here."
       />
-      <Identity data={data} />
+      <Identity data={data} name={name} />
       <Storage data={data} />
       <Limits data={data} />
       {data.room.visibility !== "private" && <MembersUsage data={data} />}
@@ -106,13 +113,33 @@ export function RoomDetail() {
   );
 }
 
-function Identity({ data }: { data: RoomGetResponse }) {
+function Identity({ data, name }: { data: RoomGetResponse; name: RoomName }) {
   const book = useNameBook();
   const r = data.room;
   return (
     <section className="card">
       <h2>Room</h2>
       <dl className="rooms-facts">
+        {/* Unknown (a viewer who may not read the community's rooms): no row,
+            as before — the identifier below is all there is to show. */}
+        {name.kind !== "unknown" && (
+          <>
+            <dt>Name</dt>
+            <dd>
+              {name.kind === "community" ? (
+                <>
+                  {name.label}
+                  <div className="muted rooms-sub">
+                    This community owns the room;{" "}
+                    <Link to={communityRoomPath(r.roomId)}>run it from Community rooms</Link>.
+                  </div>
+                </>
+              ) : (
+                <span className="muted">{MEMBER_NAMED_NOTE}</span>
+              )}
+            </dd>
+          </>
+        )}
         <dt>Identifier</dt>
         <dd>
           <code className="rooms-id">{r.roomId}</code> <CopyButton value={r.roomId} />

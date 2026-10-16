@@ -58,6 +58,11 @@ import { RefusalCard } from "./CommunityRefusal";
 import { AuthorityExpiry, COMMUNITY_ROOMS_KEY } from "./CommunityRooms";
 import { COMMUNITY_PATH, LifecyclePill, TIER_BLURB, roomPath, type Tier } from "./shared";
 
+/** The Audit trail (`plugins/audit.tsx`). It has no per-room filter: a
+ *  community room's audit row names the room in its event data, not its
+ *  `target`, which is all the trail's search reads. */
+const AUDIT_PATH = "/audit";
+
 type StateFilter = "all" | CommunityRoomMemberState;
 
 const STATE_FILTERS: { id: StateFilter; label: string }[] = [
@@ -119,6 +124,7 @@ export function CommunityRoomDetail() {
 function RoomFacts({ room }: { room: CommunityRoom }) {
   const nameBook = useNameBook();
   const hostAdmin = useCan("vtc.rooms.admin", "*");
+  const auditor = useCan("vtc.audit.read", "*");
   const r = room.room;
   return (
     <section className="card">
@@ -157,15 +163,26 @@ function RoomFacts({ room }: { room: CommunityRoom }) {
             </dd>
           </>
         )}
-        {room.createdBy && (
-          <>
-            <dt>Created by</dt>
-            <dd>
-              <NamedDid did={room.createdBy} book={nameBook} /> on {new Date(r.createdAt * 1000).toLocaleString()}
-            </dd>
-          </>
-        )}
+        <dt>Created</dt>
+        <dd>
+          {new Date(r.createdAt * 1000).toLocaleString()}
+          {room.createdBy && (
+            <>
+              {" "}
+              by <NamedDid did={room.createdBy} book={nameBook} />
+            </>
+          )}
+        </dd>
       </dl>
+      {/* Renaming the room and giving it a description go here, once the
+          community-room update task is specified (a spec PR is being drafted);
+          today's wire sets the label only at create. */}
+      {auditor && (
+        <p className="muted rooms-sub">
+          What was done to it, and by whom: the <Link to={AUDIT_PATH}>Audit trail</Link>. It
+          cannot be filtered to one room yet — filter it by <code>CommunityRoomChanged</code>.
+        </p>
+      )}
       {hostAdmin && (
         <p className="muted rooms-sub">
           Its usage, limits and storage, as this community hosts it:{" "}

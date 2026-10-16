@@ -286,3 +286,118 @@ describe("Room usage", () => {
     click.mockRestore();
   });
 });
+
+// A room the community owns is named on the host pages for a viewer who may
+// read the community's rooms (`rooms/useRoomNames.tsx`); nobody else is shown
+// a name, or an error for not being allowed to read one.
+describe("Room names on the host pages", () => {
+  const COMMUNITY_LIST = "https://trusttasks.org/spec/vtc/rooms/community/list/0.1";
+  const COMMUNITY_GET = "https://trusttasks.org/spec/vtc/rooms/community/get/0.1";
+  const COMMUNITY_MEMBERS = "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1";
+  const OTHER_ROOM = "did:webvh:QmOther:alice.example.com:notes";
+  const BOTH = whoamiWith(["vtc.rooms.admin", "vtc.rooms.manage"]);
+  const communityRoom = {
+    room: hostedRoom("attributed"),
+    label: "Board pack",
+    admitted: 2,
+    offered: 1,
+    ownerAuthorityValidUntil: "2099-01-01T00:00:00Z",
+    createdBy: "did:key:z6MkViewer",
+  };
+  const memberRoom = { ...hostedRoom("open"), roomId: OTHER_ROOM, lifecycle: "lapsed" };
+  const communityPage = `/rooms/community/${encodeURIComponent(ROOM_ID)}`;
+
+  it("shows a community room's label, badge and DID on the list", async () => {
+    mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(LIST, { items: [hostedRoom("attributed"), memberRoom] }),
+      taskRoute(COMMUNITY_LIST, { items: [communityRoom] }),
+    ]);
+    mount("/rooms", BOTH);
+    const link = await screen.findByRole("link", { name: "Board pack" });
+    expect(link.getAttribute("href")).toBe(`/rooms/r/${encodeURIComponent(ROOM_ID)}`);
+    const badge = screen.getByRole("link", { name: "Community room" });
+    expect(badge.getAttribute("href")).toBe(communityPage);
+    expect(screen.getAllByRole("button", { name: /Copy/ }).length).toBeGreaterThan(0);
+    // The other room is a member's: no name, and the note says why.
+    expect(screen.getByText(/Named by its owner; this community never sees room names/)).toBeTruthy();
+  });
+
+  it("searches by name and filters by tier and lifecycle", async () => {
+    mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(LIST, { items: [hostedRoom("attributed"), memberRoom] }),
+      taskRoute(COMMUNITY_LIST, { items: [communityRoom] }),
+    ]);
+    mount("/rooms", BOTH);
+    await screen.findByRole("link", { name: "Board pack" });
+    const rows = () => screen.getAllByRole("row").length - 1;
+    expect(rows()).toBe(2);
+
+    fireEvent.change(screen.getByPlaceholderText("Name or DID"), { target: { value: "board" } });
+    expect(rows()).toBe(1);
+    expect(screen.getByRole("link", { name: "Board pack" })).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText("Name or DID"), { target: { value: "" } });
+
+    fireEvent.change(screen.getByLabelText("Lifecycle"), { target: { value: "lapsed" } });
+    expect(rows()).toBe(1);
+    expect(screen.queryByRole("link", { name: "Board pack" })).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Tier"), { target: { value: "attributed" } });
+    expect(screen.getByText(/No room matches/)).toBeTruthy();
+  });
+
+  it("shows the DID, and no error, to a viewer without vtc.rooms.manage", async () => {
+    const requests = mockFetch([...NAME_BOOK_ROUTES, taskRoute(LIST, { items: [hostedRoom("open")] })]);
+    mount("/rooms");
+    expect(await screen.findByRole("link", { name: /did:web/ })).toBeTruthy();
+    expect(sentPayloads(requests, COMMUNITY_LIST)).toEqual([]);
+    expect(screen.queryByText(/Named by its owner/)).toBeNull();
+    expect(screen.queryByText("Community room")).toBeNull();
+    expect(screen.queryByText(/community.s rooms could not be read/i)).toBeNull();
+  });
+
+  it("names a community room in the room page's title and breadcrumb", async () => {
+    mockFetch([...detailRoutes(), taskRoute(COMMUNITY_LIST, { items: [communityRoom] })]);
+    mount(`/rooms/r/${encodeURIComponent(ROOM_ID)}`, BOTH);
+    expect(await screen.findByRole("heading", { name: "Board pack" })).toBeTruthy();
+    const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(within(crumbs).getByText("Board pack")).toBeTruthy();
+    expect(within(crumbs).queryByText(/did:web/)).toBeNull();
+    expect(screen.getByRole("link", { name: "Community room" }).getAttribute("href")).toBe(
+      communityPage,
+    );
+    // The DID stays, with its copy button.
+    expect(screen.getByText(ROOM_ID)).toBeTruthy();
+  });
+
+  it("says a member-owned room is named out of the community's sight", async () => {
+    mockFetch([...detailRoutes(), taskRoute(COMMUNITY_LIST, { items: [] })]);
+    mount(`/rooms/r/${encodeURIComponent(ROOM_ID)}`, BOTH);
+    expect(await screen.findByText(/Named by its owner; this community never sees room names/)).toBeTruthy();
+    expect(screen.getAllByRole("heading", { name: "Room" }).length).toBe(2);
+  });
+
+  it("keeps the room page when the community's rooms cannot be read", async () => {
+    // No route for the community list: the read fails (404 from the stand-in).
+    mockFetch(detailRoutes());
+    mount(`/rooms/r/${encodeURIComponent(ROOM_ID)}`, BOTH);
+    expect(await screen.findByText(ROOM_ID)).toBeTruthy();
+    expect(screen.getAllByRole("heading", { name: "Room" }).length).toBe(2);
+    expect(screen.queryByText(/Named by its owner/)).toBeNull();
+    expect(screen.queryByText(/community.s rooms could not be read/i)).toBeNull();
+  });
+
+  it("links a community room's page to the Audit trail for an auditor", async () => {
+    mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_GET, { room: communityRoom }),
+      taskRoute(COMMUNITY_MEMBERS, { items: [] }),
+    ]);
+    mount(communityPage, whoamiWith(["vtc.rooms.manage", "vtc.audit.read"]));
+    expect(await screen.findByRole("heading", { name: "Board pack" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Audit trail" }).getAttribute("href")).toBe("/audit");
+    expect(screen.getByText("Created")).toBeTruthy();
+    expect(screen.getByText(/2 admitted, 1 offered/)).toBeTruthy();
+  });
+});

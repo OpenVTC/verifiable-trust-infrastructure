@@ -67,14 +67,22 @@ import { DoorOpen, RefreshCw } from "lucide-react";
 import { postSignedRead } from "@/lib/api";
 import { fetchActivePolicy } from "@/lib/policies-api";
 import { formatEpoch, shorten } from "@/lib/format";
+import { CopyButton } from "@/components/CopyButton";
 import { NamedDid } from "@/components/NamedDid";
-import { DataTable } from "@/components/DataTable";
+import { DataTable, useSortedRows } from "@/components/DataTable";
+import { Field } from "@/components/Field";
 import { EmptyState } from "@/components/EmptyState";
 import { useNameBook } from "@/lib/names";
 import { formatBytes } from "@/lib/rooms-api";
 import type { HostedRoom, PolicyTestResponse, RoomScopeLimits } from "@/lib/wire-types";
 
 import { LifecyclePill, STORAGE_PATH, TIER_BLURB, TIERS, roomPath, type Tier } from "./rooms/shared";
+import {
+  CommunityRoomBadge,
+  MEMBER_NAMED_NOTE,
+  useRoomNames,
+  type RoomName,
+} from "./rooms/useRoomNames";
 
 const TRUST_TASK_TEST = "https://trusttasks.org/spec/vtc/policies/test/0.1";
 /** `vtc/rooms/list/0.1` — under `vtc/`, not `rooms/`: it is answered from the
@@ -288,57 +296,165 @@ function pluckDecision(resp: PolicyTestResponse): Verdict | null {
   };
 }
 
+/** Lifecycle states in the order they happen, which is how the column sorts. */
+const LIFECYCLES = ["live", "lapsed", "dormant", "reclaimable"] as const;
+
+type RoomSortKey = "room" | "tier" | "lifecycle" | "created";
+
+/**
+ * The hosted rooms, searchable by name and DID, filterable by tier and
+ * lifecycle, sortable by column. All client-side over the list read whole:
+ * the name is joined in here (`useRoomNames`), so the VTC could not search it.
+ */
 function RoomsTable({ rooms }: { rooms: HostedRoom[] }) {
   const nameBook = useNameBook();
+  const nameOf = useRoomNames();
+  const [search, setSearch] = useState("");
+  const [tier, setTier] = useState<"" | Tier>("");
+  const [lifecycle, setLifecycle] = useState("");
+
+  const labelOf = (r: HostedRoom): string | null => {
+    const n = nameOf(r.roomId);
+    return n.kind === "community" ? n.label : null;
+  };
+  const needle = search.trim().toLowerCase();
+  const shown = rooms.filter(
+    (r) =>
+      (tier === "" || r.visibility === tier) &&
+      (lifecycle === "" || r.lifecycle === lifecycle) &&
+      (needle === "" ||
+        r.roomId.toLowerCase().includes(needle) ||
+        (labelOf(r) ?? "").toLowerCase().includes(needle)),
+  );
+  const sorted = useSortedRows<HostedRoom, RoomSortKey>(shown, (r, key) => {
+    switch (key) {
+      // A named room sorts by its name, before the rooms known only by DID.
+      case "room":
+        return labelOf(r)?.toLowerCase() ?? `\uffff${r.roomId}`;
+      case "tier":
+        return TIERS.indexOf(r.visibility as Tier);
+      case "lifecycle":
+        return LIFECYCLES.indexOf(r.lifecycle as (typeof LIFECYCLES)[number]);
+      case "created":
+        return r.createdAt;
+    }
+  });
+  const filtered = needle !== "" || tier !== "" || lifecycle !== "";
+
   return (
-    <DataTable
-      columns={[
-        { key: "room", label: "Room" },
-        { key: "owner", label: "Owner" },
-        { key: "tier", label: "Tier" },
-        { key: "epoch", label: "Epoch" },
-        { key: "lifecycle", label: "Lifecycle" },
-        { key: "retention", label: "Retention" },
-        { key: "created", label: "Created" },
-      ]}
-    >
-      {rooms.map((r) => (
-        <tr key={r.roomId}>
-          <td>
-            <Link to={roomPath(r.roomId)} title={r.roomId}>
-              <code>{shorten(r.roomId)}</code>
-            </Link>
-            {r.mirrorOf && (
-              <div className="muted rooms-sub">
-                read-only copy of {shorten(r.mirrorOf)}
-              </div>
-            )}
-          </td>
-          <td>
-            <NamedDid did={r.ownerDid} book={nameBook} />
-          </td>
-          <td>{r.visibility}</td>
-          <td>
-            {r.epoch}
-            {r.epochExpiresAt ? (
-              <div className="muted rooms-sub">
-                expires {formatEpoch(r.epochExpiresAt)}
-              </div>
-            ) : null}
-          </td>
-          <td>
-            <LifecyclePill value={r.lifecycle} />
-          </td>
-          <td>
-            {r.retentionDays}d
-            <div className="muted rooms-sub">
-              {r.retentionPolicy === "chained" ? "history kept" : "from join"}
-            </div>
-          </td>
-          <td>{formatEpoch(r.createdAt)}</td>
-        </tr>
-      ))}
-    </DataTable>
+    <>
+      <div className="toolbar">
+        <Field label="Search" inline>
+          <input
+            type="search"
+            placeholder="Name or DID"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </Field>
+        <Field label="Tier" inline>
+          <select value={tier} onChange={(e) => setTier(e.target.value as "" | Tier)}>
+            <option value="">Any</option>
+            {TIERS.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Lifecycle" inline>
+          <select value={lifecycle} onChange={(e) => setLifecycle(e.target.value)}>
+            <option value="">Any</option>
+            {LIFECYCLES.map((l) => (
+              <option key={l} value={l}>
+                {l}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <span className="muted">
+          {filtered ? `${shown.length} of ${rooms.length}` : `${rooms.length}`}{" "}
+          {rooms.length === 1 ? "room" : "rooms"}
+        </span>
+      </div>
+      {shown.length === 0 ? (
+        <p className="muted">No room matches. Clear the search or the filters to see every room.</p>
+      ) : (
+        <DataTable<RoomSortKey>
+          sort={sorted.sort}
+          onSort={sorted.onSort}
+          columns={[
+            { key: "room", label: "Room", sortKey: "room" },
+            { key: "owner", label: "Owner" },
+            { key: "tier", label: "Tier", sortKey: "tier" },
+            { key: "epoch", label: "Epoch" },
+            { key: "lifecycle", label: "Lifecycle", sortKey: "lifecycle" },
+            { key: "retention", label: "Retention" },
+            { key: "created", label: "Created", sortKey: "created" },
+          ]}
+        >
+          {sorted.rows.map((r) => (
+            <tr key={r.roomId}>
+              <td>
+                <RoomCell roomId={r.roomId} name={nameOf(r.roomId)} />
+                {r.mirrorOf && (
+                  <div className="muted rooms-sub">read-only copy of {shorten(r.mirrorOf)}</div>
+                )}
+              </td>
+              <td>
+                <NamedDid did={r.ownerDid} book={nameBook} />
+              </td>
+              <td>{r.visibility}</td>
+              <td>
+                {r.epoch}
+                {r.epochExpiresAt ? (
+                  <div className="muted rooms-sub">expires {formatEpoch(r.epochExpiresAt)}</div>
+                ) : null}
+              </td>
+              <td>
+                <LifecyclePill value={r.lifecycle} />
+              </td>
+              <td>
+                {r.retentionDays}d
+                <div className="muted rooms-sub">
+                  {r.retentionPolicy === "chained" ? "history kept" : "from join"}
+                </div>
+              </td>
+              <td>{formatEpoch(r.createdAt)}</td>
+            </tr>
+          ))}
+        </DataTable>
+      )}
+    </>
+  );
+}
+
+/**
+ * A room's first cell: the label of a room the community owns (with the DID
+ * under it), or the DID — and, when the console can tell a member owns the
+ * room, why there is no name to show (`rooms/useRoomNames.tsx`).
+ */
+function RoomCell({ roomId, name }: { roomId: string; name: RoomName }) {
+  if (name.kind === "community") {
+    return (
+      <>
+        <Link to={roomPath(roomId)} title={roomId}>
+          {name.label}
+        </Link>{" "}
+        <CommunityRoomBadge roomId={roomId} />
+        <div className="muted rooms-sub">
+          <code title={roomId}>{shorten(roomId)}</code> <CopyButton value={roomId} />
+        </div>
+      </>
+    );
+  }
+  return (
+    <>
+      <Link to={roomPath(roomId)} title={roomId}>
+        <code>{shorten(roomId)}</code>
+      </Link>
+      {name.kind === "member" && <div className="muted rooms-sub">{MEMBER_NAMED_NOTE}</div>}
+    </>
   );
 }
 
