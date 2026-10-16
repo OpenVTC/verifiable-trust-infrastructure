@@ -932,6 +932,28 @@ mod tests {
         );
     }
 
+    /// The console holds its own copy of [`PINNED`] and refuses to render any
+    /// action whose template it has no pin for, so a pin missing there makes
+    /// that kind unapprovable from the console. Every server pin must appear
+    /// in the console's table.
+    #[test]
+    fn the_console_pins_every_template() {
+        let console = include_str!("../../admin-ui/src/lib/action-summary.ts");
+        let mut missing = Vec::new();
+        for (kind, type_uri, digest) in PINNED {
+            // A template's digest covers its kind and type URI, so the digest
+            // alone names the entry.
+            if !console.contains(&format!("\"{digest}\"")) {
+                missing.push(format!("({kind}, {type_uri}) => {digest}"));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "the console's PINNED_TEMPLATE_DIGESTS lacks:\n{}",
+            missing.join("\n")
+        );
+    }
+
     /// The closed format set, and pointers a renderer can parse.
     #[test]
     fn every_field_uses_a_closed_format_and_a_valid_pointer() {
