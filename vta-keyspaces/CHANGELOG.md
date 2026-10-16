@@ -2,6 +2,44 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.18.0...vta-keyspaces-v0.19.0) — 2026-10-16
+
+
+### Added
+
+- **witness**: Witness 0.2 — the member presentation and personhood outcome evidence as spec members, and vta/witness/list ([#1068](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1068)) ([#2147](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2147))
+
+* feat(witness)!: witness 0.2 — the member presentation and personhood outcome evidence as spec members ([#1068](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1068))
+
+- **rooms**: Rooms/owner/group/add 0.2 — a repeated admission is answered with its Welcome ([#2146](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2146))
+
+* feat(rooms)!: rooms/owner/group/add 0.2 — a repeated admission is answered with its Welcome
+
+  Serve `rooms/owner/group/add/0.2` (trust-tasks-tf #795) beside 0.1, and
+  raise the trust-tasks-rs floor to 0.31.11, which carries it.
+
+  Under 0.1 a caller that lost an admission's answer and sent the identical
+  request again was refused `alreadyMember`: the member had a leaf and no
+  Welcome anyone could give them. 0.2 item 8:
+
+  - The owner's VTA keeps the last admission it applied for a room —
+    member, the KeyPackage's KeyPackageRef (RFC 9420 §5.2), epoch and
+    Welcome — in `room_groups` (`room-admitted/<room>/<persona>`, beside the
+    pending advance that already holds the same Welcome, under the same
+    storage encryption and backup membership). It is discarded when the
+    owner builds its next advance of the room, after 24 hours (checked on
+    read, and swept by the storage thread), and with the member's group.
+  - A request naming the same room, a string-equal member and a KeyPackage
+    with the same KeyPackageRef is answered — after item 1 and the
+    authorization checks — with that epoch and Welcome: the host is not
+    contacted, the group not changed, no new Welcome built. Anything else
+    for a member with a leaf stays `alreadyMember`.
+  - Item 6 hands over to item 8: a pending admission settled by the
+    identical request becomes the retained one and answers it.
+  - 0.1 is unchanged.
+
+
+
 ## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.17.0...vta-keyspaces-v0.18.0) — 2026-10-15
 
 

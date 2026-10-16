@@ -2,6 +2,26 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.24.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.24.0...vtc-client-v0.24.1) — 2026-10-16
+
+
+### Added
+
+- **cnm**: Cnm rooms — run the rooms the community owns; docs ([#2142](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2142))
+
+* feat(cnm): cnm rooms — run the rooms the community owns; docs
+
+  `cnm rooms {create,list,get}` and `cnm rooms members {add,remove,list}` over
+  vtc/rooms/community/*, signed as the profile's administrator identity, changes
+  through the bound passkey gesture as `cnm git` changes are. vtc-client
+  re-exports the community_rooms / room_offers spec modules.
+
+- **vtc**: Direct admission on the generated vtc/members types (trust-tasks-rs 0.31.9) ([#2138](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2138))
+
+* build(deps): trust-tasks-rs 0.31.9 — vtc/members/admit and make-membership (trust-tasks-tf #784)
+
+
+
 ## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.23.0...vtc-client-v0.24.0) — 2026-10-15
 
 

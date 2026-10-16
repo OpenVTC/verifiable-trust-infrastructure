@@ -2,6 +2,37 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.42.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.41.0...pnm-cli-v0.42.0) — 2026-10-16
+
+
+### Added
+
+- **rooms**: Rooms/keys/act 0.3 — a member takes up a community's offer as themself, with only a KeyPackage their VTA minted ([#2148](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2148))
+
+Serve `rooms/keys/act/0.3` (trust-tasks-tf #797) beside 0.2 and 0.1.
+
+  - The table gains `vtc/rooms/offers/list/0.1` and
+    `vtc/rooms/offers/accept/0.1`, with no presentation inserted
+    (`room_act::OFFER_TYPES`, apart from the 0.1/0.2 host-bound table;
+    0.1 and 0.2 still refuse them by schema).
+  - Recipient item 2b: for the offer types `issuer` is required
+    (`principalAmbiguous` without it, never picked for the caller), and the
+    VTA acts as it only where it holds a key that DID lists for
+    `authentication` and the caller may act as it (`issuerNotPrincipal`).
+    No room credential is asked for.
+  - Recipient item 10 (security): an acceptance's `keyPackage` is completed
+    only when this VTA minted it with `rooms/keys/key-package` for that room
+    and member and still holds its unused, unexpired private half —
+    compared by KeyPackageRef (`room_groups::holds_key_package`), never by
+    the leaf credential — else `keyPackageNotHeld`. The existing per-member
+    pending-KeyPackage row is the record: a Welcome consumes it (used), its
+    `expiresAt` bounds it. Completing an acceptance does not consume it, so
+    a retry after a lost answer is the identical acceptance and is answered
+    with the same Welcome (rooms/owner/group/add 0.2 item 8).
+  - Policy and audit subject is the member, as at 0.2.
+
+
+
 ## [0.41.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.40.0...pnm-cli-v0.41.0) — 2026-10-15
 
 

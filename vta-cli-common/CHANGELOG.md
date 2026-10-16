@@ -2,6 +2,96 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.43.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.42.0...vta-cli-common-v0.43.0) — 2026-10-16
+
+
+### Added
+
+- **rooms**: Rooms/keys/act 0.3 — a member takes up a community's offer as themself, with only a KeyPackage their VTA minted ([#2148](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2148))
+
+Serve `rooms/keys/act/0.3` (trust-tasks-tf #797) beside 0.2 and 0.1.
+
+  - The table gains `vtc/rooms/offers/list/0.1` and
+    `vtc/rooms/offers/accept/0.1`, with no presentation inserted
+    (`room_act::OFFER_TYPES`, apart from the 0.1/0.2 host-bound table;
+    0.1 and 0.2 still refuse them by schema).
+  - Recipient item 2b: for the offer types `issuer` is required
+    (`principalAmbiguous` without it, never picked for the caller), and the
+    VTA acts as it only where it holds a key that DID lists for
+    `authentication` and the caller may act as it (`issuerNotPrincipal`).
+    No room credential is asked for.
+  - Recipient item 10 (security): an acceptance's `keyPackage` is completed
+    only when this VTA minted it with `rooms/keys/key-package` for that room
+    and member and still holds its unused, unexpired private half —
+    compared by KeyPackageRef (`room_groups::holds_key_package`), never by
+    the leaf credential — else `keyPackageNotHeld`. The existing per-member
+    pending-KeyPackage row is the record: a Welcome consumes it (used), its
+    `expiresAt` bounds it. Completing an acceptance does not consume it, so
+    a retry after a lost answer is the identical acceptance and is answered
+    with the same Welcome (rooms/owner/group/add 0.2 item 8).
+  - Policy and audit subject is the member, as at 0.2.
+
+- **rooms**: Rooms/keys file-key, open and act 0.2 — removed, beyondChain, and the member as act's subject ([#2145](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2145))
+
+trust-tasks-rs 0.31.10 (trust-tasks-tf #786, #787, released in #788) publishes
+  rooms/keys/file-key/0.2, rooms/keys/open/0.2 and rooms/keys/act/0.2. The
+  workspace floor moves to 0.31.10.
+
+  VTA (served beside 0.1, whose behaviour is unchanged):
+
+  - file-key 0.2: a file sealed at or after the member's removal is
+    `unknownEpoch` with `{reason: removed, removedAtEpoch}` (oracle item 4 —
+    an oracle that knows of the removal MUST NOT answer `notDelivered`). 0.1's
+    closed details schema has no `removed`, so 0.1 still answers
+    `notDelivered` with the removal in its message.
+  - open 0.2: `unknownEpoch` carries the declared closed details. An older
+    epoch the retained chain does not reach is `{reason: beyondChain,
+    earliestEpoch}`; 0.1 still answers it as a bare validation failure.
+    `room_groups::OpenError` gains `BeyondChain` (the enum is
+    `#[non_exhaustive]`).
+  - act 0.2: `subjectPath` is `/document/issuer`. The policy gate evaluates
+    act 0.2 against the member — `issuer`, or where it is absent the one member
+    of the room the caller may act as (`room_act::act_subject`) — never against
+    no subject. The 0.2 audit row names the member as its target, with the type
+    and room in its detail; a 0.1 row still names the room. Recipient item 2a
+    (a room-less type is completed only as its `issuer`; absent is
+    `principalAmbiguous`, never a member picked here) was already this VTA's
+    behaviour and is now tested at 0.2.
+  - Dispatch, conformance witnesses, and `vta_sdk::retry_safety`
+    (open/file-key ReadOnly, act RetrySafe) for the three new URIs.
+
+
+
+### Fixed
+
+- **rooms**: Say a removed member's file key is a removal, and keep NoMatchingProtocol typed ([#2135](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2135))
+
+Three rough edges from the end-to-end data-rooms run.
+
+  FileKeyError gains Removed and becomes #[non_exhaustive] (breaking for
+  vta-service). file_key now reads the room-removed row exactly as
+  open_record_detailed does, so a file sealed at or after the member's
+  removal is Removed rather than NotDelivered. On the wire it stays
+  rooms/keys/file-key:unknownEpoch with reason notDelivered: the spec's
+  detailsSchema for that code is closed (reason in {notDelivered,
+  beyondChain}, additionalProperties false), so there is no `removed` to
+  send until the specification declares one. The message says it was a
+  removal, and `pnm rooms file get` now prints the same remedies a record
+  refusal prints (catch up / backfill / removed), sharing one hint function.
+
+  AppError gains NoMatchingProtocol(Box<vti_common::error::NoMatchingProtocol>)
+  (peer, ours, theirs, note; boxed for clippy::result_large_err), breaking
+  for vti-common. Outbound::pick_transport returned AppError::Validation,
+  which the Trust Task spine renders as malformedRequest: the producer was
+  told its document was wrong and lost both transport sets. It is now
+  taskFailed (SPEC 8.3 defines no transport code, and the peer is not
+  unavailable), not retryable, with details.reason no_matching_protocol
+  plus counterpartyDid/ours/theirs; REST renders 502 with the same members.
+  The SDK maps both back to VtaError::NoMatchingProtocol and the CLI prints
+  which side can add which service.
+
+
+
 ## [0.42.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.41.0...vta-cli-common-v0.42.0) — 2026-10-15
 
 

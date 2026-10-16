@@ -2,6 +2,60 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.16.0...vti-rooms-v0.17.0) — 2026-10-16
+
+
+### Added
+
+- **rooms**: Rooms/owner/group/add 0.2 — a repeated admission is answered with its Welcome ([#2146](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2146))
+
+* feat(rooms)!: rooms/owner/group/add 0.2 — a repeated admission is answered with its Welcome
+
+  Serve `rooms/owner/group/add/0.2` (trust-tasks-tf #795) beside 0.1, and
+  raise the trust-tasks-rs floor to 0.31.11, which carries it.
+
+  Under 0.1 a caller that lost an admission's answer and sent the identical
+  request again was refused `alreadyMember`: the member had a leaf and no
+  Welcome anyone could give them. 0.2 item 8:
+
+  - The owner's VTA keeps the last admission it applied for a room —
+    member, the KeyPackage's KeyPackageRef (RFC 9420 §5.2), epoch and
+    Welcome — in `room_groups` (`room-admitted/<room>/<persona>`, beside the
+    pending advance that already holds the same Welcome, under the same
+    storage encryption and backup membership). It is discarded when the
+    owner builds its next advance of the room, after 24 hours (checked on
+    read, and swept by the storage thread), and with the member's group.
+  - A request naming the same room, a string-equal member and a KeyPackage
+    with the same KeyPackageRef is answered — after item 1 and the
+    authorization checks — with that epoch and Welcome: the host is not
+    contacted, the group not changed, no new Welcome built. Anything else
+    for a member with a leaf stays `alreadyMember`.
+  - Item 6 hands over to item 8: a pending admission settled by the
+    identical request becomes the retained one and answers it.
+  - 0.1 is unchanged.
+
+- **vtc**: The `rooms` topic on the admin console's live channel (vtc/admin/events 0.2) ([#2136](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2136))
+
+Serve `vtc/admin/events/subscribe/0.2` beside 0.1 (trust-tasks-tf #767, in
+  trust-tasks-rs 0.31.2+). The topic set is closed per version: 0.2 adds `rooms`
+  and nothing else, a 0.1 subscribe that names it is refused by its schema, and
+  every stream answers — its `#response` and every hint — at the version it was
+  opened with, so 0.1 consoles and `cnm actions watch` are unchanged.
+
+  `rooms` is effective for holders of `vtc.rooms.admin` (subscribe 0.2
+  §Authorization; `admin_events::read_capability`), who are answered on
+  `vtc/rooms/list`, `vtc/rooms/usage` and `vtc/storage/configs/list`. It is a
+  countless hint, sent per event 0.2 producer rule 4 when a room is registered or
+  removed, a room's lifecycle state changes, a room's usage or a storage config's
+  held bytes crosses 80/95/100 % of its limit or capacity in either direction, or
+  a storage config is created, changed or changes state. The stream fingerprints
+  exactly those facts, read as the rooms reads report them, so holdings moving
+  inside a band or a live room renewing send nothing. Lifecycle is computed from
+  the clock and never written, so a stream holding `rooms` also wakes itself at
+  the next transition (`vti_rooms::Room::next_lifecycle_change`).
+
+
+
 ## [0.16.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.15.0...vti-rooms-v0.16.0) — 2026-10-15
 
 
