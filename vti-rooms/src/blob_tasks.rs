@@ -138,7 +138,14 @@ pub async fn begin(
     let manifest = Manifest::parse(&payload["manifest"])
         .map_err(|e| declared(codes::INVALID_MANIFEST, e.to_string(), None))?;
     match files
-        .begin(room, presenter, authorized.member(), manifest)
+        .begin_presented(
+            room,
+            presenter,
+            authorized.member(),
+            authorized.presented(),
+            manifest,
+            None,
+        )
         .await
     {
         Ok(b) => {
@@ -256,7 +263,13 @@ pub async fn get(
     use blob_get::error_codes as codes;
     let req: blob_get::Payload = parse(payload)?;
     match files
-        .open_download(room, presenter, authorized.member(), req.blob_ref.as_str())
+        .open_download_presented(
+            room,
+            presenter,
+            authorized.member(),
+            Some(authorized.presented()),
+            req.blob_ref.as_str(),
+        )
         .await
     {
         Ok(d) => checked::<blob_get::Response>(json!({
@@ -328,7 +341,14 @@ pub async fn begin_v2(
         }),
     };
     match files
-        .begin_v2(room, presenter, authorized.member(), manifest, offer)
+        .begin_presented(
+            room,
+            presenter,
+            authorized.member(),
+            authorized.presented(),
+            manifest,
+            Some(offer),
+        )
         .await
     {
         Ok(b) => {
@@ -492,6 +512,7 @@ pub async fn get_v2(
             room,
             presenter,
             authorized.member(),
+            Some(authorized.presented()),
             req.blob_ref.as_str(),
             req.direct == Some(true),
         )

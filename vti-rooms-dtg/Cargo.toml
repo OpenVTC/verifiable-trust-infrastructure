@@ -21,7 +21,7 @@ publish.workspace = true
 [features]
 # Signed fixtures for downstream tests and the data_room example. Never a default:
 # a permissive fixture is exactly what should not ship.
-test-support = ["dep:ed25519-dalek", "dep:getrandom", "dep:multibase", "dep:vta-sdk", "dep:affinidi-tdk"]
+test-support = ["dep:ed25519-dalek", "dep:getrandom", "dep:multibase", "dep:vta-sdk", "dep:affinidi-tdk", "vti-rooms/test-support"]
 
 [dependencies]
 vti-rooms = { path = "../vti-rooms", version = "0.17" }

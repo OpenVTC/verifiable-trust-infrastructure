@@ -54,6 +54,7 @@ async fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) 
     let rooms_ks = store.keyspace("rooms").unwrap();
     let room_records_ks = store.keyspace("room_records").unwrap();
     let room_epoch_links_ks = store.keyspace("room_epoch_links").unwrap();
+    let room_revocations_ks = store.keyspace("room_revocations").unwrap();
     let audit_ks = store.keyspace("audit").unwrap();
     let audit_key_ks = store.keyspace("audit_key").unwrap();
     let audit_checkpoint_ks = store.keyspace("audit_checkpoint").unwrap();
@@ -132,6 +133,7 @@ async fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) 
         rooms_ks: rooms_ks.clone(),
         room_records_ks: room_records_ks.clone(),
         room_epoch_links_ks: room_epoch_links_ks.clone(),
+        room_revocations_ks: room_revocations_ks.clone(),
         room_files: std::sync::Arc::new(
             vtc_service::rooms::files::open_blob_host(
                 &store,

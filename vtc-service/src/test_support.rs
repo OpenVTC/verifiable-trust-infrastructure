@@ -438,6 +438,9 @@ impl TestVtcBuilder {
         let room_epoch_links_ks = store
             .keyspace("room_epoch_links")
             .expect("room_epoch_links ks");
+        let room_revocations_ks = store
+            .keyspace("room_revocations")
+            .expect("room_revocations ks");
         // Room files on, as a `[rooms.files]` section would make them, unless the
         // test asked for a configuration without one.
         let files_config = crate::config::RoomFilesConfig {
@@ -666,6 +669,7 @@ impl TestVtcBuilder {
             rooms_ks,
             room_records_ks,
             room_epoch_links_ks,
+            room_revocations_ks,
             room_files,
             room_storage,
             community_rooms: crate::rooms::community::CommunityRooms::new(

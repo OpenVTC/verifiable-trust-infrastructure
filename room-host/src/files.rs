@@ -19,6 +19,7 @@ use vti_rooms::Room;
 use vti_rooms::authz::{self, Action, AuthorizedAction};
 use vti_rooms::blob_tasks::{self, Refusal, TaskResult};
 use vti_rooms::blobs::BlobError;
+use vti_rooms::revocation_tasks;
 use vti_rooms::storage;
 use vti_rooms::wire::AuthorityPresentation;
 
@@ -123,13 +124,86 @@ async fn authorize(
         .presenter_and_verifier(doc)
         .await
         .map_err(|e| from_app_error(doc, &e))?;
-    let authorized = authz::authorize(&room, &presentation, action, &presenter, now(), &verifier)
-        .await
-        .map_err(|e| from_app_error(doc, &e))?;
+    let authorized = authz::authorize(
+        &room,
+        &presentation,
+        action,
+        &presenter,
+        now(),
+        &verifier,
+        &state.revocations,
+    )
+    .await
+    .map_err(|e| from_app_error(doc, &e))?;
     Ok((room, presenter, authorized))
 }
 
 /// The authenticated presenter of a transfer task, which carries no presentation.
+/// Hold a transfer step that presents nothing to the room's revocation list, returning
+/// the room's gate for the step to commit under.
+async fn held_step(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: &Value,
+) -> Result<Option<vti_rooms::revocation::gate::Shared>, Answer> {
+    revocation_tasks::hold_transfer_step(&state.files, &state.rooms, &state.revocations, payload)
+        .await
+        .map_err(|r| refused(doc, r))
+}
+
+/// `rooms/revocations/put/0.1`: hold the room's signed list if it moves the room forward.
+pub(crate) async fn revocations_put(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> Answer {
+    revocations(state, doc, payload, true).await
+}
+
+/// `rooms/revocations/get/0.1`: the list this host holds, unaltered.
+pub(crate) async fn revocations_get(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> Answer {
+    revocations(state, doc, payload, false).await
+}
+
+async fn revocations(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+    put: bool,
+) -> Answer {
+    let room_id = payload["roomId"].as_str().unwrap_or_default();
+    let room = match storage::get_room(&state.rooms, room_id).await {
+        Ok(r) => r,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
+        Ok(p) => p,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    let (result, operation) = if put {
+        (
+            revocation_tasks::put(&room, &presenter, &payload, &verifier, &state.revocations).await,
+            vti_rooms::audit::RoomOperation::PutRevocations,
+        )
+    } else {
+        (
+            revocation_tasks::get(&room, &presenter, &payload, &verifier, &state.revocations).await,
+            vti_rooms::audit::RoomOperation::GetRevocations,
+        )
+    };
+    match result {
+        Ok((body, authorized)) => {
+            super::audit_room(&room, &authorized, operation, None);
+            respond(doc, body)
+        }
+        Err(r) => refused(doc, r),
+    }
+}
+
 async fn presenter(state: &HostState, doc: &TrustTask<Value>) -> Result<String, Answer> {
     state
         .presenter(doc)
@@ -162,17 +236,33 @@ pub(crate) async fn upload_chunk(
     payload: Value,
 ) -> Answer {
     match presenter(state, doc).await {
-        Ok(p) => render(
-            doc,
-            blob_tasks::upload_chunk(&state.files, &p, &payload).await,
-        ),
+        Ok(p) => {
+            // Held to the room's revocation list: this step presents nothing, so the
+            // credentials that opened the transfer stand for it (*Enforcement* item 3).
+            let _gate = match held_step(state, doc, &payload).await {
+                Ok(g) => g,
+                Err(a) => return a,
+            };
+            render(
+                doc,
+                blob_tasks::upload_chunk(&state.files, &p, &payload).await,
+            )
+        }
         Err(a) => a,
     }
 }
 
 pub(crate) async fn commit(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     match presenter(state, doc).await {
-        Ok(p) => render(doc, blob_tasks::commit(&state.files, &p, &payload).await),
+        Ok(p) => {
+            // The step that commits an upload begun before a list was accepted is refused
+            // if the list withdraws what began it (*Enforcement* item 3).
+            let _gate = match held_step(state, doc, &payload).await {
+                Ok(g) => g,
+                Err(a) => return a,
+            };
+            render(doc, blob_tasks::commit(&state.files, &p, &payload).await)
+        }
         Err(a) => a,
     }
 }
@@ -206,10 +296,18 @@ pub(crate) async fn download_chunk(
     payload: Value,
 ) -> Answer {
     match presenter(state, doc).await {
-        Ok(p) => render(
-            doc,
-            blob_tasks::download_chunk(&state.files, &p, &payload).await,
-        ),
+        Ok(p) => {
+            // Held to the room's revocation list: this step presents nothing, so the
+            // credentials that opened the transfer stand for it (*Enforcement* item 3).
+            let _gate = match held_step(state, doc, &payload).await {
+                Ok(g) => g,
+                Err(a) => return a,
+            };
+            render(
+                doc,
+                blob_tasks::download_chunk(&state.files, &p, &payload).await,
+            )
+        }
         Err(a) => a,
     }
 }
@@ -241,10 +339,18 @@ pub(crate) async fn upload_chunk_v2(
     payload: Value,
 ) -> Answer {
     match presenter(state, doc).await {
-        Ok(p) => render(
-            doc,
-            blob_tasks::upload_chunk_v2(&state.files, &p, &payload).await,
-        ),
+        Ok(p) => {
+            // Held to the room's revocation list: this step presents nothing, so the
+            // credentials that opened the transfer stand for it (*Enforcement* item 3).
+            let _gate = match held_step(state, doc, &payload).await {
+                Ok(g) => g,
+                Err(a) => return a,
+            };
+            render(
+                doc,
+                blob_tasks::upload_chunk_v2(&state.files, &p, &payload).await,
+            )
+        }
         Err(a) => a,
     }
 }
@@ -252,7 +358,15 @@ pub(crate) async fn upload_chunk_v2(
 /// `rooms/blobs/upload/commit/0.2`, signed by the upload's key.
 pub(crate) async fn commit_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     match presenter(state, doc).await {
-        Ok(p) => render(doc, blob_tasks::commit_v2(&state.files, &p, &payload).await),
+        Ok(p) => {
+            // The step that commits an upload begun before a list was accepted is refused
+            // if the list withdraws what began it (*Enforcement* item 3).
+            let _gate = match held_step(state, doc, &payload).await {
+                Ok(g) => g,
+                Err(a) => return a,
+            };
+            render(doc, blob_tasks::commit_v2(&state.files, &p, &payload).await)
+        }
         Err(a) => a,
     }
 }
@@ -580,6 +694,110 @@ mod tests {
             &f.owner,
         )
         .await
+    }
+
+    async fn deliver(h: &Host, f: &RoomFixture, list: Value) -> (StatusCode, Value) {
+        call(
+            &h.app,
+            vti_rooms::revocation_tasks::PUT_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner(), "list": list }),
+            &f.owner,
+        )
+        .await
+    }
+
+    /// `rooms/revocations/put` items 4–5 and `get` item 2, over the wire: the room's list is
+    /// held, answered with its head, and served back exactly as the room signed it.
+    #[tokio::test]
+    async fn a_room_signed_list_is_held_and_served_back_unaltered() {
+        let h = host(eager());
+        let f = room(&h).await;
+        let list = f
+            .revocation_list(1, vec![RoomFixture::withdraw_subject("did:key:z6MkGone")])
+            .await;
+        let (status, out) = deliver(&h, &f, list.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(out["head"]["sequence"], 1);
+        assert_eq!(
+            out["head"]["digest"],
+            vti_rooms::revocation::digest_multibase(&list)
+        );
+
+        let (status, got) = call(
+            &h.app,
+            vti_rooms::revocation_tasks::GET_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        assert_eq!(got["list"], list, "unaltered, proof included");
+        assert_eq!(got["inForceAt"], out["inForceAt"]);
+    }
+
+    /// Item 2: a list signed by anyone but the room is `listInvalid`.
+    #[tokio::test]
+    async fn a_list_not_signed_by_the_room_is_refused_list_invalid() {
+        let h = host(eager());
+        let f = room(&h).await;
+        let mut forged = f.revocation_list(1, vec![]).await;
+        forged.as_object_mut().unwrap().remove("proof");
+        let forged = vti_rooms_dtg::test_support::sign_as(&f.owner, forged).await;
+        let (status, out) = deliver(&h, &f, forged).await;
+        assert_ne!(status, StatusCode::OK);
+        assert_eq!(out["code"], "rooms/revocations/put:listInvalid", "{out}");
+    }
+
+    /// *Enforcement* items 1–3: once the owner is withdrawn, every task they present for is
+    /// refused with the standard `permissionDenied`, and an upload they began before the
+    /// list — whose chunks and commit present nothing — can neither continue nor commit.
+    #[tokio::test]
+    async fn a_withdrawal_reaches_an_upload_already_begun_and_every_presenting_task() {
+        let h = host(eager());
+        let f = room(&h).await;
+        let b = blob(CHUNK + 10, 3);
+        let (status, begun) = begin(&h, &f, &b).await;
+        assert_eq!(status, StatusCode::OK, "{begun}");
+        let id = begun["uploadId"].as_str().unwrap().to_string();
+        let (status, out) = call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, &b, 0), &f.owner).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+
+        let list = f
+            .revocation_list(1, vec![RoomFixture::withdraw_subject(&f.owner.did)])
+            .await;
+        let (status, out) = deliver(&h, &f, list).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+
+        let (status, out) = call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, &b, 1), &f.owner).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{out}");
+        assert_eq!(out["code"], "permissionDenied");
+        let (status, out) = call(
+            &h.app,
+            UPLOAD_COMMIT_TYPE,
+            json!({ "uploadId": id }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{out}");
+        let (status, out) = call(
+            &h.app,
+            INFO_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{out}");
+        let (status, _) = put_record(&h, &f, "after", &[]).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // The withdrawn administrator cannot deliver or read the list either.
+        let (status, _) = call(
+            &h.app,
+            vti_rooms::revocation_tasks::GET_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
     async fn info(h: &Host, f: &RoomFixture) -> Value {

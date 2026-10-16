@@ -53,6 +53,14 @@ pub use vti_rooms::ROOM_RECORDS_KEYSPACE as ROOM_RECORDS;
 /// Restoring the records without it hands the members a room they can see the shape of and
 /// cannot read.
 pub use vti_rooms::ROOM_EPOCH_LINKS_KEYSPACE as ROOM_EPOCH_LINKS;
+
+/// Each hosted room's revocation list at `room_revocations:<roomId>`: the latest list the
+/// room signed and an administrator delivered (`rooms/revocations/put`), with when this
+/// host began enforcing it.
+///
+/// **Backed up.** It is the room's state, not this host's: a restore without it would
+/// honour again every credential the room withdrew, until somebody re-delivered the list.
+pub use vti_rooms::ROOM_REVOCATIONS_KEYSPACE as ROOM_REVOCATIONS;
 /// The VTC's OpenID4VP verifier identities (`crate::oid4vp`): one record per
 /// identity, each holding the private P-256 key its request objects are
 /// signed with. Encrypted at rest under the storage key, like `install` and
@@ -255,6 +263,7 @@ pub const ALL: &[&str] = &[
     ROOMS,
     ROOM_RECORDS,
     ROOM_EPOCH_LINKS,
+    ROOM_REVOCATIONS,
     ROOM_BLOBS,
     ROOM_BLOB_TRANSFERS,
     STORAGE_CONFIGS,
@@ -311,6 +320,9 @@ pub const BACKED_UP: &[&str] = &[
     ROOMS,
     ROOM_RECORDS,
     ROOM_EPOCH_LINKS,
+    // A room's withdrawals: restored without them, every credential the room took
+    // back would be honoured again.
+    ROOM_REVOCATIONS,
     ROOM_BLOBS,
     // Which backend each room's files are on. The blob index names configs, so a
     // restore without them would hold blobs it could not find.
@@ -459,14 +471,14 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        // 43 top-level `*_ks` fields (the member portal's two among them) plus
+        // 44 top-level `*_ks` fields (the member portal's two among them) plus
         // the three `AppState::git_ns` carries, plus the 2 hidden-vetting
         // keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`) from the
         // `zkp-pcs` development branch, plus the two room-file keyspaces
         // `AppState::room_files` holds (`ROOM_BLOBS`, `ROOM_BLOB_TRANSFERS`), plus the
         // one `AppState::room_storage` holds (`STORAGE_CONFIGS`), plus the one
         // `AppState::community_rooms` holds (`COMMUNITY_ROOMS`).
-        assert_eq!(ALL.len(), 52, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 53, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

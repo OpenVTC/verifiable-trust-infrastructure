@@ -1002,6 +1002,14 @@ fn every_dispatched_uri_is_the_published_one() {
             ROOMS_BLOBS_GET_V2_TYPE,
             <rooms::blobs::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
+        (
+            ROOMS_REVOCATIONS_PUT_TYPE,
+            <rooms::revocations::put::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_REVOCATIONS_GET_TYPE,
+            <rooms::revocations::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
     ];
 
     for (ours, registry) in &published {

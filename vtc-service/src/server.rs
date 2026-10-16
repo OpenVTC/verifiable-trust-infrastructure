@@ -194,6 +194,9 @@ pub struct AppState {
     pub room_records_ks: KeyspaceHandle,
     /// The rooms' epoch key chains. Wrapped key material this service cannot read.
     pub room_epoch_links_ks: KeyspaceHandle,
+    /// Each hosted room's revocation list (`rooms/revocations/put`), consulted by every
+    /// room authorization.
+    pub room_revocations_ks: KeyspaceHandle,
     /// Room files: the blob index, transfers in flight, limits and the blob store
     /// (`[rooms.files]`). Ciphertext only: this service never holds a file key.
     pub room_files: Arc<vti_rooms::blobs::BlobHost>,
@@ -547,6 +550,7 @@ pub async fn run(
     let rooms_ks = store.keyspace(keyspaces::ROOMS)?;
     let room_records_ks = store.keyspace(keyspaces::ROOM_RECORDS)?;
     let room_epoch_links_ks = store.keyspace(keyspaces::ROOM_EPOCH_LINKS)?;
+    let room_revocations_ks = store.keyspace(keyspaces::ROOM_REVOCATIONS)?;
     let room_storage = crate::rooms::files::open_room_storage(
         &store,
         &config.store.data_dir,
@@ -1010,6 +1014,7 @@ pub async fn run(
         rooms_ks,
         room_records_ks,
         room_epoch_links_ks,
+        room_revocations_ks,
         room_files,
         room_storage,
         community_rooms,

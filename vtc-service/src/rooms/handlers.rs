@@ -61,13 +61,23 @@ static ROOMS: std::sync::LazyLock<AsyncDispatcher<RoomCtx, TrustTaskOutcome>> =
 /// of its own and a matching entry in two URI arrays.
 #[must_use]
 pub(crate) fn serves(type_uri: &str) -> bool {
-    ROOMS.registered_uris().contains(&type_uri)
+    ROOMS.registered_uris().contains(&type_uri) || REVOCATION_URIS.contains(&type_uri)
 }
+
+/// `rooms/revocations/{put,get}/0.1`: served beside the dispatcher, over the payload as
+/// received ([`super::files::handle_revocations`]), because a list must reach its
+/// verifier exactly as the room signed it.
+const REVOCATION_URIS: &[&str] = &[
+    vti_rooms::revocation_tasks::PUT_TYPE,
+    vti_rooms::revocation_tasks::GET_TYPE,
+];
 
 /// Every URI this family serves — the served list, not a copy of one.
 #[must_use]
 pub(crate) fn served_uris() -> Vec<&'static str> {
-    ROOMS.registered_uris()
+    let mut uris = ROOMS.registered_uris();
+    uris.extend_from_slice(REVOCATION_URIS);
+    uris
 }
 
 /// Dispatch a room task to its handler.
@@ -85,6 +95,11 @@ pub(crate) async fn dispatch(
         state: state.clone(),
         presenter: presenter.to_string(),
     };
+    let type_uri = doc.type_uri.to_string();
+    if REVOCATION_URIS.contains(&type_uri.as_str()) {
+        let put = type_uri == vti_rooms::revocation_tasks::PUT_TYPE;
+        return super::files::handle_revocations(doc, ctx, put).await;
+    }
     match ROOMS
         .dispatch_or_reject(doc, ctx, format!("urn:uuid:{}", uuid::Uuid::new_v4()))
         .await
@@ -440,6 +455,7 @@ pub(super) async fn put_record<P>(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
@@ -570,6 +586,7 @@ pub(super) async fn get_record<P>(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
@@ -647,6 +664,7 @@ pub(super) async fn list_records<P>(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
@@ -785,6 +803,7 @@ pub(crate) async fn handle_mint_epoch(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
@@ -890,6 +909,7 @@ pub(crate) async fn handle_epoch_prune(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
@@ -963,6 +983,7 @@ pub(crate) async fn handle_epoch_commits(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
@@ -1035,6 +1056,7 @@ pub(crate) async fn handle_epoch_chain(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
@@ -1111,6 +1133,7 @@ pub(crate) async fn handle_transfer_owner(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
@@ -1181,9 +1204,11 @@ pub(crate) async fn handle_claim_owner(
     // 1. The nomination, against the party who actually signed this request — never against
     //    a DID named in the payload, which the claimant chooses.
     let keys = DataIntegrityKeys(state.trust_task_vm_resolver());
-    if let Err(e) = nomination::verify(&req.nomination, &room.room_id, &presenter, &keys).await {
-        return app_error_to_reject(&doc, &e);
-    }
+    let nominated =
+        match nomination::verify(&req.nomination, &room.room_id, &presenter, &keys).await {
+            Ok(n) => n,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
 
     // 2. Dormant, not merely lapsed. An epoch expiring is frequently somebody on holiday.
     let lifecycle = room.lifecycle(now());
@@ -1208,12 +1233,18 @@ pub(crate) async fn handle_claim_owner(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    // A nomination is a credential the room issued, and a revocation list governs
+    // succession like every other task (`rooms/revocations/put`, *Enforcement* item 2).
+    if let Err(e) = authorized.also_unrevoked(nominated.facts()) {
+        return app_error_to_reject(&doc, &e);
+    }
     if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
         return o;
     }
@@ -1267,6 +1298,7 @@ pub(crate) async fn handle_curate_record(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
@@ -1797,6 +1829,59 @@ mod tests {
         assert!(create(state, &f).await.status.is_success());
     }
 
+    /// `rooms/revocations/put` over this host's production path: the room-signed list is
+    /// accepted with its head, the member it withdraws is refused from then on — including
+    /// under `rooms/records/put` 0.1, a version published before revocation existed
+    /// (*Enforcement* item 2) — and `get` serves the list back as the room signed it.
+    #[tokio::test]
+    async fn a_delivered_list_is_enforced_on_every_version_and_served_back() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+
+        let list = f
+            .revocation_list(1, vec![RoomFixture::withdraw_subject(&f.successor.did)])
+            .await;
+        let call =
+            |uri: &'static str, payload: Value, signer: &vti_rooms_dtg::test_support::Party| {
+                let did = signer.did.clone();
+                let key = signer.secret_multibase.clone();
+                async move {
+                    let d = doc(state, uri, payload, &did, &key).await;
+                    let presenter = spine_presenter(state, &d).await;
+                    super::dispatch(state, d, &presenter).await
+                }
+            };
+        let out = call(
+            vti_rooms::revocation_tasks::PUT_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner(), "list": list }),
+            &f.owner,
+        )
+        .await;
+        assert!(out.status.is_success(), "put: {}", payload_of(&out));
+        assert_eq!(payload_of(&out)["head"]["sequence"], 1);
+        assert!(super::serves(vti_rooms::revocation_tasks::PUT_TYPE));
+
+        let out = call(
+            vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "k1", "presentation": f.as_successor() }),
+            &f.successor,
+        )
+        .await;
+        assert_eq!(out.status.as_u16(), 403, "{}", payload_of(&out));
+        assert_eq!(payload_of(&out)["code"], "permissionDenied");
+
+        let out = call(
+            vti_rooms::revocation_tasks::GET_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert!(out.status.is_success(), "get: {}", payload_of(&out));
+        assert_eq!(payload_of(&out)["list"], list, "served back unaltered");
+    }
+
     #[tokio::test]
     async fn a_room_is_created_and_a_record_round_trips() {
         let tv = build_test_vtc().await;
@@ -2123,6 +2208,7 @@ mod tests {
             &f.owner.did,
             now(),
             &AlwaysVouches,
+            &state.room_revocations_ks,
         )
         .await
         .expect("authorized");
@@ -2168,6 +2254,7 @@ mod tests {
                 subject: presenter.to_string(),
                 actions: vec!["read".into()],
                 member: Some(presenter.to_string()),
+                presented: Default::default(),
             })
         }
     }

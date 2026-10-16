@@ -250,11 +250,88 @@ async fn authorize<P>(
         .await
         .map_err(|e| app_error_to_reject(doc, &e))?;
     let (presenter, verifier) = presenter_and_verifier(&ctx.state, &ctx.presenter);
-    let authorized = authz::authorize(&room, &presentation, action, &presenter, now(), &verifier)
-        .await
-        .map_err(|e| app_error_to_reject(doc, &e))?;
+    let authorized = authz::authorize(
+        &room,
+        &presentation,
+        action,
+        &presenter,
+        now(),
+        &verifier,
+        &ctx.state.room_revocations_ks,
+    )
+    .await
+    .map_err(|e| app_error_to_reject(doc, &e))?;
     charged(&room.room_id, &presenter, RoomTraffic::Operation)?;
     Ok((room, authorized))
+}
+
+/// Hold a transfer step that presents nothing to the room's revocation list, returning the
+/// room's gate for the step to commit under.
+async fn held_step<P>(
+    doc: &TrustTask<P>,
+    ctx: &RoomCtx,
+    payload: &Value,
+) -> Result<Option<vti_rooms::revocation::gate::Shared>, TrustTaskOutcome> {
+    vti_rooms::revocation_tasks::hold_transfer_step(
+        &ctx.state.room_files,
+        &ctx.state.rooms_ks,
+        &ctx.state.room_revocations_ks,
+        payload,
+    )
+    .await
+    .map_err(|r| refused(doc, r))
+}
+
+/// `rooms/revocations/put/0.1` (`put`) or `rooms/revocations/get/0.1`, over the payload
+/// **as received**.
+///
+/// Not through the typed dispatcher: the generated `RevocationList` types its timestamps,
+/// and a list read into it and written back is not byte-for-byte the list the room signed
+/// — its signature and its head digest are over the room's own serialization.
+pub(crate) async fn handle_revocations(
+    doc: TrustTask<Value>,
+    ctx: RoomCtx,
+    put: bool,
+) -> TrustTaskOutcome {
+    let payload = doc.payload.clone();
+    let room_id = payload["roomId"].as_str().unwrap_or_default();
+    let room = match storage::get_room(&ctx.state.rooms_ks, room_id).await {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let (presenter, verifier) = presenter_and_verifier(&ctx.state, &ctx.presenter);
+    let (result, operation) = if put {
+        (
+            vti_rooms::revocation_tasks::put(
+                &room,
+                &presenter,
+                &payload,
+                &verifier,
+                &ctx.state.room_revocations_ks,
+            )
+            .await,
+            vti_rooms::audit::RoomOperation::PutRevocations,
+        )
+    } else {
+        (
+            vti_rooms::revocation_tasks::get(
+                &room,
+                &presenter,
+                &payload,
+                &verifier,
+                &ctx.state.room_revocations_ks,
+            )
+            .await,
+            vti_rooms::audit::RoomOperation::GetRevocations,
+        )
+    };
+    match result {
+        Ok((body, authorized)) => {
+            super::handlers::audit_room(&ctx.state, &room, &authorized, operation, None).await;
+            success_response(&doc, body)
+        }
+        Err(r) => refused(&doc, r),
+    }
 }
 
 /// Charge a task authorized by owning a transfer (`uploadId` / `downloadId`) to the room
@@ -400,6 +477,12 @@ pub(crate) async fn handle_upload_chunk(
     if let Err(o) = charge_transfer(&ctx, &p, "uploadId", RoomTraffic::Transfer).await {
         return o;
     }
+    // This step presents nothing: the credentials that opened the transfer stand for it,
+    // held to the room's revocation list (`rooms/revocations/put`, *Enforcement* item 3).
+    let _gate = match held_step(&doc, &ctx, &p).await {
+        Ok(g) => g,
+        Err(o) => return o,
+    };
     render(
         &doc,
         blob_tasks::upload_chunk(&ctx.state.room_files, &ctx.presenter, &p).await,
@@ -418,6 +501,12 @@ pub(crate) async fn handle_upload_commit(
     if let Err(o) = charge_transfer(&ctx, &p, "uploadId", RoomTraffic::Operation).await {
         return o;
     }
+    // This step presents nothing: the credentials that opened the transfer stand for it,
+    // held to the room's revocation list (`rooms/revocations/put`, *Enforcement* item 3).
+    let _gate = match held_step(&doc, &ctx, &p).await {
+        Ok(g) => g,
+        Err(o) => return o,
+    };
     render(
         &doc,
         blob_tasks::commit(&ctx.state.room_files, &ctx.presenter, &p).await,
@@ -480,6 +569,12 @@ pub(crate) async fn handle_download_chunk(
     if let Err(o) = charge_transfer(&ctx, &p, "downloadId", RoomTraffic::Transfer).await {
         return o;
     }
+    // This step presents nothing: the credentials that opened the transfer stand for it,
+    // held to the room's revocation list (`rooms/revocations/put`, *Enforcement* item 3).
+    let _gate = match held_step(&doc, &ctx, &p).await {
+        Ok(g) => g,
+        Err(o) => return o,
+    };
     render(
         &doc,
         blob_tasks::download_chunk(&ctx.state.room_files, &ctx.presenter, &p).await,
@@ -524,6 +619,12 @@ pub(crate) async fn handle_upload_chunk_v2(
     if let Err(o) = charge_upload_v2(&ctx, &p, RoomTraffic::Transfer).await {
         return o;
     }
+    // This step presents nothing: the credentials that opened the transfer stand for it,
+    // held to the room's revocation list (`rooms/revocations/put`, *Enforcement* item 3).
+    let _gate = match held_step(&doc, &ctx, &p).await {
+        Ok(g) => g,
+        Err(o) => return o,
+    };
     render(
         &doc,
         blob_tasks::upload_chunk_v2(&ctx.state.room_files, &ctx.presenter, &p).await,
@@ -542,6 +643,12 @@ pub(crate) async fn handle_upload_commit_v2(
     if let Err(o) = charge_upload_v2(&ctx, &p, RoomTraffic::Operation).await {
         return o;
     }
+    // This step presents nothing: the credentials that opened the transfer stand for it,
+    // held to the room's revocation list (`rooms/revocations/put`, *Enforcement* item 3).
+    let _gate = match held_step(&doc, &ctx, &p).await {
+        Ok(g) => g,
+        Err(o) => return o,
+    };
     render(
         &doc,
         blob_tasks::commit_v2(&ctx.state.room_files, &ctx.presenter, &p).await,

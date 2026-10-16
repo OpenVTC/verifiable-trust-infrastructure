@@ -3701,7 +3701,7 @@ export interface components {
          * @enum {string}
          */
         VtcRoomsCommunityCreateV0_1RetentionPolicy: "chained" | "fromJoin";
-        /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and not sent to the room's host path. MUST NOT carry personal data. */
+        /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data. */
         VtcRoomsCommunityCreateV0_1RoomLabel: string;
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
         VtcRoomsCommunityCreateV0_1StorageConfigId: string;
@@ -3756,7 +3756,7 @@ export interface components {
          * @enum {string}
          */
         VtcRoomsCommunityGetV0_1RetentionPolicy: "chained" | "fromJoin";
-        /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and not sent to the room's host path. MUST NOT carry personal data. */
+        /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data. */
         VtcRoomsCommunityGetV0_1RoomLabel: string;
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
         VtcRoomsCommunityGetV0_1StorageConfigId: string;
@@ -3813,7 +3813,7 @@ export interface components {
          * @enum {string}
          */
         VtcRoomsCommunityListV0_1RetentionPolicy: "chained" | "fromJoin";
-        /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and not sent to the room's host path. MUST NOT carry personal data. */
+        /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data. */
         VtcRoomsCommunityListV0_1RoomLabel: string;
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
         VtcRoomsCommunityListV0_1StorageConfigId: string;
