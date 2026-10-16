@@ -90,7 +90,7 @@ impl<'a> PersonaStores<'a> {
 /// The verification relationship a persona's key is wanted for.
 ///
 /// A credential the persona issues, or a record body it authors, is an attestation
-/// (`assertionMethod`); a room request it sends as itself — `rooms/keys/act/0.1`, and the
+/// (`assertionMethod`); a room request it sends as itself — `rooms/keys/act`, and the
 /// documents `read` / `browse` / `backfill` send — proves control of the identifier
 /// (`authentication`). A verifier checks the key against the relationship the proof
 /// declares (VTI-KEY-022), so the method a proof names must be listed under that one.

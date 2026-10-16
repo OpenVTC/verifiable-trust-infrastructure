@@ -1105,11 +1105,51 @@ pub(super) async fn handle_browse(
     )
 }
 
+/// Which version of a `rooms/keys/{open,file-key}` request is being answered. The
+/// request and response are the same at both; what differs is what `unknownEpoch` may
+/// say (`rooms/keys/{open,file-key}/0.2` *What changed from 0.1*).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EpochVersion {
+    V0_1,
+    V0_2,
+}
+
 /// `rooms/keys/open/0.1`.
 pub(super) async fn handle_open(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    open_at(state, auth, doc, EpochVersion::V0_1).await
+}
+
+/// `rooms/keys/open/0.2`: 0.1, with `unknownEpoch`'s `details` declared — including
+/// `beyondChain` for an older epoch the retained chain does not reach, which 0.1 answered
+/// as a bare failure.
+pub(super) async fn handle_open_v0_2(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    open_at(state, auth, doc, EpochVersion::V0_2).await
+}
+
+/// The request members `open` reads — the same at 0.1 and 0.2, each parsed through its
+/// own version's generated type.
+struct OpenRequest {
+    room_id: String,
+    key: String,
+    version: u64,
+    ciphertext: String,
+    nonce: String,
+    epoch: u64,
+}
+
+async fn open_at(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    at: EpochVersion,
 ) -> TrustTaskOutcome {
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -1123,7 +1163,31 @@ pub(super) async fn handle_open(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::keys::open::v0_1::Payload = match parse_payload(&doc) {
+    let parsed = match at {
+        EpochVersion::V0_1 => parse_payload::<
+            trust_tasks_rs::specs::rooms::keys::open::v0_1::Payload,
+        >(&doc)
+        .map(|r| OpenRequest {
+            room_id: r.room_id.to_string(),
+            key: r.key.to_string(),
+            version: u64::from(r.version),
+            ciphertext: r.sealed.ciphertext.to_string(),
+            nonce: r.sealed.nonce.to_string(),
+            epoch: u64::from(r.sealed.epoch),
+        }),
+        EpochVersion::V0_2 => parse_payload::<
+            trust_tasks_rs::specs::rooms::keys::open::v0_2::Payload,
+        >(&doc)
+        .map(|r| OpenRequest {
+            room_id: r.room_id.to_string(),
+            key: r.key.to_string(),
+            version: u64::from(r.version),
+            ciphertext: r.sealed.ciphertext.to_string(),
+            nonce: r.sealed.nonce.to_string(),
+            epoch: u64::from(r.sealed.epoch),
+        }),
+    };
+    let req = match parsed {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -1136,15 +1200,15 @@ pub(super) async fn handle_open(
         &state.room_groups_ks,
         &member,
         &req.key,
-        u64::from(req.version),
-        &req.sealed.ciphertext,
-        &req.sealed.nonce,
-        u32::try_from(u64::from(req.sealed.epoch)).unwrap_or(u32::MAX),
+        req.version,
+        &req.ciphertext,
+        &req.nonce,
+        u32::try_from(req.epoch).unwrap_or(u32::MAX),
     )
     .await
     {
         Ok(p) => p,
-        Err(e) => return open_refused(&doc, e),
+        Err(e) => return open_refused(&doc, e, at),
     };
 
     record(state, "rooms.keys.open", auth, &req.room_id).await;
@@ -1160,6 +1224,25 @@ pub(super) async fn handle_open(
 }
 
 /// `rooms/keys/file-key/0.1`.
+pub(super) async fn handle_file_key(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    file_key_at(state, auth, doc, EpochVersion::V0_1).await
+}
+
+/// `rooms/keys/file-key/0.2`: 0.1, with `unknownEpoch` reason `removed` for a file sealed
+/// at or after the member's removal.
+pub(super) async fn handle_file_key_v0_2(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    file_key_at(state, auth, doc, EpochVersion::V0_2).await
+}
+
+/// `rooms/keys/file-key`, at either version.
 ///
 /// The one `rooms/keys/*` task that releases a key. `open` keeps the key and returns
 /// plaintext; a file can be a gigabyte, and its bytes must not pass through this VTA, so
@@ -1169,12 +1252,17 @@ pub(super) async fn handle_open(
 ///
 /// Gated on `RoomOpen` for both purposes, as `seal` and `open` are: a sealing key opens the
 /// file it seals.
-pub(super) async fn handle_file_key(
+///
+/// The request is parsed through 0.2's generated type at both versions: 0.2's request
+/// schema is 0.1's unchanged, and the error codes' strings are the slug's, not the
+/// version's.
+async fn file_key_at(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
+    at: EpochVersion,
 ) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::rooms::keys::file_key::v0_1 as spec;
+    use trust_tasks_rs::specs::rooms::keys::file_key::v0_2 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -1276,15 +1364,21 @@ pub(super) async fn handle_file_key(
                     Some(serde_json::json!({ "reason": "notDelivered", "heldEpoch": held })),
                 );
             }
-            // `rooms/keys/file-key/0.1` oracle item 4 gives `unknownEpoch` exactly two
-            // reasons, and its `detailsSchema` is closed (`additionalProperties: false`,
-            // `reason` ∈ {notDelivered, beyondChain}) — so unlike `rooms/keys/open`, whose
-            // `unknownEpoch` declares no schema, there is no `removed` to send. An epoch
-            // later than any the oracle holds is `notDelivered` by the item's own
-            // definition; the message says what the reason cannot, and `heldEpoch` is left
-            // out because no epoch this VTA could reach would open the file. A `removed`
-            // reason here waits on the specification.
+            // 0.2 oracle item 4: `removed`, with `removedAtEpoch`, takes precedence over
+            // `notDelivered` — an oracle that knows of the removal MUST NOT tell the
+            // caller to catch up. 0.1's closed `detailsSchema` has only `notDelivered`
+            // and `beyondChain`, and an epoch later than any the oracle holds is
+            // `notDelivered` by that item's own definition; there the message says what
+            // the reason cannot, and `heldEpoch` is left out because no epoch this VTA
+            // could reach would open the file.
             Err(room_groups::FileKeyError::Removed { epoch, removed_at }) => {
+                let details = match at {
+                    EpochVersion::V0_2 => serde_json::json!({
+                        "reason": "removed",
+                        "removedAtEpoch": removed_at,
+                    }),
+                    EpochVersion::V0_1 => serde_json::json!({ "reason": "notDelivered" }),
+                };
                 return super::helpers::reject_with_code(
                     &doc,
                     declared(spec::error_codes::UNKNOWN_EPOCH),
@@ -1294,7 +1388,7 @@ pub(super) async fn handle_file_key(
                          key derivable here",
                         req.room_id
                     ),
-                    Some(serde_json::json!({ "reason": "notDelivered" })),
+                    Some(details),
                 );
             }
             Err(room_groups::FileKeyError::BeyondChain { epoch, earliest }) => {
@@ -1344,12 +1438,19 @@ pub(super) async fn handle_file_key(
 
 /// `rooms/keys/open`'s refusal for a record that did not open.
 ///
-/// The two epoch cases are the declared `unknownEpoch` with `details.reason` saying which,
-/// as `rooms/keys/file-key` answers them: `notDelivered` (catch up with the commits) and
-/// `removed` (nothing will — this member was removed). A client tells them apart by
-/// reason, never by message.
-fn open_refused(doc: &TrustTask<Value>, e: room_groups::OpenError) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::rooms::keys::open::v0_1::error_codes::UNKNOWN_EPOCH;
+/// The epoch cases are the declared `unknownEpoch` with `details.reason` saying which, as
+/// `rooms/keys/open/0.2` declares them: `notDelivered` (catch up with the commits),
+/// `removed` (nothing will — this member was removed) and `beyondChain` (the retained
+/// chain does not reach back). A client tells them apart by reason, never by message.
+///
+/// At 0.1, which declares no `details` for `unknownEpoch`, the first two are sent as they
+/// always were, and an unreachable older epoch stays the bare validation failure it was.
+fn open_refused(
+    doc: &TrustTask<Value>,
+    e: room_groups::OpenError,
+    at: EpochVersion,
+) -> TrustTaskOutcome {
+    use trust_tasks_rs::specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH;
     let message = e.to_string();
     match e {
         room_groups::OpenError::NotDelivered { held, .. } => super::helpers::reject_with_code(
@@ -1364,6 +1465,17 @@ fn open_refused(doc: &TrustTask<Value>, e: room_groups::OpenError) -> TrustTaskO
             message,
             Some(serde_json::json!({ "reason": "removed", "removedAtEpoch": removed_at })),
         ),
+        room_groups::OpenError::BeyondChain { earliest, .. } if at == EpochVersion::V0_2 => {
+            super::helpers::reject_with_code(
+                doc,
+                declared(UNKNOWN_EPOCH),
+                message,
+                Some(serde_json::json!({ "reason": "beyondChain", "earliestEpoch": earliest })),
+            )
+        }
+        room_groups::OpenError::BeyondChain { .. } => {
+            app_error_to_reject(doc, vti_common::error::AppError::Validation(message))
+        }
         room_groups::OpenError::App(e) => app_error_to_reject(doc, e),
     }
 }
@@ -1547,8 +1659,9 @@ mod verification_tests {
     }
 }
 
-/// `rooms/keys/file-key` refusals, as a caller receives them: the declared code, and
-/// `details` that validate against the `detailsSchema` the specification declares.
+/// `rooms/keys/file-key` and `rooms/keys/open` refusals, as a caller receives them: the
+/// declared code, and `details` that validate against the `detailsSchema` the
+/// specification declares — 0.1's for 0.1, 0.2's for 0.2.
 #[cfg(test)]
 mod file_key_refusal_tests {
     use super::*;
@@ -1560,9 +1673,11 @@ mod file_key_refusal_tests {
     const FILE_ID: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 
     fn request(payload: Value) -> TrustTask<Value> {
-        let uri: TypeUri = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1
-            .parse()
-            .unwrap();
+        request_at(vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1, payload)
+    }
+
+    fn request_at(uri: &str, payload: Value) -> TrustTask<Value> {
+        let uri: TypeUri = uri.parse().unwrap();
         TrustTask::new("urn:uuid:file-key-test", uri, payload)
     }
 
@@ -1571,8 +1686,8 @@ mod file_key_refusal_tests {
     }
 
     /// A room this VTA holds at epoch 2 for a persona the super-admin acts as, with no rung
-    /// back to 1.
-    async fn hold_room_at_epoch_2(state: &AppState) {
+    /// back to 1. Returns the member.
+    async fn hold_room_at_epoch_2(state: &AppState) -> room_groups::Member {
         let alice = crate::test_support::seed_holder_key(state, "m/44'/0'/9'/0'/1'", None).await;
         let mut room = SealedRoom::new(ROOM, RoomGroup::create(&alice).unwrap());
         let (_bob, kp) = IdentitySnapshot::mint("did:key:zBob").unwrap();
@@ -1585,11 +1700,155 @@ mod file_key_refusal_tests {
         )
         .await
         .unwrap();
+        room_groups::Member::new(ROOM, &alice).unwrap()
     }
 
     async fn ask(state: &AppState, payload: Value) -> Value {
         let auth = crate::test_support::super_admin_claims();
         body(handle_file_key(state, &auth, request(payload)).await)
+    }
+
+    async fn ask_v0_2(state: &AppState, payload: Value) -> Value {
+        let auth = crate::test_support::super_admin_claims();
+        body(
+            handle_file_key_v0_2(
+                state,
+                &auth,
+                request_at(vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_2, payload),
+            )
+            .await,
+        )
+    }
+
+    async fn open_at_version(state: &AppState, uri: &str, epoch: u32) -> Value {
+        let auth = crate::test_support::super_admin_claims();
+        let payload = serde_json::json!({
+            "roomId": ROOM,
+            "key": "k",
+            "version": 1,
+            "sealed": { "ciphertext": "AAAAAAAAAAAAAAAAAAAAAA", "nonce": "AAAAAAAAAAAAAAAA", "epoch": epoch },
+        });
+        let doc = request_at(uri, payload);
+        let out = if uri == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2 {
+            handle_open_v0_2(state, &auth, doc).await
+        } else {
+            handle_open(state, &auth, doc).await
+        };
+        body(out)
+    }
+
+    /// `rooms/keys/file-key/0.2` oracle item 4: a file sealed at or after the member's
+    /// removal is `removed`, with `removedAtEpoch` — never `notDelivered`, whose remedy
+    /// (catch up) cannot work. 0.1, whose closed schema has no `removed`, still answers
+    /// `notDelivered` with the removal in its message.
+    #[tokio::test]
+    async fn file_key_0_2_says_removed_where_0_1_could_only_say_not_delivered() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let member = hold_room_at_epoch_2(&state).await;
+        room_groups::record_removal_for_test(&state.room_groups_ks, &member, 3)
+            .await
+            .unwrap();
+        let open =
+            serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "open", "epoch": 3 });
+
+        let doc = ask_v0_2(&state, open.clone()).await;
+        assert_eq!(
+            doc["payload"]["code"], "rooms/keys/file-key:unknownEpoch",
+            "{doc}"
+        );
+        let details = &doc["payload"]["details"];
+        assert_eq!(details["reason"], "removed", "{doc}");
+        assert_eq!(details["removedAtEpoch"], 3, "{doc}");
+        trust_tasks_rs::specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
+            .check_details(details)
+            .unwrap_or_else(|e| panic!("0.2 detailsSchema: {e}: {details}"));
+
+        let doc = ask(&state, open).await;
+        assert_unknown_epoch(&doc, "notDelivered");
+        assert!(
+            doc["payload"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("was removed")),
+            "{doc}"
+        );
+    }
+
+    /// An epoch before the removal is not `removed`: the removal says nothing about it.
+    #[tokio::test]
+    async fn file_key_0_2_before_the_removal_is_not_removed() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let member = hold_room_at_epoch_2(&state).await;
+        room_groups::record_removal_for_test(&state.room_groups_ks, &member, 5)
+            .await
+            .unwrap();
+        let doc = ask_v0_2(
+            &state,
+            serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "open", "epoch": 4 }),
+        )
+        .await;
+        assert_eq!(doc["payload"]["details"]["reason"], "notDelivered", "{doc}");
+        let doc = ask_v0_2(
+            &state,
+            serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "open", "epoch": 1 }),
+        )
+        .await;
+        assert_eq!(doc["payload"]["details"]["reason"], "beyondChain", "{doc}");
+        trust_tasks_rs::specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
+            .check_details(&doc["payload"]["details"])
+            .unwrap();
+    }
+
+    /// `rooms/keys/open/0.2`: an older epoch the retained chain does not reach is
+    /// `unknownEpoch` reason `beyondChain`, with `earliestEpoch` — where 0.1 answered a
+    /// bare failure, which it still does.
+    #[tokio::test]
+    async fn open_0_2_says_beyond_chain_for_an_epoch_the_chain_does_not_reach() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        hold_room_at_epoch_2(&state).await;
+
+        let doc = open_at_version(&state, vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2, 1).await;
+        assert_eq!(
+            doc["payload"]["code"], "rooms/keys/open:unknownEpoch",
+            "{doc}"
+        );
+        let details = &doc["payload"]["details"];
+        assert_eq!(details["reason"], "beyondChain", "{doc}");
+        assert_eq!(details["earliestEpoch"], 2, "{doc}");
+        trust_tasks_rs::specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH
+            .check_details(details)
+            .unwrap_or_else(|e| panic!("0.2 detailsSchema: {e}: {details}"));
+
+        let doc = open_at_version(&state, vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1, 1).await;
+        assert_ne!(
+            doc["payload"]["code"], "rooms/keys/open:unknownEpoch",
+            "{doc}"
+        );
+    }
+
+    /// `rooms/keys/open/0.2`: `notDelivered` and `removed` carry the declared details.
+    #[tokio::test]
+    async fn open_0_2_reasons_match_the_declared_details_schema() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let member = hold_room_at_epoch_2(&state).await;
+        let check = |doc: &Value, reason: &str| {
+            assert_eq!(
+                doc["payload"]["code"], "rooms/keys/open:unknownEpoch",
+                "{doc}"
+            );
+            assert_eq!(doc["payload"]["details"]["reason"], reason, "{doc}");
+            trust_tasks_rs::specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH
+                .check_details(&doc["payload"]["details"])
+                .unwrap_or_else(|e| panic!("0.2 detailsSchema: {e}: {doc}"));
+        };
+        let doc = open_at_version(&state, vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2, 4).await;
+        check(&doc, "notDelivered");
+
+        room_groups::record_removal_for_test(&state.room_groups_ks, &member, 3)
+            .await
+            .unwrap();
+        let doc = open_at_version(&state, vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2, 4).await;
+        check(&doc, "removed");
+        assert_eq!(doc["payload"]["details"]["removedAtEpoch"], 3, "{doc}");
     }
 
     fn assert_unknown_epoch(doc: &Value, reason: &str) {

@@ -3019,6 +3019,39 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_ACT_0_2,
+            checked!(
+                specs::rooms::keys::act::v0_2::Payload,
+                specs::rooms::keys::act::v0_2::Response,
+                json!({
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a1",
+                        "type": "https://trusttasks.org/spec/rooms/records/put/0.2",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:00:00Z",
+                        "payload": {
+                            "roomId": "did:webvh:example.com:rooms:northwind",
+                            "key": "giXFLTGBdnnQJRoIsktuIg",
+                            "expectedVersion": 0
+                        }
+                    }
+                }),
+                json!({
+                    "principal": "did:webvh:example.com:people:alice",
+                    "expiresAt": "2026-01-01T01:00:01Z",
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a1",
+                        "type": "https://trusttasks.org/spec/rooms/records/put/0.2",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:00:00Z",
+                        "payload": { "roomId": "did:webvh:example.com:rooms:northwind" },
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_LIST_0_1,
             checked!(
                 specs::rooms::keys::list::v0_1::Payload,
@@ -3171,10 +3204,45 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_OPEN_0_2,
+            checked!(
+                specs::rooms::keys::open::v0_2::Payload,
+                specs::rooms::keys::open::v0_2::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "key": "giXFLTGBdnnQJRoIsktuIg",
+                    "version": 1,
+                    "sealed": {
+                        "ciphertext": "1ep1PJuf8-yNmTndwcuMxA",
+                        "nonce": "AAAAAAAAAAAAAAAA",
+                        "epoch": 1
+                    }
+                }),
+                json!({ "plaintext": "YSBkZWNpc2lvbg" })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_FILE_KEY_0_1,
             checked!(
                 specs::rooms::keys::file_key::v0_1::Payload,
                 specs::rooms::keys::file_key::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "fileId": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+                    "purpose": "open",
+                    "epoch": 5
+                }),
+                json!({
+                    "key": "qPm3rH0xU1d5wR6x0yTq8ZbV7k2nC4aE9fG1hJ3kL5M",
+                    "epoch": 5
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_FILE_KEY_0_2,
+            checked!(
+                specs::rooms::keys::file_key::v0_2::Payload,
+                specs::rooms::keys::file_key::v0_2::Response,
                 json!({
                     "roomId": "did:webvh:example.com:rooms:northwind",
                     "fileId": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",

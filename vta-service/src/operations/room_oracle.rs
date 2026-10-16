@@ -114,7 +114,7 @@ pub struct Principal {
 
 impl Principal {
     /// Whether the room's grant to this persona confers `action` — what
-    /// `rooms/keys/act/0.1` checks before narrowing to it, so a member who does not hold
+    /// `rooms/keys/act` checks before narrowing to it, so a member who does not hold
     /// the action is told so in the task's own words (`actionNotHeld`) rather than in the
     /// credential library's.
     pub fn confers(&self, action: &str) -> Result<bool, AppError> {
@@ -130,7 +130,7 @@ impl Principal {
 /// Every persona the caller may act as that holds credentials issued by `room_id`, with
 /// those credentials.
 ///
-/// The candidates [`principal`] chooses from, and what `rooms/keys/act/0.1` resolves its
+/// The candidates [`principal`] chooses from, and what `rooms/keys/act` resolves its
 /// `issuer` against. Empty when there are none — a room nobody here holds anything from and
 /// a room only somebody the caller cannot act as holds read alike. A persona holding two
 /// authority credentials, or two membership credentials, from one room is refused rather

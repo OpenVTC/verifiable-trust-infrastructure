@@ -1,4 +1,4 @@
-//! Acting **as** the member — `rooms/keys/act/0.1` and `rooms/keys/seal/0.2`.
+//! Acting **as** the member — `rooms/keys/act/{0.1,0.2}` and `rooms/keys/seal/0.2`.
 //!
 //! The member's own client (a `pnm` session, a wallet extension, a phone) holds no key of
 //! the persona the room admitted. These two tasks are how it writes and reads as that
@@ -22,6 +22,14 @@
 //! 3. **Persona**: the member acted as is a persona the caller may act as
 //!    ([`crate::operations::persona`]) — a DID this VTA holds in a context the caller acts
 //!    in — holding the room's credentials.
+//!
+//! # The subject (`rooms/keys/act/0.2`)
+//!
+//! 0.2's `subjectPath` is `/document/issuer`: the member, never the room. Where `issuer`
+//! is absent (a type that names a room, a caller who may act as exactly one of its
+//! members) the subject is the member recipient item 2 resolves — [`act_subject`] for the
+//! policy gate, which runs before this handler, and the completed document's `issuer` for
+//! the audit row. 0.1 keeps the room as its row's resource, as it always has.
 
 use chrono::Utc;
 use serde_json::Value;
@@ -42,7 +50,7 @@ use super::helpers::{
 use super::room_group::declared;
 
 /// How old a document's `issuedAt` may be when it is completed. A document is signed to be
-/// sent now (`rooms/keys/act/0.1` recipient item 8), and a host applies its own window on
+/// sent now (`rooms/keys/act/0.2` recipient item 8), and a host applies its own window on
 /// top of this one.
 const MAX_AGE: chrono::Duration = chrono::Duration::minutes(5);
 
@@ -103,13 +111,75 @@ async fn holds_any_group(state: &AppState, room_id: &str) -> Result<bool, AppErr
         || room_groups::legacy_group(groups, room_id).await?.is_some())
 }
 
+/// The subject of a `rooms/keys/act/0.2` request, for a policy evaluated before the
+/// handler runs: the value at `subjectPath` (`/document/issuer`) when it is set, and
+/// otherwise the member recipient item 2 resolves — the one member of the document's room
+/// the caller may act as (act 0.2 *The subject*).
+///
+/// `None` only where item 2 resolves no member, and so the handler refuses the request
+/// (`notAMember`, `principalAmbiguous`) before anything is completed: nothing is done as
+/// a subject-less request.
+pub(super) async fn act_subject(
+    state: &AppState,
+    auth: &AuthClaims,
+    payload: &Value,
+) -> Option<String> {
+    let document = payload.get("document")?;
+    if let Some(issuer) = document.get("issuer").and_then(Value::as_str) {
+        return Some(issuer.to_string());
+    }
+    let room_id = document
+        .get("payload")
+        .and_then(|p| p.get("roomId"))
+        .and_then(Value::as_str)?;
+    match room_oracle::principals(state, auth, room_id).await {
+        Ok(candidates) if candidates.len() == 1 => candidates.into_iter().next().map(|p| p.did),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not resolve the rooms/keys/act subject for the policy gate");
+            None
+        }
+    }
+}
+
+/// Which `rooms/keys/act` is being answered. The request and response schemas are the same;
+/// 0.2 names the member as the subject, which this VTA records as the audit row's resource.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActVersion {
+    V0_1,
+    V0_2,
+}
+
 /// `rooms/keys/act/0.1`.
 pub(super) async fn handle_act(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::rooms::keys::act::v0_1 as spec;
+    act_at(state, auth, doc, ActVersion::V0_1).await
+}
+
+/// `rooms/keys/act/0.2`: 0.1, with the member as the task's subject. For a type that
+/// names no room the member is `issuer`, required and never picked here (recipient item
+/// 2a) — which 0.1 already did in this VTA.
+pub(super) async fn handle_act_v0_2(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    act_at(state, auth, doc, ActVersion::V0_2).await
+}
+
+/// `rooms/keys/act`, at either version. The request is parsed through 0.2's generated type
+/// at both — its schema is 0.1's unchanged — and the answer is checked against the asked
+/// version's response type.
+async fn act_at(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    at: ActVersion,
+) -> TrustTaskOutcome {
+    use trust_tasks_rs::specs::rooms::keys::act::v0_2 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -260,7 +330,11 @@ pub(super) async fn handle_act(
         }
         // A document that names no room — a download chunk, an upload's commit or abort —
         // takes no presentation; its authority is the transfer the member's own request
-        // opened. With no room to resolve against, the member must be named.
+        // opened. With no room to resolve against, the member must be named (0.2 recipient
+        // item 2a): `issuer` if this VTA holds its keys and the caller may act as it, and
+        // never a member picked here — not the only one held, not one inferred from the
+        // transfer id. The transfer belongs to whoever opened it, which only the client
+        // knows.
         None => {
             if action.is_some() {
                 return malformed_request_response(format!(
@@ -312,16 +386,29 @@ pub(super) async fn handle_act(
         .unwrap_or_default()
         .to_string();
 
-    // The type and room, never the payload (spec *Retention*).
+    // The type and room, never the payload (spec *Retention*). At 0.2 the row's resource
+    // is the subject — the member item 2 resolved, whom the completed document names as
+    // `issuer` — and the room, where the type names one, goes beside the type.
+    let bare = room_act::bare_type(type_uri);
+    let (resource, detail) = match at {
+        ActVersion::V0_1 => (room_id.clone(), format!("type={bare}")),
+        ActVersion::V0_2 => (
+            Some(principal.clone()),
+            match &room_id {
+                Some(room) => format!("type={bare} roomId={room}"),
+                None => format!("type={bare}"),
+            },
+        ),
+    };
     if let Err(e) = audit::record_with_detail(
         &state.audit_sink,
         "rooms.keys.act",
         &auth.did,
-        room_id.as_deref(),
+        resource.as_deref(),
         "success",
         Some(TRANSPORT_TRUST_TASK),
         None,
-        Some(&format!("type={}", room_act::bare_type(type_uri))),
+        Some(&detail),
     )
     .await
     {
@@ -335,7 +422,16 @@ pub(super) async fn handle_act(
     if let Some(expires) = completed.expires_at {
         response["expiresAt"] = Value::String(expires);
     }
-    match serde_json::from_value::<spec::Response>(response) {
+    let checked = match at {
+        ActVersion::V0_1 => serde_json::from_value::<
+            trust_tasks_rs::specs::rooms::keys::act::v0_1::Response,
+        >(response)
+        .and_then(serde_json::to_value),
+        ActVersion::V0_2 => {
+            serde_json::from_value::<spec::Response>(response).and_then(serde_json::to_value)
+        }
+    };
+    match checked {
         Ok(r) => success_response(&doc, r),
         Err(e) => app_error_to_reject(
             &doc,
@@ -590,7 +686,7 @@ async fn sign_body(
 
 #[cfg(test)]
 mod tests {
-    //! `rooms/keys/act/0.1` and `rooms/keys/seal/0.2`, and the in-place
+    //! `rooms/keys/act/{0.1,0.2}` and `rooms/keys/seal/0.2`, and the in-place
     //! `rooms/keys/{read,browse,backfill}` change, against real personas held in contexts.
     //!
     //! The end-to-end case runs a real room host in process (`room_host::dispatch`): the
@@ -612,6 +708,7 @@ mod tests {
     use crate::operations::room_oracle::{AUTHORITY_TYPE, MEMBERSHIP_TYPE};
 
     const ACT: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_1;
+    const ACT_0_2: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_2;
     const SEAL: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2;
     const KEY: &str = "giXFLTGBdnnQJRoIsktuIg";
 
@@ -768,6 +865,143 @@ mod tests {
 
     async fn act(state: &AppState, auth: &AuthClaims, document: Value) -> Value {
         body(handle_act(state, auth, request(ACT, json!({ "document": document }))).await)
+    }
+
+    async fn act_v0_2(state: &AppState, auth: &AuthClaims, document: Value) -> Value {
+        body(
+            handle_act_v0_2(
+                state,
+                auth,
+                request(ACT_0_2, json!({ "document": document })),
+            )
+            .await,
+        )
+    }
+
+    /// Every `rooms.keys.act` audit row as `(target, detail)`, oldest first. A DID
+    /// resource is the row's target (`target_did_plain` beside its hash).
+    async fn act_rows(state: &AppState) -> Vec<(Option<String>, Option<String>)> {
+        let mut rows: Vec<(String, Option<String>, Option<String>)> = state
+            .audit_ks
+            .prefix_iter_raw("log:")
+            .await
+            .expect("scan the audit log")
+            .iter()
+            .filter_map(|(_, v)| serde_json::from_slice::<Value>(v).ok())
+            .filter(|r| r["event"]["data"]["action"] == "rooms.keys.act")
+            .map(|r| {
+                (
+                    r["timestamp"].as_str().unwrap_or_default().to_string(),
+                    r["target_did_plain"].as_str().map(str::to_string),
+                    r["event"]["data"]["detail"].as_str().map(str::to_string),
+                )
+            })
+            .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        rows.into_iter().map(|(_, t, d)| (t, d)).collect()
+    }
+
+    /// `rooms/keys/act/0.2` recipient item 2a: a type that names no room is completed as
+    /// its `issuer` and nobody else. Absent, it is `principalAmbiguous` even where the
+    /// caller may act as exactly one member — the VTA never picks one; a member the caller
+    /// may not act as is `issuerNotPrincipal`.
+    #[tokio::test]
+    async fn act_0_2_completes_a_room_less_type_only_as_its_named_issuer() {
+        let f = fixture(&["read"]).await;
+        let chunk = |issuer: Option<&str>| {
+            let mut d = unsigned(
+                vti_rooms::wire::ROOMS_BLOBS_CHUNK_TYPE,
+                "did:key:zHost",
+                json!({ "downloadId": "3e0f5a7c-9b21-4d8e-a6c4-2f1b0d9e8c7a", "index": 0 }),
+            );
+            if let Some(i) = issuer {
+                d["issuer"] = json!(i);
+            }
+            d
+        };
+
+        let out = act_v0_2(&f.state, &alice_client(), chunk(None)).await;
+        assert_eq!(code(&out), "rooms/keys/act:principalAmbiguous", "{out}");
+
+        let out = act_v0_2(&f.state, &alice_client(), chunk(Some(&f.bob.did))).await;
+        assert_eq!(code(&out), "rooms/keys/act:issuerNotPrincipal", "{out}");
+        assert_eq!(out["payload"]["details"]["issuer"], f.bob.did, "{out}");
+
+        let out = act_v0_2(&f.state, &alice_client(), chunk(Some(&f.alice.did))).await;
+        assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
+        assert_eq!(out["payload"]["document"]["issuer"], f.alice.did, "{out}");
+        assert!(
+            out["type"].as_str().is_some_and(|t| t.starts_with(ACT_0_2)),
+            "{out}"
+        );
+        serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_2::Response>(
+            out["payload"].clone(),
+        )
+        .expect("a 0.2 response");
+
+        // The subject is the member: the audit row's resource.
+        let rows = act_rows(&f.state).await;
+        let last = rows.last().expect("a row");
+        assert_eq!(last.0.as_deref(), Some(f.alice.did.as_str()), "{rows:?}");
+    }
+
+    /// `rooms/keys/act/0.2` *The subject*: a policy and an audit row take the member item 2
+    /// resolves — when `issuer` is absent, the one member of the room the caller may act as —
+    /// never the room, and never "no subject". 0.1 keeps the room as its row's resource.
+    #[tokio::test]
+    async fn act_0_2_records_and_gates_the_resolved_member_as_the_subject() {
+        let f = fixture(&["read"]).await;
+        let get = || {
+            unsigned(
+                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                "did:key:zHost",
+                json!({ "roomId": f.room.did, "key": KEY }),
+            )
+        };
+
+        // The policy gate's subject, before the handler runs.
+        let resolved = act_subject(&f.state, &alice_client(), &json!({ "document": get() })).await;
+        assert_eq!(resolved.as_deref(), Some(f.alice.did.as_str()));
+        let mut named = get();
+        named["issuer"] = json!(f.bob.did);
+        assert_eq!(
+            act_subject(&f.state, &alice_client(), &json!({ "document": named }))
+                .await
+                .as_deref(),
+            Some(f.bob.did.as_str()),
+            "the value at subjectPath, when set"
+        );
+        let nobody = crate::test_support::admin_claims_for_context("bob");
+        assert_eq!(
+            act_subject(&f.state, &nobody, &json!({ "document": get() })).await,
+            None,
+            "no member resolves, so the handler refuses"
+        );
+
+        let out = act_v0_2(&f.state, &alice_client(), get()).await;
+        assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
+        let out = act(&f.state, &alice_client(), get()).await;
+        assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
+
+        let rows = act_rows(&f.state).await;
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        let (v2_target, v2_detail) = &rows[0];
+        assert_eq!(
+            v2_target.as_deref(),
+            Some(f.alice.did.as_str()),
+            "the 0.2 row names the member: {rows:?}"
+        );
+        assert!(
+            v2_detail
+                .as_deref()
+                .is_some_and(|d| d.contains(&format!("roomId={}", f.room.did))),
+            "{rows:?}"
+        );
+        assert_eq!(
+            rows[1].0.as_deref(),
+            Some(f.room.did.as_str()),
+            "the 0.1 row names the room, as it always has: {rows:?}"
+        );
     }
 
     async fn seal(state: &AppState, auth: &AuthClaims, payload: Value) -> Value {

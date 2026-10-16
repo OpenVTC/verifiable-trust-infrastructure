@@ -39,7 +39,7 @@ vti-common = { path = "../vti-common", version = "0.45" }
 # in `vtc-client` was deleted to avoid.
 vtc-client = { path = "../vtc-client", version = "0.24" }
 # `pnm rooms file …`: a file's STREAM sealing, without the group layer. The key
-# comes from the operator's VTA (`rooms/keys/file-key/0.1`), so OpenMLS is not needed.
+# comes from the operator's VTA (`rooms/keys/file-key/0.2`), so OpenMLS is not needed.
 vti-rooms = { path = "../vti-rooms", version = "0.16", default-features = false, features = [
   "files",
 ] }

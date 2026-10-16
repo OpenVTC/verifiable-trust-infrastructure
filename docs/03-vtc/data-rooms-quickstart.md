@@ -561,6 +561,3 @@ Found in this run; each is being fixed.
   signer of your own (§10.4).
 - **`private` rooms are not served**, and so neither is their commit relay —
   use `attributed`.
-- **`rooms/keys/act` sets no `subjectPath`** for a document without a `roomId`
-  (a download chunk, a direct upload's commit or abort); those are completed
-  only for a member named as `issuer`.

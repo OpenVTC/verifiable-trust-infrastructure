@@ -586,9 +586,13 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Reads group state and returns plaintext. Nothing is written, and a second
     // execution is indistinguishable from one.
     (trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1, ReadOnly),
+    // 0.2 declares `unknownEpoch`'s details; the operation is 0.1's.
+    (trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2, ReadOnly),
     // A pure derivation: the same request yields the same key, and nothing is
     // stored but the audit line.
     (trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1, ReadOnly),
+    // 0.2 adds the `removed` reason to a refusal; the derivation is 0.1's.
+    (trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_2, ReadOnly),
     // Minting retains a private key. A retry after a lost reply mints a SECOND
     // one and leaves a second private half behind for a Welcome that will
     // consume at most one — a duplicate that costs real key material, which is
@@ -642,6 +646,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // answer would buy nothing a host does not already dedupe, and the client that lost
     // the reply legitimately needs it again.
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_1, RetrySafe),
+    // 0.2 changes whom the VTA acts as for a room-less type (always the named
+    // `issuer`) and what the subject is, not what a completion stores: still nothing.
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_2, RetrySafe),
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_1, RetrySafe),
     // Issuance mints a NEW credential with a fresh id on every call, so a retry
     // without a key leaves a second durable artefact that persists and matters —

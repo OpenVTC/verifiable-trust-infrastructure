@@ -195,7 +195,7 @@ under the persona its group's own leaf identifies, the first time that
 persona's caller touches the room.
 
 Your own client never reaches a host as itself: it builds each room request
-unsigned and your VTA completes it **as the persona** (`rooms/keys/act/0.1`,
+unsigned and your VTA completes it **as the persona** (`rooms/keys/act/0.2`,
 §9). The one place a client DID does appear is as a *presenter* (§7): an
 agent your VTA equips with a four-hour, one-action leaf narrowed **from** your
 persona's grant. That leaf is a delegation, signed by your persona; the agent
@@ -569,13 +569,23 @@ pnm rooms keys backfill --room <room-did> --host-did <host-did>
 It walks down until it reads the room's whole retained history, or the host has
 no more, and says how far back it now reads. Run it once after `keys welcome`.
 
-Three error messages distinguish the cases, and they mean different things:
+Three cases, and they mean different things. `rooms/keys/open/0.2` and
+`rooms/keys/file-key/0.2` refuse each as `unknownEpoch` with `details.reason`
+saying which; a client acts on the reason, never on the message:
 
-| Message | What happened | What to do |
-|---|---|---|
-| *"a commit has not been delivered"* | the record is **newer** than this VTA's epoch | `pnm rooms keys commit --host …` |
-| *"cannot reach … the epoch key chain reaches back only to N"* | the record is **older** than any key this VTA can derive | `pnm rooms keys backfill`. If the reach does not move, the links for that stretch never reached the host, or the history was deliberately severed — nothing recovers it |
-| *"this commit removed this holder from the group"* | you were removed | nothing: what you read before still opens, nothing written after does |
+| `details.reason` | Message | What happened | What to do |
+|---|---|---|---|
+| `notDelivered` (`heldEpoch`) | *"a commit has not been delivered"* | the record is **newer** than this VTA's epoch | `pnm rooms keys commit --host …`, then try again |
+| `beyondChain` (`earliestEpoch`) | *"cannot reach … the epoch key chain reaches back only to N"* | the record is **older** than any key this VTA can derive | `pnm rooms keys backfill`. If the reach does not move, the links for that stretch never reached the host, or the history was deliberately severed — nothing recovers it |
+| `removed` (`removedAtEpoch`) | *"this member was removed from the room's group at epoch N"* | you were removed, and it was sealed at or after that | nothing, and do not retry: what you read before still opens, nothing written after does, and no commit changes that |
+
+A VTA that knows of the removal never answers `notDelivered` for an epoch at or
+after it — that reason's remedy, catching up, cannot work. At 0.1, which a VTA
+still serves beside 0.2, `open` sends `notDelivered` and `removed` the same
+way but an unreachable older epoch as a bare failure, and `file-key` has no
+`removed` at all: a removed member's file is `notDelivered`, with the removal in
+the message. `pnm` asks at 0.2 and falls back to 0.1 for a VTA that does not
+serve it.
 
 ### Remove a member
 
@@ -635,7 +645,7 @@ then they can still present it for whatever their old epochs' keys suffice for.
 
 **Two different parties reach a host, and they use two different tasks.** Your
 own client — `pnm`, the browser extension, your phone — *is* you, and acts as
-your persona through `rooms/keys/act/0.1` (§9): the host records the persona.
+your persona through `rooms/keys/act/0.2` (§9): the host records the persona.
 An **agent** you equip is a different party, rightly recorded as itself: it
 asks for a presentation with `rooms/keys/present/0.2`, signs its own requests
 and its own record bodies, and is refused `act` and `seal`'s `signAsPrincipal`
@@ -653,7 +663,7 @@ The member's VTA does both halves:
 | Task | What it does | Gate |
 |---|---|---|
 | `rooms/keys/present/0.2` | Attenuates the principal persona's VAC into a one-action leaf granted to the caller, signed as the persona, and returns a presentation | `roomPresent` capability + acting in the persona's context |
-| `rooms/keys/open/0.1` | Takes ciphertext, returns plaintext | `roomOpen` capability |
+| `rooms/keys/open/0.2` (and `0.1`) | Takes ciphertext, returns plaintext | `roomOpen` capability |
 
 ```jsonc
 // rooms/keys/present/0.2 payload — no audience, no nonce: the leaf is bound to
@@ -1091,7 +1101,8 @@ pnm rooms file get <record-key> --room <room-did> --host … [--out ./term-sheet
 The CLI **never holds a room credential, a group key or a key of your
 persona's**. For `list`, `get`, `put`, `curate`, the `rooms/info` lookup and
 `keys commit --host`, it builds the room request **unsigned** — no
-presentation, no proof — and hands it to your VTA with `rooms/keys/act/0.1`.
+presentation, no proof — and hands it to your VTA with `rooms/keys/act/0.2`
+(falling back to `0.1` for a VTA that does not serve it).
 The VTA completes it **as your persona**: it inserts the persona's own
 authority narrowed to exactly the action the request's type needs (`read`,
 `write`, `curate`, `admin`, from the specification's closed table) and granted
@@ -1103,6 +1114,23 @@ back to the VTA to open. A member who holds less than the action needs is
 refused by their own VTA (`actionNotHeld`) rather than by the host; one who
 may act as several members of the room names the one they mean (`issuer`), or
 is asked to (`principalAmbiguous`).
+
+**A request that names no room names its member.** A download chunk
+(`rooms/blobs/chunk/0.1`) and a direct upload's commit or abort
+(`rooms/blobs/upload/{commit,abort}/0.2`) carry no `roomId`, so the client sets
+`issuer` to the member whose request opened the transfer — the one whose
+`rooms/blobs/get` or `rooms/blobs/upload/begin` it was. The VTA completes such
+a document only as that `issuer`, if it holds the member's keys and the caller
+may act as it (`issuerNotPrincipal` otherwise), and refuses one without
+`issuer` (`principalAmbiguous`) even when it holds keys for only one member: it
+never picks the member itself (act 0.2 recipient item 2a).
+
+**The member is `act`'s subject.** At 0.2 the task's `subjectPath` is
+`/document/issuer`, not the room. A policy over `rooms/keys/act/0.2` sees the
+member as `input.request.subject` — where `issuer` is absent, the one member of
+the room the caller may act as — and the audit row (`rooms.keys.act`) names the
+member as its target, the type and room in its detail. A 0.1 row still names
+the room.
 
 `act` is not a signing oracle: only the table's host-bound room requests are
 completed, never `rooms/epoch/prune`, ownership changes, `rooms/create` or a
@@ -1432,8 +1460,11 @@ and `vtc-service`:
 | `rooms/keys/key-package/0.1` | an invitation naming a persona the caller may act as |
 | `rooms/keys/welcome/0.1` | that invitation, consumed |
 | `rooms/keys/commit/0.1` | the MLS group itself |
-| `rooms/keys/open/0.1` | `roomOpen` capability |
+| `rooms/keys/open/0.1`, `0.2` | `roomOpen` capability |
+| `rooms/keys/file-key/0.1`, `0.2` | `roomOpen` capability |
 | `rooms/keys/seal/0.1` | `roomOpen` capability |
+| `rooms/keys/seal/0.2` | `roomOpen` capability; `signAsPrincipal` refused to a delegate |
+| `rooms/keys/act/0.1`, `0.2` | `roomPresent` capability; refused to a delegate |
 | `rooms/keys/list/0.1` | `roomOpen` capability |
 | `rooms/keys/chain/0.1` | `roomOpen` capability |
 | `rooms/keys/backfill/0.1` | `roomOpen` capability |

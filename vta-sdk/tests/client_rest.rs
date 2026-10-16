@@ -2306,3 +2306,108 @@ async fn a_single_operation_too_large_is_not_asked_again() {
     );
     assert_eq!(*asked.lock().unwrap(), [(1, false)]);
 }
+
+// ── rooms/keys/{file-key,act} 0.2, falling back to 0.1 ──────────────
+
+/// Matches a request whose document `type` is `uri` (with or without a fragment).
+fn task_type(uri: &'static str) -> impl Fn(&wiremock::Request) -> bool {
+    move |req: &wiremock::Request| {
+        serde_json::from_slice::<Value>(&req.body)
+            .ok()
+            .and_then(|v| v["type"].as_str().map(|t| t.split('#').next() == Some(uri)))
+            .unwrap_or(false)
+    }
+}
+
+/// A VTA that predates the 0.2 versions: it refuses them `unsupportedType` and answers
+/// 0.1 with `ok`.
+async fn mount_only_0_1(
+    server: &MockServer,
+    v0_2: &'static str,
+    v0_1: &'static str,
+    ok: Value,
+) -> (wiremock::MockGuard, wiremock::MockGuard) {
+    let refused = Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(task_type(v0_2))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000001",
+            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {
+                "code": "unsupportedType",
+                "message": format!("unsupported type: {v0_2}"),
+                "retryable": false,
+            },
+        })))
+        .expect(1)
+        .mount_as_scoped(server)
+        .await;
+    let answered = Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(task_type(v0_1))
+        .respond_with(ResponseTemplate::new(200).set_body_json(signed_response(ok).await))
+        .expect(1)
+        .mount_as_scoped(server)
+        .await;
+    (refused, answered)
+}
+
+/// `rooms/keys/file-key/0.2` first; a VTA that does not serve it is asked at 0.1, whose
+/// answer reads as 0.2's.
+#[tokio::test]
+async fn room_file_key_falls_back_to_0_1() {
+    let server = MockServer::start().await;
+    let _m = mount_only_0_1(
+        &server,
+        "https://trusttasks.org/spec/rooms/keys/file-key/0.2",
+        "https://trusttasks.org/spec/rooms/keys/file-key/0.1",
+        json!({ "key": "qPm3rH0xU1d5wR6x0yTq8ZbV7k2nC4aE9fG1hJ3kL5M", "epoch": 4 }),
+    )
+    .await;
+    let c = client(&server).await;
+    let resp = c
+        .room_file_key(
+            "did:webvh:example.com:rooms:northwind",
+            "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+            Some(4),
+        )
+        .await
+        .expect("answered at 0.1");
+    assert_eq!(resp.epoch.get(), 4);
+}
+
+/// `rooms/keys/act/0.2` first, then 0.1 with the same document.
+#[tokio::test]
+async fn room_act_falls_back_to_0_1() {
+    let server = MockServer::start().await;
+    let member = "did:webvh:example.com:people:alice";
+    let _m = mount_only_0_1(
+        &server,
+        "https://trusttasks.org/spec/rooms/keys/act/0.2",
+        "https://trusttasks.org/spec/rooms/keys/act/0.1",
+        json!({
+            "principal": member,
+            "document": {
+                "id": "urn:uuid:00000000-0000-4000-8000-0000000000a2",
+                "type": "https://trusttasks.org/spec/rooms/blobs/upload/commit/0.2",
+                "issuer": member,
+                "recipient": "did:key:zHost",
+                "issuedAt": "2026-01-01T00:05:00Z",
+                "payload": { "uploadId": "u" },
+                "proof": { "type": "DataIntegrityProof" }
+            }
+        }),
+    )
+    .await;
+    let c = client(&server).await;
+    let doc = unsigned_room_request(
+        "https://trusttasks.org/spec/rooms/blobs/upload/commit/0.2",
+        "did:key:zHost",
+        Some(member),
+        json!({ "uploadId": "u" }),
+    )
+    .unwrap();
+    let resp = c.room_act(&doc).await.expect("answered at 0.1");
+    assert_eq!(resp.principal.as_str(), member);
+}

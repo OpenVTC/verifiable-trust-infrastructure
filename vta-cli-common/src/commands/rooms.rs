@@ -6,7 +6,7 @@
 //!
 //! - the operator's **VTA**, over the client's existing session, to complete each
 //!   host-bound request **as the member** ([`VtaClient::room_act`],
-//!   `rooms/keys/act/0.1`), to seal a record body signed as the member
+//!   `rooms/keys/act/0.2`), to seal a record body signed as the member
 //!   ([`VtaClient::room_seal_as_principal`]) and to open a sealed record
 //!   ([`VtaClient::room_open`]);
 //! - the room's **host**, unauthenticated, receiving the completed document unchanged.
@@ -146,7 +146,7 @@ pub fn session_from_minted(
 }
 
 /// Send one room request to the host **as the member**: built here without presentation
-/// or proof, completed by the VTA with `rooms/keys/act/0.1`, sent unchanged. Returns the
+/// or proof, completed by the VTA with `rooms/keys/act/0.2`, sent unchanged. Returns the
 /// member the VTA acted as and the host's response payload.
 ///
 /// Nothing this client holds goes to the host: not its DID, not its key.
@@ -511,7 +511,7 @@ pub async fn cmd_rooms_renew(
     epoch: u32,
     reason: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // The tier first, under `read`, before anything is minted: rooms/keys/act/0.1
+    // The tier first, under `read`, before anything is minted: rooms/keys/act/0.2
     // producer item 4 — a client never asks to mint a sealed room's epoch.
     let read = present(client, &target, "read").await?;
     let info = target
@@ -597,7 +597,7 @@ pub async fn cmd_rooms_create(
 // ─── Files ───────────────────────────────────────────────────────────────
 //
 // Sealing and opening a room file locally, with one file's key from the VTA
-// (`rooms/keys/file-key/0.1`). The bytes never pass through the VTA; what the
+// (`rooms/keys/file-key/0.2`). The bytes never pass through the VTA; what the
 // VTA releases opens this one file and nothing else.
 //
 // What is written is the upload's whole input and nothing more: the sealed
@@ -617,7 +617,7 @@ fn chunk_path(dir: &std::path::Path, index: usize) -> std::path::PathBuf {
 }
 
 fn file_key_bytes(
-    resp: &trust_tasks_rs::specs::rooms::keys::file_key::v0_1::Response,
+    resp: &trust_tasks_rs::specs::rooms::keys::file_key::v0_2::Response,
 ) -> Result<vti_rooms::files::FileKey, Box<dyn std::error::Error>> {
     use base64::Engine as _;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(resp.key.as_str())?;
@@ -796,7 +796,7 @@ async fn room_tier(
 }
 
 /// Have the VTA sign `content` **as the member** and seal it (`rooms/keys/seal/0.2`), and
-/// put it as the member (`rooms/keys/act/0.1`), re-sealing at the version the host assigned
+/// put it as the member (`rooms/keys/act/0.2`), re-sealing at the version the host assigned
 /// whenever that is not the one sealed for. Returns the version written.
 ///
 /// The record's associated data and its signed body both name the version, and the host
@@ -930,14 +930,14 @@ fn put_refusal_hint(code: &str, message: &str, target: &RoomTarget<'_>) -> Optio
 
 /// The operator-facing text for a `rooms/keys/open` refusal.
 fn open_refusal_hint(e: &VtaError, target: &RoomTarget<'_>) -> String {
-    use trust_tasks_rs::specs::rooms::keys::open::v0_1::error_codes::UNKNOWN_EPOCH;
+    use trust_tasks_rs::specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH;
     epoch_refusal_hint(e, target, UNKNOWN_EPOCH.code, Sealed::Record)
 }
 
 /// The operator-facing text for a `rooms/keys/file-key` refusal, as `pnm rooms file
 /// get` and `file open` print it — the same remedies a record's refusal names.
 fn file_key_refusal_hint(e: &VtaError, target: &RoomTarget<'_>) -> String {
-    use trust_tasks_rs::specs::rooms::keys::file_key::v0_1::error_codes::UNKNOWN_EPOCH;
+    use trust_tasks_rs::specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH;
     epoch_refusal_hint(e, target, UNKNOWN_EPOCH.code, Sealed::File)
 }
 
@@ -961,19 +961,23 @@ impl Sealed {
 /// `details.reason`.
 ///
 /// The epoch cases have opposite remedies, so they are told apart by reason —
-/// `notDelivered` (catch up), `beyondChain` (backfill) and, where the task's
-/// specification declares it, `removed` (no commit will help) — never by the message.
-/// `rooms/keys/file-key/0.1` declares only the first two, so a removed member's file
-/// arrives as `notDelivered`, with the VTA's message saying it was a removal; the hint
-/// says to look for that. The text checks are for a VTA that predates the reasons.
+/// `notDelivered` (catch up), `beyondChain` (backfill) and `removed` (no commit will
+/// help: `rooms/keys/{open,file-key}/0.2` say a caller MUST NOT retry after catching up)
+/// — never by the message. The text checks are for a VTA that predates the reasons, and
+/// for one that serves only `rooms/keys/file-key/0.1`, which declares no `removed`: such a
+/// VTA answers a removed member's file `notDelivered` and says the removal in its message.
 fn epoch_refusal_hint(e: &VtaError, target: &RoomTarget<'_>, code: &str, sealed: Sealed) -> String {
     let noun = sealed.noun();
+    let text = e.to_string();
     let reason = (e.rejection_code() == Some(code))
         .then(|| e.rejection_details())
         .flatten()
         .and_then(|d| d.get("reason"))
-        .and_then(Value::as_str);
-    let text = e.to_string();
+        .and_then(Value::as_str)
+        .map(|r| match r {
+            "notDelivered" if text.contains("was removed from room") => "removed",
+            r => r,
+        });
     let backfill = || {
         format!(
             "The {noun} is older than any key this VTA holds — it was written before you \
@@ -1001,18 +1005,8 @@ fn epoch_refusal_hint(e: &VtaError, target: &RoomTarget<'_>, code: &str, sealed:
         }
         Some("notDelivered") => format!(
             "The {noun} is newer than this VTA's group: a commit has not been applied here. \
-             Catch up, then try again:\n\n  {}{}",
+             Catch up, then try again:\n\n  {}",
             keys_commit_command(target),
-            match sealed {
-                // `removed` has a reason of its own for a record.
-                Sealed::Record => "",
-                Sealed::File => {
-                    "\n\nIf the VTA says above that you were removed from the room's group, \
-                     catching up will not help: files sealed since your removal will never \
-                     open for you, and what was sealed before it still opens. Rejoining takes \
-                     a fresh invitation from the room's owner."
-                }
-            }
         ),
         Some("beyondChain") => backfill(),
         _ if text.contains("cannot reach") => backfill(),
@@ -1745,21 +1739,44 @@ mod tests {
     }
 
     /// `pnm rooms file get` names the same remedies a record's refusal does. A removed
-    /// member's file comes as `notDelivered` (`rooms/keys/file-key/0.1` declares no
-    /// `removed`), with the VTA's message saying so — and the hint tells the operator that
-    /// catching up will not help then.
+    /// member's file comes as `removed` (`rooms/keys/file-key/0.2`), and the operator is
+    /// told so and not sent to `keys commit` — the caller MUST NOT retry after catching up.
     #[test]
     fn a_file_key_refusal_names_the_remedy() {
-        let removed = file_key_rejected(
+        let removed = VtaError::Rejected {
+            code: "rooms/keys/file-key:unknownEpoch".into(),
+            message: "the file is sealed under epoch 4, and this member was removed".into(),
+            details: Some(json!({ "reason": "removed", "removedAtEpoch": 3 })),
+        };
+        let text = file_key_refusal_hint(&removed, &vtc_target());
+        assert!(
+            text.contains("You were removed from this room's group at epoch 3"),
+            "{text}"
+        );
+        assert!(text.contains("Files sealed since then"), "{text}");
+        assert!(!text.contains("keys commit"), "{text}");
+
+        // A VTA serving only file-key 0.1 has no `removed` to send: it answers
+        // `notDelivered` and says the removal in its message. The operator is still not
+        // sent to catch up.
+        let old_vta = file_key_rejected(
             "notDelivered",
             "the file is sealed under epoch 4, and this member was removed from room `r`'s \
              group at epoch 3: no commit will make its key derivable here",
         );
-        let text = file_key_refusal_hint(&removed, &vtc_target());
-        assert!(text.contains("was removed from room"), "{text}");
-        assert!(text.contains(CATCH_UP), "{text}");
-        assert!(text.contains("catching up will not help"), "{text}");
-        assert!(text.contains("files sealed since your removal"), "{text}");
+        let text = file_key_refusal_hint(&old_vta, &vtc_target());
+        assert!(
+            text.contains("You were removed from this room's group"),
+            "{text}"
+        );
+        assert!(!text.contains("keys commit"), "{text}");
+
+        // Only behind: catch up.
+        let behind_commit = file_key_refusal_hint(
+            &file_key_rejected("notDelivered", "the file is sealed under epoch 4"),
+            &vtc_target(),
+        );
+        assert!(behind_commit.contains(CATCH_UP), "{behind_commit}");
 
         let behind = file_key_refusal_hint(
             &file_key_rejected("beyondChain", "sealed under epoch 1"),
@@ -1790,7 +1807,7 @@ mod tests {
     }
 
     /// `pnm rooms renew` refuses a sealed room and names the command that renews it
-    /// (rooms/keys/act/0.1 producer item 4); an open room renews as before.
+    /// (rooms/keys/act/0.2 producer item 4); an open room renews as before.
     #[test]
     fn renew_refuses_a_sealed_room_and_names_group_renew() {
         let target = RoomTarget {

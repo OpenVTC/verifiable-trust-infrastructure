@@ -979,6 +979,13 @@ pub const TASK_ROOMS_KEYS_PRESENT_0_2: &str = "https://trusttasks.org/spec/rooms
 /// plaintext. The key never crosses. Auth: `roomOpen` capability.
 pub const TASK_ROOMS_KEYS_OPEN_0_1: &str = "https://trusttasks.org/spec/rooms/keys/open/0.1";
 
+/// `spec/rooms/keys/open/0.2` — `open` 0.1, with `unknownEpoch` declaring its
+/// `details`: `reason` is `notDelivered` (catch up and retry), `beyondChain`
+/// (the retained chain does not reach the epoch) or `removed` (never retry).
+/// Auth: `roomOpen` capability.
+pub const TASK_ROOMS_KEYS_OPEN_0_2: &str =
+    <trust_tasks_rs::specs::rooms::keys::open::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/keys/key-package/0.1` — mint an MLS KeyPackage so a room's
 /// owner has something to add. Auth: a valid invitation for that room.
 pub const TASK_ROOMS_KEYS_KEY_PACKAGE_0_1: &str =
@@ -1053,12 +1060,25 @@ pub const TASK_ROOMS_KEYS_SEAL_0_2: &str =
 pub const TASK_ROOMS_KEYS_ACT_0_1: &str =
     <trust_tasks_rs::specs::rooms::keys::act::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `spec/rooms/keys/act/0.2` — `act` 0.1, with the member as the task's subject
+/// (`subjectPath: /document/issuer`) and `issuer` required on a document whose type
+/// names no room (`rooms/blobs/chunk/0.1`, `rooms/blobs/upload/{commit,abort}/0.2`):
+/// the VTA never picks the member for one. Auth: as 0.1.
+pub const TASK_ROOMS_KEYS_ACT_0_2: &str =
+    <trust_tasks_rs::specs::rooms::keys::act::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/keys/file-key/0.1` — one file's key, for the member's own client
 /// to seal or open that file itself, so file bytes never pass through the VTA.
 /// Unlike `open`, a key crosses — one bound to the room, the epoch and the file,
 /// which opens that file and nothing else. Auth: `roomOpen` capability.
 pub const TASK_ROOMS_KEYS_FILE_KEY_0_1: &str =
     "https://trusttasks.org/spec/rooms/keys/file-key/0.1";
+
+/// `spec/rooms/keys/file-key/0.2` — `file-key` 0.1, with a third `unknownEpoch`
+/// reason: `removed` (with `removedAtEpoch`), for a file sealed at or after the
+/// member's removal, which no commit will make derivable. Auth: as 0.1.
+pub const TASK_ROOMS_KEYS_FILE_KEY_0_2: &str =
+    <trust_tasks_rs::specs::rooms::keys::file_key::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/list/0.1` — which rooms this VTA can open, and how far back
 /// each reads. Auth: `roomOpen` capability. Key custody, never membership: a
@@ -2595,6 +2615,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_MEMORY_LIST_0_1,
     TASK_ROOMS_KEYS_PRESENT_0_2,
     TASK_ROOMS_KEYS_OPEN_0_1,
+    TASK_ROOMS_KEYS_OPEN_0_2,
     TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
     TASK_ROOMS_KEYS_WELCOME_0_1,
     TASK_ROOMS_KEYS_COMMIT_0_1,
@@ -2605,7 +2626,9 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_SEAL_0_1,
     TASK_ROOMS_KEYS_SEAL_0_2,
     TASK_ROOMS_KEYS_ACT_0_1,
+    TASK_ROOMS_KEYS_ACT_0_2,
     TASK_ROOMS_KEYS_FILE_KEY_0_1,
+    TASK_ROOMS_KEYS_FILE_KEY_0_2,
     TASK_ROOMS_KEYS_LIST_0_1,
     TASK_ROOMS_OWNER_INVITE_0_1,
     TASK_ROOMS_OWNER_REGISTER_0_1,

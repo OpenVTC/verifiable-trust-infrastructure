@@ -627,10 +627,13 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # capability (trust-tasks-tf #779), which `trust_tasks::witness` serves.
 # 0.31.8: external/credentials/issue 0.3 — at most 64 presigns a batch,
 # `responseTooLarge` (trust-tasks-tf #781).
-# 0.31.9 is the FLOOR: `vtc/members/admit` and `vtc/members/make-membership`
+# 0.31.9: `vtc/members/admit` and `vtc/members/make-membership`
 # (trust-tasks-tf #784), whose generated types `trust_tasks::admission_tasks`
 # serves.
-trust-tasks-rs = { version = "0.31.9", default-features = false, features = [
+# 0.31.10 is the FLOOR: `rooms/keys/file-key/0.2` and `rooms/keys/open/0.2`
+# (`unknownEpoch` reason `removed`, trust-tasks-tf #786) and
+# `rooms/keys/act/0.2` (the member is the subject, trust-tasks-tf #787).
+trust-tasks-rs = { version = "0.31.10", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

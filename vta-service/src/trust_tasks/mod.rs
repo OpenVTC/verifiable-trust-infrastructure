@@ -2660,9 +2660,16 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1 => room_group::handle_open
         [ None Metadata false ],
+    // 0.2: `unknownEpoch` says why — `notDelivered`, `beyondChain` or `removed`.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2 => room_group::handle_open_v0_2
+        [ None Metadata false ],
     // Releases one file's key — `None Secret false`: a pure derivation that
     // stores nothing, returning key material for one file and nothing else.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1 => room_group::handle_file_key
+        [ None Secret false ],
+    // 0.2: a removed member's file is `unknownEpoch` reason `removed`, never
+    // `notDelivered`.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_2 => room_group::handle_file_key_v0_2
         [ None Secret false ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_1 => room_group::handle_chain
         [ Mutating None false ],
@@ -2693,6 +2700,9 @@ dispatch_table! {
     // Signs a host-bound document as the member and presents their authority; stores
     // nothing and sends nothing — the caller sends what comes back.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_1 => room_act::handle_act
+        [ None Metadata true ],
+    // 0.2: the member is the subject (`/document/issuer`), for policy and audit.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_2 => room_act::handle_act_v0_2
         [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1 => room_group::handle_list
         [ None Metadata false ],

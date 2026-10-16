@@ -1,4 +1,4 @@
-//! Completing a host-bound room request **as the member** — `rooms/keys/act/0.1`, and the
+//! Completing a host-bound room request **as the member** — `rooms/keys/act/{0.1,0.2}`, and the
 //! documents `rooms/keys/{read,browse,backfill}` send on the member's behalf.
 //!
 //! # Why this exists
@@ -39,12 +39,14 @@ use crate::server::AppState;
 use trust_tasks_rs::Payload as _;
 use trust_tasks_rs::specs::rooms as spec;
 
-/// One row of `rooms/keys/act/0.1`'s table: a request type, and the action its inserted
+/// One row of `rooms/keys/act`'s table: a request type, and the action its inserted
 /// presentation is narrowed to — `None` for the types that take no presentation.
 pub type ActRow = (&'static str, Option<&'static str>);
 
-/// The table, exactly as `rooms/keys/act/0.1` states it. Type URIs come from the
-/// generated payload types, never a literal.
+/// The table, exactly as `rooms/keys/act/0.1` states it — and 0.2, which leaves it
+/// unchanged and adds only that its three room-less types (`rooms/blobs/chunk/0.1`,
+/// `rooms/blobs/upload/{commit,abort}/0.2`) name their member in `issuer`. Type URIs come
+/// from the generated payload types, never a literal.
 ///
 /// `rooms/epoch/mint/0.1` is in the table, and refused for any room this VTA holds group
 /// state for (`sealedRoomMint`, recipient item 9, checked in the handler): a mint carries
@@ -171,7 +173,7 @@ pub async fn sign_as(
 }
 
 /// Validate a room request's payload against its type's own schema — what a host will do,
-/// done before this VTA signs anything as the member (`rooms/keys/act/0.1` recipient item
+/// done before this VTA signs anything as the member (`rooms/keys/act` recipient item
 /// 8). A type the registry carries no schema for is refused: signing a document nobody
 /// can check is not a default worth having.
 pub fn check_schema(document: &Value) -> Result<(), AppError> {

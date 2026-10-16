@@ -432,7 +432,7 @@ pub enum FileKeyError {
     Removed { epoch: u32, removed_at: u32 },
 }
 
-/// One file's key — `rooms/keys/file-key/0.1`.
+/// One file's key — `rooms/keys/file-key/0.1` and `0.2`.
 ///
 /// `open_epoch` is `None` to seal (the current epoch, which is returned) and the file's
 /// epoch to open, walked out of the retained chain exactly as [`open_record`] walks it.
@@ -645,9 +645,11 @@ pub async fn open_record(
 
 /// Why [`open_record_detailed`] did not open a record.
 ///
-/// The two epoch cases are apart from [`Self::App`] because their remedies are opposite:
-/// a member who is behind applies the commits it missed, and a member who was removed
-/// can apply nothing that will ever open the record.
+/// The epoch cases are apart from [`Self::App`] because their remedies differ, and
+/// `rooms/keys/open/0.2` names each as an `unknownEpoch` reason: a member who is behind
+/// applies the commits it missed, a member whose chain does not reach back needs it
+/// extended (or cannot open the record at all), and a member who was removed can apply
+/// nothing that will ever open the record.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum OpenError {
@@ -657,6 +659,9 @@ pub enum OpenError {
     /// A commit this VTA applied removed the member from the group at `removed_at`, and
     /// the record is sealed under `epoch`, at or after it: it will never open here.
     Removed { epoch: u32, removed_at: u32 },
+    /// The record is sealed under `epoch`, earlier than this VTA's group, and the retained
+    /// epoch chain reaches back only to `earliest` (`rooms/keys/open/0.2`'s `beyondChain`).
+    BeyondChain { epoch: u32, earliest: u32 },
     /// Anything else: no group, a group that does not restore, a record that did not open.
     App(AppError),
 }
@@ -679,6 +684,16 @@ impl std::fmt::Display for OpenError {
                 f,
                 "record is sealed under epoch {epoch}, and this member was removed from the \
                  room's group at epoch {removed_at}: nothing sealed from then on opens here"
+            ),
+            // `RoomKeyError::EpochUnreachable`'s words, which is what this case said before
+            // it had a variant of its own.
+            Self::BeyondChain { epoch, earliest } => write!(
+                f,
+                "{}",
+                RoomKeyError::EpochUnreachable {
+                    sealed: *epoch,
+                    earliest: *earliest,
+                }
             ),
             Self::App(e) => write!(f, "{e}"),
         }
@@ -741,7 +756,13 @@ pub async fn open_record_detailed(
             epoch,
         },
     )
-    .map_err(|e| OpenError::App(AppError::Validation(e.to_string())))
+    .map_err(|e| match e {
+        RoomKeyError::EpochUnreachable { sealed, earliest } => OpenError::BeyondChain {
+            epoch: sealed,
+            earliest,
+        },
+        e => OpenError::App(AppError::Validation(e.to_string())),
+    })
 }
 
 /// The first room epoch `member` cannot open because a commit removed them, if one did.
@@ -1455,6 +1476,17 @@ pub(crate) async fn store_for_test(
     links: Vec<EpochLink>,
 ) -> Result<(), AppError> {
     store(groups, member, group, links, 0).await
+}
+
+/// Record that a commit removed `member` at `epoch`, as [`apply_commit`] does on
+/// processing it — for tests of how a removed member's refusals read.
+#[cfg(test)]
+pub(crate) async fn record_removal_for_test(
+    groups: &KeyspaceHandle,
+    member: &Member,
+    epoch: u32,
+) -> Result<(), AppError> {
+    record_removal(groups, member, epoch, 0).await
 }
 
 /// How many `(headVersion, root)` observations to keep per room.

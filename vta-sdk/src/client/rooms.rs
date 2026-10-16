@@ -69,16 +69,21 @@ impl VtaClient {
         .await
     }
 
-    /// `rooms/keys/open/0.1` — decrypt one sealed record.
+    /// `rooms/keys/open/0.2` — decrypt one sealed record. A VTA that does not serve
+    /// 0.2 (`unsupportedType` / `unsupportedVersion`) is asked at 0.1, which takes the
+    /// same payload and answers the same way.
     ///
     /// `version` and the sealed triple must be exactly what the host returned:
     /// the record's AEAD is bound to `roomId | key | version | epoch`, so a
     /// value adjusted in transit does not open. The reply carries `plaintext`
     /// as base64url.
     ///
-    /// **A record sealed under a later epoch than this VTA holds means a missed
-    /// commit**, not corruption. The VTA says which epoch it has; deliver the
-    /// commit and retry rather than treating the record as damaged.
+    /// **An `unknownEpoch` refusal says why in `details.reason`**, and the caller acts on
+    /// that, never on the message: `notDelivered` — a commit has not reached the VTA;
+    /// deliver it and retry; `beyondChain` — the retained chain does not reach back to the
+    /// record's epoch (`details.earliestEpoch`); `removed` — the member was removed at
+    /// `details.removedAtEpoch`, and nothing will ever open the record here, so do not
+    /// retry.
     pub async fn room_open(
         &self,
         room_id: &str,
@@ -98,12 +103,37 @@ impl VtaClient {
                 "epoch": epoch,
             },
         });
-        self.dispatch_trust_task(
+        self.dispatch_at_or_before(
+            trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2,
             trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1,
             payload,
-            ROOM_TT_TIMEOUT,
         )
         .await
+    }
+
+    /// Send `payload` at `current`, and at `previous` when the VTA does not serve
+    /// `current` (`unsupportedType` / `unsupportedVersion`, typed as
+    /// [`VtaError::UnsupportedTaskType`]).
+    ///
+    /// For a version pair whose payloads are identical and whose operation is the same:
+    /// asking again at the older version is not a retry of a failed operation, because the
+    /// first was never routed.
+    async fn dispatch_at_or_before(
+        &self,
+        current: &str,
+        previous: &str,
+        payload: Value,
+    ) -> Result<Value, VtaError> {
+        match self
+            .dispatch_trust_task(current, payload.clone(), ROOM_TT_TIMEOUT)
+            .await
+        {
+            Err(VtaError::UnsupportedTaskType { .. }) => {
+                self.dispatch_trust_task(previous, payload, ROOM_TT_TIMEOUT)
+                    .await
+            }
+            other => other,
+        }
     }
 
     /// `rooms/keys/seal/0.1` — seal one record body under the room's current
@@ -187,13 +217,18 @@ impl VtaClient {
         })
     }
 
-    /// `rooms/keys/act/0.1` — have the VTA complete one host-bound room request **as the
-    /// member**, and get it back to send.
+    /// `rooms/keys/act/0.2` — have the VTA complete one host-bound room request **as the
+    /// member**, and get it back to send. A VTA that does not serve 0.2
+    /// (`unsupportedType` / `unsupportedVersion`) is asked at 0.1 with the same document,
+    /// and its answer read as 0.2's.
     ///
     /// `document` is the room request this client means to send — `id`, `type`, `recipient`
     /// (the host), `issuedAt` and `payload` — with no `proof` and no `presentation` in the
-    /// payload; build it with [`unsigned_room_request`]. Set `issuer` only to name which
-    /// member to act as, where the caller may act as more than one in the room. The VTA
+    /// payload; build it with [`unsigned_room_request`]. Set `issuer` to name which member
+    /// to act as where the caller may act as more than one in the room, and **always** for
+    /// a type that names no room (`rooms/blobs/chunk/0.1`,
+    /// `rooms/blobs/upload/{commit,abort}/0.2`): the member whose request opened the
+    /// transfer, which the VTA never guesses (act 0.2 producer item 2). The VTA
     /// inserts the member's own authority narrowed to the one action the type needs and
     /// granted to the member, sets `issuer` to the member and signs for `authentication`.
     ///
@@ -201,14 +236,17 @@ impl VtaClient {
     /// Nothing in it names this client: the host records the member.
     pub async fn room_act(
         &self,
-        document: &trust_tasks_rs::specs::rooms::keys::act::v0_1::UnsignedRoomRequest,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_1::Response, VtaError> {
+        document: &trust_tasks_rs::specs::rooms::keys::act::v0_2::UnsignedRoomRequest,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_2::Response, VtaError> {
+        // The two versions' request and response schemas are identical (act 0.2 *What
+        // changed from 0.1*), so the same JSON goes at either and either answer reads as
+        // 0.2's.
         let payload = json!({ "document": document });
         let value = self
-            .dispatch_trust_task(
+            .dispatch_at_or_before(
+                trust_tasks::TASK_ROOMS_KEYS_ACT_0_2,
                 trust_tasks::TASK_ROOMS_KEYS_ACT_0_1,
                 payload,
-                ROOM_TT_TIMEOUT,
             )
             .await?;
         serde_json::from_value(value).map_err(|e| {
@@ -218,8 +256,14 @@ impl VtaClient {
         })
     }
 
-    /// `rooms/keys/file-key/0.1` — one file's key, so the caller seals or opens
-    /// that file itself and its bytes never pass through the VTA.
+    /// `rooms/keys/file-key/0.2` — one file's key, so the caller seals or opens
+    /// that file itself and its bytes never pass through the VTA. A VTA that does not
+    /// serve 0.2 (`unsupportedType` / `unsupportedVersion`) is asked at 0.1, whose
+    /// request and response are 0.2's.
+    ///
+    /// An `unknownEpoch` refusal says why in `details.reason`, as
+    /// [`VtaClient::room_open`]'s does; after `removed` the caller does not retry. A 0.1
+    /// VTA says `notDelivered` for a removed member's file too.
     ///
     /// `open_epoch` is `None` to seal (the VTA derives under the room's current
     /// epoch and says which) and the file manifest's `epoch` to open.
@@ -232,7 +276,7 @@ impl VtaClient {
         room_id: &str,
         file_id: &str,
         open_epoch: Option<u64>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::file_key::v0_1::Response, VtaError> {
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::file_key::v0_2::Response, VtaError> {
         let mut payload = json!({
             "roomId": room_id,
             "fileId": file_id,
@@ -242,10 +286,10 @@ impl VtaClient {
             payload["epoch"] = json!(epoch);
         }
         let value = self
-            .dispatch_trust_task(
+            .dispatch_at_or_before(
+                trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_2,
                 trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1,
                 payload,
-                ROOM_TT_TIMEOUT,
             )
             .await?;
         serde_json::from_value(value).map_err(|e| {
@@ -827,19 +871,28 @@ mod tests {
 
 /// An unsigned host-bound room request for [`VtaClient::room_act`]: a fresh `id`, `issuedAt`
 /// now, addressed to `host`, carrying `payload` (without `presentation`). `issuer` names the
-/// member to act as, and is needed only where the caller may act as more than one member of
-/// the room — never this client's own DID.
+/// member to act as — never this client's own DID. It is needed where the caller may act as
+/// more than one member of the room, and always where `payload` names no room (a download
+/// chunk, a direct upload's commit or abort): there it is the member whose request opened
+/// the transfer (`rooms/keys/act/0.2` producer item 2).
 ///
 /// # Errors
 ///
 /// [`VtaError::Validation`] when a member does not fit the generated type (a `type` that is
-/// not a room type, a `recipient` or `issuer` that is not a DID).
+/// not a room type, a `recipient` or `issuer` that is not a DID), or when `payload` names
+/// no `roomId` and `issuer` is absent.
 pub fn unsigned_room_request(
     type_uri: &str,
     host: &str,
     issuer: Option<&str>,
     payload: Value,
-) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_1::UnsignedRoomRequest, VtaError> {
+) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_2::UnsignedRoomRequest, VtaError> {
+    if issuer.is_none() && payload.get("roomId").is_none() {
+        return Err(VtaError::Validation(format!(
+            "`{type_uri}` names no room, so the member to act as is the document's `issuer`: \
+             name the member whose request opened the transfer"
+        )));
+    }
     let mut doc = json!({
         "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
         "type": type_uri,
@@ -906,9 +959,44 @@ mod act_tests {
                 "https://trusttasks.org/spec/rooms/info/0.1",
                 "https://host.example",
                 None,
-                json!({}),
+                json!({ "roomId": "did:key:zRoom" }),
             )
             .is_err()
         );
+    }
+
+    /// `rooms/keys/act/0.2` producer item 2: a type that names no room carries its member
+    /// in `issuer`, always — the VTA refuses to pick one, so the client never asks it to.
+    #[test]
+    fn a_room_less_request_names_its_member() {
+        for (type_uri, payload) in [
+            (
+                "https://trusttasks.org/spec/rooms/blobs/chunk/0.1",
+                json!({ "downloadId": "d", "index": 0 }),
+            ),
+            (
+                "https://trusttasks.org/spec/rooms/blobs/upload/commit/0.2",
+                json!({ "uploadId": "u" }),
+            ),
+            (
+                "https://trusttasks.org/spec/rooms/blobs/upload/abort/0.2",
+                json!({ "uploadId": "u" }),
+            ),
+        ] {
+            let err = unsigned_room_request(type_uri, "did:key:zHost", None, payload.clone())
+                .expect_err("no issuer");
+            assert!(matches!(err, VtaError::Validation(_)), "{type_uri}: {err}");
+            let named = unsigned_room_request(
+                type_uri,
+                "did:key:zHost",
+                Some("did:webvh:example.com:people:alice"),
+                payload,
+            )
+            .expect("named");
+            assert_eq!(
+                serde_json::to_value(&named).unwrap()["issuer"],
+                "did:webvh:example.com:people:alice"
+            );
+        }
     }
 }

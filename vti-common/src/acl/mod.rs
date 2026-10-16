@@ -229,7 +229,7 @@ pub enum Capability {
     /// Withheld from [`Role::Reader`]: minting a credential on a principal's
     /// behalf is not a read.
     RoomPresent,
-    /// Asking this VTA to open a sealed room record — `rooms/keys/open/0.1`.
+    /// Asking this VTA to open a sealed room record — `rooms/keys/open/{0.1,0.2}`.
     ///
     /// Registered upstream as `roomOpen` alongside `roomPresent`
     /// (`trustoverip/dtgwg-trust-tasks-tf` #351), and separate from it on
@@ -237,7 +237,7 @@ pub enum Capability {
     /// powers. An agent that indexes a room — walking the listing and building
     /// a searchable view — should not thereby be able to read it.
     ///
-    /// Also gates `rooms/keys/{seal,file-key}/0.1`: a sealing key is a file key
+    /// Also gates `rooms/keys/seal` and `rooms/keys/file-key`: a sealing key is a file key
     /// like any other, and opens the file it seals.
     RoomOpen,
     /// Acting for the **holder** over their own identity: the ten holder-scoped

@@ -185,14 +185,21 @@ One new Trust Task on the member's VTA:
 
 | Task | Payload | Returns | Gate |
 |---|---|---|---|
-| `rooms/keys/file-key/0.1` | `{ roomId, fileId, purpose: "seal" \| "open", epoch? }` | `{ key, epoch }` | `RoomOpen` capability, as `seal` / `open` |
+| `rooms/keys/file-key/0.2` (and `0.1`) | `{ roomId, fileId, purpose: "seal" \| "open", epoch? }` | `{ key, epoch }` | `RoomOpen` capability, as `seal` / `open` |
 
 - **`purpose: "seal"`** derives under the **current** epoch and returns it. The
   uploader writes that epoch into the manifest.
 - **`purpose: "open"`** takes the manifest's `epoch` and derives through the
-  chain. If the chain does not reach that far, it is refused with the same two
-  messages `rooms/keys/open` uses ("a commit has not been delivered" /
-  "the chain reaches back only to N").
+  chain. An epoch it cannot reach is refused `unknownEpoch`, with
+  `details.reason` saying which of three cases holds, as `rooms/keys/open/0.2`
+  says them: `notDelivered` (`heldEpoch`; a commit has not been delivered —
+  catch up and retry), `beyondChain` (`earliestEpoch`; the chain reaches back
+  only so far) and `removed` (`removedAtEpoch`; a commit this VTA processed
+  removed the member at or before the file's epoch). `removed` takes
+  precedence: no commit will make the key derivable, so the caller is never
+  told to catch up and does not retry. `0.1`, served beside it, has only the
+  first two, and answers a removed member's file `notDelivered` with the
+  removal in the message.
 - **Audited** with `roomId`, `fileId`, purpose and epoch, never the key. That gives
   a member a record of which files their agents and pages opened.
 - **Retry class**: `Idempotent`. The derivation is a pure function, and the census
@@ -1141,6 +1148,8 @@ bump, per the workspace rule.
 | `rooms/blobs/upload/{begin,chunk,commit,abort}/0.1` | new; `chunk` declares `maxDocumentBytes.request` |
 | `rooms/blobs/{get,chunk}/0.1` | new; `chunk` declares `maxDocumentBytes.response` |
 | `rooms/keys/file-key/0.1` | new |
+| `rooms/keys/file-key/0.1` → **0.2**, `rooms/keys/open/0.1` → **0.2** | `unknownEpoch` reason `removed` with `removedAtEpoch`; `open` declares the same closed `details` (trust-tasks-tf #786, `trust-tasks-rs` 0.31.10). Served beside 0.1 |
+| `rooms/keys/act/0.1` → **0.2** | the member is the subject (`subjectPath: /document/issuer`); a room-less type (`rooms/blobs/chunk/0.1`, `rooms/blobs/upload/{commit,abort}/0.2`) names its member in `issuer`, and the recipient never picks one (trust-tasks-tf #787). Served beside 0.1 |
 | `rooms/usage/0.1` | new: per-member usage for a room's `admin` chain |
 | `vtc/rooms/get/0.1`, `vtc/rooms/limits/set/0.1`, `vtc/rooms/usage/0.1` | new, VTC-only: room detail, limit overrides at all three scopes, usage reports |
 | `vtc/storage/configs/{list,get,create,update,retire}/0.1` | new, VTC-only: storage configs (§7.1) |
