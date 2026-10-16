@@ -1270,6 +1270,23 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
+            s::rooms::community::members::remove::v0_2::Payload,
+            s::rooms::community::members::remove::v0_2::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "member": "did:key:z6MkMember", "reason": "left" }),
+            json!({
+                "member": {
+                    "member": "did:key:z6MkMember", "actions": ["read"],
+                    "validUntil": "2027-10-01T00:00:00Z", "state": "removed",
+                    "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
+                    "removedAt": "2026-11-02T09:00:00Z",
+                },
+                "revocation": { "sequence": 2,
+                    "digest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR" },
+                "revokedAt": "2026-11-02T09:00:00Z",
+                "epoch": 3,
+            })
+        ),
+        checked!(
             s::rooms::community::members::list::v0_1::Payload,
             s::rooms::community::members::list::v0_1::Response,
             json!({ "roomId": "did:key:z6MkRoom", "state": "admitted", "limit": 10 }),

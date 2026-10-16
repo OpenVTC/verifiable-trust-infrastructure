@@ -19,7 +19,7 @@ room's description and tags, and `update`, trust-tasks-tf #805).
 The VTC holds **no room key and no group secret**. It acts on a room the way any owner's
 client does — by sending its VTA the `rooms/owner/*` tasks the VTA serves for every owner
 (`group/create`, `invite`, `issue-membership`, `issue-authority`, `group/add`,
-`group/remove`) — over the messaging link it already keeps to its VTA (TSP, else
+`group/remove`, `revoke`) — over the messaging link it already keeps to its VTA (TSP, else
 DIDComm, through the mediator; the VTA needs no inbound address). The VTA applies its own
 gates to each call.
 
@@ -216,9 +216,10 @@ no REST route.
   filtered by offered / admitted / removed. **Add a member** takes the member's DID,
   actions (`read`, `write`, `curate`), how many days the admission is valid and a
   reason, and makes an **offer**. **Remove** (or **Withdraw**, for an open offer) says
-  what removal does on the room's tier and until when the member's authority is
-  honoured **before** anything is signed, takes a reason, and reports the answer's
-  `validUntil` and, on a sealed tier, the first epoch sealed without them.
+  what removal does on the room's tier **before** anything is signed — on a private
+  room, until when the member's credentials are still honoured — takes a reason, and
+  reports what the answer says it did: from when the host refuses the member's
+  credentials, and on a sealed tier the first epoch sealed without them.
 
 The console reads and creates at 0.2 (it ships inside the VTC, so the two always match).
 Create, add and remove each ask for your passkey (or the wallet plugin's step-up
@@ -275,12 +276,23 @@ cnm rooms members remove <room DID> --member <DID> --reason "left the board"
   member's invitation, membership and authority (`read`, `write`, `curate` — never
   `admin`), and the VTC keeps them as an **offer**. Nothing is delivered: the member's VTA
   has no inbound address, so admission is pull-shaped.
-- **members remove**: an open offer is withdrawn. An admitted member of a sealed room
-  leaves the group and the room advances to an epoch sealed to everyone else, before the
-  removal is recorded. **What removal does not do**: it recalls nothing already read, and
-  the member's authority credential is not revoked — a host honours it until it expires,
-  though on a sealed room it opens nothing written afterwards. On an `open` room it
-  withdraws nothing cryptographically, so admit with short `--valid-for` there.
+- **members remove** (`vtc/rooms/community/members/remove/0.2`, trust-tasks-tf #804):
+  **the removal takes effect at the host at once.** On an `open` room the VTA withdraws
+  the member — it signs the room's next revocation list as the room (one `subject`
+  entry) and delivers it to this community, the room's host (`rooms/owner/revoke`). On
+  an `attributed` room it does that first and then removes their leaf and advances the
+  room (`rooms/owner/group/remove/0.2`). From the answer's `revokedAt` the host refuses
+  every credential the room issued them — and anything they delegated to an agent — on
+  every task; the answer carries the list's head (`revocation`). An open offer is
+  withdrawn, and on those tiers its credentials too, since a member may already have
+  collected them. The removal is recorded only once the host accepted the withdrawal.
+  On a `private` room a member cannot be withdrawn one at a time — the host verifies
+  membership in zero knowledge and does not know who they are — so they leave the
+  group (`group/remove/0.1`) and their credentials are honoured until `validUntil`.
+  **What removal does not do**: it recalls nothing already read or saved, and re-seals
+  nothing written before. Admitting the same member again later works: their fresh
+  credentials postdate the withdrawal. `0.1` of the task is still served, and withdraws
+  nothing at the host.
 
 ## Renewing the community's own authority
 
@@ -340,12 +352,17 @@ of their authority. A key rotation (`acl/swap-key`) is not a departure.
 owed for each room in which the member holds an admission or an open offer, in the
 `community_rooms` keyspace (backed up, so a restart or a restore resumes it). A background
 worker — the one owner of these removals — then completes each, exactly as an
-administrator's **Remove** would:
+administrator's **Remove** (`members/remove/0.2`) would, at the VTA **before** it is
+recorded:
 
-- an open offer is **withdrawn**;
-- an admission to an `open` room is recorded removed;
-- on a sealed room the VTA removes them from the group and the room advances past them
-  (`rooms/owner/group/remove`) **before** it is recorded.
+- on an `open` room, an admission or an open offer is **withdrawn at the host** — the
+  VTA signs the room's revocation list (`rooms/owner/revoke`) and this community, the
+  room's host, refuses their credentials from then on;
+- on an `attributed` room, an admission is withdrawn and then removed from the group,
+  the room advancing past them (`rooms/owner/group/remove/0.2`); an open offer is
+  withdrawn at the host;
+- on a `private` room, an admission leaves the group (`group/remove/0.1`) and an open
+  offer is withdrawn here; their credentials last until they expire.
 
 Each is audited as `memberRemoved` / `offerWithdrawn` with actor `vtc:member-departure` and
 a reason naming the departure ("Left the community.", "Their access-control entry at the
@@ -353,7 +370,10 @@ community expired.", …). What removal does and does not do is unchanged.
 
 **When the VTA does not answer**, or refuses, the departure itself has already happened;
 the removal is tried again with backoff (30 s, doubling, at most hourly). A retry after an
-answer that was lost is answered `notMember` by the VTA, which counts as done. An
+answer that was lost is answered `notMember` by the VTA, and they are withdrawn again
+(a repeat entry in the room's list, harmlessly), which counts as done. Because every
+removal now asks the VTA, a pass stops at the first VTA that does not answer and resumes
+the rest on the next. An
 administrator removing the member by hand settles the owed removal too.
 
 **Where to see it.** Until a removal completes, `vtc/rooms/community/get`,

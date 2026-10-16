@@ -134,8 +134,10 @@ pub enum MembersCommands {
         #[arg(long)]
         reason: String,
     },
-    /// Remove a member, or withdraw an open offer. On a sealed room the room advances to an
-    /// epoch sealed to everyone else.
+    /// Remove a member, or withdraw an open offer. On an open or attributed room the
+    /// room's host refuses their credentials from then on; on a sealed room the room also
+    /// advances to an epoch sealed to everyone else. A private room cannot withdraw one
+    /// member: there they leave the group, and their credentials last until they expire.
     Remove {
         /// The room's DID.
         room: String,
@@ -864,18 +866,35 @@ async fn run_task(
                 reason,
             } => {
                 let member = did_arg("--member", &member)?;
-                let payload = typed::<spec::members::remove::v0_1::Payload>(json!({
+                // 0.2: on `open` and `attributed` rooms the member's credentials are
+                // withdrawn at the room's host too, from `revokedAt` (trust-tasks-tf #804).
+                let payload = typed::<spec::members::remove::v0_2::Payload>(json!({
                     "roomId": room,
                     "member": member,
                     "reason": reason,
                 }))?;
                 let type_uri =
-                    <spec::members::remove::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+                    <spec::members::remove::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
                 let v = change(client, &target.base, type_uri, payload, &did, &key).await?;
                 if is_json_output() {
                     return Ok(print_json(&v)?);
                 }
                 print_member(&v["member"]);
+                if let Some(at) = v["revokedAt"].as_str() {
+                    println!(
+                        "The room's host refuses their credentials, and anything they delegated, \
+                         from {} (revocation list {}).",
+                        terminal_safe(at),
+                        v["revocation"]["sequence"]
+                    );
+                } else if let Some(until) = v.pointer("/member/validUntil").and_then(Value::as_str)
+                {
+                    println!(
+                        "A private room cannot withdraw one member: a host honours their \
+                         credentials until {}.",
+                        terminal_safe(until)
+                    );
+                }
                 if let Some(epoch) = v["epoch"].as_u64() {
                     println!("The room is now at epoch {epoch}, sealed to everyone else.");
                 }

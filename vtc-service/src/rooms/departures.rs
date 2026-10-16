@@ -8,10 +8,12 @@
 //! [`PendingRemoval`](super::community::PendingRemoval) per room the member holds an admission or an open offer in
 //! ([`CommunityRooms::record_departure`]), in the `community_rooms` keyspace — durable and
 //! backed up — and this module's worker is the **one retry owner** that drives each to
-//! completion: an open offer is withdrawn; an admission to an `open` room is recorded removed;
-//! an admission to a sealed room is removed at the VTA (`rooms/owner/group/remove`, the room
-//! advancing past them) **before** it is recorded (R2.1), exactly as an administrator's
-//! `members/remove` does. The removal and the dropping of the owed row are one batch.
+//! completion, exactly as an administrator's `members/remove/0.2` does ([`remove_member`],
+//! trust-tasks-tf #804): on `open` and `attributed` rooms the member's credentials — an open
+//! offer's too — are withdrawn at the host (`rooms/owner/revoke`, or
+//! `rooms/owner/group/remove/0.2`, which also advances an `attributed` room past them); on a
+//! `private` room they leave the group (`group/remove/0.1`) and an open offer is withdrawn
+//! here. All of it **before** the removal is recorded (R2.1). The removal and the dropping of the owed row are one batch.
 //!
 //! A VTA that does not answer, or refuses, is tried again with capped exponential backoff,
 //! and the row says so (`attempts`, `lastError`) where administrators read the room
@@ -42,6 +44,8 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use trust_tasks_rs::Payload;
 use trust_tasks_rs::specs::rooms::owner::group::remove::v0_1 as owner_remove;
+use trust_tasks_rs::specs::rooms::owner::group::remove::v0_2 as owner_remove_v0_2;
+use trust_tasks_rs::specs::rooms::owner::revoke::v0_1 as owner_revoke;
 use vti_common::audit::{AuditEvent, CommunityRoomChangedData};
 use vti_common::error::AppError;
 
@@ -74,6 +78,165 @@ pub const REMOVAL_NOTICE: &str = "Removal ends access to what is written from no
      honours it until it expires, though on a sealed room it opens nothing written after this.";
 
 const OWNER_GROUP_REMOVE: &str = <owner_remove::Payload as Payload>::TYPE_URI;
+const OWNER_GROUP_REMOVE_V0_2: &str = <owner_remove_v0_2::Payload as Payload>::TYPE_URI;
+const OWNER_REVOKE: &str = <owner_revoke::Payload as Payload>::TYPE_URI;
+
+/// What a removal at `vtc/rooms/community/members/remove/0.2` does not do, per tier — the
+/// audit row's note and, for an administrator's, a courtesy in the answer's `ext` beside
+/// the structured members a caller reads instead (item 4).
+pub fn removal_notice(withdrawn_at_host: bool) -> &'static str {
+    if withdrawn_at_host {
+        "Removal ends the member's access at once: the room's host refuses every credential \
+         the room issued them, and anything they delegated, from `revokedAt`. It recalls \
+         nothing they already read or saved, and re-seals nothing written before."
+    } else {
+        "On a private room a member cannot be withdrawn one at a time: they leave the room's \
+         group, so nothing written from the new epoch on opens for them, but the host honours \
+         their credentials until `validUntil`. It recalls nothing they already read."
+    }
+}
+
+/// What a removal did at the community's VTA.
+#[derive(Debug, Default)]
+pub struct Removed {
+    /// The first epoch sealed without the member, on a sealed tier.
+    pub epoch: Option<u64>,
+    /// The room's revocation list head the host accepted, and the withdrawal's
+    /// `revokedAt` — on `open` and `attributed` rooms.
+    pub revocation: Option<(Value, String)>,
+}
+
+fn request<P: serde::de::DeserializeOwned + serde::Serialize>(
+    payload: Value,
+) -> Result<Value, HolderError> {
+    let p: P = serde_json::from_value(payload)
+        .map_err(|e| HolderError::Unavailable(format!("a request to the community's VTA: {e}")))?;
+    serde_json::to_value(p)
+        .map_err(|e| HolderError::Unavailable(format!("a request to the community's VTA: {e}")))
+}
+
+fn shape<R: serde::de::DeserializeOwned>(task: &str, answer: &Value) -> Result<R, HolderError> {
+    serde_json::from_value(answer.clone()).map_err(|e| {
+        HolderError::Unavailable(format!(
+            "the community's VTA answered {task} in a shape its specification does not define: {e}"
+        ))
+    })
+}
+
+/// Remove `member` from `room` as `vtc/rooms/community/members/remove/0.2` item 2 does —
+/// the one removal an administrator's request and a departure both make
+/// (trust-tasks-tf #804):
+///
+/// - `open`, or an open offer on `attributed`: the VTA **withdraws** them —
+///   `rooms/owner/revoke`, one `subject` withdrawal, delivered to `host` (this community,
+///   the room's host) — and the removal holds only once the host accepted it;
+/// - `attributed`, admitted: `rooms/owner/group/remove` at 0.2 — withdrawn first, then the
+///   room advances; a member with no leaf is withdrawn alone;
+/// - `private`, admitted: `rooms/owner/group/remove` at 0.1 — the group alone, since a
+///   private room's host cannot be told whom to refuse. (A private room's open offer asks
+///   the VTA nothing; the caller does not call this for one.)
+///
+/// A host that did not accept the withdrawal is a refusal or an unknown outcome — never a
+/// removal.
+pub async fn remove_member(
+    holder: &KeyHolder,
+    room: &OwnedRoom,
+    host: &str,
+    member: &str,
+    offered: bool,
+    reason: &str,
+) -> Result<Removed, HolderError> {
+    let room_id = room.room_id.as_str();
+    if room.visibility == "private" {
+        return remove_from_group(holder, room_id, host, member, reason)
+            .await
+            .map(|epoch| Removed {
+                epoch,
+                revocation: None,
+            });
+    }
+    if room.visibility != "open" && !offered {
+        let req = request::<owner_remove_v0_2::Payload>(json!({
+            "roomId": room_id,
+            "host": host,
+            "member": member,
+            "signingKeyId": room.signing_key_id,
+            "reason": reason,
+        }))?;
+        match holder
+            .ask(OWNER_GROUP_REMOVE_V0_2, req, ADVANCE_TIMEOUT)
+            .await
+        {
+            Ok(answer) => {
+                let r: owner_remove_v0_2::Response = shape("rooms/owner/group/remove", &answer)?;
+                return Ok(Removed {
+                    epoch: u64::try_from(r.epoch).ok(),
+                    revocation: Some((
+                        answer["revocation"].clone(),
+                        answer["revokedAt"].as_str().unwrap_or_default().to_string(),
+                    )),
+                });
+            }
+            // No leaf — admitted here, never joined at the VTA: withdrawn alone, below.
+            Err(HolderError::Refused { code, .. })
+                if code == owner_remove_v0_2::error_codes::NOT_MEMBER.code => {}
+            Err(HolderError::Refused { code, message })
+                if code == owner_remove_v0_2::error_codes::HOST_UNREACHABLE.code =>
+            {
+                return Err(HolderError::Unavailable(message));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    let req = request::<owner_revoke::Payload>(json!({
+        "roomId": room_id,
+        "signingKeyId": room.signing_key_id,
+        "hosts": [host],
+        "withdraw": [{ "kind": "subject", "subject": member }],
+        "reason": reason,
+    }))?;
+    let answer = holder.ask(OWNER_REVOKE, req, ADVANCE_TIMEOUT).await?;
+    shape::<owner_revoke::Response>("rooms/owner/revoke", &answer)?;
+    // Only a host that answered with the list's head enforces it (`rooms/owner/revoke`
+    // item 5).
+    let delivery = answer["deliveries"]
+        .as_array()
+        .and_then(|d| d.first())
+        .cloned()
+        .unwrap_or(Value::Null);
+    match delivery["outcome"].as_str() {
+        Some("accepted") => {}
+        Some("refused") => {
+            return Err(HolderError::Refused {
+                code: delivery["code"].as_str().unwrap_or_default().to_string(),
+                message: "this community, the room's host, refused the room's revocation list"
+                    .into(),
+            });
+        }
+        _ => {
+            return Err(HolderError::Unavailable(
+                "the room's revocation list was signed, but this community did not confirm it \
+                 as the room's host; it is delivered again on the next attempt"
+                    .into(),
+            ));
+        }
+    }
+    // The withdrawal's time: the latest entry naming the member.
+    let revoked_at = answer["list"]["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|e| e["kind"] == "subject" && e["subject"] == member)
+        .filter_map(|e| e["revokedAt"].as_str())
+        .max()
+        .unwrap_or_default()
+        .to_string();
+    Ok(Removed {
+        epoch: None,
+        revocation: Some((answer["head"].clone(), revoked_at)),
+    })
+}
 
 /// The delay before the next attempt, after `attempts` have failed.
 pub fn backoff(attempts: u32) -> chrono::Duration {
@@ -83,10 +246,6 @@ pub fn backoff(attempts: u32) -> chrono::Duration {
 
 fn rfc3339(t: DateTime<Utc>) -> String {
     t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-}
-
-fn sealed(room: &OwnedRoom) -> bool {
-    room.visibility != "open"
 }
 
 /// Have the community's VTA remove `member` from `room_id`'s group, advancing the room past
@@ -279,7 +438,11 @@ async fn drive_one(
 
     let withdrawn = record.state == MemberRecord::OFFERED;
     let mut epoch = None;
-    if !withdrawn && sealed(&room) {
+    let mut withdrawn_at_host = false;
+    // As an administrator's `members/remove/0.2` removes them (trust-tasks-tf #804): on
+    // `open` and `attributed` rooms their credentials — an open offer's too — are withdrawn
+    // at the host, and on a sealed tier the room advances past them.
+    if !(withdrawn && room.visibility == "private") {
         if *vta_down {
             return Ok(());
         }
@@ -295,11 +458,19 @@ async fn drive_one(
                     .vtc_did
                     .clone()
                     .unwrap_or_default();
-                match remove_from_group(&holder, room_id, &host, member, pending.cause.reason())
-                    .await
+                match remove_member(
+                    &holder,
+                    &room,
+                    &host,
+                    member,
+                    withdrawn,
+                    pending.cause.reason(),
+                )
+                .await
                 {
-                    Ok(e) => {
-                        epoch = e;
+                    Ok(r) => {
+                        epoch = r.epoch;
+                        withdrawn_at_host = r.revocation.is_some();
                         None
                     }
                     Err(HolderError::Unavailable(why)) => {
@@ -352,7 +523,8 @@ async fn drive_one(
         member: Some(member.to_string()),
         actions: Vec::new(),
         epoch,
-        note: (!withdrawn).then(|| REMOVAL_NOTICE.to_string()),
+        note: (!withdrawn || withdrawn_at_host)
+            .then(|| removal_notice(withdrawn_at_host).to_string()),
         reason: Some(pending.cause.reason().to_string()),
         details: Vec::new(),
     };

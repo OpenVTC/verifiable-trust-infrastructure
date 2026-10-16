@@ -417,6 +417,8 @@ describe("a community room's page", () => {
     })),
     taskRoute(COMMUNITY_ROOMS_MEMBERS_REMOVE_TASK, {
       member: { ...admitted, state: "removed", removedAt: "2026-10-16T12:00:00Z" },
+      revocation: { sequence: 1, digest: "zQmHead" },
+      revokedAt: "2026-10-16T12:00:00Z",
       epoch: 3,
     }),
   ];
@@ -538,13 +540,15 @@ describe("a community room's page", () => {
     mount(page);
     fireEvent.click(await screen.findByRole("button", { name: /Remove/ }));
     const dialog = await screen.findByRole("dialog");
-    // The tier's consequences and the member's validUntil, before anything is sent.
+    // The tier's consequences before anything is sent: on an attributed room the host
+    // refuses their credentials at once, and the room advances past them.
     expect(within(dialog).getByText(/sealed to everyone else/)).toBeTruthy();
-    expect(within(dialog).getByText(/2027-01-14T00:00:00Z/)).toBeTruthy();
+    expect(within(dialog).getByText(/host refuses their credentials/)).toBeTruthy();
     expect(sentPayloads(requests, COMMUNITY_ROOMS_MEMBERS_REMOVE_TASK)).toEqual([]);
     fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "left the board" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
     expect(await screen.findByText(/Epoch 3 is the first sealed without them/)).toBeTruthy();
+    expect(screen.getByText(/refuses their credentials from 2026-10-16T12:00:00Z/)).toBeTruthy();
     expect(sentPayloads(requests, COMMUNITY_ROOMS_MEMBERS_REMOVE_TASK)).toEqual([
       { roomId: ROOM, member: admitted.member, reason: "left the board" },
     ]);
@@ -621,15 +625,23 @@ describe("a community room's page", () => {
 describe("community-rooms-api", () => {
   it("says what removal does on each tier", () => {
     const m = { ...admitted, actions: ["read" as const], state: "admitted" as const };
-    expect(removalPreview("open", m)).toMatch(/withdraws nothing cryptographically/);
+    // 0.2: on open and attributed rooms the host refuses their credentials at once.
+    expect(removalPreview("open", m)).toMatch(/host refuses their credentials/);
+    expect(removalPreview("attributed", m)).toMatch(/host refuses their credentials/);
     expect(removalPreview("attributed", m)).toMatch(/sealed to everyone else/);
     expect(removalPreview("attributed", { ...m, state: "offered" })).toMatch(/offer is withdrawn/);
+    // A private room cannot withdraw one member: the host honours them until validUntil.
+    expect(removalPreview("private", m)).toMatch(/cannot be withdrawn one at a time/);
+    expect(removalPreview("private", m)).toContain(m.validUntil);
   });
 
   it("reports a removal from the answer's structured members", () => {
     const member = { ...admitted, actions: ["read" as const], state: "removed" as const };
-    expect(removalOutcome({ member, epoch: 4 })).toMatch(/Epoch 4/);
-    expect(removalOutcome({ member })).toMatch(/Nothing was withdrawn cryptographically/);
+    const revocation = { sequence: 2, digest: "zQmHead" };
+    expect(
+      removalOutcome({ member, revocation, revokedAt: "2026-11-02T09:00:00Z", epoch: 4 }),
+    ).toMatch(/refuses their credentials from 2026-11-02T09:00:00Z.*Epoch 4/);
+    expect(removalOutcome({ member, epoch: 4 })).toMatch(/not withdrawn at the host/);
   });
 
   it("suggests a fix for the refusals an administrator can act on", () => {

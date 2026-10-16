@@ -950,7 +950,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/rooms/community/update/0.2",
     "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1",
     "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1",
-    "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2",
     // The console's signing keys (`trust_tasks::signing_key_tasks`).
     "https://trusttasks.org/spec/auth/signing-key/enroll/0.2",
     "https://trusttasks.org/spec/auth/signing-key/list/0.1",

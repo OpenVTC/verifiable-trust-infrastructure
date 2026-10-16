@@ -4166,6 +4166,77 @@ export interface components {
              */
             validUntil: string;
         };
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcRoomsCommunityMembersRemoveV0_2DigestMultibase: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcRoomsCommunityMembersRemoveV0_2Ext: {
+            [key: string]: unknown;
+        };
+        /**
+         * @description What a member of a community-owned room may do there. `admin` is not among them: minting epochs, admitting and removing members are the community's, as the room's owner, and are exercised through the vtc/rooms/community/* tasks rather than by any member's credential. `curate` is not implied by `write`.
+         * @enum {string}
+         */
+        VtcRoomsCommunityMembersRemoveV0_2MemberAction: "read" | "write" | "curate";
+        /** @description The actions granted, at least one. An empty list confers nothing rather than everything, and a schema that allowed it would make the more dangerous reading available to a careless consumer. */
+        VtcRoomsCommunityMembersRemoveV0_2MemberActions: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_2MemberAction"][];
+        /**
+         * @description Where an admission stands. `offered`: credentials issued and waiting for the member to collect and accept them. `admitted`: accepted — on a sealed tier, the member is in the room's group. `removed`: an administrator removed them; on a sealed tier the room has advanced past them.
+         * @enum {string}
+         */
+        VtcRoomsCommunityMembersRemoveV0_2MemberState: "offered" | "admitted" | "removed";
+        VtcRoomsCommunityMembersRemoveV0_2Payload: {
+            ext?: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_2Ext"];
+            member: string;
+            reason: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_2Reason"];
+            /** @description The room's identifier: its DID. */
+            roomId: string;
+        };
+        /** @description Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
+        VtcRoomsCommunityMembersRemoveV0_2Reason: string;
+        /** @description Success response to vtc/rooms/community/members/remove. Type https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2#response. The member as recorded, in state `removed`; on `open` and `attributed` rooms the revocation list in force at the room's host, from which the member's credentials are refused; and on a sealed tier the epoch the room advanced to. */
+        VtcRoomsCommunityMembersRemoveV0_2Response: {
+            /** @description On a sealed tier, the room epoch after the removal. */
+            epoch?: number;
+            ext?: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_2Ext"];
+            member: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_2RoomMember"];
+            revocation?: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_2RevocationHead"];
+            /**
+             * Format: date-time
+             * @description Present with `revocation`: the withdrawal's time.
+             */
+            revokedAt?: string;
+        };
+        /** @description Which `RevocationList` a party holds, without its entries: comparable between the room's key holder and a host, and between two hosts, without disclosing whom the room withdrew. */
+        VtcRoomsCommunityMembersRemoveV0_2RevocationHead: {
+            digest: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_2DigestMultibase"];
+            /** @description The list's `sequence`. */
+            sequence: number;
+        };
+        /** @description One party the community admitted to a room it owns, or offered admission to. */
+        VtcRoomsCommunityMembersRemoveV0_2RoomMember: {
+            actions: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_2MemberActions"];
+            /** Format: date-time */
+            admittedAt?: string;
+            member: string;
+            /** Format: date-time */
+            offeredAt: string;
+            /** Format: date-time */
+            removedAt?: string;
+            state: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_2MemberState"];
+            /**
+             * Format: date-time
+             * @description When the member's authority credential expires.
+             */
+            validUntil: string;
+        };
         /** @description What vtc/rooms/community/{create,get,list}/0.2 and vtc/rooms/community/update/0.1 return: `CommunityRoom` plus the details an administrator keeps track of a room by — `description`, `tags`, and who last changed them and when. A separate definition, not a change to `CommunityRoom`, so that the 0.1 versions of those tasks keep the exact shape they published. The room's creation is `room.createdAt` and `createdBy`. */
         VtcRoomsCommunityUpdateV0_1CommunityRoomV2: {
             /** @description Members in state `admitted`. */

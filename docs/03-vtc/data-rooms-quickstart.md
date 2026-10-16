@@ -364,24 +364,30 @@ host's epoch without a group commit.
 ## 9. Membership changes
 
 Every change moves the room to a new epoch. Members who stay catch up from the
-VTC's relay; a member who is removed cannot read anything written after.
+VTC's relay. Removing a member withdraws their credentials at the VTC first —
+Alice's VTA signs the room's revocation list as the room and delivers it — and
+then advances the room, so Bob is refused at the host at once and cannot open
+anything written after.
 
 ```bash
 PNM_HOME=/tmp/vdr/pnm-alice pnm rooms owner group-remove --room "$ROOM" \
-    --host-did "$VTC" --member "$BOB" --reason "left the deal team"
+    --host-did "$VTC" --member "$BOB" --signing-key "$ROOMKEY" \
+    --reason "left the deal team"
+# Removed did:key:…Bob from …: withdrawn at the host from 2026-…Z (revocation list 1), …
 PNM_HOME=/tmp/vdr/pnm-alice pnm rooms put r-0004 "Final price." "${H[@]}" --expected-version 0
 
+PNM_HOME=$B pnm rooms get r-0002 "${H[@]}"   # ✗ permissionDenied: the VTC refuses Bob's credentials
 PNM_HOME=$B pnm rooms keys commit --room "$ROOM" \
-    --host http://localhost:8200/v1 --host-did "$VTC"
-# ✗ … this commit removed this holder from the group: nothing sealed from epoch 4 on will open here
-#   You are no longer a member of this room's group. …
-PNM_HOME=$B pnm rooms get r-0004 "${H[@]}"   # does not open ("a commit has not been delivered")
-PNM_HOME=$B pnm rooms get r-0002 "${H[@]}"   # still does
+    --host http://localhost:8200/v1 --host-did "$VTC"   # ✗ permissionDenied, likewise
 ```
 
-The removal is reported as an error, and the record written after it then
-reads as *"a commit has not been delivered"*: the removed member's VTA stays
-at its last epoch for good.
+The VTC refuses Bob's presentation outright on every task — reads, files, the
+commit relay — from the moment it accepted the room's list, because the room
+withdrew his credentials; what he already read and saved is his, and nothing
+recalls it. Without `--signing-key` the removal is the group alone: his
+credentials stay good at the VTC until they expire, and `keys commit` then
+reports *"this commit removed this holder from the group"* while he can still
+read what his old epochs' keys open.
 
 A member who stays runs the same `keys commit --host` after every change made
 by someone else; until they do, newer records answer *"a commit has not been

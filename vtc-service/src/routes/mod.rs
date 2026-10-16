@@ -143,6 +143,8 @@ use crate::server::AppState;
         vta_sdk::openapi::RoomsCommunityMembersAdd01Response,
         vta_sdk::openapi::RoomsCommunityMembersRemove01Payload,
         vta_sdk::openapi::RoomsCommunityMembersRemove01Response,
+        vta_sdk::openapi::RoomsCommunityMembersRemove02Payload,
+        vta_sdk::openapi::RoomsCommunityMembersRemove02Response,
         vta_sdk::openapi::RoomsCommunityMembersList01Payload,
         vta_sdk::openapi::RoomsCommunityMembersList01Response,
         // Where rooms' files are kept (`trust_tasks::storage_tasks`), signed

@@ -55,6 +55,9 @@ const GROUP_CREATE: &str = "https://trusttasks.org/spec/rooms/owner/group/create
 const GROUP_ADD: &str = "https://trusttasks.org/spec/rooms/owner/group/add/0.2";
 const GROUP_ADD_V0_1: &str = "https://trusttasks.org/spec/rooms/owner/group/add/0.1";
 const GROUP_REMOVE: &str = "https://trusttasks.org/spec/rooms/owner/group/remove/0.1";
+const GROUP_REMOVE_V0_2: &str = "https://trusttasks.org/spec/rooms/owner/group/remove/0.2";
+const OWNER_REVOKE: &str = "https://trusttasks.org/spec/rooms/owner/revoke/0.1";
+const REMOVE_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2";
 const INVITE: &str = "https://trusttasks.org/spec/rooms/owner/invite/0.1";
 const ISSUE_MEMBERSHIP: &str = "https://trusttasks.org/spec/rooms/owner/issue-membership/0.1";
 const ISSUE_AUTHORITY: &str = "https://trusttasks.org/spec/rooms/owner/issue-authority/0.2";
@@ -102,6 +105,12 @@ struct VtaState {
     /// Each room's profile as the stand-in holds it — what `rooms/keys/profile/write`
     /// last wrote, or what a test set as a curator's edit in the room.
     profiles: HashMap<String, Value>,
+    /// The community's revocation keyspace — where a list this VTA signs lands, standing in
+    /// for its `rooms/revocations/put` to the community as the room's host.
+    host: Option<vti_common::store::KeyspaceHandle>,
+    /// Issue credentials valid from now rather than a minute ago — as the VTA does — so a
+    /// test can tell what was issued after a withdrawal from what was issued before it.
+    issue_from_now: bool,
 }
 
 #[derive(Clone, Default)]
@@ -142,8 +151,19 @@ impl FakeVta {
         self.0.lock().unwrap().groups.get(room).cloned()
     }
 
-    async fn credential(room: &Party, kind: &str, subject: &str, payload: &Value) -> String {
+    async fn credential(
+        room: &Party,
+        kind: &str,
+        subject: &str,
+        payload: &Value,
+        from_now: bool,
+    ) -> String {
         let now = Utc::now();
+        let from = if from_now {
+            now
+        } else {
+            now - chrono::Duration::minutes(1)
+        };
         let until = payload["validUntil"]
             .as_str()
             .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
@@ -153,7 +173,7 @@ impl FakeVta {
             "membership" => DTGCredential::new_vmc(
                 room.did.clone(),
                 subject.to_string(),
-                now - chrono::Duration::minutes(1),
+                from,
                 Some(until),
                 false,
             ),
@@ -168,7 +188,7 @@ impl FakeVta {
                     .iter()
                     .map(|a| a.as_str().unwrap().to_string())
                     .collect(),
-                now - chrono::Duration::minutes(1),
+                from,
                 until,
             )
             .expect("a VAC"),
@@ -176,13 +196,16 @@ impl FakeVta {
                 room.did.clone(),
                 IssuerScope::Public,
                 subject.to_string(),
-                now - chrono::Duration::minutes(1),
+                from,
                 Some(until),
             ),
         };
         c.sign(&room.secret, None).await.expect("sign");
         serde_json::to_string(&c).unwrap()
     }
+
+    /// Sign the room's next list withdrawing `subject`, as the room, and put it in force at
+    /// the community (the room's host). Returns the list, its head and the `revokedAt`.
 
     fn profile(&self, room: &str) -> Option<Value> {
         self.0.lock().unwrap().profiles.get(room).cloned()
@@ -196,8 +219,83 @@ impl FakeVta {
             .insert(room.to_string(), profile);
     }
 
+    /// Sign the room's next list withdrawing `subject`, as the room, and put it in force at
+    /// the community (the room's host). Returns the list, its head and the `revokedAt`.
+    async fn withdraw(&self, room_id: &str, subject: &str) -> (Value, Value, String) {
+        use vti_rooms::revocation::{Entry, HeldList, RevocationList, held, next_unsigned, store};
+        let room = self.room_key(room_id);
+        let host = self
+            .0
+            .lock()
+            .unwrap()
+            .host
+            .clone()
+            .expect("a host keyspace");
+        let current = held(&host, room_id)
+            .await
+            .unwrap()
+            .map(|h| RevocationList::parse(&h.list, room_id).unwrap());
+        let now = Utc::now();
+        let unsigned = next_unsigned(
+            room_id,
+            current.as_ref(),
+            &[Entry::Subject {
+                subject: subject.to_string(),
+                revoked_at: now,
+                until: None,
+            }],
+            now,
+        );
+        let list = vti_rooms_dtg::test_support::sign_as(&room, unsigned).await;
+        store(
+            &host,
+            room_id,
+            &HeldList {
+                list: list.clone(),
+                in_force_at: now,
+            },
+        )
+        .await
+        .unwrap();
+        let head = RevocationList::parse(&list, room_id)
+            .unwrap()
+            .head()
+            .to_wire();
+        (list, head, vti_rooms::revocation::rfc3339(now))
+    }
+
     async fn serve(&self, type_uri: &str, p: &Value) -> Result<Value, (&'static str, String)> {
         match type_uri {
+            OWNER_REVOKE => {
+                let room = p["roomId"].as_str().unwrap();
+                let subject = p["withdraw"][0]["subject"].as_str().unwrap();
+                let (list, head, _) = self.withdraw(room, subject).await;
+                Ok(json!({
+                    "roomId": room, "list": list, "head": head,
+                    "deliveries": [{
+                        "host": p["hosts"][0], "outcome": "accepted", "head": head,
+                        "inForceAt": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    }],
+                }))
+            }
+            GROUP_REMOVE_V0_2 => {
+                let room = p["roomId"].as_str().unwrap().to_string();
+                let member = p["member"].as_str().unwrap().to_string();
+                if !self.group(&room).is_some_and(|(m, _)| m.contains(&member)) {
+                    return Err(("rooms/owner/group/remove:notMember", "no leaf".into()));
+                }
+                // Withdraw first, then advance.
+                let (_, head, revoked_at) = self.withdraw(&room, &member).await;
+                let mut st = self.0.lock().unwrap();
+                st.admitted.remove(&room);
+                let group = st.groups.get_mut(&room).expect("a group");
+                group.0.retain(|m| *m != member);
+                group.1 += 1;
+                Ok(json!({
+                    "roomId": room, "member": member, "revocation": head,
+                    "revokedAt": revoked_at, "epoch": group.1,
+                }))
+            }
             PROFILE_READ => {
                 let room = p["roomId"].as_str().unwrap_or_default().to_string();
                 Ok(match self.profile(&room) {
@@ -261,7 +359,8 @@ impl FakeVta {
                     ISSUE_AUTHORITY => "authority",
                     _ => "invitation",
                 };
-                let credential = Self::credential(&room, kind, subject, p).await;
+                let from_now = self.0.lock().unwrap().issue_from_now;
+                let credential = Self::credential(&room, kind, subject, p, from_now).await;
                 Ok(json!({
                     "credential": credential,
                     "credentialId": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
@@ -429,6 +528,7 @@ async fn fixture_with(
         builder = builder.with_community_key_holder(Arc::new(vta.clone()));
     }
     let vtc = builder.build().await;
+    vta.0.lock().unwrap().host = Some(vtc.state.room_revocations_ks.clone());
     vtc_service::policy::default::install_defaults(
         &vtc.state.policies_ks,
         &vtc.state.active_policies_ks,
@@ -1378,9 +1478,11 @@ async fn owed(fix: &Fixture) -> Vec<(String, String, DepartureCause)> {
 }
 
 /// A member who leaves is owed a removal from every room the community owns, recorded at
-/// the departure itself — before the VTA is asked anything. The worker withdraws the offer,
-/// records the open room's removal, and removes them from the sealed room's group at the
-/// VTA before recording it; each is audited as the community's own act, naming the
+/// the departure itself — before the VTA is asked anything. The worker removes them as an
+/// administrator's `members/remove/0.2` does (trust-tasks-tf #804): the open room's
+/// admission and the offer are withdrawn at the host (`rooms/owner/revoke`), and the sealed
+/// room's withdrawn and advanced past them (`rooms/owner/group/remove/0.2`), each at the
+/// VTA before it is recorded; each is audited as the community's own act, naming the
 /// departure. Rejoining re-adds nothing.
 #[tokio::test]
 async fn a_member_who_leaves_is_removed_from_every_community_room() {
@@ -1434,12 +1536,25 @@ async fn a_member_who_leaves_is_removed_from_every_community_room() {
         "nobody else moves"
     );
     assert!(owed(&fix).await.is_empty());
-    // Only the sealed room's group was asked, once.
-    assert_eq!(fix.vta.types_called(), vec![GROUP_REMOVE]);
-    let call = &fix.vta.calls()[0].1;
+    // The sealed room's group was asked once, withdrawing first; the open room and the
+    // offer were withdrawn at the host.
+    let mut types = fix.vta.types_called();
+    types.retain(|t| t == GROUP_REMOVE_V0_2 || t == OWNER_REVOKE);
+    types.sort();
+    assert_eq!(types, vec![GROUP_REMOVE_V0_2, OWNER_REVOKE, OWNER_REVOKE]);
+    let calls = fix.vta.calls();
+    let call = &calls
+        .iter()
+        .find(|(t, _)| t == GROUP_REMOVE_V0_2)
+        .unwrap()
+        .1;
     assert_eq!(call["member"], alice.did);
     assert_eq!(call["host"], TEST_VTC_DID);
     assert_eq!(call["reason"], DepartureCause::Left.reason());
+    for (t, p) in calls.iter().filter(|(t, _)| t == OWNER_REVOKE) {
+        assert_eq!(p["withdraw"][0]["subject"], alice.did, "{t}");
+        assert_eq!(p["hosts"], json!([TEST_VTC_DID]));
+    }
     let (members, _) = fix.vta.group(&sealed).unwrap();
     assert!(!members.contains(&alice.did));
     let got = call_as(&fix, &fix.admin, GET, json!({ "roomId": sealed })).await;
@@ -1600,7 +1715,7 @@ async fn an_unreachable_vta_is_retried_until_the_removal_completes() {
     )
     .await;
 
-    fix.vta.script(GROUP_REMOVE, Script::Silent);
+    fix.vta.script(GROUP_REMOVE_V0_2, Script::Silent);
     let left = call_as(&fix, &alice, SELF_REMOVE, json!({})).await;
     assert_eq!(
         left["payload"]["removed"], true,
@@ -1630,7 +1745,7 @@ async fn an_unreachable_vta_is_retried_until_the_removal_completes() {
     assert!(fix.vta.calls().is_empty());
 
     // Due: the VTA removes them, and the answer is lost.
-    fix.vta.script(GROUP_REMOVE, Script::ServeThenSilent);
+    fix.vta.script(GROUP_REMOVE_V0_2, Script::ServeThenSilent);
     let t1 = t0 + departures::backoff(1);
     let report = departures::run_once(&fix.vtc.state, t1).await.unwrap();
     assert_eq!(report.retrying, 1, "{report:?}");
@@ -1656,15 +1771,23 @@ async fn owed_removals_survive_a_restart_and_yield_to_a_manual_removal() {
     let mut fix = fixture().await;
     let alice = member(&fix).await;
     let (sealed, open, offered) = in_three_rooms(&mut fix, &alice).await;
-    fix.vta.script(GROUP_REMOVE, Script::Silent);
+    fix.vta.script(GROUP_REMOVE_V0_2, Script::Silent);
     call_as(&fix, &alice, SELF_REMOVE, json!({})).await;
-    // Withdraws the offer and the open room; the sealed room's VTA does not answer.
+    // The sealed room's VTA does not answer. Every removal asks the VTA now — the open
+    // room's and the offer's withdraw their credentials at the host — so the pass stops at
+    // the first silence and whatever it had not reached stays owed.
     departures::run_once(&fix.vtc.state, Utc::now())
         .await
         .unwrap();
-    assert_eq!(state_in(&fix, &offered, &alice.did).await, "removed");
-    assert_eq!(state_in(&fix, &open, &alice.did).await, "removed");
-    assert_eq!(owed(&fix).await.len(), 1);
+    assert_eq!(state_in(&fix, &sealed, &alice.did).await, "admitted");
+    let mut still = 0;
+    for room in [&sealed, &open, &offered] {
+        if state_in(&fix, room, &alice.did).await != "removed" {
+            still += 1;
+        }
+    }
+    assert!(still >= 1);
+    assert_eq!(owed(&fix).await.len(), still);
 
     // A restart: the same keyspace, a fresh service around it.
     let mut restarted = fix.vtc.state.clone();
@@ -1675,8 +1798,10 @@ async fn owed_removals_survive_a_restart_and_yield_to_a_manual_removal() {
     let report = departures::run_once(&restarted, Utc::now() + chrono::Duration::hours(2))
         .await
         .unwrap();
-    assert_eq!(report.removed, 1, "{report:?}");
-    assert_eq!(state_in(&fix, &sealed, &alice.did).await, "removed");
+    assert_eq!(report.removed, still, "{report:?}");
+    for room in [&sealed, &open, &offered] {
+        assert_eq!(state_in(&fix, room, &alice.did).await, "removed");
+    }
 
     // By hand: an owed removal is settled by the administrator's.
     let bob = member(&fix).await;
@@ -2399,4 +2524,198 @@ async fn vtc_rooms_community_update_0_2_writes_the_profile_of_a_room_made_before
     )
     .await;
     assert_eq!(r["payload"]["roomProfile"], "unchanged", "{r}");
+}
+
+// ─── vtc/rooms/community/members/remove/0.2 (trust-tasks-tf #804) ───────────────
+
+/// An offer accepted on an open room, and the presentation its credentials make.
+async fn admitted_on_open_room(fix: &mut Fixture) -> (String, Party, Value) {
+    let room = create_room(fix, "open").await;
+    let alice = member(fix).await;
+    add_member(fix, &room, &alice.did, &in_a_year()).await;
+    let offers = call_as(fix, &alice, OFFERS, json!({})).await;
+    let offer = offers["payload"]["items"][0].clone();
+    let accepted = call_as(fix, &alice, ACCEPT, json!({ "roomId": room })).await;
+    assert_eq!(accepted["payload"]["state"], "admitted", "{accepted}");
+    let presentation = json!({
+        "membership": offer["credentials"]["membership"],
+        "authority": [offer["credentials"]["authority"]],
+    });
+    (room, alice, presentation)
+}
+
+async fn read_as(fix: &Fixture, who: &Party, room: &str, presentation: &Value) -> Value {
+    call_as(
+        fix,
+        who,
+        vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
+        json!({ "roomId": room, "presentation": presentation }),
+    )
+    .await
+}
+
+/// Item 2, `open`: the VTA withdraws the member (`rooms/owner/revoke`, one `subject`
+/// withdrawal delivered to this community as the room's host), and from then on this
+/// community refuses the credentials the offer gave them — the removal takes effect at
+/// the host at once. The answer carries the list's head and `revokedAt`, and no epoch.
+#[tokio::test]
+async fn removal_0_2_on_an_open_room_withdraws_the_member_at_the_host() {
+    let mut fix = fixture().await;
+    let (room, alice, presentation) = admitted_on_open_room(&mut fix).await;
+    let read = read_as(&fix, &alice, &room, &presentation).await;
+    assert!(
+        read["payload"]["records"].is_array(),
+        "reads before: {read}"
+    );
+
+    fix.vta.clear_calls();
+    let (status, removed) = admin_call(
+        &mut fix,
+        REMOVE_V0_2,
+        json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    let p = &removed["payload"];
+    assert_eq!(p["member"]["state"], "removed");
+    assert_eq!(p["revocation"]["sequence"], 1, "{removed}");
+    assert!(p["revokedAt"].is_string());
+    assert!(p.get("epoch").is_none());
+
+    let calls = fix.vta.calls();
+    assert_eq!(fix.vta.types_called(), vec![OWNER_REVOKE]);
+    assert_eq!(calls[0].1["hosts"], json!([TEST_VTC_DID]));
+    assert_eq!(calls[0].1["withdraw"][0]["kind"], "subject");
+    assert_eq!(calls[0].1["withdraw"][0]["subject"], alice.did);
+
+    let refused = read_as(&fix, &alice, &room, &presentation).await;
+    assert_eq!(error_code(&refused), Some("permissionDenied"), "{refused}");
+}
+
+/// Item 2, `attributed`: `rooms/owner/group/remove` at 0.2 — withdraw first, then advance.
+#[tokio::test]
+async fn removal_0_2_on_an_attributed_room_withdraws_then_advances() {
+    let mut fix = fixture().await;
+    let room = create_room(&mut fix, "attributed").await;
+    let alice = member(&fix).await;
+    add_member(&mut fix, &room, &alice.did, &in_a_year()).await;
+    call_as(
+        &fix,
+        &alice,
+        ACCEPT,
+        json!({ "roomId": room, "keyPackage": "S1A" }),
+    )
+    .await;
+
+    fix.vta.clear_calls();
+    let (_, removed) = admin_call(
+        &mut fix,
+        REMOVE_V0_2,
+        json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
+    )
+    .await;
+    let p = &removed["payload"];
+    assert_eq!(p["epoch"], 3, "{removed}");
+    assert_eq!(p["revocation"]["sequence"], 1);
+    assert!(p["revokedAt"].is_string());
+    assert_eq!(fix.vta.types_called(), vec![GROUP_REMOVE_V0_2]);
+    let call = &fix.vta.calls()[0].1;
+    assert_eq!(call["host"], TEST_VTC_DID);
+    assert!(call["signingKeyId"].is_string());
+    assert_eq!(
+        fix.vta.group(&room).unwrap().0,
+        vec![TEST_VTC_DID.to_string()]
+    );
+}
+
+/// Item 3: an open offer is withdrawn, and on `open` and `attributed` rooms its
+/// credentials at the host too — a member may already have collected them.
+#[tokio::test]
+async fn removal_0_2_withdraws_an_open_offers_credentials() {
+    let mut fix = fixture().await;
+    let room = create_room(&mut fix, "attributed").await;
+    let alice = member(&fix).await;
+    add_member(&mut fix, &room, &alice.did, &in_a_year()).await;
+    fix.vta.clear_calls();
+    let (_, removed) = admin_call(
+        &mut fix,
+        REMOVE_V0_2,
+        json!({ "roomId": room, "member": alice.did, "reason": "changed our minds" }),
+    )
+    .await;
+    assert_eq!(
+        removed["payload"]["member"]["state"], "removed",
+        "{removed}"
+    );
+    assert_eq!(removed["payload"]["revocation"]["sequence"], 1);
+    assert!(removed["payload"].get("epoch").is_none());
+    assert_eq!(fix.vta.types_called(), vec![OWNER_REVOKE]);
+}
+
+/// Item 2: a withdrawal the host did not accept is never a removal — the VTA's refusal
+/// is `keyHolderRefused`, its silence `keyHolderUnavailable`, and nothing is recorded.
+#[tokio::test]
+async fn removal_0_2_records_nothing_until_the_withdrawal_is_accepted() {
+    let mut fix = fixture().await;
+    let (room, alice, _) = admitted_on_open_room(&mut fix).await;
+
+    fix.vta.script(
+        OWNER_REVOKE,
+        Script::Refuse("rooms/owner/revoke:noAuthority"),
+    );
+    let (_, refused) = admin_call(
+        &mut fix,
+        REMOVE_V0_2,
+        json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
+    )
+    .await;
+    assert_eq!(
+        error_code(&refused),
+        Some(REMOVE_KEY_HOLDER_REFUSED),
+        "{refused}"
+    );
+
+    fix.vta.script(OWNER_REVOKE, Script::Silent);
+    let (_, silent) = admin_call(
+        &mut fix,
+        REMOVE_V0_2,
+        json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
+    )
+    .await;
+    assert_eq!(
+        error_code(&silent),
+        Some(REMOVE_KEY_HOLDER_UNAVAILABLE),
+        "{silent}"
+    );
+    let members = call_as(&fix, &fix.admin, MEMBERS, json!({ "roomId": room })).await;
+    assert_eq!(members["payload"]["items"][0]["state"], "admitted");
+}
+
+/// Re-admission after a removal works: the withdrawal is keyed on time, and the fresh
+/// credentials a second offer gives postdate it.
+#[tokio::test]
+async fn a_member_removed_at_0_2_can_be_admitted_again() {
+    let mut fix = fixture().await;
+    let (room, alice, _) = admitted_on_open_room(&mut fix).await;
+    admin_call(
+        &mut fix,
+        REMOVE_V0_2,
+        json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
+    )
+    .await;
+    // Issued from now, as the VTA issues them: after the withdrawal. A credential's
+    // `validFrom` is written to the second, so one issued within the second of a
+    // withdrawal reads as issued before it and stays withdrawn — fail closed.
+    fix.vta.0.lock().unwrap().issue_from_now = true;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    add_member(&mut fix, &room, &alice.did, &in_a_year()).await;
+    let offers = call_as(&fix, &alice, OFFERS, json!({})).await;
+    let offer = offers["payload"]["items"][0].clone();
+    call_as(&fix, &alice, ACCEPT, json!({ "roomId": room })).await;
+    let presentation = json!({
+        "membership": offer["credentials"]["membership"],
+        "authority": [offer["credentials"]["authority"]],
+    });
+    let read = read_as(&fix, &alice, &room, &presentation).await;
+    assert!(read["payload"]["records"].is_array(), "re-admitted: {read}");
 }

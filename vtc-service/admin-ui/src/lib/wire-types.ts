@@ -294,5 +294,5 @@ export type CommunityRoomMembersListPayload = Schemas["VtcRoomsCommunityMembersL
 export type CommunityRoomMembersListResponse = Schemas["VtcRoomsCommunityMembersListV0_1Response"];
 export type CommunityRoomMembersAddPayload = Schemas["VtcRoomsCommunityMembersAddV0_1Payload"];
 export type CommunityRoomMembersAddResponse = Schemas["VtcRoomsCommunityMembersAddV0_1Response"];
-export type CommunityRoomMembersRemovePayload = Schemas["VtcRoomsCommunityMembersRemoveV0_1Payload"];
-export type CommunityRoomMembersRemoveResponse = Schemas["VtcRoomsCommunityMembersRemoveV0_1Response"];
+export type CommunityRoomMembersRemovePayload = Schemas["VtcRoomsCommunityMembersRemoveV0_2Payload"];
+export type CommunityRoomMembersRemoveResponse = Schemas["VtcRoomsCommunityMembersRemoveV0_2Response"];

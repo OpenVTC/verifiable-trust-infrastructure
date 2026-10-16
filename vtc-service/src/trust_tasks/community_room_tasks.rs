@@ -51,7 +51,8 @@ use trust_tasks_rs::specs::vtc::rooms::community::{
     create::v0_1 as create, create::v0_2 as create_v0_2, create::v0_3 as create_v0_3,
     get::v0_1 as get, get::v0_2 as get_v0_2, list::v0_1 as list, list::v0_2 as list_v0_2,
     members::add::v0_1 as add, members::list::v0_1 as members_list,
-    members::remove::v0_1 as remove, update::v0_1 as update, update::v0_2 as update_v0_2,
+    members::remove::v0_1 as remove, members::remove::v0_2 as remove_v0_2, update::v0_1 as update,
+    update::v0_2 as update_v0_2,
 };
 use trust_tasks_rs::specs::vtc::rooms::offers::{
     accept::v0_1 as accept, list::v0_1 as offers_list, list::v0_2 as offers_list_v0_2,
@@ -83,6 +84,9 @@ pub(crate) const UPDATE_TYPE: &str = <update::Payload as Payload>::TYPE_URI;
 pub(crate) const UPDATE_V0_2_TYPE: &str = <update_v0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const MEMBERS_ADD_TYPE: &str = <add::Payload as Payload>::TYPE_URI;
 pub(crate) const MEMBERS_REMOVE_TYPE: &str = <remove::Payload as Payload>::TYPE_URI;
+/// 0.2: on `open` and `attributed` rooms the member's credentials are withdrawn at the
+/// room's host too (trust-tasks-tf #804).
+pub(crate) const MEMBERS_REMOVE_V0_2_TYPE: &str = <remove_v0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::TYPE_URI;
 pub(crate) const OFFERS_LIST_TYPE: &str = <offers_list::Payload as Payload>::TYPE_URI;
 pub(crate) const OFFERS_LIST_V0_2_TYPE: &str = <offers_list_v0_2::Payload as Payload>::TYPE_URI;
@@ -101,6 +105,7 @@ pub(crate) const URIS: &[&str] = &[
     UPDATE_V0_2_TYPE,
     MEMBERS_ADD_TYPE,
     MEMBERS_REMOVE_TYPE,
+    MEMBERS_REMOVE_V0_2_TYPE,
     MEMBERS_LIST_TYPE,
     OFFERS_LIST_TYPE,
     OFFERS_LIST_V0_2_TYPE,
@@ -126,6 +131,15 @@ const OFFERS_CURSOR: &str = "community-room-offers:";
 
 use crate::rooms::departures::REMOVAL_NOTICE;
 
+/// Which `vtc/rooms/community/members/remove` is being answered.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RemoveVersion {
+    /// The group alone, on a sealed tier; nothing withdrawn at the host.
+    V0_1,
+    /// Withdrawn at the host on `open` and `attributed`; the group too where sealed.
+    V0_2,
+}
+
 pub(super) async fn dispatch(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -143,7 +157,10 @@ pub(super) async fn dispatch(
         UPDATE_TYPE => handle_update(state, ctx, doc, false).await,
         UPDATE_V0_2_TYPE => handle_update(state, ctx, doc, true).await,
         MEMBERS_ADD_TYPE => handle_members_add(state, ctx, doc).await,
-        MEMBERS_REMOVE_TYPE => handle_members_remove(state, ctx, doc).await,
+        MEMBERS_REMOVE_TYPE => handle_members_remove(state, ctx, doc, RemoveVersion::V0_1).await,
+        MEMBERS_REMOVE_V0_2_TYPE => {
+            handle_members_remove(state, ctx, doc, RemoveVersion::V0_2).await
+        }
         MEMBERS_LIST_TYPE => handle_members_list(state, ctx, doc).await,
         OFFERS_LIST_TYPE => handle_offers_list(state, ctx, doc, Shape::V0_1).await,
         OFFERS_LIST_V0_2_TYPE => handle_offers_list(state, ctx, doc, Shape::V0_2).await,
@@ -1460,6 +1477,7 @@ async fn handle_members_remove(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    version: RemoveVersion,
 ) -> TrustTaskOutcome {
     use crate::rooms::community::codes as c;
     let actor = match capable_signer(state, ctx, &doc, Capability::RoomsManage, None).await {
@@ -1503,11 +1521,19 @@ async fn handle_members_remove(
         return reject;
     }
 
-    // Item 2: an admitted member of a sealed room leaves the group, and the room advances
-    // to an epoch sealed to everyone else, before anything is recorded here.
+    // Item 2. At 0.1 an admitted member of a sealed room leaves the group and the room
+    // advances. At 0.2 (trust-tasks-tf #804) the member is withdrawn at the host too on
+    // `open` and `attributed` rooms, and an open offer's credentials with them
+    // ([`crate::rooms::departures::remove_member`]). Either way, before anything is
+    // recorded here.
     let withdrawn = record.state == MemberRecord::OFFERED;
     let mut epoch = None;
-    if !withdrawn && sealed(&room) {
+    let mut revocation: Option<(Value, String)> = None;
+    let asks_vta = match version {
+        RemoveVersion::V0_1 => !withdrawn && sealed(&room),
+        RemoveVersion::V0_2 => !(withdrawn && room.visibility == "private"),
+    };
+    if asks_vta {
         let Some(holder) = state.community_rooms.key_holder() else {
             return refuse(
                 &doc,
@@ -1523,16 +1549,36 @@ async fn handle_members_remove(
             .vtc_did
             .clone()
             .unwrap_or_default();
-        match crate::rooms::departures::remove_from_group(
-            &holder,
-            &room_id,
-            &community_did,
-            &member,
-            &reason,
-        )
-        .await
-        {
-            Ok(e) => epoch = e,
+        let outcome = match version {
+            RemoveVersion::V0_1 => crate::rooms::departures::remove_from_group(
+                &holder,
+                &room_id,
+                &community_did,
+                &member,
+                &reason,
+            )
+            .await
+            .map(|epoch| crate::rooms::departures::Removed {
+                epoch,
+                revocation: None,
+            }),
+            RemoveVersion::V0_2 => {
+                crate::rooms::departures::remove_member(
+                    &holder,
+                    &room,
+                    &community_did,
+                    &member,
+                    withdrawn,
+                    &reason,
+                )
+                .await
+            }
+        };
+        match outcome {
+            Ok(r) => {
+                epoch = r.epoch;
+                revocation = r.revocation;
+            }
             // Not answered, or the host — this community — did not answer the VTA: the
             // outcome is unknown, and the VTA settles it on the next request.
             Err(HolderError::Unavailable(why)) => {
@@ -1571,24 +1617,36 @@ async fn handle_members_remove(
         },
         &room,
     );
+    let notice = match version {
+        RemoveVersion::V0_1 => REMOVAL_NOTICE,
+        RemoveVersion::V0_2 => crate::rooms::departures::removal_notice(revocation.is_some()),
+    };
     row.member = Some(member);
     row.epoch = epoch;
     row.reason = Some(reason);
-    if !withdrawn {
-        row.note = Some(REMOVAL_NOTICE.into());
+    if !withdrawn || revocation.is_some() {
+        row.note = Some(notice.into());
     }
     audit(state, &actor.did, row).await;
 
-    // Item 4: the structured members say what removal did; the notice beside them in
-    // `ext` is a courtesy a caller must not depend on (#796).
+    // Item 4: the structured members say what removal did — at 0.2 `revocation` and
+    // `revokedAt` where the host refuses the member's credentials from then on; the notice
+    // beside them in `ext` is a courtesy a caller must not depend on (#796).
     let mut body = json!({
         "member": record.wire(),
-        "ext": { "org.openvtc": { "notice": REMOVAL_NOTICE } },
+        "ext": { "org.openvtc": { "notice": notice } },
     });
-    if let Some(e) = epoch.filter(|e| *e >= 2) {
+    if let Some((head, revoked_at)) = revocation {
+        body["revocation"] = head;
+        body["revokedAt"] = json!(revoked_at);
+    }
+    if let Some(e) = epoch.filter(|e| *e >= 2 && !withdrawn) {
         body["epoch"] = json!(e);
     }
-    respond::<remove::Response>(&doc, body)
+    match version {
+        RemoveVersion::V0_1 => respond::<remove::Response>(&doc, body),
+        RemoveVersion::V0_2 => respond::<remove_v0_2::Response>(&doc, body),
+    }
 }
 
 async fn handle_members_list(

@@ -3027,6 +3027,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     community_room_tasks::UPDATE_V0_2_TYPE,
     community_room_tasks::MEMBERS_ADD_TYPE,
     community_room_tasks::MEMBERS_REMOVE_TYPE,
+    community_room_tasks::MEMBERS_REMOVE_V0_2_TYPE,
     community_room_tasks::MEMBERS_LIST_TYPE,
     community_room_tasks::OFFERS_LIST_TYPE,
     community_room_tasks::OFFERS_LIST_V0_2_TYPE,

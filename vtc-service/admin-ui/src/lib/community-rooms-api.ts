@@ -56,7 +56,7 @@ export const COMMUNITY_ROOMS_UPDATE_TASK = "https://trusttasks.org/spec/vtc/room
 export const COMMUNITY_ROOMS_MEMBERS_ADD_TASK =
   "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1";
 export const COMMUNITY_ROOMS_MEMBERS_REMOVE_TASK =
-  "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.1";
+  "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2";
 export const COMMUNITY_ROOMS_MEMBERS_LIST_TASK =
   "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1";
 
@@ -376,7 +376,7 @@ export function addCommunityRoomMember(
   );
 }
 
-/** `vtc/rooms/community/members/remove/0.1`, after the requester's bound gesture. */
+/** `vtc/rooms/community/members/remove/0.2`, after the requester's bound gesture. */
 export function removeCommunityRoomMember(
   payload: CommunityRoomMembersRemovePayload,
   confirmGesture: ConfirmGesture,
@@ -464,39 +464,55 @@ export const AUTHORITY_WARN_DAYS = 30;
 
 // ── What removal does, said before it is signed ─────────────────────────
 //
-// `vtc/rooms/community/members/remove/0.1` producer item 1: show the requester,
+// `vtc/rooms/community/members/remove/0.2` producer item 1: show the requester,
 // before the request is signed and before the gesture bound to it, what removal
-// does and does not do on the room's tier, and the member's `validUntil`. Item
-// 2: report the answer from its structured members, never as ending access to
-// what the member already read.
+// does and does not do on the room's tier, and on a private room the member's
+// `validUntil`. Item 2: report the answer from its structured members —
+// `revocation` and `revokedAt` where present, `validUntil` where they are
+// absent, and `epoch` — never as ending access to what the member already read.
 
 /** What removing `member` from a room at `visibility` will do. */
 export function removalPreview(visibility: string, member: CommunityRoomMember): string {
-  if (member.state === "offered") {
-    return "Their open offer is withdrawn, so it can never be accepted. Nothing was issued to the room's group, so nothing else changes.";
-  }
-  if (visibility === "open") {
+  if (visibility === "private") {
+    if (member.state === "offered") {
+      return "Their open offer is withdrawn, so it can never be accepted.";
+    }
     return (
-      "This room is open: it has no group, so removal withdraws nothing cryptographically. " +
-      `Their authority credential is not revoked and a host honours it until ${member.validUntil}. ` +
-      "Nothing they already read can be recalled."
+      "This room is private: a member cannot be withdrawn one at a time, because its host does not " +
+      "know who its members are. They leave the room's group, so they cannot open anything written " +
+      `from now on, but a host honours their credentials until ${member.validUntil}. Nothing they ` +
+      "already read can be recalled."
     );
   }
+  const withdrawn =
+    "The room's host refuses their credentials — and anything they delegated to an agent — from the " +
+    "moment it accepts the room's revocation list.";
+  if (member.state === "offered") {
+    return `Their open offer is withdrawn, so it can never be accepted. ${withdrawn}`;
+  }
+  if (visibility === "open") {
+    return `${withdrawn} Nothing they already read can be recalled.`;
+  }
   return (
-    "They leave the room's group and the room advances to an epoch sealed to everyone else, so they " +
-    "cannot open anything written from now on. Nothing they already read can be recalled, nothing " +
-    "written before is re-sealed, and their authority credential is not revoked: a host honours it " +
-    `until ${member.validUntil}, though it opens nothing written after this.`
+    `${withdrawn} They also leave the room's group and the room advances to an epoch sealed to ` +
+    "everyone else. Nothing they already read can be recalled, and nothing written before is re-sealed."
   );
 }
 
 /** What a completed removal did, from the answer's structured members. */
 export function removalOutcome(answer: CommunityRoomMembersRemoveResponse): string {
-  const until = `Their authority credential is honoured by a host until ${answer.member.validUntil}.`;
-  if (answer.epoch !== undefined) {
-    return `Removed. Epoch ${answer.epoch} is the first sealed without them. ${until}`;
+  const sealed =
+    answer.epoch !== undefined ? ` Epoch ${answer.epoch} is the first sealed without them.` : "";
+  if (answer.revocation !== undefined) {
+    return (
+      `Removed. The host refuses their credentials from ${answer.revokedAt ?? "now"} ` +
+      `(revocation list ${answer.revocation.sequence}).${sealed}`
+    );
   }
-  return `Removed. Nothing was withdrawn cryptographically (an open room, or an offer withdrawn). ${until}`;
+  return (
+    `Removed.${sealed} Their credentials were not withdrawn at the host (a private room) and are ` +
+    `honoured until ${answer.member.validUntil}.`
+  );
 }
 
 // ── Refusals, and what to do about them ─────────────────────────────────

@@ -282,6 +282,12 @@ spec_types! {
     /// `vtc/rooms/community/members/remove/0.1#response` — the member's record,
     /// and on a sealed tier the first epoch sealed without them.
     RoomsCommunityMembersRemove01Response(rooms_community::members::remove::v0_1::Response);
+    /// `vtc/rooms/community/members/remove/0.2` payload.
+    RoomsCommunityMembersRemove02Payload(rooms_community::members::remove::v0_2::Payload);
+    /// `vtc/rooms/community/members/remove/0.2#response` — the member's record; on
+    /// `open` and `attributed` rooms the revocation list in force at the room's host and
+    /// the withdrawal's time; on a sealed tier the first epoch sealed without them.
+    RoomsCommunityMembersRemove02Response(rooms_community::members::remove::v0_2::Response);
     /// `vtc/rooms/community/members/list/0.1` payload.
     RoomsCommunityMembersList01Payload(rooms_community::members::list::v0_1::Payload);
     /// `vtc/rooms/community/members/list/0.1#response` — one page of a room's
