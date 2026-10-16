@@ -111,6 +111,58 @@ const ROOTS: &str = "room-roots";
 /// removal read as a commit somebody had not delivered — whose remedy, applying commits,
 /// can never work.
 const REMOVED: &str = "room-removed";
+/// The last admission this owner applied, per owner: `room-admitted/<roomId>/<persona>`.
+///
+/// `rooms/owner/group/add/0.2` item 8: kept so that a caller who lost the answer and sends
+/// the identical request again gets the Welcome it needs, rather than `alreadyMember`. Short
+/// on purpose — until this owner builds its next advance of the room, or
+/// [`ADMISSION_RETENTION_SECS`] after it was applied, whichever is first — because the
+/// Welcome is secret-bearing ciphertext and a request after either is no longer a retry of
+/// anything.
+///
+/// In [`ROOM_GROUPS`](crate::keyspaces::ROOM_GROUPS), beside the pending advance it is promoted
+/// from, which already holds the same Welcome: under the same storage encryption, carried by
+/// a backup with the group it belongs to, and gone with the member's DID. A separate keyspace
+/// excluded from backup would buy nothing — the pending advance it is made from is backed up
+/// — and a restored row is still bounded by its `appliedAt`.
+const ADMITTED: &str = "room-admitted";
+
+/// How long a retained admission is kept at most — `rooms/owner/group/add/0.2` item 8's
+/// 24 hours.
+pub const ADMISSION_RETENTION_SECS: u64 = 24 * 60 * 60;
+
+/// The [`ADMITTED`] row: `rooms/owner/group/add/0.2` item 8's retained admission.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetainedAdmission {
+    /// The DID admitted, compared with a repeat's `member` as a string — never normalised,
+    /// never resolved.
+    pub member: String,
+    /// The admitted KeyPackage's `KeyPackageRef` (RFC 9420 §5.2), base64url.
+    pub key_package_ref: String,
+    /// The room epoch the admission produced.
+    pub epoch: u32,
+    /// The Welcome, base64url.
+    pub welcome: String,
+    /// The ratchet tree, base64url, where the admission returned one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ratchet_tree: Option<String>,
+    /// Unix seconds when it was applied here.
+    pub applied_at: u64,
+}
+
+impl RetainedAdmission {
+    /// Whether it is still kept at `now` (item 8's 24 hours).
+    pub fn kept_at(&self, now: u64) -> bool {
+        now < self.applied_at.saturating_add(ADMISSION_RETENTION_SECS)
+    }
+
+    /// Whether a request for `member` with a KeyPackage whose reference is
+    /// `key_package_ref` repeats this admission — the exact match item 8 asks for.
+    pub fn repeated_by(&self, member: &str, key_package_ref: &[u8]) -> bool {
+        self.member == member && self.key_package_ref == B64.encode(key_package_ref)
+    }
+}
 
 /// The [`REMOVED`] row.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -988,6 +1040,12 @@ pub struct PendingAdvance {
     /// only; a removal welcomes nobody.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub welcome: Option<String>,
+    /// The admitted KeyPackage's `KeyPackageRef`, base64url. An admission's only — what
+    /// the admission is remembered by once applied (`rooms/owner/group/add/0.2` item 8). An
+    /// admission retained before the field existed has none, and is applied without being
+    /// retained: a repeat of it is `alreadyMember`, as it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_package_ref: Option<String>,
     /// Unix seconds it was built.
     pub created_at: u64,
 }
@@ -1036,7 +1094,10 @@ async fn retain(
             .unwrap_or_else(|| pending.clone());
         return Err(taken(&found));
     }
-    Ok(())
+    // `rooms/owner/group/add/0.2` item 8: the last admission is kept until the owner builds
+    // its next advance of the room. This is that moment — a request after it is no longer a
+    // retry of anything (the advance may itself remove the member).
+    discard_retained_admission(groups, owner).await
 }
 
 /// Build the admission of `member` to `owner`'s group from their KeyPackage and retain it,
@@ -1077,6 +1138,10 @@ pub async fn prepare_add(
     let welcome = change.welcome.ok_or_else(|| {
         PrepareAddError::App(AppError::Internal("an add produced no Welcome".into()))
     })?;
+    // What the admission is remembered by once applied (`rooms/owner/group/add/0.2` item 8).
+    // The add above already validated the KeyPackage, so this cannot fail on its bytes.
+    let key_package_ref = vti_rooms::mls::key_package_ref(key_package)
+        .map_err(|e| PrepareAddError::KeyPackageInvalid(e.to_string()))?;
 
     let pending = PendingAdvance {
         kind: AdvanceKind::Admission,
@@ -1090,6 +1155,7 @@ pub async fn prepare_add(
         link,
         commit: B64.encode(&change.commit),
         welcome: Some(B64.encode(&welcome)),
+        key_package_ref: Some(B64.encode(&key_package_ref)),
         created_at: now,
     };
     retain(groups, owner, &pending)
@@ -1161,6 +1227,7 @@ pub async fn prepare_remove(
         link,
         commit: B64.encode(&change.commit),
         welcome: None,
+        key_package_ref: None,
         created_at: now,
     };
     retain(groups, owner, &pending)
@@ -1209,6 +1276,7 @@ pub async fn prepare_renew(
         link,
         commit: B64.encode(&change.commit),
         welcome: None,
+        key_package_ref: None,
         created_at: now,
     };
     retain(groups, owner, &pending).await?;
@@ -1244,7 +1312,99 @@ pub async fn promote_pending_advance(
     let group = RoomGroup::restore(&pending.snapshot)
         .map_err(|e| AppError::Internal(format!("restore the pending group: {e}")))?;
     store(groups, owner, &group, pending.links.clone(), now).await?;
+    // Before the pending row goes: a crash between the two leaves the pending row, which
+    // the next request recognises as promoted and retains again.
+    retain_admission(groups, owner, pending, now).await?;
     discard_pending_advance(groups, owner).await
+}
+
+/// An applied admission becomes the room's retained admission (`rooms/owner/group/add/0.2`
+/// items 6 and 8). A removal or renewal retains nothing — and was preceded, when it was
+/// built, by the discard of whatever was retained.
+async fn retain_admission(
+    groups: &KeyspaceHandle,
+    owner: &Member,
+    pending: &PendingAdvance,
+    now: u64,
+) -> Result<(), AppError> {
+    let (AdvanceKind::Admission, Some(welcome), Some(key_package_ref)) =
+        (pending.kind, &pending.welcome, &pending.key_package_ref)
+    else {
+        return Ok(());
+    };
+    groups
+        .insert(
+            owner.key(ADMITTED),
+            &RetainedAdmission {
+                member: pending.member.clone(),
+                key_package_ref: key_package_ref.clone(),
+                epoch: pending.epoch,
+                welcome: welcome.clone(),
+                ratchet_tree: None,
+                applied_at: now,
+            },
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("retain the applied admission: {e}")))
+}
+
+/// The admission `owner` last applied in the room, while it is still kept
+/// (`rooms/owner/group/add/0.2` item 8). One kept past its 24 hours is discarded here, so
+/// it is never served late even before the sweep reaches it.
+pub async fn retained_admission(
+    groups: &KeyspaceHandle,
+    owner: &Member,
+    now: u64,
+) -> Result<Option<RetainedAdmission>, AppError> {
+    let row: Option<RetainedAdmission> = groups
+        .get(owner.key(ADMITTED))
+        .await
+        .map_err(|e| AppError::Internal(format!("read the retained admission: {e}")))?;
+    match row {
+        Some(r) if r.kept_at(now) => Ok(Some(r)),
+        Some(_) => {
+            discard_retained_admission(groups, owner).await?;
+            Ok(None)
+        }
+        None => Ok(None),
+    }
+}
+
+async fn discard_retained_admission(
+    groups: &KeyspaceHandle,
+    owner: &Member,
+) -> Result<(), AppError> {
+    groups
+        .remove(owner.key(ADMITTED))
+        .await
+        .map_err(|e| AppError::Internal(format!("discard the retained admission: {e}")))
+}
+
+/// Discard every retained admission past its 24 hours (`rooms/owner/group/add/0.2` item 8,
+/// "and MUST discard it then"), for the storage thread's sweep. [`retained_admission`]
+/// already refuses to serve one late; this is what removes the Welcome from disk when
+/// nobody asks again. Returns how many were discarded.
+pub async fn sweep_retained_admissions(
+    groups: &KeyspaceHandle,
+    now: u64,
+) -> Result<usize, AppError> {
+    let rows = groups
+        .prefix_iter_raw(format!("{ADMITTED}/").into_bytes())
+        .await
+        .map_err(|e| AppError::Internal(format!("scan retained admissions: {e}")))?;
+    let mut discarded = 0;
+    for (key, raw) in rows {
+        // A row that does not read is not one this build can ever serve: discard it too.
+        let keep = serde_json::from_slice::<RetainedAdmission>(&raw).is_ok_and(|r| r.kept_at(now));
+        if !keep {
+            groups
+                .remove(key)
+                .await
+                .map_err(|e| AppError::Internal(format!("discard a retained admission: {e}")))?;
+            discarded += 1;
+        }
+    }
+    Ok(discarded)
 }
 
 /// The host refused, or the room has moved past it: forget the advance
@@ -1289,7 +1449,9 @@ pub async fn reconcile_pending_advance(
         None => 0,
     };
     if live_epoch == pending.epoch {
-        // Promoted already; only the pending row survived a crash.
+        // Promoted already; only the pending row survived a crash — perhaps before the
+        // admission was retained, so it is retained (again) here.
+        retain_admission(groups, owner, pending, now).await?;
         discard_pending_advance(groups, owner).await?;
         return Ok(Reconciled::Applied);
     }
@@ -1478,6 +1640,25 @@ pub(crate) async fn store_for_test(
     store(groups, member, group, links, 0).await
 }
 
+/// Move the retained admission's `appliedAt` `secs` into the past, for tests of item 8's
+/// 24 hours.
+#[cfg(test)]
+pub(crate) async fn age_retained_admission_for_test(
+    groups: &KeyspaceHandle,
+    owner: &Member,
+    secs: u64,
+) {
+    let mut row: RetainedAdmission = groups.get(owner.key(ADMITTED)).await.unwrap().unwrap();
+    row.applied_at = row.applied_at.saturating_sub(secs);
+    groups.insert(owner.key(ADMITTED), &row).await.unwrap();
+}
+
+/// Whether a retained admission row exists at all, expired or not.
+#[cfg(test)]
+pub(crate) async fn has_retained_admission_row(groups: &KeyspaceHandle, owner: &Member) -> bool {
+    groups.get_raw(owner.key(ADMITTED)).await.unwrap().is_some()
+}
+
 /// Record that a commit removed `member` at `epoch`, as [`apply_commit`] does on
 /// processing it — for tests of how a removed member's refusals read.
 #[cfg(test)]
@@ -1662,6 +1843,7 @@ pub async fn forget(groups: &KeyspaceHandle, member: &Member) -> Result<(), AppE
     // An advance this agent built for a group it no longer holds can never be
     // promoted; leaving it would hand whoever rejoins a stale successor to settle.
     discard_pending_advance(groups, member).await?;
+    discard_retained_admission(groups, member).await?;
     // The root history goes with the membership. It carries no record content,
     // but it is a record of when this member read this room, and an agent that
     // kept it afterwards would be keeping a diary of a room its principal can no

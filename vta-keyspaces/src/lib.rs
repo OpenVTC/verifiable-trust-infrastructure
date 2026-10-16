@@ -113,8 +113,11 @@ pub const MEMORY: &str = "memory";
 /// (`rooms/keys/{welcome,commit,open}`), keyed **per member**:
 /// `room-group/<roomId>/<persona>`, beside the member's pending KeyPackage
 /// (`room-kp/…`), pending epoch advance (`room-advance/…`), root memory
-/// (`room-roots/…`) and the epoch a commit removed the member at
-/// (`room-removed/…`) under the same `<roomId>/<persona>`. One VTA may hold several
+/// (`room-roots/…`), the epoch a commit removed the member at
+/// (`room-removed/…`) and an owner's last applied admission, Welcome included, kept
+/// for at most 24 hours so a repeated request can be answered
+/// (`room-admitted/…`, `rooms/owner/group/add/0.2` item 8) under the same
+/// `<roomId>/<persona>`. One VTA may hold several
 /// members of one room — several principals, or several personas of one — and
 /// each is a different leaf with different secrets. Rows a per-room build wrote
 /// (`room-group:<roomId>`, …) are moved under their member on first touch.

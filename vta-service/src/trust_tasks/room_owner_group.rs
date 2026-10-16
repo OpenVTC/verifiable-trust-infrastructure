@@ -133,13 +133,44 @@ pub(super) async fn handle_create(
     }
 }
 
+/// Which `rooms/owner/group/add` is being answered. The request and response schemas are
+/// the same; 0.2 answers a repeated admission with its Welcome (item 8) where 0.1 refused it
+/// `alreadyMember`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AddVersion {
+    V0_1,
+    V0_2,
+}
+
 /// `rooms/owner/group/add/0.1` — admit a member, advancing the room at its host first.
 pub(super) async fn handle_add(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec_add::v0_1::error_codes as codes;
+    add_at(state, auth, doc, AddVersion::V0_1).await
+}
+
+/// `rooms/owner/group/add/0.2` — 0.1, and a request that repeats the admission this agent
+/// last applied for the room (same `member`, a KeyPackage with the same `KeyPackageRef`) is
+/// answered with that admission's epoch and Welcome, changing nothing (item 8).
+pub(super) async fn handle_add_v0_2(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    add_at(state, auth, doc, AddVersion::V0_2).await
+}
+
+/// `rooms/owner/group/add`, at either version. The error codes are the same at both (the
+/// slug carries no version), so 0.2's generated constants serve both.
+async fn add_at(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    at: AddVersion,
+) -> TrustTaskOutcome {
+    use spec_add::v0_2::error_codes as codes;
     const ADVANCE: AdvanceCodes = AdvanceCodes {
         no_authority: codes::NO_AUTHORITY,
         epoch_conflict: codes::EPOCH_CONFLICT,
@@ -157,7 +188,7 @@ pub(super) async fn handle_add(
     {
         return r;
     }
-    let req: spec_add::v0_1::Payload = match parse_payload(&doc) {
+    let req: spec_add::v0_2::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -202,6 +233,44 @@ pub(super) async fn handle_add(
         }
     };
 
+    // 0.2 item 8: a repeat of the admission last applied — after item 1 and the checks of
+    // *Authorization* above, and after item 6 settled a pending admission into the retained
+    // one — is answered with that admission, without contacting the host, advancing or
+    // building a new Welcome.
+    if at == AddVersion::V0_2 {
+        let key_package_ref = match vti_rooms::mls::key_package_ref(&key_package) {
+            Ok(r) => r,
+            Err(e) => {
+                return reject_with_code(
+                    &doc,
+                    declared(codes::KEY_PACKAGE_INVALID),
+                    format!("the KeyPackage cannot admit `{member}`: {e}"),
+                    None,
+                );
+            }
+        };
+        match room_groups::retained_admission(&state.room_groups_ks, &host_call.owner_member, now())
+            .await
+        {
+            Ok(Some(kept)) if kept.repeated_by(&member, &key_package_ref) => {
+                // A repeat changes nothing, so it is recorded as one: no second admission.
+                record(state, "rooms.owner.group.add.repeated", auth, &room_id).await;
+                let mut body = serde_json::json!({
+                    "roomId": room_id,
+                    "member": member,
+                    "epoch": kept.epoch,
+                    "welcome": kept.welcome,
+                });
+                if let Some(tree) = kept.ratchet_tree {
+                    body["ratchetTree"] = Value::String(tree);
+                }
+                return success_response(&doc, body);
+            }
+            Ok(_) => {}
+            Err(e) => return app_error_to_reject(&doc, e),
+        }
+    }
+
     // Items 2 and 3: built on a copy and retained durably before the host is contacted.
     let pending = match room_groups::prepare_add(
         &state.room_groups_ks,
@@ -226,7 +295,20 @@ pub(super) async fn handle_add(
             return reject_with_code(
                 &doc,
                 declared(codes::ALREADY_MEMBER),
-                format!("`{member}` already has a leaf in room `{room_id}`'s group"),
+                match at {
+                    AddVersion::V0_1 => {
+                        format!("`{member}` already has a leaf in room `{room_id}`'s group")
+                    }
+                    // 0.2: and this is not a repeat this agent can answer (item 8).
+                    AddVersion::V0_2 => format!(
+                        "`{member}` already has a leaf in room `{room_id}`'s group, and this \
+                         is not a repeat of an admission whose Welcome is still kept here — \
+                         another KeyPackage, or one admitted before this agent's last advance \
+                         of the room or more than 24 hours ago. Remove them \
+                         (rooms/owner/group/remove) and admit them again with a fresh \
+                         KeyPackage"
+                    ),
+                },
                 None,
             );
         }
@@ -1187,6 +1269,23 @@ mod tests {
         )
     }
 
+    async fn add_v0_2(o: &Owner, member: &str, key_package: &str) -> Value {
+        body(
+            handle_add_v0_2(
+                &o.state,
+                &crate::test_support::super_admin_claims(),
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_2,
+                    serde_json::json!({
+                        "roomId": o.room.did, "host": o.host.did, "member": member,
+                        "keyPackage": key_package, "reason": "joining the deal team",
+                    }),
+                ),
+            )
+            .await,
+        )
+    }
+
     async fn remove(o: &Owner, member: &str) -> Value {
         body(
             handle_remove(
@@ -1402,6 +1501,207 @@ mod tests {
             again["payload"]["code"], "rooms/owner/group/add:alreadyMember",
             "{again}"
         );
+    }
+
+    /// `rooms/owner/group/add/0.2` item 8: the identical request again — after the answer
+    /// was lost on the way back to the caller — is answered with the same epoch and Welcome,
+    /// and nothing moves: not the host, not the group. The Welcome still admits the member.
+    /// 0.1 is unchanged and refuses the same repeat `alreadyMember`.
+    #[tokio::test]
+    async fn add_0_2_answers_an_identical_repeat_with_the_kept_welcome() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (j_state, _j_dir, j_did, kp) = joiner(&o.room.did).await;
+
+        let first = add_v0_2(&o, &j_did, &kp).await;
+        assert_eq!(first["payload"]["epoch"], 2, "{first}");
+        let mints_before = o.host.state.lock().unwrap().last_mint.clone();
+
+        let again = add_v0_2(&o, &j_did, &kp).await;
+        assert_eq!(again["payload"]["epoch"], 2, "{again}");
+        assert_eq!(again["payload"]["member"], j_did, "{again}");
+        assert_eq!(
+            again["payload"]["welcome"], first["payload"]["welcome"],
+            "the same Welcome, not a fresh one"
+        );
+        assert!(
+            again["type"].as_str().is_some_and(
+                |t| t.starts_with(vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_2)
+            ),
+            "{again}"
+        );
+        serde_json::from_value::<spec_add::v0_2::Response>(again["payload"].clone())
+            .expect("a 0.2 response");
+        assert_eq!(
+            o.host.state.lock().unwrap().epoch,
+            2,
+            "the host did not advance"
+        );
+        assert_eq!(
+            o.host.state.lock().unwrap().last_mint,
+            mints_before,
+            "nothing was sent to the host"
+        );
+        assert_eq!(live_epoch(&o).await, 2, "the group did not change");
+        assert!(pending(&o).await.is_none());
+
+        // 0.1 behaviour is unchanged: the same repeat is `alreadyMember`.
+        let v01 = add(&o, &j_did, &kp).await;
+        assert_eq!(
+            v01["payload"]["code"], "rooms/owner/group/add:alreadyMember",
+            "{v01}"
+        );
+
+        // The re-served Welcome is the one that admits them.
+        let welcome = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(again["payload"]["welcome"].as_str().unwrap())
+                .unwrap()
+        };
+        room_groups::join(
+            &j_state.room_groups_ks,
+            &Member::new(&o.room.did, &j_did).unwrap(),
+            &welcome,
+            0,
+        )
+        .await
+        .expect("joins from the re-served Welcome");
+    }
+
+    /// Item 8: the match is exact. Another KeyPackage for the same member, or the same
+    /// KeyPackage named for another member, is no repeat — `alreadyMember` for the first,
+    /// and the second is refused as `keyPackageInvalid` as any mismatched leaf is.
+    #[tokio::test]
+    async fn add_0_2_another_key_package_for_the_member_is_already_member() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, j_did, kp) = joiner(&o.room.did).await;
+        add_v0_2(&o, &j_did, &kp).await;
+
+        let (_, other) = vti_rooms::mls::IdentitySnapshot::mint(&j_did).unwrap();
+        let other = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(other)
+        };
+        let out = add_v0_2(&o, &j_did, &other).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/add:alreadyMember",
+            "{out}"
+        );
+        assert_eq!(o.host.state.lock().unwrap().epoch, 2);
+
+        let out = add_v0_2(&o, "did:key:z6MkSomebodyElse", &kp).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/add:keyPackageInvalid",
+            "{out}"
+        );
+        assert_eq!(o.host.state.lock().unwrap().epoch, 2);
+    }
+
+    /// Item 8: kept until the owner's next advance of the room, or 24 hours — whichever is
+    /// first — and `alreadyMember` after either. The sweep takes an expired one off disk.
+    #[tokio::test]
+    async fn add_0_2_forgets_the_welcome_at_the_next_advance_or_after_24_hours() {
+        // The next advance.
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, j_did, kp) = joiner(&o.room.did).await;
+        add_v0_2(&o, &j_did, &kp).await;
+        let renewed = renew(&o).await;
+        assert_eq!(renewed["payload"]["epoch"], 3, "{renewed}");
+        assert!(!room_groups::has_retained_admission_row(&o.state.room_groups_ks, &om(&o)).await);
+        let out = add_v0_2(&o, &j_did, &kp).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/add:alreadyMember",
+            "{out}"
+        );
+
+        // 24 hours.
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, j_did, kp) = joiner(&o.room.did).await;
+        add_v0_2(&o, &j_did, &kp).await;
+        room_groups::age_retained_admission_for_test(
+            &o.state.room_groups_ks,
+            &om(&o),
+            room_groups::ADMISSION_RETENTION_SECS - 60,
+        )
+        .await;
+        let out = add_v0_2(&o, &j_did, &kp).await;
+        assert_eq!(
+            out["payload"]["epoch"], 2,
+            "still kept just inside 24 hours: {out}"
+        );
+        room_groups::age_retained_admission_for_test(&o.state.room_groups_ks, &om(&o), 120).await;
+        let out = add_v0_2(&o, &j_did, &kp).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/add:alreadyMember",
+            "{out}"
+        );
+        assert!(
+            !room_groups::has_retained_admission_row(&o.state.room_groups_ks, &om(&o)).await,
+            "an expired admission read is discarded"
+        );
+
+        // The sweep, for one nobody asks about again.
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, j_did, kp) = joiner(&o.room.did).await;
+        add_v0_2(&o, &j_did, &kp).await;
+        let now = u64::try_from(Utc::now().timestamp()).unwrap();
+        assert_eq!(
+            room_groups::sweep_retained_admissions(&o.state.room_groups_ks, now)
+                .await
+                .unwrap(),
+            0,
+            "a kept one stays"
+        );
+        assert_eq!(
+            room_groups::sweep_retained_admissions(
+                &o.state.room_groups_ks,
+                now + room_groups::ADMISSION_RETENTION_SECS
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        assert!(!room_groups::has_retained_admission_row(&o.state.room_groups_ks, &om(&o)).await);
+    }
+
+    /// Items 6 and 8: the host accepts and its answer is lost, so the admission is pending.
+    /// The identical request settles it (item 6) — and, since it repeats the admission it
+    /// just applied, is answered with that admission's Welcome rather than refused or
+    /// advanced again.
+    #[tokio::test]
+    async fn add_0_2_a_repeat_after_a_lost_host_answer_settles_and_gets_the_welcome() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        o.host.state.lock().unwrap().mode = Mode::AcceptThenLose;
+        let (_s, _d, j_did, kp) = joiner(&o.room.did).await;
+
+        let out = add_v0_2(&o, &j_did, &kp).await;
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/group/add:hostUnreachable",
+            "{out}"
+        );
+        let kept = pending(&o).await.expect("pending").welcome;
+
+        o.host.state.lock().unwrap().mode = Mode::Accept;
+        let again = add_v0_2(&o, &j_did, &kp).await;
+        assert_eq!(again["payload"]["epoch"], 2, "{again}");
+        assert_eq!(
+            again["payload"]["welcome"].as_str(),
+            kept.as_deref(),
+            "{again}"
+        );
+        assert_eq!(
+            o.host.state.lock().unwrap().epoch,
+            2,
+            "settled, not advanced again"
+        );
+        assert_eq!(live_epoch(&o).await, 2);
+        assert!(pending(&o).await.is_none());
     }
 
     /// A KeyPackage naming somebody else is refused: an owner admits the party they meant.

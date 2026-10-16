@@ -483,7 +483,8 @@ Step by step:
    ```bash
    pnm rooms keys key-package --room <room-did> --invitation ./invite.json --out ./kp.b64
    ```
-3. **The owner's VTA admits the leaf** (`rooms/owner/group/add/0.1`):
+3. **The owner's VTA admits the leaf** (`rooms/owner/group/add/0.2`, falling
+   back to `0.1` against a VTA that predates it):
 
    ```bash
    pnm rooms owner group-add --room <room-did> --host-did <host-did> \
@@ -501,6 +502,15 @@ Step by step:
    it and a key holder cannot process its own commit from the wire. Deliver
    `welcome.json` to the joiner directly — **never through the host**, which
    on a `private` room must not learn who joined.
+
+   Lost the answer? Send the identical request again. At `0.2` the VTA keeps
+   the last admission it applied for the room — the member, the KeyPackage's
+   `KeyPackageRef`, the epoch and the Welcome — until its next advance of the
+   room or 24 hours, whichever is first, and answers a repeat (same member,
+   same KeyPackage) with that Welcome without touching the host or the group
+   (item 8). Another KeyPackage for the same member, or a repeat after the
+   Welcome is gone, is `alreadyMember`: remove the member and admit them again
+   with a fresh KeyPackage.
 4. **The joiner's VTA processes it** (`rooms/keys/welcome/0.1`, same invitation):
 
    ```bash

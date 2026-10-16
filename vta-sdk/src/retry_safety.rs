@@ -683,6 +683,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // the Welcome is sealed to the newcomer's KeyPackage and opens nothing for
     // anyone else, including whoever holds the cached copy.
     (trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_1, Keyed),
+    // Still `Keyed` at 0.2, though 0.2 answers a repeat with the kept Welcome (item 8):
+    // the agent keeps it only until its next advance of the room or 24 hours, so a key
+    // still covers a retry later than that, and a cached answer is the same answer.
+    (trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_2, Keyed),
     // `Keyed`, like add. A second execution after a lost reply is refused
     // `notMember` — the removal happened, but the caller is told the member was
     // never there, and an operator reading that may conclude the wrong person

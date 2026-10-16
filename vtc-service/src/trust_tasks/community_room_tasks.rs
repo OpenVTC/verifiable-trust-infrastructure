@@ -37,7 +37,8 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::rooms::owner::{
     group::{
-        add::v0_1 as owner_add, create::v0_1 as owner_group_create, remove::v0_1 as owner_remove,
+        add::v0_1 as owner_add_v0_1, add::v0_2 as owner_add, create::v0_1 as owner_group_create,
+        remove::v0_1 as owner_remove,
     },
     invite::v0_1 as owner_invite,
     issue_authority::v0_2 as owner_authority,
@@ -89,6 +90,9 @@ pub(crate) const URIS: &[&str] = &[
 
 const OWNER_GROUP_CREATE: &str = <owner_group_create::Payload as Payload>::TYPE_URI;
 const OWNER_GROUP_ADD: &str = <owner_add::Payload as Payload>::TYPE_URI;
+/// For a VTA that does not serve `rooms/owner/group/add/0.2`: same request, same response,
+/// but a repeated admission is refused `alreadyMember` rather than answered (0.2 item 8).
+const OWNER_GROUP_ADD_V0_1: &str = <owner_add_v0_1::Payload as Payload>::TYPE_URI;
 const OWNER_GROUP_REMOVE: &str = <owner_remove::Payload as Payload>::TYPE_URI;
 const OWNER_INVITE: &str = <owner_invite::Payload as Payload>::TYPE_URI;
 const OWNER_MEMBERSHIP: &str = <owner_membership::Payload as Payload>::TYPE_URI;
@@ -102,8 +106,12 @@ const ROOMS_CURSOR: &str = "community-rooms:";
 const MEMBERS_CURSOR: &str = "community-room-members:";
 const OFFERS_CURSOR: &str = "community-room-offers:";
 
-/// What removal does not do — said in the answer and the audit row
-/// (`vtc/rooms/community/members/remove` item 4).
+/// What removal does not do — said in the audit row, and in the answer's `ext` only as a
+/// courtesy. `vtc/rooms/community/members/remove` item 4 (clarified in place,
+/// trust-tasks-tf #796) requires only that neither represent a removal as recalling what
+/// was read, re-sealing what was written or revoking the authority credential: the answer
+/// says what removal did in its structured members (`member.state`, `member.validUntil`,
+/// `epoch`), and a caller must not depend on this notice.
 const REMOVAL_NOTICE: &str = "Removal ends access to what is written from now on. It recalls \
      nothing the member already read, and their authority credential is not revoked: a host \
      honours it until it expires, though on a sealed room it opens nothing written after this.";
@@ -1108,7 +1116,8 @@ async fn handle_members_remove(
     }
     audit(state, &actor.did, row).await;
 
-    // Item 4: said in the answer too.
+    // Item 4: the structured members say what removal did; the notice beside them in
+    // `ext` is a courtesy a caller must not depend on (#796).
     let mut body = json!({
         "member": record.wire(),
         "ext": { "org.openvtc": { "notice": REMOVAL_NOTICE } },
@@ -1377,7 +1386,18 @@ async fn handle_offers_accept(
             Ok(r) => r,
             Err(e) => return app_error_to_reject(&doc, &e),
         };
-        match ask(&holder, OWNER_GROUP_ADD, request, ADVANCE_TIMEOUT).await {
+        // 0.2 first, whose answer to a repeat of an admission whose reply was lost is its
+        // Welcome (item 8). A VTA that does not serve 0.2 never routed the ask, so asking
+        // again at 0.1 — which takes the same request — is not a second admission.
+        let asked = match ask(&holder, OWNER_GROUP_ADD, request.clone(), ADVANCE_TIMEOUT).await {
+            Err(HolderError::Refused { code, .. })
+                if matches!(code.as_str(), "unsupportedType" | "unsupportedVersion") =>
+            {
+                ask(&holder, OWNER_GROUP_ADD_V0_1, request, ADVANCE_TIMEOUT).await
+            }
+            other => other,
+        };
+        match asked {
             Ok(answer) => match read::<owner_add::Response>("rooms/owner/group/add", answer) {
                 Ok(r) => {
                     let epoch = u64::try_from(r.epoch).unwrap_or(1);
@@ -1406,10 +1426,12 @@ async fn handle_offers_accept(
             {
                 return refuse(&doc, c::ACCEPT_KEY_PACKAGE_INVALID, message, None);
             }
-            // The member already has a leaf — an admission whose answer was lost and the
-            // VTA has since settled. They are in the group, and no Welcome is kept here
-            // to give them: that is `alreadyAccepted`, and the record says admitted so a
-            // removal can find them.
+            // The member already has a leaf, and the VTA cannot answer this as a repeat:
+            // another KeyPackage, an admission whose Welcome the VTA no longer keeps (it
+            // keeps it until its next advance of the room or 24 hours —
+            // `rooms/owner/group/add/0.2` item 8), or a VTA serving only 0.1, which keeps
+            // none. They are in the group with no Welcome anyone can give them: that is
+            // `alreadyAccepted`, and the record says admitted so a removal can find them.
             Err(HolderError::Refused { code, .. })
                 if code == owner_add::error_codes::ALREADY_MEMBER.code =>
             {

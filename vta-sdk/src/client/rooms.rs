@@ -332,15 +332,19 @@ impl VtaClient {
         })
     }
 
-    /// `rooms/owner/group/add/0.1` — admit `member` to a room's group from the KeyPackage
-    /// their key holder minted (base64url).
+    /// `rooms/owner/group/add/0.2` — admit `member` to a room's group from the KeyPackage
+    /// their key holder minted (base64url). A VTA that does not serve 0.2
+    /// (`unsupportedType` / `unsupportedVersion`) is asked at 0.1, whose request and
+    /// response are 0.2's.
     ///
     /// The VTA advances the room's epoch at `host_did` first, and only then its own group.
     /// The reply carries the **Welcome** (and, where the group needs it, the ratchet tree):
     /// deliver both to the member's key holder with `rooms/keys/welcome`, never through the
-    /// host. The answer is the only copy of the Welcome, so call this inside
-    /// [`VtaClient::idempotent`]: the task is `Keyed`, and a retry carrying the same key
-    /// gets the first answer back instead of an `alreadyMember` refusal and a lost Welcome.
+    /// host. At 0.2 the VTA answers the identical request again with the same Welcome
+    /// (item 8) — but only until its next advance of the room or 24 hours, and a 0.1 VTA
+    /// never does — so still call this inside [`VtaClient::idempotent`]: the task is
+    /// `Keyed`, and a retry carrying the same key gets the first answer back instead of an
+    /// `alreadyMember` refusal and a lost Welcome.
     pub async fn room_group_add(
         &self,
         room_id: &str,
@@ -348,7 +352,7 @@ impl VtaClient {
         member: &str,
         key_package: &str,
         reason: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::add::v0_1::Response, VtaError> {
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::add::v0_2::Response, VtaError> {
         let mut payload = json!({
             "roomId": room_id,
             "host": host_did,
@@ -358,15 +362,29 @@ impl VtaClient {
         if let Some(r) = reason {
             payload["reason"] = json!(r);
         }
-        let value = self
+        // Two host round trips at most (an earlier admission settled, then the advance),
+        // each over whatever transport the host speaks.
+        let timeout = ROOM_TT_TIMEOUT * 4;
+        // A VTA that does not serve 0.2 never routed the first ask, so asking again at 0.1
+        // is not a retry of an admission.
+        let value = match self
             .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_1,
-                payload,
-                // Two host round trips at most (an earlier admission settled, then the
-                // advance), each over whatever transport the host speaks.
-                ROOM_TT_TIMEOUT * 4,
+                trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_2,
+                payload.clone(),
+                timeout,
             )
-            .await?;
+            .await
+        {
+            Err(VtaError::UnsupportedTaskType { .. }) => {
+                self.dispatch_trust_task(
+                    trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_1,
+                    payload,
+                    timeout,
+                )
+                .await?
+            }
+            other => other?,
+        };
         serde_json::from_value(value).map_err(|e| {
             VtaError::Protocol(format!(
                 "rooms/owner/group/add response does not match its schema: {e}"

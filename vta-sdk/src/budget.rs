@@ -172,6 +172,7 @@ pub const RELAYS_ONWARD: &[&str] = &[
     // Admission advances the room's epoch at its host (and may first ask it which
     // epoch it is at).
     trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_1,
+    trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_2,
     // So does removal.
     trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
     // And renewal.

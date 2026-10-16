@@ -1130,6 +1130,14 @@ pub const TASK_ROOMS_OWNER_GROUP_CREATE_0_1: &str =
 pub const TASK_ROOMS_OWNER_GROUP_ADD_0_1: &str =
     "https://trusttasks.org/spec/rooms/owner/group/add/0.1";
 
+/// `spec/rooms/owner/group/add/0.2` — `add` 0.1, and a request that repeats the admission
+/// the agent last applied for the room (same `member`, a KeyPackage with the same
+/// `KeyPackageRef`, within 24 hours and before the agent's next advance of the room) is
+/// answered with that admission's epoch and Welcome instead of `alreadyMember` (item 8).
+/// Auth: as 0.1.
+pub const TASK_ROOMS_OWNER_GROUP_ADD_0_2: &str =
+    <trust_tasks_rs::specs::rooms::owner::group::add::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/owner/group/remove/0.1` — remove a member's leaf from a room's group:
 /// advance the room's epoch at its host first, then this agent's group, so nothing sealed
 /// from then on is readable to them. Recalls nothing they already read.
@@ -2637,6 +2645,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,
     TASK_ROOMS_OWNER_GROUP_CREATE_0_1,
     TASK_ROOMS_OWNER_GROUP_ADD_0_1,
+    TASK_ROOMS_OWNER_GROUP_ADD_0_2,
     TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
     TASK_ROOMS_OWNER_GROUP_RENEW_0_1,
     TASK_VTA_MEMORY_DELETE_0_1,

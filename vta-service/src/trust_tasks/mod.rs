@@ -2724,6 +2724,9 @@ dispatch_table! {
     // principal's name, presenting their `admin` authority.
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_1 => room_owner_group::handle_add
         [ Mutating Metadata true ],
+    // 0.2: a repeated admission is answered with its kept Welcome (item 8).
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_2 => room_owner_group::handle_add_v0_2
+        [ Mutating Metadata true ],
     // The mirror of add: same host, same authority, the other direction.
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1 => room_owner_group::handle_remove
         [ Mutating Metadata true ],

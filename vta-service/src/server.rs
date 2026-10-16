@@ -1203,6 +1203,8 @@ pub async fn run(
         let storage_vault_ks = vault_ks.clone();
         let storage_witness_sessions_ks =
             apply_encryption(store.keyspace(crate::keyspaces::WITNESS_SESSIONS)?);
+        let storage_room_groups_ks =
+            apply_encryption(store.keyspace(crate::keyspaces::ROOM_GROUPS)?);
         let storage_app_state_ks = apply_encryption(store.keyspace(crate::keyspaces::APP_STATE)?);
         let storage_app_state_retention_days = config.app_state.tombstone_retention_days;
         let storage_backup_bundles_ks = backup_bundles_ks.clone();
@@ -1662,6 +1664,7 @@ pub async fn run(
                     storage_task_consent_ks,
                     storage_vault_ks,
                     storage_witness_sessions_ks,
+                    storage_room_groups_ks,
                     storage_app_state_ks,
                     storage_app_state_locks,
                     storage_app_state_retention_days,
@@ -1847,6 +1850,7 @@ fn run_storage_thread(
     task_consent_ks: KeyspaceHandle,
     vault_ks: KeyspaceHandle,
     witness_sessions_ks: KeyspaceHandle,
+    room_groups_ks: KeyspaceHandle,
     app_state_ks: KeyspaceHandle,
     app_state_locks: crate::operations::app_state::NamespaceLocks,
     app_state_retention_days: u32,
@@ -2006,6 +2010,20 @@ fn run_storage_thread(
                             Ok(n) if n > 0 => debug!(removed = n, "witness session sweeper"),
                             Ok(_) => {}
                             Err(e) => warn!("witness session sweeper error: {e}"),
+                        }
+                        // Discard every retained admission past its 24 hours
+                        // (`rooms/owner/group/add/0.2` item 8). Reads already refuse
+                        // to serve one late; this takes its Welcome off the disk
+                        // when nobody asks again.
+                        match crate::operations::room_groups::sweep_retained_admissions(
+                            &room_groups_ks,
+                            u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0),
+                        )
+                        .await
+                        {
+                            Ok(n) if n > 0 => debug!(removed = n, "retained admission sweeper"),
+                            Ok(_) => {}
+                            Err(e) => warn!("retained admission sweeper error: {e}"),
                         }
                         // Reap application-state tombstones past their retention
                         // window. This is what makes the window real rather than

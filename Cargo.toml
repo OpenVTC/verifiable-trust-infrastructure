@@ -630,10 +630,13 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # 0.31.9: `vtc/members/admit` and `vtc/members/make-membership`
 # (trust-tasks-tf #784), whose generated types `trust_tasks::admission_tasks`
 # serves.
-# 0.31.10 is the FLOOR: `rooms/keys/file-key/0.2` and `rooms/keys/open/0.2`
+# 0.31.10: `rooms/keys/file-key/0.2` and `rooms/keys/open/0.2`
 # (`unknownEpoch` reason `removed`, trust-tasks-tf #786) and
 # `rooms/keys/act/0.2` (the member is the subject, trust-tasks-tf #787).
-trust-tasks-rs = { version = "0.31.10", default-features = false, features = [
+# 0.31.11 is the FLOOR: `rooms/owner/group/add/0.2` (a repeated admission is
+# answered with its Welcome, trust-tasks-tf #795) and `rooms/keys/act/0.3`
+# (the offer types and `keyPackageNotHeld`, trust-tasks-tf #797).
+trust-tasks-rs = { version = "0.31.11", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

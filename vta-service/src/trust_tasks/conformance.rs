@@ -3129,6 +3129,21 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_OWNER_GROUP_ADD_0_2,
+            checked!(
+                specs::rooms::owner::group::add::v0_2::Payload,
+                specs::rooms::owner::group::add::v0_2::Response,
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "keyPackage": "AAEAAgADAAQ" }),
+                // A repeat (item 8) answers with the same members as the first admission.
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "epoch": 2, "welcome": "AAEAAgADAAQ", "ratchetTree": "AAEAAgADAAQ" })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
             checked!(
                 specs::rooms::owner::group::remove::v0_1::Payload,

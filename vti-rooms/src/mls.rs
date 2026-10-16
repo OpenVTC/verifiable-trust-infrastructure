@@ -959,6 +959,59 @@ impl RoomGroup {
     }
 }
 
+/// The `KeyPackageRef` of a serialized KeyPackage ([RFC 9420 §5.2]): the hash MLS itself
+/// names a KeyPackage by, and what a Welcome is addressed to.
+///
+/// **The only identity of a KeyPackage worth comparing.** Equal references mean
+/// byte-identical KeyPackages, and so the same init key — which is why
+/// `rooms/owner/group/add/0.2` recognises a repeated admission by it, and
+/// `rooms/keys/act/0.3` a KeyPackage its key holder minted. The leaf credential is not
+/// such an identity: it is signed by the leaf's own key, so anybody can make one naming
+/// anybody.
+///
+/// The bytes are parsed and validated against [`ROOM_CIPHERSUITE`] first, as an add would
+/// validate them; a KeyPackage that does not validate has no reference worth trusting.
+///
+/// [RFC 9420 §5.2]: https://www.rfc-editor.org/rfc/rfc9420#section-5.2
+pub fn key_package_ref(key_package: &[u8]) -> Result<Vec<u8>, RoomKeyError> {
+    let provider = OpenMlsRustCrypto::default();
+    let incoming = KeyPackageIn::tls_deserialize_exact(key_package)
+        .map_err(|e| RoomKeyError::Group(format!("parse the key package: {e:?}")))?;
+    let validated = incoming
+        .validate(provider.crypto(), ProtocolVersion::Mls10)
+        .map_err(|e| RoomKeyError::Group(format!("validate the key package: {e:?}")))?;
+    if validated.ciphersuite() != ROOM_CIPHERSUITE {
+        return Err(RoomKeyError::Group(
+            "the key package is for another ciphersuite".into(),
+        ));
+    }
+    validated
+        .hash_ref(provider.crypto())
+        .map(|r| r.as_slice().to_vec())
+        .map_err(|e| RoomKeyError::Group(format!("hash the key package: {e:?}")))
+}
+
+#[cfg(test)]
+mod key_package_ref_tests {
+    use super::*;
+
+    /// Two KeyPackages for one member are two references; one KeyPackage is always the
+    /// same reference; and bytes that are not a KeyPackage have none.
+    #[test]
+    fn a_reference_names_exactly_one_key_package() {
+        let (_, a) = IdentitySnapshot::mint("did:example:alice").expect("mints");
+        let (_, b) = IdentitySnapshot::mint("did:example:alice").expect("mints");
+        let ra = key_package_ref(&a).expect("a reference");
+        assert_eq!(ra, key_package_ref(&a).expect("again"), "deterministic");
+        assert_ne!(
+            ra,
+            key_package_ref(&b).expect("b"),
+            "another KeyPackage for the same member is another reference"
+        );
+        assert!(key_package_ref(b"not a key package").is_err());
+    }
+}
+
 #[cfg(test)]
 mod self_update_tests {
     use super::*;
