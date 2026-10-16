@@ -201,6 +201,9 @@ pub struct AppState {
     /// (`docs/05-design-notes/data-rooms-files.md` §7). The resolver `room_files` writes,
     /// reads and collects through.
     pub room_storage: Arc<crate::rooms::storage_configs::RoomStorage>,
+    /// The rooms this community owns (`crate::rooms::community`): the owner's record,
+    /// in its own keyspace, and the community's VTA that holds the rooms' keys.
+    pub community_rooms: Arc<crate::rooms::community::CommunityRooms>,
     pub audit_ks: KeyspaceHandle,
     pub audit_key_ks: KeyspaceHandle,
     /// Signed audit checkpoints (#708). Read by `GET /v1/audit/verify`,
@@ -608,6 +611,15 @@ pub async fn run(
         warn!("failed to upgrade the superseded personhood default: {e}");
     }
 
+    // The rooms default an earlier binary installed refuses every room the
+    // community itself would own (`vtc/rooms/community/create`): its owner is
+    // no member. Replaced only while it is still the workspace's own row.
+    if let Err(e) =
+        crate::policy::default::upgrade_stale_rooms_default(&policies_ks, &active_policies_ks).await
+    {
+        warn!("failed to upgrade the superseded rooms default: {e}");
+    }
+
     // M2.10 + M2.11: provision the two BitstringStatusLists.
     // Idempotent — only seeds decoys when the row is brand new; an
     // existing row is re-pointed if `public_url` has since changed.
@@ -858,6 +870,16 @@ pub async fn run(
         let _ = vta_link_cell.set(link as Arc<dyn crate::oid4vp::VtaJwsSigner>);
     }
 
+    // The rooms this community owns (`rooms::community`): its VTA holds their
+    // keys, reached over the same link. Without one, a create is refused
+    // `noKeyHolder`.
+    let community_rooms = crate::rooms::community::CommunityRooms::new(
+        store.keyspace(keyspaces::COMMUNITY_ROOMS)?,
+        vta_link
+            .clone()
+            .map(|l| l as Arc<dyn crate::rooms::vta_storage::VtaChannel>),
+    );
+
     // Room files through the community's VTA (`rooms::vta_storage`): the
     // presigned requests come sealed to this community's key-agreement key.
     if let (Some(link), Some(vtc_did), Some(secrets)) =
@@ -990,6 +1012,7 @@ pub async fn run(
         room_epoch_links_ks,
         room_files,
         room_storage,
+        community_rooms,
         audit_ks,
         audit_key_ks,
         audit_checkpoint_ks: audit_checkpoint_ks.clone(),

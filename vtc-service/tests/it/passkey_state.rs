@@ -142,6 +142,12 @@ async fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) 
             .unwrap(),
         ),
         room_storage,
+        community_rooms: vtc_service::rooms::community::CommunityRooms::new(
+            store
+                .keyspace(vtc_service::store::keyspaces::COMMUNITY_ROOMS)
+                .unwrap(),
+            None,
+        ),
         invitations_ks,
         consumed_invitations_ks,
         registry_client: None,

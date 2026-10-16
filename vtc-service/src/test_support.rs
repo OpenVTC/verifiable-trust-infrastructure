@@ -158,6 +158,10 @@ pub struct TestVtcBuilder {
     without_room_files: bool,
     /// `[rooms.rate_limits]`.
     room_rate_limits: Option<crate::config::RoomRateLimitsConfig>,
+    /// `[rooms.community]`.
+    community_rooms: Option<crate::config::CommunityRoomsConfig>,
+    /// The community's VTA, as the key holder of the rooms it owns.
+    community_key_holder: Option<Arc<dyn crate::rooms::vta_storage::VtaChannel>>,
 }
 
 impl Default for TestVtcBuilder {
@@ -182,6 +186,8 @@ impl Default for TestVtcBuilder {
             room_file_ceiling: None,
             without_room_files: false,
             room_rate_limits: None,
+            community_rooms: None,
+            community_key_holder: None,
         }
     }
 }
@@ -190,6 +196,22 @@ impl TestVtcBuilder {
     /// Override the configured `vtc_did`.
     pub fn vtc_did(mut self, did: impl Into<String>) -> Self {
         self.vtc_did = did.into();
+        self
+    }
+
+    /// Set `[rooms.community]`: the rooms this community owns are on.
+    pub fn with_community_rooms(mut self, config: crate::config::CommunityRoomsConfig) -> Self {
+        self.community_rooms = Some(config);
+        self
+    }
+
+    /// The community's VTA, as the key holder of the rooms it owns — a stand-in a test
+    /// scripts, where a running community has its messaging link.
+    pub fn with_community_key_holder(
+        mut self,
+        vta: Arc<dyn crate::rooms::vta_storage::VtaChannel>,
+    ) -> Self {
+        self.community_key_holder = Some(vta);
         self
     }
 
@@ -510,6 +532,9 @@ impl TestVtcBuilder {
         if let Some(limits) = &self.room_rate_limits {
             config.rooms.rate_limits = limits.clone();
         }
+        if let Some(community) = &self.community_rooms {
+            config.rooms.community = Some(community.clone());
+        }
         if let Some(mediator_did) = &self.messaging_mediator {
             config.messaging = Some(vti_common::config::MessagingConfig {
                 mediator_url: String::new(),
@@ -643,6 +668,12 @@ impl TestVtcBuilder {
             room_epoch_links_ks,
             room_files,
             room_storage,
+            community_rooms: crate::rooms::community::CommunityRooms::new(
+                store
+                    .keyspace(crate::store::keyspaces::COMMUNITY_ROOMS)
+                    .expect("community_rooms ks"),
+                self.community_key_holder,
+            ),
             audit_ks,
             audit_key_ks,
             audit_checkpoint_ks,

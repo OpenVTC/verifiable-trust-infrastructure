@@ -414,6 +414,23 @@ fn sample_cooling_off(open: bool, caller_role: &str) -> serde_json::Value {
     action
 }
 
+/// A room the community owns, as `vtc/rooms/community/*` answers it.
+fn sample_community_room() -> serde_json::Value {
+    json!({
+        "room": {
+            "roomId": "did:key:z6MkRoom", "ownerDid": "did:example:community",
+            "visibility": "attributed", "retentionPolicy": "chained", "epoch": 1,
+            "lifecycle": "live", "retentionDays": 90, "createdAt": 0, "updatedAt": 0,
+        },
+        "label": "Board pack",
+        "storageConfig": "local",
+        "admitted": 0,
+        "offered": 1,
+        "ownerAuthorityValidUntil": "2027-10-14T10:00:00Z",
+        "createdBy": "did:key:z6MkAdmin",
+    })
+}
+
 /// A stored storage config as `crate::rooms::storage_configs` keeps it.
 fn sample_storage_config() -> serde_json::Value {
     json!({
@@ -1119,6 +1136,85 @@ fn table() -> Vec<Conformance> {
                 "usage": { "files": 2, "bytes": 200, "reservedBytes": 0, "reservedFiles": 0 },
                 "overLimit": true,
             })
+        ),
+        // ─── rooms the community owns (`community_room_tasks`) ───────
+        checked!(
+            s::rooms::community::create::v0_1::Payload,
+            s::rooms::community::create::v0_1::Response,
+            json!({ "label": "Board pack", "visibility": "attributed", "reason": "the board" }),
+            json!({ "room": sample_community_room() })
+        ),
+        checked!(
+            s::rooms::community::list::v0_1::Payload,
+            s::rooms::community::list::v0_1::Response,
+            json!({ "limit": 10 }),
+            json!({
+                "items": [sample_community_room()],
+                "nextCursor": "community-rooms:did:key:z6MkRoom",
+            })
+        ),
+        checked!(
+            s::rooms::community::get::v0_1::Payload,
+            s::rooms::community::get::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom" }),
+            json!({ "room": sample_community_room() })
+        ),
+        checked!(
+            s::rooms::community::members::add::v0_1::Payload,
+            s::rooms::community::members::add::v0_1::Response,
+            json!({
+                "roomId": "did:key:z6MkRoom", "member": "did:key:z6MkMember",
+                "actions": ["read", "write"], "validUntil": "2027-10-01T00:00:00Z",
+                "reason": "joins the board",
+            }),
+            json!({ "member": {
+                "member": "did:key:z6MkMember", "actions": ["read", "write"],
+                "validUntil": "2027-10-01T00:00:00Z", "state": "offered",
+                "offeredAt": "2026-10-14T10:00:00Z",
+            } })
+        ),
+        checked!(
+            s::rooms::community::members::remove::v0_1::Payload,
+            s::rooms::community::members::remove::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "member": "did:key:z6MkMember", "reason": "left" }),
+            json!({
+                "member": {
+                    "member": "did:key:z6MkMember", "actions": ["read"],
+                    "validUntil": "2027-10-01T00:00:00Z", "state": "removed",
+                    "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
+                    "removedAt": "2026-11-02T09:00:00Z",
+                },
+                "epoch": 3,
+                "ext": { "org.openvtc": { "notice": "Removal recalls nothing already read." } },
+            })
+        ),
+        checked!(
+            s::rooms::community::members::list::v0_1::Payload,
+            s::rooms::community::members::list::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "state": "admitted", "limit": 10 }),
+            json!({ "items": [{
+                "member": "did:key:z6MkMember", "actions": ["read"],
+                "validUntil": "2027-10-01T00:00:00Z", "state": "admitted",
+                "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
+            }] })
+        ),
+        checked!(
+            s::rooms::offers::list::v0_1::Payload,
+            s::rooms::offers::list::v0_1::Response,
+            json!({}),
+            json!({ "items": [{
+                "roomId": "did:key:z6MkRoom", "host": "did:example:community",
+                "label": "Board pack", "visibility": "attributed", "actions": ["read"],
+                "validUntil": "2027-10-01T00:00:00Z", "offeredAt": "2026-10-14T10:00:00Z",
+                "state": "open",
+                "credentials": { "invitation": "{}", "membership": "{}", "authority": "{}" },
+            }] })
+        ),
+        checked!(
+            s::rooms::offers::accept::v0_1::Payload,
+            s::rooms::offers::accept::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "keyPackage": "AAEAAgADAAQ" }),
+            json!({ "roomId": "did:key:z6MkRoom", "state": "admitted", "epoch": 2, "welcome": "AAEAAgADAAQ" })
         ),
         // ─── storage configs (`storage_tasks`) ───────────────────────
         checked!(

@@ -847,6 +847,12 @@ pub enum AuditEvent {
     /// (`vtc/rooms/limits/set`): the room, the scope, what it was, what it is
     /// now, and why. Sizes and counts only; never a file.
     RoomLimitsChanged(RoomLimitsChangedData),
+
+    /// A change to a room the community **owns** (`vtc/rooms/community/*`,
+    /// `vtc/rooms/offers/accept`): the room created, a member offered,
+    /// admitted or removed, an offer withdrawn. The owner's record, never the
+    /// host's. Never carries a credential, a key, a Welcome or a KeyPackage.
+    CommunityRoomChanged(CommunityRoomChangedData),
 }
 
 /// Payload for [`AuditEvent::RoomStorageChanged`].
@@ -889,6 +895,35 @@ pub struct RoomLimitsChangedData {
     pub current: Option<serde_json::Value>,
     /// The requester's stated reason.
     pub reason: String,
+}
+
+/// Payload for [`AuditEvent::CommunityRoomChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityRoomChangedData {
+    /// `created`, `memberOffered`, `memberAdmitted`, `memberRemoved` or
+    /// `offerWithdrawn`.
+    pub event: String,
+    /// The room: its DID.
+    pub room_id: String,
+    /// The room's tier.
+    pub visibility: String,
+    /// The member the change is about; absent on `created`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<String>,
+    /// The actions granted, on `memberOffered`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<String>,
+    /// The room epoch after the change, where the change advanced it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u64>,
+    /// What the change does not do, where that needs saying: a removal recalls
+    /// nothing the member already read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// The requester's stated reason; absent on a member's own acceptance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Payload for [`AuditEvent::CapabilityModuleChanged`].
@@ -1098,6 +1133,7 @@ impl AuditEvent {
             Self::CapabilityModuleChanged(..) => "CapabilityModuleChanged",
             Self::RoomStorageChanged(..) => "RoomStorageChanged",
             Self::RoomLimitsChanged(..) => "RoomLimitsChanged",
+            Self::CommunityRoomChanged(..) => "CommunityRoomChanged",
         }
     }
 

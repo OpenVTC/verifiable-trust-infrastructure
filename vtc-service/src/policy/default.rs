@@ -467,6 +467,85 @@ pub async fn upgrade_stale_personhood_default(
     Ok(true)
 }
 
+/// Whether a workspace-shipped `rooms` default predates community-owned rooms: it
+/// refuses the community an `attributed` room of its own, which the shipped default
+/// permits (`vtc/rooms/community/create`, `data-rooms-files.md` §8.4).
+fn is_stale_rooms_default(policy: &Policy) -> bool {
+    let Ok(compiled) = compile(&policy.rego_source, policy.id) else {
+        return false;
+    };
+    let probe = serde_json::json!({
+        "now": "2026-10-16T00:00:00Z",
+        "actor": { "did": "did:example:probe-administrator", "member": false },
+        "room": {
+            "roomId": "",
+            "visibility": "attributed",
+            "ownerDid": "did:example:probe-community",
+            "communityOwned": true,
+        },
+    });
+    let allows = evaluate(&compiled, "data.vtc.rooms.decision", probe)
+        .ok()
+        .and_then(|r| {
+            r.pointer("/result/0/expressions/0/value/effect")
+                .and_then(serde_json::Value::as_str)
+                .map(|e| e == "allow")
+        })
+        .unwrap_or(false);
+    !allows
+}
+
+/// Replace a **workspace-shipped** `rooms` default that predates community-owned
+/// rooms, which refuses every room the community would own (its owner is no member).
+/// The same two conditions as [`upgrade_stale_personhood_default`] — the active row is
+/// the workspace's own, and it behaves like the superseded default — so an operator's
+/// own `rooms` policy is never touched. Fail-forward: a new revision, the active
+/// pointer moved to it. Returns whether an upgrade happened.
+pub async fn upgrade_stale_rooms_default(
+    policies_ks: &KeyspaceHandle,
+    active_policies_ks: &KeyspaceHandle,
+) -> Result<bool, AppError> {
+    let purpose = PolicyPurpose::Rooms;
+    let Some(active_id) = get_active_policy_id(active_policies_ks, purpose).await? else {
+        return Ok(false); // install_defaults handles the missing case
+    };
+    let Some(active) = get_policy(policies_ks, active_id).await? else {
+        return Ok(false);
+    };
+    if active.author_did != DEFAULTS_AUTHOR || !is_stale_rooms_default(&active) {
+        return Ok(false);
+    }
+    let source = default_source(purpose);
+    let id = Uuid::new_v4();
+    let compiled = compile(source, id).map_err(|e| {
+        AppError::Internal(format!(
+            "default policy for {} failed to compile: {e}",
+            purpose.as_str()
+        ))
+    })?;
+    let sha = *compiled.source_sha256();
+    let version = max_version_for(policies_ks, purpose).await? + 1;
+    let mut policy = new_policy(
+        purpose,
+        source.to_string(),
+        sha,
+        DEFAULTS_AUTHOR.to_string(),
+        version,
+    );
+    policy.id = id;
+    policy.activated_at = Some(Utc::now());
+    store_policy(policies_ks, &policy).await?;
+    set_active_policy_id(active_policies_ks, purpose, id).await?;
+    warn!(
+        purpose = purpose.as_str(),
+        replaced = %active_id,
+        policy_id = %id,
+        "upgraded the shipped rooms default: it predates community-owned rooms and refused \
+         every room the community would own"
+    );
+    Ok(true)
+}
+
 /// Verify every [`PolicyPurpose`] has an active pointer. Called
 /// after [`install_defaults`] succeeds — under normal boot every
 /// purpose should be live. A gap here means a default-install
@@ -1838,6 +1917,132 @@ allow if {
         assert!(
             !pluck_bool(&not_a_member),
             "proof of control is not membership; a non-member session must be denied"
+        );
+    }
+
+    /// The `rooms` default every community installed before community-owned rooms
+    /// (`vtc/rooms/community/create`): it refuses a room whose owner is no member,
+    /// which is every room the community would own.
+    const SUPERSEDED_ROOMS_DEFAULT: &str = r#"# Default `rooms` policy — who may create a data room on this community.
+#
+# This governs **creation only**. Once a room exists, every operation on it is
+# authorized by credentials the room itself issued, and this service's roster
+# has no say — that is invariant I5 of the data-rooms design, and it is what
+# lets a room move to another host. What a community decides here is narrower
+# and entirely its own: whether to lend its disk.
+#
+# The shipped posture is §7.4's: members may create `open` and `attributed`
+# rooms; `private` is denied until an operator enables it. Not because a private
+# room is dangerous, but because a community that has not decided should not
+# discover it is hosting rooms whose membership it cannot see. To permit them,
+# upload a policy with the `private` clause removed.
+#
+# The input carries the creator (with their community standing) and the room's
+# identifier, visibility and owner. It deliberately does NOT carry the hosting
+# axes the design sketches (`didControlledBy` / `contentStoredAt`): the
+# published `rooms/create/0.1` schema has no member for either, so no host can
+# know them, and inventing them locally would put this service's rooms out of
+# conformance with the schema every other host reads.
+
+package vtc.rooms
+
+import rego.v1
+
+# Structural totality. A policy that answers nothing is refused by the host
+# rather than read as consent, but saying so here means the common refusal
+# carries a code an operator can act on.
+default decision := {"effect": "deny", "with": {
+	"code": "not-a-member",
+	"reason": "this community hosts rooms for its own members",
+}}
+
+# A private room asks this community to store content it cannot read, for
+# members it cannot enumerate. Permitted only once an operator has said so.
+decision := {"effect": "deny", "with": {
+	"code": "private-tier-not-enabled",
+	"reason": "this community has not enabled private rooms; upload a rooms policy that permits them",
+}} if {
+	input.actor.member == true
+	input.room.visibility == "private"
+}
+
+# The ordinary case: a member creating a room whose tier this community serves.
+else := {"effect": "allow"} if {
+	input.actor.member == true
+	input.room.visibility in {"open", "attributed"}
+}
+"#;
+
+    async fn activate_rooms(
+        policies_ks: &KeyspaceHandle,
+        active_ks: &KeyspaceHandle,
+        source: &str,
+        author: &str,
+    ) -> Uuid {
+        let id = Uuid::new_v4();
+        let sha = *compile_policy(source, id).unwrap().source_sha256();
+        let mut p = new_policy(
+            PolicyPurpose::Rooms,
+            source.to_string(),
+            sha,
+            author.into(),
+            1,
+        );
+        p.id = id;
+        p.activated_at = Some(Utc::now());
+        store_policy(policies_ks, &p).await.unwrap();
+        set_active_policy_id(active_ks, PolicyPurpose::Rooms, id)
+            .await
+            .unwrap();
+        id
+    }
+
+    /// An upgraded VTC keeps the rooms default it installed; the upgrade moves the
+    /// workspace's own row forward so the community can own rooms, and leaves an
+    /// operator's policy — and the current default — alone.
+    #[tokio::test]
+    async fn the_rooms_default_before_community_rooms_is_upgraded() {
+        let (policies_ks, active_ks, _dir) = temp_keyspaces().await;
+        let old = activate_rooms(
+            &policies_ks,
+            &active_ks,
+            SUPERSEDED_ROOMS_DEFAULT,
+            DEFAULTS_AUTHOR,
+        )
+        .await;
+        assert!(
+            upgrade_stale_rooms_default(&policies_ks, &active_ks)
+                .await
+                .unwrap()
+        );
+        let now = get_active_policy_id(&active_ks, PolicyPurpose::Rooms)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(now, old);
+        let active = get_policy(&policies_ks, now).await.unwrap().unwrap();
+        assert_eq!(active.rego_source, default_source(PolicyPurpose::Rooms));
+        assert_eq!(active.version, 2);
+        assert!(
+            !upgrade_stale_rooms_default(&policies_ks, &active_ks)
+                .await
+                .unwrap(),
+            "the shipped default is not stale"
+        );
+
+        let (policies_ks, active_ks, _dir) = temp_keyspaces().await;
+        activate_rooms(
+            &policies_ks,
+            &active_ks,
+            SUPERSEDED_ROOMS_DEFAULT,
+            "did:key:z6MkAnOperator",
+        )
+        .await;
+        assert!(
+            !upgrade_stale_rooms_default(&policies_ks, &active_ks)
+                .await
+                .unwrap(),
+            "an operator's own rooms policy is never touched"
         );
     }
 }

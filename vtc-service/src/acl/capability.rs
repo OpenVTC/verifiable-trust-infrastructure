@@ -82,6 +82,12 @@ pub enum Capability {
     /// room stores to, room limits and usage. The host's authority, never a
     /// room's: it confers nothing inside a room.
     RoomsAdmin,
+    /// Running the rooms the community itself **owns**: create them, admit and
+    /// remove their members (`vtc/rooms/community/*`). The owner's authority,
+    /// distinct from hosting's [`Capability::RoomsAdmin`]: a community may let
+    /// someone run its board room without letting them reassign every room's
+    /// storage, and the reverse.
+    RoomsManage,
     /// A git namespace (qualified by namespace).
     GitNsAdmin,
     /// Repository create, adopt, archive, transfer.
@@ -92,7 +98,7 @@ pub enum Capability {
 
 impl Capability {
     /// Every capability, in registry order.
-    pub const ALL: [Capability; 21] = [
+    pub const ALL: [Capability; 22] = [
         Capability::RolesAssign,
         Capability::ApprovalsAdmin,
         Capability::PolicyAdmin,
@@ -111,6 +117,7 @@ impl Capability {
         Capability::RegistryAdmin,
         Capability::SessionsRevoke,
         Capability::RoomsAdmin,
+        Capability::RoomsManage,
         Capability::GitNsAdmin,
         Capability::GitRepoManage,
         Capability::GitCommitSign,
@@ -137,6 +144,7 @@ impl Capability {
             Capability::RegistryAdmin => "vtc.registry.admin",
             Capability::SessionsRevoke => "vtc.sessions.revoke",
             Capability::RoomsAdmin => "vtc.rooms.admin",
+            Capability::RoomsManage => "vtc.rooms.manage",
             Capability::GitNsAdmin => "git.ns.admin",
             Capability::GitRepoManage => "git.repo.manage",
             Capability::GitCommitSign => "git.commit.sign",

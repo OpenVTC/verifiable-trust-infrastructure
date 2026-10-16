@@ -75,6 +75,18 @@ pub use vti_rooms::blobs::ROOM_BLOBS_KEYSPACE as ROOM_BLOBS;
 /// **Backed up**: nothing in it is a secret, and the blob index names its configs.
 pub const STORAGE_CONFIGS: &str = "storage_configs";
 
+/// The rooms this community **owns** (`crate::rooms::community`): one row per room
+/// (its label, the signing key the community's VTA holds for it, who created it), one per
+/// member admitted or offered admission, with the offer's credentials and, for a while
+/// after acceptance, the Welcome a repeated accept is answered with, and the `did.jsonl`
+/// of each room whose identity this community publishes itself.
+///
+/// The owner's record, **never read on the host path**: a community room's records are
+/// authorized by credential chains exactly as a member's room's are (invariant I5).
+/// **Backed up**: a restored community that forgot whom it admitted could not remove
+/// them, and a room whose log it no longer served would stop resolving.
+pub const COMMUNITY_ROOMS: &str = "community_rooms";
+
 /// Uploads and downloads in flight. Hours long at most, so **not backed up**: a restored
 /// host starts with none, and a client resumes from `begin`.
 pub use vti_rooms::blobs::ROOM_BLOB_TRANSFERS_KEYSPACE as ROOM_BLOB_TRANSFERS;
@@ -244,6 +256,7 @@ pub const ALL: &[&str] = &[
     ROOM_BLOBS,
     ROOM_BLOB_TRANSFERS,
     STORAGE_CONFIGS,
+    COMMUNITY_ROOMS,
     AUDIT,
     AUDIT_KEY,
     AUDIT_CHECKPOINT,
@@ -300,6 +313,9 @@ pub const BACKED_UP: &[&str] = &[
     // Which backend each room's files are on. The blob index names configs, so a
     // restore without them would hold blobs it could not find.
     STORAGE_CONFIGS,
+    // The owner's record of the rooms this community owns, whom it admitted to
+    // them, and the logs of the room identities it publishes.
+    COMMUNITY_ROOMS,
     AUDIT,
     AUDIT_KEY,
     // Required, not optional: restoring the audit log without its
@@ -445,8 +461,9 @@ mod tests {
         // keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`) from the
         // `zkp-pcs` development branch, plus the two room-file keyspaces
         // `AppState::room_files` holds (`ROOM_BLOBS`, `ROOM_BLOB_TRANSFERS`), plus the
-        // one `AppState::room_storage` holds (`STORAGE_CONFIGS`).
-        assert_eq!(ALL.len(), 51, "ALL must list every AppState keyspace");
+        // one `AppState::room_storage` holds (`STORAGE_CONFIGS`), plus the one
+        // `AppState::community_rooms` holds (`COMMUNITY_ROOMS`).
+        assert_eq!(ALL.len(), 52, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

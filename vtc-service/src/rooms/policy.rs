@@ -83,6 +83,12 @@ pub struct RoomRequest {
     /// may cap it; nothing here does by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_days: Option<u32>,
+    /// Whether the community itself is to own the room (`vtc/rooms/community/create`):
+    /// `ownerDid` is then this community's own DID and `actor` the administrator asking.
+    /// Such a room is decided before its identity is minted, so its `roomId` is empty —
+    /// a refusal then costs the community's VTA nothing.
+    #[serde(default)]
+    pub community_owned: bool,
 }
 
 /// Facts that passed the verification gate.
@@ -239,6 +245,7 @@ mod tests {
                 visibility,
                 owner_did: "did:key:zCreator".into(),
                 retention_days: Some(90),
+                community_owned: false,
             },
         })
         .expect("a signed registration assembles")
@@ -347,6 +354,7 @@ mod tests {
                 visibility: Visibility::Open,
                 owner_did: "did:key:zCreator".into(),
                 retention_days: None,
+                community_owned: false,
             },
         })
         .expect_err("an empty actor is refused at the gate");

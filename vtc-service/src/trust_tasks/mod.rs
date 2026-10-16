@@ -138,6 +138,7 @@ pub(crate) mod step_up_approver_tasks;
 // Custom administrative roles: `vtc/roles/{define,list,show,delete}/0.1`
 // (`vtc-admin-roles.md` §6.2). The records are `crate::acl::roles`'s; this is
 // their only door.
+pub(crate) mod community_room_tasks;
 pub(crate) mod role_tasks;
 pub(crate) mod room_admin_tasks;
 // The administrators' view of the OpenID4VP verifier identities (#1988).
@@ -1304,6 +1305,15 @@ fn dispatch_typed<'a>(
                 None => unreachable!("oid4vp_tasks::URIS names {uri}, which it does not route"),
             }
         }),
+        uri if community_room_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match Box::pin(community_room_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => {
+                    unreachable!("community_room_tasks::URIS names {uri}, which it does not route")
+                }
+            }
+        }),
         uri if room_admin_tasks::URIS.contains(&uri) => Box::pin(async move {
             match Box::pin(room_admin_tasks::dispatch(state, ctx, doc, uri)).await {
                 Some(outcome) => outcome,
@@ -2003,6 +2013,14 @@ mod spine_proof_tests {
         (
             room_admin_tasks::GET_TYPE,
             "reads one room's storage, limits and usage; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            community_room_tasks::LIST_TYPE,
+            "lists the rooms the community owns; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            community_room_tasks::GET_TYPE,
+            "reads one room the community owns; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
             room_admin_tasks::USAGE_TYPE,
@@ -2947,6 +2965,18 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     room_admin_tasks::GET_TYPE,
     room_admin_tasks::USAGE_TYPE,
     room_admin_tasks::LIMITS_SET_TYPE,
+    // Rooms the community owns (`data-rooms-files.md` §8.4): an administrator's
+    // create, reads and membership changes under `vtc.rooms.manage`, the changes
+    // behind the requester's bound gesture; a member's offers on their own DID. No
+    // REST route.
+    community_room_tasks::CREATE_TYPE,
+    community_room_tasks::LIST_TYPE,
+    community_room_tasks::GET_TYPE,
+    community_room_tasks::MEMBERS_ADD_TYPE,
+    community_room_tasks::MEMBERS_REMOVE_TYPE,
+    community_room_tasks::MEMBERS_LIST_TYPE,
+    community_room_tasks::OFFERS_LIST_TYPE,
+    community_room_tasks::OFFERS_ACCEPT_TYPE,
     // The OpenID4VP verifier identities, as a holder of `vtc.config.admin`
     // sees them (#1988). A read; no REST route.
     oid4vp_tasks::IDENTITIES_LIST_TYPE,

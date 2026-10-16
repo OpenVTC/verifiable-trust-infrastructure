@@ -362,6 +362,12 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
             .unwrap(),
         ),
         room_storage,
+        community_rooms: vtc_service::rooms::community::CommunityRooms::new(
+            store
+                .keyspace(vtc_service::store::keyspaces::COMMUNITY_ROOMS)
+                .unwrap(),
+            None,
+        ),
         invitations_ks,
         consumed_invitations_ks,
         console_keys_ks,

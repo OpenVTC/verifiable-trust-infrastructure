@@ -1088,6 +1088,13 @@ fn assemble(routing: &RoutingConfig, api: Router<AppState>) -> Router<AppState> 
         // VTC's own DID to be resolvable. The VTC hosts exactly one
         // DID, its own. See `tasks/vtc-mvp/vta-driven-keys.md` §10.
         .route("/.well-known/did.jsonl", get(did_log::did_log))
+        // The logs of the room identities this community minted serverless
+        // (`rooms::community`): a room it owns resolves to
+        // `https://<host>/room-dids/<id>/did.jsonl`. Public, like the line above.
+        .route(
+            "/room-dids/{id}/did.jsonl",
+            get(crate::rooms::community::serve_room_did_log),
+        )
         // API surface — existing TrustTaskRouter result nested at
         // the configured mount.
         .nest(&routing.api.mount, api);
@@ -1196,6 +1203,10 @@ pub fn assemble_with_website(
         // `did:webvh:<scid>:<host>` resolves to
         // `https://<host>/.well-known/did.jsonl`, the URL we serve.
         .route("/.well-known/did.jsonl", get(did_log::did_log))
+        .route(
+            "/room-dids/{id}/did.jsonl",
+            get(crate::rooms::community::serve_room_did_log),
+        )
         .nest(&routing.api.mount, api);
     app = app.nest(&routing.admin_ui.mount, admin);
     // axum 0.8's `nest("/admin", inner)` registers `/admin` (bare)

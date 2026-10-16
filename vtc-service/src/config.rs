@@ -138,6 +138,52 @@ pub struct RoomsConfig {
     /// what every configuration written before this section existed has.
     #[serde(default, skip_serializing_if = "RoomRateLimitsConfig::is_unset")]
     pub rate_limits: RoomRateLimitsConfig,
+    /// Rooms the community itself owns (`[rooms.community]`, the
+    /// `vtc/rooms/community/*` tasks): where its VTA mints their identities.
+    ///
+    /// **Absent means off**, as every configuration written before community rooms
+    /// existed is: such a VTC starts exactly as before, and a create is refused
+    /// `noKeyHolder` naming this section. Writing it is what turns them on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub community: Option<CommunityRoomsConfig>,
+}
+
+/// Where the community's own rooms get their identities (`[rooms.community]`).
+///
+/// The community owns these rooms and its VTA (`vta_did`) holds their keys: it mints
+/// each room's `did:webvh` from the `room` template, signs its credentials and holds the
+/// community's place in a sealed room's group. This community holds no room key. It
+/// reaches the VTA over the messaging link it already keeps, so `vta_did` and
+/// `[messaging]` are needed too, and this community's DID needs an entry at the VTA in
+/// `context` with `key-mint`, `credential-write` and `vault-write`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct CommunityRoomsConfig {
+    /// The context at the community's VTA the rooms' keys are minted in. This
+    /// community's own entry there must act in it.
+    pub context: String,
+    /// A `did:webvh` hosting server registered at the VTA, by its id there, that
+    /// publishes each room's log. **Absent**: the rooms' identities are minted
+    /// serverless and this community serves each log itself, at
+    /// `<public_url>/room-dids/<id>/did.jsonl`, so `public_url` must be set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webvh_server: Option<String>,
+    /// The mediator each room's DID document names (the `room` template's
+    /// `MEDIATOR_DID`). Absent: `[messaging] mediator_did`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mediator_did: Option<String>,
+    /// How long the community's own `admin` authority over a room it creates lasts,
+    /// in days. Default 365. A room whose owner's authority has lapsed can no longer
+    /// admit or remove anyone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_valid_days: Option<u32>,
+}
+
+impl CommunityRoomsConfig {
+    /// [`Self::authority_valid_days`], defaulted and at least one day.
+    pub fn authority_valid_days(&self) -> u32 {
+        self.authority_valid_days.unwrap_or(365).max(1)
+    }
 }
 
 /// The budgets room traffic is charged to on the HTTPS Trust Task door

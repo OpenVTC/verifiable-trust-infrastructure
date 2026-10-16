@@ -283,6 +283,7 @@ async fn govern_creation(
             visibility,
             owner_did: authorized.owner_did().to_string(),
             retention_days,
+            community_owned: false,
         },
     })?;
 

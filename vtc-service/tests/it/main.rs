@@ -47,6 +47,7 @@ mod ceremonies_list;
 mod ceremony_execute;
 mod cnm_vtc_admin_live;
 mod community_profile;
+mod community_rooms;
 mod community_verbs_spine;
 mod config_identity;
 mod console_list_limits;
