@@ -926,6 +926,13 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/storage/configs/retire/0.1",
     "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1",
     "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.1",
+    // Community rooms, the Community rooms tab (`trust_tasks::community_room_tasks`).
+    "https://trusttasks.org/spec/vtc/rooms/community/create/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/community/get/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/community/list/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.1",
     // The console's signing keys (`trust_tasks::signing_key_tasks`).
     "https://trusttasks.org/spec/auth/signing-key/enroll/0.2",
     "https://trusttasks.org/spec/auth/signing-key/list/0.1",
