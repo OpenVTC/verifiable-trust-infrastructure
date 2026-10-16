@@ -12,6 +12,13 @@ pub use vti_common::config::{
 pub struct AppConfig {
     pub vtc_did: Option<String>,
     pub vta_did: Option<String>,
+    /// The context at `vta_did` holding this community's own DID — the one `vtc setup`
+    /// provisioned it in. Written by setup; **absent** in a configuration written before
+    /// it was, which changes nothing but the community rooms' fix commands
+    /// ([`crate::rooms::vta_access`]), which then name it by a placeholder. The
+    /// community's entry at its VTA must cover it for the VTA to act as the community.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vta_context: Option<String>,
     #[serde(alias = "community_name")]
     pub vtc_name: Option<String>,
     #[serde(alias = "community_description")]

@@ -236,6 +236,9 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
     // VTI-APV-022: written only when chosen (`skip_serializing_if`), so a
     // config.toml that does not mention it is a community without it.
     app_config.acl.single_admin_mode = inputs.single_admin_mode;
+    // Where the VTC's DID lives at its VTA: what its entry there must cover for the VTA
+    // to act as the community (`rooms::vta_access`).
+    app_config.vta_context = Some(inputs.context.clone());
 
     // 7. Persist the key bundle via the chosen backend.
     //

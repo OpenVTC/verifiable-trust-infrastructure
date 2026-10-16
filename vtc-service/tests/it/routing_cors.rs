@@ -27,6 +27,7 @@ fn cfg_with(routing: RoutingConfig, cors: CorsConfig) -> AppConfig {
     AppConfig {
         vtc_did: None,
         vta_did: None,
+        vta_context: None,
         vtc_name: None,
         hooks: Default::default(),
         git_ns: Default::default(),

@@ -850,6 +850,89 @@ async fn a_served_room_identity_resolves_from_this_community() {
 
 // ─── refusals ───────────────────────────────────────────────────────────
 
+/// The fix a client picks for a refusal: the first on the listing whose `when` names the
+/// refusal's code and, if it lists any, a phrase its message contains.
+fn chosen_fix<'a>(access: &'a Value, code: &str, message: &str) -> Option<&'a Value> {
+    access["fixes"].as_array()?.iter().find(|f| {
+        f["when"].as_array().into_iter().flatten().any(|w| {
+            let refusal = w["refusal"].as_str().unwrap_or_default();
+            let phrases: Vec<&str> = w["messageContains"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            code.ends_with(&format!(":{refusal}"))
+                && (phrases.is_empty() || phrases.iter().any(|p| message.contains(p)))
+        })
+    })
+}
+
+/// A permission refusal at the community's VTA is answered on the listing — to a holder
+/// of `vtc.rooms.manage` — with the `pnm` commands that fix it, filled in with this VTC's
+/// DID and contexts. The refusal itself names no VTA context (framework *What a
+/// `message` May Not Say*).
+#[tokio::test]
+async fn vtc_rooms_community_listing_carries_the_commands_that_fix_a_vta_refusal() {
+    let mut fix = fixture().await;
+    fix.vtc.state.config.write().await.vta_context = Some("vtc".into());
+    fix.vta.script(MINT, Script::Refuse("permissionDenied"));
+    let (_, r) = admin_call(
+        &mut fix,
+        CREATE,
+        json!({ "label": "Board pack", "visibility": "open", "reason": "r" }),
+    )
+    .await;
+    let code = tt_error_code(&r).unwrap().to_string();
+    assert_eq!(code, CREATE_KEY_HOLDER_REFUSED, "{r}");
+    let message = r["payload"]["message"].as_str().unwrap().to_string();
+    assert!(!message.contains("pnm acl"), "{message}");
+
+    let listed = call_as(&fix, &fix.admin, LIST, json!({})).await;
+    let rooms = &listed["payload"]["ext"]["org.openvtc"]["communityRooms"];
+    assert_eq!(rooms["enabled"], true, "{listed}");
+    let access = &rooms["vtaAccess"];
+    assert_eq!(access["vtcDid"], TEST_VTC_DID);
+    assert_eq!(access["vtcDidContext"], "vtc");
+    assert_eq!(access["roomsContext"], "vtc");
+    assert_eq!(access["roomsContextInside"], true);
+    assert!(access.get("warning").is_none(), "{access}");
+
+    // The stand-in gave no reason: every command, with which one applies.
+    let chosen = chosen_fix(access, &code, &message).expect("a permission refusal has a fix");
+    assert_eq!(chosen["id"], "permission");
+    let commands: Vec<&str> = chosen["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["command"].as_str().unwrap())
+        .collect();
+    assert!(
+        commands.contains(&format!("pnm acl update {TEST_VTC_DID} --contexts vtc").as_str()),
+        "{commands:?}"
+    );
+    assert_eq!(
+        chosen["check"],
+        "pnm acl list --context vtc --direction any"
+    );
+
+    // The persona refusal of the founding leaf: the entry's scope.
+    let persona = format!(
+        "the community's VTA refused: permissionDenied `{TEST_VTC_DID}` is not a persona you \
+         may act as, so it cannot be the owner's leaf in room `did:x`"
+    );
+    assert_eq!(chosen_fix(access, &code, &persona).unwrap()["id"], "scope");
+    // Not about permission: no fix.
+    assert!(
+        chosen_fix(
+            access,
+            &code,
+            "the community's VTA refused: malformedRequest x"
+        )
+        .is_none()
+    );
+}
+
 /// Every declared refusal of a create, and that none leaves a room behind.
 #[tokio::test]
 async fn vtc_rooms_community_create_refuses_with_its_declared_codes() {

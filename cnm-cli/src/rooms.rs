@@ -252,7 +252,8 @@ async fn read(
         .map_err(explain)
 }
 
-/// A change: through the passkey gesture it asks for. A refusal is rewritten with its fix.
+/// A change: through the passkey gesture it asks for. A refusal is rewritten with its fix
+/// — for one the community's entry at its VTA explains, the `pnm` commands that fix it.
 async fn change(
     client: &VtcClient,
     base: &str,
@@ -261,12 +262,72 @@ async fn change(
     did: &str,
     key: &HolderKey,
 ) -> CliResult<Value> {
-    send_change(client, base, type_uri, &payload, did, key)
-        .await
-        .map_err(|e| {
+    match send_change(client, base, type_uri, &payload, did, key).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
             let text = e.to_string();
-            format!("{text}{}", hint(refused_code(&text).unwrap_or_default())).into()
+            let code = refused_code(&text).unwrap_or_default();
+            let fix = match vta_fix(client, key, code, &text).await {
+                Some(f) => f,
+                None => hint(code).to_string(),
+            };
+            Err(format!("{text}{fix}").into())
+        }
+    }
+}
+
+/// Whether a refusal could be one the community's entry at its VTA explains.
+fn may_be_vta_permission(code: &str) -> bool {
+    code.starts_with("vtc/rooms/community/")
+        && (code.ends_with(":keyHolderRefused") || code.ends_with(":noKeyHolder"))
+}
+
+/// The `pnm` commands for a refusal the community's entry at its VTA explains, from the
+/// listing's `ext["org.openvtc"].communityRooms.vtaAccess` — the VTC says its VTA contexts
+/// there, to a holder of `vtc.rooms.manage`, and never in a refusal's message.
+async fn vta_fix(client: &VtcClient, key: &HolderKey, code: &str, message: &str) -> Option<String> {
+    if !may_be_vta_permission(code) {
+        return None;
+    }
+    let type_uri = <spec::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    let payload = typed::<spec::list::v0_1::Payload>(json!({ "limit": 1 })).ok()?;
+    let listed = read(client, type_uri, payload, key).await.ok()?;
+    let access = listed.pointer("/ext/org.openvtc/communityRooms/vtaAccess")?;
+    pick_fix(access, code, message).map(render_fix)
+}
+
+/// The first fix on the listing whose `when` names the refusal's code and, if it lists
+/// any, a phrase its message contains (`vtc_service::rooms::vta_access::Fix::matches`).
+fn pick_fix<'a>(access: &'a Value, code: &str, message: &str) -> Option<&'a Value> {
+    let short = code.rsplit(':').next().unwrap_or(code);
+    access["fixes"].as_array()?.iter().find(|f| {
+        f["when"].as_array().into_iter().flatten().any(|w| {
+            let phrases: Vec<&str> = w["messageContains"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            w["refusal"].as_str() == Some(short)
+                && (phrases.is_empty() || phrases.iter().any(|p| message.contains(p)))
         })
+    })
+}
+
+/// A fix as the terminal shows it: what is wrong, each command on its own line under what
+/// it is for, the check, and who runs them.
+fn render_fix(fix: &Value) -> String {
+    let s = |k: &str| terminal_safe(fix[k].as_str().unwrap_or_default());
+    let mut out = format!("\n\n{}\n", s("summary"));
+    for c in fix["commands"].as_array().into_iter().flatten() {
+        out.push_str(&format!(
+            "\n  {DIM}# {}{RESET}\n  {}\n",
+            terminal_safe(c["purpose"].as_str().unwrap_or_default()),
+            terminal_safe(c["command"].as_str().unwrap_or_default()),
+        ));
+    }
+    out.push_str(&format!("\nthen check:\n  {}\n\n{}", s("check"), s("note")));
+    out
 }
 
 /// The code in a refusal `cnm git`'s guidance phrased as
@@ -406,6 +467,23 @@ async fn run_task(
                     "Community rooms are off on this VTC. Its operator adds to its config:\n{}",
                     terminal_safe(off["configure"].as_str().unwrap_or_default())
                 );
+            }
+            // The VTC's configuration looks wrong for its entry at its VTA.
+            if let Some(access) = v.pointer("/ext/org.openvtc/communityRooms/vtaAccess")
+                && let Some(warning) = access["warning"].as_str()
+            {
+                eprintln!(
+                    "{BOLD}Check the community's entry at its VTA:{RESET} {}",
+                    terminal_safe(warning)
+                );
+                if let Some(scope) = access["fixes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|f| f["id"] == "scope")
+                {
+                    eprintln!("{}", render_fix(scope).trim_start());
+                }
             }
             let items = v["items"].as_array().cloned().unwrap_or_default();
             if items.is_empty() {
@@ -551,6 +629,61 @@ mod tests {
             "actions": ["admin"], "validUntil": "2027-10-01T00:00:00Z", "reason": "r",
         }));
         assert!(admin.is_err(), "admin stays the community's");
+    }
+
+    fn access() -> Value {
+        json!({
+            "vtcDid": "did:webvh:Qm:example.com:test-vtc",
+            "fixes": [
+                {
+                    "id": "noEntry",
+                    "when": [
+                        { "refusal": "keyHolderRefused", "messageContains": ["DID not in ACL"] },
+                        { "refusal": "noKeyHolder" },
+                    ],
+                    "summary": "The VTC's DID needs an entry at its VTA.",
+                    "commands": [{ "purpose": "create it", "command": "pnm acl create --did did:webvh:Qm:example.com:test-vtc --role initiator --contexts vtc-test" }],
+                    "note": "Run these with pnm as someone with admin at the community's VTA.",
+                    "check": "pnm acl list --context vtc-test --direction any",
+                },
+                {
+                    "id": "scope",
+                    "when": [{ "refusal": "keyHolderRefused", "messageContains": ["persona you may act as"] }],
+                    "summary": "The entry does not cover vtc-test.",
+                    "commands": [{ "purpose": "scope it", "command": "pnm acl update did:webvh:Qm:example.com:test-vtc --contexts vtc-test" }],
+                    "note": "Run these with pnm as someone with admin at the community's VTA.",
+                    "check": "pnm acl list --context vtc-test --direction any",
+                },
+            ],
+        })
+    }
+
+    #[test]
+    fn a_vta_permission_refusal_prints_the_commands_from_the_listing() {
+        let a = access();
+        let code = "vtc/rooms/community/create:keyHolderRefused";
+        let persona = "the community refused it (vtc/rooms/community/create:keyHolderRefused): \
+                       the community's VTA refused: permissionDenied `did:x` is not a persona \
+                       you may act as";
+        let fix = pick_fix(&a, code, persona).unwrap();
+        assert_eq!(fix["id"], "scope");
+        let text = render_fix(fix);
+        assert!(text.contains(
+            "\n  pnm acl update did:webvh:Qm:example.com:test-vtc --contexts vtc-test\n"
+        ));
+        assert!(text.contains("pnm acl list --context vtc-test --direction any"));
+        assert!(text.contains("admin at the community's VTA"));
+
+        assert_eq!(
+            pick_fix(&a, "vtc/rooms/community/create:noKeyHolder", "x").unwrap()["id"],
+            "noEntry"
+        );
+        assert!(pick_fix(&a, code, "malformedRequest").is_none());
+        assert!(may_be_vta_permission(code));
+        assert!(!may_be_vta_permission("permissionDenied"));
+        assert!(!may_be_vta_permission(
+            "vtc/rooms/community/create:keyHolderUnavailable"
+        ));
     }
 
     #[test]

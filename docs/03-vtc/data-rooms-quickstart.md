@@ -564,11 +564,20 @@ storage does.
 > the VTC side is covered by `vtc-service/tests/it/community_rooms.rs` against a
 > stand-in VTA.
 
+The VTC's entry at VTA C has to cover the context holding the VTC's own DID — here
+`vtc`, where `vtc setup` minted it (§3) — as well as the rooms context: the VTA acts on
+a room **as the community**, and only for a DID in a context the entry covers. A scope
+covers a context's descendants, never its parent, so an entry scoped only to a rooms
+sub-context such as `vtc/rooms` is refused "… is not a persona you may act as". The rooms
+here are minted in `vtc` itself, so `vtc` covers both.
+
 ```bash
 # VTA C: the community's DID mints, issues and keeps credentials in `vtc`
 export PNM_HOME=/tmp/vdr/pnm-community
 pnm acl change-role --did "$VTC" --from application --to initiator
-pnm acl update "$VTC" --capabilities key-mint,credential-write,vault-write,external-auth-use
+pnm acl update "$VTC" --contexts vtc \
+    --capabilities key-mint,credential-write,vault-write,external-auth-use
+pnm acl list --context vtc --direction any     # check: the VTC's entry, role initiator
 ```
 
 ```toml
@@ -579,6 +588,12 @@ context = "vtc"
 
 With no `webvh_server`, each room's DID is published by the VTC itself, at
 `http://localhost:8200/room-dids/<id>/did.jsonl`.
+
+If the VTA refuses a step for lack of permission, the console and `cnm rooms` show the
+`pnm` commands that fix the VTC's entry, filled in with its DID and contexts
+([Troubleshooting](community-rooms.md#troubleshooting-permission-errors)). A VTC set up
+before `vtc setup` recorded `vta_context` names that context by a placeholder until
+`vta_context = "vtc"` is added to its `config.toml`.
 
 ```bash
 cnm rooms create --label "Board pack" --visibility attributed --reason "the board's papers"

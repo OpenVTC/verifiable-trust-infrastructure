@@ -96,6 +96,11 @@ vault_auth_method = "kubernetes"   # pod ServiceAccount token — nothing to mou
 vault_k8s_role    = "vtc"
 ```
 
+`context` is the context at the VTA the VTC's own DID is minted in. Setup writes
+it to `config.toml` as `vta_context`, so the community rooms' fix commands can
+name it ([`community-rooms.md`](community-rooms.md#troubleshooting-permission-errors));
+a VTC set up before that has no `vta_context` and may add it by hand.
+
 Phase 2 prints a terse, scrape-friendly block (`vtc_did=…`, `admin_did=…`,
 `install_url=…`, `claim_code=…`, `single_admin_mode=…`); it never prints the
 admin private key.

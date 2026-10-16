@@ -161,3 +161,24 @@
 .community-fix {
   margin-top: var(--space-2);
 }
+
+/* A `pnm` command an administrator of the community's VTA copies: the command,
+   wrapped rather than scrolled on a phone, and its copy button beside it. */
+.rooms-command {
+  margin-top: var(--space-2);
+}
+.rooms-command .rooms-sub {
+  margin: 0;
+}
+.rooms-command-line {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.rooms-command-line .rooms-config-snippet {
+  flex: 1;
+  min-width: 0;
+  margin: var(--space-1) 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

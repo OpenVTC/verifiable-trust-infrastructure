@@ -36,6 +36,8 @@ snippet in `ext["org.openvtc"].communityRooms` for the console.
 ```toml
 # config.toml
 vta_did = "<the community's VTA>"          # already there on a VTA-provisioned VTC
+vta_context = "vtc"                         # the VTA context holding the VTC's own DID;
+                                            # written by `vtc setup`, add it by hand if absent
 
 [messaging]                                 # the link to the VTA rides it
 mediator_did = "<mediator DID>"
@@ -57,23 +59,41 @@ can be checked — the VTA verifies the community's own credentials as it stores
   `<public_url>/room-dids/<id>/did.jsonl`, and **this VTC serves the log** there, on
   every host, like its own `/.well-known/did.jsonl`. `public_url` must be set.
 
-**At the community's VTA**, the VTC's own DID needs an entry in `context` that may mint
-DIDs (`key-mint`), issue a room's credentials (`credential-write`) and keep the
-community's own in the vault (`vault-write`). `application`, the role the quickstart
-gives the VTC for storage, carries none of the three; `initiator` carries all of them,
-narrowed here to what the community uses:
+**At the community's VTA**, the VTC's own DID needs an entry that covers **both**
+the context holding the VTC's own DID (the one `vtc setup` minted it in, `vta_context`)
+**and** `[rooms.community] context`, and that may mint DIDs (`key-mint`), issue a
+room's credentials (`credential-write`) and keep the community's own in the vault
+(`vault-write`).
+
+Why both: the VTA acts on a community room **as the community** — it founds the room's
+group with the VTC's DID as the owner's leaf and signs the community's group changes as
+that DID — and it does so only for a DID it holds in a context the caller's entry
+covers. A scope covers a context and its descendants, never a parent, so an entry scoped
+to a rooms sub-context (`vtc/rooms`) alone cannot act as a VTC whose DID lives in `vtc`:
+the create is refused `keyHolderRefused` with the VTA's "… is not a persona you may act
+as". Scoping the entry to the context holding the VTC's DID covers a rooms context beneath
+it, so with the VTC's DID in `vtc` and the rooms in `vtc` or `vtc/rooms`, `--contexts vtc`
+is the whole list.
+
+`application`, the role the quickstart gives the VTC for storage, carries none of the
+three capabilities; `initiator` carries all of them, narrowed here to what the community
+uses. Run these with `pnm` as someone with admin at the community's VTA:
 
 ```bash
 pnm acl create --did "$VTC" --role initiator --contexts vtc \
     --capabilities key-mint,credential-write,vault-write,external-auth-use \
     --label "community (rooms and storage)"
+pnm acl list --context vtc --direction any     # check
 ```
 
-(`external-auth-use` is for `vta-account` storage; drop it if the community has none.
-An existing `application` entry for the same DID changes role in place:
+(`external-auth-use` is for `vta-account` storage; drop it if the community has none,
+and add the context of each `vta-account` storage config if it is not beneath `vtc`. An
+existing `application` entry for the same DID changes role in place:
 `pnm acl change-role --did "$VTC" --from application --to initiator`, then
-`pnm acl update "$VTC" --capabilities key-mint,credential-write,vault-write,external-auth-use`.)
-The VTC's DID is itself a persona the VTA holds in that context, minted there by
+`pnm acl update "$VTC" --capabilities key-mint,credential-write,vault-write,external-auth-use`.
+`--capabilities` sets exactly that list, so add any other capability the VTC uses at its
+VTA, such as `sign-jws` for an OpenID4VP verifier.)
+The VTC's DID is itself a persona the VTA holds in its context, minted there by
 `vtc setup`; that is what lets the VTA sign the room's group changes **as the
 community**. Its `admin` authority over each room expires (`authority_valid_days`,
 default 365); a room whose owner's authority has lapsed can no longer admit or remove.
@@ -120,7 +140,12 @@ approver) bound to that one request — the console's confirmation is the click 
 ceremony runs in — and then send the identical signed document again. A refusal is shown
 with what fixes it: `noKeyHolder` with the configuration and the VTA entry to add,
 `visibilityNotPermitted` with the policy to change, `notAMember`, `alreadyMember`, a VTA
-that did not answer (and, for a create, the DID it may have minted).
+that did not answer (and, for a create, the DID it may have minted). A refusal the VTC's
+entry at its VTA explains is shown with the `pnm` commands that fix it, filled in with
+this VTC's DID and contexts, each with a copy button
+([Troubleshooting](#troubleshooting-permission-errors)); and when the VTC's configuration
+itself looks wrong — a rooms context outside the context holding its DID, or no
+`vta_context` — the list says so above the rooms.
 
 The pages re-read after every change made from them and poll once a minute. A create
 also reaches other open consoles through the live channel's `rooms` topic, which hints
@@ -244,6 +269,42 @@ the VTA mint the KeyPackage against the offer's invitation on a sealed room, acc
 joins the room's group from the Welcome. If an acceptance's answer is lost, it prints the
 KeyPackage it carried; retry with `--key-package <file>` so the community sees the
 identical request and answers with the same Welcome.
+
+## Troubleshooting: permission errors
+
+When the community's VTA refuses a step for lack of permission, the VTC answers
+`keyHolderRefused` with the VTA's own code and message in `details`. The console and
+`cnm rooms` then show the `pnm` commands that fix it, **filled in** with this VTC's DID,
+the context holding it (`vta_context`) and the rooms context. The VTC cannot read its own
+entry at the VTA, so which fix applies is read off the VTA's words; when they do not say,
+every command is shown with a line on which one applies.
+
+The commands are not in the refusal itself: a refusal's `message` may not name the VTA's
+contexts (framework, *What a `message` May Not Say*), and `keyHolderRefused`'s `details`
+holds only the VTA's code and message. They ride the list read instead —
+`vtc/rooms/community/list`, `ext["org.openvtc"].communityRooms.vtaAccess`, answered to a
+holder of `vtc.rooms.manage` — as `fixes`, each naming the refusals it answers (`when`), in
+the order to try them; the VTC also logs the chosen fix at `warn`. They are run by someone
+with admin at the community's VTA. With `$VTC` the VTC's DID, the VTC's DID in `vtc` and
+`[rooms.community] context = "vtc/rooms"`:
+
+| The VTA said | What is wrong | Fix |
+|---|---|---|
+| `DID not in ACL`, `ACL entry expired` (or the VTC refused `noKeyHolder` and has just been configured) | the VTC's DID has no entry | `pnm acl create --did $VTC --role initiator --contexts vtc --capabilities key-mint,credential-write,vault-write --label "community (rooms)"` (with `external-auth-use` when `vta-account` storage is configured; `pnm acl delete $VTC` first if an expired entry is still listed) |
+| `… is not a persona you may act as`, `no access to context: …`, `noAuthority … for a persona you act as` | the entry does not cover the context holding the VTC's DID | `pnm acl update $VTC --contexts vtc` — `--contexts` replaces the list, so keep any other context it needs (`pnm acl get $VTC`) |
+| `… does not carry the … capability` | the role or a narrowing lacks `key-mint`, `credential-write` or `vault-write` | `pnm acl get $VTC`, then `pnm acl change-role --did $VTC --from <its current role> --to initiator` (skip if it is already `initiator`), then `pnm acl update $VTC --capabilities key-mint,credential-write,vault-write` |
+| any other `permissionDenied` | unknown | all of the above, starting from `pnm acl get $VTC` |
+
+Then check with `pnm acl list --context vtc --direction any`, which lists the entries
+that act in `vtc` and those granted beneath it — an entry scoped to `vtc/rooms` alone
+shows up there too.
+
+A VTC set up before `vta_context` was recorded shows `<the context holding the VTC's DID>`
+in its commands, and the list warns about it: add `vta_context = "<that context>"` to
+`config.toml` (`pnm did-mgmt dids get $VTC` at the VTA shows the context it was minted
+in) and restart. A `noAuthority` refusal on a room
+already created can also mean the community's own authority over it has lapsed
+(`ownerAuthorityValidUntil`).
 
 ## What is not here yet
 

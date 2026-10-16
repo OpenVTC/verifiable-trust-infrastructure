@@ -65,6 +65,7 @@ use crate::rooms::community::{
     ADVANCE_TIMEOUT, HolderError, KeptWelcome, KeyHolder, MemberRecord, OfferCredentials,
     OwnedRoom, ROOM_DID_PATH, SIGN_TIMEOUT, key_package_digest,
 };
+use crate::rooms::vta_access;
 use crate::server::AppState;
 
 pub(crate) const CREATE_TYPE: &str = <create::Payload as Payload>::TYPE_URI;
@@ -194,6 +195,30 @@ async fn bound_step_up(
         Ok(Gate::Required(request)) => Err(task_error_to_reject(doc, &TaskError::step_up(request))),
         Err(e) => Err(app_error_to_reject(doc, &e)),
     }
+}
+
+/// A refusal the community's entry at its VTA may explain. The operator's log gets the
+/// `pnm` commands that fix it ([`vta_access`]): the log is where the VTA's contexts may be
+/// said, and the refusal's `message` is not.
+async fn refuse_logged(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    code: &str,
+    message: String,
+    details: Option<Value>,
+) -> TrustTaskOutcome {
+    if let Some(facts) = vta_access::Facts::read(state).await
+        && let Some(fix) = vta_access::fix_for(&facts, code, &message)
+    {
+        tracing::warn!(
+            code,
+            fix = fix.id,
+            "a community room operation was refused; the community's entry at its VTA \
+             needs a change:\n{}",
+            fix.to_text()
+        );
+    }
+    refuse(doc, code, message, details)
 }
 
 async fn audit(state: &AppState, actor: &str, data: CommunityRoomChangedData) {
@@ -466,7 +491,7 @@ async fn handle_create(
     // Item 5: no key holder, no room — and never a key held here instead.
     let setup = match setup(state).await {
         Ok(s) => s,
-        Err(why) => return refuse(&doc, c::CREATE_NO_KEY_HOLDER, why, None),
+        Err(why) => return refuse_logged(state, &doc, c::CREATE_NO_KEY_HOLDER, why, None).await,
     };
     // Item 2.
     if let Err(e) = govern(
@@ -521,12 +546,14 @@ async fn handle_create(
                 return refuse(&doc, c::CREATE_KEY_HOLDER_UNAVAILABLE, why, details);
             }
             Err(CreateFailure::Holder(HolderError::Refused { code, message }, _)) => {
-                return refuse(
+                return refuse_logged(
+                    state,
                     &doc,
                     c::CREATE_KEY_HOLDER_REFUSED,
                     format!("the community's VTA refused: {code} {message}"),
                     Some(HolderError::refused_details(&code, &message)),
-                );
+                )
+                .await;
             }
             Err(CreateFailure::Local(e)) => return app_error_to_reject(&doc, &e),
         };
@@ -811,12 +838,21 @@ async fn handle_list(
         body["nextCursor"] = json!(n);
     }
     // Off until the operator turns it on: the console reads this to say what to add.
-    if state.config.read().await.rooms.community.is_none() {
-        body["ext"] = json!({ "org.openvtc": { "communityRooms": {
+    let mut setting = if state.config.read().await.rooms.community.is_none() {
+        json!({
             "enabled": false,
             "configure": "[rooms.community]\ncontext = \"<the context at the community's VTA the rooms' keys are minted in>\"",
-        } } });
+        })
+    } else {
+        json!({ "enabled": true })
+    };
+    // What the community's entry at its VTA must hold, and the `pnm` commands that fix
+    // it: here, to a holder of `vtc.rooms.manage`, rather than on a refusal, whose
+    // `message` may not carry the VTA's contexts (`rooms::vta_access`).
+    if let Some(facts) = vta_access::Facts::read(state).await {
+        setting["vtaAccess"] = vta_access::list_ext(&facts);
     }
+    body["ext"] = json!({ "org.openvtc": { "communityRooms": setting } });
     // How the renewal of the community's own authority stands, per room
     // (`rooms::community_renewal`): the shared `CommunityRoom` has no member for it.
     match crate::rooms::community_renewal::list_ext(state, &listed).await {
@@ -939,12 +975,14 @@ async fn handle_members_add(
             return refuse(&doc, c::ADD_KEY_HOLDER_UNAVAILABLE, why, None);
         }
         Err(HolderError::Refused { code, message }) => {
-            return refuse(
+            return refuse_logged(
+                state,
                 &doc,
                 c::ADD_KEY_HOLDER_REFUSED,
                 format!("the community's VTA refused: {code} {message}"),
                 Some(HolderError::refused_details(&code, &message)),
-            );
+            )
+            .await;
         }
     };
 
@@ -1120,12 +1158,14 @@ async fn handle_members_remove(
                 return refuse(&doc, c::REMOVE_KEY_HOLDER_UNAVAILABLE, why, None);
             }
             Err(HolderError::Refused { code, message }) => {
-                return refuse(
+                return refuse_logged(
+                    state,
                     &doc,
                     c::REMOVE_KEY_HOLDER_REFUSED,
                     format!("the community's VTA refused: {code} {message}"),
                     Some(HolderError::refused_details(&code, &message)),
-                );
+                )
+                .await;
             }
         }
     }
@@ -1489,12 +1529,14 @@ async fn handle_offers_accept(
                 );
             }
             Err(HolderError::Refused { code, message }) => {
-                return refuse(
+                return refuse_logged(
+                    state,
                     &doc,
                     c::ACCEPT_KEY_HOLDER_REFUSED,
                     format!("the community's VTA refused: {code} {message}"),
                     Some(HolderError::refused_details(&code, &message)),
-                );
+                )
+                .await;
             }
         }
     } else {

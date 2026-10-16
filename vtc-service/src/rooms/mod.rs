@@ -15,6 +15,7 @@ pub mod files;
 pub mod handlers;
 pub mod policy;
 pub mod storage_configs;
+pub mod vta_access;
 pub mod vta_storage;
 
 pub use vti_rooms::{

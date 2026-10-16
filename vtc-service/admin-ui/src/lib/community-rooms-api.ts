@@ -63,12 +63,61 @@ export const MEMBER_ACTIONS: readonly { id: CommunityRoomMemberAction; hint: str
   { id: "curate", hint: "Edit and remove what others wrote." },
 ];
 
+/** One `pnm` command of a [`VtaFix`], and what it is for. */
+export interface VtaFixCommand {
+  purpose: string;
+  command: string;
+}
+
+/** Which refusal a [`VtaFix`] answers: a `vtc/rooms/community/*` refusal whose code
+ *  ends in `:<refusal>`, and — when `messageContains` is given — whose message
+ *  (which, for `keyHolderRefused`, carries the VTA's own code and message) contains
+ *  one of those phrases. */
+export interface VtaFixWhen {
+  refusal: string;
+  messageContains?: string[];
+}
+
+/** The `pnm` commands, filled in with this VTC's DID and contexts, for one way its
+ *  entry at its VTA can be wrong (`vtc_service::rooms::vta_access`). */
+export interface VtaFix {
+  /** `noEntry`, `scope`, `capability` or `permission`. */
+  id: string;
+  when: VtaFixWhen[];
+  summary: string;
+  commands: VtaFixCommand[];
+  note: string;
+  /** The command that shows the result. */
+  check: string;
+}
+
+/** What the community's entry at its VTA must hold — the list's
+ *  `ext["org.openvtc"].communityRooms.vtaAccess`. Carried on the list, to a holder
+ *  of `vtc.rooms.manage`, rather than on a refusal: a refusal's message may not name
+ *  the VTA's contexts. */
+export interface VtaAccess {
+  vtcDid: string;
+  /** The context at the VTA holding the VTC's DID, when the VTC records it. */
+  vtcDidContext?: string;
+  roomsContext?: string;
+  /** Whether the rooms context is that context or beneath it. */
+  roomsContextInside?: boolean;
+  /** The contexts the entry needs. */
+  contexts: string[];
+  /** What looks wrong in the VTC's configuration. */
+  warning?: string;
+  /** In the order to try them. */
+  fixes: VtaFix[];
+}
+
 /** Whether community rooms are on, and if not what the operator adds — the
  *  list's `ext["org.openvtc"].communityRooms`. Absent means on. */
 export interface CommunityRoomsSetting {
   enabled: boolean;
   /** The configuration section to add, when off. */
   configure?: string;
+  /** What the community's entry at its VTA must hold, and the commands that fix it. */
+  vtaAccess?: VtaAccess;
 }
 
 /** How the renewal of the community's own authority over a room stands — the
@@ -121,16 +170,38 @@ export interface CommunityRoomsListing {
   truncated: boolean;
 }
 
+function accessOf(v: unknown): VtaAccess | undefined {
+  const a = v as Partial<VtaAccess> | undefined;
+  if (!a || typeof a.vtcDid !== "string" || !Array.isArray(a.fixes)) return undefined;
+  const fixes = a.fixes.filter(
+    (f): f is VtaFix =>
+      !!f &&
+      typeof f.id === "string" &&
+      Array.isArray(f.when) &&
+      Array.isArray(f.commands) &&
+      f.commands.every((c) => typeof c?.command === "string"),
+  );
+  return { ...a, contexts: Array.isArray(a.contexts) ? a.contexts : [], fixes } as VtaAccess;
+}
+
 function settingOf(ext: unknown): CommunityRoomsSetting | null {
-  const c = (ext as { "org.openvtc"?: { communityRooms?: { enabled?: unknown; configure?: unknown } } } | undefined)?.[
-    "org.openvtc"
-  ]?.communityRooms;
+  const c = (
+    ext as
+      | { "org.openvtc"?: { communityRooms?: { enabled?: unknown; configure?: unknown; vtaAccess?: unknown } } }
+      | undefined
+  )?.["org.openvtc"]?.communityRooms;
   if (!c || typeof c.enabled !== "boolean") return null;
+  const vtaAccess = accessOf(c.vtaAccess);
   return {
     enabled: c.enabled,
     ...(typeof c.configure === "string" ? { configure: c.configure } : {}),
+    ...(vtaAccess ? { vtaAccess } : {}),
   };
 }
+
+/** The query key of the owner's list, under `["rooms"]` (which a live `rooms` hint
+ *  invalidates). A refusal card reads the same cached list for its fix. */
+export const COMMUNITY_ROOMS_LIST_KEY = ["rooms", "community", "list"] as const;
 
 /** Every room the community owns, page by page, and whether the feature is on. */
 export async function fetchCommunityRooms(): Promise<CommunityRoomsListing> {
@@ -298,9 +369,9 @@ export function refusalFix(err: unknown): string | null {
       return (
         "Community rooms need configuration on this VTC: do what the message says in its " +
         "configuration file and restart it. At the community's VTA, the VTC's own DID also needs " +
-        "an entry in that context that may mint DIDs, issue credentials and keep them " +
-        "(`pnm acl create --did <VTC DID> --role initiator --contexts <context> " +
-        "--capabilities key-mint,credential-write,vault-write`)."
+        "an entry covering the context that holds the VTC's DID and the rooms context, that may " +
+        "mint DIDs, issue credentials and keep them (key-mint,credential-write,vault-write; the " +
+        "community rooms guide has the command)."
       );
     case "visibilityNotPermitted":
       return (
@@ -327,9 +398,10 @@ export function refusalFix(err: unknown): string | null {
       const d = e?.details as { code?: unknown; message?: unknown } | undefined;
       const said = typeof d?.code === "string" ? ` It answered ${d.code}.` : "";
       return (
-        `The community's VTA refused and nothing changed.${said} Check that the VTC's entry at its ` +
-        "VTA holds key-mint, credential-write and vault-write in the `[rooms.community]` context, " +
-        "and that the community's own authority over this room has not lapsed."
+        `The community's VTA refused and nothing changed.${said} If it is a permission refusal, ` +
+        "the VTC's entry at its VTA must cover the context holding the VTC's own DID (the " +
+        "persona the community acts as) as well as the rooms context, as initiator; on a room " +
+        "already created, check too that the community's own authority over it has not lapsed."
       );
     }
     case "notAMember":
@@ -343,6 +415,27 @@ export function refusalFix(err: unknown): string | null {
     default:
       return null;
   }
+}
+
+/** The fix on the list that answers `err`, when it is a refusal the community's
+ *  entry at its VTA explains: the first whose `when` matches (the same rule as
+ *  `vtc_service::rooms::vta_access::Fix::matches`). */
+export function vtaFixFor(err: unknown, access: VtaAccess | undefined): VtaFix | null {
+  if (!access || err instanceof GestureDeclinedError) return null;
+  const e = err as ApiError | null;
+  const code = e?.code ?? "";
+  if (!code.startsWith("vtc/rooms/community/")) return null;
+  const short = code.slice(code.lastIndexOf(":") + 1);
+  const message = e?.message ?? "";
+  return (
+    access.fixes.find((f) =>
+      f.when.some(
+        (w) =>
+          w.refusal === short &&
+          (!w.messageContains?.length || w.messageContains.some((m) => message.includes(m))),
+      ),
+    ) ?? null
+  );
 }
 
 /** A refusal's own message. */

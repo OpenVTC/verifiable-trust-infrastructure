@@ -31,11 +31,13 @@ import { EmptyState } from "@/components/EmptyState";
 import { Field } from "@/components/Field";
 import {
   AUTHORITY_WARN_DAYS,
+  COMMUNITY_ROOMS_LIST_KEY,
   createCommunityRoom,
   daysUntil,
   fetchCommunityRooms,
   type AuthorityRenewal,
   type CommunityRoomsSetting,
+  type VtaAccess,
 } from "@/lib/community-rooms-api";
 import { formatIso, shorten } from "@/lib/format";
 import { gestureFromConfirm } from "@/lib/signed-act";
@@ -45,7 +47,7 @@ import { OFFLINE_POLL_MS } from "@/lib/use-live-events";
 import { useCan } from "@/lib/viewer";
 import type { CommunityRoom, CommunityRoomCreatePayload } from "@/lib/wire-types";
 
-import { RefusalCard } from "./CommunityRefusal";
+import { RefusalCard, VtaFixCommands } from "./CommunityRefusal";
 import { LifecyclePill, TIER_BLURB, communityRoomPath } from "./shared";
 
 /** The query key of the owner's list. Under `["rooms"]`, which a live `rooms`
@@ -66,6 +68,7 @@ export function NewCommunityRoomButton() {
 
 /** Community rooms are off: the section to add, as the VTC itself words it. */
 function CommunityRoomsOff({ setting }: { setting: CommunityRoomsSetting }) {
+  const noEntry = setting.vtaAccess?.fixes.find((f) => f.id === "noEntry");
   return (
     <section className="card">
       <h2>Community rooms are off</h2>
@@ -81,11 +84,25 @@ function CommunityRoomsOff({ setting }: { setting: CommunityRoomsSetting }) {
       <p className="muted rooms-sub">
         The VTC also needs its link to that VTA (<code>vta_did</code> and{" "}
         <code>[messaging]</code>, already there on a VTA-provisioned VTC), and at the VTA its own
-        DID needs an entry in that context that may mint DIDs, issue credentials and keep them
-        (<code>key-mint</code>, <code>credential-write</code>, <code>vault-write</code>). Where each
-        room&rsquo;s DID is published, and the rest, is in the community rooms guide
-        (docs/03-vtc/community-rooms.md).
+        DID needs an entry covering the context that holds the VTC&rsquo;s DID as well as the
+        rooms context, that may mint DIDs, issue credentials and keep them (<code>key-mint</code>,{" "}
+        <code>credential-write</code>, <code>vault-write</code>). Where each room&rsquo;s DID is
+        published, and the rest, is in the community rooms guide (docs/03-vtc/community-rooms.md).
       </p>
+      {noEntry && <VtaFixCommands fix={noEntry} />}
+    </section>
+  );
+}
+
+/** The VTC's configuration looks wrong for its entry at its VTA: say so, with the
+ *  commands, before anything is refused. */
+function VtaAccessWarning({ access }: { access: VtaAccess }) {
+  const scope = access.fixes.find((f) => f.id === "scope");
+  return (
+    <section className="card warning" role="status">
+      <h2>Check the community&rsquo;s entry at its VTA</h2>
+      <p>{access.warning}</p>
+      {scope && <VtaFixCommands fix={scope} />}
     </section>
   );
 }
@@ -345,7 +362,7 @@ export function CommunityRoomsList() {
   const [params, setParams] = useSearchParams();
   const creating = params.get("create") === "1";
   const q = useQuery({
-    queryKey: [...COMMUNITY_ROOMS_KEY, "list"],
+    queryKey: COMMUNITY_ROOMS_LIST_KEY,
     queryFn: fetchCommunityRooms,
     // No live topic carries the owner's record; see the header.
     refetchInterval: OFFLINE_POLL_MS,
@@ -356,6 +373,7 @@ export function CommunityRoomsList() {
   return (
     <>
       {off && <CommunityRoomsOff setting={q.data!.setting} />}
+      {q.data?.setting.vtaAccess?.warning && <VtaAccessWarning access={q.data.setting.vtaAccess} />}
       {creating && <NewCommunityRoom onDone={() => setParams({})} />}
 
       {q.isPending && (

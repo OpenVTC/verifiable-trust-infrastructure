@@ -13,6 +13,8 @@ import {
   removalOutcome,
   removalPreview,
   validUntilIn,
+  vtaFixFor,
+  type VtaAccess,
 } from "@/lib/community-rooms-api";
 import { GestureDeclinedError } from "@/lib/signed-act";
 import { DataRooms } from "@/plugins/dataRooms";
@@ -51,6 +53,58 @@ const ROOMS_LIST = `${T}/vtc/rooms/list/0.1`;
 const ROOM = "did:webvh:QmScid:vtc.example.com:room-dids:abc";
 const MEMBER = "did:webvh:QmAlice:alice.example.com";
 const MANAGER = whoamiWith(["vtc.rooms.manage"]);
+const VTC_DID = "did:webvh:QmScid:example.com:test-vtc";
+
+// As `vtc_service::rooms::vta_access` writes it for a VTC whose DID lives in
+// `vtc-test` and whose rooms context is `vtc-test/rooms`.
+const VTA_ACCESS: VtaAccess = {
+  vtcDid: VTC_DID,
+  vtcDidContext: "vtc-test",
+  roomsContext: "vtc-test/rooms",
+  roomsContextInside: true,
+  contexts: ["vtc-test"],
+  fixes: [
+    {
+      id: "noEntry",
+      when: [
+        { refusal: "keyHolderRefused", messageContains: ["DID not in ACL", "ACL entry expired"] },
+        { refusal: "noKeyHolder" },
+      ],
+      summary: "The VTC's DID needs an entry at its VTA.",
+      commands: [
+        {
+          purpose: "give the VTC's DID an entry",
+          command: `pnm acl create --did ${VTC_DID} --role initiator --contexts vtc-test --capabilities key-mint,credential-write,vault-write --label "community (rooms)"`,
+        },
+      ],
+      note: "Run these with pnm as someone with admin at the community's VTA.",
+      check: "pnm acl list --context vtc-test --direction any",
+    },
+    {
+      id: "scope",
+      when: [
+        {
+          refusal: "keyHolderRefused",
+          messageContains: ["no access to context", "persona you may act as", "persona you act as"],
+        },
+      ],
+      summary: "The VTC's entry at its VTA does not cover the context holding the VTC's own DID (vtc-test).",
+      commands: [
+        {
+          purpose: "scope the entry to the context holding the VTC's DID",
+          command: `pnm acl update ${VTC_DID} --contexts vtc-test`,
+        },
+      ],
+      note: "Run these with pnm as someone with admin at the community's VTA.",
+      check: "pnm acl list --context vtc-test --direction any",
+    },
+  ],
+};
+const PERSONA_REFUSAL = {
+  code: "vtc/rooms/community/create:keyHolderRefused",
+  message: `the community's VTA refused: permissionDenied \`${VTC_DID}\` is not a persona you may act as, so it cannot be the owner's leaf in room \`did:webvh:x\``,
+  details: { code: "permissionDenied", message: "is not a persona you may act as" },
+};
 
 const hosted = (visibility = "attributed") => ({
   roomId: ROOM,
@@ -214,6 +268,77 @@ describe("Community rooms tab", () => {
     const card = await screen.findByRole("alert");
     expect(within(card).getByText(/operator turns them on/)).toBeTruthy();
     expect(within(card).getByText(/key-mint,credential-write,vault-write/)).toBeTruthy();
+  });
+});
+
+describe("a refusal the community's entry at its VTA explains", () => {
+  it("shows the pnm commands that fix it, filled in and copyable", async () => {
+    mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_LIST_TASK, {
+        items: [],
+        ext: { "org.openvtc": { communityRooms: { enabled: true, vtaAccess: VTA_ACCESS } } },
+      }),
+      taskRoute(COMMUNITY_ROOMS_CREATE_TASK, PERSONA_REFUSAL, 409),
+    ]);
+    mount("/rooms/community?create=1");
+    fireEvent.change(await screen.findByLabelText(/^Label/), { target: { value: "Board" } });
+    fireEvent.change(screen.getByLabelText(/^Reason/), { target: { value: "r" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create room" }));
+    const card = await screen.findByRole("alert");
+    const command = await within(card).findByText(`pnm acl update ${VTC_DID} --contexts vtc-test`);
+    expect(command.tagName).toBe("PRE");
+    expect(within(card).getByText("pnm acl list --context vtc-test --direction any")).toBeTruthy();
+    expect(within(card).getAllByRole("button", { name: "Copy command" })).toHaveLength(2);
+    expect(within(card).getByText(/admin at the community's VTA/)).toBeTruthy();
+    // Never the old hint pointing at the rooms context alone.
+    expect(within(card).queryByText(/in the `\[rooms.community\]` context/)).toBeNull();
+  });
+
+  it("warns on the list when the rooms context is outside the VTC DID's", async () => {
+    mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_LIST_TASK, {
+        items: [],
+        ext: {
+          "org.openvtc": {
+            communityRooms: {
+              enabled: true,
+              vtaAccess: {
+                ...VTA_ACCESS,
+                roomsContext: "rooms",
+                roomsContextInside: false,
+                warning: "`[rooms.community] context` (`rooms`) is not inside `vtc-test`",
+              },
+            },
+          },
+        },
+      }),
+    ]);
+    mount("/rooms/community");
+    expect(await screen.findByText("Check the community’s entry at its VTA")).toBeTruthy();
+    expect(screen.getByText(`pnm acl update ${VTC_DID} --contexts vtc-test`)).toBeTruthy();
+  });
+
+  it("picks the fix by the refusal's code and the VTA's words", () => {
+    expect(vtaFixFor(PERSONA_REFUSAL, VTA_ACCESS)?.id).toBe("scope");
+    expect(
+      vtaFixFor(
+        {
+          code: "vtc/rooms/community/members/add:keyHolderRefused",
+          message: `the community's VTA refused: permissionDenied DID not in ACL: ${VTC_DID}`,
+        },
+        VTA_ACCESS,
+      )?.id,
+    ).toBe("noEntry");
+    expect(vtaFixFor({ code: "vtc/rooms/community/create:noKeyHolder", message: "x" }, VTA_ACCESS)?.id).toBe(
+      "noEntry",
+    );
+    expect(
+      vtaFixFor({ code: "vtc/rooms/community/create:keyHolderRefused", message: "malformedRequest" }, VTA_ACCESS),
+    ).toBeNull();
+    expect(vtaFixFor({ code: "permissionDenied", message: "DID not in ACL" }, VTA_ACCESS)).toBeNull();
+    expect(vtaFixFor(PERSONA_REFUSAL, undefined)).toBeNull();
   });
 });
 
