@@ -1034,7 +1034,11 @@ pub(super) async fn handle_read(
             Ok(p) => p,
             Err(e) => return app_error_to_reject(&doc, e),
         };
-        payload["plaintext"] = serde_json::json!(plaintext);
+        // base64url, as the spec gives it — not the bytes, which serialize as an array.
+        payload["plaintext"] = serde_json::json!(base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            plaintext
+        ));
     } else if let Some(cleartext) = &served.record.cleartext {
         payload["cleartext"] = cleartext.clone();
     }

@@ -2090,6 +2090,12 @@ mod tests {
     /// A stand-in host on loopback that records every document it receives and answers
     /// `rooms/records/{get,list}` and `rooms/epoch/chain` signed as itself.
     async fn recording_host() -> (Party, Value, Arc<Mutex<Vec<Value>>>) {
+        recording_host_serving(json!({ "cleartext": { "title": "t" } })).await
+    }
+
+    /// [`recording_host`], answering `rooms/records/get` with `content` (`cleartext` or
+    /// `sealed`) for the requested key at version 1.
+    async fn recording_host_serving(content: Value) -> (Party, Value, Arc<Mutex<Vec<Value>>>) {
         let party = Party::new();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2103,15 +2109,20 @@ mod tests {
                 let host_did = host_did.clone();
                 let secret = secret.clone();
                 let log = log.clone();
+                let content = content.clone();
                 async move {
                     log.lock().unwrap().push(req.clone());
                     let task = req["type"].as_str().unwrap_or_default().to_string();
                     let room_id = req["payload"]["roomId"].clone();
                     let payload = if task == vti_rooms::wire::ROOMS_RECORDS_GET_TYPE {
-                        json!({
+                        let mut record = json!({
                             "key": req["payload"]["key"], "version": 1, "status": "active",
-                            "updatedAt": "2026-01-01T00:00:00Z", "cleartext": { "title": "t" },
-                        })
+                            "updatedAt": "2026-01-01T00:00:00Z",
+                        });
+                        for (k, v) in content.as_object().unwrap() {
+                            record[k] = v.clone();
+                        }
+                        record
                     } else if task == vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE {
                         json!({ "records": [] })
                     } else {
@@ -2255,6 +2266,56 @@ mod tests {
                 json!(["read"])
             );
         }
+    }
+
+    /// **Found live**: `read` answered a sealed record's `plaintext` as a JSON array of
+    /// numbers, which a client decoding the spec's base64url string refused
+    /// (`rooms/keys/read/0.1`: `plaintext` is the opened record, base64url).
+    #[tokio::test]
+    async fn read_answers_a_sealed_records_plaintext_as_base64url() {
+        let mut f = fixture(&["read", "write"]).await;
+        found_group(&f, &f.alice.did).await;
+        let sealed = room_groups::seal_record(
+            &f.state.room_groups_ks,
+            &Member::new(&f.room.did, &f.alice.did).unwrap(),
+            KEY,
+            1,
+            b"a note",
+        )
+        .await
+        .unwrap();
+        let (host, host_doc, _seen) =
+            recording_host_serving(json!({ "sealed": serde_json::to_value(&sealed).unwrap() }))
+                .await;
+        let mut resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+        )
+        .await
+        .unwrap();
+        resolver
+            .add_did_document(&host.did, serde_json::from_value(host_doc).unwrap())
+            .await;
+        f.state.did_resolver = Some(resolver);
+
+        let read = body(
+            super::super::room_group::handle_read(
+                &f.state,
+                &alice_client(),
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_1,
+                    json!({ "roomId": f.room.did, "key": KEY, "host": host.did }),
+                ),
+            )
+            .await,
+        );
+        let plaintext = read["payload"]["plaintext"]
+            .as_str()
+            .unwrap_or_else(|| panic!("plaintext is not a string: {read}"));
+        assert_eq!(
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, plaintext)
+                .unwrap(),
+            b"a note"
+        );
     }
 
     // ─── transport: the binding whose authenticated sender can be the signer ───
