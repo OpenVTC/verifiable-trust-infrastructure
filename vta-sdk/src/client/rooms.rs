@@ -421,8 +421,9 @@ impl VtaClient {
     ///
     /// The VTA advances the room's epoch at `host_did` first, and only then its own group.
     /// It recalls nothing the member already read, and on a `chained` room they keep the
-    /// epochs they were in; their authority credential is untouched — let it lapse
-    /// separately. Call this inside [`VtaClient::idempotent`]: the task is `Keyed`, and a
+    /// epochs they were in; their credentials are untouched at the host. On an `open` or
+    /// `attributed` room prefer [`Self::room_group_remove_v0_2`], which withdraws them
+    /// first; 0.1 is the removal for a `private` room. Call this inside [`VtaClient::idempotent`]: the task is `Keyed`, and a
     /// retry after a lost reply gets the first answer back instead of a `notMember`
     /// refusal that reads as though the wrong member had been named.
     pub async fn room_group_remove(
@@ -451,6 +452,104 @@ impl VtaClient {
         serde_json::from_value(value).map_err(|e| {
             VtaError::Protocol(format!(
                 "rooms/owner/group/remove response does not match its schema: {e}"
+            ))
+        })
+    }
+
+    /// `rooms/owner/group/remove/0.2` — remove `member` from a room **and withdraw their
+    /// credentials at its host at once**: the VTA signs the room's next revocation list
+    /// with `signing_key_id` (one `subject` entry for `member`), delivers it to `host_did`
+    /// and to each of `mirrors`, and only then removes their leaf and advances the room.
+    ///
+    /// From the answer's `revokedAt` the host refuses every credential the room issued the
+    /// member before then — and anything they delegated — on every task; their fresh
+    /// credentials, if the room re-admits them, are not affected. A `private` room is
+    /// refused `privateRoom`: there a member is removed from the group alone with
+    /// [`Self::room_group_remove`] (0.1), and every credential reset with
+    /// [`Self::room_owner_revoke`] if the room needs that too. Deliberately no silent
+    /// fall back to 0.1 on any other refusal: 0.1 withdraws nothing at the host.
+    ///
+    /// Call inside [`VtaClient::idempotent`]: the task is `Keyed`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn room_group_remove_v0_2(
+        &self,
+        room_id: &str,
+        host_did: &str,
+        member: &str,
+        signing_key_id: &str,
+        mirrors: &[String],
+        until: Option<chrono::DateTime<chrono::Utc>>,
+        reason: Option<&str>,
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::remove::v0_2::Response, VtaError> {
+        let mut payload = json!({
+            "roomId": room_id,
+            "host": host_did,
+            "member": member,
+            "signingKeyId": signing_key_id,
+        });
+        if !mirrors.is_empty() {
+            payload["mirrors"] = json!(mirrors);
+        }
+        if let Some(u) = until {
+            payload["until"] = json!(u.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        }
+        if let Some(r) = reason {
+            payload["reason"] = json!(r);
+        }
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_2,
+                payload,
+                // An earlier advance settled, the list delivered, the advance, the mirrors.
+                ROOM_TT_TIMEOUT * 6,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| {
+            VtaError::Protocol(format!(
+                "rooms/owner/group/remove response does not match its schema: {e}"
+            ))
+        })
+    }
+
+    /// `rooms/owner/revoke/0.1` — withdraw credentials a room issued: the VTA signs the
+    /// room's next revocation list as the room with `signing_key_id`, keeps it, and
+    /// delivers it to each of `hosts` (every host serving the room).
+    ///
+    /// `withdraw` empty signs nothing and re-delivers the list the VTA holds — how a host
+    /// the room moved to, or one reported `unreachable`, is brought up to date. A success
+    /// says the list is signed and kept; only a delivery whose `outcome` is `accepted` says
+    /// a host enforces it. Call inside [`VtaClient::idempotent`]: the task is `Keyed`.
+    pub async fn room_owner_revoke(
+        &self,
+        room_id: &str,
+        signing_key_id: &str,
+        hosts: &[String],
+        withdraw: &[trust_tasks_rs::specs::rooms::owner::revoke::v0_1::Withdrawal],
+        reason: Option<&str>,
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::revoke::v0_1::Response, VtaError> {
+        let mut payload = json!({
+            "roomId": room_id,
+            "signingKeyId": signing_key_id,
+            "hosts": hosts,
+        });
+        if !withdraw.is_empty() {
+            payload["withdraw"] = serde_json::to_value(withdraw)
+                .map_err(|e| VtaError::Validation(format!("rooms/owner/revoke withdraw: {e}")))?;
+        }
+        if let Some(r) = reason {
+            payload["reason"] = json!(r);
+        }
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_OWNER_REVOKE_0_1,
+                payload,
+                // A read and a delivery per host, at most eight.
+                ROOM_TT_TIMEOUT * 8,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| {
+            VtaError::Protocol(format!(
+                "rooms/owner/revoke response does not match its schema: {e}"
             ))
         })
     }

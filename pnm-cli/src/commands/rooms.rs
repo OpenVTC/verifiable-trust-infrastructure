@@ -177,6 +177,9 @@ pub(crate) async fn run(
                     room_id,
                     host_did,
                     member,
+                    signing_key_id,
+                    mirrors,
+                    until,
                     reason,
                 } => {
                     rooms::cmd_rooms_owner_group_remove(
@@ -184,6 +187,32 @@ pub(crate) async fn run(
                         &room_id,
                         &host_did,
                         &member,
+                        signing_key_id.as_deref(),
+                        &mirrors,
+                        until,
+                        reason.as_deref(),
+                    )
+                    .await
+                }
+                RoomOwnerCommands::Revoke {
+                    room_id,
+                    signing_key_id,
+                    hosts,
+                    subjects,
+                    credentials,
+                    reset,
+                    until,
+                    reason,
+                } => {
+                    rooms::cmd_rooms_owner_revoke(
+                        client,
+                        &room_id,
+                        &signing_key_id,
+                        &hosts,
+                        &subjects,
+                        &credentials,
+                        reset,
+                        until,
                         reason.as_deref(),
                     )
                     .await

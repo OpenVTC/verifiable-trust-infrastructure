@@ -79,6 +79,7 @@ pub mod room_invitation;
 pub mod room_issuance;
 pub mod room_member;
 pub mod room_oracle;
+pub mod room_revocation;
 pub mod seeds;
 /// The byte strings `keys/sign-jws` and `keys/sign-csr` sign: a JWS signing
 /// input and a PKCS#10 `CertificationRequestInfo`, built here and nowhere else.
