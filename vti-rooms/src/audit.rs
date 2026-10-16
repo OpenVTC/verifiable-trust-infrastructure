@@ -141,6 +141,10 @@ pub enum RoomOperation {
     TransferOwner,
     /// A nominated successor takes a dormant room.
     ClaimOwner,
+    /// `rooms/revocations/put`: an administrator delivered the room's revocation list.
+    PutRevocations,
+    /// `rooms/revocations/get`: an administrator read the list this host holds.
+    GetRevocations,
 }
 
 impl RoomOperation {
@@ -154,6 +158,8 @@ impl RoomOperation {
             RoomOperation::MintEpoch => "room.epoch.mint",
             RoomOperation::TransferOwner => "room.owner.transfer",
             RoomOperation::ClaimOwner => "room.owner.claim",
+            RoomOperation::PutRevocations => "room.revocations.put",
+            RoomOperation::GetRevocations => "room.revocations.get",
         }
     }
 
@@ -171,7 +177,10 @@ impl RoomOperation {
             }
             RoomOperation::PutRecord => Action::Write,
             RoomOperation::CurateRecord => Action::Curate,
-            RoomOperation::MintEpoch | RoomOperation::TransferOwner => Action::Admin,
+            RoomOperation::MintEpoch
+            | RoomOperation::TransferOwner
+            | RoomOperation::PutRevocations
+            | RoomOperation::GetRevocations => Action::Admin,
         }
     }
 }
@@ -202,6 +211,7 @@ mod tests {
                 subject: presenter.to_string(),
                 actions: vec!["read".into(), "write".into()],
                 member: Some(presenter.to_string()),
+                presented: Default::default(),
             })
         }
     }
@@ -226,9 +236,17 @@ mod tests {
             authority: vec!["vac".into()],
             subject_binding: Some("binding".into()),
         };
-        authorize(&room, &presentation, Action::Read, PRESENTER, NOW, &Vouches)
-            .await
-            .expect("authorized")
+        authorize(
+            &room,
+            &presentation,
+            Action::Read,
+            PRESENTER,
+            NOW,
+            &Vouches,
+            crate::revocation::test_keyspace(),
+        )
+        .await
+        .expect("authorized")
     }
 
     #[tokio::test]

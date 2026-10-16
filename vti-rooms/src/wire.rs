@@ -110,6 +110,13 @@ pub const ROOMS_INFO_TYPE: &str =
 pub const ROOMS_USAGE_TYPE: &str =
     <trust_tasks_rs::specs::rooms::usage::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `rooms/revocations/put/0.1`: an administrator delivers the room's signed revocation list.
+pub const ROOMS_REVOCATIONS_PUT_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::revocations::put::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/revocations/get/0.1`: an administrator reads the list a host holds.
+pub const ROOMS_REVOCATIONS_GET_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::revocations::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// Every `rooms/*` URI this service dispatches.
 pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_CREATE_TYPE,
@@ -141,6 +148,9 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_BLOBS_UPLOAD_COMMIT_V2_TYPE,
     ROOMS_BLOBS_UPLOAD_ABORT_V2_TYPE,
     ROOMS_BLOBS_GET_V2_TYPE,
+    // Revocation (trust-tasks-tf #804).
+    ROOMS_REVOCATIONS_PUT_TYPE,
+    ROOMS_REVOCATIONS_GET_TYPE,
 ];
 
 /// What a party presents to act on a room.

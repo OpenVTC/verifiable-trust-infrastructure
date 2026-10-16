@@ -645,8 +645,11 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # 0.31.13: `vtc/registry/sync-jobs/retry/0.2` — a pending job
 # waiting out its backoff can be run now, a held one never (trust-tasks-tf
 # #802).
-# 0.31.14 is the FLOOR: `rooms/keys/label/0.1` and `rooms/keys/list/0.2` — a
-# member's own private label for each room they hold (trust-tasks-tf #806) —
+# 0.31.14 is the FLOOR: room revocation (trust-tasks-tf #804) —
+# `rooms/revocations/{put,get}/0.1`, `rooms/owner/revoke/0.1`,
+# `rooms/owner/group/remove/0.2`, `vtc/rooms/community/members/remove/0.2` and
+# the `RevocationList` defs; `rooms/keys/label/0.1` and `rooms/keys/list/0.2` —
+# a member's own private label for each room they hold (trust-tasks-tf #806) —
 # and `vtc/rooms/community/update/0.1`, the 0.2 community-room reads and create,
 # and `vtc/rooms/offers/list/0.2` — a community-owned room's description and
 # tags (trust-tasks-tf #805).

@@ -105,6 +105,10 @@ pub struct HostState {
     records: KeyspaceHandle,
     /// The rooms' epoch key chains. Wrapped key material this host cannot read.
     epoch_links: KeyspaceHandle,
+    /// Each room's revocation list (`rooms/revocations/put`): the one thing this host
+    /// consults beyond a presentation, and room state rather than its own — signed by the
+    /// room, moving with it.
+    revocations: KeyspaceHandle,
     /// Room files: the blob index, transfers, limits and usage, and the store
     /// the ciphertext lives in. Ciphertext this host cannot read, again.
     files: Arc<vti_rooms::blobs::BlobHost>,
@@ -558,6 +562,8 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         ROOMS_EPOCH_COMMITS_TYPE => epoch_commits(state, &doc, payload).await,
         ROOMS_OWNER_TRANSFER_TYPE => transfer_owner(state, &doc, payload).await,
         ROOMS_OWNER_CLAIM_TYPE => claim_owner(state, &doc, payload).await,
+        vti_rooms::revocation_tasks::PUT_TYPE => files::revocations_put(state, &doc, payload).await,
+        vti_rooms::revocation_tasks::GET_TYPE => files::revocations_get(state, &doc, payload).await,
         files::PUT_V2_TYPE => files::put_v2(state, &doc, payload).await,
         files::GET_V2_TYPE => files::get_v2(state, &doc, payload).await,
         files::LIST_V2_TYPE => files::list_v2(state, &doc, payload).await,
@@ -607,6 +613,7 @@ fn is_consequential(type_uri: &str) -> bool {
             | files::USAGE_TYPE
             | files::GET_V2_TYPE
             | files::LIST_V2_TYPE
+            | vti_rooms::revocation_tasks::GET_TYPE
     )
 }
 
@@ -756,6 +763,7 @@ async fn put_with_blobs(
         &presenter,
         now(),
         &verifier,
+        &state.revocations,
     )
     .await
     {
@@ -876,6 +884,7 @@ async fn get_versioned(
         &presenter,
         now(),
         &verifier,
+        &state.revocations,
     )
     .await
     {
@@ -941,6 +950,7 @@ async fn list_versioned(
         &presenter,
         now(),
         &verifier,
+        &state.revocations,
     )
     .await
     {
@@ -1086,6 +1096,7 @@ async fn epoch_chain(state: &HostState, doc: &TrustTask<Value>, payload: Value) 
         &presenter,
         now(),
         &verifier,
+        &state.revocations,
     )
     .await
     {
@@ -1147,6 +1158,7 @@ async fn mint(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answ
         &presenter,
         now(),
         &verifier,
+        &state.revocations,
     )
     .await
     {
@@ -1247,6 +1259,7 @@ async fn epoch_prune(state: &HostState, doc: &TrustTask<Value>, payload: Value) 
         &presenter,
         now(),
         &verifier,
+        &state.revocations,
     )
     .await
     {
@@ -1311,6 +1324,7 @@ async fn epoch_commits(state: &HostState, doc: &TrustTask<Value>, payload: Value
         &presenter,
         now(),
         &verifier,
+        &state.revocations,
     )
     .await
     {
@@ -1378,6 +1392,7 @@ async fn transfer_owner(state: &HostState, doc: &TrustTask<Value>, payload: Valu
         &presenter,
         now(),
         &verifier,
+        &state.revocations,
     )
     .await
     {
@@ -1432,9 +1447,11 @@ async fn claim_owner(state: &HostState, doc: &TrustTask<Value>, payload: Value) 
 
     // Against the party who signed the request, never a DID from the payload.
     let keys = DataIntegrityKeys(state.resolver.clone());
-    if let Err(e) = nomination::verify(&req.nomination, &room.room_id, &presenter, &keys).await {
-        return from_app_error(doc, &e);
-    }
+    let nominated =
+        match nomination::verify(&req.nomination, &room.room_id, &presenter, &keys).await {
+            Ok(n) => n,
+            Err(e) => return from_app_error(doc, &e),
+        };
 
     let lifecycle = room.lifecycle(now());
     if !lifecycle.admits_a_claim() {
@@ -1457,12 +1474,18 @@ async fn claim_owner(state: &HostState, doc: &TrustTask<Value>, payload: Value) 
         &presenter,
         now(),
         &verifier,
+        &state.revocations,
     )
     .await
     {
         Ok(a) => a,
         Err(e) => return from_app_error(doc, &e),
     };
+    // A nomination is a credential the room issued, and a list governs succession like
+    // every other task (`rooms/revocations/put`, *Enforcement* item 2).
+    if let Err(e) = authorized.also_unrevoked(nominated.facts()) {
+        return from_app_error(doc, &e);
+    }
     match storage::set_owner(&state.rooms, &req.room_id, &presenter, now()).await {
         Ok(updated) => {
             audit_room(&room, &authorized, operation, None);
@@ -1519,6 +1542,7 @@ async fn curate(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
         &presenter,
         now(),
         &verifier,
+        &state.revocations,
     )
     .await
     {
@@ -1693,6 +1717,7 @@ pub fn open_state_with_files(
         rooms: store.keyspace(ROOMS_KEYSPACE)?,
         records: store.keyspace(ROOM_RECORDS_KEYSPACE)?,
         epoch_links: store.keyspace(vti_rooms::ROOM_EPOCH_LINKS_KEYSPACE)?,
+        revocations: store.keyspace(vti_rooms::ROOM_REVOCATIONS_KEYSPACE)?,
         files: Arc::new(vti_rooms::blobs::BlobHost::new(
             store.keyspace(vti_rooms::blobs::ROOM_BLOBS_KEYSPACE)?,
             store.keyspace(vti_rooms::blobs::ROOM_BLOB_TRANSFERS_KEYSPACE)?,

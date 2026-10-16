@@ -50,6 +50,7 @@ use vti_common::blob_store::{
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
+use crate::revocation::Presented;
 use crate::{Room, Visibility};
 
 mod usage;
@@ -501,6 +502,12 @@ struct UploadRecord {
     /// proxied upload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     direct: Option<DirectState>,
+    /// The credentials the begin that opened — or last resumed — this upload presented,
+    /// so its chunks and its commit, which present nothing, are held to a revocation list
+    /// accepted after it began (`rooms/revocations/put`, *Enforcement* item 3). Absent on
+    /// an upload begun before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    presented: Option<Presented>,
 }
 
 /// A direct upload's state: the object this host chose, storage's multipart upload
@@ -730,6 +737,9 @@ struct DownloadRecord {
     /// served count under; `None` on a `private` room.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     member: Option<String>,
+    /// The credentials the request that opened it presented, as for an upload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    presented: Option<Presented>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1226,7 +1236,8 @@ impl BlobHost {
         member: Option<&str>,
         manifest: Manifest,
     ) -> Result<Begun, BlobError> {
-        self.begin_with(room, opener, member, manifest, None).await
+        self.begin_with(room, opener, member, None, manifest, None)
+            .await
     }
 
     /// `rooms/blobs/upload/begin/0.2`: as [`Self::begin`], and then the transfer
@@ -1246,8 +1257,41 @@ impl BlobHost {
         manifest: Manifest,
         offer: UploadOffer,
     ) -> Result<Begun, BlobError> {
-        self.begin_with(room, opener, member, manifest, Some(offer))
+        self.begin_with(room, opener, member, None, manifest, Some(offer))
             .await
+    }
+
+    /// [`Self::begin`] (`offer` absent) or [`Self::begin_v2`], recording the credentials
+    /// the begin presented so the steps that present nothing are held to a revocation
+    /// list accepted later (`rooms/revocations/put`, *Enforcement* item 3).
+    pub async fn begin_presented(
+        &self,
+        room: &Room,
+        opener: &str,
+        member: Option<&str>,
+        presented: &Presented,
+        manifest: Manifest,
+        offer: Option<UploadOffer>,
+    ) -> Result<Begun, BlobError> {
+        self.begin_with(room, opener, member, Some(presented), manifest, offer)
+            .await
+    }
+
+    /// The room a transfer belongs to and the credentials that opened it, whoever asks —
+    /// for a host to hold the transfer's next step to the room's revocation list before
+    /// the step's own ownership check runs. `None` for a transfer this host does not hold.
+    pub async fn transfer_presented(
+        &self,
+        transfer_id: &str,
+    ) -> Option<(String, Option<Presented>)> {
+        let id = Uuid::parse_str(transfer_id).ok()?;
+        if let Ok(Some(rec)) = self.blobs.get::<UploadRecord>(upload_key_record(&id)).await {
+            return Some((rec.room_id, rec.presented));
+        }
+        match self.blobs.get::<DownloadRecord>(download_key(&id)).await {
+            Ok(Some(r)) => Some((r.room_id, r.presented)),
+            _ => None,
+        }
     }
 
     /// The mode a `0.2` begin is answered in, or why none (item 16). `None` is a
@@ -1447,6 +1491,7 @@ impl BlobHost {
         room: &Room,
         opener: &str,
         member: Option<&str>,
+        presented: Option<&Presented>,
         manifest: Manifest,
         offer: Option<UploadOffer>,
     ) -> Result<Begun, BlobError> {
@@ -1480,6 +1525,9 @@ impl BlobHost {
                 .await?
             && rec.phase == UploadPhase::Open
         {
+            // Resumed under this begin's presentation, which is what its later steps
+            // are held to from now on.
+            rec.presented = presented.cloned();
             if rec.already_committed {
                 if rec.created_at + ALREADY_COMMITTED_TTL_SECS > now_secs()
                     && self.blob(&room.room_id, &rec.blob_ref).await?.is_some()
@@ -1603,6 +1651,7 @@ impl BlobHost {
                 protocol: TransferProtocol::V1,
                 upload_key_did: None,
                 direct: None,
+                presented: presented.cloned(),
             };
             self.bind(&mut rec, offer.as_ref()).await?;
             self.blobs
@@ -1665,6 +1714,7 @@ impl BlobHost {
                     part_digests: plan.part_digests.clone(),
                     expires_at,
                 }),
+                presented: presented.cloned(),
             };
             self.reserve(&rec).await?;
             self.bind(&mut rec, Some(&Self::without_key(offer.as_ref())))
@@ -1732,6 +1782,7 @@ impl BlobHost {
             protocol: TransferProtocol::V1,
             upload_key_did: None,
             direct: None,
+            presented: presented.cloned(),
         };
         self.reserve(&rec).await?;
         self.bind(&mut rec, offer.as_ref()).await?;
@@ -2082,6 +2133,22 @@ impl BlobHost {
         member: Option<&str>,
         blob_ref: &str,
     ) -> Result<Download, BlobError> {
+        self.open_download_presented(room, opener, member, None, blob_ref)
+            .await
+    }
+
+    /// [`Self::open_download`], recording the credentials the request presented, so the
+    /// download's chunks — which present nothing — are held to a revocation list accepted
+    /// after it opened (`rooms/revocations/put`, *Enforcement* item 4: a host serving from
+    /// storage it controls SHOULD refuse those too).
+    pub async fn open_download_presented(
+        &self,
+        room: &Room,
+        opener: &str,
+        member: Option<&str>,
+        presented: Option<&Presented>,
+        blob_ref: &str,
+    ) -> Result<Download, BlobError> {
         let room_id = room.room_id.as_str();
         let member = match room.visibility {
             Visibility::Private => None,
@@ -2100,6 +2167,7 @@ impl BlobHost {
             expires_at: now + Duration::seconds(DOWNLOAD_TTL_SECS),
             ceiling: now + Duration::seconds(DOWNLOAD_LIFETIME_SECS),
             member: member.map(str::to_string),
+            presented: presented.cloned(),
         };
         self.blobs
             .insert(download_key(&rec.download_id), &rec)
@@ -2130,6 +2198,7 @@ impl BlobHost {
         room: &Room,
         opener: &str,
         member: Option<&str>,
+        presented: Option<&Presented>,
         blob_ref: &str,
         want_direct: bool,
     ) -> Result<DownloadV2, BlobError> {
@@ -2176,7 +2245,7 @@ impl BlobHost {
                 ),
             }
         }
-        self.open_download(room, opener, member, blob_ref)
+        self.open_download_presented(room, opener, member, presented, blob_ref)
             .await
             .map(DownloadV2::Proxied)
     }

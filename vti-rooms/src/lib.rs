@@ -116,6 +116,12 @@ pub mod profile;
 /// The epoch key chain that keeps a room readable across a membership change.
 #[cfg(feature = "mls")]
 pub mod retention;
+/// A room's revocation list: the room's signed withdrawals, how a host accepts one, and
+/// which presented credentials it refuses (`rooms/revocations/*`).
+pub mod revocation;
+/// The `rooms/revocations/{put,get}` tasks, host-neutral, behind the `host` feature.
+#[cfg(feature = "host")]
+pub mod revocation_tasks;
 #[cfg(feature = "mls")]
 pub mod sealed;
 /// The room and record keyspaces, behind the `host` feature.
@@ -138,6 +144,13 @@ pub const ROOM_RECORDS_KEYSPACE: &str = "room_records";
 ///
 /// Held by the host as opaque ciphertext it cannot read. See [`wire::EpochLink`].
 pub const ROOM_EPOCH_LINKS_KEYSPACE: &str = "room_epoch_links";
+
+/// Keyspace holding each room's revocation list — the latest one the room signed and an
+/// administrator delivered (`rooms/revocations/put`), with when this host began enforcing it.
+///
+/// Room state rather than host state, and it moves with the room: a host that loses it
+/// honours what the room withdrew. Back it up with the rooms it governs.
+pub const ROOM_REVOCATIONS_KEYSPACE: &str = "room_revocations";
 
 /// Whether a room keeps its history readable across a membership change.
 ///

@@ -608,6 +608,7 @@ fn backed_up_handle<'a>(state: &'a AppState, name: &str) -> Option<&'a KeyspaceH
         x if x == ROOMS => &state.rooms_ks,
         x if x == ROOM_RECORDS => &state.room_records_ks,
         x if x == ROOM_EPOCH_LINKS => &state.room_epoch_links_ks,
+        x if x == ROOM_REVOCATIONS => &state.room_revocations_ks,
         x if x == ROOM_BLOBS => state.room_files.index_keyspace(),
         x if x == STORAGE_CONFIGS => state.room_storage.keyspace(),
         x if x == COMMUNITY_ROOMS => state.community_rooms.keyspace(),

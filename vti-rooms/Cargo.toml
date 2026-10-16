@@ -46,7 +46,7 @@ mls = [
 files = ["dep:chacha20poly1305", "dep:hkdf", "dep:getrandom"]
 # Hooks for a host's own tests (`BlobHost::lapse_direct_uploads`). Never in a
 # production build.
-test-support = ["host"]
+test-support = ["host", "dep:tempfile"]
 
 [dependencies]
 # The Trust Task framework. A normal dependency rather than a dev one, because
@@ -108,6 +108,7 @@ getrandom = { version = "0.4", optional = true }
 # Verification may resolve a DID, so ChainVerifier is async; async-trait keeps it
 # dyn-compatible, as it does for vti_common::auth::backend.
 async-trait = "0.1"
+tempfile = { version = "3", optional = true }
 
 # On wasm, OpenMLS needs its `js` feature: it swaps `std::time` for `web-time`
 # (there is no `SystemTime` on `wasm32-unknown-unknown`) and routes randomness

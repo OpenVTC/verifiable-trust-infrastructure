@@ -969,6 +969,36 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Docs**: `docs/02-vta/external-accounts.md`,
   `docs/05-design-notes/vta-external-accounts.md`.
 
+### Room revocation (`rooms/revocations/*`, `rooms/owner/revoke`)
+- **What**: A room withdraws credentials it issued before they expire, effective at its
+  host at once (trust-tasks-tf #804). The room's **revocation list** — signed by the
+  room, cumulative, numbered — is made by the owner's VTA (it holds the room key) and
+  delivered to every host serving the room; a host holds the latest one per room and
+  refuses every presentation it withdraws.
+- **Invariants to preserve**: the host checks the list inside `vti_rooms::authz::authorize`
+  — every task, every version, the membership credential and every chain link (a
+  `subject` entry matches subject **or issuer**, `validFrom < revokedAt`) — with the same
+  opaque `permissionDenied` as any refusal; never a revocation-specific code or text.
+  `authorize` holds the room's gate (`revocation::gate`) shared until the
+  `AuthorizedAction` is dropped and accepting a list holds it exclusively, so keep the
+  value alive until the operation commits and never authorize the same room twice in one
+  request. Transfer steps that present nothing are held to the list through the
+  credentials recorded at begin (`revocation_tasks::hold_transfer_step`). A list is
+  accepted only room-signed (method under the room's DID), higher sequence, append-only;
+  the deliverer is checked against the **held** list. Hosts read the list from the
+  payload **as received** (a generated-type round trip rewrites its timestamps). The VTA
+  keeps the list with the room key (`room_groups`, `room-revocations/<roomId>`), signs one
+  list per sequence under `room_revocation::signing_lock`, through the gated oracle, and
+  delivers it before answering `rooms/owner/register`. `group/remove/0.2` withdraws
+  first, then advances; a private room is never withdrawn per member.
+- **Code**: `vti-rooms/src/{revocation,revocation_tasks,authz}.rs`,
+  `vti-rooms-dtg/src/lib.rs` (`verify_room_signed`, `credential_facts`),
+  `room-host/src/files.rs`, `vtc-service/src/rooms/{handlers,files}.rs`,
+  `vta-service/src/operations/room_revocation.rs`,
+  `vta-service/src/trust_tasks/{room_owner_revoke,room_owner_group}.rs`,
+  `vtc-service/src/rooms/departures.rs` (`remove_member`).
+- **Docs**: `docs/02-vta/data-rooms.md` (§6), `docs/03-vtc/community-rooms.md`.
+
 ### Hidden-vetting PCS engine (`vta/pcs/*`)
 - **What**: The VTA holds its principal's PCS keys and runs every member-side
   hidden-vetting operation — an applicant's application, attestation receipt

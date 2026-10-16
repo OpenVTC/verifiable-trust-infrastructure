@@ -53,6 +53,7 @@ use dtg_credentials::{DTGCredential, DTGCredentialType};
 use vti_common::auth::{ProofPurpose, PurposeVmResolver};
 use vti_common::error::AppError;
 use vti_rooms::authz::{Action, ChainVerifier, VerifiedChain};
+use vti_rooms::revocation::{CredentialFacts, Presented};
 use vti_rooms::wire::AuthorityPresentation;
 use vti_rooms::{Room, Visibility};
 
@@ -291,6 +292,64 @@ pub async fn open_credential(
     Ok(credential)
 }
 
+/// What a revocation list matches a credential on (`RevocationEntry`): its `id`, subject,
+/// issuer and `validFrom`.
+pub fn credential_facts(c: &DTGCredential) -> CredentialFacts {
+    CredentialFacts {
+        id: c.id().map(str::to_string),
+        subject: c.subject().to_string(),
+        issuer: c.issuer().to_string(),
+        valid_from: Some(c.valid_from()),
+    }
+}
+
+/// Verify that `document` carries a Data Integrity proof by `room_id` itself: a
+/// verification method under the room's DID (`AuthorityPresentation`, *every credential is
+/// its issuer's attestation* — "the same binding holds for every other document a room
+/// signs, such as a `RevocationList`"), listed for `assertionMethod`, over every other
+/// member of the document.
+///
+/// Every failure is one opaque `Validation`; the reason goes to the log.
+pub async fn verify_room_signed(
+    document: &serde_json::Value,
+    room_id: &str,
+    keys: &dyn VerificationKeys,
+) -> Result<(), AppError> {
+    let refuse = |why: &str| {
+        tracing::warn!(room = %room_id, reason = why, "a room-signed document did not verify");
+        AppError::Validation("the document is not signed by the room".into())
+    };
+    let proof: affinidi_data_integrity::DataIntegrityProof = document
+        .get("proof")
+        .cloned()
+        .ok_or_else(|| refuse("no proof"))
+        .and_then(|p| serde_json::from_value(p).map_err(|_| refuse("unreadable proof")))?;
+    if proof.proof_purpose != ProofPurpose::AssertionMethod.as_str() {
+        return Err(refuse("proofPurpose is not assertionMethod"));
+    }
+    vti_common::auth::check_issuer_binding(&proof.verification_method, room_id).map_err(|_| {
+        tracing::warn!(room = %room_id, security_alert = true,
+            "a document claimed as the room's is signed by a key outside the room's DID");
+        refuse("verification method is not the room's")
+    })?;
+    let key = keys
+        .public_key(&proof.verification_method, ProofPurpose::AssertionMethod)
+        .await
+        .map_err(|_| refuse("verification method does not resolve for assertionMethod"))?;
+    let mut unsigned = document.clone();
+    if let Some(obj) = unsigned.as_object_mut() {
+        obj.remove("proof");
+    }
+    proof
+        .verify_with_public_key(
+            &unsigned,
+            &key,
+            affinidi_data_integrity::VerifyOptions::new(),
+        )
+        .map_err(|_| refuse("signature does not verify"))?;
+    Ok(())
+}
+
 /// An [`AuthorityError`] as a refusal.
 ///
 /// Every variant becomes the same `Forbidden`, with the specifics in the message for an
@@ -351,6 +410,13 @@ impl ChainVerifier for DtgChainVerifier {
         // The tests that pinned it stay exactly as they were — a chain presented by the
         // wrong party must still be refused, and it is not this crate's business any more
         // *which layer* refuses it.
+
+        // What a revocation list matches (`rooms/revocations/put`, *Matching*): every link,
+        // and — where the tier discloses it — the membership credential.
+        let mut presented = Presented {
+            membership: None,
+            authority: chain.iter().map(credential_facts).collect(),
+        };
 
         // The pooling defence: membership and authority must describe one subject.
         let member = match room.visibility {
@@ -424,6 +490,7 @@ impl ChainVerifier for DtgChainVerifier {
                         root.subject()
                     )));
                 }
+                presented.membership = Some(credential_facts(&membership));
                 Some(root.subject().to_string())
             }
         };
@@ -432,7 +499,16 @@ impl ChainVerifier for DtgChainVerifier {
             subject: verified.subject,
             actions: verified.actions,
             member,
+            presented,
         })
+    }
+
+    async fn verify_room_signature(
+        &self,
+        room: &Room,
+        document: &serde_json::Value,
+    ) -> Result<(), AppError> {
+        verify_room_signed(document, &room.room_id, self.keys.as_ref()).await
     }
 }
 
@@ -1048,6 +1124,7 @@ mod issuer_binding {
                 &mallory.did,
                 Utc::now().timestamp() as u64,
                 &verifier(),
+                vti_rooms::revocation::test_keyspace(),
             )
             .await
             .expect_err("a room grant the room did not sign confers nothing");
@@ -1302,6 +1379,20 @@ pub mod test_support {
         }
     }
 
+    /// `document` with a Data Integrity proof by `party` attached — a room-signed list when
+    /// `party` is the room, a forgery when it is anybody else.
+    pub async fn sign_as(party: &Party, mut document: serde_json::Value) -> serde_json::Value {
+        let proof = affinidi_data_integrity::DataIntegrityProof::sign(
+            &document,
+            &party.secret,
+            affinidi_data_integrity::SignOptions::new(),
+        )
+        .await
+        .expect("sign the document");
+        document["proof"] = serde_json::to_value(proof).expect("serialise the proof");
+        document
+    }
+
     /// A room, its owner, and the owner's agent — with every credential actually signed.
     pub struct RoomFixture {
         /// The room itself. Its DID is a `did:key` so a host needs no network to verify it.
@@ -1441,6 +1532,34 @@ pub mod test_support {
                 agent,
                 successor,
             }
+        }
+
+        /// A `RevocationList` for this room at `sequence`, carrying `entries` as given, signed
+        /// as the room (`rooms/revocations/put`).
+        pub async fn revocation_list(
+            &self,
+            sequence: u64,
+            entries: Vec<serde_json::Value>,
+        ) -> serde_json::Value {
+            sign_as(
+                &self.room_key,
+                serde_json::json!({
+                    "roomId": self.room.room_id,
+                    "sequence": sequence,
+                    "issuedAt": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "entries": entries,
+                }),
+            )
+            .await
+        }
+
+        /// A `subject` withdrawal of `did`, made now.
+        pub fn withdraw_subject(did: &str) -> serde_json::Value {
+            serde_json::json!({
+                "kind": "subject",
+                "subject": did,
+                "revokedAt": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            })
         }
 
         /// The owner's presentation.

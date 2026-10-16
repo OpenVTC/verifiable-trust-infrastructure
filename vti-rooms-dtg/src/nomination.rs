@@ -40,6 +40,7 @@ use crate::{VerificationKeys, chain_refusal, open_credential};
 #[derive(Debug)]
 pub struct VerifiedNomination {
     successor: String,
+    facts: vti_rooms::revocation::CredentialFacts,
 }
 
 impl VerifiedNomination {
@@ -47,6 +48,13 @@ impl VerifiedNomination {
     /// sender.
     pub fn successor(&self) -> &str {
         &self.successor
+    }
+
+    /// The nomination as a revocation list matches it: succession is a task a held list
+    /// governs like any other (`rooms/revocations/put`, *Enforcement* item 2), so a
+    /// withdrawn nomination redeems nothing.
+    pub fn facts(&self) -> &vti_rooms::revocation::CredentialFacts {
+        &self.facts
     }
 }
 
@@ -85,6 +93,7 @@ pub async fn verify(
 
     Ok(VerifiedNomination {
         successor: verified.subject,
+        facts: crate::credential_facts(&nomination),
     })
 }
 
