@@ -276,6 +276,14 @@ pub use trust_tasks_rs::specs::policy::upsert::v0_2 as policy_upsert;
 /// returns, and the error code it maps to [`VtcError::NotFound`].
 pub use trust_tasks_rs::specs::vtc::members::credentials::v0_1 as members_credentials;
 
+/// `vtc/rooms/community/*` — the rooms a community owns, as its administrators run
+/// them: create, list, get, and members add, remove and list.
+pub use trust_tasks_rs::specs::vtc::rooms::community as community_rooms;
+
+/// `vtc/rooms/offers/*` — a member's offers of admission to the community's own rooms,
+/// and accepting one.
+pub use trust_tasks_rs::specs::vtc::rooms::offers as room_offers;
+
 /// The `ext` key under which a VTC binds an uploaded policy module to the
 /// decision slot (purpose) it serves.
 ///

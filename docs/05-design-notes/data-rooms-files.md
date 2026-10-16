@@ -1198,7 +1198,7 @@ on their own merit:
 | P10 | Room storage reassignment and migration (§7.3) | M | P5 |
 | P11 | Walrus backend: upload relay, transactions signed by the VTA's `sui-signer` (E4), epoch extension in the sweeper | L | P3, P4, P5, E4 |
 | P12 | Direct-to-store presigned transfer (§5.2), if measurements ask for it | M | P5 |
-| P13 | Community-owned rooms (§8.4): the community's VTA as key holder over `vta_link`, the offers keyspace, `vtc.rooms.manage`, the console's create / members pages, and the member's offers in the portal and the extension | L | P0, P8 for the portal half |
+| P13 | Community-owned rooms (§8.4): the community's VTA as key holder over `vta_link`, the offers keyspace, `vtc.rooms.manage`, the console's create / members pages, and the member's offers in the portal and the extension. **First part landed**: `vtc/rooms/community/*` and `vtc/rooms/offers/*` served (`[rooms.community]`, the `community_rooms` keyspace, `vtc.rooms.manage`, serverless room identities served at `/room-dids/<id>/did.jsonl`), `cnm rooms …` for administrators ([`community-rooms.md`](../03-vtc/community-rooms.md)); console pages, a member client for the offers, and renewing the community's own authority follow | L | P0, P8 for the portal half |
 
 P0, P2 and P3 run in parallel; P4 follows P3, and P4b follows P4. A member can upload and
 download a file from the CLI after P6, and from the portal after P8.

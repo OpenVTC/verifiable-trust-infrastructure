@@ -12,6 +12,7 @@ mod member;
 mod members;
 mod onboard;
 mod pnm_profile;
+mod rooms;
 mod setup;
 mod vetting;
 mod vtc;
@@ -283,6 +284,13 @@ enum Commands {
     Git {
         #[command(subcommand)]
         command: git::GitCommands,
+    },
+
+    /// Data rooms the community itself owns: create them, offer members admission,
+    /// remove members (`vtc/rooms/community/*`). The community's VTA holds their keys.
+    Rooms {
+        #[command(subcommand)]
+        command: rooms::RoomsCommands,
     },
 
     /// The community's own DID log, when the community self-hosts it: install a
@@ -1053,6 +1061,7 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::DidLog { .. }
             | Commands::Vetting { .. }
             | Commands::Git { .. }
+            | Commands::Rooms { .. }
             | Commands::Consent { .. }
             | Commands::Actions { .. }
             | Commands::Access { .. }
@@ -1683,6 +1692,12 @@ async fn main() {
         Commands::Git { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => git::run(command, &key, &target, cli.transport.into()).await,
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Rooms { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => rooms::run(command, &key, &target, cli.transport.into()).await,
                 Err(e) => Err(e),
             }
         }

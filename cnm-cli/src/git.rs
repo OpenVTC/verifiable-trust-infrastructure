@@ -463,7 +463,7 @@ impl RightArg {
 }
 
 /// This profile's key, as the signer of `git-ns/*` documents.
-fn signing_key(keyring_key: &str) -> CliResult<(String, HolderKey)> {
+pub(crate) fn signing_key(keyring_key: &str) -> CliResult<(String, HolderKey)> {
     let session = auth::loaded_session(keyring_key).ok_or_else(|| {
         format!(
             "no stored identity for this community profile. Run `{} setup` first.",
@@ -480,7 +480,7 @@ fn signing_key(keyring_key: &str) -> CliResult<(String, HolderKey)> {
 /// A DID argument, checked as DID-core has it before anything is signed:
 /// what the VTC would refuse, and what could not be pasted safely, is caught
 /// here with the reason.
-fn did_arg(label: &str, value: &str) -> CliResult<String> {
+pub(crate) fn did_arg(label: &str, value: &str) -> CliResult<String> {
     vta_sdk::identifier::validate_did_core(label, value)?;
     Ok(value.to_string())
 }
@@ -547,7 +547,7 @@ fn shell_word(s: &str) -> String {
 /// ones among them — U+202A–202E, U+2066–2069 — reorder what follows, and
 /// the zero-width ones hide in plain sight, so a hostile value could make an
 /// authorisation URL read as another. Nothing here needs one.
-fn terminal_safe(s: &str) -> String {
+pub(crate) fn terminal_safe(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_control() || is_format_char(c) {
@@ -1124,7 +1124,7 @@ fn self_grant_waived_note(answer: &Value) -> Option<String> {
 /// a change the VTC answers with an operation-bound step-up — a self-grant
 /// under single-administrator mode — is completed rather than refused, then
 /// say when the single-administrator waiver applied.
-async fn send_change<P: serde::Serialize>(
+pub(crate) async fn send_change<P: serde::Serialize>(
     client: &VtcClient,
     base: &str,
     type_uri: &str,

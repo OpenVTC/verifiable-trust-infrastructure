@@ -553,12 +553,54 @@ write is not retried:
 ✗ Error: VTC returned HTTP 429: {"error":"rate_limited","limiter":"room-presenter",…,"retryAfterSecs":4}
 ```
 
+## 12. A room the community owns
+
+Everything above is a room **Alice** owns. The community can own rooms too — run by its
+administrators with `cnm`, with VTA C holding their keys ([Rooms the community
+owns](community-rooms.md)). It needs the VTC on a mediator with VTA C (§10.1), as
+storage does.
+
+> Unlike §1–§11, this section has not yet been run end to end against live services;
+> the VTC side is covered by `vtc-service/tests/it/community_rooms.rs` against a
+> stand-in VTA.
+
+```bash
+# VTA C: the community's DID mints, issues and keeps credentials in `vtc`
+export PNM_HOME=/tmp/vdr/pnm-community
+pnm acl change-role --did "$VTC" --from application --to initiator
+pnm acl update "$VTC" --capabilities key-mint,credential-write,vault-write,external-auth-use
+```
+
+```toml
+# appended to /tmp/vdr/vtc/config.toml — restart the VTC after
+[rooms.community]
+context = "vtc"
+```
+
+With no `webvh_server`, each room's DID is published by the VTC itself, at
+`http://localhost:8200/room-dids/<id>/did.jsonl`.
+
+```bash
+cnm rooms create --label "Board pack" --visibility attributed --reason "the board's papers"
+export CROOM=<the room DID it prints>
+cnm rooms members add "$CROOM" --member "$ALICE" --action read --action write \
+    --valid-for 90d --reason "joins the board"
+cnm rooms members list "$CROOM"
+```
+
+Alice then lists her offers and accepts with a KeyPackage her VTA minted against the
+offer's invitation (`vtc/rooms/offers/{list,accept}/0.1`, signed as `$ALICE`). No client
+signs those as her persona yet — see *Not yet* in [Rooms the community
+owns](community-rooms.md#the-members-half--vtcroomsoffers).
+
 ## What does not work yet
 
 Found in this run; each is being fixed.
 
 - **Storage configs need the console too** — or an approver device and a
   signer of your own (§10.4).
+- **A member cannot yet accept a community room's offer from a CLI** (§12): no client
+  signs `vtc/rooms/offers/*` as the member's persona.
 - **`private` rooms are not served**, and so neither is their commit relay —
   use `attributed`.
 - **`rooms/keys/act` sets no `subjectPath`** for a document without a `roomId`

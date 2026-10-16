@@ -35,6 +35,8 @@ affinidi-did-resolver-cache-sdk = { workspace = true }
 # into guidance.
 # `tsp` (which includes `didcomm`): `cnm backup` reaches the VTC only end to end.
 vtc-client = { path = "../vtc-client", version = "0.24", features = ["tsp"] }
+# `cnm rooms`: a request's type URI is read off its generated payload type.
+trust-tasks-rs = { workspace = true }
 # `cnm vetting bootstrap-pgp`: parse an OpenPGP keyring, verify third-party
 # certifications and cleartext-signed link statements.
 pgp = { workspace = true }

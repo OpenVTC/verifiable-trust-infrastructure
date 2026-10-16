@@ -1196,6 +1196,31 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Docs**: `docs/06-witness/README.md`,
   `docs/05-design-notes/witness-host-service.md`.
 
+### VTC community-owned rooms (`vtc/rooms/community/*`, `vtc/rooms/offers/*`)
+- **What**: Data rooms the community itself owns (design §8.4). The VTC is the
+  owner (`ownerDid` = its DID) and host; **its own VTA is the key holder**,
+  reached over `vta_link` (TSP > DIDComm, never inbound): it mints the room's
+  DID from the `room` template, founds the group with the community as its only
+  member, issues and vaults the community's own VMC + `admin` VAC, and later
+  issues members' VIC/VMC/VAC (`rooms/owner/*` + `vault/credentials/receive`,
+  unchanged VTA tasks, signed as the VTC's DID, which is a persona the VTA
+  holds in `[rooms.community] context`). Members are offered admission and
+  pull it (`offers/list`, `offers/accept` with a KeyPackage → Welcome).
+- **Invariants to preserve**: the VTC holds no room key or group secret, and
+  never falls back to one (`noKeyHolder`). Remote first: a create stores the
+  room only after mint + group + credentials; an admission is recorded only
+  after `group/add` answered; a removal only after `group/remove`. The owner's
+  record (`community_rooms` keyspace, backed up) is **never read on the host
+  path** (I5). `vtc.rooms.manage` (not `vtc.rooms.admin`) gates the admin
+  tasks; changes take the requester's bound step-up and do not park. Offers
+  answer only the proven signer, and only an active member. Never log or audit
+  a Welcome, a KeyPackage or a credential. Absent `[rooms.community]` = off.
+  Serverless room identities are served at `/room-dids/<id>/did.jsonl`.
+- **Code**: `vtc-service/src/rooms/community.rs`,
+  `vtc-service/src/trust_tasks/community_room_tasks.rs`,
+  `cnm-cli/src/rooms.rs` (`cnm rooms …`).
+- **Docs**: `docs/03-vtc/community-rooms.md`.
+
 ### VTC administrator action list (`vtc/admin/actions/*`)
 - **What**: Second-party consent at the VTC. An operation that needs other
   administrators' agreement — an authority-conferring grant or admin invite

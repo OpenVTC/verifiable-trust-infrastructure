@@ -2875,6 +2875,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "trust-tasks-rs",
  "url",
  "vta-cli-common",
  "vta-sdk",
