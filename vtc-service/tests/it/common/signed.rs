@@ -9,7 +9,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 use vti_rooms_dtg::test_support::Party;
 
@@ -212,4 +212,20 @@ pub async fn bearer_route_served_as(vtc: &TestVtc, method: &str, path: &str, tas
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|ct| ct.starts_with("application/json"))
+}
+
+/// Store a join criterion directly, as a suite's setup — for a suite whose
+/// subject is not the criterion's registration. Registering one through
+/// `vtc/schemas/accepts/register` takes the requester's gesture and another
+/// administrator's consent (VTI-APV-023), which `join_criteria_consent` holds;
+/// a suite that only needs a criterion to exist writes it here, through the
+/// store's own checks, as the registration's execution would.
+pub async fn seed_criterion(vtc: &TestVtc, mut criterion: Value) {
+    criterion["createdAt"] = json!("2026-10-16T00:00:00Z");
+    criterion["createdByDid"] = json!("did:key:z6MkSeededCriterion");
+    let criterion: vtc_service::schemas::AcceptsCriterion =
+        serde_json::from_value(criterion).expect("a criterion");
+    vtc_service::schemas::store_accepts(&vtc.state.schemas_ks, &criterion)
+        .await
+        .expect("store the criterion");
 }

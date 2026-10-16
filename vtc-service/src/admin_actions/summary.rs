@@ -51,6 +51,10 @@ pub const KIND_THRESHOLD_LOWER: &str = "config.threshold.lower";
 /// Changing the trusted-witness list, `witnesses.trusted` (VTI-CMP-090).
 pub const KIND_WITNESSES_CHANGE: &str = "config.witnesses.change";
 pub const KIND_POLICY_AUTHORITY: &str = "policy.authority.change";
+/// Registering, replacing or deleting a join criterion (VTI-APV-023).
+pub const KIND_CRITERIA_CHANGE: &str = "join.criteria.change";
+/// Replacing or activating the personhood policy (VTI-APV-023).
+pub const KIND_POLICY_RECOGNITION: &str = "policy.recognition.change";
 pub const KIND_INVITE_CREATE: &str = "admin.invite.create";
 /// An operator's offline write, raised for acknowledgement (VTI-VTC-023).
 pub const KIND_OPERATOR_WRITE: &str = "operator.offlineWrite";
@@ -126,6 +130,8 @@ const CONFIG_PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const CONFIG_IMPORT: &str = "https://trusttasks.org/spec/vtc/config/import/0.1";
 const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
 const POLICY_ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
+const ACCEPTS_REGISTER: &str = crate::trust_tasks::surface_tasks::ACCEPTS_REGISTER_TYPE;
+const ACCEPTS_DELETE: &str = crate::trust_tasks::surface_tasks::ACCEPTS_DELETE_TYPE;
 const ROLES_DEFINE: &str = "https://trusttasks.org/spec/vtc/roles/define/0.1";
 const ROLES_DELETE: &str = "https://trusttasks.org/spec/vtc/roles/delete/0.1";
 const BACKUP_FINALIZE_IMPORT: &str = "https://trusttasks.org/spec/backup/finalize-import/0.1";
@@ -173,6 +179,18 @@ const WITNESSES_EFFECT: &str = "The witnesses whose Verifiable Witness Credentia
                                 any witness not listed counts for nothing here, including ones \
                                 members already hold.";
 const POLICY_EFFECT: &str = "The rules that decide who holds authority in this community change.";
+const RECOGNITION_POLICY_EFFECT: &str = "The rules that decide who this community recognises as a \
+                                         person change — for joining, and for members whose \
+                                         personhood it has already recognised.";
+const CRITERION_REGISTER_EFFECT: &str = "Who may become a member of this community changes: \
+                                         {id} becomes exactly what is shown, with admission \
+                                         {admission} — automatic admits an applicant who meets \
+                                         it, review refers them to an administrator. It replaces \
+                                         any criterion of that name, keeping its place in the \
+                                         order.";
+const CRITERION_DELETE_EFFECT: &str = "Who may become a member of this community changes: \
+                                       applicants can no longer join through {id}. Members \
+                                       admitted through it keep their membership.";
 const ACL_MIGRATION_EFFECT: &str = "This VTC ran {command} when it started on {host} at {at}. It \
                                     is already in effect: acknowledging records that you have \
                                     seen it, and changes nothing. Re-grant anyone who should keep \
@@ -433,6 +451,46 @@ pub const TEMPLATES: &[Template] = &[
         title: "Activate policy {id} for {purpose}",
         effect: POLICY_EFFECT,
         fields: &[f("id", "/id", "text"), f("purpose", "/purpose", "text")],
+    },
+    Template {
+        kind: KIND_POLICY_RECOGNITION,
+        type_uri: POLICY_UPSERT,
+        title: "Replace the policy {name}",
+        effect: RECOGNITION_POLICY_EFFECT,
+        fields: &[
+            f("name", "/name", "text"),
+            f("id", "/id", "text"),
+            f("module", "/module", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_POLICY_RECOGNITION,
+        type_uri: POLICY_ACTIVATE,
+        title: "Activate policy {id} for {purpose}",
+        effect: RECOGNITION_POLICY_EFFECT,
+        fields: &[f("id", "/id", "text"), f("purpose", "/purpose", "text")],
+    },
+    Template {
+        kind: KIND_CRITERIA_CHANGE,
+        type_uri: ACCEPTS_REGISTER,
+        title: "Register the join criterion {id}",
+        effect: CRITERION_REGISTER_EFFECT,
+        fields: &[
+            f("id", "/id", "text"),
+            f("admission", "/admission", "text"),
+            f("query", "/query", "text"),
+            f("credentialIssuers", "/credentialIssuers", "text"),
+            f("invitationRequired", "/invitationRequired", "text"),
+            f("vetting", "/vetting", "text"),
+            f("description", "/description", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_CRITERIA_CHANGE,
+        type_uri: ACCEPTS_DELETE,
+        title: "Remove the join criterion {id}",
+        effect: CRITERION_DELETE_EFFECT,
+        fields: &[f("id", "/id", "text")],
     },
     Template {
         kind: KIND_OPERATOR_WRITE,
@@ -708,6 +766,26 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_WITNESSES_CHANGE,
         CONFIG_IMPORT,
         "zQmathdofD8yrXDQ2AuSfsWwjjKdx9RdPkAnC2r7qdU79hc",
+    ),
+    (
+        KIND_POLICY_RECOGNITION,
+        POLICY_UPSERT,
+        "zQmT4hA8bE6Z1G2PDPPTvzH9ZTGrKdnyS3UBhhEXZkeDLhm",
+    ),
+    (
+        KIND_POLICY_RECOGNITION,
+        POLICY_ACTIVATE,
+        "zQmSdYoQSJ79w1Di8LMr3QJKcjLt47c2DdH2F9gbfoLF6hv",
+    ),
+    (
+        KIND_CRITERIA_CHANGE,
+        ACCEPTS_REGISTER,
+        "zQmbgGnKd4rpcj5dPZsKGTrL48wFiL5jGnyyUe9o3JcP5mr",
+    ),
+    (
+        KIND_CRITERIA_CHANGE,
+        ACCEPTS_DELETE,
+        "zQmaKTFtV3fF3hBkeWwduWohd35nePzqcEvBP95HLa3e7Pu",
     ),
     (
         KIND_POLICY_AUTHORITY,

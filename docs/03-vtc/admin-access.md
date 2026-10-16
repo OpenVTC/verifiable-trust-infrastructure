@@ -300,9 +300,10 @@ What a single administrator cannot do on their own, unless the community runs
 in single-administrator mode (§2.1a), is anything that needs another
 administrator's consent (§3.2): granting an authority-conferring capability —
 `vtc.roles.assign`, `vtc.config.admin`, … — inviting an administrator,
-changing a policy that decides authority, lowering the consent threshold, or
-changing the trusted-witness list. With nobody else eligible to approve, the VTC refuses it before asking for a
-step-up:
+changing a policy that decides authority, lowering the consent threshold,
+changing the trusted-witness list, or changing a join criterion or the
+personhood policy. With nobody else eligible to approve, the VTC refuses it
+before asking for a step-up:
 
 > Give did:example:geoff vtc.roles.assign, … needs consent from 1 other
 > holder(s) of vtc.roles.assign, … (VTI-APV-018).
@@ -338,8 +339,9 @@ operation that ordinarily needs another administrator's approval — granting an
 authority-conferring capability or inviting an administrator (VTI-APV-018),
 lowering the consent threshold (VTI-APV-020), replacing a policy that decides
 authority (VTI-VTC-022), defining or deleting a custom role, committing a
-restore, changing the trusted-witness list (VTI-CMP-090) — is authorized by
-your step-up **bound to that one operation** (§3.1)
+restore, changing the trusted-witness list, a join criterion or the
+personhood policy (VTI-APV-023) — is authorized by your step-up **bound to
+that one operation** (§3.1)
 instead, **whether or not other administrators' entries exist**. The
 operation runs at once; nothing waits in Actions. An administrator whose entry
 is unrestricted may also edit its own entry (§1.4a).
@@ -442,7 +444,8 @@ for **that one operation**:
 - removing, demoting or narrowing an administrator, including bringing an
   entry's expiry forward;
 - lowering the consent threshold, changing a policy that decides
-  authority, and changing the trusted-witness list;
+  authority, and changing the trusted-witness list, a join criterion or the
+  personhood policy;
 - defining or deleting a custom role, and committing a backup restore;
 - inviting a member to enrol a step-up passkey or a step-up approver, revoking
   one on their behalf, and adding or revoking your own approver;
@@ -514,8 +517,10 @@ These operations need the consent of **other** administrators:
 | granting or widening an entry to an **authority-conferring capability** it did not hold: `acl/grant`, `acl/update`, `acl/change-role`, `vtc/admin/invites/create` | holders of the same capabilities at a covering resource | VTI-APV-018 (the generalised VTI-APV-014) |
 | taking authority-conferring capabilities away from **another** entry: `acl/revoke`, a downward `acl/change-role`, a narrowing `acl/update`, `vtc/members/admin-remove` | the same, the subject excluded | VTI-APV-019 |
 | lowering `acl.unrestricted_admin_consent_threshold`, by `config/patch` or `vtc/config/import` (raising it stays immediate) | holders of `vtc.roles.assign` | VTI-APV-020 |
-| any change to the trusted-witness list `witnesses.trusted` — adding, removing or relabelling a witness — by `config/patch` or `vtc/config/import` (kind `config.witnesses.change`; [trusted-witnesses.md](trusted-witnesses.md)) | holders of `vtc.config.admin` | VTI-CMP-090 |
+| any change to the trusted-witness list `witnesses.trusted` — adding, removing or relabelling a witness — by `config/patch` or `vtc/config/import` (kind `config.witnesses.change`; [trusted-witnesses.md](trusted-witnesses.md)) | holders of `vtc.config.admin` | VTI-CMP-090, VTI-APV-023 |
 | `policy/upsert` and `policy/activate` for the purposes that decide authority | holders of `vtc.policy.admin` at that purpose | VTI-VTC-022 |
+| any change to a **join criterion** — adding, replacing (any requirement, its admission mode or description) or removing one — by `vtc/schemas/accepts/register` or `vtc/schemas/accepts/delete` (kind `join.criteria.change`; [join-criteria.md](join-criteria.md)). Re-saving a criterion unchanged asks nothing | holders of `vtc.surface.admin` | VTI-APV-023 |
+| `policy/upsert` and `policy/activate` for the **personhood** policy (kind `policy.recognition.change`; [personhood-and-graph.md](personhood-and-graph.md)) | holders of `vtc.policy.admin` at `policy:personhood` | VTI-APV-023 |
 | `vtc/roles/define`, `vtc/roles/delete` | holders of `vtc.roles.assign` and `vtc.approvals.admin` | VTI-APV-018 |
 | committing a backup restore (`backup/finalize-import` with `confirm: true`) — it replaces the ACL | holders of `vtc.backup.restore` | VTI-APV-018 |
 | a departed granter's grants (raised by the community itself) | holders of `vtc.roles.assign`; one approval re-affirms | VTI-ACL-071 |

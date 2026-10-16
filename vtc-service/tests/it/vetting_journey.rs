@@ -64,7 +64,6 @@ use vta_sdk::vetting::status::{StatusCheck, check_credential_status};
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::test_support::{MockVtcTransport, TestJoinClient, TestVtc};
 
-const ACCEPTS_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2";
 const JOIN_VETTING_SHOW_TASK: &str =
     "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1";
 const AUTO_GRANT_UPDATE_TASK: &str =
@@ -139,28 +138,29 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
 
     // …and the criterion says how many a join needs. Every number is the
     // community's policy.
-    let (status, body) = c
-        .admin_document(
-            ACCEPTS_REGISTER_TASK,
-            json!({
-                "id": "kernel-developer",
-                "description": "Two vetters, at least one in person",
-                "admission": "automatic",
-                "vetting": {
-                    "version": "0.1",
-                    "statementType": VETTED_PREDICATE,
-                    "minStatements": 2,
-                    "minByMethod": { "inPerson": 1 },
-                    "acceptedMethods": ["inPerson", "video"],
-                    "requiredClaims": ["name.legal"],
-                    "maxStatementAge": "P120D",
-                    "eligibleVetters": { "role": "vetter" },
-                    "independence": { "requireConsistentIdentityCommitment": true }
-                }
-            }),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "vetting criterion: {body}");
+    // (Stored directly: registering it through `vtc/schemas/accepts/register`
+    // takes a second administrator's consent, VTI-APV-023, and this community
+    // has one administrator.)
+    crate::common::signed::seed_criterion(
+        &c._vtc,
+        json!({
+            "id": "kernel-developer",
+            "description": "Two vetters, at least one in person",
+            "admission": "automatic",
+            "vetting": {
+                "version": "0.1",
+                "statementType": VETTED_PREDICATE,
+                "minStatements": 2,
+                "minByMethod": { "inPerson": 1 },
+                "acceptedMethods": ["inPerson", "video"],
+                "requiredClaims": ["name.legal"],
+                "maxStatementAge": "P120D",
+                "eligibleVetters": { "role": "vetter" },
+                "independence": { "requireConsistentIdentityCommitment": true }
+            }
+        }),
+    )
+    .await;
 
     // -----------------------------------------------------------------------
     // 2. The community names its vetters.

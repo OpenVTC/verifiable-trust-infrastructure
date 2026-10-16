@@ -1044,17 +1044,40 @@ async fn publishing_hidden_vetting_refuses_with_the_codes_it_declares() {
 /// member for the parameters, so a replacement built from it always arrives without them, and
 /// every edit an administrator made in the console used to turn hidden vetting off unannounced.
 /// Dropped only when the replacement asks for no vetting at all, which publish refuses anyway.
+///
+/// Each save is a change to a join criterion, so it takes the requester's gesture and a second
+/// administrator's approval (VTI-APV-023) and runs on that approval: what is kept is kept by the
+/// write the approval executes.
 #[tokio::test]
 async fn saving_a_criterion_keeps_its_hidden_vetting_until_it_stops_asking_for_vetting() {
+    use crate::common::second_party::Gesturer;
+    use crate::common::signed::{admin, post, signed};
+    use vti_rooms_dtg::test_support::Party;
     const ACCEPTS_REGISTER: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2";
     const MANIFEST: &str = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3";
-    let h = Harness::start().await;
-    vtc_service::endorsement_types::seed_defaults(&h.tv.state.endorsement_types_ks)
+    let tv = TestVtc::builder()
+        .with_signers(true)
+        .with_audit(true)
+        .with_public_url("https://vtc.example.com")
+        .build()
+        .await;
+    vtc_service::endorsement_types::seed_defaults(&tv.state.endorsement_types_ks)
         .await
         .expect("seed the default predicates");
-    let (admin_did, admin) = identity(0x71);
-    crate::common::signed::seed_role(&h.tv, &admin_did, vtc_service::acl::VtcRole::Admin, &[])
-        .await;
+    let a = admin(&tv).await;
+    let b = admin(&tv).await;
+    let mut gesturer = Gesturer::new();
+    gesturer.enrol(&tv, &a.did).await;
+    async fn register(
+        tv: &TestVtc,
+        g: &mut Gesturer,
+        a: &Party,
+        b: &Party,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        g.send_through(tv, a, &[b], &signed(a, ACCEPTS_REGISTER, body).await)
+            .await
+    }
 
     let criterion = |min: u32| {
         json!({
@@ -1077,40 +1100,43 @@ async fn saving_a_criterion_keeps_its_hidden_vetting_until_it_stops_asking_for_v
             .unwrap_or(false)
     };
 
-    let (status, body) = h.post(&admin, ACCEPTS_REGISTER, criterion(1)).await;
+    let (status, body) = register(&tv, &mut gesturer, &a, &b, criterion(1)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (status, body) = h
-        .post(
-            &admin,
+    let (status, body) = post(
+        &tv,
+        &signed(
+            &a,
             pcs_tasks::HIDDEN_PUBLISH_TYPE,
             json!({ "criterionId": "vetted-member" }),
         )
-        .await;
+        .await,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     // An ordinary edit: the requirements change, hidden vetting stays on.
-    let (status, body) = h.post(&admin, ACCEPTS_REGISTER, criterion(2)).await;
+    let (status, body) = register(&tv, &mut gesturer, &a, &b, criterion(2)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (_, manifest) = h.post(&admin, MANIFEST, json!({})).await;
+    let (_, manifest) = post(&tv, &signed(&a, MANIFEST, json!({})).await).await;
     assert!(
         hidden_in_manifest(&manifest),
         "an edit kept hidden vetting: {manifest}"
     );
 
     // The criterion stops asking for vetting: nothing left for the parameters to qualify.
-    let (status, body) = h
-        .post(
-            &admin,
-            ACCEPTS_REGISTER,
-            json!({ "id": "vetted-member", "admission": "review" }),
-        )
-        .await;
+    let (status, body) = register(
+        &tv,
+        &mut gesturer,
+        &a,
+        &b,
+        json!({ "id": "vetted-member", "admission": "review" }),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let stored =
-        vtc_service::schemas::accepts::get_accepts(&h.tv.state.schemas_ks, "vetted-member")
-            .await
-            .unwrap()
-            .expect("the criterion");
+    let stored = vtc_service::schemas::accepts::get_accepts(&tv.state.schemas_ks, "vetted-member")
+        .await
+        .unwrap()
+        .expect("the criterion");
     assert!(stored.hidden_vetting.is_none());
 }
 
@@ -1256,21 +1282,18 @@ async fn a_refused_challenge_says_which_way() {
     );
 }
 
-const ACCEPTS_REGISTER_TYPE: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2";
-
-/// An administrator, and a criterion `vetted-member` that asks for vetting, registered the way
-/// the console registers it.
+/// An administrator, and a criterion `vetted-member` that asks for vetting. Stored directly:
+/// registering it through `vtc/schemas/accepts/register` takes a second administrator's consent
+/// (VTI-APV-023), which `join_criteria_consent` holds.
 async fn vetted_criterion(h: &Harness, seed: u8) -> (String, Secret) {
     vtc_service::endorsement_types::seed_defaults(&h.tv.state.endorsement_types_ks)
         .await
         .expect("seed the default predicates");
     let (did, key) = identity(seed);
     crate::common::signed::seed_role(&h.tv, &did, vtc_service::acl::VtcRole::Admin, &[]).await;
-    let (status, body) = h
-        .post(
-            &key,
-            ACCEPTS_REGISTER_TYPE,
-            json!({
+    crate::common::signed::seed_criterion(
+        &h.tv,
+        json!({
                 "id": "vetted-member",
                 "admission": "automatic",
                 "vetting": {
@@ -1280,10 +1303,9 @@ async fn vetted_criterion(h: &Harness, seed: u8) -> (String, Secret) {
                     "acceptedMethods": ["inPerson", "video"],
                     "eligibleVetters": { "role": "vetter" },
                 },
-            }),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+        }),
+    )
+    .await;
     (did, key)
 }
 
@@ -1514,24 +1536,21 @@ async fn hidden_vetting_turns_off_and_shows_what_it_stores() {
 async fn publish_refuses_a_second_criterion_and_keys_its_signer_no_longer_derives() {
     let h = Harness::start().await;
     let (_, a) = vetted_criterion(&h, 0x77).await;
-    let (status, body) = h
-        .post(
-            &a,
-            ACCEPTS_REGISTER_TYPE,
-            json!({
-                "id": "second-route",
-                "admission": "review",
-                "vetting": {
-                    "version": "0.1",
-                    "statementType": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
-                    "minStatements": 2,
-                    "acceptedMethods": ["inPerson"],
-                    "eligibleVetters": { "role": "vetter" },
-                },
-            }),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    crate::common::signed::seed_criterion(
+        &h.tv,
+        json!({
+            "id": "second-route",
+            "admission": "review",
+            "vetting": {
+                "version": "0.1",
+                "statementType": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
+                "minStatements": 2,
+                "acceptedMethods": ["inPerson"],
+                "eligibleVetters": { "role": "vetter" },
+            },
+        }),
+    )
+    .await;
     let (status, body) = h
         .post(
             &a,

@@ -117,8 +117,17 @@ async fn below_the_routes_role_and_unsigned_are_refused() {
 
 #[tokio::test]
 async fn the_schema_registry_round_trips_with_its_declared_codes() {
-    let vtc = vtc().await;
+    // A criterion's registration and removal each take the requester's
+    // gesture and a second administrator's approval (VTI-APV-023).
+    let vtc = TestVtc::builder()
+        .with_audit(true)
+        .with_public_url("https://vtc.example.com")
+        .build()
+        .await;
     let admin = admin(&vtc).await;
+    let approver = crate::common::signed::admin(&vtc).await;
+    let mut gesturer = crate::common::second_party::Gesturer::new();
+    gesturer.enrol(&vtc, &admin.did).await;
     let schema = json!({ "type": "object" });
     let (status, doc) = call(
         &vtc,
@@ -160,19 +169,25 @@ async fn the_schema_registry_round_trips_with_its_declared_codes() {
     .await;
     assert_eq!(payload(&doc)["schema"]["credentialSchema"], schema, "{doc}");
 
-    let (_, doc) = call(
-        &vtc,
-        &admin,
-        &t("schemas/accepts/register/0.2"),
-        json!({
-            "id": "membership",
-            "admission": "automatic",
-            "credentialIssuers": "any",
-            "query": { "credentials": [ { "id": "m", "format": "ldp_vc",
-                       "meta": { "type_values": ["StatementCredential"] } } ] },
-        }),
-    )
-    .await;
+    let (_, doc) = gesturer
+        .send_through(
+            &vtc,
+            &admin,
+            &[&approver],
+            &crate::common::signed::signed(
+                &admin,
+                &t("schemas/accepts/register/0.2"),
+                json!({
+                    "id": "membership",
+                    "admission": "automatic",
+                    "credentialIssuers": "any",
+                    "query": { "credentials": [ { "id": "m", "format": "ldp_vc",
+                               "meta": { "type_values": ["StatementCredential"] } } ] },
+                }),
+            )
+            .await,
+        )
+        .await;
     assert_eq!(payload(&doc)["criterion"]["id"], "membership", "{doc}");
     let (_, doc) = call(
         &vtc,
@@ -182,13 +197,19 @@ async fn the_schema_registry_round_trips_with_its_declared_codes() {
     )
     .await;
     assert_eq!(payload(&doc)["criterion"]["id"], "membership", "{doc}");
-    let (_, doc) = call(
-        &vtc,
-        &admin,
-        &t("schemas/accepts/delete/0.1"),
-        json!({ "id": "membership" }),
-    )
-    .await;
+    let (_, doc) = gesturer
+        .send_through(
+            &vtc,
+            &admin,
+            &[&approver],
+            &crate::common::signed::signed(
+                &admin,
+                &t("schemas/accepts/delete/0.1"),
+                json!({ "id": "membership" }),
+            )
+            .await,
+        )
+        .await;
     assert_eq!(payload(&doc)["id"], "membership", "{doc}");
     let (_, doc) = call(
         &vtc,
@@ -541,9 +562,14 @@ async fn the_presentation_and_registry_codes_are_answered() {
         "{doc}"
     );
 
-    // A type a criterion's query names cannot be deleted from under it.
-    let doc = register(json!({ "id": "c", "admission": "review", "credentialIssuers": "any", "query": query_for("Vetted") })).await;
-    assert_eq!(payload(&doc)["criterion"]["id"], "c", "{doc}");
+    // A type a criterion's query names cannot be deleted from under it. (The
+    // criterion is stored directly: registering it takes a second
+    // administrator's consent, VTI-APV-023.)
+    crate::common::signed::seed_criterion(
+        &vtc,
+        json!({ "id": "c", "admission": "review", "credentialIssuers": "any", "query": query_for("Vetted") }),
+    )
+    .await;
     let (_, doc) = call(
         &vtc,
         &admin,

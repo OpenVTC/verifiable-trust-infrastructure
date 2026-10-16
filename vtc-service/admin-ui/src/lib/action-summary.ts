@@ -122,6 +122,16 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmYGMiMk9SpEJwJ7g4EpxKCourBJVRP6PnmHMzYccbQugH",
   [pinKey("config.witnesses.change", `${SPEC}/vtc/config/import/0.1`)]:
     "zQmathdofD8yrXDQ2AuSfsWwjjKdx9RdPkAnC2r7qdU79hc",
+  // Replacing or activating the personhood policy (VTI-APV-023).
+  [pinKey("policy.recognition.change", `${SPEC}/policy/upsert/0.2`)]:
+    "zQmT4hA8bE6Z1G2PDPPTvzH9ZTGrKdnyS3UBhhEXZkeDLhm",
+  [pinKey("policy.recognition.change", `${SPEC}/policy/activate/0.1`)]:
+    "zQmSdYoQSJ79w1Di8LMr3QJKcjLt47c2DdH2F9gbfoLF6hv",
+  // Registering, replacing or removing a join criterion (VTI-APV-023).
+  [pinKey("join.criteria.change", `${SPEC}/vtc/schemas/accepts/register/0.2`)]:
+    "zQmbgGnKd4rpcj5dPZsKGTrL48wFiL5jGnyyUe9o3JcP5mr",
+  [pinKey("join.criteria.change", `${SPEC}/vtc/schemas/accepts/delete/0.1`)]:
+    "zQmaKTFtV3fF3hBkeWwduWohd35nePzqcEvBP95HLa3e7Pu",
   [pinKey("policy.authority.change", `${SPEC}/policy/upsert/0.2`)]:
     "zQma1zFb7cvRpSH7erp14W83wYZW5vP7cke1yLwcwQZdEie",
   [pinKey("policy.authority.change", `${SPEC}/policy/activate/0.1`)]:

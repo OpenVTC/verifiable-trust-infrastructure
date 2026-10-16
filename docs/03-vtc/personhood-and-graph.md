@@ -131,6 +131,17 @@ check as the retired plain `IdentityVerificationCredential` rather than as its
 the stored policy, not by its bytes). A personhood
 policy an operator uploaded is never replaced.
 
+Replacing or activating the personhood policy (`policy/upsert`,
+`policy/activate` for purpose `personhood`) decides who this community
+recognises as a person, so it takes the requester's gesture and the approval
+of the other holders of `vtc.policy.admin @ policy:personhood` (kind
+`policy.recognition.change`, **VTI-APV-023**), as an authority policy does
+(VTI-VTC-022) — see [admin-access.md](admin-access.md) §3.2. In
+single-administrator mode the bound gesture stands in, audited at `Critical`.
+The capability itself is not authority-conferring: recognising a person grants
+no power in the community, so granting `vtc.policy.admin @ policy:personhood`
+is an ordinary grant. What is held for consent is each change it makes.
+
 ### The community's own identity check
 
 The default policy accepts a second evidence shape: a **`vetted/1` statement

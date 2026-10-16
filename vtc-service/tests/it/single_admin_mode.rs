@@ -479,3 +479,95 @@ async fn vti_apv_022_boot_audits_the_mode_in_effect_and_its_changes() {
     seen.sort();
     assert_eq!(seen, vec!["disabled", "enabled", "inEffect", "inEffect"]);
 }
+
+/// VTI-APV-022 / VTI-APV-023: a sole administrator adds a join criterion on
+/// their bound gesture — never without it — and the waiver is audited at
+/// `Critical`.
+#[tokio::test]
+async fn vti_apv_022_a_sole_admin_changes_a_join_criterion() {
+    const REGISTER: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2";
+    let mut fix = fixture(true).await;
+    let a = requester(&mut fix).await;
+    let doc = signed(
+        &a,
+        REGISTER,
+        json!({ "id": "open-door", "admission": "review" }),
+    )
+    .await;
+    async fn stored(fix: &Fixture) -> bool {
+        vtc_service::schemas::get_accepts(&fix.vtc.state.schemas_ks, "open-door")
+            .await
+            .unwrap()
+            .is_some()
+    }
+
+    let (status, reply) = post(&fix.vtc, &doc).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert!(
+        step_up_request(&reply).is_some(),
+        "the gesture first: {reply}"
+    );
+    assert!(!stored(&fix).await, "nothing without the gesture");
+
+    let (status, reply) = submit(&mut fix, &a, &doc).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert!(stored(&fix).await);
+    assert_nothing_open(&fix, &a).await;
+    let rows = waived(&fix).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].requirement.as_deref(), Some("VTI-APV-023"));
+    assert_eq!(rows[0].task.as_deref(), Some(REGISTER));
+}
+
+/// Without the mode, a sole administrator cannot add a join criterion alone:
+/// nobody else could approve, so it is refused before the gesture.
+#[tokio::test]
+async fn without_the_mode_a_sole_admin_cannot_change_a_join_criterion() {
+    let mut fix = fixture(false).await;
+    let a = requester(&mut fix).await;
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2",
+            json!({ "id": "open-door", "admission": "review" }),
+        )
+        .await,
+    )
+    .await;
+    assert!(!status.is_success(), "{reply}");
+    assert!(
+        step_up_request(&reply).is_none(),
+        "no gesture asked: {reply}"
+    );
+    assert!(
+        vtc_service::schemas::get_accepts(&fix.vtc.state.schemas_ks, "open-door")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// VTI-APV-022 / VTI-APV-023: replacing the personhood policy.
+#[tokio::test]
+async fn vti_apv_022_a_sole_admin_changes_the_personhood_policy() {
+    let mut fix = fixture(true).await;
+    let a = requester(&mut fix).await;
+    let src = "package vtc.personhood\nimport rego.v1\ndefault allow := false\n";
+    let (status, reply) = submit(
+        &mut fix,
+        &a,
+        &signed(
+            &a,
+            UPSERT,
+            json!({ "name": "personhood", "module": src, "ext": { "org.openvtc.purpose": "personhood" } }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_nothing_open(&fix, &a).await;
+    let rows = waived(&fix).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].requirement.as_deref(), Some("VTI-APV-023"));
+}

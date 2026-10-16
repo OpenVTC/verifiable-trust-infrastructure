@@ -234,6 +234,63 @@ where
     Ok(actor.did)
 }
 
+/// [`as_capable`], keeping the signer's claims for a consent gate.
+async fn as_capable_claims<P>(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+    cap: crate::acl::Capability,
+) -> Result<vti_common::auth::extractor::AuthClaims, TrustTaskOutcome>
+where
+    P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
+{
+    let actor = super::capable_signer(state, ctx, doc, cap, None).await?;
+    parse_spec_payload::<P>(doc)?;
+    Ok(actor)
+}
+
+/// What a criterion states — every requirement the register payload carries —
+/// without what the store adds (registrant, time, position, hidden-vetting
+/// parameters). Two criteria that state the same are no change, so
+/// re-registering one as it stands asks nobody for anything.
+fn stated_requirements(c: &crate::schemas::AcceptsCriterion) -> Value {
+    json!({
+        "admission": c.admission.as_str(),
+        "query": c.query,
+        "credentialIssuers": c.credential_issuers,
+        "invitationRequired": c.invitation_required,
+        "description": c.description,
+        "vetting": c.vetting,
+    })
+}
+
+/// The gate on registering, replacing or deleting a join criterion —
+/// **VTI-APV-023**: the requester's bound gesture and the consent of the other
+/// holders of `vtc.surface.admin`, or, in single-administrator mode
+/// (VTI-APV-022), the gesture alone at `Critical`
+/// ([`super::acl_tasks::settle_consent_gate`]). The parked action runs this
+/// handler again on its N-th approval, against the criteria as they are then
+/// (VTI-APV-017); the consent is pinned to the criterion as stored, so a write
+/// to it in the meantime voids the action.
+async fn settle_criteria_gate(
+    state: &AppState,
+    actor: &vti_common::auth::extractor::AuthClaims,
+    doc: &TrustTask<Value>,
+    id: &str,
+    summary: &str,
+) -> Result<(), TrustTaskOutcome> {
+    super::acl_tasks::settle_consent_gate(
+        state,
+        actor,
+        doc,
+        crate::acl::admin_consent::Act::ChangeJoinCriteria,
+        id,
+        summary,
+        summary,
+    )
+    .await
+}
+
 /// Any signer the community holds an entry for, with its payload held to the
 /// published schema.
 async fn as_member<P>(
@@ -658,7 +715,7 @@ async fn handle_accepts_register(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match as_capable::<accepts_register::Payload>(
+    let claims = match as_capable_claims::<accepts_register::Payload>(
         state,
         ctx,
         &doc,
@@ -669,6 +726,7 @@ async fn handle_accepts_register(
         Ok(a) => a,
         Err(reject) => return reject,
     };
+    let actor = claims.did.clone();
     let body: accepts_register::Payload = match parse_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
@@ -724,6 +782,30 @@ async fn handle_accepts_register(
     }
     if let Some(reason) = unsupported_requirement(state, &criterion) {
         return declared(&doc, ACCEPTS_REGISTER_ERR_UNSUPPORTED_REQUIREMENT, reason);
+    }
+    // VTI-APV-023: a criterion that differs from the one stored under its id —
+    // a new one, or any requirement changed — takes the requester's bound
+    // gesture and the other `vtc.surface.admin` holders' consent. Last, so a
+    // criterion the checks above refuse asks nobody for anything.
+    let stored = match crate::schemas::get_accepts(&state.schemas_ks, &criterion.id).await {
+        Ok(c) => c,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if !criterion.id.is_empty()
+        && stored.as_ref().map(stated_requirements) != Some(stated_requirements(&criterion))
+    {
+        let verb = if stored.is_some() { "Replace" } else { "Add" };
+        let summary = format!(
+            "{verb} the join criterion {} (admission {}), which decides who may become a \
+             member of this community",
+            criterion.id,
+            criterion.admission.as_str()
+        );
+        if let Err(refusal) =
+            settle_criteria_gate(state, &claims, &doc, &criterion.id, &summary).await
+        {
+            return refusal;
+        }
     }
     match crate::routes::schemas::register_accepts_inner(state, &actor, criterion).await {
         Ok(criterion) => success_response(&doc, json!({ "criterion": criterion.to_wire() })),
@@ -847,7 +929,7 @@ async fn handle_accepts_delete(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match as_capable::<accepts_delete::Payload>(
+    let claims = match as_capable_claims::<accepts_delete::Payload>(
         state,
         ctx,
         &doc,
@@ -858,10 +940,36 @@ async fn handle_accepts_delete(
         Ok(a) => a,
         Err(reject) => return reject,
     };
+    let actor = claims.did.clone();
     let id: String = match member_of(&doc, "id") {
         Ok(i) => i,
         Err(reject) => return reject,
     };
+    // VTI-APV-023: removing a criterion changes who may become a member as
+    // surely as adding one does. One that does not exist is refused as such,
+    // without asking anyone to approve it.
+    match crate::schemas::get_accepts(&state.schemas_ks, id.trim()).await {
+        Ok(Some(_)) => {
+            let summary = format!(
+                "Remove the join criterion {}, which decides who may become a member of this \
+                 community",
+                id.trim()
+            );
+            if let Err(refusal) =
+                settle_criteria_gate(state, &claims, &doc, id.trim(), &summary).await
+            {
+                return refusal;
+            }
+        }
+        Ok(None) => {
+            return declared_as(
+                &doc,
+                ACCEPTS_DELETE_ERR_NOT_FOUND,
+                AppError::NotFound(format!("accepts criterion `{}` not found", id.trim())),
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
     match crate::routes::schemas::delete_accepts_inner(state, &actor, id.trim()).await {
         Ok(id) => success_response(&doc, json!({ "id": id })),
         Err(e @ AppError::NotFound(_)) => declared_as(&doc, ACCEPTS_DELETE_ERR_NOT_FOUND, e),

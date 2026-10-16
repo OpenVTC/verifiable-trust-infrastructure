@@ -4113,6 +4113,17 @@ pub(crate) async fn sign_requests(
             "Whose witness credentials count as evidence in this community changes — for \
              personhood and for joining, and for credentials members already hold.",
         ),
+        Act::ChangeJoinCriteria => (
+            "joinCriteriaChange",
+            json!({ "criterion": rec.subject }),
+            "Who may become a member of this community changes, for every applicant from then on.",
+        ),
+        Act::ChangeRecognitionPolicy(purpose) => (
+            "policyChange",
+            json!({ "purpose": purpose.as_str() }),
+            "Who this community recognises as a person changes — for joining, and for members \
+             it has already recognised.",
+        ),
         Act::ChangeStorage => (
             "storageChange",
             json!({ "subject": rec.subject }),

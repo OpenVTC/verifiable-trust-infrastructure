@@ -107,6 +107,14 @@
 //!   the other holders of `vtc.config.admin`. Whose attestation counts as
 //!   evidence is a major trust change, and the "same review" CMP-090 asks of
 //!   it is a second administrator's (`credentials::trusted_witnesses`).
+//! - [`Act::ChangeJoinCriteria`] — **VTI-APV-023**: registering, replacing or
+//!   deleting a join criterion (`vtc/schemas/accepts/*`), approved by the other
+//!   holders of `vtc.surface.admin`. Who may become a member is decided by the
+//!   criteria; one administrator should not change what admission means alone.
+//! - [`Act::ChangeRecognitionPolicy`] — **VTI-APV-023**: replacing or
+//!   activating the personhood policy, approved by the other holders of
+//!   `vtc.policy.admin @ policy:personhood`. Not authority — the capability is
+//!   not conferring — but who is recognised as a person is a trust change.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -233,6 +241,19 @@ pub enum Act {
     /// evidence in this community, so a second administrator reviews it. The
     /// subject is the config key; the consent is pinned to the list in force.
     ChangeTrustedWitnesses,
+    /// **VTI-APV-023** — registering, replacing or deleting a join criterion
+    /// (`vtc/schemas/accepts/register` / `delete`). Not conferring, but the
+    /// criteria decide who may become a member. The subject is the criterion's
+    /// id; the consent is pinned to the criterion as stored (or its absence).
+    ChangeJoinCriteria,
+    /// **VTI-APV-023** — replacing or activating a policy that decides who this
+    /// community recognises as a person
+    /// ([`crate::policy::PolicyPurpose::decides_recognition`]). Kept apart from
+    /// [`Self::ChangeAuthorityPolicy`] because it decides no authority: what
+    /// approvers are told differs, and so does the requirement it implements.
+    /// The subject names the purpose; the consent is pinned to the revision
+    /// active for it now.
+    ChangeRecognitionPolicy(crate::policy::PolicyPurpose),
 }
 
 impl Act {
@@ -256,6 +277,7 @@ impl Act {
             Self::DirectAdmission => "the admission policy",
             Self::ChangeStorage => "the storage tasks' consent",
             Self::ChangeTrustedWitnesses => "VTI-CMP-090",
+            Self::ChangeJoinCriteria | Self::ChangeRecognitionPolicy(_) => "VTI-APV-023",
         }
     }
 
@@ -326,6 +348,11 @@ impl Act {
             Self::DirectAdmission => vec![CapRef::all(Capability::MembersManage)],
             Self::ChangeStorage => vec![CapRef::all(Capability::RoomsAdmin)],
             Self::ChangeTrustedWitnesses => vec![CapRef::all(Capability::ConfigAdmin)],
+            Self::ChangeJoinCriteria => vec![CapRef::all(Capability::SurfaceAdmin)],
+            Self::ChangeRecognitionPolicy(purpose) => vec![CapRef::new(
+                Capability::PolicyAdmin,
+                Some(ResourceQualifier::Policy(purpose)),
+            )],
         }
     }
 
@@ -375,6 +402,8 @@ impl Act {
                 _ => s::KIND_STORAGE_CONFIG_UPDATE,
             },
             Self::ChangeTrustedWitnesses => s::KIND_WITNESSES_CHANGE,
+            Self::ChangeJoinCriteria => s::KIND_CRITERIA_CHANGE,
+            Self::ChangeRecognitionPolicy(_) => s::KIND_POLICY_RECOGNITION,
         }
     }
 }
@@ -1520,6 +1549,10 @@ pub(crate) fn requester_still_authorized(
         Act::DirectAdmission => entry.admin.can(Capability::MembersManage, None),
         Act::ChangeStorage => entry.admin.can(Capability::RoomsAdmin, None),
         Act::ChangeTrustedWitnesses => entry.admin.can(Capability::ConfigAdmin, None),
+        Act::ChangeJoinCriteria => entry.admin.can(Capability::SurfaceAdmin, None),
+        Act::ChangeRecognitionPolicy(p) => entry
+            .admin
+            .can(Capability::PolicyAdmin, Some(&ResourceQualifier::Policy(p))),
     }
 }
 
@@ -1537,7 +1570,7 @@ pub(crate) async fn pin_for(
         // VTI-APV-020: the consent is to lowering *this* threshold. Once it
         // moves, what the approvers agreed to is not what would happen.
         Act::LowerThreshold => json!(threshold(state).await?),
-        Act::ChangeAuthorityPolicy(purpose) => json!(
+        Act::ChangeAuthorityPolicy(purpose) | Act::ChangeRecognitionPolicy(purpose) => json!(
             crate::policy::get_active_policy_id(&state.active_policies_ks, purpose)
                 .await?
                 .map(|id| id.to_string())
@@ -1578,6 +1611,12 @@ pub(crate) async fn pin_for(
         // happen.
         Act::ChangeTrustedWitnesses => {
             crate::credentials::trusted_witnesses::current_value(state).await?
+        }
+        // The approvers were shown a change to *this* criterion (none, for a
+        // new one). Any write to it in the meantime — another replacement, a
+        // deletion, hidden vetting turned on or off — voids the action.
+        Act::ChangeJoinCriteria => {
+            json!(crate::schemas::get_accepts(&state.schemas_ks, subject).await?)
         }
     };
     Ok(StatePin {
@@ -1740,6 +1779,8 @@ mod tests {
             Act::RestoreBackup,
             Act::GrantsReview,
             Act::ChangeTrustedWitnesses,
+            Act::ChangeJoinCriteria,
+            Act::ChangeRecognitionPolicy(PolicyPurpose::Personhood),
         ] {
             assert!(may_approve(&approver, &act.default_stake(), now), "{act:?}");
         }
@@ -1796,6 +1837,22 @@ mod tests {
                 tt::admin_tasks::CONFIG_PATCH_TYPE,
             ),
             (Act::ChangeTrustedWitnesses, tt::CONFIG_IMPORT_TYPE),
+            (
+                Act::ChangeJoinCriteria,
+                tt::surface_tasks::ACCEPTS_REGISTER_TYPE,
+            ),
+            (
+                Act::ChangeJoinCriteria,
+                tt::surface_tasks::ACCEPTS_DELETE_TYPE,
+            ),
+            (
+                Act::ChangeRecognitionPolicy(PolicyPurpose::Personhood),
+                tt::policy_tasks::POLICY_UPSERT_TYPE,
+            ),
+            (
+                Act::ChangeRecognitionPolicy(PolicyPurpose::Personhood),
+                tt::policy_tasks::POLICY_ACTIVATE_TYPE,
+            ),
             (
                 Act::ChangeAuthorityPolicy(PolicyPurpose::Removal),
                 tt::policy_tasks::POLICY_UPSERT_TYPE,

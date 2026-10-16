@@ -14,6 +14,7 @@
 // out below, since nothing else on this page names its task.
 
 import { postSignedRead, postSignedTrustTask } from "@/lib/api";
+import { postSignedWithStepUp, type ConfirmGesture } from "@/lib/signed-act";
 import type {
   AcceptsCriterion,
   AutoGrantConfig,
@@ -253,12 +254,28 @@ export const fetchCriteria = (): Promise<AcceptsCriterion[]> =>
  * vetting requirements against the manifest schema, that the `statementType`
  * is registered, and that it can evaluate every requirement stated.
  */
-export const saveCriterion = async (body: RegisterAcceptsBody): Promise<AcceptsCriterion> =>
-  (await postSignedTrustTask<{ criterion: AcceptsCriterion }>(TASK_ACCEPTS_REGISTER, body))
-    .criterion;
+//
+// Adding, changing or removing a criterion decides who may become a member, so
+// it takes a passkey gesture bound to that one write and the approval of the
+// community's other `vtc.surface.admin` holders (VTI-APV-023):
+// `confirmGesture` answers the first, and for the second the write is parked
+// as an administrator action and thrown as a `ParkedAction` — a success that
+// applied nothing yet. Re-saving a criterion unchanged asks for neither.
+export const saveCriterion = async (
+  body: RegisterAcceptsBody,
+  confirmGesture: ConfirmGesture,
+): Promise<AcceptsCriterion> =>
+  (
+    await postSignedWithStepUp<{ criterion: AcceptsCriterion }>(
+      TASK_ACCEPTS_REGISTER,
+      body,
+      confirmGesture,
+    )
+  ).criterion;
 
-export const deleteCriterion = (id: string): Promise<unknown> =>
-  postSignedTrustTask<unknown>(TASK_ACCEPTS_DELETE, { id });
+/** Remove a criterion — gated as [`saveCriterion`] is (VTI-APV-023). */
+export const deleteCriterion = (id: string, confirmGesture: ConfirmGesture): Promise<unknown> =>
+  postSignedWithStepUp<unknown>(TASK_ACCEPTS_DELETE, { id }, confirmGesture);
 
 // ── Endorsement types ───────────────────────────────────────────────────
 

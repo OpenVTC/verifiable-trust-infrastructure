@@ -105,7 +105,10 @@ waives.
 
 The rule implements VTI-CMP-090: a configuration change that alters trust
 semantics attracts the same review as a code change, and for a community that
-review is another administrator's. Editing `[witnesses]` in `config.toml` is the
+review is another administrator's. VTI-APV-023 states it for this list and for
+what it feeds — the [join criteria](join-criteria.md#who-may-change-them) and
+the personhood policy ([personhood-and-graph.md](personhood-and-graph.md)) —
+both of which park the same way. Editing `[witnesses]` in `config.toml` is the
 host operator's change, made outside the running VTC, like every other
 host-only setting.
 

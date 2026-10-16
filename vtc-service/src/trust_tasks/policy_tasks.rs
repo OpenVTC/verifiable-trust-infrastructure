@@ -193,9 +193,12 @@ async fn handle_active(
 /// recognition, git rights, rooms and vetter eligibility, so a scoped admin
 /// could rewrite the rules that bound it (`vtc-action-list.md` §8.1, hole 3).
 /// For a purpose that decides authority ([`PolicyPurpose::decides_authority`])
-/// it also takes the requester's gesture and another unrestricted
-/// administrator's consent, bound to this document (**VTI-VTC-022**: policy may
-/// only refuse, and changing the policy that decides authority is gated).
+/// or recognition — the personhood policy
+/// ([`PolicyPurpose::decides_recognition`]) — it also takes the requester's
+/// gesture and another administrator's consent, bound to this document
+/// (**VTI-VTC-022**: policy may only refuse, and changing the policy that
+/// decides authority is gated; **VTI-APV-023**: so is changing who is
+/// recognised as a person).
 async fn handle_upsert(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -228,7 +231,7 @@ async fn handle_upsert(
     }
     // Refused for its own faults before anyone is asked to approve it
     // (`vtc-action-list.md` §4.2); `upload_inner` checks again when it runs.
-    if purpose.decides_authority() {
+    if purpose.requires_consent() {
         match policy_admin::check_upload(state, &body).await {
             Ok(()) => {}
             Err(AppError::Conflict(message)) => {
@@ -273,8 +276,14 @@ async fn require_policy_admin(
     .map(|_| ())
 }
 
-/// The second party a change to an authority-deciding policy takes
-/// (**VTI-VTC-022**), and nothing for any other purpose.
+/// The second party a change to a consent-gated policy takes, and nothing for
+/// any other purpose: one that decides authority (**VTI-VTC-022**) parks as
+/// [`Act::ChangeAuthorityPolicy`](crate::acl::admin_consent::Act::ChangeAuthorityPolicy),
+/// the personhood policy (**VTI-APV-023**) as
+/// [`Act::ChangeRecognitionPolicy`](crate::acl::admin_consent::Act::ChangeRecognitionPolicy).
+/// Both are approved by the other holders of `vtc.policy.admin @
+/// policy:<purpose>`; in single-administrator mode the requester's bound
+/// gesture stands in, at `Critical` ([`super::acl_tasks::settle_consent_gate`]).
 async fn gate_authority_policy(
     state: &AppState,
     actor: &AuthClaims,
@@ -282,18 +291,31 @@ async fn gate_authority_policy(
     purpose: PolicyPurpose,
     verb: &str,
 ) -> Result<(), TrustTaskOutcome> {
-    if !purpose.decides_authority() {
+    use crate::acl::admin_consent::Act;
+    let (act, summary) = if purpose.decides_authority() {
+        (
+            Act::ChangeAuthorityPolicy(purpose),
+            format!(
+                "{verb} the {} policy, which decides authority in this community",
+                purpose.as_str()
+            ),
+        )
+    } else if purpose.decides_recognition() {
+        (
+            Act::ChangeRecognitionPolicy(purpose),
+            format!(
+                "{verb} the {} policy, which decides who this community recognises as a person",
+                purpose.as_str()
+            ),
+        )
+    } else {
         return Ok(());
-    }
-    let summary = format!(
-        "{verb} the {} policy, which decides authority in this community",
-        purpose.as_str()
-    );
+    };
     super::acl_tasks::settle_consent_gate(
         state,
         actor,
         doc,
-        crate::acl::admin_consent::Act::ChangeAuthorityPolicy(purpose),
+        act,
         &format!("policy:{}", purpose.as_str()),
         &summary,
         &summary,
@@ -304,8 +326,9 @@ async fn gate_authority_policy(
 /// `policy/activate/0.1` — put a revision in force for its purpose.
 ///
 /// Unrestricted administrator only, and for a purpose that decides authority
-/// the gesture and another unrestricted administrator's consent too — the same
-/// gate as [`handle_upsert`], for the same reason (**VTI-VTC-022**).
+/// or recognition the gesture and another administrator's consent too — the
+/// same gate as [`handle_upsert`], for the same reasons (**VTI-VTC-022**,
+/// **VTI-APV-023**).
 async fn handle_activate(
     state: &AppState,
     ctx: &JoinAuthCtx,

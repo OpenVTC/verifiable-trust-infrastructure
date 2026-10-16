@@ -207,6 +207,27 @@ impl PolicyPurpose {
         )
     }
 
+    /// Whether this purpose decides **who this community recognises as a
+    /// person** — the personhood policy. Not authority: recognition confers no
+    /// power in the community, so holding `vtc.policy.admin @
+    /// policy:personhood` is not authority-conferring
+    /// ([`crate::acl::Capability::is_authority_conferring`] reads
+    /// [`Self::decides_authority`] alone). But changing it alters the
+    /// community's trust semantics (VTI-CMP-090), so it is held for another
+    /// administrator's consent all the same (**VTI-APV-023**).
+    #[must_use]
+    pub fn decides_recognition(self) -> bool {
+        matches!(self, PolicyPurpose::Personhood)
+    }
+
+    /// Whether replacing or activating this purpose's policy is held for
+    /// another administrator's consent: it decides authority (**VTI-VTC-022**)
+    /// or recognition (**VTI-APV-023**).
+    #[must_use]
+    pub fn requires_consent(self) -> bool {
+        self.decides_authority() || self.decides_recognition()
+    }
+
     /// Lowercase camelCase wire form of this purpose. Stable wire
     /// (operators script around it); matches the serde
     /// representation.
