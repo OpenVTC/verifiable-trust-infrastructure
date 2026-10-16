@@ -3049,6 +3049,19 @@ pub struct TspSession {
     demux: crate::tsp_demux::TspDemux,
 }
 
+/// The signing + key-agreement secrets of a `did:key`, both from its one
+/// Ed25519 seed — what [`TspSession::connect`] and [`TspSession::connect_on`]
+/// hand to the secrets-driven constructors.
+#[cfg(feature = "tsp")]
+fn did_key_secrets(
+    client_did: &str,
+    private_key_multibase: &str,
+) -> Result<Vec<affinidi_tdk::secrets_resolver::secrets::Secret>, Box<dyn std::error::Error>> {
+    let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
+    let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
+    Ok(vec![secrets.signing, secrets.key_agreement])
+}
+
 #[cfg(feature = "tsp")]
 impl TspSession {
     /// Connect the client's TSP websocket to `mediator_did` (the VTA's `#tsp`
@@ -3060,6 +3073,31 @@ impl TspSession {
         private_key_multibase: &str,
         mediator_did: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let secrets = did_key_secrets(client_did, private_key_multibase)?;
+        Self::connect_with_secrets(client_did, secrets, mediator_did).await
+    }
+
+    /// Connect with pre-built secrets — the counterpart to
+    /// [`connect`](Self::connect) for an identity that is **not** a `did:key`.
+    ///
+    /// `connect` derives both secrets from one Ed25519 seed, which is right for
+    /// a `did:key` (its X25519 key-agreement key *is* the converted signing
+    /// key) and wrong for anything else. A `did:peer:2` relationship DID carries
+    /// an independent signing key `V` and key-agreement key `E` under its own
+    /// `#key-N` ids, as does a `did:webvh` with a
+    /// [`DidSecretsBundle`](crate::did_secrets::DidSecretsBundle) — build those
+    /// with [`crate::did_key::secrets_from_bundle`] and pass them here.
+    ///
+    /// Every secret's `id` MUST be a verification-method id of `client_did`, so
+    /// the mediator can match inbound recipients against it. Same contract as
+    /// [`DIDCommSession::connect_with_secrets`].
+    ///
+    /// [`DIDCommSession::connect_with_secrets`]: crate::didcomm_session::DIDCommSession::connect_with_secrets
+    pub async fn connect_with_secrets(
+        client_did: &str,
+        secrets: Vec<affinidi_tdk::secrets_resolver::secrets::Secret>,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let hub = crate::session_hub::SessionHub::new().await?;
         // Stringify before the shutdown await: a `Box<dyn Error>` is not `Send`,
         // and one held across an await would make this future non-`Send`.
@@ -3067,7 +3105,7 @@ impl TspSession {
             &hub,
             crate::session_hub::HubOwnership::Exclusive,
             client_did,
-            private_key_multibase,
+            secrets,
             mediator_did,
         )
         .await
@@ -3101,11 +3139,24 @@ impl TspSession {
         private_key_multibase: &str,
         mediator_did: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let secrets = did_key_secrets(client_did, private_key_multibase)?;
+        Self::connect_with_secrets_on(hub, client_did, secrets, mediator_did).await
+    }
+
+    /// Connect with pre-built secrets as one identity on a shared
+    /// [`SessionHub`](crate::session_hub::SessionHub) — the multi-identity
+    /// counterpart to [`connect_with_secrets`](Self::connect_with_secrets).
+    pub async fn connect_with_secrets_on(
+        hub: &std::sync::Arc<crate::session_hub::SessionHub>,
+        client_did: &str,
+        secrets: Vec<affinidi_tdk::secrets_resolver::secrets::Secret>,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::attach(
             hub,
             crate::session_hub::HubOwnership::Shared,
             client_did,
-            private_key_multibase,
+            secrets,
             mediator_did,
         )
         .await
@@ -3117,19 +3168,10 @@ impl TspSession {
         hub: &std::sync::Arc<crate::session_hub::SessionHub>,
         ownership: crate::session_hub::HubOwnership,
         client_did: &str,
-        private_key_multibase: &str,
+        secrets: Vec<affinidi_tdk::secrets_resolver::secrets::Secret>,
         mediator_did: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
-        let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
-
-        let identity = hub
-            .attach(
-                client_did,
-                vec![secrets.signing, secrets.key_agreement],
-                mediator_did,
-            )
-            .await?;
+        let identity = hub.attach(client_did, secrets, mediator_did).await?;
 
         // Stringified before the detach await: a boxed error is not `Send`.
         let prepared = hub

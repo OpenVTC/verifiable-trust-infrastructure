@@ -64,6 +64,27 @@ impl TspMediatorSession {
         Ok(Arc::new(Self { inner, holder_did }))
     }
 
+    /// Connect the TSP websocket as a holder that is **not** a `did:key`, with its secrets
+    /// given one per verification method — the TSP counterpart to
+    /// [`MediatorSession::connect_with_secrets`](crate::mediator::MediatorSession::connect_with_secrets),
+    /// for a `did:peer:2` relationship DID carrying witness documents ([`crate::witness`]).
+    /// The secrets are checked against the resolved document before any socket opens
+    /// ([`crate::holder_secrets`]).
+    #[uniffi::constructor]
+    pub async fn connect_with_secrets(
+        holder_did: String,
+        secrets: Vec<crate::holder_secrets::HolderSecret>,
+        mediator_did: String,
+    ) -> Result<Arc<Self>, FfiError> {
+        let secrets = crate::holder_secrets::holder_secrets(&holder_did, secrets).await?;
+        let inner = TspSession::connect_with_secrets(&holder_did, secrets, &mediator_did)
+            .await
+            .map_err(|e| FfiError::Transport {
+                reason: e.to_string(),
+            })?;
+        Ok(Arc::new(Self { inner, holder_did }))
+    }
+
     /// Wait up to `timeout_secs` for the next inbound TSP message from the
     /// mediator. Returns the unpacked Trust-Task document as JSON — the phone
     /// parses it exactly as it parses a DIDComm-delivered one (its own

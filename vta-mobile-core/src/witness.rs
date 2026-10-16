@@ -31,7 +31,10 @@
 //! [`TspMediatorSession`](crate::tsp::TspMediatorSession) or
 //! [`MediatorSession`](crate::mediator::MediatorSession) whose holder is the relationship DID,
 //! sending to the witness DID as its peer. Both refuse a document not issued by their holder or
-//! not addressed to the peer, as [`check_witness_document`] does.
+//! not addressed to the peer, as [`check_witness_document`] does. A `did:peer:2` relationship
+//! DID holds independent signing and key-agreement keys, so open its session with
+//! `connect_with_secrets` and its keys as [`HolderSecret`](crate::holder_secrets::HolderSecret)s,
+//! not `connect`, which derives both from one `did:key` seed.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;

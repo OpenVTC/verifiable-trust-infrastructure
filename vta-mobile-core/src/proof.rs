@@ -472,7 +472,11 @@ async fn verify_signature(
 
 /// Whether `did_doc` lists the verification method `vm` under `relationship`,
 /// by absolute DID URL, by relative `#fragment`, or as an embedded method.
-fn lists_method_under(did_doc: &serde_json::Value, vm: &str, relationship: &str) -> bool {
+pub(crate) fn lists_method_under(
+    did_doc: &serde_json::Value,
+    vm: &str,
+    relationship: &str,
+) -> bool {
     let fragment = vm.find('#').map(|i| &vm[i..]);
     let names_vm = |id: &str| id == vm || fragment.is_some_and(|f| id == f);
     did_doc

@@ -101,6 +101,16 @@ relationship — a wallet or agent.
   round is exercised against the real tasks and the real witness core in
   `vta-mobile-core/tests/witness_e2e.rs`.
 
+  A relationship DID is usually a `did:peer:2`, whose signing key `V` and
+  key-agreement key `E` are independent, so the session is opened with
+  `connect_with_secrets` (on `MediatorSession` or `TspMediatorSession`) and the
+  DID's keys as `HolderSecret`s, one per verification method — not `connect`,
+  which derives both keys from one `did:key` seed. The engine checks each secret
+  against the resolved document before any socket opens (every key is the one
+  published at its id; an Ed25519 `authentication` key and an X25519
+  `keyAgreement` key are both present), so a wrong key is refused by name rather
+  than as a mediator authentication failure.
+
 ## What the VTA checks
 
 **At open**, before the witness learns anything, so a session that cannot succeed

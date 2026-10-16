@@ -11617,6 +11617,7 @@ dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-didcomm",
  "affinidi-secrets-resolver",
+ "affinidi-tdk",
  "base64 0.23.1",
  "chrono",
  "dtg-credentials",

@@ -82,6 +82,11 @@ vta-sdk = { path = "../vta-sdk", version = "0.69", features = [
 # the crate directly (`use tokio_tungstenite as _` in lib.rs); it's a feature
 # enabler matched to the version affinidi-messaging-sdk already pulls.
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+# `Secret::from_multibase` for a holder that is not a `did:key` — a `did:peer:2`
+# relationship DID's independent `V` / `E` keys (`holder_secrets`). The same
+# crate `vta-sdk`'s sessions take their secrets in; the tests also use it to
+# mint the executor keys they sign with.
+affinidi-secrets-resolver = { workspace = true }
 
 [dev-dependencies]
 # Test-only Ed25519 signing for the did-signed verify round-trip (stands in for
@@ -90,9 +95,9 @@ ed25519-dalek = { workspace = true }
 # Test-only: builds real sha2-256 digests to prove the match code discriminates
 # between payloads once the constant multihash prefix is stripped.
 sha2 = { workspace = true }
-# Test-only `Secret::generate_ed25519` — mints the executor keys the request
-# verification tests sign with (the same sign path the VTA uses in production).
-affinidi-secrets-resolver = { workspace = true }
+# Test-only: mints a `did:peer:2` relationship DID (`DID::generate_did_peer`) for
+# the `connect_with_secrets` checks in `holder_secrets`.
+affinidi-tdk = { workspace = true }
 # `tests/witness_e2e.rs`: a witnessed session driven through this crate's API
 # against the real VTA tasks (`MockVta`, over HTTPS) and the real witness core
 # (`vti_witness::dispatch::answer`), carried by the test as a wallet would.

@@ -69,6 +69,40 @@ impl MediatorSession {
         }))
     }
 
+    /// Connect to `mediator_did` as a holder that is **not** a `did:key`, with its secrets
+    /// given one per verification method — a `did:peer:2` relationship DID, whose signing
+    /// key `V` and key-agreement key `E` are independent, so [`connect`](Self::connect)'s
+    /// one seed cannot express them. This is the session a wallet carries witness documents
+    /// on ([`crate::witness`]): its holder is the relationship DID, its peer the witness.
+    ///
+    /// - `holder_did`: the holder DID.
+    /// - `secrets`: its private keys, each under the verification-method id it is
+    ///   published as. Checked against the resolved document before any socket opens
+    ///   ([`crate::holder_secrets`]): every one must be the key published at its id, and
+    ///   there must be an Ed25519 `authentication` key and an X25519 `keyAgreement` key.
+    /// - `peer_did`: the peer this session converses with — a VTA, or a witness.
+    /// - `mediator_did`: the mediator to connect through.
+    #[uniffi::constructor]
+    pub async fn connect_with_secrets(
+        holder_did: String,
+        secrets: Vec<crate::holder_secrets::HolderSecret>,
+        peer_did: String,
+        mediator_did: String,
+    ) -> Result<Arc<Self>, FfiError> {
+        let secrets = crate::holder_secrets::holder_secrets(&holder_did, secrets).await?;
+        let inner =
+            DIDCommSession::connect_with_secrets(&holder_did, secrets, &peer_did, &mediator_did)
+                .await
+                .map_err(|e| FfiError::Transport {
+                    reason: e.to_string(),
+                })?;
+        Ok(Arc::new(Self {
+            inner,
+            holder_did,
+            vta_did: peer_did,
+        }))
+    }
+
     /// Wait up to `timeout_secs` for the next inbound DIDComm message from the
     /// mediator. Returns the unpacked message as JSON (`{ id, type, body, … }`)
     /// — the application Trust Task (e.g. the approve-request) rides in `body` —
