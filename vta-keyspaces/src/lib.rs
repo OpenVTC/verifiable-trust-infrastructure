@@ -318,7 +318,7 @@ pub const PCS_ENGINE: &str = "pcs_engine";
 /// The VTA's records of **witnessed sessions** in flight (`vta/witness/*`): one per
 /// session, keyed `session:<sessionId>`, from `vta/witness/open` until the record
 /// expires — minutes, near the witness's own session lifetime — with an accepted
-/// session reduced to its stub (`vta/_shared/0.5/CONVENTIONS.md` §3).
+/// session reduced to its stub (`vta/_shared/0.6/CONVENTIONS.md` §3).
 ///
 /// Holds the session document as signed, the relationship and member DIDs, the
 /// credential handles and their digests. Never a presentation or a challenge.

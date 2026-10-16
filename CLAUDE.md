@@ -974,12 +974,12 @@ new flow, update both this section and the relevant `docs/*.md`.
   `vta_sdk::client::pcs`, `vta-mobile-core/src/pcs.rs`.
 - **Docs**: `docs/02-vta/pcs-engine.md`.
 
-### Witnessed party (`vta/witness/*`)
-- **What**: The VTA is the participating party of a `witness/session` for its
+### Witnessed party (`vta/witness/*/0.2`)
+- **What**: The VTA is the participating party of a `witness/session/0.2` for its
   principal: `open` returns the `witness/session` document signed as the
   relationship DID, `present` verifies the witness's session answer and returns
-  the signed `witness/session/submit` (relationship presentation, and under the
-  member link the member presentation in `ext["org.openvtc.witness"]`), `accept`
+  the signed `witness/session/submit/0.2` (relationship presentation, and under
+  the member link the member presentation in its own `memberPresentation`), `accept`
   verifies the VWC and stores it with its evidence. **The client carries every
   document** from the relationship DID — the witness checks the transport-proven
   sender against `issuer`, and that DID's one mediator socket is the client's.
@@ -992,8 +992,10 @@ new flow, update both this section and the relevant `docs/*.md`.
   before it is read — `VerifiedWitnessAnswer` / `VerifiedWitnessOutcome` are the
   only way in. `sessionUnknown` is one answer whatever the cause. The record
   (`witness_sessions`, not backed up, swept) holds no presentation or challenge;
-  audit never names a member DID. A member presentation is built only for a
-  witness in `[witness] member_link_witnesses`.
+  audit never names a member DID. Only 0.2 is served, and a session record is
+  continued only by the version that opened it (a record whose session document
+  is not `witness/session/0.2` is `sessionUnknown`); the `ext["org.openvtc.witness"]`
+  carriage is retired, never read or written.
 - **Code**: `vta-service/src/operations/witness.rs`,
   `vta-service/src/trust_tasks/{witness,witness_tests}.rs`,
   `vta_sdk::client::witness`.
@@ -1166,7 +1168,7 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Docs**: `docs/02-vta/did-templates.md`.
 
 ### Witness host service (`vti-witness`)
-- **What**: The witness of `witness/session/0.1` / `witness/session/submit/0.1`
+- **What**: The witness of `witness/session/0.2` / `witness/session/submit/0.2`
   as a **host service**, never a VTA or VTC role: it must be independent of what
   it witnesses, and its DID is public by design, so it is never a node's own
   (VTI-KEY-007). Up to 10 identities per service (an 11th fails config load).
@@ -1358,9 +1360,11 @@ new flow, update both this section and the relevant `docs/*.md`.
   (`noOutcomeEvidence` / `outcomeInvalid`, VTI-CMP-023), then the digest
   binding — so every later state implies the earlier checks passed and no
   policy can accept what the host refused (VTI-VTC-022). Evidence rides
-  `ext["org.openvtc.witness"].outcomeEvidence` on `personhood/assert` only (the
-  `evidence` `vta/witness/accept` returns); the join paths carry none, so a VWC
-  meets no criterion there. Never compare witness DIDs other than verbatim,
+  `outcomeEvidence` on `vtc/members/personhood/assert/0.2` only (the `evidence`
+  `vta/witness/accept` returns; 0.1 and its `ext` stop-gap are not served), read
+  as received, and an entry's terminal type is the one its session document's own
+  version declares (`submit/0.1` for a 0.1 session, `/0.2` for 0.2, never
+  crossed); the join paths carry none, so a VWC meets no criterion there. Never compare witness DIDs other than verbatim,
   never let a community list its own DID.
 - **Code**: `vtc-service/src/credentials/{trusted_witnesses,witness}.rs`,
   `vtc-service/src/config_store.rs`, `vtc-service/src/routes/members/personhood.rs`,

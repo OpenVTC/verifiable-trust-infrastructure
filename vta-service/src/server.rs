@@ -1997,7 +1997,7 @@ fn run_storage_thread(
                             warn!("vault sweeper error: {e}");
                         }
                         // Delete witnessed-session records past their expiry
-                        // (`vta/_shared/0.5/CONVENTIONS.md` §3 item 4). Reads
+                        // (`vta/_shared/0.6/CONVENTIONS.md` §3 item 4). Reads
                         // already treat an expired record as unknown; this keeps
                         // the keyspace from holding abandoned sessions — their
                         // session documents name both relationship DIDs.

@@ -2018,8 +2018,8 @@ fn table() -> Vec<Conformance> {
                     "ext": { crate::members::match_code::MATCH_CODE_EXT_KEY: "7F4K-2QX9" } })
         ),
         checked!(
-            s::members::personhood::assert::v0_1::Payload,
-            s::members::personhood::assert::v0_1::Response,
+            s::members::personhood::assert::v0_2::Payload,
+            s::members::personhood::assert::v0_2::Response,
             // The payload the spine's assert handler reads.
             json!({ "did": DID, "presentation": { "type": ["VerifiablePresentation"] } }),
             // `AssertResponse` — routes/members/personhood.rs:206.

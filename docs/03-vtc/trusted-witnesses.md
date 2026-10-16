@@ -121,34 +121,35 @@ audit trail is what reconstructs the list that governed a past decision
 ## Outcome evidence
 
 A VWC cites the witnessing session it came from: `taskContext` names the
-`witness/session/0.1` document, and `taskDigestMultibase` is its digest. The
+`witness/session` document, and `taskDigestMultibase` is its digest. The
 citation does not show that the session finished. A session that was cancelled
 cites the same way. The Trust Task framework (*Evidence That a Cited Exchange
 Completed*) therefore asks for **outcome evidence**: the initiating document and
 the terminal success document. For witnessing, those are the `witness/session`
-document and the witness's `witness/session/submit/0.1#response`.
+document and the witness's `witness/session/submit#response`, at the version
+the session was opened at.
 
 The member presents both beside the VWC, in the
-`vtc/members/personhood/assert/0.1` payload:
+`vtc/members/personhood/assert/0.2` payload's own `outcomeEvidence`:
 
 ```json
 {
   "did": "did:key:z6Mk…",
   "presentation": { "…": "the VP carrying the VWC" },
-  "ext": {
-    "org.openvtc.witness": {
-      "outcomeEvidence": [
-        { "session": { "…": "the witness/session document" },
-          "outcome": { "…": "the witness's submit #response" } }
-      ]
-    }
-  }
+  "outcomeEvidence": [
+    { "session": { "…": "the witness/session document" },
+      "outcome": { "…": "the witness's submit #response" } }
+  ]
 }
 ```
 
-This is the `evidence` object that `vta/witness/accept/0.1` returns, so a client
-passes on what its VTA gave it. At most 16 entries are accepted. Any other
-member of the `org.openvtc.witness` namespace is refused as `malformedRequest`.
+This is the `evidence` object that `vta/witness/accept/0.2` returns, so a client
+passes on what its VTA gave it, exactly as stored. Between 1 and 16 entries are
+accepted (omit the member when no VWC is to count); anything else is
+`malformedRequest`. An entry that pairs with no VWC in the presentation is
+ignored. Only `assert/0.2` is served: 0.1 had no member for the evidence, and the
+`ext["org.openvtc.witness"]` stop-gap that carried it is retired. The member sends
+only the VWCs, and the evidence, it chose to present.
 
 The VTC pairs an entry with the VWC whose `taskContext` is the entry's session
 `id`, and checks:
@@ -156,7 +157,9 @@ The VTC pairs an entry with the VWC whose `taskContext` is the entry's session
 1. the VWC's `taskDigestMultibase` is the digest of the session document;
 2. the response is on the session's thread (`threadId` equals the session's
    `threadId`, or its `id` when it has none);
-3. the response is a `witness/session/submit/0.1#response`;
+3. the response is the type the session document's own version declares —
+   `witness/session/submit/0.2#response` for a `witness/session/0.2`,
+   `/0.1#response` for a `witness/session/0.1`, never the other;
 4. the response's proof verifies under the session's `recipient`, and that
    recipient is the VWC's issuer;
 5. the session was opened by, and the response addressed to, the VWC's subject;
@@ -171,10 +174,6 @@ witnessing completed without it.
 - **The join paths have no carriage for outcome evidence.** A join submission, a
   supplement and a credential-exchange presentation carry none. On those paths a
   VWC from a trusted witness is `noOutcomeEvidence`, so it meets no criterion.
-- **The carriage is an OpenVTC extension.** Like the witness's member link, it
-  rides `ext` because no task defines a member for it. Other implementations
-  will not send it, and the namespace is closed so the carriage can be replaced
-  once it is standardised upstream.
 - **There are no per-witness constraints.** Nothing yet limits a witness to
   some purposes or criteria. A community that wants one witness for personhood
   and another for joining says so in its policy, which may refuse a witness the

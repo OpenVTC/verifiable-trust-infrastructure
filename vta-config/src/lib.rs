@@ -26,27 +26,13 @@ pub use tenant_overlay::{
 pub struct WitnessPartyConfig {
     /// Seconds a session record lives after `vta/witness/open` (default 600, 60–3600).
     ///
-    /// `vta/_shared/0.5/CONVENTIONS.md` §3 item 4: minutes, near the witness's own
+    /// `vta/_shared/0.6/CONVENTIONS.md` §3 item 4: minutes, near the witness's own
     /// session lifetime — a witness session is opened for one occasion, and a
     /// record that outlived the witness's side would only ever answer
     /// `sessionUnknown` later than it should.
     #[serde(default = "default_witness_session_ttl_secs")]
     pub session_ttl_secs: u64,
-    /// Witnesses known to read a **member presentation** in the OpenVTC carriage
-    /// (`ext["org.openvtc.witness"].memberPresentation` on `witness/session/submit/0.1`),
-    /// by DID, or `["*"]` for every witness.
-    ///
-    /// `witness/session/submit/0.1` defines no member for a second presentation, so a
-    /// VTA must not build one for a witness whose carriage it does not know
-    /// (`vta/witness/open/0.1` item 4). **Empty — the default — knows none**, and a
-    /// `vta/witness/open` naming a `memberDid` is refused `memberLinkUnsupported`.
-    /// `vti-witness` reads the OpenVTC carriage; list the witnesses run with it.
-    #[serde(default)]
-    pub member_link_witnesses: Vec<String>,
 }
-
-/// The `member_link_witnesses` entry meaning every witness.
-pub const ANY_WITNESS: &str = "*";
 
 fn default_witness_session_ttl_secs() -> u64 {
     600
@@ -56,19 +42,11 @@ impl Default for WitnessPartyConfig {
     fn default() -> Self {
         Self {
             session_ttl_secs: default_witness_session_ttl_secs(),
-            member_link_witnesses: Vec::new(),
         }
     }
 }
 
 impl WitnessPartyConfig {
-    /// Whether `witness` is known to read the OpenVTC member-presentation carriage.
-    pub fn knows_member_link_carriage(&self, witness: &str) -> bool {
-        self.member_link_witnesses
-            .iter()
-            .any(|w| w == ANY_WITNESS || w == witness)
-    }
-
     fn validation_errors(&self) -> Vec<String> {
         let mut errors = Vec::new();
         if !(60..=3600).contains(&self.session_ttl_secs) {
@@ -77,21 +55,6 @@ impl WitnessPartyConfig {
                  opened for one occasion, and its record should expire in minutes",
                 self.session_ttl_secs
             ));
-        }
-        let any = self.member_link_witnesses.iter().any(|w| w == ANY_WITNESS);
-        if any && self.member_link_witnesses.len() > 1 {
-            errors.push(
-                "witness.member_link_witnesses: \"*\" already names every witness and \
-                 cannot be combined with DIDs"
-                    .into(),
-            );
-        }
-        for w in &self.member_link_witnesses {
-            if w != ANY_WITNESS && !w.starts_with("did:") {
-                errors.push(format!(
-                    "witness.member_link_witnesses: `{w}` is not a DID (or \"*\")"
-                ));
-            }
         }
         errors
     }

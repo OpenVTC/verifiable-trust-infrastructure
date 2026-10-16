@@ -1,8 +1,13 @@
 //! The VTA as the principal's **witnessed party** — the engine behind `vta/witness/open`,
-//! `vta/witness/present` and `vta/witness/accept` (trust-tasks-tf #779; the family's rules are
-//! `specs/vta/_shared/0.5/CONVENTIONS.md`, cited below as "conventions").
+//! `vta/witness/present` and `vta/witness/accept` at 0.2 (trust-tasks-tf #779, #799; the family's
+//! rules are `specs/vta/_shared/0.6/CONVENTIONS.md`, cited below as "conventions").
 //!
-//! A witness (`witness/session/0.1`, `witness/session/submit/0.1`) checks that the
+//! Sessions are conducted under `witness/session/0.2` and `witness/session/submit/0.2`, whose
+//! payload carries the member presentation in its own `memberPresentation`. A session record is
+//! continued only by the version that opened it: one whose stored document is not a
+//! `witness/session/0.2` answers `sessionUnknown` (conventions, introduction).
+//!
+//! A witness checks that the
 //! transport-proven sender of each document is its `issuer`, and replies to that sender. The
 //! relationship DID's one mediator connection belongs to whoever holds the relationship —
 //! normally the client — so the VTA never speaks to the witness (conventions §2 item 3). It
@@ -54,34 +59,30 @@ use crate::vault::model::{
     CredentialFormat, CredentialPurpose, CredentialStatus, StoredCredential,
 };
 
-/// The `ext` namespace the OpenVTC witness reads a member presentation from
-/// (`vta/witness/present/0.1`, *The member presentation's carriage*; `vti-witness`'s
-/// `presentation::MEMBER_LINK_EXT`).
-pub const MEMBER_LINK_EXT: &str = "org.openvtc.witness";
-/// The member of [`MEMBER_LINK_EXT`] carrying the member presentation.
+/// The `witness/session/submit/0.2` payload member carrying the member presentation.
 pub const MEMBER_PRESENTATION: &str = "memberPresentation";
 
 /// The reserved credential-vault tag holding the `witness/session` document a stored VWC cites,
-/// as the VTA built it (`vta/witness/accept/0.1` item 5).
+/// as the VTA built it (`vta/witness/accept/0.2` item 5).
 pub const EVIDENCE_SESSION_TAG: &str = "witness:session";
 /// The reserved credential-vault tag holding the witness's `witness/session/submit` `#response`,
 /// as handed back.
 pub const EVIDENCE_OUTCOME_TAG: &str = "witness:outcome";
 
-/// The DTG predicate a VWC states (`witness/session/submit/0.1`, *The credential delivered*).
+/// The DTG predicate a VWC states (`witness/session/submit/0.2`, *The credential delivered*).
 const WITNESSED_V1: &str = dtg_credentials::WITNESSED_V1;
 
 fn session_type() -> &'static str {
-    <session::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI
+    <session::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI
 }
 fn session_response_type() -> &'static str {
-    <session::v0_1::Response as trust_tasks_rs::Payload>::TYPE_URI
+    <session::v0_2::Response as trust_tasks_rs::Payload>::TYPE_URI
 }
 fn submit_type() -> &'static str {
-    <session::submit::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI
+    <session::submit::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI
 }
 fn submit_response_type() -> &'static str {
-    <session::submit::v0_1::Response as trust_tasks_rs::Payload>::TYPE_URI
+    <session::submit::v0_2::Response as trust_tasks_rs::Payload>::TYPE_URI
 }
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
@@ -99,8 +100,6 @@ pub enum WitnessError {
     NotFound(String),
     /// A credential does not fit its role, or has changed since open.
     CredentialMismatch(String),
-    /// `memberDid` named for a witness whose carriage this VTA does not know.
-    MemberLinkUnsupported(String),
     /// The witness's DID could not be resolved.
     WitnessUnresolvable(String),
     /// No record in a state that admits the task, in the caller's contexts. Deliberately
@@ -121,7 +120,6 @@ impl std::fmt::Display for WitnessError {
             | Self::Malformed(m)
             | Self::NotFound(m)
             | Self::CredentialMismatch(m)
-            | Self::MemberLinkUnsupported(m)
             | Self::WitnessUnresolvable(m)
             | Self::ResponseInvalid(m)
             | Self::VwcInvalid(m) => f.write_str(m),
@@ -174,7 +172,7 @@ pub struct SessionRecord {
     pub relationship_did: String,
     pub counterparty_did: String,
     pub relationship_thread_id: String,
-    /// The `witness/session/0.1` document exactly as built and signed.
+    /// The `witness/session/0.2` document exactly as built and signed.
     pub session_document: Value,
     pub relationship_credential: BoundCredential,
     /// The relationship credential's DTG digest (proof excluded) — what the VWC's
@@ -264,6 +262,13 @@ async fn find_session(
     Ok((entry, raw))
 }
 
+/// Whether `record` was opened by `vta/witness/open/0.2`: its stored session document is a
+/// `witness/session/0.2`. A session is continued only by the version that opened it
+/// (conventions, introduction), so any other record answers `sessionUnknown`.
+fn opened_at_this_version(record: &SessionRecord) -> bool {
+    record.session_document.get("type").and_then(Value::as_str) == Some(session_type())
+}
+
 /// Replace the row at `session_id` with `next`, only while it still holds `expected`. A lost
 /// race is [`WitnessError::SessionUnknown`]: the session moved on under another request.
 async fn replace_session(
@@ -333,7 +338,7 @@ async fn party_key(
     .await?
     .ok_or_else(not_held)?;
     // The oracle's gates, applied now rather than at the first signature: a refusal here
-    // happens before the witness learns anything (`vta/witness/open/0.1` item 1).
+    // happens before the witness learns anything (`vta/witness/open/0.2` item 1).
     let record = crate::operations::keys::require_key_nameable(
         &state.keys_ks,
         &state.acl_ks,
@@ -517,7 +522,7 @@ fn vm_resolver(state: &AppState) -> TrustTaskVmResolver {
     TrustTaskVmResolver::from_optional(state.did_resolver.clone())
 }
 
-/// `witnessUnresolvable` unless `witness` resolves (`vta/witness/open/0.1` item 5): nothing it
+/// `witnessUnresolvable` unless `witness` resolves (`vta/witness/open/0.2` item 5): nothing it
 /// answers could be verified otherwise.
 async fn require_resolvable(state: &AppState, witness: &str) -> Result<(), WitnessError> {
     let unresolvable = |why: String| {
@@ -577,7 +582,7 @@ pub struct Opened {
     pub context_id: Option<String>,
 }
 
-/// `vta/witness/open/0.1`, items 1–8, in order.
+/// `vta/witness/open/0.2`, items 1–7, in order.
 pub async fn open(
     state: &AppState,
     auth: &AuthClaims,
@@ -651,18 +656,6 @@ pub async fn open(
         None => None,
     };
 
-    // 4. The member link only where the witness's carriage is known.
-    if req.member_did.is_some() && !witness_config.knows_member_link_carriage(req.witness) {
-        return Err(WitnessError::MemberLinkUnsupported(format!(
-            "this agent knows no carriage in which `{}` reads a member presentation, so it will \
-             not build one that witness would ignore. If that witness reads the OpenVTC carriage \
-             (`ext[\"org.openvtc.witness\"].memberPresentation`, as vti-witness does), add it to \
-             `[witness] member_link_witnesses` in this VTA's configuration; otherwise present a \
-             membership credential naming the relationship DID, without memberDid",
-            req.witness
-        )));
-    }
-
     // A handle already in use would be overwritten, or refused at accept after the witness
     // has seen everything; refuse it before anything is disclosed.
     if let Some(handle) = req.store_as
@@ -676,10 +669,10 @@ pub async fn open(
         )));
     }
 
-    // 5. The witness resolves.
+    // 4. The witness resolves.
     require_resolvable(state, req.witness).await?;
 
-    // 6. The session document, signed as the relationship DID.
+    // 5. The session document, signed as the relationship DID.
     let session_id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
     let mut document = json!({
         "id": session_id,
@@ -700,7 +693,7 @@ pub async fn open(
     )
     .await?;
 
-    // 7. The record, `opened`.
+    // 6. The record, `opened`.
     let expires_at = now + TimeDelta::seconds(witness_config.session_ttl_secs as i64);
     let record = SessionRecord {
         session_id: session_id.clone(),
@@ -729,7 +722,7 @@ pub async fn open(
         )));
     }
 
-    // 8.
+    // 7.
     Ok(Opened {
         session_id,
         document,
@@ -864,7 +857,7 @@ async fn reread(
     Ok(held.body)
 }
 
-/// `vta/witness/present/0.1`, items 2–7.
+/// `vta/witness/present/0.2`, items 2–7.
 pub async fn present(
     state: &AppState,
     auth: &AuthClaims,
@@ -875,8 +868,8 @@ pub async fn present(
     // 2. The record, `opened` or `presented`.
     let (entry, raw) = find_session(&state.witness_sessions_ks, auth, session_id, now).await?;
     let record = match entry {
-        SessionEntry::Opened(r) | SessionEntry::Presented(r) => r,
-        SessionEntry::Accepted(_) => return Err(WitnessError::SessionUnknown),
+        SessionEntry::Opened(r) | SessionEntry::Presented(r) if opened_at_this_version(&r) => r,
+        _ => return Err(WitnessError::SessionUnknown),
     };
 
     // 3. The witness's own answer for this session — before any of it is read.
@@ -889,7 +882,7 @@ pub async fn present(
         response,
     )
     .await?;
-    let binding: session::v0_1::Response = serde_json::from_value(answer.payload().clone())
+    let binding: session::v0_2::Response = serde_json::from_value(answer.payload().clone())
         .map_err(|e| {
             WitnessError::ResponseInvalid(format!(
                 "the witness's session answer does not carry a challenge and domain: {e}"
@@ -942,7 +935,7 @@ pub async fn present(
     // 6. The submit document, signed as the relationship DID.
     let mut payload = json!({ "vp": vp });
     if let Some(mp) = member_presentation {
-        payload["ext"] = json!({ MEMBER_LINK_EXT: { MEMBER_PRESENTATION: mp } });
+        payload[MEMBER_PRESENTATION] = mp;
     }
     let mut document = json!({
         "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
@@ -986,7 +979,7 @@ pub async fn present(
 
 // ─── accept ──────────────────────────────────────────────────────────────────
 
-/// A VWC verified against the session that produced it (`vta/witness/accept/0.1` item 4).
+/// A VWC verified against the session that produced it (`vta/witness/accept/0.2` item 4).
 /// Only [`verify_outcome`] makes one, and [`accept`] stores nothing else.
 #[derive(Debug)]
 pub struct VerifiedWitnessOutcome {
@@ -995,7 +988,7 @@ pub struct VerifiedWitnessOutcome {
     vwc_digest_multibase: String,
 }
 
-/// `vwcDigestMultibase` as `witness/session/submit/0.1` defines it: sha2-256 multihash, base58btc,
+/// `vwcDigestMultibase` as `witness/session/submit/0.2` defines it: sha2-256 multihash, base58btc,
 /// of the RFC 8785 canonicalization of the VWC **whole, proof included**.
 fn vwc_digest(vwc: &Value) -> Result<String, AppError> {
     let canonical = serde_json_canonicalizer::to_vec(vwc)
@@ -1170,7 +1163,7 @@ fn vault_entry(
     })
 }
 
-/// `vta/witness/accept/0.1`, items 2–6.
+/// `vta/witness/accept/0.2`, items 2–6.
 pub async fn accept(
     state: &AppState,
     auth: &AuthClaims,
@@ -1182,8 +1175,10 @@ pub async fn accept(
     // 2. The record: `presented`, or an accepted one answering the same outcome again.
     let (entry, raw) = find_session(&state.witness_sessions_ks, auth, session_id, now).await?;
     let record = match entry {
-        SessionEntry::Presented(r) => r,
-        SessionEntry::Opened(_) => return Err(WitnessError::SessionUnknown),
+        SessionEntry::Presented(r) if opened_at_this_version(&r) => r,
+        SessionEntry::Opened(_) | SessionEntry::Presented(_) => {
+            return Err(WitnessError::SessionUnknown);
+        }
         SessionEntry::Accepted(stub) => {
             return accepted_again(state, &resolver, stub, response).await;
         }

@@ -2,7 +2,7 @@
 //!
 //! A VWC is a DTG Verifiable Statement Credential (`StatementCredential`)
 //! under the predicate `https://registry.trustoverip.org/dtg/vsc/witnessed/1`
-//! (`dtg_credentials::WITNESSED_V1`; witness/session/submit/0.1, "The
+//! (`dtg_credentials::WITNESSED_V1`; witness/session/submit/0.2, "The
 //! credential delivered"). It is recognised by that predicate, never by a type
 //! string: DTG Credentials no longer defines a witness credential type.
 //!
@@ -430,24 +430,20 @@ pub async fn assess_or_unresolved(
 
 // ─── outcome evidence ────────────────────────────────────────────────────────
 
-/// The vendor-extension namespace a presentation's outcome evidence travels
-/// in — the same one the witness's member link uses
-/// (`docs/05-design-notes/witness-host-service.md` §3.3a).
-pub const OUTCOME_EVIDENCE_EXT: &str = "org.openvtc.witness";
-
-/// The member of [`OUTCOME_EVIDENCE_EXT`] that carries it: an array of
-/// [`OutcomeEvidence`], one per VWC presented.
+/// The `vtc/members/personhood/assert/0.2` payload member carrying it: an array
+/// of [`OutcomeEvidence`], one per VWC the member wants counted.
 pub const OUTCOME_EVIDENCE: &str = "outcomeEvidence";
 
-/// The most outcome-evidence entries one presentation may carry.
+/// The most outcome-evidence entries one presentation may carry (the schema's
+/// `maxItems`).
 pub const MAX_OUTCOME_EVIDENCE: usize = 16;
 
 /// Outcome evidence for one witnessing session (Trust Task framework,
-/// *Evidence That a Cited Exchange Completed*): the initiating
-/// `witness/session/0.1` document and the terminal
-/// `witness/session/submit/0.1#response`, both exactly as received. The shape
-/// `vta/witness/accept/0.1` answers in its `evidence` member, so a client hands
-/// on what its VTA gave it.
+/// *Evidence That a Cited Exchange Completed*; `witness/_shared/0.1`
+/// `OutcomeEvidence`): the initiating `witness/session` document and the
+/// terminal `witness/session/submit#response`, both exactly as received. The
+/// shape `vta/witness/accept` answers in its `evidence` member, so a client
+/// hands on what its VTA gave it.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutcomeEvidence {
@@ -455,37 +451,29 @@ pub struct OutcomeEvidence {
     pub outcome: JsonValue,
 }
 
-/// Read the outcome evidence out of a payload's `ext`, refusing a malformed
-/// carriage rather than ignoring it.
-///
-/// `witness/session/submit`'s evidence has no member of its own in any VTC
-/// task, so it rides the payload's vendor extension, exactly as the member link
-/// rides the submit payload's: `ext["org.openvtc.witness"].outcomeEvidence`.
-/// The namespace is closed — a member this service does not read is refused —
-/// so it can be replaced cleanly when the carriage is standardised.
-pub fn outcome_evidence_from_ext(
-    ext: Option<&JsonValue>,
+/// Read `outcomeEvidence` from a `personhood/assert/0.2` payload as received —
+/// never through a re-serialised typed copy, since each document's proof and
+/// task digest are taken over its members. Absent is none; anything the schema
+/// would refuse (an empty list, more than [`MAX_OUTCOME_EVIDENCE`], an entry
+/// that is not `{ session, outcome }` objects) is refused rather than read as
+/// none. An entry pairing no VWC in the presentation is ignored by
+/// [`pair_outcome`], as the specification says.
+pub fn outcome_evidence_from_payload(
+    payload: &JsonValue,
 ) -> Result<Vec<OutcomeEvidence>, AppError> {
-    let Some(ns) = ext.and_then(|e| e.get(OUTCOME_EVIDENCE_EXT)) else {
-        return Ok(Vec::new());
-    };
-    let ns = ns.as_object().ok_or_else(|| {
-        AppError::Validation(format!("ext[\"{OUTCOME_EVIDENCE_EXT}\"] must be an object"))
-    })?;
-    if let Some(other) = ns.keys().find(|k| k.as_str() != OUTCOME_EVIDENCE) {
-        return Err(AppError::Validation(format!(
-            "ext[\"{OUTCOME_EVIDENCE_EXT}\"].{other} is not a member this community reads"
-        )));
-    }
-    let Some(list) = ns.get(OUTCOME_EVIDENCE) else {
+    let Some(list) = payload.get(OUTCOME_EVIDENCE) else {
         return Ok(Vec::new());
     };
     let evidence: Vec<OutcomeEvidence> = serde_json::from_value(list.clone()).map_err(|e| {
         AppError::Validation(format!(
-            "ext[\"{OUTCOME_EVIDENCE_EXT}\"].{OUTCOME_EVIDENCE} must be an array of \
-             {{ \"session\", \"outcome\" }} objects: {e}"
+            "{OUTCOME_EVIDENCE} must be an array of {{ \"session\", \"outcome\" }} objects: {e}"
         ))
     })?;
+    if evidence.is_empty() {
+        return Err(AppError::Validation(format!(
+            "{OUTCOME_EVIDENCE} is empty; omit it when no witness credential is to count"
+        )));
+    }
     if evidence.len() > MAX_OUTCOME_EVIDENCE {
         return Err(AppError::Validation(format!(
             "{} outcome-evidence entries; at most {MAX_OUTCOME_EVIDENCE} may travel with one \
@@ -493,7 +481,21 @@ pub fn outcome_evidence_from_ext(
             evidence.len()
         )));
     }
+    if let Some(i) = evidence
+        .iter()
+        .position(|e| !is_document(&e.session) || !is_document(&e.outcome))
+    {
+        return Err(AppError::Validation(format!(
+            "{OUTCOME_EVIDENCE}[{i}]: session and outcome must each be a whole Trust Task document"
+        )));
+    }
     Ok(evidence)
+}
+
+/// A non-empty object: the least a carried Trust Task document can be
+/// (`EvidenceDocument`, `minProperties: 1`).
+fn is_document(v: &JsonValue) -> bool {
+    v.as_object().is_some_and(|o| !o.is_empty())
 }
 
 /// Whether outcome evidence pairs with a VWC.
@@ -507,12 +509,20 @@ pub enum Pairing {
     Invalid(String),
 }
 
-fn session_type() -> &'static str {
-    <trust_tasks_rs::specs::witness::session::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI
-}
-
-fn submit_response_type() -> &'static str {
-    <trust_tasks_rs::specs::witness::session::submit::v0_1::Response as trust_tasks_rs::Payload>::TYPE_URI
+/// The terminal response a `witness/session` document's own version declares as
+/// its outcome evidence (`witness/session/0.2`, *how the versions pair*): 0.1
+/// closes with `submit/0.1#response`, 0.2 with `submit/0.2#response`. `None`
+/// for any other document.
+fn declared_outcome_type(session_type: &str) -> Option<&'static str> {
+    use trust_tasks_rs::Payload;
+    use trust_tasks_rs::specs::witness::session;
+    if session_type == <session::v0_1::Payload as Payload>::TYPE_URI {
+        Some(<session::submit::v0_1::Response as Payload>::TYPE_URI)
+    } else if session_type == <session::v0_2::Payload as Payload>::TYPE_URI {
+        Some(<session::submit::v0_2::Response as Payload>::TYPE_URI)
+    } else {
+        None
+    }
 }
 
 /// Pair a VWC issued by `issuer` with the outcome evidence of the session it
@@ -560,8 +570,9 @@ fn str_at<'a>(doc: &'a JsonValue, key: &str) -> Option<&'a str> {
 /// 2. the terminal document is on that exchange's thread, and carries the
 ///    binding `witness/session/submit` declares — the VWC it delivers cites the
 ///    same document, which holds because it is this VWC (below);
-/// 3. its type is the declared outcome evidence,
-///    `witness/session/submit/0.1#response`;
+/// 3. its type is the outcome evidence the session document's own version
+///    declares — `witness/session/submit/0.1#response` for a 0.1 session,
+///    `/0.2#response` for a 0.2 one, never the other;
 /// 4. its proof verifies under the initiating document's `recipient`.
 ///
 /// Then what makes it *this* VWC's evidence: the `recipient` is the VWC's
@@ -579,9 +590,9 @@ async fn check_pair(
     let session = &entry.session;
     let outcome = &entry.outcome;
 
-    if str_at(session, "type") != Some(session_type()) {
-        return Err(format!("the initiating document is not {}", session_type()));
-    }
+    let declared = str_at(session, "type")
+        .and_then(declared_outcome_type)
+        .ok_or("the initiating document is not a witness/session")?;
     // Check 1, the digest half.
     let cited_digest =
         str_at(vwc, "taskDigestMultibase").ok_or("the VWC carries no taskDigestMultibase")?;
@@ -597,9 +608,9 @@ async fn check_pair(
     if str_at(outcome, "threadId") != Some(thread) {
         return Err("the response is not on the session's thread".into());
     }
-    // Check 3.
-    if str_at(outcome, "type") != Some(submit_response_type()) {
-        return Err(format!("the response is not {}", submit_response_type()));
+    // Check 3: the type the initiating document's own version declares.
+    if str_at(outcome, "type") != Some(declared) {
+        return Err(format!("the response is not {declared}"));
     }
     // The responder named by the initiating document is the witness.
     let recipient = str_at(session, "recipient")
@@ -685,6 +696,16 @@ pub(crate) mod fixtures {
     use serde_json::json;
     pub use vti_rooms_dtg::test_support::Party;
 
+    /// The 0.2 session type, which the fixtures build unless told otherwise.
+    pub fn session_type() -> &'static str {
+        <trust_tasks_rs::specs::witness::session::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI
+    }
+
+    /// The outcome evidence a 0.2 session declares.
+    pub fn submit_response_type() -> &'static str {
+        <trust_tasks_rs::specs::witness::session::submit::v0_2::Response as trust_tasks_rs::Payload>::TYPE_URI
+    }
+
     pub struct Witnessed {
         pub witness: Party,
         pub session: JsonValue,
@@ -693,12 +714,17 @@ pub(crate) mod fixtures {
         pub evidence: OutcomeEvidence,
     }
 
-    /// The `witness/session` document `party` opened with `witness`.
-    pub fn session_document(party: &str, counterparty: &str, witness: &str) -> JsonValue {
+    /// The `witness/session` document `party` opened with `witness`, of type `type_uri`.
+    pub fn session_document_typed(
+        party: &str,
+        counterparty: &str,
+        witness: &str,
+        type_uri: &str,
+    ) -> JsonValue {
         let id = format!("urn:uuid:{}", Uuid::new_v4());
         json!({
             "id": id,
-            "type": session_type(),
+            "type": type_uri,
             "threadId": id,
             "issuer": party,
             "recipient": witness,
@@ -707,11 +733,21 @@ pub(crate) mod fixtures {
         })
     }
 
-    /// The witness's signed `witness/session/submit/0.1#response` delivering `vwc`.
+    /// The witness's signed `witness/session/submit/0.2#response` delivering `vwc`.
     pub async fn outcome(witness: &Party, session: &JsonValue, vwc: &JsonValue) -> JsonValue {
+        outcome_typed(witness, session, vwc, submit_response_type()).await
+    }
+
+    /// [`outcome`] as the response type `type_uri`.
+    pub async fn outcome_typed(
+        witness: &Party,
+        session: &JsonValue,
+        vwc: &JsonValue,
+        type_uri: &str,
+    ) -> JsonValue {
         let submitter = session["issuer"].as_str().unwrap();
         let mut doc = vta_sdk::trust_task_sign::build_unsigned(
-            submit_response_type(),
+            type_uri,
             json!({
                 "vwc": vwc,
                 "vwcDigestMultibase": crate::credentials::ingress::digest_multibase(vwc).unwrap(),
@@ -746,9 +782,28 @@ pub(crate) mod fixtures {
         counterparty: &str,
         edit: impl FnOnce(&mut JsonValue),
     ) -> Witnessed {
+        witnessed_at(
+            edge,
+            counterparty,
+            session_type(),
+            submit_response_type(),
+            edit,
+        )
+        .await
+    }
+
+    /// [`witnessed_with`] for a session opened as `session_type`, closed with a
+    /// response of `outcome_type`.
+    pub async fn witnessed_at(
+        edge: &JsonValue,
+        counterparty: &str,
+        session_type: &str,
+        outcome_type: &str,
+        edit: impl FnOnce(&mut JsonValue),
+    ) -> Witnessed {
         let witness = Party::new();
         let party = edge["issuer"].as_str().unwrap().to_string();
-        let session = session_document(&party, counterparty, &witness.did);
+        let session = session_document_typed(&party, counterparty, &witness.did, session_type);
         let built = DTGCredential::new_witnessed_vsc(
             witness.did.clone(),
             IssuerScope::Public,
@@ -769,7 +824,7 @@ pub(crate) mod fixtures {
         .await
         .expect("sign the VWC");
         vwc["proof"] = serde_json::to_value(proof).unwrap();
-        let outcome = outcome(&witness, &session, &vwc).await;
+        let outcome = outcome_typed(&witness, &session, &vwc, outcome_type).await;
         Witnessed {
             witness,
             evidence: OutcomeEvidence {
@@ -1141,7 +1196,7 @@ mod tests {
     const BOB: &str = "did:key:zBob";
     /// The `id` of the `witness/session` document that opened the witnessing
     /// session — what a VWC's `taskContext` names (trust task
-    /// `witness/session/0.1` §The nesting).
+    /// `witness/session/0.2` §The nesting).
     const SESSION: &str = "urn:uuid:6f1c1c1e-5a8b-4f7e-9d0c-2b7a4e1d9c30";
 
     /// The `witness/session` document that opened the session, as the witness
@@ -1153,7 +1208,7 @@ mod tests {
     fn witness_session() -> JsonValue {
         json!({
             "id": SESSION,
-            "type": "https://trusttasks.org/spec/witness/session/0.1",
+            "type": "https://trusttasks.org/spec/witness/session/0.2",
             "threadId": SESSION,
             "issuer": ALICE,
             "recipient": WITNESS,
@@ -1525,7 +1580,7 @@ mod tests {
 
         // Check 3: not the declared outcome evidence (a session #response).
         let mut e = w.evidence.clone();
-        e.outcome["type"] = json!(format!("{}#response", session_type()));
+        e.outcome["type"] = json!(format!("{}#response", fixtures::session_type()));
         cases.push(("wrong type", e, "is not"));
 
         // Check 4: signed by someone other than the session's recipient.
@@ -1597,43 +1652,100 @@ mod tests {
         ));
     }
 
+    /// `outcomeEvidence` is read from the payload, whole; anything the schema
+    /// refuses is refused, never read as none.
     #[test]
-    fn the_carriage_is_read_and_its_namespace_is_closed() {
+    fn the_payload_member_is_read_and_its_shape_is_enforced() {
         let session = json!({ "id": "urn:uuid:s" });
         let outcome = json!({ "type": "x" });
-        let ext = json!({ OUTCOME_EVIDENCE_EXT: {
-            OUTCOME_EVIDENCE: [{ "session": session, "outcome": outcome }]
-        }});
-        let got = outcome_evidence_from_ext(Some(&ext)).unwrap();
+        let payload = json!({ OUTCOME_EVIDENCE: [{ "session": session, "outcome": outcome }] });
+        let got = outcome_evidence_from_payload(&payload).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].session, session);
 
-        assert!(outcome_evidence_from_ext(None).unwrap().is_empty());
         assert!(
-            outcome_evidence_from_ext(Some(&json!({ "org.example": {} })))
+            outcome_evidence_from_payload(&json!({}))
                 .unwrap()
-                .is_empty(),
-            "another namespace is not ours to read"
+                .is_empty()
         );
         for bad in [
-            json!({ OUTCOME_EVIDENCE_EXT: [] }),
-            json!({ OUTCOME_EVIDENCE_EXT: { "memberPresentation": {} } }),
-            json!({ OUTCOME_EVIDENCE_EXT: { OUTCOME_EVIDENCE: [{ "session": {} }] } }),
-            json!({ OUTCOME_EVIDENCE_EXT: { OUTCOME_EVIDENCE: [
-                { "session": {}, "outcome": {}, "extra": 1 }
-            ] } }),
+            json!({ OUTCOME_EVIDENCE: [] }),
+            json!({ OUTCOME_EVIDENCE: {} }),
+            json!({ OUTCOME_EVIDENCE: [{ "session": {} }] }),
+            json!({ OUTCOME_EVIDENCE: [{ "session": {}, "outcome": {} }] }),
+            json!({ OUTCOME_EVIDENCE: [{ "session": session, "outcome": outcome, "extra": 1 }] }),
         ] {
-            assert!(outcome_evidence_from_ext(Some(&bad)).is_err(), "{bad}");
+            assert!(outcome_evidence_from_payload(&bad).is_err(), "{bad}");
         }
         let too_many: Vec<_> = (0..=MAX_OUTCOME_EVIDENCE)
-            .map(|_| json!({ "session": {}, "outcome": {} }))
+            .map(|_| json!({ "session": session, "outcome": outcome }))
             .collect();
-        assert!(
-            outcome_evidence_from_ext(Some(
-                &json!({ OUTCOME_EVIDENCE_EXT: { OUTCOME_EVIDENCE: too_many } })
-            ))
-            .is_err()
+        assert!(outcome_evidence_from_payload(&json!({ OUTCOME_EVIDENCE: too_many })).is_err());
+    }
+
+    /// The retired vendor-extension carriage is not read: evidence only in
+    /// `ext["org.openvtc.witness"]` is no evidence.
+    #[test]
+    fn the_retired_ext_carriage_is_not_read() {
+        let payload = json!({ "ext": { "org.openvtc.witness": { OUTCOME_EVIDENCE: [
+            { "session": { "id": "urn:uuid:s" }, "outcome": { "type": "x" } }
+        ] } } });
+        assert!(outcome_evidence_from_payload(&payload).unwrap().is_empty());
+    }
+
+    /// The versions pair one to one (`witness/session/0.2`): a 0.1 session
+    /// pairs with a `submit/0.1#response`, and with nothing else.
+    #[tokio::test]
+    async fn the_terminal_type_follows_the_sessions_own_version() {
+        use trust_tasks_rs::Payload;
+        use trust_tasks_rs::specs::witness::session;
+        let resolver = TrustTaskVmResolver::did_key_only();
+        let v01 = <session::v0_1::Payload as Payload>::TYPE_URI;
+        let v01_out = <session::submit::v0_1::Response as Payload>::TYPE_URI;
+        let v02_out = fixtures::submit_response_type();
+
+        let w = fixtures::witnessed_at(&witnessed_edge(), BOB, v01, v01_out, |_| {}).await;
+        assert_eq!(
+            pair_outcome(
+                std::slice::from_ref(&w.evidence),
+                &w.witness.did,
+                &w.vwc,
+                &resolver
+            )
+            .await,
+            Pairing::Paired,
+            "a 0.1 session under its own declaration"
         );
+
+        let crossed = fixtures::witnessed_at(&witnessed_edge(), BOB, v01, v02_out, |_| {}).await;
+        assert!(matches!(
+            pair_outcome(
+                std::slice::from_ref(&crossed.evidence),
+                &crossed.witness.did,
+                &crossed.vwc,
+                &resolver
+            )
+            .await,
+            Pairing::Invalid(reason) if reason.contains("is not")
+        ));
+        let crossed = fixtures::witnessed_at(
+            &witnessed_edge(),
+            BOB,
+            fixtures::session_type(),
+            v01_out,
+            |_| {},
+        )
+        .await;
+        assert!(matches!(
+            pair_outcome(
+                std::slice::from_ref(&crossed.evidence),
+                &crossed.witness.did,
+                &crossed.vwc,
+                &resolver
+            )
+            .await,
+            Pairing::Invalid(_)
+        ));
     }
 
     /// A witness is classified by its predicate. A single-string `type` is

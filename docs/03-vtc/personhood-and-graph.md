@@ -103,10 +103,10 @@ verdict is the VTC's, not the presenter's: a `witness_binding` member inside a
 presented credential never reaches the policy, and no policy can accept a VWC
 the VTC refused as `untrustedWitness`, `noOutcomeEvidence` or `outcomeInvalid`.
 
-The outcome evidence travels in the `vtc/members/personhood/assert/0.1`
-payload's `ext["org.openvtc.witness"].outcomeEvidence`: an array of
-`{ "session", "outcome" }` objects, one per VWC presented — the `evidence` that
-`vta/witness/accept/0.1` returns. See [Trusted witnesses](trusted-witnesses.md).
+The outcome evidence travels in the `vtc/members/personhood/assert/0.2`
+payload's own `outcomeEvidence`: an array of `{ "session", "outcome" }` objects,
+one per VWC the member wants counted — the `evidence` that
+`vta/witness/accept/0.2` returns. See [Trusted witnesses](trusted-witnesses.md).
 
 The **default policy accepts only `bound`**. A community that trusts
 witnesses of edges held elsewhere can accept `unresolved` in its own

@@ -636,6 +636,10 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # 0.31.11 is the FLOOR: `rooms/owner/group/add/0.2` (a repeated admission is
 # answered with its Welcome, trust-tasks-tf #795) and `rooms/keys/act/0.3`
 # (the offer types and `keyPackageNotHeld`, trust-tasks-tf #797).
+# 0.31.11 also: witness 0.2 — `witness/session{,/submit}/0.2` with
+# `memberPresentation`, `vtc/members/personhood/assert/0.2` with
+# `outcomeEvidence`, and `vta/witness/{open,present,accept}/0.2`
+# (trust-tasks-tf #799).
 trust-tasks-rs = { version = "0.31.11", default-features = false, features = [
   "validate",
   "all-specs",

@@ -6,7 +6,7 @@
 //! holds neither the relationship DID's signing key nor the credentials — its VTA does — so the
 //! VTA builds and signs every document **as the relationship DID**, and the wallet **carries**
 //! them: it sends each one to the witness from the relationship DID and hands each answer back.
-//! The VTA never contacts the witness (`vta/_shared/0.5/CONVENTIONS.md`).
+//! The VTA never contacts the witness (`vta/_shared/0.6/CONVENTIONS.md`).
 //!
 //! The round, as the native app drives it:
 //!
@@ -53,28 +53,28 @@ use crate::session::AuthEnvelope;
 /// The `vta/witness/*` task a document is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum WitnessTask {
-    /// `vta/witness/open/0.1` — the `witness/session` document to carry.
+    /// `vta/witness/open/0.2` — the `witness/session` document to carry.
     Open,
-    /// `vta/witness/present/0.1` — hand back the session answer; the submit document to carry.
+    /// `vta/witness/present/0.2` — hand back the session answer; the submit document to carry.
     Present,
-    /// `vta/witness/accept/0.1` — hand back the submit answer; the stored VWC.
+    /// `vta/witness/accept/0.2` — hand back the submit answer; the stored VWC.
     Accept,
 }
 
 /// The document of the session the wallet is about to carry to the witness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum WitnessDocument {
-    /// `witness/session/0.1`, from [`WitnessTask::Open`].
+    /// `witness/session/0.2`, from [`WitnessTask::Open`].
     Session,
-    /// `witness/session/submit/0.1`, from [`WitnessTask::Present`].
+    /// `witness/session/submit/0.2`, from [`WitnessTask::Present`].
     Submit,
 }
 
 impl WitnessDocument {
     fn type_uri(self) -> &'static str {
         match self {
-            Self::Session => <session::v0_1::Payload as Payload>::TYPE_URI,
-            Self::Submit => <session::submit::v0_1::Payload as Payload>::TYPE_URI,
+            Self::Session => <session::v0_2::Payload as Payload>::TYPE_URI,
+            Self::Submit => <session::submit::v0_2::Payload as Payload>::TYPE_URI,
         }
     }
 }
@@ -186,9 +186,9 @@ pub fn build_witness_task(
     let s = &*signer;
     let p = payload_json.as_str();
     match task {
-        WitnessTask::Open => signed::<vta_witness::open::v0_1::Payload>(&env, p, s),
-        WitnessTask::Present => signed::<vta_witness::present::v0_1::Payload>(&env, p, s),
-        WitnessTask::Accept => signed::<vta_witness::accept::v0_1::Payload>(&env, p, s),
+        WitnessTask::Open => signed::<vta_witness::open::v0_2::Payload>(&env, p, s),
+        WitnessTask::Present => signed::<vta_witness::present::v0_2::Payload>(&env, p, s),
+        WitnessTask::Accept => signed::<vta_witness::accept::v0_2::Payload>(&env, p, s),
     }
 }
 
@@ -200,9 +200,9 @@ pub fn build_witness_task(
 pub fn parse_witness_response(task: WitnessTask, json: String) -> Result<String, FfiError> {
     let j = json.as_str();
     match task {
-        WitnessTask::Open => response::<vta_witness::open::v0_1::Response>(j),
-        WitnessTask::Present => response::<vta_witness::present::v0_1::Response>(j),
-        WitnessTask::Accept => response::<vta_witness::accept::v0_1::Response>(j),
+        WitnessTask::Open => response::<vta_witness::open::v0_2::Response>(j),
+        WitnessTask::Present => response::<vta_witness::present::v0_2::Response>(j),
+        WitnessTask::Accept => response::<vta_witness::accept::v0_2::Response>(j),
     }
 }
 
@@ -311,8 +311,8 @@ fn classify_verified(reply_json: String, reply: &Value) -> Result<WitnessReply, 
 }
 
 fn refusal_for(code: &str) -> WitnessRefusal {
-    use session::submit::v0_1::error_codes as submit;
-    use session::v0_1::error_codes as open;
+    use session::submit::v0_2::error_codes as submit;
+    use session::v0_2::error_codes as open;
     if code == open::REFUSED.code {
         WitnessRefusal::SessionRefused
     } else if code == submit::CHALLENGE_MISMATCH.code {
@@ -388,7 +388,7 @@ mod tests {
     fn session_doc() -> Value {
         json!({
             "id": SESSION,
-            "type": <session::v0_1::Payload as Payload>::TYPE_URI,
+            "type": <session::v0_2::Payload as Payload>::TYPE_URI,
             "issuer": did_for(RELATIONSHIP),
             "recipient": did_for(WITNESS),
             "issuedAt": "2026-10-15T10:00:00Z",
@@ -400,7 +400,7 @@ mod tests {
     fn submit_doc() -> Value {
         json!({
             "id": "urn:uuid:submit-1",
-            "type": <session::submit::v0_1::Payload as Payload>::TYPE_URI,
+            "type": <session::submit::v0_2::Payload as Payload>::TYPE_URI,
             "threadId": SESSION,
             "issuer": did_for(RELATIONSHIP),
             "recipient": did_for(WITNESS),
@@ -464,7 +464,7 @@ mod tests {
     fn answer(payload: Value) -> Value {
         json!({
             "id": "urn:uuid:answer-1",
-            "type": format!("{}#response", <session::v0_1::Payload as Payload>::TYPE_URI),
+            "type": format!("{}#response", <session::v0_2::Payload as Payload>::TYPE_URI),
             "threadId": SESSION,
             "issuer": did_for(WITNESS),
             "recipient": did_for(RELATIONSHIP),

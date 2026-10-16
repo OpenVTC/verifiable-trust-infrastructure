@@ -640,7 +640,7 @@ const WITNESS_DID: &str = "did:webvh:QmWitness:witness.example.org:a";
 /// A carried document: opaque to the schema, checked by the VTA against its session record.
 fn witness_session_doc() -> Value {
     json!({
-        "id": "urn:uuid:session", "type": "https://trusttasks.org/spec/witness/session/0.1",
+        "id": "urn:uuid:session", "type": "https://trusttasks.org/spec/witness/session/0.2",
         "issuer": SUBJECT, "recipient": WITNESS_DID, "issuedAt": TS,
         "threadId": "urn:uuid:session", "parentThreadId": "urn:uuid:thread",
         "payload": { "parties": [SUBJECT, "did:key:z6MkCounterparty"] },
@@ -649,7 +649,7 @@ fn witness_session_doc() -> Value {
 
 fn witness_answer() -> Value {
     json!({
-        "id": "urn:uuid:answer", "type": "https://trusttasks.org/spec/witness/session/0.1#response",
+        "id": "urn:uuid:answer", "type": "https://trusttasks.org/spec/witness/session/0.2#response",
         "issuer": WITNESS_DID, "recipient": SUBJECT, "threadId": "urn:uuid:session",
         "payload": { "challenge": "00112233445566778899aabbccddeeff", "domain": WITNESS_DID },
     })
@@ -2398,10 +2398,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ),
         // ─── vta/witness — the witnessed party ───────────────────
         (
-            uris::TASK_VTA_WITNESS_OPEN_0_1,
+            uris::TASK_VTA_WITNESS_OPEN_0_2,
             checked!(
-                specs::vta::witness::open::v0_1::Payload,
-                specs::vta::witness::open::v0_1::Response,
+                specs::vta::witness::open::v0_2::Payload,
+                specs::vta::witness::open::v0_2::Response,
                 json!({
                     "witness": WITNESS_DID, "relationshipDid": SUBJECT,
                     "counterpartyDid": "did:key:z6MkCounterparty",
@@ -2413,19 +2413,19 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_VTA_WITNESS_PRESENT_0_1,
+            uris::TASK_VTA_WITNESS_PRESENT_0_2,
             checked!(
-                specs::vta::witness::present::v0_1::Payload,
-                specs::vta::witness::present::v0_1::Response,
+                specs::vta::witness::present::v0_2::Payload,
+                specs::vta::witness::present::v0_2::Response,
                 json!({ "sessionId": "urn:uuid:session", "response": witness_answer() }),
                 json!({ "sessionId": "urn:uuid:session", "document": witness_session_doc() })
             ),
         ),
         (
-            uris::TASK_VTA_WITNESS_ACCEPT_0_1,
+            uris::TASK_VTA_WITNESS_ACCEPT_0_2,
             checked!(
-                specs::vta::witness::accept::v0_1::Payload,
-                specs::vta::witness::accept::v0_1::Response,
+                specs::vta::witness::accept::v0_2::Payload,
+                specs::vta::witness::accept::v0_2::Response,
                 json!({ "sessionId": "urn:uuid:session", "response": witness_answer() }),
                 json!({
                     "sessionId": "urn:uuid:session", "credentialId": "vwc-1", "witness": WITNESS_DID,

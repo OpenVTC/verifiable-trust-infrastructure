@@ -2631,11 +2631,11 @@ dispatch_table! {
     // ─── Witnessed party (`vta/witness/*`) ─────────────────────────
     // Classes match each specification's own declarations: the VTA acts as the
     // relationship DID at open and present; accept stores what the witness said.
-    vta_sdk::trust_tasks::TASK_VTA_WITNESS_OPEN_0_1 => witness::handle_open
+    vta_sdk::trust_tasks::TASK_VTA_WITNESS_OPEN_0_2 => witness::handle_open
         [ Mutating Metadata true ],
-    vta_sdk::trust_tasks::TASK_VTA_WITNESS_PRESENT_0_1 => witness::handle_present
+    vta_sdk::trust_tasks::TASK_VTA_WITNESS_PRESENT_0_2 => witness::handle_present
         [ Mutating Metadata true ],
-    vta_sdk::trust_tasks::TASK_VTA_WITNESS_ACCEPT_0_1 => witness::handle_accept
+    vta_sdk::trust_tasks::TASK_VTA_WITNESS_ACCEPT_0_2 => witness::handle_accept
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_PUT_0_1 => memory::handle_put
         [ Mutating None false ],

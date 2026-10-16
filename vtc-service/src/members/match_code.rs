@@ -3,7 +3,7 @@
 //! ## Why this exists
 //!
 //! The personhood ceremony's security comes from two bindings the
-//! published Trust Task spells out (`vtc/members/personhood/assert/0.1`,
+//! published Trust Task spells out (`vtc/members/personhood/assert/0.2`,
 //! §Authorization): the presentation's `holder` equals the DID being
 //! asserted, and its `proof.challenge` equals the paired `challengeId`.
 //! Neither is negotiable, and `challengeId` is a UUID — 36 characters,

@@ -2303,7 +2303,7 @@ fn an_undeclared_or_shadowed_jwk_placeholder_is_refused() {
 
 // ─── dtg-witness built-in ──────────────────────────────────────────────
 //
-// A `vti-witness` identity — the witness of `witness/session/0.1`, named
+// A `vti-witness` identity — the witness of `witness/session/0.2`, named
 // `dtg-witness` so it cannot be confused with the did:webvh log witness
 // (`did-host-didcomm`, which `did-templates init witness` still resolves to).
 // Design: docs/05-design-notes/witness-host-service.md §3.1. One Ed25519 key that both authenticates and asserts (it answers

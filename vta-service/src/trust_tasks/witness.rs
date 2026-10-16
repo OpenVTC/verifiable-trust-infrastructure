@@ -1,5 +1,7 @@
-//! The witnessed-party tasks — `vta/witness/open/0.1`, `vta/witness/present/0.1` and
-//! `vta/witness/accept/0.1` (trust-tasks-tf #779, rules in `vta/_shared/0.5/CONVENTIONS.md`).
+//! The witnessed-party tasks — `vta/witness/open/0.2`, `vta/witness/present/0.2` and
+//! `vta/witness/accept/0.2` (trust-tasks-tf #779, #799; rules in `vta/_shared/0.6/CONVENTIONS.md`).
+//! The 0.1 versions are not served: they conducted the session under `witness/session/0.1` and
+//! carried the member presentation in a vendor extension, which 0.2 replaces.
 //!
 //! The engine is [`crate::operations::witness`]; this slice is the dispatch surface over it:
 //!
@@ -9,7 +11,7 @@
 //! - **Context-gated** in the engine: the keys of the session's DIDs, the credentials and the
 //!   session record are all found only among the contexts the caller may act in.
 //! - **Audited** with the caller, the context, the session and the witness — never a
-//!   presentation, a challenge or a member DID (`vta/witness/accept/0.1`, *Retention*).
+//!   presentation, a challenge or a member DID (`vta/witness/accept/0.2`, *Retention*).
 //!
 //! Every refusal is the code the task declares for it, or the framework's standard code where
 //! the conventions say so (§7), so it survives TSP, DIDComm and HTTPS alike as a typed
@@ -35,7 +37,6 @@ use super::helpers::{
 struct Codes {
     not_found: Option<DeclaredErrorCode>,
     credential_mismatch: Option<DeclaredErrorCode>,
-    member_link_unsupported: Option<DeclaredErrorCode>,
     witness_unresolvable: Option<DeclaredErrorCode>,
     session_unknown: Option<DeclaredErrorCode>,
     response_invalid: Option<DeclaredErrorCode>,
@@ -45,7 +46,6 @@ struct Codes {
 const NONE: Codes = Codes {
     not_found: None,
     credential_mismatch: None,
-    member_link_unsupported: None,
     witness_unresolvable: None,
     session_unknown: None,
     response_invalid: None,
@@ -58,7 +58,6 @@ fn refuse(doc: &TrustTask<Value>, e: WitnessError, codes: &Codes) -> TrustTaskOu
     let declared = match &e {
         WitnessError::NotFound(_) => codes.not_found,
         WitnessError::CredentialMismatch(_) => codes.credential_mismatch,
-        WitnessError::MemberLinkUnsupported(_) => codes.member_link_unsupported,
         WitnessError::WitnessUnresolvable(_) => codes.witness_unresolvable,
         WitnessError::SessionUnknown => codes.session_unknown,
         WitnessError::ResponseInvalid(_) => codes.response_invalid,
@@ -146,13 +145,13 @@ async fn gate(
     .await
 }
 
-/// `vta/witness/open/0.1`.
+/// `vta/witness/open/0.2`.
 pub(super) async fn handle_open(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::open::v0_1 as t;
+    use spec::open::v0_2 as t;
     if let Err(r) = gate(state, auth, &doc).await {
         return r;
     }
@@ -198,7 +197,6 @@ pub(super) async fn handle_open(
             &Codes {
                 not_found: Some(t::error_codes::NOT_FOUND),
                 credential_mismatch: Some(t::error_codes::CREDENTIAL_MISMATCH),
-                member_link_unsupported: Some(t::error_codes::MEMBER_LINK_UNSUPPORTED),
                 witness_unresolvable: Some(t::error_codes::WITNESS_UNRESOLVABLE),
                 ..NONE
             },
@@ -206,13 +204,13 @@ pub(super) async fn handle_open(
     }
 }
 
-/// `vta/witness/present/0.1`.
+/// `vta/witness/present/0.2`.
 pub(super) async fn handle_present(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::present::v0_1 as t;
+    use spec::present::v0_2 as t;
     if let Err(r) = gate(state, auth, &doc).await {
         return r;
     }
@@ -254,13 +252,13 @@ pub(super) async fn handle_present(
     }
 }
 
-/// `vta/witness/accept/0.1`.
+/// `vta/witness/accept/0.2`.
 pub(super) async fn handle_accept(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::accept::v0_1 as t;
+    use spec::accept::v0_2 as t;
     if let Err(r) = gate(state, auth, &doc).await {
         return r;
     }

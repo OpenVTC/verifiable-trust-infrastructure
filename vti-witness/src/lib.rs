@@ -9,7 +9,7 @@
 //!
 //! P1 built the skeleton: setup, configuration, one supervised mediator
 //! session per identity, and the dispatcher. P2 adds the witnessing itself —
-//! `witness/session/0.1` and `witness/session/submit/0.1` ([`witness`]), the
+//! `witness/session/0.2` and `witness/session/submit/0.2` ([`witness`]), the
 //! presentation checks ([`presentation`]), session and attestation storage
 //! ([`store`]) and the duplicate-execution record ([`replay`]).
 //!

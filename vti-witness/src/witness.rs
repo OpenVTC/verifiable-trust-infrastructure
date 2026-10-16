@@ -1,7 +1,13 @@
-//! Witnessing: `witness/session/0.1` and `witness/session/submit/0.1`
+//! Witnessing: `witness/session/0.2` and `witness/session/submit/0.2`
 //! (design note §3.2–§3.4).
 //!
-//! # `witness/session/0.1`
+//! Only 0.2 is served. The versions pair one to one (`witness/session/0.2`,
+//! *how the versions pair*): a session opened at 0.2 declares
+//! `submit/0.2#response` as its outcome evidence, so a submission is taken only
+//! on a session whose stored document is a `witness/session/0.2` — anything
+//! else is `challengeMismatch`.
+//!
+//! # `witness/session/0.2`
 //!
 //! Cheap checks only, then a session (§3.3):
 //!
@@ -25,17 +31,18 @@
 //! DID), and the session — opener, parties, challenge, domain, the document as
 //! received, expiry — stored before the `#response` is returned.
 //!
-//! # `witness/session/submit/0.1`
+//! # `witness/session/submit/0.2`
 //!
 //! **Binding first** (submit conformance items 2–3): the document is on a live
 //! session's thread, from that session's opener, and the VP's `nonce` (or
 //! `challenge`) and `domain` are the session's. Any failure is
 //! `challengeMismatch`, before the presentation is examined at all.
 //!
-//! **Then the presentation** ([`crate::presentation`]), and the member
-//! presentation if `ext["org.openvtc.witness"]` carries one (the member link,
-//! for a party whose membership credential names its member DID rather than its
-//! relationship DID): `presentationInvalid`.
+//! **Then the presentation** ([`crate::presentation`]), and the payload's
+//! `memberPresentation` where this identity relies on one (the member link, for
+//! a party whose membership credential names its member DID rather than its
+//! relationship DID): `presentationInvalid`. The member DID goes nowhere — not
+//! into the VWC, the attestation record or a log line.
 //!
 //! **Then the session is taken** — an atomic get-and-delete, so of two
 //! submissions racing on one session exactly one goes on to mint; the other
@@ -198,12 +205,12 @@ pub(crate) struct Witness<'a> {
 
 fn refused(rule: &str, witness: &Witness<'_>) -> Refusal {
     tracing::info!(identity = %witness.name, rule, "witness/session refused");
-    Box::new(ErrorPayload::from(session::v0_1::error_codes::REFUSED).with_message(REFUSED_MESSAGE))
+    Box::new(ErrorPayload::from(session::v0_2::error_codes::REFUSED).with_message(REFUSED_MESSAGE))
 }
 
 fn challenge_mismatch(why: &str) -> Refusal {
     Box::new(
-        ErrorPayload::from(session::submit::v0_1::error_codes::CHALLENGE_MISMATCH).with_message(
+        ErrorPayload::from(session::submit::v0_2::error_codes::CHALLENGE_MISMATCH).with_message(
             format!("the submission is not bound to a live session this party opened: {why}"),
         ),
     )
@@ -211,7 +218,7 @@ fn challenge_mismatch(why: &str) -> Refusal {
 
 fn presentation_invalid(why: &str) -> Refusal {
     Box::new(
-        ErrorPayload::from(session::submit::v0_1::error_codes::PRESENTATION_INVALID)
+        ErrorPayload::from(session::submit::v0_2::error_codes::PRESENTATION_INVALID)
             .with_message(format!("the presentation did not verify: {why}")),
     )
 }
@@ -230,7 +237,7 @@ fn internal(what: &str, e: impl std::fmt::Display) -> Refusal {
     Box::new(ErrorPayload::new(StandardCode::InternalError).with_message(what.to_string()))
 }
 
-/// `witness/session/0.1`. `received` is the document's bytes as they arrived.
+/// `witness/session/0.2`. `received` is the document's bytes as they arrived.
 pub(crate) async fn open_session(
     witness: &Witness<'_>,
     doc: &TrustTask<Value>,
@@ -238,10 +245,10 @@ pub(crate) async fn open_session(
     sender: &str,
     now: DateTime<Utc>,
 ) -> Result<Value, Refusal> {
-    if let Err(e) = session::v0_1::Payload::validate_value(&doc.payload) {
+    if let Err(e) = session::v0_2::Payload::validate_value(&doc.payload) {
         return Err(malformed(format!("payload: {e}")));
     }
-    let payload: session::v0_1::Payload = serde_json::from_value(doc.payload.clone())
+    let payload: session::v0_2::Payload = serde_json::from_value(doc.payload.clone())
         .map_err(|e| malformed(format!("payload: {e}")))?;
 
     // The document is the session's name, and the VWC cites it only if it
@@ -318,16 +325,16 @@ pub(crate) async fn open_session(
         }
     }
 
-    let response = session::v0_1::Response::builder()
+    let response = session::v0_2::Response::builder()
         .challenge(challenge)
         .domain(witness.did.to_string());
-    let response: session::v0_1::Response = response
+    let response: session::v0_2::Response = response
         .try_into()
         .map_err(|e| internal("could not build the session response", e))?;
     serde_json::to_value(response).map_err(|e| internal("could not encode the response", e))
 }
 
-/// `witness/session/submit/0.1`.
+/// `witness/session/submit/0.2`.
 pub(crate) async fn submit(
     witness: &Witness<'_>,
     doc: &TrustTask<Value>,
@@ -335,13 +342,16 @@ pub(crate) async fn submit(
     resolver: &TrustTaskVmResolver,
     now: DateTime<Utc>,
 ) -> Result<Value, Refusal> {
-    if let Err(e) = session::submit::v0_1::Payload::validate_value(&doc.payload) {
+    if let Err(e) = session::submit::v0_2::Payload::validate_value(&doc.payload) {
         return Err(malformed(format!("payload: {e}")));
     }
-    let payload: session::submit::v0_1::Payload = serde_json::from_value(doc.payload.clone())
+    let payload: session::submit::v0_2::Payload = serde_json::from_value(doc.payload.clone())
         .map_err(|e| malformed(format!("payload: {e}")))?;
     let vp = Value::Object(payload.vp);
-    let member_presentation = member_presentation(&doc.payload)?;
+    // Read from the payload as received: the generated type folds an empty
+    // object into "absent", and a member presentation that was sent is one the
+    // witness must judge, not skip.
+    let member_presentation = doc.payload.get(MEMBER_PRESENTATION).cloned();
     let store = witness.state.store();
 
     // ── Binding first (items 2–3) ──────────────────────────────────────
@@ -359,6 +369,13 @@ pub(crate) async fn submit(
             "the session was opened by another party",
         ));
     }
+    // The versions pair one to one: a submit/0.2 completes only a session
+    // opened as witness/session/0.2, whose declared outcome evidence it is.
+    if !opened_at_this_version(&session) {
+        return Err(challenge_mismatch(
+            "the session was not opened as witness/session/0.2",
+        ));
+    }
     bound_to(&vp, &session)?;
 
     // ── Then the presentation ──────────────────────────────────────────
@@ -374,6 +391,7 @@ pub(crate) async fn submit(
         &Expected {
             submitter: sender,
             counterparty: &counterparty,
+            witness: witness.did,
             challenge: &session.challenge,
             domain: &session.domain,
         },
@@ -411,37 +429,17 @@ pub(crate) async fn submit(
     }
 }
 
-/// The member presentation, if the payload carries one in
-/// `ext["org.openvtc.witness"]` ([`presentation::MEMBER_LINK_EXT`]). Any other
-/// member of that namespace is refused, as an unknown field would be.
-fn member_presentation(payload: &Value) -> Result<Option<Value>, Refusal> {
-    let Some(ns) = payload
-        .get("ext")
-        .and_then(|e| e.get(presentation::MEMBER_LINK_EXT))
-    else {
-        return Ok(None);
-    };
-    let Some(ns) = ns.as_object() else {
-        return Err(malformed(format!(
-            "ext.{}: must be an object",
-            presentation::MEMBER_LINK_EXT
-        )));
-    };
-    if let Some(unknown) = ns.keys().find(|k| *k != presentation::MEMBER_PRESENTATION) {
-        return Err(malformed(format!(
-            "ext.{}: unknown member `{unknown}`",
-            presentation::MEMBER_LINK_EXT
-        )));
-    }
-    match ns.get(presentation::MEMBER_PRESENTATION) {
-        None => Ok(None),
-        Some(mp @ Value::Object(_)) => Ok(Some(mp.clone())),
-        Some(_) => Err(malformed(format!(
-            "ext.{}.{}: must be an object",
-            presentation::MEMBER_LINK_EXT,
-            presentation::MEMBER_PRESENTATION
-        ))),
-    }
+/// The payload member carrying the member presentation
+/// (`witness/session/submit/0.2`, *The member presentation*).
+const MEMBER_PRESENTATION: &str = "memberPresentation";
+
+/// Whether `session` was opened as `witness/session/0.2`, read off the
+/// document the witness stored as received.
+fn opened_at_this_version(session: &SessionRecord) -> bool {
+    serde_json::from_str::<Value>(&session.document)
+        .ok()
+        .and_then(|d| d.get("type").and_then(Value::as_str).map(str::to_owned))
+        .is_some_and(|t| t == <session::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI)
 }
 
 /// The VP is bound to `session`: its `domain` is the session's, and its
@@ -517,7 +515,7 @@ async fn mint(
     let Value::Object(vwc) = vwc else {
         return Err(internal("the witness credential is not an object", ""));
     };
-    let response: session::submit::v0_1::Response = session::submit::v0_1::Response::builder()
+    let response: session::submit::v0_2::Response = session::submit::v0_2::Response::builder()
         .vwc(vwc)
         .vwc_digest_multibase(digest)
         .try_into()
@@ -525,7 +523,7 @@ async fn mint(
     serde_json::to_value(response).map_err(|e| internal("could not encode the response", e))
 }
 
-/// `vwcDigestMultibase` (`witness/session/submit/0.1` response schema): over
+/// `vwcDigestMultibase` (`witness/session/submit/0.2` response schema): over
 /// the RFC 8785 canonicalization of the delivered credential **whole, proof
 /// included** — unlike every `dtg-credentials` digest, which drops the
 /// top-level proof — as a `sha2-256` multihash, base58btc.

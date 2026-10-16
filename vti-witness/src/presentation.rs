@@ -28,22 +28,27 @@
 //!
 //! A party submits from its pairwise relationship DID, but a community's
 //! membership credential names the member's own DID, so step 4 cannot be met
-//! from the relationship presentation alone. The submit payload may carry a
-//! **member presentation** in `ext["org.openvtc.witness"].memberPresentation`
-//! ([`MEMBER_LINK_EXT`]):
+//! from the relationship presentation alone. `witness/session/submit/0.2`
+//! carries the bridge in its own payload member, **`memberPresentation`**
+//! (*The member presentation*, rules 1–4):
 //!
-//! - a `VerifiablePresentation` whose `holder` is the member DID, signed for
-//!   `authentication` by that DID;
-//! - bound to the **same session** — its `nonce` (or `challenge`) is the
-//!   session's challenge and its `domain` the session's domain — which only the
-//!   party that opened the session was told, so the member key signed for this
-//!   one session and nothing else;
-//! - carrying a membership credential from one of the identity's communities
-//!   naming the member DID, every credential in it checked as in step 2.
+//! 1. a `VerifiablePresentation` whose `holder` is the member DID, signed for
+//!    `authentication` by that DID;
+//! 2. bound to the **same session** — its `nonce` (or `challenge`) is the
+//!    session's challenge and its `domain` the session's domain — which only the
+//!    party that opened the session was told, so the member key signed for this
+//!    one session and nothing else;
+//! 3. carrying a membership credential from one of the identity's communities
+//!    naming the member DID, every credential in it checked as in step 2;
+//! 4. the member DID is neither of the session's parties and not the witness
+//!    (nor an excluded DID): the counterparty's membership does not make the
+//!    submitter eligible, and a membership credential naming the submitter's
+//!    relationship DID belongs in `vp`.
 //!
-//! The member DID may not be the session's other party (the counterparty's
-//! membership does not make the submitter eligible) or an excluded DID. The
-//! link proves that whoever holds the relationship key also holds a member key
+//! The witness **relies** on it only when its policy asks for membership
+//! evidence, and then verifies it whole: any failure is `presentationInvalid`.
+//! An identity that witnesses anyone (`communities = ["*"]`) ignores it, and
+//! nothing in it counts for any other check. The link proves that whoever holds the relationship key also holds a member key
 //! **in this session**; it cannot prove they are one person, so a member who
 //! signs for somebody else lends them their eligibility. The witness learns the
 //! member DID, keeps it nowhere, and logs it nowhere. Design note §3.3a has the
@@ -70,18 +75,14 @@ pub struct VerifiedPresentation {
     pub relationship_credential: Value,
 }
 
-/// The `ext` namespace a member presentation is carried in.
-pub const MEMBER_LINK_EXT: &str = "org.openvtc.witness";
-
-/// The member of [`MEMBER_LINK_EXT`] holding the member presentation.
-pub const MEMBER_PRESENTATION: &str = "memberPresentation";
-
 /// The parties and session a presentation is checked against.
 pub struct Expected<'a> {
     /// The party submitting — the session's opener.
     pub submitter: &'a str,
     /// The session's other party.
     pub counterparty: &'a str,
+    /// The witness identity answering, which a member DID may not be.
+    pub witness: &'a str,
     /// The session's challenge, which a member presentation binds to.
     pub challenge: &'a str,
     /// The session's domain, which a member presentation binds to.
@@ -145,8 +146,12 @@ pub async fn verify(
         }
     }
 
-    // The member link, checked whole whenever it is carried.
-    if let Some(member_vp) = member_presentation {
+    // The member link: relied on — and so verified whole — only where this
+    // identity asks for membership evidence. One that witnesses anyone ignores
+    // it, and it never stands in for any other check.
+    if let Some(member_vp) = member_presentation
+        && !policy.witnesses_anyone()
+    {
         verify_member_link(member_vp, expected, policy, resolver, now).await?;
         member_of_a_community = true;
     }
@@ -242,6 +247,16 @@ async fn verify_member_link(
         .and_then(Value::as_str)
         .filter(|h| h.starts_with("did:"))
         .ok_or("the member presentation names no `holder` DID")?;
+    if member == expected.submitter {
+        return Err(
+            "the member presentation is the submitting party's own: a membership credential \
+             naming the relationship DID belongs in `vp`"
+                .into(),
+        );
+    }
+    if member == expected.witness {
+        return Err("the member presentation's holder is this witness".into());
+    }
     if member == expected.counterparty {
         return Err(
             "the member presentation is the other party's: its membership does not make the \

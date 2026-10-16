@@ -114,7 +114,7 @@ async fn discovery_is_answered_with_this_identitys_task_list_and_signed_by_it() 
     let mut expected: Vec<&str> = SERVED.to_vec();
     expected.sort_unstable();
     assert_eq!(listed, expected, "exactly what this identity routes");
-    for witness_task in [WITNESS_SESSION_V0_1, WITNESS_SESSION_SUBMIT_V0_1] {
+    for witness_task in [WITNESS_SESSION_V0_2, WITNESS_SESSION_SUBMIT_V0_2] {
         assert!(
             listed.contains(&witness_task),
             "{witness_task} is served, so discovery lists it"
@@ -340,7 +340,7 @@ fn an_identity_refuses_a_signing_key_of_another_did() {
 /// The witness tasks are the generated types' own URIs, and served.
 #[test]
 fn the_witness_tasks_are_the_generated_uris_and_are_served() {
-    for uri in [WITNESS_SESSION_V0_1, WITNESS_SESSION_SUBMIT_V0_1] {
+    for uri in [WITNESS_SESSION_V0_2, WITNESS_SESSION_SUBMIT_V0_2] {
         assert!(SERVED.contains(&uri), "{uri}");
         assert!(uri.starts_with("https://trusttasks.org/spec/witness/session/"));
     }

@@ -314,7 +314,7 @@ template without explicit scope is **context → global → builtin**:
     where to publish the log but appears nowhere in the document. Not the
     did:webvh log witness the `did-host-*` descriptions mention (for which
     `pnm did-templates init witness` remains an alias of `did-host-didcomm`) —
-    this is the witness of `witness/session/0.1`. Curated builder:
+    this is the witness of `witness/session/0.2`. Curated builder:
     `ProvisionAsk::dtg_witness(context, mediator_did)`.
   - `did-host-http-didcomm` — node whose DID exposes both a `WebVHHosting`
     service (URL-based) **and** a `DIDCommMessaging` service routed through

@@ -2,7 +2,7 @@
 //! (`vti_witness::dispatch::answer`, the same dispatch core `vti-witness run` puts behind its
 //! sockets). The test is the client: it carries each document the VTA builds to the witness,
 //! from the relationship DID, and hands each answer back — exactly the carriage of
-//! `vta/_shared/0.5/CONVENTIONS.md`.
+//! `vta/_shared/0.6/CONVENTIONS.md`.
 //!
 //! The relationship DID is a `did:peer:2` whose signing key the VTA holds (the shape openvtc
 //! mints), the member DID a `did:key` the VTA holds, and the witness and the community are
@@ -168,7 +168,6 @@ impl World {
         }
         let community = Key::new();
         let witness = Witness::new(vec![community.did.clone()]);
-        state.config.write().await.witness.member_link_witnesses = vec![witness.did().to_string()];
 
         // The relationship DID: a did:peer:2 over a key minted in CTX.
         let raw = crate::operations::persona::test_fixture::mint_key(
@@ -337,7 +336,7 @@ impl World {
         handle_open(
             &self.state,
             auth,
-            doc(uris::TASK_VTA_WITNESS_OPEN_0_1, payload),
+            doc(uris::TASK_VTA_WITNESS_OPEN_0_2, payload),
         )
         .await
     }
@@ -352,7 +351,7 @@ impl World {
             &self.state,
             auth,
             doc(
-                uris::TASK_VTA_WITNESS_PRESENT_0_1,
+                uris::TASK_VTA_WITNESS_PRESENT_0_2,
                 json!({ "sessionId": session, "response": response }),
             ),
         )
@@ -369,7 +368,7 @@ impl World {
             &self.state,
             auth,
             doc(
-                uris::TASK_VTA_WITNESS_ACCEPT_0_1,
+                uris::TASK_VTA_WITNESS_ACCEPT_0_2,
                 json!({ "sessionId": session, "response": response }),
             ),
         )
@@ -393,7 +392,7 @@ impl World {
         assert!(
             outcome["type"]
                 .as_str()
-                .is_some_and(|t| t.ends_with("submit/0.1#response")),
+                .is_some_and(|t| t.ends_with("submit/0.2#response")),
             "the witness accepted the submission: {outcome:#}"
         );
         (session, session_doc, session_answer, outcome)
@@ -403,7 +402,8 @@ impl World {
 // ── The happy paths ─────────────────────────────────────────────────────
 
 /// The whole family under the member link: the VTA signs the session and the submission as the
-/// relationship DID (never as itself), the member presentation rides in the OpenVTC carriage,
+/// relationship DID (never as itself), the member presentation rides in the submit payload's
+/// own `memberPresentation` (`witness/session/submit/0.2`),
 /// the real witness mints a VWC, and the VTA verifies and stores it with its evidence.
 #[tokio::test]
 async fn witnessed_end_to_end_through_the_member_link() {
@@ -439,7 +439,11 @@ async fn witnessed_end_to_end_through_the_member_link() {
     let submit = &presented["document"];
     assert_eq!(submit["issuer"], w.relationship);
     assert_eq!(submit["threadId"], session);
-    let member_vp = &submit["payload"]["ext"]["org.openvtc.witness"]["memberPresentation"];
+    assert!(
+        submit["payload"].get("ext").is_none(),
+        "no vendor-extension carriage: {submit:#}"
+    );
+    let member_vp = &submit["payload"]["memberPresentation"];
     assert_eq!(
         member_vp["holder"], w.member,
         "the member presentation is the member DID's"
@@ -593,7 +597,7 @@ async fn a_vwc_from_another_session_is_refused() {
     // The witness's own key, answering this session with the other session's VWC.
     let mut forged: TrustTask<Value> = serde_json::from_value(json!({
         "id": urn(),
-        "type": <trust_tasks_rs::specs::witness::session::submit::v0_1::Response
+        "type": <trust_tasks_rs::specs::witness::session::submit::v0_2::Response
             as trust_tasks_rs::Payload>::TYPE_URI,
         "issuer": w.witness.did(),
         "recipient": w.relationship,
@@ -646,6 +650,36 @@ async fn session_unknown_says_nothing_about_why() {
         body(&unknown)["payload"]["message"],
         body(&elsewhere)["payload"]["message"]
     );
+}
+
+/// A session is continued only by the version that opened it (`vta/_shared/0.6` conventions):
+/// a record whose session document is not a `witness/session/0.2` — one a 0.1 open left behind
+/// — is `sessionUnknown` to the 0.2 tasks.
+#[tokio::test]
+async fn a_session_opened_at_another_version_is_unknown() {
+    let w = World::new(true).await;
+    let opened = ok(&w.open_as(&w.auth, w.open_payload(true)).await);
+    let session = opened["sessionId"].as_str().unwrap();
+    let answer = w.witness.carry(&w.relationship, &opened["document"]).await;
+
+    let key = format!("session:{session}");
+    let raw = w
+        .state
+        .witness_sessions_ks
+        .get_raw(key.clone())
+        .await
+        .unwrap()
+        .expect("the open session's record");
+    let mut record: Value = serde_json::from_slice(&raw).unwrap();
+    record["sessionDocument"]["type"] = json!("https://trusttasks.org/spec/witness/session/0.1");
+    w.state
+        .witness_sessions_ks
+        .insert(key, &record)
+        .await
+        .unwrap();
+
+    let out = w.present_as(&w.auth, session, &answer).await;
+    assert_eq!(code(&out), "vta/witness/present:sessionUnknown");
 }
 
 // ── Custody and authorization ───────────────────────────────────────────
@@ -720,19 +754,6 @@ async fn open_refuses_what_cannot_succeed_before_anything_is_disclosed() {
     let mut p = w.open_payload(true);
     p["witness"] = json!(w.counterparty);
     assert_eq!(code(&w.open_as(&w.auth, p).await), "malformedRequest");
-
-    // The member link, for a witness whose carriage this VTA does not know.
-    w.state
-        .config
-        .write()
-        .await
-        .witness
-        .member_link_witnesses
-        .clear();
-    assert_eq!(
-        code(&w.open_as(&w.auth, w.open_payload(true)).await),
-        "vta/witness/open:memberLinkUnsupported"
-    );
 
     // Nothing above left a session behind.
     assert!(

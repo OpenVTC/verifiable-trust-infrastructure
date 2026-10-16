@@ -12,7 +12,7 @@
 //!    successful assert. Reuses the rotation-challenge storage
 //!    pattern: `passkey_ks` keyspace, `personhood_chal:` prefix.
 //!
-//! 2. `vtc/members/personhood/assert/0.1` — accepts a VP signed by the
+//! 2. `vtc/members/personhood/assert/0.2` — accepts a VP signed by the
 //!    member's `#key-0`. Flow:
 //!    - Consume the challenge (single-use; refuses on missing /
 //!      expired / wrong-DID). The challenge must appear **both** at
@@ -94,15 +94,15 @@ use trust_tasks_rs::specs::vtc::members::personhood as personhood_spec;
 pub const CHALLENGE_ERR_NOT_FOUND: &str =
     personhood_spec::challenge::v0_1::error_codes::NOT_FOUND.code;
 /// `vtc/members/personhood/assert:notFound` — no member with that DID.
-pub const ASSERT_ERR_NOT_FOUND: &str = personhood_spec::assert::v0_1::error_codes::NOT_FOUND.code;
+pub const ASSERT_ERR_NOT_FOUND: &str = personhood_spec::assert::v0_2::error_codes::NOT_FOUND.code;
 /// `vtc/members/personhood/assert:challengeExpired` — the challenge is
 /// unknown or expired.
 pub const ASSERT_ERR_CHALLENGE_EXPIRED: &str =
-    personhood_spec::assert::v0_1::error_codes::CHALLENGE_EXPIRED.code;
+    personhood_spec::assert::v0_2::error_codes::CHALLENGE_EXPIRED.code;
 /// `vtc/members/personhood/assert:presentationInvalid` — the VP failed
 /// verification, its holder is not `did`, or the personhood policy refused it.
 pub const ASSERT_ERR_PRESENTATION_INVALID: &str =
-    personhood_spec::assert::v0_1::error_codes::PRESENTATION_INVALID.code;
+    personhood_spec::assert::v0_2::error_codes::PRESENTATION_INVALID.code;
 /// `vtc/members/personhood/revoke:notFound` — no member with that DID.
 pub const REVOKE_ERR_NOT_FOUND: &str = personhood_spec::revoke::v0_1::error_codes::NOT_FOUND.code;
 
@@ -252,7 +252,7 @@ pub struct AssertResponse {
 /// ceremony, not two implementations that agree today.
 ///
 /// Note what is deliberately *not* a parameter — the caller's identity.
-/// `assert/0.1` §Authorization makes the presentation the gate: holder
+/// `assert/0.2` §Authorization makes the presentation the gate: holder
 /// equality binds the assertion to the party it is about, and the
 /// single-use challenge binds it to this exchange. Neither is a claim
 /// about who delivered the bytes, so a relaying transport does not get a
@@ -772,8 +772,8 @@ async fn reject_unaccepted_statements(
 ///
 /// A `witnessed/1` statement counts only from a witness this community trusts
 /// ([`crate::credentials::trusted_witnesses`]) and only with the outcome
-/// evidence of its session (`evidence`, carried in the payload's
-/// `ext["org.openvtc.witness"].outcomeEvidence`), both settled into the same
+/// evidence of its session (`evidence`, carried in the payload's own
+/// `outcomeEvidence`, `vtc/members/personhood/assert/0.2`), both settled into the same
 /// verdict.
 async fn policy_projection(
     state: &AppState,

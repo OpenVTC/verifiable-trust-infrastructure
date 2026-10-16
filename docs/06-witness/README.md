@@ -1,7 +1,7 @@
 # The witness host service (`vti-witness`)
 
-`vti-witness` runs **witnesses**: the parties that `witness/session/0.1` and
-`witness/session/submit/0.1` define. A witness opens a session for a party to an
+`vti-witness` runs **witnesses**: the parties that `witness/session/0.2` and
+`witness/session/submit/0.2` define. A witness opens a session for a party to an
 exchange, verifies that party's presentation of its relationship credential, and
 issues a Verifiable Witness Credential (VWC) saying the exchange happened.
 
@@ -193,9 +193,14 @@ key. Nothing is signed as, or names, the operator's VTA.
 | Type | Answer |
 |---|---|
 | `trust-task-discovery/0.3`, `/0.1` | This identity's task list: the four types in this table. |
-| `witness/session/0.1` | A session and its challenge — [The protocol](#the-protocol). |
-| `witness/session/submit/0.1` | The VWC and its digest — [The protocol](#the-protocol). |
-| Any other type | `unsupportedType` (`unsupportedVersion` for another version of discovery). |
+| `witness/session/0.2` | A session and its challenge — [The protocol](#the-protocol). |
+| `witness/session/submit/0.2` | The VWC and its digest — [The protocol](#the-protocol). |
+| Any other type | `unsupportedType` (`unsupportedVersion` for another version of a served family — the 0.1 witness tasks included). |
+
+Only 0.2 is served. The versions pair one to one: a session opened as
+`witness/session/0.2` declares `submit/0.2#response` as its outcome evidence, so a
+submission is taken only on a session whose stored document is a 0.2 one
+(`challengeMismatch` otherwise).
 
 Only an enabled identity is connected at all, so "listed in discovery" and
 "enabled" are the same fact.
@@ -221,7 +226,7 @@ A witnessed exchange between two parties runs **two sessions** with the same
 witness, one per party, both naming the same `parties` pair. Each yields one VWC
 attesting that party's issuance of its relationship credential.
 
-### `witness/session/0.1`: open a session
+### `witness/session/0.2`: open a session
 
 The party sends the two relationship DIDs (`parties`), on a document whose
 `threadId` is its own `id` (it names the session, and the VWC cites it). The
@@ -246,7 +251,7 @@ to its own DID, stores the session — opener, `parties`, challenge, domain, the
 session document byte for byte as received, and the expiry (`ttl_secs`) — and
 answers `{ challenge, domain }` in a signed `#response`.
 
-### `witness/session/submit/0.1`: submit and receive the VWC
+### `witness/session/submit/0.2`: submit and receive the VWC
 
 The party sends a signed document **on the session's thread** (`threadId` = the
 session document's `id`) carrying `vp`, a W3C Verifiable Presentation bound to
@@ -272,7 +277,7 @@ one, not as a broken presentation.
   subject is the session's other party — this is the credential the VWC names;
 - unless `communities = ["*"]`, a community-issued `MembershipCredential` from
   one of `communities` names the submitter as its subject, **or** the payload
-  carries a member presentation (the *member link*, below);
+  carries a valid `memberPresentation` (the *member link*, below);
 - independence again: no credential is issued by an excluded DID (an excluded
   community counts for nothing even when listed), and neither party is excluded.
 
@@ -280,43 +285,41 @@ one, not as a broken presentation.
 
 A party submits from its pairwise relationship DID, but its community's
 membership credential names its member DID. To bridge the two, the payload may
-carry a second presentation in the vendor extension:
+carry a second presentation in its own `memberPresentation` member
+(`witness/session/submit/0.2`, *The member presentation*):
 
 ```json
 {
   "vp": { "...": "the relationship presentation, holder = the relationship DID" },
-  "ext": {
-    "org.openvtc.witness": {
-      "memberPresentation": {
-        "type": ["VerifiablePresentation"],
-        "holder": "did:…member",
-        "verifiableCredential": [ { "...": "the community's MembershipCredential naming did:…member" } ],
-        "nonce": "<this session's challenge>",
-        "domain": "<this session's domain>",
-        "proof": { "proofPurpose": "authentication", "...": "signed by did:…member" }
-      }
-    }
+  "memberPresentation": {
+    "type": ["VerifiablePresentation"],
+    "holder": "did:…member",
+    "verifiableCredential": [ { "...": "the community's MembershipCredential naming did:…member" } ],
+    "nonce": "<this session's challenge>",
+    "domain": "<this session's domain>",
+    "proof": { "proofPurpose": "authentication", "...": "signed by did:…member" }
   }
 }
 ```
 
-It counts when it is a presentation by the member DID, signed for
-`authentication`, bound to **this** session's challenge and domain, and carries a
-valid membership credential from one of `communities` naming its holder. The
-member DID may not be the other party or an excluded DID. A failure is
-`presentationInvalid`; any other member of `org.openvtc.witness` is
-`malformedRequest`. The VWC names the relationship DID, never the member DID,
-which is kept and logged nowhere.
+An identity that asks for membership evidence relies on it, and so verifies it
+whole: a presentation by the member DID, signed for `authentication`, bound to
+**this** session's challenge and domain, carrying a valid membership credential
+from one of `communities` naming its holder. The member DID may be neither of the
+session's parties, nor this witness, nor an excluded DID. Any failure is
+`presentationInvalid`, and the session stays open. An identity that witnesses
+anyone (`communities = ["*"]`) ignores it, and nothing in it counts for any other
+check. The VWC names the relationship DID, never the member DID, which is kept
+and logged nowhere. The old `ext["org.openvtc.witness"]` carriage is not read.
 
 **Know what it does and does not prove.** It proves the submitter also held a
 member key in this session. It does not prove they are the same person: a member
 who signs for somebody else lends them eligibility, and the witness cannot see
 that happen. The witness also learns *which member* is behind the relationship
-DID, not only which community. The link is an `ext` extension that other witness
-implementations ignore, and VWC verifiers cannot see that it was used. The design
-note (§3.3a) covers the risks and the options for later: an upstream spec member,
-a pairwise membership credential, a zero-knowledge membership proof, and
-recording the evidence in the VWC.
+DID, not only which community. VWC verifiers cannot see that the link was used.
+The design note (§3.3a) covers the risks and the options for later: a pairwise
+membership credential, a zero-knowledge membership proof, and recording the
+evidence in the VWC.
 
 **Then the session is spent.** It is removed atomically, so of two submissions
 racing on one session exactly one mints; the other is `challengeMismatch`.
@@ -410,6 +413,10 @@ wanting stronger independence runs its witness under a separate operator.
    (`witnesses.trusted`, empty by default), and the pairing of each VWC with the
    outcome evidence of its session, carried on the personhood assertion. The
    join paths do not carry outcome evidence yet.
-4. **Next**: standardise the outcome-evidence carriage upstream and carry it on
-   the join submission, so a VWC can meet a join criterion.
-5. **Later**: VWC revocation through a status list.
+4. **Witness 0.2** (trust-tasks-tf #799): the member presentation and the
+   personhood outcome evidence are spec members (`memberPresentation` on
+   `witness/session/submit/0.2`, `outcomeEvidence` on
+   `vtc/members/personhood/assert/0.2`), replacing the `ext` stop-gaps.
+5. **Next**: carry outcome evidence on the join submission, so a VWC can meet a
+   join criterion.
+6. **Later**: VWC revocation through a status list.

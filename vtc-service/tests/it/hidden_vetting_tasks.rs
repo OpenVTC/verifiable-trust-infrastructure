@@ -1282,6 +1282,124 @@ async fn a_refused_challenge_says_which_way() {
     );
 }
 
+/// The same four refusals on `vtc/join-requests/supplement/0.1`, each under the supplement's own
+/// namespace: a deferred applicant handing in a hidden-vetting proof meets the challenge check a
+/// submission does.
+#[tokio::test]
+async fn a_refused_supplement_challenge_says_which_way() {
+    use vta_sdk::protocols::join_requests::{
+        JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_ALREADY_USED,
+        JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_EXPIRED,
+        JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_MISMATCH,
+        JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_NOT_ISSUED, JOIN_REQUEST_SUPPLEMENT_TYPE,
+    };
+    use vta_sdk::protocols::trust_task_reject_reasons as reasons;
+
+    let h = Harness::start().await;
+    h.publish().await;
+    let f: Value = serde_json::from_str(SUBMISSION_FIXTURE).unwrap();
+    let mut criterion =
+        vtc_service::schemas::accepts::get_accepts(&h.tv.state.schemas_ks, "hidden-criterion")
+            .await
+            .unwrap()
+            .unwrap();
+    criterion.vetting = Some(serde_json::from_value(f["requirements"].clone()).unwrap());
+    vtc_service::schemas::accepts::store_accepts(&h.tv.state.schemas_ks, &criterion)
+        .await
+        .unwrap();
+    for other in vtc_service::schemas::accepts::list_accepts(&h.tv.state.schemas_ks)
+        .await
+        .unwrap()
+    {
+        if other.id != "hidden-criterion" {
+            vtc_service::schemas::accepts::delete_accepts(&h.tv.state.schemas_ks, &other.id)
+                .await
+                .unwrap();
+        }
+    }
+    let reason = |body: &Value| {
+        body.pointer("/payload/details/reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    // A request the community deferred, waiting on this applicant.
+    let (applicant, key) = identity(0xD2);
+    let mut request = vtc_service::join::JoinRequest::new(applicant.clone(), json!({ "vp": "x" }));
+    request.status = vtc_service::join::JoinStatus::Deferred;
+    vtc_service::join::store_join_request(&h.tv.state.join_requests_ks, &request)
+        .await
+        .unwrap();
+    let supplement = || {
+        h.post(
+            &key,
+            JOIN_REQUEST_SUPPLEMENT_TYPE,
+            json!({
+                "requestId": request.id.to_string(),
+                "vp": { "type": "VerifiablePresentation" },
+                "extensions": f["extensions"],
+            }),
+        )
+    };
+
+    // 1. Nothing asked for.
+    let (status, body) = supplement().await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_NOT_ISSUED,
+        "{body}"
+    );
+    assert_eq!(reason(&body), reasons::NOT_FOUND, "{body}");
+
+    // 2. A challenge asked for, and a proof built over another — the fixture's.
+    let (status, body) = h
+        .post(
+            &key,
+            pcs_tasks::PCS_CHALLENGE_TYPE,
+            json!({ "criterionId": "hidden-criterion" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = supplement().await;
+    assert_eq!(
+        tt_error_code(&body),
+        JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_MISMATCH,
+        "{body}"
+    );
+    assert_eq!(reason(&body), reasons::CONFLICT, "{body}");
+
+    // 3. The attempt spent it.
+    let (_, body) = supplement().await;
+    assert_eq!(
+        tt_error_code(&body),
+        JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_ALREADY_USED,
+        "{body}"
+    );
+    assert_eq!(reason(&body), reasons::GONE, "{body}");
+
+    // 4. A challenge whose window has closed.
+    vtc_service::vetting::pcs_challenge::record(
+        &h.tv.state.join_requests_ks,
+        &applicant,
+        f["extensions"]["hiddenVetting"]["challenge"]
+            .as_str()
+            .unwrap(),
+        Duration::minutes(15),
+        Utc::now() - Duration::hours(1),
+    )
+    .await
+    .unwrap();
+    let (_, body) = supplement().await;
+    assert_eq!(
+        tt_error_code(&body),
+        JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_EXPIRED,
+        "{body}"
+    );
+    assert_eq!(reason(&body), reasons::GONE, "{body}");
+}
+
 /// An administrator, and a criterion `vetted-member` that asks for vetting. Stored directly:
 /// registering it through `vtc/schemas/accepts/register` takes a second administrator's consent
 /// (VTI-APV-023), which `join_criteria_consent` holds.

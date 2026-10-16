@@ -3,8 +3,8 @@
 **Witnessing** is a third party observing a relationship exchange and attesting, in
 a Verifiable Witness Credential (VWC), that it took place. The participating party
 opens a session with the witness under its relationship DID
-(`witness/session/0.1`), presents its relationship credential bound to the
-session's challenge (`witness/session/submit/0.1`), and receives the VWC.
+(`witness/session/0.2`), presents its relationship credential bound to the
+session's challenge (`witness/session/submit/0.2`), and receives the VWC.
 
 A principal whose keys and credentials are held by a VTA cannot do that from a
 client that holds neither. The `vta/witness/*` tasks make the VTA the party for its
@@ -13,10 +13,13 @@ verifies and stores what the witness returns. The **client carries the documents
 it sends each one to the witness *from the relationship DID* and hands each answer
 back. The VTA never contacts the witness.
 
-- Specifications: `vta/witness/{open,present,accept}/0.1` in the Trust Task
-  registry, with the family's rules in `vta/_shared/0.5/CONVENTIONS.md`
-  (trustoverip/dtgwg-trust-tasks-tf #779). `vta/witness/request/0.1` is retired and
-  was never implemented.
+- Specifications: `vta/witness/{open,present,accept}/0.2` in the Trust Task
+  registry, with the family's rules in `vta/_shared/0.6/CONVENTIONS.md`
+  (trustoverip/dtgwg-trust-tasks-tf #779, #799). Only 0.2 is served: the 0.1
+  tasks conducted the session under `witness/session/0.1` and carried the member
+  presentation in a vendor extension, which 0.2 replaces with a spec member. A
+  session is continued only by the version that opened it. `vta/witness/request/0.1`
+  is retired and was never implemented.
 - Design: [the witness as a host service](../05-design-notes/witness-host-service.md)
   §3.5; the witness itself is [`vti-witness`](../06-witness/README.md).
 - Code: `vta-service/src/operations/witness.rs` (the engine) and
@@ -45,9 +48,8 @@ client does what only it can (speak on the relationship DID's connection).
 
 `vta/witness/accept` answers with `evidence: { session, outcome }`, the outcome
 evidence of the session. Keep it with the VWC: a VTC counts a VWC only with that
-evidence beside it, in the personhood assertion's
-`ext["org.openvtc.witness"].outcomeEvidence`, and only from a witness it has
-listed as trusted ([trusted witnesses](../03-vtc/trusted-witnesses.md)).
+evidence beside it, in `vtc/members/personhood/assert/0.2`'s
+`outcomeEvidence`, and only from a witness it has listed as trusted ([trusted witnesses](../03-vtc/trusted-witnesses.md)).
 
 A refusal from the witness (`witness/session:refused`, `challengeMismatch`,
 `presentationInvalid`) ends the session at the client and is not handed back. The
@@ -56,7 +58,7 @@ VTA's record simply expires; open a new session to try again.
 ```rust
 use trust_tasks_rs::specs::vta::witness::{accept, open, present};
 
-let opened = vta.witness_open(&open::v0_1::Payload::builder()
+let opened = vta.witness_open(&open::v0_2::Payload::builder()
     .witness(witness_did)
     .relationship_did(relationship_did)
     .counterparty_did(counterparty_did)
@@ -64,12 +66,12 @@ let opened = vta.witness_open(&open::v0_1::Payload::builder()
     .relationship_credential_id("vrc-alice-to-bob")
     .try_into()?).await?;
 let answer = send_from_relationship_did(&opened.document).await?;   // the client's own socket
-let submit = vta.witness_present(&present::v0_1::Payload::builder()
+let submit = vta.witness_present(&present::v0_2::Payload::builder()
     .session_id(opened.session_id.clone())
     .response(answer)
     .try_into()?).await?;
 let outcome = send_from_relationship_did(&submit.document).await?;
-let stored = vta.witness_accept(&accept::v0_1::Payload::builder()
+let stored = vta.witness_accept(&accept::v0_2::Payload::builder()
     .session_id(opened.session_id)
     .response(outcome)
     .try_into()?).await?;
@@ -128,20 +130,18 @@ fails before it exists:
    the membership credential a community's `MembershipCredential` naming the member
    DID (or the relationship DID, without the member link); both in their validity
    windows.
-4. A member DID is named only for a witness whose carriage this VTA knows
-   (`memberLinkUnsupported`, below).
-5. The witness resolves (`witnessUnresolvable`, retryable).
+4. The witness resolves (`witnessUnresolvable`, retryable).
 
-**At present**: the record is `opened` or `presented` in the caller's contexts
-(`sessionUnknown` otherwise); the handed-back document is the witness's
-`witness/session/0.1#response`, issued by the session's witness, addressed to the
+**At present**: the record is `opened` or `presented` in the caller's contexts, and
+was opened at 0.2 (`sessionUnknown` otherwise); the handed-back document is the
+witness's `witness/session/0.2#response`, issued by the session's witness, addressed to the
 relationship DID, on the session's thread, under the witness's proof
 (`responseInvalid` otherwise — a challenge the VTA cannot attribute to the witness
 is one it will not sign over); the credentials bound at open are still there
 (`notFound`) and byte-identical and in their windows (`credentialMismatch`).
 
 **At accept**: the record is `presented`; the answer passes the same checks against
-`witness/session/submit/0.1#response`; and the VWC verifies against the session
+`witness/session/submit/0.2#response`; and the VWC verifies against the session
 (`vwcInvalid`, nothing stored): issued by the session's witness under its
 `assertionMethod` proof, `taskContext` the session id and `taskDigestMultibase` the
 digest of the session document the record holds, subject the relationship DID and
@@ -156,24 +156,25 @@ session, so it says nothing about sessions the caller cannot see.
 A witness may witness only members of communities it serves, and a community's
 membership credential names the member's own DID, not the pairwise relationship
 DID. Name the member DID in `membership.memberDid` and the VTA builds a second
-presentation, by that DID, bound to the same challenge and domain, in the OpenVTC
-carriage `ext["org.openvtc.witness"].memberPresentation` — which is what
-`vti-witness` reads. The witness learns which member is behind the relationship DID;
+presentation, by that DID, bound to the same challenge and domain, in the submit
+payload's own `memberPresentation` (`witness/session/submit/0.2`, *The member
+presentation*). The witness learns which member is behind the relationship DID;
 that is why the member DID is never read off the credential, only taken from the
-caller.
+caller. Name it only for a witness whose policy asks for membership evidence: a
+witness that asks for none may ignore it, and the member DID would have been
+disclosed for nothing.
 
-`witness/session/submit/0.1` defines no member for a second presentation, so the VTA
-builds one only for a witness it knows reads this carriage:
+A membership credential naming the relationship DID rides in the relationship
+presentation and needs no member link.
 
 ```toml
 [witness]
 session_ttl_secs = 600                       # default; 60–3600
-member_link_witnesses = ["did:webvh:Qm…:witness.example.org:a"]   # or ["*"]
 ```
 
-Empty — the default — knows none, and `open` with a `memberDid` is
-`memberLinkUnsupported`. A membership credential naming the relationship DID needs
-no carriage and works with any witness.
+`member_link_witnesses`, which named the witnesses known to read the old vendor
+extension, is gone with that extension; a configuration that still sets it loads,
+with a startup warning that the key is unknown and ignored.
 
 ## Authorization
 
@@ -189,7 +190,7 @@ caller names. A deployment that wants a human to agree first can say so with the
 approvals model, as for any task:
 
 ```sh
-pnm approvals require https://trusttasks.org/spec/vta/witness/present/0.1 \
+pnm approvals require https://trusttasks.org/spec/vta/witness/present/0.2 \
     --consent --set owners --min 1
 ```
 

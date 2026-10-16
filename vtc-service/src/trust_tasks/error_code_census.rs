@@ -132,6 +132,30 @@ fn witnesses() -> Vec<Witness> {
             "a_refused_challenge_says_which_way"
         ),
         witness!(
+            s::join_requests::supplement::v0_1::error_codes::CHALLENGE_NOT_ISSUED,
+            jr::JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_NOT_ISSUED,
+            "hidden_vetting_tasks.rs",
+            "a_refused_supplement_challenge_says_which_way"
+        ),
+        witness!(
+            s::join_requests::supplement::v0_1::error_codes::CHALLENGE_ALREADY_USED,
+            jr::JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_ALREADY_USED,
+            "hidden_vetting_tasks.rs",
+            "a_refused_supplement_challenge_says_which_way"
+        ),
+        witness!(
+            s::join_requests::supplement::v0_1::error_codes::CHALLENGE_EXPIRED,
+            jr::JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_EXPIRED,
+            "hidden_vetting_tasks.rs",
+            "a_refused_supplement_challenge_says_which_way"
+        ),
+        witness!(
+            s::join_requests::supplement::v0_1::error_codes::CHALLENGE_MISMATCH,
+            jr::JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_MISMATCH,
+            "hidden_vetting_tasks.rs",
+            "a_refused_supplement_challenge_says_which_way"
+        ),
+        witness!(
             s::rooms::community::create::v0_1::error_codes::VISIBILITY_NOT_PERMITTED,
             crate::rooms::community::codes::CREATE_VISIBILITY_NOT_PERMITTED,
             "community_rooms.rs",
@@ -1798,14 +1822,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // before anything else, so different bytes are `chunkMismatch` first;
         // the same bytes are the idempotent `stored: false`.
         s::website::upload::chunk::v0_1::error_codes::ALREADY_STORED,
-        // The four `challenge*` refusals of a supplement, declared by trust-tasks-tf #790
-        // after this service already emitted them (`vetting::challenge_refusal`, the same
-        // arm that answers a submission, whose four are witnessed). No test drives a
-        // hidden-vetting supplement to its challenge yet.
-        s::join_requests::supplement::v0_1::error_codes::CHALLENGE_NOT_ISSUED,
-        s::join_requests::supplement::v0_1::error_codes::CHALLENGE_ALREADY_USED,
-        s::join_requests::supplement::v0_1::error_codes::CHALLENGE_EXPIRED,
-        s::join_requests::supplement::v0_1::error_codes::CHALLENGE_MISMATCH,
         // BASELINE-END
     ]
 }
@@ -1818,7 +1834,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// the baseline past the ceiling — a newly bound task declaring codes
 /// nothing tests — requires raising this constant, which is the point:
 /// that always wants a human decision, never a silent pass.
-const UNWITNESSED_CEILING: usize = 13;
+const UNWITNESSED_CEILING: usize = 9;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.

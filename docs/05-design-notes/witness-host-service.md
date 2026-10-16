@@ -52,7 +52,8 @@ audit finding F8).
 
 ## 1. What is being decided
 
-`witness/session/0.1` and `witness/session/submit/0.1` define a **witness**. It
+`witness/session/0.2` and `witness/session/submit/0.2` (0.1 before
+trust-tasks-tf #799) define a **witness**. It
 opens a session for a participating party, verifies that party's presentation of
 its relationship credential, and issues a Verifiable Witness Credential (VWC). A
 VWC is a DTG `StatementCredential` under the predicate
@@ -120,8 +121,9 @@ anyone it witnesses.
   readiness gate and reconnect reuse the shared pieces the VTC uses
   (`vti_common` / `vta_sdk` sessions), and honour the invariants in CLAUDE.md
   *Mediator connection*.
-- **It serves exactly three tasks per identity:** `witness/session/0.1`,
-  `witness/session/submit/0.1` and `trust-task-discovery`. Anything else is
+- **It serves exactly three tasks per identity:** `witness/session/0.2`,
+  `witness/session/submit/0.2` and `trust-task-discovery` (0.1 is not served; the
+  versions pair one to one). Anything else is
   `unsupportedType`. There is no ACL and no administrator surface on the wire:
   the witness has no principal to administer it remotely, and its policy is the
   operator's configuration file.
@@ -176,10 +178,12 @@ names the **member's own DID**. They coincide only when a party relates from its
 member DID, which VTI-KEY-007 discourages. Read literally, §3.3 would make
 ordinary members unwitnessable.
 
-**What is built (decided 2026-10-15: option 1).** The submit payload may carry a
-second presentation, the **member presentation**, in the payload's vendor
-extension `ext["org.openvtc.witness"].memberPresentation`
-(`vti_witness::presentation::MEMBER_LINK_EXT`):
+**What is built (decided 2026-10-15: option 1; standardised in
+`witness/session/submit/0.2`, trust-tasks-tf #799).** The submit payload may carry
+a second presentation, the **member presentation**, in its own member
+`memberPresentation`. (Until 0.2 it rode the vendor extension
+`ext["org.openvtc.witness"].memberPresentation`, which is retired and no longer
+read.)
 
 - a `VerifiablePresentation` whose `holder` is the member DID, signed for
   `authentication` by that DID;
@@ -191,10 +195,13 @@ extension `ext["org.openvtc.witness"].memberPresentation`
   DID. Every credential in it is checked as the relationship presentation's are:
   issuer proof, validity window, no excluded issuer.
 
-The member DID may not be the session's other party (the counterparty's
-membership does not make the submitter eligible) or an excluded DID. A failure is
-`presentationInvalid` and leaves the session open. Any other member of the
-`org.openvtc.witness` namespace is `malformedRequest`. A VMC naming the
+The member DID may be neither of the session's parties (the counterparty's
+membership does not make the submitter eligible, and a VMC naming the submitter
+belongs in `vp`), nor the witness, nor an excluded DID. A witness that asks for
+membership evidence relies on it and verifies it whole: a failure is
+`presentationInvalid` and leaves the session open. One that witnesses anyone
+(`communities = ["*"]`) ignores it, and nothing in it counts for any other check.
+A VMC naming the
 relationship DID directly, in the relationship presentation, still counts. The
 VWC names the relationship DID only; the member DID appears in no VWC, record or
 log.
@@ -205,17 +212,16 @@ log.
 |---|---|---|
 | **Possession, not personhood** | The link proves that whoever holds the relationship key also held a member key *in this session*. It cannot prove they are one person: a member who signs a member presentation for someone else lends them their eligibility, and one member can lend it to many relationship DIDs. | None in the protocol. The witness does not count how often a member DID is used. A count would need the member DID stored, which would build the correlation table the link must not create. |
 | **The witness learns the member DID** | The witness can link the pairwise relationship DID to the member's durable community identity, so it sees more than §3.3 alone discloses: *which member*, not just *which community*. | It is not stored or logged. The correlators table (§3.6) names it, and a deployment that will not disclose it uses `communities = ["*"]` or a witness it trusts with it. |
-| **A vendor extension, not the spec** | `witness/session/submit/0.1` has no member for this, so the link rides `ext`. Another witness implementation will ignore it and refuse the submit for lack of membership. A verifier of the VWC cannot tell that eligibility rested on a link. | The namespace is closed (unknown members are refused), so it can be replaced cleanly. Standardising it is the first future option below. |
+| **The VWC does not show the link** | A verifier of the VWC cannot tell that eligibility rested on a link. | Option 5 below. (The link itself is a spec member since `submit/0.2`, so any witness reads it.) |
 | **No revocation check** | A VMC revoked since issue still counts, as in §3.3 (P2 does not read `credentialStatus`). | Short VMC validity. Status checking is follow-up work. |
 | **The VWC does not record eligibility** | A verifier sees *that* the witness attested the edge, not on what evidence it judged the party eligible. | Open question 4 to the credentials task force. |
 
 **Options left for later.** Any of these can replace or sit beside the link.
 None is built.
 
-1. **Standardise the link upstream.** Add an optional `memberPresentation` (or a
-   general `eligibility` presentation) to `witness/session/submit` in
-   dtgwg-trust-tasks-tf, so any witness reads it and the `ext` carriage retires.
-   This is the natural next step for the link itself.
+1. **Standardise the link upstream.** *Done:* `witness/session/submit/0.2`
+   carries `memberPresentation` (trust-tasks-tf #799), and the `ext` carriage is
+   retired.
 2. **A pairwise membership credential.** The community issues the member a VMC,
    or a derived credential, naming the relationship DID, on request from the
    member's VTA. The witness then needs no link and never learns the member DID.
@@ -244,13 +250,13 @@ None is built.
 
 ### 3.4 The protocol
 
-- **`witness/session/0.1`.** Apply the §7.2 pipeline, the checks of §3.2 and
+- **`witness/session/0.2`.** Apply the §7.2 pipeline, the checks of §3.2 and
   §3.3, mint a fresh 32-byte challenge and a `domain`, persist the session (the
   opener, `parties`, the challenge, the domain, the session document as
   received, and an expiry), and answer with a `#response` signed by the witness.
-- **`witness/session/submit/0.1`.** Check the binding first: a live session's
-  thread, its opener, and a VP proof bound to that challenge and domain. A
-  failure is `challengeMismatch`. Then verify the VP (its proof, holder =
+- **`witness/session/submit/0.2`.** Check the binding first: a live session's
+  thread, opened as `witness/session/0.2`, its opener, and a VP proof bound to
+  that challenge and domain. A failure is `challengeMismatch`. Then verify the VP (its proof, holder =
   submitter), the relationship credential (its issuer's proof, issuer =
   submitter), and the membership evidence (§3.3); any failure is
   `presentationInvalid`. Then build the VWC: `new_witnessed_vsc` (subject =
@@ -274,8 +280,8 @@ They are **parties**, never witnesses:
   membership evidence) as the relationship DID, and stores the returned VWC in
   the vault together with the session document and the `submit#response` (the
   outcome evidence the spec requires a holder to retain and ship). **The client
-  carries the documents** (`vta/witness/{open,present,accept}`, trust-tasks-tf
-  #779): the witness checks that each document's transport-proven sender is its
+  carries the documents** (`vta/witness/{open,present,accept}/0.2`,
+  trust-tasks-tf #779, #799): the witness checks that each document's transport-proven sender is its
   issuer and replies to that sender, and the relationship DID's one mediator
   connection belongs to the client that holds the relationship. A first draft,
   `vta/witness/request/0.1`, had the VTA make both round trips itself; it would
@@ -286,7 +292,8 @@ They are **parties**, never witnesses:
   DIDs it trusts (`witnesses.trusted`, [trusted witnesses](../03-vtc/trusted-witnesses.md)),
   empty by default, and counts a VWC only from a listed witness and only with
   the outcome evidence of its session (VTI-CMP-023), carried beside the VWC in
-  `ext["org.openvtc.witness"].outcomeEvidence`. The list is community
+  `vtc/members/personhood/assert/0.2`'s `outcomeEvidence` (trust-tasks-tf #799;
+  the earlier `ext` carriage is retired). The list is community
   configuration that criteria and policy read through the host's verdict, so it
   needs no Trust Task family of its own.
 - **The `dtg-witness` DID template** ships with the other built-ins, so any operator

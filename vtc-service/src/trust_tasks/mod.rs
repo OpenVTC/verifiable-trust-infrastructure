@@ -176,7 +176,7 @@ mod conformance;
 mod error_code_census;
 
 use serde_json::Value;
-use trust_tasks_rs::specs::vtc::members::personhood::{assert::v0_1 as pa, challenge::v0_1 as pc};
+use trust_tasks_rs::specs::vtc::members::personhood::{assert::v0_2 as pa, challenge::v0_1 as pc};
 // The admin-facing member verbs (#1641 phase 2). Their wire types are
 // generated from the published schemas, so there is no hand-written SDK
 // constant to import and the Type URIs below are read off the payload types.
@@ -3157,7 +3157,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
 pub(crate) const PERSONHOOD_CHALLENGE_TYPE: &str =
     <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `vtc/members/personhood/assert/0.1` — present the evidence.
+/// `vtc/members/personhood/assert/0.2` — present the evidence, with the outcome evidence of
+/// each witnessing session a VWC in it cites (`outcomeEvidence`). 0.1, which had no member for
+/// that evidence, is not served.
 pub(crate) const PERSONHOOD_ASSERT_TYPE: &str = <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vtc/members/credentials/0.1` — read one member's credential bodies.
@@ -5701,10 +5703,10 @@ async fn handle_personhood_challenge(
     }
 }
 
-/// `vtc/members/personhood/assert/0.1` — present the evidence and, if the
+/// `vtc/members/personhood/assert/0.2` — present the evidence and, if the
 /// community's policy accepts it, take the personhood flag.
 ///
-/// The proven sender must be the subject. `assert/0.1` declares
+/// The proven sender must be the subject. `assert/0.2` declares
 /// `exposure.actsAsSubject: true` — "the asserting member is the subject …
 /// exercising their own authority over their own personhood state" — so on
 /// a transport that proves who sent the bytes, the party executing is the
@@ -5754,20 +5756,19 @@ async fn handle_personhood_assert(
     };
 
     // The outcome evidence of each witnessing session a VWC in the presentation
-    // cites (VTI-CMP-023), in the OpenVTC carriage. A malformed carriage is
-    // refused rather than read as none.
-    let evidence =
-        match crate::credentials::witness::outcome_evidence_from_ext(doc.payload.get("ext")) {
-            Ok(e) => e,
-            Err(e) => {
-                return reject_with(
-                    &doc,
-                    RejectReason::MalformedRequest {
-                        reason: e.to_string(),
-                    },
-                );
-            }
-        };
+    // cites (VTI-CMP-023), in the payload's own `outcomeEvidence`, read as
+    // received: each document's proof and task digest are taken over its members.
+    let evidence = match crate::credentials::witness::outcome_evidence_from_payload(&doc.payload) {
+        Ok(e) => e,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            );
+        }
+    };
 
     match crate::routes::members::personhood::assert_inner(
         state,
@@ -6086,7 +6087,7 @@ mod tests {
         /// A document issued by `from` and carrying `from`'s Data-Integrity
         /// proof — what a producer sends for a task that declares `proof`
         /// REQUIRED. Both `vtc/members/personhood/challenge/0.1` (since
-        /// trust-tasks 0.23) and `assert/0.1` do.
+        /// trust-tasks 0.23) and `assert/0.2` do.
         ///
         /// `from` is a real `did:key` with the secret behind it, because the
         /// spine verifies the proof against the document's own `issuer`
@@ -6306,14 +6307,14 @@ mod tests {
             assert_eq!(doc["proof"]["proofPurpose"], "authentication", "{doc}");
         }
 
-        /// `assert/0.1` declares `actsAsSubject: true`. On a transport that
+        /// `assert/0.2` declares `actsAsSubject: true`. On a transport that
         /// proves the sender, one member must not be able to assert
         /// personhood in another's name — even though the presentation gate
         /// would also stop them, because a caller should be refused before
         /// the daemon starts verifying someone else's credentials.
         ///
         /// The document is **signed**, and that is the point of the fixture
-        /// change #1672 made here. `assert/0.1` declares `proof` REQUIRED; this
+        /// change #1672 made here. `assert/0.2` declares `proof` REQUIRED; this
         /// test used to send an unsigned one over DIDComm, which reached the
         /// handler only through the transitional allowance the same change
         /// removes. Left alone it would now stop at `proofRequired` and go on

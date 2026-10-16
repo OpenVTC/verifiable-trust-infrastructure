@@ -8,8 +8,11 @@
 //! | type | answer |
 //! |---|---|
 //! | `trust-task-discovery/0.3`, `/0.1` | this identity's own task list |
-//! | `witness/session/0.1` | a session and its challenge ([`crate::witness`]) |
-//! | `witness/session/submit/0.1` | the VWC and its digest ([`crate::witness`]) |
+//! | `witness/session/0.2` | a session and its challenge ([`crate::witness`]) |
+//! | `witness/session/submit/0.2` | the VWC and its digest ([`crate::witness`]) |
+//!
+//! The 0.1 witness tasks are not served: another version of a served family is
+//! `unsupportedVersion`, so a 0.1 party is told to re-ask at 0.2.
 //! | anything else | `unsupportedType` (or `unsupportedVersion` for another version of a served family) |
 //!
 //! [`SERVED`] is the one table both discovery and routing read, so discovery
@@ -80,22 +83,22 @@ use crate::witness::Witnessing;
 pub const DISCOVERY_V0_3: &str = discovery::DISCOVERY_V0_3;
 /// `trust-task-discovery/0.1` — still what `VtaClient` asks.
 pub const DISCOVERY_V0_1: &str = <v0_1::Payload as Payload>::TYPE_URI;
-/// `witness/session/0.1`.
-pub const WITNESS_SESSION_V0_1: &str = <session::v0_1::Payload as Payload>::TYPE_URI;
-/// `witness/session/submit/0.1`.
-pub const WITNESS_SESSION_SUBMIT_V0_1: &str = <session::submit::v0_1::Payload as Payload>::TYPE_URI;
+/// `witness/session/0.2`.
+pub const WITNESS_SESSION_V0_2: &str = <session::v0_2::Payload as Payload>::TYPE_URI;
+/// `witness/session/submit/0.2`.
+pub const WITNESS_SESSION_SUBMIT_V0_2: &str = <session::submit::v0_2::Payload as Payload>::TYPE_URI;
 
 /// Every type a witness identity serves — the one table routing and the
 /// discovery answer both read, so discovery cannot list a task nobody routes.
 pub const SERVED: &[&str] = &[
     DISCOVERY_V0_1,
     DISCOVERY_V0_3,
-    WITNESS_SESSION_V0_1,
-    WITNESS_SESSION_SUBMIT_V0_1,
+    WITNESS_SESSION_V0_2,
+    WITNESS_SESSION_SUBMIT_V0_2,
 ];
 
 /// The served types that change state, and so keep a §7.2 item 11 record.
-const CONSEQUENTIAL: &[&str] = &[WITNESS_SESSION_V0_1, WITNESS_SESSION_SUBMIT_V0_1];
+const CONSEQUENTIAL: &[&str] = &[WITNESS_SESSION_V0_2, WITNESS_SESSION_SUBMIT_V0_2];
 
 /// One witness identity, as the dispatcher needs it: who it is, the key it
 /// signs with (replies and VWCs alike: `#key-0` is both `authentication` and
@@ -446,7 +449,7 @@ async fn consequential(
         key: &identity.signing_key,
         state: &identity.witnessing,
     };
-    let outcome = if doc.type_uri.to_string() == WITNESS_SESSION_V0_1 {
+    let outcome = if doc.type_uri.to_string() == WITNESS_SESSION_V0_2 {
         crate::witness::open_session(&witness, doc, received, sender, now).await
     } else {
         crate::witness::submit(&witness, doc, sender, resolver, now).await

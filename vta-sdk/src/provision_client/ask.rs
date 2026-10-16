@@ -35,7 +35,7 @@ pub const BUILTIN_DID_HOST_DIDCOMM_TEMPLATE: &str = "did-host-didcomm";
 pub const BUILTIN_DID_HOST_HTTP_TSP_TEMPLATE: &str = "did-host-http-tsp";
 pub const BUILTIN_DID_HOST_TSP_TEMPLATE: &str = "did-host-tsp";
 /// The built-in `dtg-witness` template: a `vti-witness` identity (the witness
-/// of `witness/session/0.1`), reachable over TSP and DIDComm through a mediator
+/// of `witness/session/0.2`), reachable over TSP and DIDComm through a mediator
 /// and over nothing else. Not the did:webvh log witness, whose shape is
 /// `did-host-didcomm` (the `witness` init alias).
 pub const BUILTIN_DTG_WITNESS_TEMPLATE: &str = "dtg-witness";

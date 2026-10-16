@@ -1,5 +1,5 @@
 //! Witnessing end to end through the dispatch core, without a socket:
-//! `witness/session/0.1` and `witness/session/submit/0.1`, every refusal path,
+//! `witness/session/0.2` and `witness/session/submit/0.2`, every refusal path,
 //! and the VWC checked the way the VTC checks one.
 //!
 //! Every party is a `did:key`, so every proof verifies with no network.
@@ -23,7 +23,7 @@ use vta_sdk::trust_task_sign::{
 use vti_common::store::Store;
 use vti_witness::config::{ANY_COMMUNITY, SessionLimits};
 use vti_witness::dispatch::{
-    IdentityContext, Outcome, WITNESS_SESSION_SUBMIT_V0_1, WITNESS_SESSION_V0_1, answer,
+    IdentityContext, Outcome, WITNESS_SESSION_SUBMIT_V0_2, WITNESS_SESSION_V0_2, answer,
 };
 use vti_witness::store::{self as wstore, WitnessStore};
 use vti_witness::witness::{WitnessPolicy, Witnessing, vwc_digest_multibase};
@@ -165,14 +165,14 @@ fn urn() -> String {
 
 // ── Documents ───────────────────────────────────────────────────────────
 
-/// A `witness/session/0.1` opening its own thread.
+/// A `witness/session/0.2` opening its own thread.
 fn session_doc(opener: &str, witness: &str, parties: [&str; 2]) -> Value {
     let id = urn();
     json!({
         "id": id,
         "threadId": id,
         "parentThreadId": "urn:uuid:00000000-0000-4000-8000-00000000beef",
-        "type": WITNESS_SESSION_V0_1,
+        "type": WITNESS_SESSION_V0_2,
         "issuer": opener,
         "recipient": witness,
         "issuedAt": Utc::now().to_rfc3339(),
@@ -180,12 +180,12 @@ fn session_doc(opener: &str, witness: &str, parties: [&str; 2]) -> Value {
     })
 }
 
-/// A signed `witness/session/submit/0.1` on `thread`.
+/// A signed `witness/session/submit/0.2` on `thread`.
 async fn submit_doc(by: &Key, witness: &str, thread: &str, vp: Value) -> Value {
     submit_doc_with(by, witness, thread, json!({ "vp": vp })).await
 }
 
-/// A signed `witness/session/submit/0.1` on `thread` carrying `vp` and the
+/// A signed `witness/session/submit/0.2` on `thread` carrying `vp` and the
 /// member presentation `member_vp` (the member link).
 async fn submit_linked(
     by: &Key,
@@ -200,7 +200,7 @@ async fn submit_linked(
         thread,
         json!({
             "vp": vp,
-            "ext": { "org.openvtc.witness": { "memberPresentation": member_vp } },
+            "memberPresentation": member_vp,
         }),
     )
     .await
@@ -210,7 +210,7 @@ async fn submit_doc_with(by: &Key, witness: &str, thread: &str, payload: Value) 
     let mut doc: TrustTask<Value> = serde_json::from_value(json!({
         "id": urn(),
         "threadId": thread,
-        "type": WITNESS_SESSION_SUBMIT_V0_1,
+        "type": WITNESS_SESSION_SUBMIT_V0_2,
         "issuer": by.did,
         "recipient": witness,
         "issuedAt": Utc::now().to_rfc3339(),
@@ -351,7 +351,7 @@ fn id(doc: &Value) -> &str {
     doc["id"].as_str().unwrap()
 }
 
-// ── witness/session/0.1 ────────────────────────────────────────────────
+// ── witness/session/0.2 ────────────────────────────────────────────────
 
 #[tokio::test]
 async fn a_session_opens_with_a_fresh_challenge_and_is_stored_as_received() {
@@ -359,7 +359,7 @@ async fn a_session_opens_with_a_fresh_challenge_and_is_stored_as_received() {
     let (doc, reply) = w.open().await;
     assert_eq!(
         reply["type"],
-        format!("{WITNESS_SESSION_V0_1}#response"),
+        format!("{WITNESS_SESSION_V0_2}#response"),
         "{reply:#}"
     );
     assert_eq!(reply["threadId"], doc["id"], "the session's own thread");
@@ -456,7 +456,7 @@ async fn an_identity_with_no_communities_witnesses_nobody() {
 async fn the_wildcard_witnesses_anyone_without_membership_evidence() {
     let w = World::with_policy(|_, p| p.communities = vec![ANY_COMMUNITY.to_string()]);
     let (doc, reply) = w.open().await;
-    assert_eq!(reply["type"], format!("{WITNESS_SESSION_V0_1}#response"));
+    assert_eq!(reply["type"], format!("{WITNESS_SESSION_V0_2}#response"));
     // No VMC at all.
     let creds = vec![vrc(&w.alice, &w.bob.did).await];
     let p = vp(&w.alice, creds, challenge(&reply), domain(&reply)).await;
@@ -464,7 +464,7 @@ async fn the_wildcard_witnesses_anyone_without_membership_evidence() {
     let out = w.h.send(&w.alice.did, &sub).await;
     assert_eq!(
         out["type"],
-        format!("{WITNESS_SESSION_SUBMIT_V0_1}#response"),
+        format!("{WITNESS_SESSION_SUBMIT_V0_2}#response"),
         "{out:#}"
     );
 }
@@ -480,7 +480,7 @@ async fn the_allow_list_admits_only_the_openers_it_names() {
     let ok = w.h.send(&alice.did, &doc).await;
     assert_eq!(
         ok["type"],
-        format!("{WITNESS_SESSION_V0_1}#response"),
+        format!("{WITNESS_SESSION_V0_2}#response"),
         "{ok:#}"
     );
 }
@@ -579,7 +579,7 @@ async fn a_replayed_session_is_answered_once_and_a_reused_id_conflicts() {
     assert_eq!(error_code(&conflict), "idConflict", "{conflict:#}");
 }
 
-// ── witness/session/submit/0.1 ─────────────────────────────────────────
+// ── witness/session/submit/0.2 ─────────────────────────────────────────
 
 #[tokio::test]
 async fn binding_comes_first_a_wrong_challenge_with_a_bad_vp_is_a_challenge_mismatch() {
@@ -693,7 +693,7 @@ async fn two_submissions_on_one_session_mint_exactly_one_vwc() {
     let (a, b) = tokio::join!(w.h.send(&w.alice.did, &s1), w.h.send(&w.alice.did, &s2));
     let minted = [&a, &b]
         .iter()
-        .filter(|r| r["type"] == format!("{WITNESS_SESSION_SUBMIT_V0_1}#response"))
+        .filter(|r| r["type"] == format!("{WITNESS_SESSION_SUBMIT_V0_2}#response"))
         .count();
     assert_eq!(minted, 1, "exactly one VWC\n{a:#}\n{b:#}");
     let loser = if a["payload"]["vwc"].is_object() {
@@ -915,7 +915,7 @@ async fn a_member_presentation_links_a_relationship_did_to_its_membership() {
     let out = w.h.send(&w.alice.did, &sub).await;
     assert_eq!(
         out["type"],
-        format!("{WITNESS_SESSION_SUBMIT_V0_1}#response"),
+        format!("{WITNESS_SESSION_SUBMIT_V0_2}#response"),
         "{out:#}"
     );
     let vwc = DTGCredential::try_from(out["payload"]["vwc"].clone()).unwrap();
@@ -945,6 +945,8 @@ async fn a_member_presentation_that_does_not_hold_is_presentation_invalid() {
         OtherDomain,
         SignedBySomeoneElse,
         TheCounterparty,
+        TheSubmitter,
+        TheWitness,
         VmcNamesAnotherDid,
         VmcFromAnotherCommunity,
         ExcludedMember,
@@ -954,6 +956,8 @@ async fn a_member_presentation_that_does_not_hold_is_presentation_invalid() {
         Case::OtherDomain,
         Case::SignedBySomeoneElse,
         Case::TheCounterparty,
+        Case::TheSubmitter,
+        Case::TheWitness,
         Case::VmcNamesAnotherDid,
         Case::VmcFromAnotherCommunity,
         Case::ExcludedMember,
@@ -1000,6 +1004,26 @@ async fn a_member_presentation_that_does_not_hold_is_presentation_invalid() {
                 vp(
                     &w.bob,
                     vec![vmc(&w.community, &w.bob.did, None).await],
+                    &c,
+                    &d,
+                )
+                .await,
+            ),
+            Case::TheSubmitter => (
+                "the submitting party's own DID as the member",
+                vp(
+                    &w.alice,
+                    vec![vmc(&w.community, &w.alice.did, None).await],
+                    &c,
+                    &d,
+                )
+                .await,
+            ),
+            Case::TheWitness => (
+                "the witness as the member",
+                vp(
+                    &w.h.witness,
+                    vec![vmc(&w.community, &w.h.witness.did, None).await],
                     &c,
                     &d,
                 )
@@ -1054,23 +1078,119 @@ async fn a_member_presentation_that_does_not_hold_is_presentation_invalid() {
     }
 }
 
-/// The namespace holds the member presentation and nothing else.
+/// The 0.1 `ext` carriage is gone: a member presentation in
+/// `ext["org.openvtc.witness"]` is not the member link, so a party whose only
+/// membership evidence it is has none.
 #[tokio::test]
-async fn an_unknown_member_of_the_witness_ext_is_malformed() {
+async fn a_member_presentation_in_the_old_ext_carriage_is_not_read() {
     let w = World::new();
+    let member = Key::new();
     let (doc, reply) = w.open().await;
+    let rel = vp(
+        &w.alice,
+        vec![vrc(&w.alice, &w.bob.did).await],
+        challenge(&reply),
+        domain(&reply),
+    )
+    .await;
+    let link = vp(
+        &member,
+        vec![vmc(&w.community, &member.did, None).await],
+        challenge(&reply),
+        domain(&reply),
+    )
+    .await;
     let sub = submit_doc_with(
         &w.alice,
         w.witness_did(),
         id(&doc),
-        json!({
-            "vp": w.alice_vp(&reply).await,
-            "ext": { "org.openvtc.witness": { "memberLink": {} } },
-        }),
+        json!({ "vp": rel, "ext": { "org.openvtc.witness": { "memberPresentation": link } } }),
     )
     .await;
     let out = w.h.send(&w.alice.did, &sub).await;
-    assert_eq!(error_code(&out), "malformedRequest", "{out:#}");
+    assert_eq!(
+        error_code(&out),
+        "witness/session/submit:presentationInvalid",
+        "{out:#}"
+    );
+}
+
+/// A witness that asks for no membership evidence ignores the member
+/// presentation: one that would fail is not judged, and nothing in it counts.
+#[tokio::test]
+async fn the_wildcard_ignores_a_member_presentation() {
+    let w = World::with_policy(|_, p| p.communities = vec![ANY_COMMUNITY.to_string()]);
+    let (doc, reply) = w.open().await;
+    let rel = vp(
+        &w.alice,
+        vec![vrc(&w.alice, &w.bob.did).await],
+        challenge(&reply),
+        domain(&reply),
+    )
+    .await;
+    // Bound to another challenge: it would fail if it were relied on.
+    let member = Key::new();
+    let stale = vp(
+        &member,
+        vec![vmc(&w.community, &member.did, None).await],
+        &"0".repeat(64),
+        domain(&reply),
+    )
+    .await;
+    let sub = submit_linked(&w.alice, w.witness_did(), id(&doc), rel, stale).await;
+    let out = w.h.send(&w.alice.did, &sub).await;
+    assert_eq!(
+        out["type"],
+        format!("{WITNESS_SESSION_SUBMIT_V0_2}#response"),
+        "{out:#}"
+    );
+}
+
+/// Only 0.2 is served: the 0.1 tasks are another version of a served family.
+#[tokio::test]
+async fn the_0_1_witness_tasks_are_an_unsupported_version() {
+    let w = World::new();
+    for uri in [
+        "https://trusttasks.org/spec/witness/session/0.1",
+        "https://trusttasks.org/spec/witness/session/submit/0.1",
+    ] {
+        let mut doc = session_doc(&w.alice.did, w.witness_did(), [&w.alice.did, &w.bob.did]);
+        doc["type"] = json!(uri);
+        let out = w.h.send(&w.alice.did, &doc).await;
+        assert_eq!(error_code(&out), "unsupportedVersion", "{uri}: {out:#}");
+    }
+}
+
+/// The versions pair one to one: a submit/0.2 completes no session whose
+/// stored document is not a `witness/session/0.2`.
+#[tokio::test]
+async fn a_submit_on_a_session_opened_at_another_version_is_a_challenge_mismatch() {
+    let w = World::new();
+    let (doc, reply) = w.open().await;
+    let mut record =
+        w.h.store()
+            .take_session(w.witness_did(), id(&doc))
+            .await
+            .unwrap()
+            .expect("the open session");
+    let mut stored: Value = serde_json::from_str(&record.document).unwrap();
+    stored["type"] = json!("https://trusttasks.org/spec/witness/session/0.1");
+    record.document = stored.to_string();
+    assert!(w.h.store().insert_session(&record).await.unwrap());
+
+    let sub = submit_doc(
+        &w.alice,
+        w.witness_did(),
+        id(&doc),
+        w.alice_vp(&reply).await,
+    )
+    .await;
+    let out = w.h.send(&w.alice.did, &sub).await;
+    assert_eq!(
+        error_code(&out),
+        "witness/session/submit:challengeMismatch",
+        "{out:#}"
+    );
 }
 
 // ── End to end, checked as the VTC checks a VWC ─────────────────────────
@@ -1095,11 +1215,11 @@ async fn end_to_end_the_vwc_verifies_as_the_vtc_verifies_it() {
 
     assert_eq!(
         out["type"],
-        format!("{WITNESS_SESSION_SUBMIT_V0_1}#response"),
+        format!("{WITNESS_SESSION_SUBMIT_V0_2}#response"),
         "{out:#}"
     );
     assert_eq!(out["threadId"], session["id"], "on the session's thread");
-    trust_tasks_rs::specs::witness::session::submit::v0_1::Response::validate_value(
+    trust_tasks_rs::specs::witness::session::submit::v0_2::Response::validate_value(
         &out["payload"],
     )
     .expect("a schema-valid submit response");

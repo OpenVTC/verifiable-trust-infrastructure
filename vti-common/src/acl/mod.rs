@@ -307,7 +307,7 @@ pub enum Capability {
     /// the VTA builds and signs, as the principal's relationship DID (and, under the member
     /// link, its member DID), every document of a `witness/session`, verifies the witness's
     /// answers, and stores the Verifiable Witness Credential; the caller carries the
-    /// documents (`vta/_shared/0.5/CONVENTIONS.md` §4).
+    /// documents (`vta/_shared/0.6/CONVENTIONS.md` §4).
     ///
     /// Registered upstream as `witnessRequest`. Deliberately **not** [`Capability::Sign`]
     /// and not conferred by it: these tasks sign only documents and presentations the VTA
@@ -1963,7 +1963,7 @@ mod tests {
 
     /// `witness-request` is the principal's, like the PCS capabilities: derived by the
     /// roles that act as the principal, never by `application`, never implied by `sign`
-    /// (`vta/_shared/0.5/CONVENTIONS.md` §4), and spelled as `device/_shared` 0.1 registers it.
+    /// (`vta/_shared/0.6/CONVENTIONS.md` §4), and spelled as `device/_shared` 0.1 registers it.
     #[test]
     fn witness_request_is_the_principals_and_not_sign() {
         let cap = Capability::WitnessRequest;

@@ -518,14 +518,14 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_VTA_PCS_ATTEST_0_1, Keyed),
     (trust_tasks::TASK_VTA_PCS_VETTER_SHOW_0_1, ReadOnly),
     // ── Witnessed party (`vta/witness/*`) ───────────────────────────────
-    // Each step is safe to repeat (`vta/_shared/0.5/CONVENTIONS.md` §5): a
+    // Each step is safe to repeat (`vta/_shared/0.6/CONVENTIONS.md` §5): a
     // repeated open is an unsent, expiring session; a repeated present builds a
     // fresh submit document, and the witness spends its challenge on the first
     // it accepts; a repeated accept of the same outcome is answered again and
     // stores nothing new.
-    (trust_tasks::TASK_VTA_WITNESS_OPEN_0_1, RetrySafe),
-    (trust_tasks::TASK_VTA_WITNESS_PRESENT_0_1, RetrySafe),
-    (trust_tasks::TASK_VTA_WITNESS_ACCEPT_0_1, RetrySafe),
+    (trust_tasks::TASK_VTA_WITNESS_OPEN_0_2, RetrySafe),
+    (trust_tasks::TASK_VTA_WITNESS_PRESENT_0_2, RetrySafe),
+    (trust_tasks::TASK_VTA_WITNESS_ACCEPT_0_2, RetrySafe),
     // ── External accounts (`external/*`) ────────────────────────────────
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_LIST_0_1, ReadOnly),
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_GET_0_1, ReadOnly),
