@@ -526,6 +526,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_VTA_WITNESS_OPEN_0_2, RetrySafe),
     (trust_tasks::TASK_VTA_WITNESS_PRESENT_0_2, RetrySafe),
     (trust_tasks::TASK_VTA_WITNESS_ACCEPT_0_2, RetrySafe),
+    // A read of what accept stored.
+    (trust_tasks::TASK_VTA_WITNESS_LIST_0_1, ReadOnly),
     // ── External accounts (`external/*`) ────────────────────────────────
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_LIST_0_1, ReadOnly),
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_GET_0_1, ReadOnly),

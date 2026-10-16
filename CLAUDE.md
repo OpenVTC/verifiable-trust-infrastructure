@@ -980,7 +980,8 @@ new flow, update both this section and the relevant `docs/*.md`.
   relationship DID, `present` verifies the witness's session answer and returns
   the signed `witness/session/submit/0.2` (relationship presentation, and under
   the member link the member presentation in its own `memberPresentation`), `accept`
-  verifies the VWC and stores it with its evidence. **The client carries every
+  verifies the VWC and stores it with its evidence, and `list` (`vta/witness/list/0.1`)
+  reads stored VWCs back with that evidence exactly as stored. **The client carries every
   document** from the relationship DID — the witness checks the transport-proven
   sender against `issuer`, and that DID's one mediator socket is the client's.
 - **Invariants to preserve**: the VTA never contacts the witness and never signs
@@ -995,7 +996,10 @@ new flow, update both this section and the relevant `docs/*.md`.
   audit never names a member DID. Only 0.2 is served, and a session record is
   continued only by the version that opened it (a record whose session document
   is not `witness/session/0.2` is `sessionUnknown`); the `ext["org.openvtc.witness"]`
-  carriage is retired, never read or written.
+  carriage is retired, never read or written. `list` returns only active entries
+  in contexts the caller may act in; an unknown or unreachable DID filter is an empty
+  page, never an error; evidence comes from the vault entry's `witness:session` /
+  `witness:outcome` tags, never rebuilt or re-signed.
 - **Code**: `vta-service/src/operations/witness.rs`,
   `vta-service/src/trust_tasks/{witness,witness_tests}.rs`,
   `vta_sdk::client::witness`.

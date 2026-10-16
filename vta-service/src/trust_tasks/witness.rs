@@ -2,6 +2,7 @@
 //! `vta/witness/accept/0.2` (trust-tasks-tf #779, #799; rules in `vta/_shared/0.6/CONVENTIONS.md`).
 //! The 0.1 versions are not served: they conducted the session under `witness/session/0.1` and
 //! carried the member presentation in a vendor extension, which 0.2 replaces.
+//! `vta/witness/list/0.1` (trust-tasks-tf #800) reads back what `accept` stored.
 //!
 //! The engine is [`crate::operations::witness`]; this slice is the dispatch surface over it:
 //!
@@ -306,6 +307,79 @@ pub(super) async fn handle_accept(
                 ..NONE
             },
         ),
+    }
+}
+
+/// `vta/witness/list/0.1` — the VWCs `accept` stored, each with its evidence as stored.
+///
+/// Gated like the rest of the family (`witness-request`, never `sign`). The engine confines a
+/// page to contexts the caller may act in, so a filter naming a DID the caller cannot reach
+/// answers an empty page, never a refusal. Audited with the caller and the filters' presence —
+/// never a DID beyond the caller's own.
+pub(super) async fn handle_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::list::v0_1 as t;
+    if let Err(r) = gate(state, auth, &doc).await {
+        return r;
+    }
+    if let Err(r) = parse_payload::<t::Payload>(&doc) {
+        return r;
+    }
+    let p = &doc.payload;
+    let req = engine::ListRequest {
+        relationship_did: str_of(p, "relationshipDid"),
+        witness: str_of(p, "witness"),
+        page_size: p
+            .get("pageSize")
+            .and_then(Value::as_u64)
+            .map(|n| n as usize),
+        cursor: str_of(p, "cursor"),
+    };
+    match engine::list(state, auth, req).await {
+        Ok(page) => {
+            if let Err(e) = crate::audit::record_with_detail(
+                &state.audit_sink,
+                "witness.list",
+                &auth.did,
+                None,
+                "success",
+                Some(TRANSPORT_TRUST_TASK),
+                None,
+                Some(&format!("{} witnessings", page.witnessings.len())),
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "audit record failed for witness.list");
+            }
+            let witnessings: Vec<Value> = page
+                .witnessings
+                .into_iter()
+                .map(|w| {
+                    json!({
+                        "credentialId": w.credential_id,
+                        "witness": w.witness,
+                        "relationshipDid": w.relationship_did,
+                        "vwcDigestMultibase": w.vwc_digest_multibase,
+                        "acceptedAt": w.accepted_at,
+                        "evidence": { "session": w.session, "outcome": w.outcome },
+                    })
+                })
+                .collect();
+            let mut body = json!({ "witnessings": witnessings, "truncated": page.truncated });
+            if let Some(c) = page.cursor {
+                body["cursor"] = json!(c);
+            }
+            respond::<t::Response>(&doc, body)
+        }
+        Err(engine::ListError::CursorInvalid) => reject_declared(
+            &doc,
+            t::error_codes::CURSOR_INVALID,
+            "this cursor cannot be honoured; list again from the first page, without a cursor",
+        ),
+        Err(engine::ListError::App(e)) => app_error_to_reject(&doc, e),
     }
 }
 

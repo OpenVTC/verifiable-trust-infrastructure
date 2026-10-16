@@ -51,6 +51,25 @@ evidence of the session. Keep it with the VWC: a VTC counts a VWC only with that
 evidence beside it, in `vtc/members/personhood/assert/0.2`'s
 `outcomeEvidence`, and only from a witness it has listed as trusted ([trusted witnesses](../03-vtc/trusted-witnesses.md)).
 
+## Reading back what was stored
+
+`vta/witness/list/0.1` (trust-tasks-tf #800) returns the VWCs `accept` stored, each
+with its evidence **exactly as stored** — never rebuilt or re-signed — so a client
+that stopped before recording `accept`'s answer, or a second device of the same
+principal, can rebuild its record of a witnessing at any time.
+
+- **Filters**: `relationshipDid` (the VWC's subject) and `witness` (its issuer).
+  Filter by `relationshipDid` when one relationship's are wanted: a listing of
+  everything is a map of the principal's witnessed relationships.
+- **Scope**: only active vault entries `accept` stored (under any version), in a
+  context the caller may act in. A DID this VTA does not hold and one held where
+  the caller cannot act answer the same empty page, never a refusal.
+- **Paging**: oldest first (`acceptedAt`, then `credentialId`), `pageSize` 1–100
+  (default 100), `truncated` with an opaque `cursor` to continue; a cursor the VTA
+  cannot honour is `vta/witness/list:cursorInvalid` — list again from the start.
+- Gated on `witness-request` like the rest of the family; audited with the caller
+  and the count.
+
 A refusal from the witness (`witness/session:refused`, `challengeMismatch`,
 `presentationInvalid`) ends the session at the client and is not handed back. The
 VTA's record simply expires; open a new session to try again.
@@ -83,8 +102,9 @@ relationship — a wallet or agent.
 
 ## Clients
 
-- **Rust**: `VtaClient::witness_{open,present,accept}` (`vta_sdk::client`), taking
-  and returning the generated `trust_tasks_rs::specs::vta::witness` types, as above.
+- **Rust**: `VtaClient::witness_{open,present,accept,list}` (`vta_sdk::client`),
+  taking and returning the generated `trust_tasks_rs::specs::vta::witness` types, as
+  above.
 - **Mobile**: `vta_mobile_core::witness`. The wallet's round:
 
   | Step | Engine call |
@@ -95,6 +115,7 @@ relationship — a wallet or agent.
   | answer | `classify_witness_reply(document, reply, witness_did)` — verified as the witness's, then `Answered { response_json }` or `Refused { refusal, code, … }` |
   | present | `WitnessTask::Present` with `{sessionId, response}` → the submit `document`; check it (`WitnessDocument::Submit`), carry it, classify the answer, **discard the submit document** |
   | accept | `WitnessTask::Accept` with `{sessionId, response}` → `{credentialId, witness, vwcDigestMultibase, evidence}` |
+  | list | `WitnessTask::List` with `{relationshipDid?, witness?, pageSize?, cursor?}` → `{witnessings, truncated, cursor?}`, to rebuild a lost record |
 
   `Refused` carries the witness's code — `SessionRefused` (`witness/session:refused`:
   this witness will not witness the exchange), `ChallengeMismatch` (the session is

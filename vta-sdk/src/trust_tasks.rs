@@ -2398,6 +2398,10 @@ pub const TASK_VTA_WITNESS_PRESENT_0_2: &str =
 pub const TASK_VTA_WITNESS_ACCEPT_0_2: &str =
     <trust_tasks_rs::specs::vta::witness::accept::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `vta/witness/list/0.1` — read back the stored Verifiable Witness Credentials, each with its outcome evidence exactly as stored.
+pub const TASK_VTA_WITNESS_LIST_0_1: &str =
+    <trust_tasks_rs::specs::vta::witness::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// Every URI registered in this module — handy for the dispatcher's
 /// parity harness and for operator tooling that wants to enumerate
 /// the VTA's wire surface programmatically.
@@ -2694,6 +2698,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_WITNESS_OPEN_0_2,
     TASK_VTA_WITNESS_PRESENT_0_2,
     TASK_VTA_WITNESS_ACCEPT_0_2,
+    TASK_VTA_WITNESS_LIST_0_1,
     // Application-state slice (spec/vta/app-state/*)
     TASK_VTA_APP_STATE_GET_1_0,
     TASK_VTA_APP_STATE_PUT_1_0,

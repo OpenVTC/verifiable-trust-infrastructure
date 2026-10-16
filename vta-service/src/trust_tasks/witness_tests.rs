@@ -721,6 +721,180 @@ async fn sign_alone_does_not_satisfy_witness_request() {
     assert!(body(&out).to_string().contains("WitnessRequest"));
 }
 
+// ── vta/witness/list ────────────────────────────────────────────────────
+
+impl World {
+    async fn list_as(&self, auth: &AuthClaims, payload: Value) -> TrustTaskOutcome {
+        handle_list(
+            &self.state,
+            auth,
+            doc(uris::TASK_VTA_WITNESS_LIST_0_1, payload),
+        )
+        .await
+    }
+
+    /// A whole round, accepted: the accept answer's payload.
+    async fn witnessed(&self) -> Value {
+        let (session, _, _, outcome) = self.run_to_outcome(true).await;
+        ok(&self.accept_as(&self.auth, &session, &outcome).await)
+    }
+}
+
+/// What accept answered is what list reads back: the same handle, witness, digest, and both
+/// evidence documents byte for byte — never rebuilt or re-signed.
+#[tokio::test]
+async fn list_reads_back_what_accept_stored_byte_for_byte() {
+    let w = World::new(true).await;
+    let accepted = w.witnessed().await;
+
+    let listed = ok(&w.list_as(&w.auth, json!({})).await);
+    let entries = listed["witnessings"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{listed:#}");
+    let e = &entries[0];
+    assert_eq!(e["credentialId"], accepted["credentialId"]);
+    assert_eq!(e["witness"], accepted["witness"]);
+    assert_eq!(e["relationshipDid"], w.relationship);
+    assert_eq!(e["vwcDigestMultibase"], accepted["vwcDigestMultibase"]);
+    assert!(e["acceptedAt"].as_str().is_some());
+    for part in ["session", "outcome"] {
+        assert_eq!(
+            serde_json::to_string(&e["evidence"][part]).unwrap(),
+            serde_json::to_string(&accepted["evidence"][part]).unwrap(),
+            "evidence.{part} is returned exactly as stored"
+        );
+    }
+    assert_eq!(listed["truncated"], false);
+    assert!(listed.get("cursor").is_none(), "{listed:#}");
+}
+
+/// Both filters apply, and a filter that matches nothing is an empty page.
+#[tokio::test]
+async fn list_applies_its_filters() {
+    let w = World::new(true).await;
+    w.witnessed().await;
+    let count = |v: Value| v["witnessings"].as_array().unwrap().len();
+
+    let rel = ok(&w
+        .list_as(&w.auth, json!({ "relationshipDid": w.relationship }))
+        .await);
+    assert_eq!(count(rel), 1);
+    let by_witness = ok(&w
+        .list_as(&w.auth, json!({ "witness": w.witness.did() }))
+        .await);
+    assert_eq!(count(by_witness), 1);
+    let other_rel = ok(&w
+        .list_as(&w.auth, json!({ "relationshipDid": w.counterparty }))
+        .await);
+    assert_eq!(count(other_rel), 0);
+    let other_witness = ok(&w
+        .list_as(&w.auth, json!({ "witness": Key::new().did }))
+        .await);
+    assert_eq!(count(other_witness), 0);
+}
+
+/// A DID this agent does not hold, and one held where the caller cannot act, answer the same
+/// empty page — never a refusal — so the listing says nothing about DIDs the caller cannot see.
+#[tokio::test]
+async fn list_answers_unreachable_and_unknown_alike() {
+    let w = World::new(true).await;
+    w.witnessed().await;
+
+    let elsewhere = claims(Role::Admin, OTHER);
+    let unreachable = w
+        .list_as(&elsewhere, json!({ "relationshipDid": w.relationship }))
+        .await;
+    let unknown = w
+        .list_as(&w.auth, json!({ "relationshipDid": Key::new().did }))
+        .await;
+    let everything_elsewhere = w.list_as(&elsewhere, json!({})).await;
+    for out in [&unreachable, &unknown, &everything_elsewhere] {
+        assert_eq!(
+            ok(out),
+            json!({ "witnessings": [], "truncated": false }),
+            "{:#}",
+            body(out)
+        );
+    }
+}
+
+/// Oldest first, `pageSize` honoured, a cursor that continues without repeating, and one it
+/// cannot honour is `cursorInvalid`.
+#[tokio::test]
+async fn list_pages_oldest_first_with_an_opaque_cursor() {
+    let w = World::new(true).await;
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(w.witnessed().await["credentialId"].clone());
+    }
+
+    let first = ok(&w.list_as(&w.auth, json!({ "pageSize": 2 })).await);
+    assert_eq!(first["truncated"], true, "{first:#}");
+    let cursor = first["cursor"]
+        .as_str()
+        .expect("a cursor to continue")
+        .to_string();
+    let second = ok(&w
+        .list_as(&w.auth, json!({ "pageSize": 2, "cursor": cursor }))
+        .await);
+    assert_eq!(second["truncated"], false, "{second:#}");
+    assert!(second.get("cursor").is_none());
+
+    let seen: Vec<Value> = first["witnessings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(second["witnessings"].as_array().unwrap())
+        .map(|e| e["credentialId"].clone())
+        .collect();
+    assert_eq!(seen.len(), 3, "every stored VWC once: {seen:?}");
+    let mut sorted = seen.clone();
+    sorted.sort_by_key(|v| v.to_string());
+    let mut expected = ids.clone();
+    expected.sort_by_key(|v| v.to_string());
+    assert_eq!(sorted, expected);
+    let at: Vec<String> = first["witnessings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(second["witnessings"].as_array().unwrap())
+        .map(|e| e["acceptedAt"].as_str().unwrap().to_string())
+        .collect();
+    let mut ordered = at.clone();
+    ordered.sort();
+    assert_eq!(at, ordered, "oldest first");
+
+    for bad in ["not-a-cursor", "w1.!!!", "w1.Zm9v"] {
+        let out = w.list_as(&w.auth, json!({ "cursor": bad })).await;
+        assert_eq!(code(&out), "vta/witness/list:cursorInvalid", "{bad}");
+    }
+}
+
+/// Only active vault entries are listed: an archived VWC is not.
+#[tokio::test]
+async fn list_omits_an_archived_witness_credential() {
+    let w = World::new(true).await;
+    let accepted = w.witnessed().await;
+    let id = accepted["credentialId"].as_str().unwrap();
+    let mut stored = crate::vault::storage::get(&w.state.vault_ks, id)
+        .await
+        .unwrap()
+        .unwrap();
+    stored.lifecycle = vti_common::vault::VaultStatus::Archived;
+    crate::vault::storage::put(&w.state.vault_ks, &stored)
+        .await
+        .unwrap();
+    let listed = ok(&w.list_as(&w.auth, json!({})).await);
+    assert_eq!(listed["witnessings"], json!([]));
+}
+
+/// Gated like the family: `sign` alone is not `witness-request`.
+#[tokio::test]
+async fn list_needs_witness_request_not_sign() {
+    let w = World::new(true).await;
+    let out = w.list_as(&claims(Role::Application, CTX), json!({})).await;
+    assert_eq!(code(&out), "permissionDenied");
+}
+
 // ── open's other refusals ───────────────────────────────────────────────
 
 #[tokio::test]

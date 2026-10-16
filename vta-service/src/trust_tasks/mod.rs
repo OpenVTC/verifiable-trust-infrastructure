@@ -2637,6 +2637,8 @@ dispatch_table! {
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_WITNESS_ACCEPT_0_2 => witness::handle_accept
         [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_WITNESS_LIST_0_1 => witness::handle_list
+        [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_PUT_0_1 => memory::handle_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_LIST_0_1 => memory::handle_list

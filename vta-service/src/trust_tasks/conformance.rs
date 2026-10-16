@@ -2434,6 +2434,25 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 })
             ),
         ),
+        (
+            uris::TASK_VTA_WITNESS_LIST_0_1,
+            checked!(
+                specs::vta::witness::list::v0_1::Payload,
+                specs::vta::witness::list::v0_1::Response,
+                json!({ "relationshipDid": SUBJECT, "pageSize": 20 }),
+                json!({
+                    "witnessings": [{
+                        "credentialId": "vwc-1", "witness": WITNESS_DID,
+                        "relationshipDid": SUBJECT,
+                        "vwcDigestMultibase": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                        "acceptedAt": TS,
+                        "evidence": { "session": witness_session_doc(), "outcome": witness_answer() },
+                    }],
+                    "truncated": true,
+                    "cursor": "w1.opaque",
+                })
+            ),
+        ),
         // ─── vta/memory ──────────────────────────────────────────
         (
             uris::TASK_VTA_MEMORY_PUT_0_1,

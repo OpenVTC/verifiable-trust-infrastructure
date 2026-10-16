@@ -14,6 +14,10 @@
 //! 3. [`VtaClient::witness_accept`] — hand back the witness's submit `#response`; the stored
 //!    VWC's handle and its evidence.
 //!
+//! [`VtaClient::witness_list`] (`vta/witness/list/0.1`) reads back every stored VWC with its
+//! evidence exactly as stored — how a client that lost `accept`'s answer, or a second device,
+//! rebuilds its record of a witnessing.
+//!
 //! A refusal from the witness ends the session at the caller and is not handed back; open a new
 //! session to try again. Every step is safe to repeat (`retry_safety`: `RetrySafe`).
 //!
@@ -63,6 +67,17 @@ impl VtaClient {
         req: &witness::present::v0_2::Payload,
     ) -> Result<witness::present::v0_2::Response, VtaError> {
         self.witness_call(trust_tasks::TASK_VTA_WITNESS_PRESENT_0_2, req)
+            .await
+    }
+
+    /// `vta/witness/list/0.1` — the stored VWCs the caller may read, each with its evidence,
+    /// oldest first. Filter by `relationshipDid` when one relationship's are wanted. A page with
+    /// `truncated: true` is not the whole listing: pass its `cursor` back for the next.
+    pub async fn witness_list(
+        &self,
+        req: &witness::list::v0_1::Payload,
+    ) -> Result<witness::list::v0_1::Response, VtaError> {
+        self.witness_call(trust_tasks::TASK_VTA_WITNESS_LIST_0_1, req)
             .await
     }
 
