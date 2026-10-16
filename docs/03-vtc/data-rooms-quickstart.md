@@ -588,10 +588,22 @@ cnm rooms members add "$CROOM" --member "$ALICE" --action read --action write \
 cnm rooms members list "$CROOM"
 ```
 
-Alice then lists her offers and accepts with a KeyPackage her VTA minted against the
-offer's invitation (`vtc/rooms/offers/{list,accept}/0.1`, signed as `$ALICE`). No client
-signs those as her persona yet — see *Not yet* in [Rooms the community
-owns](community-rooms.md#the-members-half--vtcroomsoffers).
+Alice then lists her offers and accepts one. Her VTA signs each request as `$ALICE`
+(`rooms/keys/act` 0.3) and `pnm` carries it to the VTC (`vtc/rooms/offers/{list,accept}/0.1`):
+
+```bash
+export PNM_HOME=/tmp/vdr/pnm-alice
+pnm rooms offers list   --vtc http://localhost:8200/v1 --vtc-did "$VTC" --member "$ALICE"
+pnm rooms offers accept --vtc http://localhost:8200/v1 --vtc-did "$VTC" --member "$ALICE" \
+    --room "$CROOM"
+```
+
+`accept` stores the offer's membership and authority credentials in VTA A's vault, has
+VTA A mint the KeyPackage against the offer's invitation on a sealed room, accepts, and
+joins from the Welcome. If the answer is lost, it prints the KeyPackage it carried: run
+`accept` again with `--key-package <file>`, and the community answers the identical
+request with the same Welcome. Both VTAs need to be built from a `main` that has
+`rooms/owner/group/add` 0.2 and `rooms/keys/act` 0.3 (#2146, #2148).
 
 ## What does not work yet
 
@@ -599,7 +611,6 @@ Found in this run; each is being fixed.
 
 - **Storage configs need the console too** — or an approver device and a
   signer of your own (§10.4).
-- **A member cannot yet accept a community room's offer from a CLI** (§12): no client
-  signs `vtc/rooms/offers/*` as the member's persona.
+- **`cnm` has no `rooms offers`** (§12): a member accepts with `pnm`.
 - **`private` rooms are not served**, and so neither is their commit relay —
   use `attributed`.
