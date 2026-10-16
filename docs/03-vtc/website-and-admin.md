@@ -980,6 +980,24 @@ WebAuthn ceremony, the wallet's header-less SIOP exchange, and cookie
 plumbing. Anything a member *does* in the portal beyond signing in
 belongs on the Trust Task surface, signed by the member's own DID.
 
+**Data rooms** (`/members/#/rooms`, `#/rooms/<roomId>`). A member's
+rooms open through their wallet extension, never through the portal's
+server: the pages call `window.vtaWallet.rooms`, and the wallet acts in
+the room as the member's own identity through their VTA, so this page
+holds no key and the daemon adds no route. The wallet answers only the
+portal this community's DID document names (`SignInPortal`), shows the
+page only the rooms the member shared with it in the wallet's own
+window, and confirms every note and file before it is written. A
+`private` room is never shared with the portal, because the portal is
+the host's own page. The pages show the room's tier, the member's and
+the room's storage against their limits, the records (each sealed one
+opened through the wallet for its title), a note as plain text, a
+file's download (decrypted in the wallet and checked against what its
+author signed before the page receives it), and adding a note or a
+file. Running a room as its owner, curating and direct-to-storage
+transfer from the browser come later
+([`data-rooms-files.md`](../05-design-notes/data-rooms-files.md) §8.5).
+
 **Routing.** The mount is fixed at `/members` and takes precedence
 over an operator website's own `/members` path. In subdomain mode it
 is served on the **API's** host, since its calls go to `/v1/member/*`

@@ -1262,6 +1262,13 @@ new flow, update both this section and the relevant `docs/*.md`.
   admin role read now) or the portal's, never the other. Never let a
   member-audience request reach the console minter, and never read an
   unreadable audience as `admin`.
+- **Data rooms in the portal** (`src/members/Rooms.tsx`, `wallet-rooms.ts`):
+  the pages talk only to the member's wallet (`window.vtaWallet.rooms`, the
+  extension's P7b channel), which acts as the member's persona through their
+  VTA. Never add a `/v1/member/*` route that carries room content, a
+  presentation or a key, and never import the extension's code: the wallet's
+  gates (the page is the `SignInPortal` origin, rooms the member shared, each
+  write confirmed) are the authorization (`data-rooms-files.md` §8.5).
 - **DID self-check**: `did_self_check` resolves the VTC's own DID (boot +
   5-minute lazy cache) and warns when the published document lacks
   `TrustTaskHTTPS` / `SignInPortal`; `GET /v1/member/sign-in/config` carries

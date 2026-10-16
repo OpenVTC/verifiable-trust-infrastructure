@@ -2,10 +2,12 @@
 // the member's home. What a member can *do* here grows from this page; for
 // now it is who you are, your membership, and how you sign in.
 
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { BadgeCheck, LogOut, Sparkles } from "lucide-react";
+import { BadgeCheck, Boxes, LogOut, Sparkles } from "lucide-react";
 
-import { MemberApiError, memberFetch, postMember, type MemberMe } from "./api";
+import { MemberApiError, memberFetch, postMember, vtcDid, type MemberMe } from "./api";
+import { RoomPage, RoomsPage } from "./Rooms";
 import { Passkeys } from "./Passkeys";
 import { forgetSessionKey } from "./oob";
 import { SignIn } from "./SignIn";
@@ -21,6 +23,34 @@ async function fetchMe(): Promise<MemberMe | null> {
     }
     throw e;
   }
+}
+
+/** The portal's page, from the location hash: `#/rooms`, `#/rooms/<roomId>`, else home. */
+export type Route = { page: "home" } | { page: "rooms" } | { page: "room"; roomId: string };
+
+export function routeOf(hash: string): Route {
+  const path = hash.replace(/^#/, "");
+  if (path === "/rooms") return { page: "rooms" };
+  const m = /^\/rooms\/(.+)$/.exec(path);
+  if (m) {
+    try {
+      const roomId = decodeURIComponent(m[1]!);
+      if (roomId.startsWith("did:")) return { page: "room", roomId };
+    } catch {
+      // A malformed address is the home page.
+    }
+  }
+  return { page: "home" };
+}
+
+function useRoute(): Route {
+  const [route, setRoute] = useState(() => routeOf(window.location.hash));
+  useEffect(() => {
+    const on = () => setRoute(routeOf(window.location.hash));
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
+  return route;
 }
 
 function shortDid(did: string): string {
@@ -80,9 +110,34 @@ export function Portal() {
       ) : !me.data ? (
         <SignIn communityName={communityName} />
       ) : (
-        <Home me={me.data} />
+        <SignedIn me={me.data} />
       )}
     </>
+  );
+}
+
+/** A signed-in member's pages. The room pages need the community's DID: the
+ *  member's wallet holds them to the portal that DID's document names. */
+function SignedIn({ me }: { me: MemberMe }) {
+  const route = useRoute();
+  const host = useQuery({
+    queryKey: ["community-did"],
+    queryFn: async () => me.community.did ?? (await vtcDid()),
+    staleTime: Infinity,
+    enabled: route.page !== "home",
+  });
+  if (route.page === "home") return <Home me={me} />;
+  if (!host.data) {
+    return (
+      <main className="home" id="main">
+        <p className="muted">{host.isError ? (host.error as Error).message : "Loading…"}</p>
+      </main>
+    );
+  }
+  return route.page === "rooms" ? (
+    <RoomsPage hostDid={host.data} />
+  ) : (
+    <RoomPage hostDid={host.data} roomId={route.roomId} />
   );
 }
 
@@ -135,6 +190,22 @@ function Home({ me }: { me: MemberMe }) {
 
         <Passkeys canManage={me.canManagePasskeys} />
 
+        <section className="card" aria-labelledby="rooms-card-heading">
+          <div className="card-head">
+            <Boxes size={18} aria-hidden="true" />
+            <h2 id="rooms-card-heading">Data rooms</h2>
+          </div>
+          <p className="muted">
+            Shared spaces for notes and files, encrypted for their members. They open through your wallet, which
+            shows you everything you add before it is added.
+          </p>
+          <p>
+            <a className="btn btn-primary" href="#/rooms">
+              Open your rooms
+            </a>
+          </p>
+        </section>
+
         <section className="card card-soon" aria-labelledby="soon-heading">
           <div className="card-head">
             <Sparkles size={18} aria-hidden="true" />
@@ -143,7 +214,6 @@ function Home({ me }: { me: MemberMe }) {
           <ul className="soon">
             <li>Your credentials and their status</li>
             <li>Repositories you can create, own and sign for</li>
-            <li>Data rooms you belong to</li>
             <li>Relationships and endorsements</li>
           </ul>
         </section>

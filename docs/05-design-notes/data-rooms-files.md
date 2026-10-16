@@ -1,6 +1,6 @@
 # Data rooms — files, blob stores, and working with a room from a VTC
 
-Status: **proposal.** Nothing here is built. It extends
+Status: **in progress** (§12 says which phases have landed). It extends
 [`data-rooms.md`](data-rooms.md) (the design) and
 [`../02-vta/data-rooms.md`](../02-vta/data-rooms.md) (the operator guide), and
 assumes the member portal on `feat/vtc-member-portal`.
@@ -228,6 +228,12 @@ This is stricter than "the browser holds the file key", and deliberately so.
   would become a permanent disclosure.
 - **With the key held in the extension**, the same compromise discloses what the
   member viewed while it lasted, and nothing after.
+
+The allow-list and consent above were refined when they were built (§8.5): a
+room's DID names no host, so the allow-list is the community's `SignInPortal`
+origin and the rooms are the ones the member shares with it; reads ride that
+share and every write is confirmed; and the page calls the wallet's own room
+methods rather than `rooms/keys/*` tasks, so no task result reaches it as is.
 
 ---
 
@@ -945,6 +951,154 @@ and `vtc/rooms/community/members/{add,remove,list}/0.1` for administrators;
 [`vta_link`]: ../../vtc-service/src/vta_link.rs
 [`data-rooms-joining.md`]: data-rooms-joining.md
 
+### 8.5 The portal through the wallet (P7b, P8): settled design
+
+§4.1 and §8.2 sketched this before `rooms/keys/act` existed and before the
+member portal had shipped. This section is what is built, and where it departs
+from the sketch it says why. It covers a **member's** use of rooms from the
+portal: listing, reading, adding notes and files. Running a room as its owner
+(§8.2 *Run a room*) is not in this cut (see *Deferred* below).
+
+Built in OpenVTC/vta-browser-plugin#330 (the file engine acting as the
+persona), #331 (the page channel) and, here, the portal's room pages.
+
+**Pages.** All inside the portal bundle (`admin-ui/src/members/`), behind the
+existing member session; nothing is added to the console.
+
+- **Rooms** (`/members/#/rooms`): the rooms the member has shared with this
+  portal (below), each with its tier, the member's standing (the two epochs,
+  read as the extension's manager reads them), and storage use against the
+  room's and the member's limits (`rooms/info`). A button to share more.
+- **A room** (`/members/#/rooms/<roomId>`): the record listing (`rooms/keys/browse`,
+  its verification verdict shown as a banner when adverse, never as a shorter
+  list), each row opened on demand (`rooms/keys/read`) for its title and file;
+  a record's note rendered as text and its file with **Download**; **Add a
+  note** and **Add a file**, each sized against the limits before anything is
+  sent.
+
+The member portal's routes are unchanged. Nothing about a room crosses the
+portal's own server: the page talks to the wallet, and the wallet to the
+member's VTA and to the room's host as any member's client does. The portal's
+session is still re-checked on every `/v1/member/*` request, and the room pages
+render only for an active member.
+
+**The page asks the wallet, through methods that are the wallet's, not
+through the generic relay.** `window.vtaWallet.rooms.{list, choose, info,
+browse, read, putNote, getFile, putFile, forget}`. `requestTask` and
+`signTrustTask` keep refusing the whole `rooms/` family
+(`page-task-policy.ts`): the relay returns the agent's reply to the page as it
+is — presentations, persona-signed documents, the agent's own refusal details —
+and lets the page pick the verb, including the owner verbs, `present`,
+`file-key` and `act`. A dedicated method fixes the verb, runs the whole flow in
+the extension and decides what crosses back. No method takes a key, a DID to
+act as, an endpoint, or a document to sign.
+
+**Which pages: the community's own portal, by its DID document.** Every call
+names `hostDid`, the community the page speaks for. The wallet resolves it
+(verified, through its contact methods, as the trigger-link sign-in does —
+`resolveCommunityDocument`), takes the first usable `SignInPortal` service, and
+refuses unless its origin equals the **browser-attested** origin of the calling
+page, compared exactly (scheme, host, port). The host requests go to that same
+document's `TrustTaskHTTPS` endpoint. So a page can name only the community
+whose portal it is, and nothing the page supplies decides where a request goes.
+
+**Which rooms: the ones the member shares, one by one.** A room's DID names no
+host, deliberately (the `room` template: a room may be registered with more
+than one), and `rooms/keys/list` returns room identifiers only. So nothing
+available to the wallet says "room R is hosted by this community", and a page
+handed the member's whole listing would learn every room they are in — on a
+`private` room, the one fact the tier withholds. Instead:
+
+- `rooms.choose({ hostDid })` opens an extension window that lists the rooms
+  the member's VTA holds. The member ticks the ones that belong to this
+  community. Each ticked room is then confirmed with the host, as the member
+  (`rooms/info` through `act`); a room the host does not hold is reported and
+  not shared. The page learns only the rooms shared.
+- A share is one **grant**: (page origin, `hostDid`, the active VTA, room).
+  It lasts 30 days, is listed and revocable in the extension's manager, and
+  `rooms.forget` lets the page drop one. `rooms.list` returns the live grants
+  and never prompts.
+- **A `private` room is never shared with a portal.** Its tier hides from the
+  host which member acts; the portal is the host's own page and knows who is
+  signed in, so using the room from it would tell the host exactly what the tier
+  withholds. The window says so and points to the extension's manager.
+- A page may pass `suggest: roomId` to pre-tick a room it links to. A room the
+  member does not hold is simply not in the window; the page cannot tell that
+  from a member who declined.
+
+**Reads ride the grant; every write is confirmed.** `info`, `browse`, `read`
+and `getFile` on a granted room run without a prompt — the member already
+said this portal may show them this room. `putNote` and `putFile` each open a
+confirmation in the extension window, naming the room, the member identity
+that will sign, and what will be written (the title, the file's name and
+size). There is no "remember" on it. A write is the member's signed statement
+to every other member, and a page that could add one silently could put words
+in their mouth for as long as it was compromised.
+
+**The member is the persona, never the wallet.** Every host-bound request is
+built unsigned and completed by the member's VTA **as the persona**
+(`rooms/keys/act`); a record body is signed as the persona and sealed by the
+VTA (`rooms/keys/seal/0.2`, `signAsPrincipal`); a proxied upload's chunks,
+commit and abort are signed by a single-use upload key minted in the offscreen
+document for that upload (`rooms/blobs/*/0.2`). The wallet's own DID reaches no
+host. The extension's file engine (§8.3, P7) predates `act` and still presents
+for the wallet's DID and signs record bodies with it, so it moves first, for
+the manager too — one engine, one identity.
+
+**Files stay in the offscreen document (§4.1, unchanged).** `file-key` is
+requested there and nowhere else, and the CI guard that bans the URI from every
+other bundle stands. The page sends the bytes it uploads and receives the bytes
+it downloads, and nothing else: an upload is streamed page → content script →
+background → offscreen; a download is held in the offscreen document until the
+whole file has hashed to its author's digest and only then streamed to the page.
+The page never holds a provisional byte, so a file that fails verification
+leaves nothing behind in it.
+
+**What never reaches the page.** Any key (file key, upload key, the wallet's or
+the persona's); a presentation; a persona-signed document; the VTA's or the
+host's reply as such, or a refusal's `details`; a room the member has not
+shared with this origin; a record body before its signature, location and (on
+`attributed`) author check; a file byte before its digest check.
+
+**Transfers from the browser are proxied, for now.** A direct transfer (§5.2)
+reaches the storage provider's origin, for which the extension holds no host
+permission and can ask for none outside a gesture on its own page, and a
+provider's CORS rules are not something a community configures for an
+extension origin. Browser uploads omit `directParts` and downloads ask
+`direct: false`; the CLI keeps direct mode. Lifting it means asking for the
+storage origin in the write confirmation, which needs the target before
+`begin` returns — a follow-up.
+
+**Threat model: a compromised portal page.** An XSS, a malicious dependency,
+or the VTC's operator serving hostile script all amount to the same attacker:
+code running with the portal's origin while the member is signed in.
+
+| It can | It cannot |
+|---|---|
+| read what the member shared with this portal, without a prompt, while the grant lasts (30 days, revocable) | read a room not shared, or learn which other rooms the member is in |
+| ask for writes; each is shown to the member, with the bytes' name and size, in a window the page does not draw | write without the member confirming that write |
+| show the member false text on its own pages | obtain a key, a presentation or a signed document to replay elsewhere |
+| | send a request to any host but the one whose `SignInPortal` it is |
+| | act as another member, or as the wallet's own DID |
+| | drive `present`, `act`, `file-key`, `seal`, `open` or any owner verb |
+
+A member who does not trust the portal uses the extension's manager, which runs
+the same engine and never involves a page. A different site is not on the
+allow-list at all, and a look-alike origin is a different origin.
+
+**Deferred.**
+
+- **Running a room from the portal** (§8.2 *Run a room*): creating, inviting,
+  removing, renewing. Each is an owner verb at the member's VTA
+  (`rooms/owner/*`), and each would be a confirmed write of its own kind. It
+  follows this cut, on the same channel.
+- **Curating** (pin, deprecate, retract): a write; same channel, later.
+- **Direct transfer from the browser** (above).
+- **Titles in the listing without opening each record.** `browse` returns
+  metadata, never bodies, so on a sealed room a title needs a `read`. The
+  portal opens the rows it shows; client-side search over a whole room waits
+  for a batch read.
+
 ---
 
 ## 9. What each party learns
@@ -1031,8 +1185,9 @@ on their own merit:
 | P4b | `vta-account` auth: a `CredentialProvider` over `external/credentials/issue`, per-room credential cache, presigned-URL path for `s3-static-presign`, and the console's External accounts pages. Needs E0–E3 of the external-accounts note. **Presigned path landed** (E3's model): `s3` configs through a VTA account, one presigned request per object operation over the VTC's messaging link (the config names the account by context and identifier), the account confirmed with the VTA at create and update; session-credential models wait on E1/E2 | M | P4, E0–E3 |
 | P5 | Host: `room_blobs`, upload/download tasks, `size.rs` bundle gate, limits at three scopes with reservations, usage counters, GC sweeper. In **both** `vtc-service` and `room-host` (one config, set from its command line) | L | P1, P3, P4 |
 | P6 | VTA `rooms/keys/file-key`; `pnm rooms file {put,get}` | M | P2 |
-| P7 | Extension: page allow-list + per-room consent, file crypto in the extension's own context with plaintext streamed over a port (§4.1); manager-pane files (§8.3) | M | P6 |
-| P8 | Member portal Rooms (§8.2), members first, owners after P0 | XL | P5, P7, member portal merged |
+| P7 | Extension: file crypto in the extension's own context with plaintext streamed over a port (§4.1); manager-pane files (§8.3). **Landed** (P7a, the manager only) | M | P6 |
+| P7b | Extension: the file engine acting as the persona (`act`, `seal/0.2`, `blobs/*/0.2`), then the page channel — `window.vtaWallet.rooms`, the `SignInPortal` allow-list, per-room grants, a confirmation per write (§8.5) | M | P7 |
+| P8 | Member portal Rooms (§8.2, §8.5), members first; owners follow on the same channel | XL | P5, P7b, member portal merged |
 | P9 | Console: room detail, Storage, Usage, Settings (§8.1); `room_usage_daily` history and CSV | L | P4, P5 |
 | P10 | Room storage reassignment and migration (§7.3) | M | P5 |
 | P11 | Walrus backend: upload relay, transactions signed by the VTA's `sui-signer` (E4), epoch extension in the sweeper | L | P3, P4, P5, E4 |
