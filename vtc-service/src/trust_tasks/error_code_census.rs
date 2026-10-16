@@ -98,6 +98,39 @@ fn witnesses() -> Vec<Witness> {
 
     #[allow(unused_mut)]
     let mut table = vec![
+        // Declared since trust-tasks-tf #789; minted here before that.
+        witness!(
+            s::members::update::v0_1::error_codes::CONSENT_GRANT_FORBIDDEN,
+            crate::routes::members::update::UPDATE_ERR_CONSENT_GRANT_FORBIDDEN,
+            "members_crud.rs",
+            "the_update_task_refuses_to_grant_registry_consent"
+        ),
+        // Declared since trust-tasks-tf #790; minted here before that. Driven by the
+        // hidden-vetting suite, which CI runs under `--features vetting-pcs`.
+        witness!(
+            s::join_requests::submit::v0_3::error_codes::CHALLENGE_NOT_ISSUED,
+            jr::JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_NOT_ISSUED,
+            "hidden_vetting_tasks.rs",
+            "a_refused_challenge_says_which_way"
+        ),
+        witness!(
+            s::join_requests::submit::v0_3::error_codes::CHALLENGE_ALREADY_USED,
+            jr::JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_ALREADY_USED,
+            "hidden_vetting_tasks.rs",
+            "a_refused_challenge_says_which_way"
+        ),
+        witness!(
+            s::join_requests::submit::v0_3::error_codes::CHALLENGE_EXPIRED,
+            jr::JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_EXPIRED,
+            "hidden_vetting_tasks.rs",
+            "a_refused_challenge_says_which_way"
+        ),
+        witness!(
+            s::join_requests::submit::v0_3::error_codes::CHALLENGE_MISMATCH,
+            jr::JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_MISMATCH,
+            "hidden_vetting_tasks.rs",
+            "a_refused_challenge_says_which_way"
+        ),
         witness!(
             s::rooms::community::create::v0_1::error_codes::VISIBILITY_NOT_PERMITTED,
             crate::rooms::community::codes::CREATE_VISIBILITY_NOT_PERMITTED,
@@ -1765,6 +1798,14 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // before anything else, so different bytes are `chunkMismatch` first;
         // the same bytes are the idempotent `stored: false`.
         s::website::upload::chunk::v0_1::error_codes::ALREADY_STORED,
+        // The four `challenge*` refusals of a supplement, declared by trust-tasks-tf #790
+        // after this service already emitted them (`vetting::challenge_refusal`, the same
+        // arm that answers a submission, whose four are witnessed). No test drives a
+        // hidden-vetting supplement to its challenge yet.
+        s::join_requests::supplement::v0_1::error_codes::CHALLENGE_NOT_ISSUED,
+        s::join_requests::supplement::v0_1::error_codes::CHALLENGE_ALREADY_USED,
+        s::join_requests::supplement::v0_1::error_codes::CHALLENGE_EXPIRED,
+        s::join_requests::supplement::v0_1::error_codes::CHALLENGE_MISMATCH,
         // BASELINE-END
     ]
 }
@@ -1777,63 +1818,21 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// the baseline past the ceiling — a newly bound task declaring codes
 /// nothing tests — requires raising this constant, which is the point:
 /// that always wants a human decision, never a silent pass.
-const UNWITNESSED_CEILING: usize = 9;
+const UNWITNESSED_CEILING: usize = 13;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.
 /// `(request Type URI, code)`.
 ///
-/// The `challenge*` codes say which way a hidden-vetting proof's challenge was
-/// refused (`crate::vetting::challenge_refusal`); `tests/it/hidden_vetting_tasks.rs`
-/// drives the service into each.
-///
-/// `consentGrantForbidden` is an administrator's `publishConsent: true` for a
-/// member who has not consented: registry consent is the member's to give, and
-/// an administrator may only withdraw it (`tests/it/members_crud.rs`).
+/// Every one that was here and is now declared by its specification has moved to a
+/// `witness!` row: the hidden-vetting `challenge*` codes (trust-tasks-tf #790) and
+/// `vtc/members/update:consentGrantForbidden` (#789).
 const CONSUMER_MINTED: &[(&str, &str)] = {
     use vta_sdk::protocols::join_requests as jr;
-    &[
-        (
-            super::MEMBER_UPDATE_TYPE,
-            crate::routes::members::update::UPDATE_ERR_CONSENT_GRANT_FORBIDDEN,
-        ),
-        (
-            jr::JOIN_REQUEST_SUBMIT_TYPE,
-            jr::JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN,
-        ),
-        (
-            jr::JOIN_REQUEST_SUBMIT_TYPE,
-            jr::JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_NOT_ISSUED,
-        ),
-        (
-            jr::JOIN_REQUEST_SUBMIT_TYPE,
-            jr::JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_ALREADY_USED,
-        ),
-        (
-            jr::JOIN_REQUEST_SUBMIT_TYPE,
-            jr::JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_EXPIRED,
-        ),
-        (
-            jr::JOIN_REQUEST_SUBMIT_TYPE,
-            jr::JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_MISMATCH,
-        ),
-        (
-            jr::JOIN_REQUEST_SUPPLEMENT_TYPE,
-            jr::JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_NOT_ISSUED,
-        ),
-        (
-            jr::JOIN_REQUEST_SUPPLEMENT_TYPE,
-            jr::JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_ALREADY_USED,
-        ),
-        (
-            jr::JOIN_REQUEST_SUPPLEMENT_TYPE,
-            jr::JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_EXPIRED,
-        ),
-        (
-            jr::JOIN_REQUEST_SUPPLEMENT_TYPE,
-            jr::JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_MISMATCH,
-        ),
-    ]
+    &[(
+        jr::JOIN_REQUEST_SUBMIT_TYPE,
+        jr::JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN,
+    )]
 };
 
 /// Every declared code in scope, keyed by code, with the URI declaring it.

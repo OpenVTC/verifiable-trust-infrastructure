@@ -2411,3 +2411,25 @@ async fn room_act_falls_back_to_0_1() {
     let resp = c.room_act(&doc).await.expect("answered at 0.1");
     assert_eq!(resp.principal.as_str(), member);
 }
+
+/// `rooms/owner/group/add/0.2` first; a VTA that does not serve it is asked at 0.1, the
+/// same request, and its answer read as 0.2's.
+#[tokio::test]
+async fn room_group_add_falls_back_to_0_1() {
+    let server = MockServer::start().await;
+    let room = "did:webvh:example.com:rooms:northwind";
+    let member = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+    let _m = mount_only_0_1(
+        &server,
+        "https://trusttasks.org/spec/rooms/owner/group/add/0.2",
+        "https://trusttasks.org/spec/rooms/owner/group/add/0.1",
+        json!({ "roomId": room, "member": member, "epoch": 2, "welcome": "AAEAAgADAAQ" }),
+    )
+    .await;
+    let c = client(&server).await;
+    let resp = c
+        .room_group_add(room, "did:key:zHost", member, "AAEAAgADAAQ", None)
+        .await
+        .expect("answered at 0.1");
+    assert_eq!(resp.epoch, 2);
+}

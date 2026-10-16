@@ -297,53 +297,56 @@ pub const JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN: &str =
 // explanation is not, and only one of them (`challengeMismatch`) points at a
 // client bug rather than at timing.
 //
-// Consumer-minted under the slug of the request being processed (SPEC §8.5):
-// neither `vtc/join-requests/submit` nor `vtc/join-requests/supplement`
-// declares a code for a challenge yet. A client that does not recognise one
-// falls back to `taskFailed` by the same rule, and `details.reason` carries the
-// generic marker ([`super::trust_task_reject_reasons`]) so it still recovers a
-// typed error. The submission's challenge is spent whichever code is sent.
+// Declared by `vtc/join-requests/submit/0.3` and `vtc/join-requests/supplement/0.1`
+// since trust-tasks-tf #790, so each constant is the generated code, not a literal.
+// `details.reason` still carries the generic marker
+// ([`super::trust_task_reject_reasons`]) for a client that does not know the code.
+// The submission's challenge is spent whichever code is sent.
 
 /// `vtc/join-requests/submit:challengeNotIssued` — the community holds no
 /// challenge for this applicant: none was asked for, or the one asked for
 /// expired and has since been cleared. `details.reason` is `not_found`.
 pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_NOT_ISSUED: &str =
-    "vtc/join-requests/submit:challengeNotIssued";
+    trust_tasks_rs::specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_NOT_ISSUED.code;
 
 /// `vtc/join-requests/submit:challengeAlreadyUsed` — the challenge was spent
 /// by an earlier submission; each is accepted once. `details.reason` is
 /// `gone`.
 pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_ALREADY_USED: &str =
-    "vtc/join-requests/submit:challengeAlreadyUsed";
+    trust_tasks_rs::specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_ALREADY_USED
+        .code;
 
 /// `vtc/join-requests/submit:challengeExpired` — the challenge's window
 /// (`expiresAt` on the `pcs-challenge` response) had passed. `details` carries
 /// `expiredAt` (RFC 3339); `details.reason` is `gone`.
 pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_EXPIRED: &str =
-    "vtc/join-requests/submit:challengeExpired";
+    trust_tasks_rs::specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_EXPIRED.code;
 
 /// `vtc/join-requests/submit:challengeMismatch` — the proof is bound to a
 /// challenge other than the one the community holds for this applicant:
 /// usually an older one, replaced when a newer challenge was asked for.
 /// `details.reason` is `conflict`.
 pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_MISMATCH: &str =
-    "vtc/join-requests/submit:challengeMismatch";
+    trust_tasks_rs::specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_MISMATCH.code;
 
 /// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_NOT_ISSUED`], answering a supplement.
 pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_NOT_ISSUED: &str =
-    "vtc/join-requests/supplement:challengeNotIssued";
+    trust_tasks_rs::specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_NOT_ISSUED
+        .code;
 
 /// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_ALREADY_USED`], answering a supplement.
 pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_ALREADY_USED: &str =
-    "vtc/join-requests/supplement:challengeAlreadyUsed";
+    trust_tasks_rs::specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_ALREADY_USED.code;
 
 /// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_EXPIRED`], answering a supplement.
 pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_EXPIRED: &str =
-    "vtc/join-requests/supplement:challengeExpired";
+    trust_tasks_rs::specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_EXPIRED
+        .code;
 
 /// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_MISMATCH`], answering a supplement.
 pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_MISMATCH: &str =
-    "vtc/join-requests/supplement:challengeMismatch";
+    trust_tasks_rs::specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_MISMATCH
+        .code;
 
 /// `vtc/join-requests/submit:attributesMissing` — a required requested
 /// attribute was not answered. `details.types` names them.

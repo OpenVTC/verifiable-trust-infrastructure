@@ -16,8 +16,8 @@ use serde_json::{Value, json};
 use vta_sdk::protocols::join_requests as jr;
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
 
-/// Which task the refused challenge arrived on — the namespace its code is minted under
-/// (SPEC §8.5: a consumer-minted code takes the slug of the request being processed).
+/// Which task the refused challenge arrived on — the namespace its code is under. Each
+/// task's specification declares the four codes (trust-tasks-tf #790).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChallengeTask {
     /// `vtc/join-requests/submit`.
