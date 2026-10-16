@@ -2478,3 +2478,58 @@ async fn room_act_for_an_offer_does_not_fall_back() {
     let err = c.room_act(&doc).await.expect_err("no 0.3");
     assert!(matches!(err, VtaError::UnsupportedTaskType { .. }), "{err}");
 }
+
+// ── rooms/keys/list 0.2, falling back to 0.1 ─────────────────────────
+
+/// `rooms/keys/list/0.2` first; a VTA that does not serve it is asked at 0.1, whose entries
+/// read as 0.2's with each member taken from the `ext` it puts beside them.
+#[tokio::test]
+async fn room_list_falls_back_to_0_1_and_reads_its_members() {
+    let server = MockServer::start().await;
+    let _m = mount_only_0_1(
+        &server,
+        "https://trusttasks.org/spec/rooms/keys/list/0.2",
+        "https://trusttasks.org/spec/rooms/keys/list/0.1",
+        json!({
+            "rooms": [{
+                "roomId": "did:webvh:example.com:rooms:northwind",
+                "epoch": 4,
+                "earliestReadableEpoch": 1
+            }],
+            "ext": { "org.openvtc.rooms": { "held": [{ "member": "did:key:zAlice" }] } }
+        }),
+    )
+    .await;
+    let c = client(&server).await;
+    let resp = c.room_list(true).await.expect("answered at 0.1");
+    assert_eq!(resp.rooms.len(), 1);
+    assert_eq!(resp.rooms[0].member.as_str(), "did:key:zAlice");
+    assert!(resp.rooms[0].personal.is_none());
+}
+
+/// `include_personal` is the request's `includePersonal`, and only when asked.
+#[tokio::test]
+async fn room_list_asks_for_labels_only_when_told() {
+    let server = MockServer::start().await;
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let seen = asked.clone();
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(task_type("https://trusttasks.org/spec/rooms/keys/list/0.2"))
+        .and(move |req: &wiremock::Request| {
+            if let Ok(v) = serde_json::from_slice::<Value>(&req.body) {
+                seen.lock().unwrap().push(v["payload"].clone());
+            }
+            true
+        })
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(signed_response(json!({ "rooms": [] })).await),
+        )
+        .mount(&server)
+        .await;
+    let c = client(&server).await;
+    c.room_list(false).await.unwrap();
+    c.room_list(true).await.unwrap();
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked, vec![json!({}), json!({ "includePersonal": true })]);
+}

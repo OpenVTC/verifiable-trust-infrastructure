@@ -3123,6 +3123,51 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_LIST_0_2,
+            checked!(
+                specs::rooms::keys::list::v0_2::Payload,
+                specs::rooms::keys::list::v0_2::Response,
+                json!({ "includePersonal": true }),
+                json!({
+                    "rooms": [
+                        {
+                            "roomId": "did:webvh:example.com:rooms:northwind",
+                            "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                            "epoch": 4,
+                            "earliestReadableEpoch": 1,
+                            "personal": {
+                                "label": "Northwind tender",
+                                "tags": ["work", "bids"],
+                                "updatedAt": "2026-01-01T00:00:00Z"
+                            }
+                        }
+                    ]
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_LABEL_0_1,
+            checked!(
+                specs::rooms::keys::label::v0_1::Payload,
+                specs::rooms::keys::label::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "label": "Northwind tender",
+                    "removeNotes": true
+                }),
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "personal": {
+                        "label": "Northwind tender",
+                        "updatedAt": "2026-01-01T00:00:00Z"
+                    },
+                    "changed": true
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_OWNER_INVITE_0_1,
             checked!(
                 specs::rooms::owner::invite::v0_1::Payload,

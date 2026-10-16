@@ -221,6 +221,10 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // single room operation discloses. Named here so that is a decision rather
     // than a default.
     ("rooms/keys/list", Risk::ReadOnly),
+    // Writes only the member's own private name for a room, in their VTA, reversibly. The
+    // VTA refuses it from a delegate — an agent is never the member — so a host approving
+    // `vta_call` gains nothing here; named so the class is a decision.
+    ("rooms/keys/label", Risk::Mutating),
     // Issuance, signed as the room. `invite` and `issue-membership` decide who
     // may enter and remain; `issue-authority` decides what they may do, and an
     // `admin` grant is the authority to mint epochs and transfer the room. The

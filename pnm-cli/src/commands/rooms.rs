@@ -275,6 +275,30 @@ pub(crate) async fn run(
                 return custody::cmd_rooms_keys_backfill(client, &room_id, &host_did).await;
             }
             RoomKeysCommands::List => return custody::cmd_rooms_keys_list(client).await,
+            RoomKeysCommands::Label {
+                room_id,
+                member,
+                label,
+                description,
+                notes,
+                tags,
+                remove_label,
+                remove_description,
+                remove_notes,
+                remove_tags,
+            } => {
+                let edit = vta_sdk::client::RoomLabelEdit {
+                    label,
+                    description,
+                    notes,
+                    tags: (!tags.is_empty()).then_some(tags),
+                    remove_label,
+                    remove_description,
+                    remove_notes,
+                    remove_tags,
+                };
+                return custody::cmd_rooms_keys_label(client, &room_id, &member, &edit).await;
+            }
             command @ RoomKeysCommands::Commit { .. } => RoomCommands::Keys { command },
         },
         other => other,

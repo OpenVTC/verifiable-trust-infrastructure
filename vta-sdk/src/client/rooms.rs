@@ -754,6 +754,197 @@ impl VtaClient {
             .await?;
         parse_response(value, "rooms/keys/list")
     }
+
+    /// `rooms/keys/list/0.2` — the rooms this VTA holds a group for, one entry per room
+    /// **and member** (each names its `member`), for the members this caller may act as;
+    /// with `include_personal`, each entry carries the member's own label
+    /// ([`VtaClient::room_label`]) in `personal`.
+    ///
+    /// Ask with `include_personal: false` whenever the list will be passed on — to a web
+    /// page, a community, a room's host. A label is the member's alone, and a client that
+    /// never asked for it cannot leak it (`rooms/keys/list/0.2` consumer items 2–3).
+    ///
+    /// A VTA that does not serve 0.2 (`unsupportedType` / `unsupportedVersion`) is asked
+    /// at 0.1, whose answer is read as 0.2's: each entry's member from the
+    /// `ext["org.openvtc.rooms"].held` that VTA puts beside it, and no labels (0.1 has
+    /// none). A 0.1 answer that names no member for an entry cannot be read as 0.2, and
+    /// returns [`VtaError::UnsupportedTaskType`]; call [`VtaClient::room_keys_list`] then.
+    pub async fn room_list(
+        &self,
+        include_personal: bool,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::list::v0_2::Response, VtaError> {
+        use trust_tasks_rs::specs::rooms::keys::list::v0_2::Payload;
+        let mut payload = json!({});
+        if include_personal {
+            payload["includePersonal"] = Value::Bool(true);
+        }
+        let payload: Payload = serde_json::from_value(payload)
+            .map_err(|e| VtaError::Validation(format!("rooms/keys/list request: {e}")))?;
+        match self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_LIST_0_2,
+                serde_json::to_value(payload)?,
+                ROOM_TT_TIMEOUT,
+            )
+            .await
+        {
+            Ok(value) => parse_response(value, "rooms/keys/list"),
+            Err(VtaError::UnsupportedTaskType { .. }) => {
+                let value = self
+                    .dispatch_trust_task(
+                        trust_tasks::TASK_ROOMS_KEYS_LIST_0_1,
+                        json!({}),
+                        ROOM_TT_TIMEOUT,
+                    )
+                    .await?;
+                list_0_1_as_0_2(value)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// `rooms/keys/label/0.1` — set, change or remove the member's own private name,
+    /// description, notes and tags for one room they hold, kept by this VTA and sent
+    /// nowhere else.
+    ///
+    /// `member` is the DID [`VtaClient::room_list`] names beside the room — never
+    /// inferred, because a person holding one room as two personas keeps a label for each.
+    /// Each detail [`RoomLabelEdit`] gives replaces the stored one, each `remove_*` removes
+    /// one, and the rest are unchanged; removing the last one removes the label. Idempotent:
+    /// a repeat answers `changed: false`, so a lost reply can simply be asked again.
+    pub async fn room_label(
+        &self,
+        room_id: &str,
+        member: &str,
+        edit: &RoomLabelEdit,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::label::v0_1::Response, VtaError> {
+        let payload = room_label_payload(room_id, member, edit)?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1,
+                serde_json::to_value(payload)?,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/label")
+    }
+}
+
+/// What [`VtaClient::room_label`] changes in a member's personal label for a room.
+///
+/// A detail left `None` (and its `remove_*` false) is unchanged. Giving a detail and
+/// removing it in one edit is refused, as is an edit that changes nothing. The label is
+/// plain text the member writes for themselves: never put a secret in it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RoomLabelEdit {
+    /// The member's name for the room: one line, up to 128 characters.
+    pub label: Option<String>,
+    /// Up to 1000 characters; line breaks allowed.
+    pub description: Option<String>,
+    /// Up to 4000 characters; line breaks allowed.
+    pub notes: Option<String>,
+    /// One to sixteen tags of up to 32 characters, replacing the whole set.
+    pub tags: Option<Vec<String>>,
+    pub remove_label: bool,
+    pub remove_description: bool,
+    pub remove_notes: bool,
+    pub remove_tags: bool,
+}
+
+/// The `rooms/keys/label/0.1` request for `edit`, checked against the generated type — so a
+/// detail too long, a line break in a name or a tag set out of bounds is refused here, with
+/// the schema's reason, rather than at the VTA.
+pub fn room_label_payload(
+    room_id: &str,
+    member: &str,
+    edit: &RoomLabelEdit,
+) -> Result<trust_tasks_rs::specs::rooms::keys::label::v0_1::Payload, VtaError> {
+    use trust_tasks_rs::specs::rooms::keys::label::v0_1::Payload;
+    let mut payload = json!({ "roomId": room_id, "member": member });
+    let pairs = [
+        (
+            "label",
+            "removeLabel",
+            edit.label.clone().map(Value::String),
+            edit.remove_label,
+        ),
+        (
+            "description",
+            "removeDescription",
+            edit.description.clone().map(Value::String),
+            edit.remove_description,
+        ),
+        (
+            "notes",
+            "removeNotes",
+            edit.notes.clone().map(Value::String),
+            edit.remove_notes,
+        ),
+        (
+            "tags",
+            "removeTags",
+            edit.tags.clone().map(|t| json!(t)),
+            edit.remove_tags,
+        ),
+    ];
+    let mut changes = 0;
+    for (name, remove, given, removing) in pairs {
+        match (given, removing) {
+            (Some(_), true) => {
+                return Err(VtaError::Validation(format!(
+                    "rooms/keys/label: `{name}` is both given and removed"
+                )));
+            }
+            (Some(v), false) => payload[name] = v,
+            (None, true) => payload[remove] = Value::Bool(true),
+            (None, false) => continue,
+        }
+        changes += 1;
+    }
+    if changes == 0 {
+        return Err(VtaError::Validation(
+            "rooms/keys/label: the edit changes nothing — give a detail or remove one".into(),
+        ));
+    }
+    let payload: Payload = serde_json::from_value(payload)
+        .map_err(|e| VtaError::Validation(format!("rooms/keys/label request: {e}")))?;
+    // The rules typify cannot carry (`minProperties`, `uniqueItems`, `const: true`).
+    if let Some(schema) =
+        trust_tasks_rs::schema_index::schema_for(trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1)
+    {
+        trust_tasks_rs::validate::against_schema(schema, &serde_json::to_value(&payload)?)
+            .map_err(|e| VtaError::Validation(format!("rooms/keys/label request: {e}")))?;
+    }
+    Ok(payload)
+}
+
+/// A `rooms/keys/list/0.1` answer read as 0.2's: each entry's member from the
+/// `ext["org.openvtc.rooms"].held` beside it (index for index), and no labels.
+fn list_0_1_as_0_2(
+    mut value: Value,
+) -> Result<trust_tasks_rs::specs::rooms::keys::list::v0_2::Response, VtaError> {
+    let held = value
+        .pointer("/ext/org.openvtc.rooms/held")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let unreadable = || VtaError::UnsupportedTaskType {
+        type_uri: trust_tasks::TASK_ROOMS_KEYS_LIST_0_2.to_string(),
+        served_versions: vec!["0.1".to_string()],
+    };
+    let rooms = value
+        .get_mut("rooms")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| VtaError::Protocol("rooms/keys/list response has no `rooms`".into()))?;
+    for (i, room) in rooms.iter_mut().enumerate() {
+        let member = held
+            .get(i)
+            .and_then(|h| h.get("member"))
+            .cloned()
+            .ok_or_else(unreadable)?;
+        room["member"] = member;
+    }
+    parse_response(value, "rooms/keys/list")
 }
 
 /// One room action a VAC confers — the generated `rooms/owner/issue-authority/0.2`
@@ -1092,5 +1283,113 @@ mod act_tests {
                 "did:webvh:example.com:people:alice"
             );
         }
+    }
+}
+
+/// `rooms/keys/label` requests and `rooms/keys/list` 0.1 answers read as 0.2.
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    #[test]
+    fn a_label_edit_becomes_a_conforming_patch() {
+        let edit = RoomLabelEdit {
+            label: Some("Northwind tender".into()),
+            tags: Some(vec!["work".into(), "bids".into()]),
+            remove_description: true,
+            ..Default::default()
+        };
+        let payload = room_label_payload(
+            "did:webvh:example.com:rooms:northwind",
+            "did:example:alice-work",
+            &edit,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(payload).unwrap(),
+            json!({
+                "roomId": "did:webvh:example.com:rooms:northwind",
+                "member": "did:example:alice-work",
+                "label": "Northwind tender",
+                "tags": ["work", "bids"],
+                "removeDescription": true,
+            })
+        );
+    }
+
+    #[test]
+    fn a_label_edit_that_changes_nothing_or_breaks_the_schema_is_refused() {
+        let room = "did:webvh:example.com:rooms:northwind";
+        let member = "did:example:alice-work";
+        for edit in [
+            RoomLabelEdit::default(),
+            RoomLabelEdit {
+                label: Some("x".into()),
+                remove_label: true,
+                ..Default::default()
+            },
+            RoomLabelEdit {
+                label: Some("two\nlines".into()),
+                ..Default::default()
+            },
+            RoomLabelEdit {
+                label: Some("x".repeat(129)),
+                ..Default::default()
+            },
+            RoomLabelEdit {
+                tags: Some(vec![]),
+                ..Default::default()
+            },
+            RoomLabelEdit {
+                tags: Some(vec!["same".into(), "same".into()]),
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                matches!(
+                    room_label_payload(room, member, &edit),
+                    Err(VtaError::Validation(_))
+                ),
+                "{edit:?}"
+            );
+        }
+        assert!(
+            room_label_payload(
+                room,
+                "not-a-did",
+                &RoomLabelEdit {
+                    remove_notes: true,
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_0_1_list_reads_as_0_2_with_its_members() {
+        let read = list_0_1_as_0_2(json!({
+            "rooms": [
+                { "roomId": "did:web:a", "epoch": 3, "earliestReadableEpoch": 1 },
+                { "roomId": "did:web:a", "epoch": 3, "earliestReadableEpoch": 3 },
+            ],
+            "ext": { "org.openvtc.rooms": { "held": [
+                { "member": "did:key:zAlice", "context": "alice" },
+                { "member": "did:key:zOrg" },
+            ] } },
+        }))
+        .unwrap();
+        assert_eq!(read.rooms[0].member.as_str(), "did:key:zAlice");
+        assert_eq!(read.rooms[1].member.as_str(), "did:key:zOrg");
+        assert!(read.rooms.iter().all(|r| r.personal.is_none()));
+
+        // An older 0.1 that names no member cannot be read as 0.2.
+        let older = list_0_1_as_0_2(json!({
+            "rooms": [{ "roomId": "did:web:a", "epoch": 3, "earliestReadableEpoch": 1 }],
+        }));
+        assert!(
+            matches!(older, Err(VtaError::UnsupportedTaskType { .. })),
+            "{older:?}"
+        );
     }
 }

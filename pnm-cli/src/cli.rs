@@ -1095,9 +1095,57 @@ pub(crate) enum RoomKeysCommands {
         #[arg(long)]
         host_did: String,
     },
-    /// Which rooms your VTA holds a group for, each with its room epoch and how
-    /// far back it reads (`rooms/keys/list`). Key custody, not membership.
+    /// Which rooms your VTA holds a group for, each with the member it holds it
+    /// as, its room epoch, how far back it reads, and your own name for it
+    /// (`rooms/keys/list`). Key custody, not membership.
     List,
+    /// Your own private name, description, notes and tags for a room you hold
+    /// (`rooms/keys/label`). Kept by your VTA for you alone: never sent to the
+    /// room, its host or a community.
+    ///
+    /// Each detail given replaces the one stored; the rest stay. `--tag` replaces
+    /// the whole set. Removing the last detail removes the label.
+    #[command(group(
+        clap::ArgGroup::new("change")
+            .required(true)
+            .multiple(true)
+            .args([
+                "label", "description", "notes", "tags",
+                "remove_label", "remove_description", "remove_notes", "remove_tags",
+            ])
+    ))]
+    Label {
+        /// The room's DID.
+        room_id: String,
+        /// The member the label is for: the DID `pnm rooms keys list` shows the
+        /// room held as. A room held as two personas keeps a label for each.
+        #[arg(long)]
+        member: String,
+        /// Your name for the room (one line, up to 128 characters).
+        #[arg(long, conflicts_with = "remove_label")]
+        label: Option<String>,
+        /// What the room is to you (up to 1000 characters).
+        #[arg(long, conflicts_with = "remove_description")]
+        description: Option<String>,
+        /// Longer notes (up to 4000 characters).
+        #[arg(long, conflicts_with = "remove_notes")]
+        notes: Option<String>,
+        /// A tag (repeat for up to 16); replaces every tag the room had.
+        #[arg(long = "tag", conflicts_with = "remove_tags")]
+        tags: Vec<String>,
+        /// Remove your name for the room.
+        #[arg(long)]
+        remove_label: bool,
+        /// Remove your description.
+        #[arg(long)]
+        remove_description: bool,
+        /// Remove your notes.
+        #[arg(long)]
+        remove_notes: bool,
+        /// Remove every tag.
+        #[arg(long)]
+        remove_tags: bool,
+    },
 }
 
 /// `pnm rooms file …`.

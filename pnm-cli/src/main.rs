@@ -917,6 +917,62 @@ mod tests {
     }
 
     #[test]
+    fn rooms_keys_label_needs_a_member_and_a_change() {
+        use crate::cli::{RoomCommands, RoomKeysCommands};
+        let base = ["pnm", "rooms", "keys", "label", "did:webvh:r"];
+        assert!(
+            Cli::try_parse_from(base.iter().chain(&["--label", "x"])).is_err(),
+            "the member is never inferred"
+        );
+        assert!(
+            Cli::try_parse_from(base.iter().chain(&["--member", "did:key:z"])).is_err(),
+            "a request that changes nothing"
+        );
+        assert!(
+            Cli::try_parse_from(base.iter().chain(&[
+                "--member",
+                "did:key:z",
+                "--label",
+                "x",
+                "--remove-label"
+            ]))
+            .is_err(),
+            "a detail both given and removed"
+        );
+        match rooms(&[
+            "keys",
+            "label",
+            "did:webvh:r",
+            "--member",
+            "did:key:z",
+            "--tag",
+            "work",
+            "--tag",
+            "bids",
+            "--remove-notes",
+        ]) {
+            RoomCommands::Keys {
+                command:
+                    RoomKeysCommands::Label {
+                        room_id,
+                        member,
+                        tags,
+                        remove_notes,
+                        label,
+                        ..
+                    },
+            } => {
+                assert_eq!(room_id, "did:webvh:r");
+                assert_eq!(member, "did:key:z");
+                assert_eq!(tags, ["work", "bids"]);
+                assert!(remove_notes);
+                assert!(label.is_none());
+            }
+            _ => panic!("expected keys label"),
+        }
+    }
+
+    #[test]
     fn rooms_keys_commit_takes_a_file_with_its_epoch_or_a_host() {
         use crate::cli::{RoomCommands, RoomKeysCommands};
         let base = ["pnm", "rooms", "keys", "commit", "--room", "did:webvh:r"];

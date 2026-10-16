@@ -118,6 +118,14 @@ async fn task_subject(
     {
         return super::room_act::act_subject(state, auth, payload).await;
     }
+    // `rooms/keys/label/0.1`'s `subjectPath` is `/member`: the member whose label it is,
+    // never the room, and never a detail of the label.
+    if bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1 {
+        return payload
+            .get("member")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+    }
     crate::policy::input::subject_of(payload)
 }
 
@@ -914,6 +922,51 @@ mod tests {
             policy_gate(&state, &auth, ACT, &act("did:example:bob"), &mut Vec::new())
                 .await
                 .is_some()
+        );
+    }
+
+    /// `rooms/keys/label/0.1`'s `subjectPath` is `/member`: a policy sees the member whose
+    /// label it is — never the room, and never the label's own text.
+    #[tokio::test]
+    async fn label_is_gated_on_the_member_as_its_subject() {
+        const LABEL: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1;
+        const MEMBER: &str = "did:webvh:example.com:people:alice";
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let auth = crate::test_support::super_admin_claims();
+        state.config.write().await.policy.enforcement = true;
+        let only_alice = format!(
+            "package vta.policy\nimport rego.v1\n\
+             decision := {{\"decision\": \"allow\"}} if input.request.subject == \"{MEMBER}\"\n\
+             decision := {{\"decision\": \"deny\", \"explanation\": \"not alice\"}} if input.request.subject != \"{MEMBER}\""
+        );
+        crate::policy::storage::store_policy(&state.policy_ks, &module("alice", 0, &only_alice))
+            .await
+            .unwrap();
+        let label = |member: &str| -> TrustTask<Value> {
+            let mut d = doc(LABEL);
+            d.payload = serde_json::json!({
+                "roomId": "did:webvh:example.com:rooms:northwind",
+                "member": member,
+                "label": "did:example:bob",
+            });
+            d
+        };
+        assert!(
+            policy_gate(&state, &auth, LABEL, &label(MEMBER), &mut Vec::new())
+                .await
+                .is_none(),
+            "the member at subjectPath is the policy's subject"
+        );
+        assert!(
+            policy_gate(
+                &state,
+                &auth,
+                LABEL,
+                &label("did:example:bob"),
+                &mut Vec::new()
+            )
+            .await
+            .is_some()
         );
     }
 

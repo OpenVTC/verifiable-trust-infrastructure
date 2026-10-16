@@ -96,6 +96,7 @@ pub(crate) mod received;
 mod room_act;
 mod room_group;
 mod room_keys;
+mod room_label;
 mod room_owner;
 mod room_owner_group;
 mod seeds;
@@ -603,7 +604,15 @@ async fn validate_payload(
     match trust_tasks_rs::validate::against_schema(schema, &doc.payload) {
         Ok(()) => None,
         Err(e) => {
-            tracing::info!(type_uri, error = %e, "payload failed schema validation");
+            // A schema error quotes the offending value. For a task whose payload is text a
+            // person wrote for themselves, that value must not reach a log
+            // (`rooms/keys/label/0.1` recipient item 10); the caller, who wrote it, still
+            // gets the full reason.
+            if carries_personal_text(type_uri) {
+                tracing::info!(type_uri, "payload failed schema validation");
+            } else {
+                tracing::info!(type_uri, error = %e, "payload failed schema validation");
+            }
             Some(helpers::reject_with(
                 doc,
                 RejectReason::MalformedRequest {
@@ -612,6 +621,18 @@ async fn validate_payload(
             ))
         }
     }
+}
+
+/// Whether a task's request or response can carry a member's personal label — text a
+/// person wrote for themselves, which `rooms/keys/label/0.1` keeps with the group state
+/// and nowhere else. Such text is never written to a log, even quoted in an error
+/// (recipient item 10), and such a response is never kept for redelivery: the label would
+/// outlive a change or a removal in the replay record, which is a history of earlier
+/// values the specification forbids (*Retention*).
+fn carries_personal_text(type_uri: &str) -> bool {
+    let bare = type_uri.split('#').next().unwrap_or(type_uri);
+    bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_2
 }
 
 /// Attach this agent's Data-Integrity proof to a success response.
@@ -2027,10 +2048,11 @@ async fn dispatch_trust_task_validated(
             // memory for the whole retention window and hand it to whoever
             // presents the same document again. A duplicate of such a task is
             // absorbed with no body instead. The effect still happened once
-            // and the claim still stands, so §7.2 item 11 holds.
+            // and the claim still stands, so §7.2 item 11 holds. A member's
+            // personal label is not kept either ([`carries_personal_text`]).
             let discloses_secret = class_for(&type_uri)
                 .is_some_and(|class| class.exposure.discloses == crate::policy::Discloses::Secret);
-            let recorded = if discloses_secret {
+            let recorded = if discloses_secret || carries_personal_text(&type_uri) {
                 None
             } else {
                 serde_json::from_slice::<serde_json::Value>(&outcome.body).ok()
@@ -2712,6 +2734,13 @@ dispatch_table! {
         [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1 => room_group::handle_list
         [ None Metadata false ],
+    // 0.2: each entry names its member; `includePersonal` adds the member's own label.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_2 => room_label::handle_list_v0_2
+        [ None Metadata false ],
+    // The member's own label for a room: written to this VTA's storage only, sent
+    // nowhere, its text never logged or audited (`rooms/keys/label/0.1` items 9–10).
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1 => room_label::handle_label
+        [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_INVITE_0_1 => room_owner::handle_invite
         [ Mutating Metadata false ],
     // `actsAsSubject`, unlike the issuance verbs beside it: those sign as the

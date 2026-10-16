@@ -1093,6 +1093,19 @@ pub const TASK_ROOMS_KEYS_FILE_KEY_0_2: &str =
 /// room whose Welcome never arrived is absent even where a good VMC is held.
 pub const TASK_ROOMS_KEYS_LIST_0_1: &str = "https://trusttasks.org/spec/rooms/keys/list/0.1";
 
+/// `spec/rooms/keys/list/0.2` — `list` 0.1, one entry per room **and member** (each
+/// names its `member`), for the members the caller may act as; `includePersonal`
+/// adds each entry's personal label (`rooms/keys/label/0.1`). Auth: as 0.1.
+pub const TASK_ROOMS_KEYS_LIST_0_2: &str =
+    <trust_tasks_rs::specs::rooms::keys::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/label/0.1` — set, change or remove the member's own private
+/// name, description, notes and tags for one room they hold, kept by this VTA
+/// beside the group state and sent nowhere else. Auth: `roomOpen` capability, and
+/// acting as the named `member`; a delegate is refused.
+pub const TASK_ROOMS_KEYS_LABEL_0_1: &str =
+    <trust_tasks_rs::specs::rooms::keys::label::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/owner/invite/0.1` — mint a Verifiable Invitation Credential in the
 /// room's own name. Joining is consent, and this is the artefact.
 /// Auth: `credentialWrite` capability, plus whatever the key oracle says about
@@ -2652,6 +2665,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_FILE_KEY_0_1,
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
     TASK_ROOMS_KEYS_LIST_0_1,
+    TASK_ROOMS_KEYS_LIST_0_2,
+    TASK_ROOMS_KEYS_LABEL_0_1,
     TASK_ROOMS_OWNER_INVITE_0_1,
     TASK_ROOMS_OWNER_REGISTER_0_1,
     TASK_ROOMS_OWNER_ANCHOR_0_1,

@@ -402,7 +402,7 @@ pub(super) async fn handle_list(
 /// client can tell the community's own place in a room (one that administers it) from a
 /// member's. `context` and `actions` are descriptions, never gates, and are left out
 /// where they cannot be read rather than failing the listing.
-async fn held_by(state: &AppState, auth: &AuthClaims, m: &room_groups::Member) -> Value {
+pub(super) async fn held_by(state: &AppState, auth: &AuthClaims, m: &room_groups::Member) -> Value {
     let mut out = serde_json::json!({ "member": m.persona() });
     let stores = crate::operations::persona::PersonaStores::from_state(state);
     if let Ok(Some(key)) =

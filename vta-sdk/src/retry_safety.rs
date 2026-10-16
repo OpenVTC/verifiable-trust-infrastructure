@@ -656,6 +656,12 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // repeat completes it again, as the lost-answer retry of the acceptance needs.
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_3, RetrySafe),
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_1, RetrySafe),
+    // 0.2 names each entry's member and can carry the member's own labels: still a read.
+    (trust_tasks::TASK_ROOMS_KEYS_LIST_0_2, RetrySafe),
+    // Idempotent by specification (`rooms/keys/label/0.1` *Retry safety*): each detail is
+    // replaced, not appended, so a repeat leaves the label as the first left it and answers
+    // `changed: false`. No key needed — there is nothing a repeat could duplicate.
+    (trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1, RetrySafe),
     // Issuance mints a NEW credential with a fresh id on every call, so a retry
     // without a key leaves a second durable artefact that persists and matters —
     // two memberships for one member, or two grants where the owner meant one.

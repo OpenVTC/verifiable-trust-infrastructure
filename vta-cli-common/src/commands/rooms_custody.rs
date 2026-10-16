@@ -624,8 +624,66 @@ pub async fn cmd_rooms_keys_backfill(
     Ok(())
 }
 
-/// `rooms keys list` — the rooms this VTA holds a group for.
+/// `rooms keys list` — the rooms this VTA holds a group for, as which member, and the
+/// member's own name for each (`rooms/keys/list/0.2` with `includePersonal`).
+///
+/// The labels are the operator's own and go only to this terminal. A VTA that does not
+/// serve 0.2 is listed as 0.1 answers, with no labels.
 pub async fn cmd_rooms_keys_list(client: &VtaClient) -> CmdResult {
+    let list = match client.room_list(true).await {
+        Ok(list) => list,
+        Err(vta_sdk::error::VtaError::UnsupportedTaskType { .. }) => {
+            return cmd_rooms_keys_list_0_1(client).await;
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if crate::render::is_json_output() {
+        crate::render::print_json(&list.rooms)?;
+        return Ok(());
+    }
+    if list.rooms.is_empty() {
+        println!("This VTA holds no room's group.");
+        return Ok(());
+    }
+    // The trust context each member's key lives in rides in `ext["org.openvtc.rooms"].held`,
+    // index for index.
+    let held = held_ext(&list.ext);
+    println!("{} room(s):", list.rooms.len());
+    for (i, r) in list.rooms.iter().enumerate() {
+        let personal = r.personal.as_ref();
+        // Your own name first (rooms/keys/label's display order), the room's DID beside it.
+        match personal.and_then(|p| p.label.as_ref()) {
+            Some(name) => println!("  {}  ({})", as_text(name), r.room_id.as_str()),
+            None => println!("  {}", r.room_id.as_str()),
+        }
+        let context = held
+            .get(i)
+            .and_then(|h| h["context"].as_str())
+            .map(|c| format!(" (context {c})"))
+            .unwrap_or_default();
+        println!("    as {}{context}", r.member.as_str());
+        println!(
+            "    epoch {}, reads back to epoch {}",
+            r.epoch, r.earliest_readable_epoch
+        );
+        if let Some(p) = personal {
+            if let Some(d) = &p.description {
+                println!("    your description: {}", indent(&as_text(d)));
+            }
+            if let Some(tags) = &p.tags {
+                let tags: Vec<String> = tags.iter().map(|t| as_text(t)).collect();
+                println!("    your tags: {}", tags.join(", "));
+            }
+            if let Some(n) = &p.notes {
+                println!("    your notes: {}", indent(&as_text(n)));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `rooms keys list` against a VTA that serves only `rooms/keys/list/0.1`.
+async fn cmd_rooms_keys_list_0_1(client: &VtaClient) -> CmdResult {
     let list = client.room_keys_list().await?;
     if crate::render::is_json_output() {
         crate::render::print_json(&list.rooms)?;
@@ -638,11 +696,7 @@ pub async fn cmd_rooms_keys_list(client: &VtaClient) -> CmdResult {
     // Whose each entry is rides in `ext["org.openvtc.rooms"].held`, index for index: a VTA
     // holding two members of one room (the community's own place and an administrator's
     // own membership) lists the room twice, and only this tells the two apart.
-    let held = serde_json::to_value(&list.ext)
-        .ok()
-        .and_then(|e| e.get("org.openvtc.rooms")?.get("held").cloned())
-        .and_then(|h| h.as_array().cloned())
-        .unwrap_or_default();
+    let held = held_ext(&list.ext);
     println!("{} room(s):", list.rooms.len());
     for (i, r) in list.rooms.iter().enumerate() {
         println!(
@@ -655,6 +709,86 @@ pub async fn cmd_rooms_keys_list(client: &VtaClient) -> CmdResult {
                 .map(|c| format!(" (context {c})"))
                 .unwrap_or_default();
             println!("    as {member}{context}");
+        }
+    }
+    Ok(())
+}
+
+/// `ext["org.openvtc.rooms"].held`, or nothing.
+fn held_ext<E: serde::Serialize>(ext: &E) -> Vec<serde_json::Value> {
+    serde_json::to_value(ext)
+        .ok()
+        .and_then(|e| e.get("org.openvtc.rooms")?.get("held").cloned())
+        .and_then(|h| h.as_array().cloned())
+        .unwrap_or_default()
+}
+
+/// A label's text as a terminal may show it: every control character but a line break or
+/// a tab replaced, so nothing in it is acted on as an escape sequence.
+fn as_text(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control() && c != '\n' && c != '\t' {
+                '\u{FFFD}'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Continuation lines of a multi-line detail, indented under it.
+fn indent(s: &str) -> String {
+    s.replace('\n', "\n      ")
+}
+
+/// `rooms keys label` — the operator's own name, description, notes and tags for a room
+/// (`rooms/keys/label/0.1`). Idempotent: asking again changes nothing and says so.
+pub async fn cmd_rooms_keys_label(
+    client: &VtaClient,
+    room_id: &str,
+    member: &str,
+    edit: &vta_sdk::client::RoomLabelEdit,
+) -> CmdResult {
+    let resp = match client.room_label(room_id, member, edit).await {
+        Ok(r) => r,
+        Err(vta_sdk::error::VtaError::Rejected { code, .. })
+            if code == "rooms/keys/label:notHeld" =>
+        {
+            return Err(format!(
+                "this VTA holds no group for room `{room_id}` as `{member}`, or you do not act \
+                 as that member. `pnm rooms keys list` shows each room with the member it is \
+                 held as — pass that DID as --member."
+            )
+            .into());
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if crate::render::is_json_output() {
+        crate::render::print_json(&resp)?;
+        return Ok(());
+    }
+    if !resp.changed {
+        println!("{room_id}: your label already says that; nothing changed.");
+        return Ok(());
+    }
+    match &resp.personal {
+        None => println!("{room_id}: your label is removed."),
+        Some(p) => {
+            println!("{room_id}: your label is updated (as {member}).");
+            if let Some(name) = &p.label {
+                println!("  name: {}", as_text(name));
+            }
+            if let Some(d) = &p.description {
+                println!("  description: {}", indent(&as_text(d)));
+            }
+            if let Some(tags) = &p.tags {
+                let tags: Vec<String> = tags.iter().map(|t| as_text(t)).collect();
+                println!("  tags: {}", tags.join(", "));
+            }
+            if let Some(n) = &p.notes {
+                println!("  notes: {}", indent(&as_text(n)));
+            }
         }
     }
     Ok(())
@@ -680,6 +814,13 @@ mod tests {
         );
         assert!(validity(Some("tomorrow"), None).is_err(), "not RFC 3339");
         assert!(validity(Some("2999-01-01T00:00:00Z"), Some("1h")).is_err());
+    }
+
+    #[test]
+    fn a_label_is_shown_as_text_never_as_escapes() {
+        assert_eq!(as_text("Book\u{1b}[31m club"), "Book\u{FFFD}[31m club");
+        assert_eq!(as_text("a\u{9b}b\rc"), "a\u{FFFD}b\u{FFFD}c");
+        assert_eq!(as_text("line\n\tnext — ok"), "line\n\tnext — ok");
     }
 
     #[test]

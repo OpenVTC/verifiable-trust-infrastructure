@@ -193,10 +193,11 @@ mean, or **name it**: `ext["org.openvtc.rooms"].member` on `read`, `browse`,
 `backfill`, `open`, `seal` 0.1, `file-key`, `commit` and `chain` names the
 persona to act as (it only narrows: a persona you may not act as is the same
 "no group state" as one nobody here holds), and `rooms/keys/act` takes it as
-the document's `issuer`. `rooms/keys/list` lists a room once per member and
-says whose each entry is in `ext["org.openvtc.rooms"].held`, index for index
-with `rooms` (`member`, the persona's `context`, and the `actions` its grant
-confers), since the specification's entry has no member of its own. This is
+the document's `issuer`. `rooms/keys/list` lists a room once per member: at
+0.2 each entry names its `member`, and on both versions
+`ext["org.openvtc.rooms"].held`, index for index with `rooms`, carries the
+`member`, the persona's `context`, and the `actions` its grant confers (0.1's
+entry has no member of its own, so 0.1 clients read it there). This is
 the ordinary case for an administrator whose VTA is also the community's: it
 holds the community's own place in a room the community owns **and** their
 own membership in it, so `pnm rooms keys list` shows the room twice, each
@@ -204,6 +205,49 @@ with `as <persona>`. A persona in a context you cannot act in is invisible: its 
 as a room nobody here holds. A store written before this keying moves its rows
 under the persona its group's own leaf identifies, the first time that
 persona's caller touches the room.
+
+### Your own name for a room (`rooms/keys/label`)
+
+A room's DID says nothing, and the names others give it — the room's own
+profile, a community's offer label — are theirs. `rooms/keys/label/0.1` keeps
+**your** name for a room, with a description, notes and tags, in your VTA beside
+the group state for that room and member:
+
+```bash
+pnm rooms keys list                     # each room, the member it is held as, and your label
+pnm rooms keys label <room-did> --member <persona-did> \
+    --label "Northwind tender" --description "Pricing room for the bid" \
+    --tag work --tag bids
+pnm rooms keys label <room-did> --member <persona-did> --notes "Final numbers: March folder" \
+    --remove-description              # only what you name changes
+pnm rooms keys label <room-did> --member <persona-did> \
+    --remove-label --remove-notes --remove-tags   # the last detail gone: no label
+```
+
+- **Per room and member.** A room held as two personas has two labels; `--member`
+  is required and never inferred (`pnm rooms keys list` shows the DID).
+- **Patch, not replace.** Each detail given replaces the stored one, `--tag`
+  replaces the whole set, absent details stay, and removing the last one removes
+  the label. A repeat answers `changed: false` and moves nothing, so the task is
+  safe to retry as it is.
+- **Who may.** The `roomOpen` capability, and acting as the member. A room you do
+  not hold as that member and a member you do not act as are the same
+  `rooms/keys/label:notHeld`. A delegate (an AI agent or mediator entry — the kind
+  `rooms/keys/present` equips) is `permissionDenied`, and lists no rooms at 0.2.
+- **Private.** The VTA sends a label to no room, host, owner or community and puts
+  it in nothing it completes, signs or seals (`act`, `seal`, `present`). Its text
+  is never logged or audited — the audit row (`rooms.keys.label`) names the room,
+  the member and whether it changed — and neither the label response nor a 0.2
+  list is kept for replay redelivery. `rooms/keys/list/0.2` returns labels only
+  with `includePersonal: true`; a client passing the list on (a wallet answering
+  a member portal) asks without it.
+- **Kept with the group state.** In the `room_groups` keyspace, backed up with it,
+  and discarded only when that member's group state is: not when a commit removes
+  the member, not when the room lapses or changes host or owner.
+
+A surface showing rooms prefers your label, then the room's profile name, then
+the community's offer label, then the DID — and keeps the room's own name
+visible beside yours.
 
 Your own client never reaches a host as itself: it builds each room request
 unsigned and your VTA completes it **as the persona** (`rooms/keys/act/0.3`,
@@ -1506,7 +1550,8 @@ and `vtc-service`:
 | `rooms/keys/seal/0.1` | `roomOpen` capability |
 | `rooms/keys/seal/0.2` | `roomOpen` capability; `signAsPrincipal` refused to a delegate |
 | `rooms/keys/act/0.1`, `0.2`, `0.3` | `roomPresent` capability; refused to a delegate |
-| `rooms/keys/list/0.1` | `roomOpen` capability |
+| `rooms/keys/list/0.1`, `0.2` | `roomOpen` capability; at 0.2 a delegate is listed nothing, and `personal` only with `includePersonal` |
+| `rooms/keys/label/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate |
 | `rooms/keys/chain/0.1` | `roomOpen` capability |
 | `rooms/keys/backfill/0.1` | `roomOpen` capability |
 | `rooms/keys/present/0.2` | `roomPresent` capability + acting in the persona's context |

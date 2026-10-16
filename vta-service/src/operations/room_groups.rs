@@ -127,6 +127,21 @@ const REMOVED: &str = "room-removed";
 /// — and a restored row is still bounded by its `appliedAt`.
 const ADMITTED: &str = "room-admitted";
 
+/// The member's own personal label for the room, per member: `room-label/<roomId>/<persona>`
+/// (`rooms/keys/label/0.1`).
+///
+/// Beside the group state it describes, in the same keyspace, on purpose
+/// (`rooms/keys/label/0.1` recipient item 8): protected as the group state is, carried by a
+/// backup with it, and discarded by [`forget`] with it — and by nothing else. Not on the
+/// member's removal from the room ([`REMOVED`] keeps the group state, and so the label), not
+/// on a lapse, not on a change of host or owner: a room a member can no longer write in is
+/// the one they most need to recognise.
+///
+/// **Never leaves this VTA except to a caller that acts as its member** (item 9): nothing
+/// that completes, signs or seals for the member reads it, and its text is never logged
+/// or audited (item 10).
+const LABEL: &str = "room-label";
+
 /// How long a retained admission is kept at most — `rooms/owner/group/add/0.2` item 8's
 /// 24 hours.
 pub const ADMISSION_RETENTION_SECS: u64 = 24 * 60 * 60;
@@ -1872,11 +1887,208 @@ pub async fn root_history(
         .unwrap_or_default())
 }
 
+// ─── The member's personal label (`rooms/keys/label/0.1`) ─────────────────
+
+/// A member's personal label for one room, as this VTA keeps it ([`LABEL`]).
+///
+/// At least one detail, always: a label whose last detail is removed is deleted, never
+/// stored empty (`rooms/keys/label/0.1` recipient item 4). Every string is kept exactly as
+/// it arrived — never trimmed, case-folded or normalised (item 7). No earlier value is kept.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonalLabel {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    /// A set: order carries no meaning, and is kept as the member last gave it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    /// When a detail last changed. A request that changed nothing does not move it.
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl PersonalLabel {
+    fn has_detail(&self) -> bool {
+        self.label.is_some()
+            || self.description.is_some()
+            || self.notes.is_some()
+            || self.tags.is_some()
+    }
+
+    /// The details, compared as `rooms/keys/label/0.1` item 5 says: strings exactly, tags
+    /// as a set. `updatedAt` is not a detail.
+    fn same_details(&self, other: &Self) -> bool {
+        fn set(t: &Option<Vec<String>>) -> Option<std::collections::BTreeSet<&str>> {
+            t.as_ref().map(|v| v.iter().map(String::as_str).collect())
+        }
+        self.label == other.label
+            && self.description == other.description
+            && self.notes == other.notes
+            && set(&self.tags) == set(&other.tags)
+    }
+}
+
+/// What a request does to one detail of a label.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum LabelDetail<T> {
+    /// Absent from the request: the stored value stays.
+    #[default]
+    Unchanged,
+    /// Replace the stored value (`tags`: the whole set).
+    Set(T),
+    /// `removeX`: remove the stored value.
+    Remove,
+}
+
+impl<T: Clone> LabelDetail<T> {
+    fn apply(&self, current: &Option<T>) -> Option<T> {
+        match self {
+            LabelDetail::Unchanged => current.clone(),
+            LabelDetail::Set(v) => Some(v.clone()),
+            LabelDetail::Remove => None,
+        }
+    }
+}
+
+/// Every change one `rooms/keys/label` request names, applied together or not at all.
+#[derive(Debug, Clone, Default)]
+pub struct LabelChange {
+    pub label: LabelDetail<String>,
+    pub description: LabelDetail<String>,
+    pub notes: LabelDetail<String>,
+    pub tags: LabelDetail<Vec<String>>,
+}
+
+/// What [`set_label`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LabelOutcome {
+    /// This VTA holds no group state for the room as this member — nothing was written.
+    NotHeld,
+    /// The label as it now stands (`None` once no detail remains), and whether this
+    /// request changed it.
+    Applied {
+        label: Option<PersonalLabel>,
+        changed: bool,
+    },
+}
+
+/// How many times [`set_label`] re-reads after a concurrent write moved the row under it.
+/// A person racing themselves across a few devices; past this, something is wrong.
+const LABEL_WRITE_ATTEMPTS: usize = 8;
+
+/// Apply `change` to `member`'s personal label for its room (`rooms/keys/label/0.1`).
+///
+/// Detail by detail (item 3): each detail given replaces the stored one, each removal
+/// removes one, each absent detail is unchanged — so a rename on one device does not
+/// overwrite notes written on another. Nothing is written when nothing would change
+/// (item 5), and a label left with no detail is deleted (item 4).
+///
+/// The write is one [`Batch`](vti_common::store::Batch) conditional on the group state
+/// still being held and the label row being as it was read, so a label can never be
+/// written beside group state [`forget`] has just discarded, and two writes racing on
+/// different details both land. A refusal re-reads and retries.
+///
+/// The caller has decided that it acts as `member`; this does not ask again.
+pub async fn set_label(
+    groups: &KeyspaceHandle,
+    member: &Member,
+    change: &LabelChange,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<LabelOutcome, AppError> {
+    let read = |e: AppError| AppError::Internal(format!("read a personal label: {e}"));
+    for _ in 0..LABEL_WRITE_ATTEMPTS {
+        if groups.get_raw(member.key(GROUP)).await?.is_none() {
+            return Ok(LabelOutcome::NotHeld);
+        }
+        let raw = groups.get_raw(member.key(LABEL)).await.map_err(read)?;
+        let current: Option<PersonalLabel> = match &raw {
+            Some(bytes) => Some(serde_json::from_slice(bytes).map_err(|e| {
+                AppError::Internal(format!("decode the personal label for a room: {e}"))
+            })?),
+            None => None,
+        };
+
+        let next = PersonalLabel {
+            label: change
+                .label
+                .apply(&current.as_ref().and_then(|c| c.label.clone())),
+            description: change
+                .description
+                .apply(&current.as_ref().and_then(|c| c.description.clone())),
+            notes: change
+                .notes
+                .apply(&current.as_ref().and_then(|c| c.notes.clone())),
+            tags: change
+                .tags
+                .apply(&current.as_ref().and_then(|c| c.tags.clone())),
+            updated_at: now,
+        };
+        let unchanged = match &current {
+            Some(c) => c.same_details(&next),
+            None => !next.has_detail(),
+        };
+        if unchanged {
+            return Ok(LabelOutcome::Applied {
+                label: current,
+                changed: false,
+            });
+        }
+
+        let mut batch = vti_common::store::Batch::new();
+        batch.require_present(member.key(GROUP));
+        match raw {
+            Some(bytes) => batch.require_unchanged(member.key(LABEL), bytes),
+            None => batch.require_absent(member.key(LABEL)),
+        };
+        let stored = if next.has_detail() {
+            batch.insert(member.key(LABEL), &next)?;
+            Some(next)
+        } else {
+            batch.remove(member.key(LABEL));
+            None
+        };
+        match groups.apply_batch(batch).await? {
+            vti_common::store::BatchOutcome::Applied => {
+                return Ok(LabelOutcome::Applied {
+                    label: stored,
+                    changed: true,
+                });
+            }
+            // The group state went while this was deciding.
+            vti_common::store::BatchOutcome::Refused { check: 0 } => {
+                return Ok(LabelOutcome::NotHeld);
+            }
+            // Another write moved the label: read it again and re-apply.
+            vti_common::store::BatchOutcome::Refused { .. } => continue,
+        }
+    }
+    Err(AppError::Conflict(
+        "the personal label kept changing while this request was applying; send it again".into(),
+    ))
+}
+
+/// `member`'s personal label for its room, if it has one — for `rooms/keys/list/0.2` with
+/// `includePersonal`, and for nothing that completes, signs or seals for the member
+/// (`rooms/keys/label/0.1` recipient item 9).
+pub async fn personal_label(
+    groups: &KeyspaceHandle,
+    member: &Member,
+) -> Result<Option<PersonalLabel>, AppError> {
+    groups
+        .get(member.key(LABEL))
+        .await
+        .map_err(|e| AppError::Internal(format!("read a personal label: {e}")))
+}
+
 /// Discard everything this VTA holds for a room.
 ///
-/// Called on removal from the group. A key-holder that kept its state would retain the
-/// ability to open everything sealed up to the epoch it was removed at — which is exactly
-/// what the removal was for.
+/// The discard of the member's group state, and with it the member's personal label
+/// (`rooms/keys/label/0.1` recipient item 8). A commit removing the member does **not**
+/// come here: [`apply_commit`] records the removal and keeps the group state, so what was
+/// readable before it still is — and the label stays with it.
 ///
 /// One member's, and only theirs: another persona on this VTA in the same room was not
 /// removed.
@@ -1894,6 +2106,11 @@ pub async fn forget(groups: &KeyspaceHandle, member: &Member) -> Result<(), AppE
     // promoted; leaving it would hand whoever rejoins a stale successor to settle.
     discard_pending_advance(groups, member).await?;
     discard_retained_admission(groups, member).await?;
+    // The personal label is kept with the group state and goes with it
+    // (`rooms/keys/label/0.1` recipient item 8) — here, and nowhere else.
+    groups.remove(member.key(LABEL)).await.map_err(|e| {
+        AppError::Internal(format!("discard the personal label for `{room_id}`: {e}"))
+    })?;
     // The root history goes with the membership. It carries no record content,
     // but it is a record of when this member read this room, and an agent that
     // kept it afterwards would be keeping a diary of a room its principal can no
