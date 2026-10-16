@@ -185,6 +185,70 @@ describe("data rooms in the portal", () => {
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(ROOM);
   });
 
+  // ── Offers ──
+
+  const OFFER = {
+    roomId: ROOM,
+    member: MEMBER,
+    label: "Board pack",
+    visibility: "private",
+    actions: ["read", "write"],
+    validUntil: "2027-10-01T00:00:00Z",
+    offeredAt: "2026-10-14T10:00:00Z",
+    state: "open" as const,
+    inProgress: false,
+  };
+
+  it("a wallet without offers support shows no offers card and is never asked", async () => {
+    const wallet = fakeWallet();
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    await screen.findByText(/You have not shared any rooms/);
+    expect(screen.queryByText("Offers from this community")).toBeNull();
+  });
+
+  it("lists the community's offers through the wallet, and accepting is asked of the wallet as the offer's identity", async () => {
+    const wallet = fakeWallet({
+      offers: vi.fn(async () => ({ offers: [OFFER, { ...OFFER, roomId: "did:webvh:QmOld:rooms.example", label: "Old", state: "accepted" as const }] })),
+      acceptOffer: vi.fn(async () => ({ roomId: ROOM, member: MEMBER, visibility: "private", joined: true, epoch: 2, resumed: false })),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    await screen.findByText("Board pack");
+    expect(screen.queryByText("Old")).toBeNull();
+    expect(screen.getByText(/as you/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Accept/ }));
+    await screen.findByText(/Joined Board pack/);
+    expect(wallet.acceptOffer).toHaveBeenCalledWith({ hostDid: HOST, roomId: ROOM, member: MEMBER });
+
+    // Then it can be shared here, pre-ticked in the wallet's window.
+    fireEvent.click(screen.getByRole("button", { name: /Share it here/ }));
+    await waitFor(() => expect(wallet.choose).toHaveBeenCalledWith({ hostDid: HOST, suggest: ROOM, member: MEMBER }));
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("a member who declines in the wallet sees the offer stays open, not an error", async () => {
+    const wallet = fakeWallet({
+      offers: vi.fn(async () => ({ offers: [OFFER] })),
+      acceptOffer: vi.fn(async () => {
+        throw new Error("the member declined the offer here; it stays open");
+      }),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    await screen.findByText("Board pack");
+    fireEvent.click(screen.getByRole("button", { name: /Accept/ }));
+    await screen.findByText(/The offer stays open/);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("a wallet not yet allowed to reach the community says where to allow it", async () => {
+    const wallet = fakeWallet({ offers: vi.fn(async () => ({ offers: [], needsOrigin: "https://acme.example" })), acceptOffer: vi.fn() });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomsPage hostDid={HOST} />);
+    await screen.findByText(/has not been allowed to reach this community/);
+  });
+
   it("a room shows its records, opens one as text, and never renders a member's words as markup", async () => {
     const wallet = fakeWallet();
     (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };

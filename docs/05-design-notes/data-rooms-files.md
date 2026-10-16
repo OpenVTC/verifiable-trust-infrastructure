@@ -1066,6 +1066,22 @@ handed the member's whole listing would learn every room they are in — on a
   two remain the member picks, one member per room. A grant made before shares
   named a member is not in force, and the page asks again.
 
+**Offers: listed through the wallet, accepted in it.** A community's offer of
+one of its rooms (`vtc/rooms/community/members/add`) is taken up with
+`vtc/rooms/offers/{list,accept}/0.1`, signed as the identity the offer is
+addressed to by the member's VTA (`rooms/keys/act/0.3`) — `pnm rooms offers
+list|accept`, and the wallet, step for step (OpenVTC/vta-browser-plugin, the
+room-offers PR). The portal shows *Offers from this community* through
+`rooms.offers({ hostDid })`, held to the same `SignInPortal` gate and answered
+for the identities the member uses here only (never `hostDid`): label, tier,
+actions and dates, never an offer's credentials. *Accept* calls
+`rooms.acceptOffer({ hostDid, roomId, member })`, and the member decides in the
+wallet's window, which names the community, the room and the identity it joins
+as; the wallet stores the credentials in the VTA, has the VTA mint the
+KeyPackage, accepts and joins from the Welcome — none of which crosses to the
+page. An accepted room is then shared here like any other (`choose` with
+`suggest`). No `/v1/member/*` route carries any of it.
+
 **Reads ride the grant; every write is confirmed.** `info`, `browse`, `read`
 and `getFile` on a granted room run without a prompt — the member already
 said this portal may show them this room. `putNote` and `putFile` each open a

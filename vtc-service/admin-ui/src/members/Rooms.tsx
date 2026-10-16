@@ -10,16 +10,20 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Boxes, Download, FileText, FilePlus2, NotebookPen, RefreshCw, Share2 } from "lucide-react";
+import { ArrowLeft, Boxes, Download, FileText, FilePlus2, Gift, NotebookPen, RefreshCw, Share2 } from "lucide-react";
 
 import { InstallWallet } from "./InstallWallet";
 import {
+  actionableOffers,
+  offerDeclined,
   adverseVerification,
   fileWontFit,
   formatBytes,
   roomName,
   shareRefusalHint,
   walletRooms,
+  type OfferAccepted,
+  type PageOffer,
   type PageRoom,
   type RoomInfo,
   type RoomRecord,
@@ -77,8 +81,142 @@ export function RoomsPage({ hostDid, member }: { hostDid: string; member?: strin
           site shows them only through your wallet.
         </p>
       </section>
-      {wallet ? <RoomList wallet={wallet} hostDid={hostDid} member={member} /> : <NoWallet />}
+      {wallet ? (
+        <>
+          <OfferList wallet={wallet} hostDid={hostDid} member={member} />
+          <RoomList wallet={wallet} hostDid={hostDid} member={member} />
+        </>
+      ) : (
+        <NoWallet />
+      )}
     </main>
+  );
+}
+
+// ── Offers ──────────────────────────────────────────────────────────────────
+
+/**
+ * This community's offers of its rooms to the member, through their wallet.
+ * The page lists what the wallet shows it — never an offer's credentials — and
+ * asks; the member accepts in the wallet's own window, which names the room and
+ * the identity it joins as. Shown only when something is waiting, and only by a
+ * wallet that can do it.
+ */
+function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: string; member?: string }) {
+  const qc = useQueryClient();
+  const [done, setDone] = useState<{ offer: PageOffer; result: OfferAccepted } | null>(null);
+  const supported = typeof wallet.offers === "function" && typeof wallet.acceptOffer === "function";
+  const offers = useQuery({
+    queryKey: ["member-room-offers", hostDid],
+    queryFn: async () => wallet.offers!({ hostDid }),
+    enabled: supported,
+  });
+  const accept = useMutation({
+    mutationFn: async (o: PageOffer) => ({
+      offer: o,
+      result: await wallet.acceptOffer!({ hostDid, roomId: o.roomId, member: o.member }),
+    }),
+    onSuccess: (r) => {
+      setDone(r);
+      void qc.invalidateQueries({ queryKey: ["member-room-offers", hostDid] });
+    },
+  });
+  const share = useMutation({
+    mutationFn: (roomId: string) => wallet.choose({ hostDid, suggest: roomId, ...(member ? { member } : {}) }),
+    onSuccess: (r) => qc.setQueryData(["member-rooms", hostDid], r.rooms),
+  });
+
+  if (!supported || offers.isPending) return null;
+  if (offers.isError) {
+    return (
+      <section className="card" aria-labelledby="offers-heading">
+        <div className="card-head">
+          <Gift size={18} aria-hidden="true" />
+          <h2 id="offers-heading">Offers from this community</h2>
+        </div>
+        <p className="muted">Your wallet could not read this community's offers: {errorText(offers.error)}</p>
+      </section>
+    );
+  }
+  const waiting = actionableOffers(offers.data.offers);
+  if (waiting.length === 0 && !done && !offers.data.needsOrigin) return null;
+
+  return (
+    <section className="card" aria-labelledby="offers-heading">
+      <div className="card-head">
+        <Gift size={18} aria-hidden="true" />
+        <h2 id="offers-heading">Offers from this community</h2>
+      </div>
+      {offers.data.needsOrigin ? (
+        <p className="muted">
+          Your wallet has not been allowed to reach this community yet, so it cannot read its offers. Allow it from
+          the wallet's console (Data rooms → Offers), or share a room with this portal.
+        </p>
+      ) : (
+        <p className="muted">
+          Rooms the community has offered you. Accepting is your decision in your wallet, which shows you the room
+          and the identity you join as before anything happens.
+        </p>
+      )}
+      {waiting.length > 0 && (
+        <ul className="room-list">
+          {waiting.map((o) => (
+            <li key={`${o.roomId}|${o.member}`}>
+              <span>
+                {o.label ? <strong className="wrap">{o.label}</strong> : <code className="wrap">{shortDid(o.roomId)}</code>}
+              </span>
+              <span className="muted small">
+                {o.visibility} · {o.actions.join(", ")} · until {new Date(o.validUntil).toLocaleDateString()}
+                {o.member === member ? " · as you" : ` · as ${shortDid(o.member)}`}
+                {o.inProgress ? " · not finished" : ""}
+              </span>
+              <div className="actions">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => accept.mutate(o)}
+                  disabled={accept.isPending}
+                >
+                  {accept.isPending && accept.variables?.roomId === o.roomId
+                    ? "Waiting for your wallet…"
+                    : o.inProgress
+                      ? "Finish accepting…"
+                      : "Accept…"}
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {accept.isError &&
+        (offerDeclined(accept.error) ? (
+          <p className="muted" role="status">
+            Not accepted. The offer stays open.
+          </p>
+        ) : (
+          <p className="error" role="alert">
+            {errorText(accept.error)}
+          </p>
+        ))}
+      {done && (
+        <div className="alert" role="status">
+          <p className="alert-title">
+            {done.result.joined ? "Joined" : "Accepted"} {done.offer.label || shortDid(done.offer.roomId)}
+          </p>
+          <p>To open it here, share it with this portal.</p>
+          <div className="actions">
+            <button
+              type="button"
+              className="btn"
+              onClick={() => share.mutate(done.offer.roomId)}
+              disabled={share.isPending}
+            >
+              <Share2 size={14} aria-hidden="true" /> {share.isPending ? "Waiting for your wallet…" : "Share it here…"}
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 

@@ -100,6 +100,37 @@ export interface RoomRecord {
   verification: Record<string, unknown> | undefined;
 }
 
+/**
+ * One of this community's offers of its rooms to the member, as the wallet
+ * shows it (`PageOfferView`): never the offer's credentials. A wallet without
+ * offers support has no `offers` method.
+ */
+export interface PageOffer {
+  roomId: string;
+  /** The identity the offer is addressed to, which accepting joins as. */
+  member: string;
+  /** The room's label, as the community's administrators wrote it. */
+  label: string;
+  visibility: "open" | "attributed" | "private" | string;
+  actions: string[];
+  validUntil: string;
+  offeredAt: string;
+  state: "open" | "accepted";
+  /** An accept began in the wallet and did not finish: accepting again finishes it. */
+  inProgress: boolean;
+}
+
+/** What the wallet reports after an accept. */
+export interface OfferAccepted {
+  roomId: string;
+  member: string;
+  visibility: string;
+  /** The member's agent holds the room's group now (a sealed room). */
+  joined: boolean;
+  epoch?: number;
+  resumed: boolean;
+}
+
 export interface TransferProgress {
   stage: string;
   done?: number;
@@ -115,6 +146,12 @@ export interface WalletRooms {
     refused: { roomId: string; reason: string }[];
   }>;
   forget(p: { hostDid: string; roomId: string }): Promise<{ forgotten: boolean }>;
+  /** This community's offers to the identities the member uses here. Never
+   *  prompts. `needsOrigin`: the member has not yet let the wallet reach the
+   *  community. Absent from a wallet older than offers support. */
+  offers?(p: { hostDid: string }): Promise<{ offers: PageOffer[]; needsOrigin?: string }>;
+  /** Ask to accept one: the member decides in the wallet's own window. */
+  acceptOffer?(p: { hostDid: string; roomId: string; member?: string }): Promise<OfferAccepted>;
   info(p: { hostDid: string; roomId: string }): Promise<RoomInfo>;
   browse(p: { hostDid: string; roomId: string; prefix?: string; sinceVersion?: number }): Promise<Listing>;
   read(p: { hostDid: string; roomId: string; key: string }): Promise<RoomRecord>;
@@ -175,6 +212,17 @@ export function shareRefusalHint(reason: string): string | null {
     );
   }
   return null;
+}
+
+/** The offers a member can still act on: open ones, and any whose accept began in the wallet. */
+export function actionableOffers(offers: readonly PageOffer[]): PageOffer[] {
+  return offers.filter((o) => o.state === "open" || o.inProgress);
+}
+
+/** Whether a wallet answer says the member chose not to accept here (the offer stays open). */
+export function offerDeclined(e: unknown): boolean {
+  const text = e instanceof Error ? e.message : String(e);
+  return /declined|did not allow/.test(text);
 }
 
 /** Whether a listing's verification says the host contradicted itself. */
