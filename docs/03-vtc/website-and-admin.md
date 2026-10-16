@@ -353,7 +353,7 @@ pill, **Jump to… ⌘K** (below), the live indicator and an account menu holdin
 sidebar groups the screens under **Overview** (Dashboard, Actions, Audit
 trail), **Membership** (Join requests, Members, Invitations, Vetting,
 Relationships), **Governance** (Policies, Roles, Access control, Sessions) and
-**Community** (Profile, Recognition, Data rooms, Storage, Room usage, Repos), with third-party
+**Community** (Profile, Recognition, Data rooms, Repos), with third-party
 plugins that name no group under **More**
 ([`admin-ui-plugins.md`](admin-ui-plugins.md)). **Policies** is the screen
 once labelled Ceremonies, and **Profile** the one labelled Community profile;
@@ -456,7 +456,7 @@ badge topics the viewer's count:
 | `members` | the Members page and tile | — | every administrator |
 | `singleAdminMode` | the single-administrator banner | — | every administrator |
 | `config` | the configuration and profile screens | — | holders of `vtc.config.admin` |
-| `rooms` (0.2) | the Rooms, room, Room usage and Storage pages | — | holders of `vtc.rooms.admin` |
+| `rooms` (0.2) | the Data rooms page (its Rooms, Usage and Storage tabs) and a room's page | — | holders of `vtc.rooms.admin` |
 
 `rooms` is hinted when a room is registered (or removed), when a room's
 lifecycle state changes — which happens with the clock, so the VTC wakes the

@@ -2,17 +2,17 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { NEXT_STEP_TYPE } from "@/lib/parked-action";
-import { Rooms } from "@/plugins/rooms";
-import { Storage } from "@/plugins/storage";
+import { DataRooms } from "@/plugins/dataRooms";
 import { createPayload, draftErrors, updatePayload } from "@/plugins/storage/ConfigForm";
 import type { StorageConfigRecord } from "@/lib/wire-types";
 import {
   NAME_BOOK_ROUTES,
-  mockFetch,
   renderWithProviders,
+  mockFetch,
   sentPayloads,
   taskRoute,
   type MockRoute,
+  whoamiWith,
 } from "@/test/render";
 
 // Signed reads and the step-up writes are sent unsigned, so the tables below
@@ -39,6 +39,15 @@ const ROOMS_LIST = `${T}/vtc/rooms/list/0.1`;
 const USAGE = `${T}/vtc/rooms/usage/0.1`;
 
 const ROOM_ID = "did:web:rooms.example.com:board";
+
+/** Mount Data rooms at `route`, as the shell mounts it, for a holder of
+ *  `vtc.rooms.admin`. */
+const mount = (route: string) =>
+  renderWithProviders(<DataRooms />, {
+    route,
+    path: "/rooms/*",
+    whoami: whoamiWith(["vtc.rooms.admin"]),
+  });
 
 const local: StorageConfigRecord = {
   id: "local",
@@ -162,7 +171,7 @@ describe("the config form's rules", () => {
 describe("Storage list", () => {
   it("lists configs needing a credential first, and never a credential", async () => {
     mockFetch([...NAME_BOOK_ROUTES, taskRoute(LIST, { items })]);
-    renderWithProviders(<Storage />, { route: "/storage", path: "/storage/*" });
+    mount("/rooms/storage");
     const attention = (await screen.findByText("Needs a credential")).closest("section")!;
     expect(within(attention).getByText("eu-s3")).toBeTruthy();
     expect(within(attention).getByText("credential required")).toBeTruthy();
@@ -174,7 +183,7 @@ describe("Storage list", () => {
 
   it("sends a new config for approval and says so", async () => {
     const requests = mockFetch([...NAME_BOOK_ROUTES, taskRoute(LIST, { items }), parked(CREATE)]);
-    renderWithProviders(<Storage />, { route: "/storage?create=1", path: "/storage/*" });
+    mount("/rooms/storage?create=1");
     fireEvent.change(await screen.findByLabelText(/^Identifier/), { target: { value: "r2" } });
     fireEvent.change(screen.getByLabelText(/^Label/), { target: { value: "R2" } });
     fireEvent.change(screen.getByLabelText(/^VTA context/), { target: { value: "community" } });
@@ -218,7 +227,7 @@ describe("Storage config page", () => {
 
   it("probes and shows each step", async () => {
     const requests = mockFetch(getRoutes(s3));
-    renderWithProviders(<Storage />, { route: "/storage/eu-s3", path: "/storage/*" });
+    mount("/rooms/storage/eu-s3");
     fireEvent.click(await screen.findByRole("button", { name: "Probe now" }));
     expect(await screen.findByText("AccessDenied")).toBeTruthy();
     expect(sentPayloads(requests, PROBE)).toEqual([{ configId: "eu-s3", includeWrite: true }]);
@@ -226,14 +235,14 @@ describe("Storage config page", () => {
 
   it("will not offer to retire the default", async () => {
     mockFetch(getRoutes(local));
-    renderWithProviders(<Storage />, { route: "/storage/local", path: "/storage/*" });
+    mount("/rooms/storage/local");
     expect(await screen.findByText("Make another location the default first.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Retire/ })).toBeNull();
   });
 
   it("retires an unused config, for approval, with a reason", async () => {
     const requests = mockFetch(getRoutes(s3));
-    renderWithProviders(<Storage />, { route: "/storage/eu-s3", path: "/storage/*" });
+    mount("/rooms/storage/eu-s3");
     fireEvent.click(await screen.findByRole("button", { name: "Retire eu-s3" }));
     fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "moving to R2" } });
     fireEvent.click(screen.getByRole("button", { name: "Send for approval" }));
@@ -268,10 +277,7 @@ describe("a room's storage", () => {
       taskRoute(LIST, { items }),
       parked(ASSIGN),
     ]);
-    renderWithProviders(<Rooms />, {
-      route: `/rooms/${encodeURIComponent(ROOM_ID)}`,
-      path: "/rooms/*",
-    });
+    mount(`/rooms/r/${encodeURIComponent(ROOM_ID)}`);
     fireEvent.click(await screen.findByRole("button", { name: "Send new uploads to other storage" }));
     const select = (await screen.findByLabelText("Storage")) as HTMLSelectElement;
     expect([...select.options].map((o) => o.value)).toEqual(["", "eu-s3"]);
@@ -307,7 +313,7 @@ describe("the rooms' defaults", () => {
       }),
       taskRoute("https://trusttasks.org/spec/vtc/policies/list/0.1", { items: [] }),
     ]);
-    renderWithProviders(<Rooms />, { route: "/rooms", path: "/rooms/*" });
+    mount("/rooms");
     const card = (await screen.findByText("Defaults")).closest("section")!;
     expect(within(card).getByText("10,000 files, 5.0 GB in all, 100 MB a file")).toBeTruthy();
     expect(within(card).getByText(/168 hours/)).toBeTruthy();
@@ -319,7 +325,7 @@ describe("the rooms' defaults", () => {
       ...NAME_BOOK_ROUTES,
       taskRoute(ROOMS_LIST, { items: [], ext: { "org.openvtc": { roomFiles: { enabled: false } } } }),
     ]);
-    renderWithProviders(<Rooms />, { route: "/rooms", path: "/rooms/*" });
+    mount("/rooms");
     await screen.findByText("Room files are off");
     await waitFor(() => expect(screen.queryByText("Defaults")).toBeNull());
   });

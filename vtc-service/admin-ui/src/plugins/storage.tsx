@@ -1,4 +1,5 @@
-// Storage — where this community keeps its rooms' files
+// Storage — the Storage tab of the Data rooms page (`dataRooms.tsx`): where
+// this community keeps its rooms' files
 // (docs/05-design-notes/data-rooms-files.md §7, §8.1 "Storage").
 //
 // A list of configs with §7.6's facts, one page per config (its rooms, capacity
@@ -12,7 +13,7 @@
 // (§7.4), so the screen says "sent for approval", never "saved", when it is.
 
 import { useState } from "react";
-import { Link, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLivePollMs } from "@/lib/use-live-events";
 import { HardDrive, Plus } from "lucide-react";
@@ -46,22 +47,8 @@ import type {
   StorageConfigUpdatePayload,
 } from "@/lib/wire-types";
 
-import { roomPath } from "./rooms/shared";
+import { ROOMS_PATH, STORAGE_PATH, configPath, roomPath } from "./rooms/shared";
 import { ConfigForm } from "./storage/ConfigForm";
-
-export function Storage() {
-  return (
-    <Routes>
-      <Route index element={<StorageList />} />
-      <Route path=":configId" element={<ConfigDetail />} />
-    </Routes>
-  );
-}
-
-/** Where one config's page is. */
-export function configPath(configId: string): string {
-  return `/storage/${encodeURIComponent(configId)}`;
-}
 
 function StatePill({ state }: { state: string }) {
   const tone = state === "active" ? "success" : state === "draining" ? "warning" : "";
@@ -108,7 +95,8 @@ function Health({ facts }: { facts: StorageConfigFacts }) {
   );
 }
 
-function StorageList() {
+/** The Storage tab of the Data rooms page (`plugins/dataRooms.tsx`). */
+export function StorageList() {
   const [params, setParams] = useSearchParams();
   const creating = params.get("create") === "1";
   const pollMs = useLivePollMs("rooms");
@@ -122,21 +110,7 @@ function StorageList() {
   const others = items.filter((i) => i.facts.credential.status !== "required");
 
   return (
-    <section className="page">
-      <PageHeader
-        title="Storage"
-        count={q.data ? items.length : undefined}
-        lead="Where this community keeps its rooms' files. Each room's new uploads go to one storage location; every file remembers where it was written, so moving a room strands nothing."
-        actions={
-          !creating && (
-            <button type="button" onClick={() => setParams({ create: "1" })}>
-              <Plus aria-hidden="true" />
-              New storage
-            </button>
-          )
-        }
-      />
-
+    <>
       {creating && <NewConfig onDone={() => setParams({})} />}
 
       {q.isPending && (
@@ -153,7 +127,8 @@ function StorageList() {
         <section className="card">
           <EmptyState icon={HardDrive} title="No storage yet">
             Room files are off on this community, or its first storage location has
-            not been set up. See Data rooms for how to turn files on.
+            not been set up. The <Link to={ROOMS_PATH}>Rooms</Link> tab says how to turn
+            files on.
           </EmptyState>
         </section>
       )}
@@ -174,7 +149,20 @@ function StorageList() {
           <ConfigsTable items={others} />
         </section>
       )}
-    </section>
+    </>
+  );
+}
+
+/** The Storage tab's primary action, drawn in the page header: open the form
+ *  for a new storage location (`?create=1`, which `StorageList` reads). */
+export function NewStorageButton() {
+  const [params, setParams] = useSearchParams();
+  if (params.get("create") === "1") return null;
+  return (
+    <button type="button" onClick={() => setParams({ create: "1" })}>
+      <Plus aria-hidden="true" />
+      New storage
+    </button>
   );
 }
 
@@ -268,7 +256,8 @@ function NewConfig({ onDone }: { onDone: () => void }) {
   );
 }
 
-function ConfigDetail() {
+/** One storage location's page, `/rooms/storage/<configId>`. */
+export function ConfigDetail() {
   // Already decoded by the router; decoding again could change the identifier.
   const { configId = "" } = useParams();
   const navigate = useNavigate();
@@ -278,7 +267,7 @@ function ConfigDetail() {
   });
   const [editing, setEditing] = useState(false);
   const update = useStorageChange<StorageConfigUpdatePayload>(updateStorageConfig);
-  const trail = [{ label: configId }];
+  const trail = [{ label: "Storage", to: STORAGE_PATH }, { label: configId }];
 
   if (q.isPending) {
     return (
@@ -299,7 +288,7 @@ function ConfigDetail() {
           <p className="muted">
             {missing ? "This community has no storage location with that identifier." : "It could not be read."}
           </p>
-          <button type="button" className="secondary" onClick={() => navigate("..")}>
+          <button type="button" className="secondary" onClick={() => navigate(STORAGE_PATH)}>
             Back to storage
           </button>
         </section>

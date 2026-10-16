@@ -33,7 +33,29 @@ export function LifecyclePill({ value }: { value: string }) {
   );
 }
 
-/** Where a room's detail page is, relative to the rooms list. */
+// ── Where things are on the Data rooms page (`plugins/dataRooms.tsx`) ──
+//
+// One page with three tabs: the rooms list at `/rooms`, usage at
+// `/rooms/usage`, storage at `/rooms/storage` (a config at
+// `/rooms/storage/<configId>`). A room's own page is `/rooms/r/<roomId>`, not
+// `/rooms/<roomId>`: a room's identifier is whatever its owner minted (the
+// `rooms/create` schema says only "string", and the host does not assign or
+// constrain it), so a bare segment could be `usage` or `storage` and land on a
+// tab instead of the room.
+
+/** The Data rooms page: the plugin's path, and its Rooms tab. */
+export const ROOMS_PATH = "/rooms";
+/** The Usage tab. */
+export const USAGE_PATH = `${ROOMS_PATH}/usage`;
+/** The Storage tab. */
+export const STORAGE_PATH = `${ROOMS_PATH}/storage`;
+
+/** Where a room's own page is. */
 export function roomPath(roomId: string): string {
-  return `/rooms/${encodeURIComponent(roomId)}`;
+  return `${ROOMS_PATH}/r/${encodeURIComponent(roomId)}`;
+}
+
+/** Where one storage config's page is. */
+export function configPath(configId: string): string {
+  return `${STORAGE_PATH}/${encodeURIComponent(configId)}`;
 }

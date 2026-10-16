@@ -143,3 +143,24 @@ describe("the shortcut", () => {
     expect(paletteShortcutLabel("Win32")).toBe("Ctrl K");
   });
 });
+
+describe("Data rooms in the palette", () => {
+  // Usage and Storage are tabs of Data rooms, not screens of their own: typing
+  // either still finds the screen, and the action that opens that tab.
+  const rooms = screenCommands([{ plugin: plugin("rooms", "Data rooms"), group: "Community" }]);
+  const actions = actionCommands(NAVIGATION_ACTIONS, new Set(["rooms"]));
+
+  it.each(["storage", "usage"])("finds Data rooms for “%s”", (q) => {
+    expect(labels(filterCommands(rooms, q))).toEqual(["Data rooms"]);
+  });
+
+  it("opens the Usage and Storage tabs directly", () => {
+    expect(filterCommands(actions, "usage")[0]?.to).toBe("/rooms/usage");
+    expect(filterCommands(actions, "storage")[0]?.to).toBe("/rooms/storage");
+  });
+
+  it("does not offer the tabs to a viewer who cannot see Data rooms", () => {
+    const none = actionCommands(NAVIGATION_ACTIONS, new Set());
+    expect(none.some((c) => c.to?.startsWith("/rooms"))).toBe(false);
+  });
+});

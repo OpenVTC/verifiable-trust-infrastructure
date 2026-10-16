@@ -49,7 +49,7 @@ import type {
 
 import { DayChart, type DayMetric } from "./DayChart";
 import { LimitsForm } from "./LimitsForm";
-import { LifecyclePill, TIER_BLURB, type Tier } from "./shared";
+import { LifecyclePill, TIER_BLURB, configPath, type Tier } from "./shared";
 
 export function RoomDetail() {
   // Already decoded by the router. Decoding again would turn a `did:web` port's
@@ -159,7 +159,7 @@ function Storage({ data }: { data: RoomGetResponse }) {
       <dl className="rooms-facts">
         <dt>New uploads go to</dt>
         <dd>
-          <Link to={`/storage/${encodeURIComponent(storage.configId)}`}>
+          <Link to={configPath(storage.configId)}>
             <code>{storage.configId}</code>
           </Link>
         </dd>

@@ -1,14 +1,14 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { RoomUsage } from "@/plugins/roomUsage";
-import { Rooms } from "@/plugins/rooms";
+import { DataRooms } from "@/plugins/dataRooms";
 import {
   NAME_BOOK_ROUTES,
   mockFetch,
   renderWithProviders,
   sentPayloads,
   taskRoute,
+  whoamiWith,
 } from "@/test/render";
 
 // The room reads and the limit override are signed documents; the stand-ins
@@ -102,18 +102,21 @@ const detailRoutes = (visibility?: "open" | "attributed" | "private") => [
   }),
 ];
 
-const openDetail = () =>
-  renderWithProviders(<Rooms />, {
-    route: `/rooms/${encodeURIComponent(ROOM_ID)}`,
-    path: "/rooms/*",
-  });
+/** A holder of `vtc.rooms.admin`: every tab of Data rooms. */
+const ROOMS_ADMIN = whoamiWith(["vtc.rooms.admin"]);
+
+/** Mount Data rooms at `route`, as the shell mounts it, for `whoami`. */
+const mount = (route: string, whoami = ROOMS_ADMIN) =>
+  renderWithProviders(<DataRooms />, { route, path: "/rooms/*", whoami });
+
+const openDetail = () => mount(`/rooms/r/${encodeURIComponent(ROOM_ID)}`);
 
 describe("Rooms list", () => {
   it("links each room to its own page", async () => {
     mockFetch([...NAME_BOOK_ROUTES, taskRoute(LIST, { items: [hostedRoom("open")] })]);
-    renderWithProviders(<Rooms />, { route: "/rooms", path: "/rooms/*" });
+    mount("/rooms");
     const link = await screen.findByRole("link", { name: /did:web/ });
-    expect(link.getAttribute("href")).toBe(`/rooms/${encodeURIComponent(ROOM_ID)}`);
+    expect(link.getAttribute("href")).toBe(`/rooms/r/${encodeURIComponent(ROOM_ID)}`);
   });
 });
 
@@ -235,7 +238,7 @@ describe("Room detail", () => {
 describe("Room usage", () => {
   it("flags rooms and storage near a limit", async () => {
     mockFetch([...NAME_BOOK_ROUTES, taskRoute(USAGE, usageAnswer)]);
-    renderWithProviders(<RoomUsage />, { route: "/room-usage", path: "/room-usage/*" });
+    mount("/rooms/usage");
     const near = (await screen.findByText("Near a limit")).closest("section")!;
     // The room: 9 of 10 files. The storage: 950 of 1000 bytes.
     expect(within(near).getByText("90%")).toBeTruthy();
@@ -244,7 +247,7 @@ describe("Room usage", () => {
 
   it("regroups by member with the range, and says private rooms are left out", async () => {
     const requests = mockFetch([...NAME_BOOK_ROUTES, taskRoute(USAGE, usageAnswer)]);
-    renderWithProviders(<RoomUsage />, { route: "/room-usage", path: "/room-usage/*" });
+    mount("/rooms/usage");
     await screen.findByText("Near a limit");
     fireEvent.click(screen.getByRole("tab", { name: "Members" }));
     expect(await screen.findByText(/attributed to nobody, by design/)).toBeTruthy();
@@ -267,7 +270,7 @@ describe("Room usage", () => {
     });
     vi.stubGlobal("URL", Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() }));
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    renderWithProviders(<RoomUsage />, { route: "/room-usage", path: "/room-usage/*" });
+    mount("/rooms/usage");
     const exportButton = await screen.findByRole("button", { name: /Export CSV/ });
     await waitFor(() => expect((exportButton as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(exportButton);

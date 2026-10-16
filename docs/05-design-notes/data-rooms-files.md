@@ -752,6 +752,12 @@ body.
 
 ### 8.1 Admin console: the Data rooms plugin
 
+> **As built:** one **Data rooms** menu entry with three tabs — **Rooms**
+> (`/rooms`), **Usage** (`/rooms/usage`) and **Storage** (`/rooms/storage`,
+> a config at `/rooms/storage/<configId>`) — rather than the separate
+> top-level Storage and Usage pages below; a room's page is
+> `/rooms/r/<roomId>`. See `vtc-service/admin-ui/src/plugins/dataRooms.tsx`.
+
 Extends `plugins/rooms.tsx`. Everything here is about **hosting**. None of it
 needs, or could use, room credentials.
 

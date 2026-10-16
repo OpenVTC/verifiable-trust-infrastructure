@@ -949,30 +949,35 @@ community's ACL or a session.
   `vtc/rooms/limits/set/0.1` (a reason is required and audited; it is not
   parked, since an allowance can be reversed and loses nothing, and a lower
   limit deletes nothing). A room's owner reads their room's figures per member
-  with `rooms/usage/0.1`. In the console:
-  - **Data rooms** lists the rooms; each opens its own page with its storage,
-    its limits and where each came from, per-member usage (not on `private`
-    rooms; members who added nothing are not listed, since the host never saw
-    them), and daily activity over 30, 90 or 365 days. Limits are changed and
-    uploads paused from there.
-  - **Room usage** groups the same figures by room, member, storage config or
-    day, lists rooms and configs past 80 %, 95 % or 100 % of a limit or of
-    capacity, and exports what it shows as CSV.
-
-  - **Storage** lists the storage configs with what each holds, its credential
-    state (never a credential) and its last probe; configs that need a
-    credential are listed first. Each config's page probes it, changes its
-    label, capacity or default, and retires it; **New storage** creates a
-    `local` or an `s3` (VTA account) config. A room's page sends its new
-    uploads to another config. Every one of those changes takes the
-    requester's passkey and is parked for another holder of
-    `vtc.rooms.admin`, as above.
-  - **Data rooms** also shows the defaults the `[rooms.files]` section sets —
-    each room's and each member's limits, the largest file, capacity and how
-    long a deleted file is kept — read from `vtc/rooms/list`'s
+  with `rooms/usage/0.1`. In the console, all of it is one **Data rooms** page
+  with three tabs:
+  - **Rooms** (`/admin/rooms`) lists the rooms; each opens its own page
+    (`/admin/rooms/r/<roomId>`) with its storage, its limits and where each
+    came from, per-member usage (not on `private` rooms; members who added
+    nothing are not listed, since the host never saw them), and daily activity
+    over 30, 90 or 365 days. Limits are changed and uploads paused from there.
+    The tab also shows the defaults the `[rooms.files]` section sets — each
+    room's and each member's limits, the largest file, capacity and how long a
+    deleted file is kept — read from `vtc/rooms/list`'s
     `ext["org.openvtc"].roomFiles` and changed only in the configuration file.
+  - **Usage** (`/admin/rooms/usage`) groups the same figures by room, member,
+    storage config or day, lists rooms and configs past 80 %, 95 % or 100 % of
+    a limit or of capacity, and exports what it shows as CSV.
+  - **Storage** (`/admin/rooms/storage`) lists the storage configs with what
+    each holds, its credential state (never a credential) and its last probe;
+    configs that need a credential are listed first. Each config's page
+    (`/admin/rooms/storage/<configId>`) probes it, changes its label, capacity
+    or default, and retires it; **New storage** creates a `local` or an `s3`
+    (VTA account) config. A room's page sends its new uploads to another
+    config. Every one of those changes takes the requester's passkey and is
+    parked for another holder of `vtc.rooms.admin`, as above.
 
-  All of them need `vtc.rooms.admin`. None shows a record title, a file name or
+  The pages that were separate before — `/admin/storage`, `/admin/storage/<id>`
+  and `/admin/room-usage`, and a room at `/admin/rooms/<roomId>` — redirect to
+  these. A room's page is under `r/` because a room's identifier is whatever
+  its owner minted, so a bare segment could be `usage` or `storage`.
+
+  Every tab needs `vtc.rooms.admin`. None shows a record title, a file name or
   a file's contents: the host has none of them.
 - **Audit**: room operations land in the VTC's hash-chained audit keyspace, with
   the same tier rule as above.

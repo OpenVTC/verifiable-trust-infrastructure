@@ -125,6 +125,22 @@ export const NAME_BOOK_ROUTES: MockRoute[] = [
   taskRoute("https://trusttasks.org/spec/acl/list/0.2", { entries: [], truncated: false }),
 ];
 
+/** A signed-in administrator holding `capabilities` — for a screen that
+ *  offers what it offers by what the viewer holds. */
+export function whoamiWith(capabilities: string[]): WhoamiResponse {
+  return {
+    session: {
+      id: "sess_test",
+      subject: "did:key:z6MkViewer",
+      issuedAt: "2026-10-01T00:00:00Z",
+      expiresAt: "2026-10-01T00:05:00Z",
+    },
+    roles: ["admin"],
+    scopes: [],
+    capabilities,
+  };
+}
+
 /**
  * `path` is the route the component is mounted on, as the shell mounts a
  * plugin on `/<plugin>/*`; a component with descendant `<Routes>` needs it to

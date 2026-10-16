@@ -58,7 +58,8 @@ const SCREEN_KEYWORDS: Record<string, readonly string[]> = {
   sessions: ["sign out", "logins", "revoke"],
   profile: ["branding", "name", "logo", "website"],
   recognition: ["registry", "cross-community", "trust registry"],
-  rooms: ["data rooms", "files"],
+  // Usage and Storage are tabs of Data rooms (`plugins/dataRooms.tsx`).
+  rooms: ["data rooms", "files", "storage", "usage", "room usage", "quota", "s3"],
   repos: ["git", "repositories", "forge", "github"],
   "my-passkeys": ["passkey", "webauthn", "security key"],
   "console-keys": ["signing key", "renew", "browser key"],
@@ -139,6 +140,22 @@ export const NAVIGATION_ACTIONS: readonly ActionSpec[] = [
     keywords: ["admin invite", "install url", "acl"],
     requires: "acl",
     to: "/acl?invite=1",
+  },
+  {
+    id: "room-usage",
+    label: "See room usage",
+    hint: "Data rooms · Usage",
+    keywords: ["usage", "room usage", "egress", "quota", "csv"],
+    requires: "rooms",
+    to: "/rooms/usage",
+  },
+  {
+    id: "room-storage",
+    label: "Manage room storage",
+    hint: "Data rooms · Storage",
+    keywords: ["storage", "s3", "bucket", "new storage"],
+    requires: "rooms",
+    to: "/rooms/storage",
   },
   {
     id: "renew-signing-key",

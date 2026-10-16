@@ -13,11 +13,9 @@
 
 import {
   BadgeCheck,
-  ChartColumn,
   ClipboardList,
   DoorOpen,
   FolderGit2,
-  HardDrive,
   Inbox,
   KeyRound,
   LayoutDashboard,
@@ -43,6 +41,7 @@ import { Audit } from "@/plugins/audit";
 import { Ceremonies } from "@/plugins/ceremonies";
 import { ConsoleKeys } from "@/plugins/consoleKeys";
 import { Dashboard } from "@/plugins/dashboard";
+import { DATA_ROOMS_CAPABILITIES, DataRooms } from "@/plugins/dataRooms";
 import { Invitations } from "@/plugins/invitations";
 import { JoinRequests } from "@/plugins/joinRequests";
 import { Members } from "@/plugins/members";
@@ -52,10 +51,7 @@ import { Recognition } from "@/plugins/recognition";
 import { Relationships } from "@/plugins/relationshipsGraph";
 import { Repos } from "@/plugins/repos";
 import { Roles } from "@/plugins/roles";
-import { RoomUsage } from "@/plugins/roomUsage";
-import { Rooms } from "@/plugins/rooms";
 import { Sessions } from "@/plugins/sessions";
-import { Storage } from "@/plugins/storage";
 import { Vetting } from "@/plugins/vetting";
 import { WalletVerifier } from "@/plugins/walletVerifier";
 
@@ -214,35 +210,18 @@ export function registerBuiltinPlugins(): void {
     capabilities: ["vtc.config.admin"],
   });
 
+  // One entry for data rooms: Rooms, Usage and Storage are tabs of it
+  // (`plugins/dataRooms.tsx`), each gated on its own capability. The entry is
+  // shown to a holder of any of them, so a tab for another authority adds its
+  // capability to the entry by being listed there.
   registerPlugin({
     id: "rooms",
     group: "community",
     label: "Data rooms",
     path: "/rooms",
     iconComponent: DoorOpen,
-    reactComponent: Rooms,
-    // The host's authority over rooms (`vtc/rooms/*` admin reads), never a room's.
-    capabilities: ["vtc.rooms.admin"],
-  });
-
-  registerPlugin({
-    id: "storage",
-    group: "community",
-    label: "Storage",
-    path: "/storage",
-    iconComponent: HardDrive,
-    reactComponent: Storage,
-    capabilities: ["vtc.rooms.admin"],
-  });
-
-  registerPlugin({
-    id: "room-usage",
-    group: "community",
-    label: "Room usage",
-    path: "/room-usage",
-    iconComponent: ChartColumn,
-    reactComponent: RoomUsage,
-    capabilities: ["vtc.rooms.admin"],
+    reactComponent: DataRooms,
+    capabilities: DATA_ROOMS_CAPABILITIES,
   });
 
   registerPlugin({

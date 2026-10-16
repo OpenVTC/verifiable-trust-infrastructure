@@ -1,5 +1,6 @@
-// Room usage — how much this community stores for its rooms, and how much is
-// read back (docs/05-design-notes/data-rooms-files.md §6.3, §8.1 "Usage").
+// Room usage — the Usage tab of the Data rooms page (`dataRooms.tsx`): how much
+// this community stores for its rooms, and how much is read back
+// (docs/05-design-notes/data-rooms-files.md §6.3, §8.1 "Usage").
 //
 // One read, `vtc/rooms/usage/0.1`, grouped by room, member, storage config or
 // day, over 30, 90 or 365 days; exported as CSV. Egress is shown beside space
@@ -18,7 +19,6 @@ import { Download } from "lucide-react";
 
 import { DataTable } from "@/components/DataTable";
 import { NamedDid } from "@/components/NamedDid";
-import { PageHeader } from "@/components/PageHeader";
 import { Tabs } from "@/components/Tabs";
 import { formatIso, shorten } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
@@ -71,6 +71,7 @@ function saveText(name: string, text: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
+/** The Usage tab of the Data rooms page. */
 export function RoomUsage() {
   const [group, setGroup] = useState<UsageGroup>("room");
   const [range, setRange] = useState<RangeId>("30");
@@ -85,11 +86,7 @@ export function RoomUsage() {
   });
 
   return (
-    <section className="page">
-      <PageHeader
-        title="Room usage"
-        lead="How much this community stores for its rooms and how much is read back. Sizes and counts only: it cannot read the rooms' records or file names."
-      />
+    <>
 
       <NearLimits />
 
@@ -160,7 +157,7 @@ export function RoomUsage() {
           </>
         )}
       </section>
-    </section>
+    </>
   );
 }
 

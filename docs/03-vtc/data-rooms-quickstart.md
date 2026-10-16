@@ -473,7 +473,7 @@ the lifecycle rule. `pnm` needs no CORS — only a browser does.
 
 ### 10.4 The storage config, and the room on it
 
-In the console: **Storage → New storage**, an `s3` (VTA account) config naming
+In the console: **Data rooms → Storage → New storage**, an `s3` (VTA account) config naming
 context `vtc`, account `localstack-rooms`, bucket `vdr-rooms`, region
 `us-east-1`, endpoint `https://localhost.localstack.cloud:4566`, path-style;
 then the room's page sends its new uploads to it. Each takes your passkey, and

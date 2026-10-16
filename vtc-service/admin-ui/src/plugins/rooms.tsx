@@ -1,5 +1,5 @@
-// Rooms plugin — the data rooms this community hosts, and the one decision it
-// gets to make about them.
+// The Rooms tab of the Data rooms page (`dataRooms.tsx`) — the data rooms this
+// community hosts, and the one decision it gets to make about them.
 //
 // ## What a host knows, and why so little is not a bug
 //
@@ -59,7 +59,7 @@
 // a different question, which is worse than not asking.
 
 import { useMemo, useState } from "react";
-import { Link, Route, Routes } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useLivePollMs } from "@/lib/use-live-events";
 import { DoorOpen, RefreshCw } from "lucide-react";
@@ -70,13 +70,11 @@ import { formatEpoch, shorten } from "@/lib/format";
 import { NamedDid } from "@/components/NamedDid";
 import { DataTable } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
-import { PageHeader } from "@/components/PageHeader";
 import { useNameBook } from "@/lib/names";
 import { formatBytes } from "@/lib/rooms-api";
 import type { HostedRoom, PolicyTestResponse, RoomScopeLimits } from "@/lib/wire-types";
 
-import { RoomDetail } from "./rooms/RoomDetail";
-import { LifecyclePill, TIER_BLURB, TIERS, roomPath, type Tier } from "./rooms/shared";
+import { LifecyclePill, STORAGE_PATH, TIER_BLURB, TIERS, roomPath, type Tier } from "./rooms/shared";
 
 const TRUST_TASK_TEST = "https://trusttasks.org/spec/vtc/policies/test/0.1";
 /** `vtc/rooms/list/0.1` — under `vtc/`, not `rooms/`: it is answered from the
@@ -209,7 +207,7 @@ function FileDefaultsCard({ d }: { d: FileDefaults }) {
       <p className="muted">
         What each room is held to unless the rooms policy or an override on the room
         says otherwise. Change a single room from its own page; where its files go is
-        on the <Link to="/storage">Storage</Link> page.
+        on the <Link to={STORAGE_PATH}>Storage</Link> tab.
       </p>
       <dl className="rooms-facts">
         <dt>Each room</dt>
@@ -475,16 +473,8 @@ function CreationPolicy() {
   );
 }
 
-export function Rooms() {
-  return (
-    <Routes>
-      <Route index element={<RoomsList />} />
-      <Route path=":roomId" element={<RoomDetail />} />
-    </Routes>
-  );
-}
-
-function RoomsList() {
+/** The Rooms tab of the Data rooms page (`plugins/dataRooms.tsx`). */
+export function RoomsList() {
   // Re-read on a live `rooms` hint (`lib/use-live-events.ts`); polled as the
   // fallback, slowly while the stream carries the topic.
   const pollMs = useLivePollMs("rooms");
@@ -507,20 +497,7 @@ function RoomsList() {
   );
 
   return (
-    <section className="page">
-      <PageHeader
-        title="Data rooms"
-        lead={
-          <>
-          Rooms this community stores. It cannot read their records and holds no
-          member list — both by construction — so this is the row and nothing
-          derived from a room's contents. The owner is shown at every tier,
-          including private, because they are the party a quota or reclamation
-          notice has to reach.
-          </>
-        }
-      />
-
+    <>
       {filesOff && <RoomFilesOff />}
 
       {roomsQuery.isPending && (
@@ -573,6 +550,6 @@ function RoomsList() {
       {roomsQuery.data?.defaults && <FileDefaultsCard d={roomsQuery.data.defaults} />}
 
       <CreationPolicy />
-    </section>
+    </>
   );
 }
