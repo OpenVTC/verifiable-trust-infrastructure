@@ -858,13 +858,9 @@ async fn dispatch_trust_task_validated(
 }
 
 /// The document requirements (SPEC §7.2 items 5b, 7a, 8; §7.3 item 17) of
-/// `type_uri`: its published specification's, read off the registry — or, for
-/// a task this service binds ahead of its specification, the policy its draft
-/// declares ([`admission_tasks::local_spec_policy`]), so a task with no
-/// published schema is never dispatched with none of them enforced.
+/// `type_uri`: its published specification's, read off the registry.
 pub(crate) fn spec_policy_for(type_uri: &str) -> Option<trust_tasks_rs::SpecPolicy> {
     trust_tasks_rs::schema_index::spec_policy_for(type_uri)
-        .or_else(|| admission_tasks::local_spec_policy(type_uri))
 }
 
 /// The acceptance window this VTC is willing to act inside — **VTI-OPS-024**,
@@ -2838,8 +2834,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     MEMBER_UPDATE_TYPE,
     MEMBER_ADMIN_REMOVE_TYPE,
     MEMBER_PURGE_TYPE,
-    // Direct admission (`crate::ceremony::admission`): no published
-    // specification yet — local wire types, drafts in the pull request.
+    // Direct admission (`crate::ceremony::admission`), on the generated
+    // `vtc/members/{admit,make-membership}` types (trust-tasks-tf #784).
     admission_tasks::ADMIT_TYPE,
     admission_tasks::MAKE_MEMBERSHIP_TYPE,
     // Batch 2: the join decision and the community-profile edit, on the same

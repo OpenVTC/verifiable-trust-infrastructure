@@ -203,12 +203,14 @@ room whose owner is not one (and refuses `private` rooms outright).
 
 In the console: **Members → Add a member**, DID = `$ALICE`, role `member`.
 
-There is no CLI for this: `vtc/members/admit/0.1` has no published
-specification, so neither `cnm` nor `pnm` sends it. Without a browser, sign it
-yourself as the offline administrator and post it to
-`http://localhost:8200/v1/trust-tasks`, with the payload
-`{"subject": "$ALICE", "role": "member", "label": "Alice", "reason": "…"}`;
-the answer carries the member's VMC and role VAC.
+Or, from an administrator's `cnm` profile:
+
+```bash
+cnm members admit "$ALICE" --role member --label Alice --reason "…"
+```
+
+That sends `vtc/members/admit/0.1`; the answer carries the member's VMC and
+role VAC.
 
 Bob does **not** need to be a member of the community to be in a room — room
 membership is the room's own statement.
@@ -555,8 +557,6 @@ write is not retried:
 
 Found in this run; each is being fixed.
 
-- **Making a member needs the console.** No CLI until `vtc/members/admit` is
-  specified.
 - **Storage configs need the console too** — or an approver device and a
   signer of your own (§10.4).
 - **`private` rooms are not served**, and so neither is their commit relay —

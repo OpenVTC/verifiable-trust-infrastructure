@@ -559,6 +559,24 @@ fn member_credentials_response() -> Value {
     )
 }
 
+/// A completed direct admission, as `ceremony::admission::admit_directly`
+/// returns one, with the credentials [`credential`] stands for.
+fn admitted(label: Option<&str>) -> crate::ceremony::admission::Admitted {
+    let vc = || serde_json::from_value(credential()).expect("the fixture credential parses");
+    crate::ceremony::admission::Admitted {
+        subject: DID.into(),
+        role: crate::acl::VtcRole::Moderator,
+        label: label.map(Into::into),
+        returning: false,
+        approval: crate::ceremony::admission::Approval::Approved,
+        creds: crate::ceremony::execute::AdmitOutcome {
+            vmc: vc(),
+            role_vac: vc(),
+            status_list_index: 7,
+        },
+    }
+}
+
 /// The `CommunityProfile` this service serialises
 /// (`community/profile.rs:73`). Carried by profile show/update and by the
 /// config export document.
@@ -1786,6 +1804,30 @@ fn table() -> Vec<Conformance> {
             // optional document present, so the witness covers the widest
             // shape the route sends.
             member_credentials_response()
+        ),
+        checked!(
+            s::members::admit::v0_1::Payload,
+            s::members::admit::v0_1::Response,
+            json!({
+                "subject": DID,
+                "role": "moderator",
+                "label": "Ada",
+                "reason": "the founding moderator"
+            }),
+            // Built by the handler's own projection from a completed admission.
+            to_v(
+                crate::trust_tasks::admission_tasks::admit_response(admitted(Some("Ada")))
+                    .expect("a completed admission projects")
+            )
+        ),
+        checked!(
+            s::members::make_membership::v0_1::Payload,
+            s::members::make_membership::v0_1::Response,
+            json!({ "subject": DID, "reason": "the founder is a member too" }),
+            to_v(
+                crate::trust_tasks::admission_tasks::make_response(admitted(None))
+                    .expect("a completed admission projects")
+            )
         ),
         checked!(
             s::members::update::v0_1::Payload,

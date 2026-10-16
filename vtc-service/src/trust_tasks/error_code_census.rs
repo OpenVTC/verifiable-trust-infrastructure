@@ -1150,9 +1150,81 @@ fn witnesses() -> Vec<Witness> {
     table.extend(action_witnesses());
     table.extend(event_witnesses());
     table.extend(role_witnesses());
+    table.extend(admission_witnesses());
     #[cfg(feature = "vetting-pcs")]
     table.extend(pcs_witnesses());
     table
+}
+
+/// Direct admission's declared codes (`vtc/members/admit/0.1`,
+/// `vtc/members/make-membership/0.1`), each driven through the signed door in
+/// `direct_admission.rs`.
+fn admission_witnesses() -> Vec<Witness> {
+    use crate::ceremony::admission::codes as c;
+    use trust_tasks_rs::specs::vtc::members::admit;
+    use trust_tasks_rs::specs::vtc::members::make_membership as make;
+    vec![
+        witness!(
+            admit::v0_1::error_codes::HAS_ENTRY,
+            c::ADMIT_HAS_ENTRY,
+            "direct_admission.rs",
+            "add_a_member_admits_with_credentials_and_label"
+        ),
+        witness!(
+            admit::v0_1::error_codes::ALREADY_MEMBER,
+            c::ADMIT_ALREADY_MEMBER,
+            "direct_admission.rs",
+            "add_a_member_refuses_a_live_member_record"
+        ),
+        witness!(
+            admit::v0_1::error_codes::ROLE_NOT_PERMITTED,
+            c::ADMIT_ROLE_NOT_PERMITTED,
+            "direct_admission.rs",
+            "add_a_member_role_is_bounded_by_the_actors_authority"
+        ),
+        witness!(
+            admit::v0_1::error_codes::DENIED_BY_POLICY,
+            c::ADMIT_DENIED_BY_POLICY,
+            "direct_admission.rs",
+            "a_refusing_policy_refuses_with_its_code"
+        ),
+        witness!(
+            make::v0_1::error_codes::NO_ENTRY,
+            c::MAKE_NO_ENTRY,
+            "direct_admission.rs",
+            "make_membership_refusals"
+        ),
+        witness!(
+            make::v0_1::error_codes::APPLICATION_ENTRY,
+            c::MAKE_APPLICATION_ENTRY,
+            "direct_admission.rs",
+            "make_membership_refusals"
+        ),
+        witness!(
+            make::v0_1::error_codes::ALREADY_MEMBER,
+            c::MAKE_ALREADY_MEMBER,
+            "direct_admission.rs",
+            "make_membership_gives_a_bootstrap_admin_a_membership_and_leaves_its_entry"
+        ),
+        witness!(
+            make::v0_1::error_codes::REMOVED_MEMBER,
+            c::MAKE_REMOVED_MEMBER,
+            "direct_admission.rs",
+            "make_membership_refusals"
+        ),
+        witness!(
+            make::v0_1::error_codes::ENTRY_NOT_LIVE,
+            c::MAKE_ENTRY_NOT_LIVE,
+            "direct_admission.rs",
+            "make_membership_refusals"
+        ),
+        witness!(
+            make::v0_1::error_codes::DENIED_BY_POLICY,
+            c::MAKE_DENIED_BY_POLICY,
+            "direct_admission.rs",
+            "a_refusing_policy_refuses_with_its_code"
+        ),
+    ]
 }
 
 /// The live console channel's declared codes

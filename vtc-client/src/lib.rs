@@ -104,6 +104,7 @@ const SESSION_TIMEOUT_SECS: u64 = 60;
 pub mod acl;
 pub mod actions;
 pub mod git_ns;
+pub mod members;
 pub mod rooms;
 
 /// The Trust Task type URI of each admin verb this client sends as a signed

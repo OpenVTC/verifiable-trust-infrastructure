@@ -229,7 +229,7 @@ pub async fn run(
 }
 
 /// This profile's key, as the signer of `acl/*` documents.
-fn signing_key(keyring_key: &str) -> CliResult<HolderKey> {
+pub(crate) fn signing_key(keyring_key: &str) -> CliResult<HolderKey> {
     let session = auth::loaded_session(keyring_key).ok_or_else(|| {
         format!(
             "no stored identity for this community profile. Run `{} setup` first.",

@@ -550,7 +550,7 @@ impl VtcClient {
     /// `declared` is the task's declared error codes, honoured only on the
     /// HTTPS path (a 404 naming one becomes [`VtcError::NotFound`]); a session
     /// refusal is always [`VtcError::Refused`].
-    async fn acl_task<R: DeserializeOwned>(
+    pub(crate) async fn acl_task<R: DeserializeOwned>(
         &self,
         type_uri: &str,
         payload: Value,

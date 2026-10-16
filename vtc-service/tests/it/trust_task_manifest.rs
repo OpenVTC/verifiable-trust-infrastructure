@@ -421,6 +421,11 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // and served ahead of their release here, and went back to zero with
     // trust-tasks-rs 0.23, which generates both.
     //
+    // Direct admission's `vtc/members/admit/0.1` and
+    // `vtc/members/make-membership/0.1` were bound here ahead of their
+    // specifications, on local wire types, and went back to zero with
+    // trust-tasks-rs 0.31.9 (trust-tasks-tf #784), which generates both.
+    //
     // Hidden vetting's four tasks (`zkp-pcs`) were bound ahead of the 0.22 line reaching this
     // graph, and went back to zero with it: trust-tasks-rs 0.22.2 serves all four.
     //
@@ -436,23 +441,6 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
         "https://trusttasks.org/spec/trust-task-error/",
         1,
         "framework error envelope — a response type, not a task; absent from the task index by design",
-    ),
-    // Direct admission (`ceremony::admission`): adding a member without a join
-    // request, and making an existing ACL entry a membership. Bound ahead of
-    // their specifications, on local wire types marked for replacement
-    // (`trust_tasks::admission_tasks`); the drafts are in the pull request
-    // that added them. Debt, to fall back to zero when trust-tasks-rs serves
-    // them — the same round trip `webvh/servers/reconcile` made.
-    (
-        "https://trusttasks.org/spec/vtc/members/admit/",
-        1,
-        "direct admission — specification drafted, not yet published upstream",
-    ),
-    (
-        "https://trusttasks.org/spec/vtc/members/make-membership/",
-        1,
-        "direct admission of an existing ACL entry — specification drafted, not yet published \
-         upstream",
     ),
     // The vault archival lifecycle (PR #540): archive, unarchive, restore,
     // purge. Authored as local "openvtc 0.1 extensions" and never taken

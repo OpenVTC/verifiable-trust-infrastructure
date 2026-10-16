@@ -1296,11 +1296,15 @@ new flow, update both this section and the relevant `docs/*.md`.
   `granting::check_write` (the invitation rule); `admin` and
   authority-conferring roles are never seated; an administrative role takes the
   bound gesture; `application` entries and removed records are refused for
-  make-membership. Wire types are local (`trust_tasks::admission_tasks`, marked
-  for replacement by generated ones), with a local `SpecPolicy` the spine
-  enforces until the specs are published.
+  make-membership. Wire types, document policy and error codes are the
+  generated `trust_tasks_rs::specs::vtc::members::{admit, make_membership}`
+  (trust-tasks-tf #784); a payload is schema-checked before it is parsed, so an
+  out-of-schema `subject` / `role` is `malformedRequest`, never
+  `roleNotPermitted`.
 - **Code**: `vtc-service/src/ceremony/admission.rs`,
   `vtc-service/src/trust_tasks/admission_tasks.rs`,
+  `vtc_client::members`, `cnm-cli/src/members.rs` (`cnm members
+  {admit,make-membership}`),
   `vtc-service/policies/default/admission.rego`,
   `admin-ui/src/plugins/members/Admission.tsx`.
 - **Docs**: `docs/03-vtc/community-lifecycle.md` (*Admitting a member

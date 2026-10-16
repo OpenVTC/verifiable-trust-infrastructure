@@ -158,19 +158,22 @@ pub enum MakeMembershipRefusal {
     NotLive,
 }
 
-/// The declared error codes of the two tasks. Local to this service until the
-/// specifications are published (see `crate::trust_tasks::admission_tasks`).
+/// The declared error codes of the two tasks, read off their specifications
+/// (trust-tasks-tf #784) so none is spelled here.
 pub mod codes {
-    pub const ADMIT_HAS_ENTRY: &str = "vtc/members/admit:hasEntry";
-    pub const ADMIT_ALREADY_MEMBER: &str = "vtc/members/admit:alreadyMember";
-    pub const ADMIT_ROLE_NOT_PERMITTED: &str = "vtc/members/admit:roleNotPermitted";
-    pub const ADMIT_DENIED_BY_POLICY: &str = "vtc/members/admit:deniedByPolicy";
-    pub const MAKE_NO_ENTRY: &str = "vtc/members/make-membership:noEntry";
-    pub const MAKE_APPLICATION_ENTRY: &str = "vtc/members/make-membership:applicationEntry";
-    pub const MAKE_ALREADY_MEMBER: &str = "vtc/members/make-membership:alreadyMember";
-    pub const MAKE_REMOVED_MEMBER: &str = "vtc/members/make-membership:removedMember";
-    pub const MAKE_ENTRY_NOT_LIVE: &str = "vtc/members/make-membership:entryNotLive";
-    pub const MAKE_DENIED_BY_POLICY: &str = "vtc/members/make-membership:deniedByPolicy";
+    use trust_tasks_rs::specs::vtc::members::admit::v0_1::error_codes as admit;
+    use trust_tasks_rs::specs::vtc::members::make_membership::v0_1::error_codes as make;
+
+    pub const ADMIT_HAS_ENTRY: &str = admit::HAS_ENTRY.code;
+    pub const ADMIT_ALREADY_MEMBER: &str = admit::ALREADY_MEMBER.code;
+    pub const ADMIT_ROLE_NOT_PERMITTED: &str = admit::ROLE_NOT_PERMITTED.code;
+    pub const ADMIT_DENIED_BY_POLICY: &str = admit::DENIED_BY_POLICY.code;
+    pub const MAKE_NO_ENTRY: &str = make::NO_ENTRY.code;
+    pub const MAKE_APPLICATION_ENTRY: &str = make::APPLICATION_ENTRY.code;
+    pub const MAKE_ALREADY_MEMBER: &str = make::ALREADY_MEMBER.code;
+    pub const MAKE_REMOVED_MEMBER: &str = make::REMOVED_MEMBER.code;
+    pub const MAKE_ENTRY_NOT_LIVE: &str = make::ENTRY_NOT_LIVE.code;
+    pub const MAKE_DENIED_BY_POLICY: &str = make::DENIED_BY_POLICY.code;
 }
 
 /// What the checks before the policy settled.

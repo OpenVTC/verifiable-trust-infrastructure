@@ -21,6 +21,7 @@ use vti_common::audit::AuditEvent;
 use vti_rooms_dtg::test_support::Party;
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
+use vtc_service::ceremony::admission::codes;
 use vtc_service::members::{Member, get_member, store_member};
 use vtc_service::policy::model::{Policy, PolicyPurpose};
 use vtc_service::policy::storage::{set_active_policy_id, store_policy};
@@ -123,7 +124,7 @@ async fn send(fix: &mut Fixture, by: &Party, task: &str, payload: Value) -> (Sta
     submit(fix, by, &doc).await
 }
 
-fn code(reply: &Value) -> &str {
+fn tt_error_code(reply: &Value) -> &str {
     reply["payload"]["code"].as_str().unwrap_or_default()
 }
 
@@ -232,15 +233,12 @@ async fn make_membership_gives_a_bootstrap_admin_a_membership_and_leaves_its_ent
         json!({ "subject": bootstrap.did }),
     )
     .await;
-    assert_eq!(
-        code(&again),
-        "vtc/members/make-membership:alreadyMember",
-        "{again}"
-    );
+    assert_eq!(tt_error_code(&again), codes::MAKE_ALREADY_MEMBER, "{again}");
 }
 
 /// Every refusal before the policy: no entry, an application entry, a removed
-/// member's record, and a caller without `vtc.members.manage`.
+/// member's record, an expired entry, and a caller without
+/// `vtc.members.manage`.
 #[tokio::test]
 async fn make_membership_refusals() {
     let mut fix = fixture().await;
@@ -248,7 +246,7 @@ async fn make_membership_refusals() {
 
     let stranger = Party::new();
     let (_, r) = send(&mut fix, &actor, MAKE, json!({ "subject": stranger.did })).await;
-    assert_eq!(code(&r), "vtc/members/make-membership:noEntry", "{r}");
+    assert_eq!(tt_error_code(&r), codes::MAKE_NO_ENTRY, "{r}");
 
     // An application entry: git rights for a non-member.
     let bridge = Party::new();
@@ -264,11 +262,7 @@ async fn make_membership_refusals() {
     .await
     .unwrap();
     let (_, r) = send(&mut fix, &actor, MAKE, json!({ "subject": bridge.did })).await;
-    assert_eq!(
-        code(&r),
-        "vtc/members/make-membership:applicationEntry",
-        "{r}"
-    );
+    assert_eq!(tt_error_code(&r), codes::MAKE_APPLICATION_ENTRY, "{r}");
 
     // A former member, removed and then granted access again.
     let former = party_with_role(&fix.vtc, VtcRole::Moderator, &[]).await;
@@ -278,7 +272,7 @@ async fn make_membership_refusals() {
         .await
         .unwrap();
     let (_, r) = send(&mut fix, &actor, MAKE, json!({ "subject": former.did })).await;
-    assert_eq!(code(&r), "vtc/members/make-membership:removedMember", "{r}");
+    assert_eq!(tt_error_code(&r), codes::MAKE_REMOVED_MEMBER, "{r}");
     assert!(
         r["payload"]["message"]
             .as_str()
@@ -293,6 +287,22 @@ async fn make_membership_refusals() {
             .is_removed(),
         "the tombstone is not overwritten"
     );
+
+    // An expired entry authorizes nothing, so there is nothing to make a
+    // membership of.
+    let lapsed = Party::new();
+    let mut entry = VtcAclEntry::new(
+        lapsed.did.clone(),
+        VtcRole::Member,
+        vtc_service::acl::AdminAuthority::none(),
+        "did:key:test",
+    );
+    entry.expires_at = Some(1);
+    store_acl_entry(&fix.vtc.state.acl_ks, &entry)
+        .await
+        .unwrap();
+    let (_, r) = send(&mut fix, &actor, MAKE, json!({ "subject": lapsed.did })).await;
+    assert_eq!(tt_error_code(&r), codes::MAKE_ENTRY_NOT_LIVE, "{r}");
 
     // A credential officer holds no vtc.members.manage.
     let officer = party_with_role(&fix.vtc, VtcRole::Issuer, &[]).await;
@@ -349,7 +359,7 @@ async fn add_a_member_admits_with_credentials_and_label() {
         json!({ "subject": newcomer.did, "role": "member" }),
     )
     .await;
-    assert_eq!(code(&again), "vtc/members/admit:hasEntry", "{again}");
+    assert_eq!(tt_error_code(&again), codes::ADMIT_HAS_ENTRY, "{again}");
     // An entry with no membership is pointed at make-membership.
     let other = admin(&mut fix).await;
     let (_, r) = send(
@@ -359,7 +369,7 @@ async fn add_a_member_admits_with_credentials_and_label() {
         json!({ "subject": other.did, "role": "member" }),
     )
     .await;
-    assert_eq!(code(&r), "vtc/members/admit:hasEntry", "{r}");
+    assert_eq!(tt_error_code(&r), codes::ADMIT_HAS_ENTRY, "{r}");
     assert!(
         r["payload"]["message"]
             .as_str()
@@ -394,6 +404,110 @@ async fn add_a_member_readmits_a_former_member() {
     assert!(direct_admissions(&fix).await[0].returning);
 }
 
+/// A DID with a live member record and no entry is already a member: *Add a
+/// member* refuses rather than issue a second membership.
+#[tokio::test]
+async fn add_a_member_refuses_a_live_member_record() {
+    let mut fix = fixture().await;
+    let actor = admin(&mut fix).await;
+    let member = Party::new();
+    store_member(&fix.vtc.state.members_ks, &Member::fresh(&member.did))
+        .await
+        .unwrap();
+    let (_, r) = send(
+        &mut fix,
+        &actor,
+        ADMIT,
+        json!({ "subject": member.did, "role": "member" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), codes::ADMIT_ALREADY_MEMBER, "{r}");
+    assert!(
+        get_acl_entry(&fix.vtc.state.acl_ks, &member.did)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// The payloads are read against their published schemas before anything else
+/// (trust-tasks-tf #784): a `subject` that is no DID or is over 2048
+/// characters, and a `role` over 128, are a malformed document — not a role
+/// the community refuses. Nothing is written by any of them.
+#[tokio::test]
+async fn admission_payloads_out_of_schema_are_malformed() {
+    let mut fix = fixture().await;
+    let actor = admin(&mut fix).await;
+    let long_did = format!("did:key:z{}", "a".repeat(2048 - "did:key:z".len() + 1));
+    assert_eq!(long_did.chars().count(), 2049);
+    let target = Party::new();
+    for (task, payload, what) in [
+        (
+            ADMIT,
+            json!({ "subject": "not-a-did", "role": "member" }),
+            "admit subject without did:",
+        ),
+        (
+            ADMIT,
+            json!({ "subject": long_did, "role": "member" }),
+            "admit subject over 2048",
+        ),
+        (
+            ADMIT,
+            json!({ "subject": target.did, "role": "r".repeat(129) }),
+            "admit role over 128",
+        ),
+        (
+            ADMIT,
+            json!({ "subject": target.did, "role": "member", "label": "  " }),
+            "admit blank label",
+        ),
+        (
+            ADMIT,
+            json!({ "subject": target.did, "role": "member", "reason": "x".repeat(1025) }),
+            "admit reason over 1024",
+        ),
+        (
+            ADMIT,
+            json!({ "subject": target.did, "role": "member", "surprise": true }),
+            "admit unknown member",
+        ),
+        (
+            MAKE,
+            json!({ "subject": "not-a-did" }),
+            "make subject without did:",
+        ),
+        (
+            MAKE,
+            json!({ "subject": long_did }),
+            "make subject over 2048",
+        ),
+    ] {
+        let (status, r) = send(&mut fix, &actor, task, payload).await;
+        assert!(!status.is_success(), "{what}: {r}");
+        assert_eq!(tt_error_code(&r), "malformedRequest", "{what}: {r}");
+    }
+
+    // At 128 characters the role is in schema, and an unknown one is the
+    // community's refusal.
+    let (_, r) = send(
+        &mut fix,
+        &actor,
+        ADMIT,
+        json!({ "subject": target.did, "role": "r".repeat(128) }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), codes::ADMIT_ROLE_NOT_PERMITTED, "{r}");
+
+    assert!(
+        get_acl_entry(&fix.vtc.state.acl_ks, &target.did)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(direct_admissions(&fix).await.is_empty());
+}
+
 /// A role beyond `member` is assigning a role (`vtc.roles.assign`), bounded by
 /// the actor's own entry; `admin` and `application` are never seated; an
 /// unknown role is refused. Nothing is written by any of them.
@@ -420,8 +534,8 @@ async fn add_a_member_role_is_bounded_by_the_actors_authority() {
         )
         .await;
         assert_eq!(
-            code(&r),
-            "vtc/members/admit:roleNotPermitted",
+            tt_error_code(&r),
+            codes::ADMIT_ROLE_NOT_PERMITTED,
             "{role}: {r}"
         );
     }
@@ -601,7 +715,7 @@ async fn a_refusing_policy_refuses_with_its_code() {
     )
     .await;
     assert!(!status.is_success(), "{r}");
-    assert_eq!(code(&r), "vtc/members/admit:deniedByPolicy", "{r}");
+    assert_eq!(tt_error_code(&r), codes::ADMIT_DENIED_BY_POLICY, "{r}");
     assert!(r["payload"]["message"].as_str().unwrap().contains("closed"));
     assert!(
         get_acl_entry(&fix.vtc.state.acl_ks, &target.did)
@@ -609,6 +723,12 @@ async fn a_refusing_policy_refuses_with_its_code() {
             .unwrap()
             .is_none()
     );
+
+    // Making a membership is decided by the same policy, under its own code.
+    let (status, r) = send(&mut fix, &actor, MAKE, json!({ "subject": actor.did })).await;
+    assert!(!status.is_success(), "{r}");
+    assert_eq!(tt_error_code(&r), codes::MAKE_DENIED_BY_POLICY, "{r}");
+    assert!(!is_active_member(&fix, &actor.did).await);
 }
 
 /// A policy may not choose the role: an `allow` naming another one is vetoed
@@ -632,7 +752,7 @@ async fn a_policy_naming_another_role_is_vetoed() {
     )
     .await;
     assert!(!status.is_success(), "{r}");
-    assert_eq!(code(&r), "vtc/members/admit:deniedByPolicy", "{r}");
+    assert_eq!(tt_error_code(&r), codes::ADMIT_DENIED_BY_POLICY, "{r}");
     assert!(
         r["payload"]["message"]
             .as_str()
@@ -685,9 +805,9 @@ async fn the_acl_listing_marks_entries_without_a_membership() {
     crate::common::signed::assert_conforms("https://trusttasks.org/spec/acl/list/0.2", &list);
 }
 
-/// Bound ahead of their specifications, the two tasks still get the document
-/// requirements their drafts declare from the spine: an unsigned one is
-/// refused before it reaches the handler.
+/// The spine enforces the document requirements the two specifications
+/// declare (a proof, among them): an unsigned one is refused before it
+/// reaches the handler.
 #[tokio::test]
 async fn an_unsigned_admission_is_refused_by_the_spine() {
     let mut fix = fixture().await;
@@ -702,7 +822,7 @@ async fn an_unsigned_admission_is_refused_by_the_spine() {
         let doc = crate::common::signed::unsigned(&actor, task, payload);
         let (status, reply) = post(&fix.vtc, &doc).await;
         assert!(!status.is_success(), "{reply}");
-        assert_eq!(code(&reply), "proofRequired", "{reply}");
+        assert_eq!(tt_error_code(&reply), "proofRequired", "{reply}");
     }
     assert!(!is_active_member(&fix, &actor.did).await);
 }

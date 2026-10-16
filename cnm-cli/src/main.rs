@@ -9,6 +9,7 @@ mod consent;
 mod did_log;
 mod git;
 mod member;
+mod members;
 mod onboard;
 mod pnm_profile;
 mod setup;
@@ -253,6 +254,14 @@ enum Commands {
     Member {
         #[command(subcommand)]
         command: member::MemberCommands,
+    },
+
+    /// Admit a DID directly, without a join request: `admit` (Add a member)
+    /// and `make-membership` (an entry with no member record). Decided by the
+    /// community's admission policy. (`member` is your own membership.)
+    Members {
+        #[command(subcommand)]
+        command: members::MembersCommands,
     },
 
     /// Answer the community's consent requests: making or widening an
@@ -1048,6 +1057,7 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Actions { .. }
             | Commands::Access { .. }
             | Commands::Member { .. }
+            | Commands::Members { .. }
             | Commands::Audit { .. }
             | Commands::Backup { .. }
     )
@@ -1704,6 +1714,14 @@ async fn main() {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => {
                     member::run(command, &key, &target, cli.transport.into()).await
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Members { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => {
+                    members::run(command, &key, &target, cli.transport.into()).await
                 }
                 Err(e) => Err(e),
             }
