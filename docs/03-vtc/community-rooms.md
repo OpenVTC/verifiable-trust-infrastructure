@@ -149,7 +149,6 @@ served and tested but has no CLI.
   the screens are follow-up work.
 - **Renewing the community's own authority** before `ownerAuthorityValidUntil`: reissue
   with `pnm rooms owner issue-authority` at the community's VTA for now.
-- **A live `rooms` hint** on the console's event stream for these changes.
 - **Removing a departing member from every room the community owns** when they leave
   the community (`members/add` item 6, a SHOULD): today an administrator removes them
   room by room.
