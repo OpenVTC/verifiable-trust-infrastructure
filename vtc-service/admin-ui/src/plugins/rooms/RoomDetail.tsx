@@ -47,6 +47,7 @@ import type {
   RoomUsageNow,
 } from "@/lib/wire-types";
 
+import { RefusalCard } from "./CommunityRefusal";
 import { DayChart, type DayMetric } from "./DayChart";
 import { LimitsForm } from "./LimitsForm";
 import { LifecyclePill, TIER_BLURB, communityRoomPath, configPath, type Tier } from "./shared";
@@ -472,13 +473,12 @@ function MembersUsage({ data }: { data: RoomGetResponse }) {
         Members who have added nothing are not listed: this is not a membership roster.
       </p>
       {q.isPending && <p>Reading members' usage…</p>}
-      {q.isError && (
-        <p className="muted">
-          {unavailable
-            ? "This host keeps no per-member figures for this room."
-            : "Members' usage could not be read."}
-        </p>
-      )}
+      {q.isError &&
+        (unavailable ? (
+          <p className="muted">This host keeps no per-member figures for this room.</p>
+        ) : (
+          <RefusalCard title="Members' usage could not be read" error={q.error} />
+        ))}
       {q.data && q.data.items.length === 0 && <p className="muted">No member has added a file.</p>}
       {q.data && q.data.items.length > 0 && (
         <DataTable
@@ -595,7 +595,7 @@ function Activity({ data }: { data: RoomGetResponse }) {
         />
       </div>
       {q.isPending && <p>Reading activity…</p>}
-      {q.isError && <p className="muted">Activity could not be read.</p>}
+      {q.isError && <RefusalCard title="Activity could not be read" error={q.error} />}
       {q.data && (
         <>
           <DayChart

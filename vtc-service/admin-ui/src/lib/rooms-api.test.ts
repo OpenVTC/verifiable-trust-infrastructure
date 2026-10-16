@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { postSignedRead } from "./api";
 import {
   ROOMS_USAGE_TASK,
+  USAGE_INVALID_RANGE,
   csvCell,
   fetchUsage,
   fillDays,
@@ -76,6 +77,53 @@ describe("fetchUsage", () => {
     const report = await fetchUsage({ groupBy: "day" });
     expect(report.truncated).toBe(true);
     expect(report.items).toHaveLength(10);
+  });
+
+  // The spec refuses a range starting before the oldest retained day, and a
+  // fixed 30-day window does exactly that on a community whose first upload
+  // was yesterday: the page read "Usage could not be read" from then on.
+  it("asks again from the oldest retained day an invalidRange refusal names", async () => {
+    vi.mocked(postSignedRead)
+      .mockRejectedValueOnce({
+        status: 400,
+        code: USAGE_INVALID_RANGE,
+        message: "the range starts before the oldest day this community has kept",
+        details: { earliest: "2026-10-16" },
+      })
+      .mockResolvedValueOnce({
+        asOf: "2026-10-17T01:00:00Z",
+        from: "2026-10-16",
+        to: "2026-10-17",
+        items: [row({ roomId: "r1" })],
+      });
+    const sort = { by: "bytes" as const, order: "desc" as const };
+    const report = await fetchUsage({
+      groupBy: "room",
+      filter: { from: "2026-09-18", to: "2026-10-17" },
+      sort,
+    });
+    expect(report.historyStartsAt).toBe("2026-10-16");
+    expect(report.from).toBe("2026-10-16");
+    expect(report.items).toHaveLength(1);
+    expect(vi.mocked(postSignedRead).mock.calls[1]).toEqual([
+      ROOMS_USAGE_TASK,
+      { groupBy: "room", limit: 100, filter: { from: "2026-10-16", to: "2026-10-17" }, sort },
+    ]);
+  });
+
+  it("passes on any other refusal, and one naming no usable day", async () => {
+    for (const err of [
+      { status: 403, code: "permissionDenied", message: "no" },
+      { status: 400, code: USAGE_INVALID_RANGE, message: "inverted" },
+      { status: 400, code: USAGE_INVALID_RANGE, message: "x", details: { earliest: "2026-09-01" } },
+      { status: 400, code: USAGE_INVALID_RANGE, message: "x", details: { earliest: "2026-11-01" } },
+    ]) {
+      vi.mocked(postSignedRead).mockReset().mockRejectedValueOnce(err);
+      await expect(
+        fetchUsage({ groupBy: "room", filter: { from: "2026-09-18", to: "2026-10-17" } }),
+      ).rejects.toBe(err);
+      expect(vi.mocked(postSignedRead)).toHaveBeenCalledTimes(1);
+    }
   });
 });
 

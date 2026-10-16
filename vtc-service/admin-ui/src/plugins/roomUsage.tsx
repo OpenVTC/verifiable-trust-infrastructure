@@ -36,6 +36,7 @@ import {
 } from "@/lib/rooms-api";
 import type { RoomsUsageRow } from "@/lib/wire-types";
 
+import { RefusalCard } from "./rooms/CommunityRefusal";
 import { DayChart, type DayMetric } from "./rooms/DayChart";
 import { roomPath } from "./rooms/shared";
 
@@ -137,7 +138,10 @@ export function RoomUsage() {
 
         {q.isPending && <p>Reading usage…</p>}
         {q.isError && (
-          <p className="muted">Usage could not be read. This is a failure to ask, not a community with none.</p>
+          <RefusalCard
+            title="Usage could not be read — a failure to ask, not a community with none"
+            error={q.error}
+          />
         )}
         {q.data && q.data.items.length === 0 && (
           <p className="muted">Nothing stored and nothing read in this range.</p>
@@ -150,7 +154,10 @@ export function RoomUsage() {
               <Rows group={group} rows={q.data.items} />
             )}
             <p className="muted rooms-sub">
-              {q.data.from} to {q.data.to}. Space and files as of {formatIso(q.data.asOf)};
+              {q.data.from} to {q.data.to}.
+              {q.data.historyStartsAt &&
+                ` This community has kept usage since ${q.data.historyStartsAt}, so the report starts there.`}{" "}
+              Space and files as of {formatIso(q.data.asOf)};
               uploads, downloads and egress over the range.
               {q.data.truncated && ` Only the first ${q.data.items.length} rows are shown and exported.`}
             </p>

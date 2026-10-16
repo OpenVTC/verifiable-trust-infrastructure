@@ -66,9 +66,15 @@ async fn send(vtc: &TestVtc, by: &Party, uri: &str, payload: Value) -> Value {
 
 /// A hosted room at `visibility`, on the default config.
 async fn room(vtc: &TestVtc, visibility: Visibility) -> vti_rooms::Room {
+    room_owned_by(vtc, visibility, "did:key:zOwner").await
+}
+
+/// As [`room`], owned by `owner` — the community's own DID for a
+/// community-owned room.
+async fn room_owned_by(vtc: &TestVtc, visibility: Visibility, owner: &str) -> vti_rooms::Room {
     let room = vti_rooms::Room {
         room_id: format!("did:key:z6MkRoom{}", uuid::Uuid::new_v4().simple()),
-        owner_did: "did:key:zOwner".into(),
+        owner_did: owner.into(),
         visibility,
         retention_policy: vti_rooms::RetentionPolicy::Chained,
         anchor_cadence: Default::default(),
@@ -602,5 +608,73 @@ async fn vtc_rooms_usage_refuses_with_its_declared_codes() {
         )
         .await;
         assert_eq!(tt_error_code(&reply), Some(USAGE_INVALID_CURSOR), "{reply}");
+    }
+}
+
+/// The console's own queries — every grouping, over 30, 90 and 365 days ending
+/// today, with every sort it offers — on a community whose file history began
+/// today, over rooms of each tier, a community-owned room and a room that has
+/// held nothing.
+///
+/// Each is refused `invalidRange`, as item 2 requires of a range starting
+/// before the oldest retained day, and the refusal names that day in
+/// `details.earliest`; the same query from that day is answered. The console
+/// used to send the fixed window and render the refusal as "Usage could not be
+/// read"; it now asks again from `earliest` (`admin-ui/src/lib/rooms-api.ts`).
+#[tokio::test]
+async fn the_consoles_window_on_a_young_history_is_refused_with_the_earliest_day() {
+    let vtc = vtc().await;
+    for visibility in [
+        Visibility::Open,
+        Visibility::Attributed,
+        Visibility::Private,
+    ] {
+        let r = room(&vtc, visibility).await;
+        upload(&vtc, &r, 100, 20).await;
+    }
+    let owned = room_owned_by(&vtc, Visibility::Attributed, TEST_VTC_DID).await;
+    upload(&vtc, &owned, 200, 21).await;
+    room(&vtc, Visibility::Open).await;
+
+    let today = chrono::Utc::now().date_naive();
+    let sorts = ["bytes", "egressBytes", "uploads", "downloads", "files"];
+    for days in [30u64, 90, 365] {
+        let from = (today - chrono::Days::new(days - 1)).to_string();
+        for (group, sort) in ["room", "member", "storageConfig"]
+            .into_iter()
+            .flat_map(|g| sorts.map(|s| (g, json!({ "by": s, "order": "desc" }))))
+            .chain([("day", json!({ "by": "date", "order": "asc" }))])
+        {
+            // A signer per query pair, so the per-signer limiter stays out of it.
+            let a = seed(&vtc, AdminAuthority::community_admin()).await;
+            let query = |from: &str| {
+                json!({
+                    "groupBy": group,
+                    "limit": 100,
+                    "filter": { "from": from, "to": today.to_string() },
+                    "sort": sort,
+                })
+            };
+            let reply = send(&vtc, &a, USAGE, query(&from)).await;
+            assert_eq!(
+                tt_error_code(&reply),
+                Some(USAGE_INVALID_RANGE),
+                "{group} over {days} days: {reply}"
+            );
+            let earliest = reply["payload"]["details"]["earliest"]
+                .as_str()
+                .unwrap_or_else(|| panic!("the refusal names the earliest day: {reply}"));
+            assert_eq!(earliest, today.to_string(), "{reply}");
+
+            let reply = send(&vtc, &a, USAGE, query(earliest)).await;
+            assert_eq!(
+                tt_error_code(&reply),
+                None,
+                "{group} from {earliest}: {reply}"
+            );
+            let items = reply["payload"]["items"].as_array().expect("items");
+            assert!(!items.is_empty(), "{group}: {reply}");
+            assert_eq!(reply["payload"]["from"], earliest);
+        }
     }
 }

@@ -11,7 +11,7 @@
 // The pure helpers (date ranges, limit thresholds, CSV) are exported for their
 // tests; the screens are `plugins/rooms/*`.
 
-import { postSignedRead, postSignedTrustTask } from "./api";
+import { postSignedRead, postSignedTrustTask, type ApiError } from "./api";
 import type {
   RoomGetResponse,
   RoomScopeLimits,
@@ -29,6 +29,11 @@ export const ROOMS_LIMITS_SET_TASK = "https://trusttasks.org/spec/vtc/rooms/limi
 /** The refusal `vtc/rooms/usage` gives for per-member figures on a `private`
  *  room, whose membership this host cannot see. */
 export const MEMBER_USAGE_UNAVAILABLE = "vtc/rooms/usage:memberUsageUnavailable";
+
+/** The refusal `vtc/rooms/usage` gives a range it cannot answer — among them
+ *  one starting before the community's oldest retained day, whose
+ *  `details.earliest` names that day (spec item 2). */
+export const USAGE_INVALID_RANGE = "vtc/rooms/usage:invalidRange";
 
 export type UsageGroup = RoomsUsagePayload["groupBy"];
 export type UsageFilter = NonNullable<RoomsUsagePayload["filter"]>;
@@ -51,20 +56,53 @@ export interface UsageReport {
   items: RoomsUsageRow[];
   /** More rows exist than `MAX_USAGE_PAGES` pages hold. */
   truncated: boolean;
+  /** Set when the range asked for began before the community's oldest
+   *  retained day: the report starts there instead, and this is that day. */
+  historyStartsAt?: string;
 }
+
+/** `details.earliest` of an `invalidRange` refusal, when it is a day. */
+function earliestOf(err: unknown): string | null {
+  const e = err as ApiError | null;
+  if (e?.code !== USAGE_INVALID_RANGE) return null;
+  const earliest = e.details?.earliest;
+  return typeof earliest === "string" && /^\d{4}-\d{2}-\d{2}$/.test(earliest) ? earliest : null;
+}
+
+type UsageQuery = {
+  groupBy: UsageGroup;
+  filter?: UsageFilter;
+  sort?: UsageSort;
+};
 
 /**
  * Every row of one usage query, page by page.
  *
- * The cursor is bound to the query it pages (a changed filter is refused as
- * `invalidCursor`), so each page re-sends the identical grouping, filter and
- * sort with only the cursor added.
+ * The specification refuses a range that starts before the community's oldest
+ * retained day (`invalidRange`, item 2) — which a fixed 30/90/365-day window
+ * does on every community whose file history is younger than the window, from
+ * the first upload on. The refusal names that day (`details.earliest`), so the
+ * range is asked again from there, once, and the report says where it starts.
+ * Any other refusal, or one naming a day outside the range, is the caller's.
  */
-export async function fetchUsage(query: {
-  groupBy: UsageGroup;
-  filter?: UsageFilter;
-  sort?: UsageSort;
-}): Promise<UsageReport> {
+export async function fetchUsage(query: UsageQuery): Promise<UsageReport> {
+  try {
+    return await fetchUsagePages(query);
+  } catch (err) {
+    const earliest = earliestOf(err);
+    const f = query.filter;
+    if (!earliest || !f?.from || !(f.from < earliest) || (f.to && earliest > f.to)) throw err;
+    const report = await fetchUsagePages({ ...query, filter: { ...f, from: earliest } });
+    return { ...report, historyStartsAt: earliest };
+  }
+}
+
+/**
+ * The pages of one query. The cursor is bound to the query it pages (a changed
+ * filter is refused as `invalidCursor`), so each page re-sends the identical
+ * grouping, filter and sort with only the cursor added.
+ */
+async function fetchUsagePages(query: UsageQuery): Promise<UsageReport> {
   const items: RoomsUsageRow[] = [];
   let cursor: string | undefined;
   let first: RoomsUsageResponse | null = null;
