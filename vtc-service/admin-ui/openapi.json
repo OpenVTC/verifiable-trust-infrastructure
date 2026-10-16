@@ -6521,20 +6521,29 @@
           "failed"
         ]
       },
-      "VtcRegistrySyncJobsRetryV0_1Ext": {
+      "VtcRegistrySyncJobsRetryV0_2Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
         "additionalProperties": true,
         "minProperties": 1
       },
-      "VtcRegistrySyncJobsRetryV0_1Requeued": {
+      "VtcRegistrySyncJobsRetryV0_2Requeued": {
         "type": "object",
         "required": [
-          "jobId"
+          "jobId",
+          "from"
         ],
         "properties": {
           "ext": {
-            "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_1Ext"
+            "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_2Ext"
+          },
+          "from": {
+            "type": "string",
+            "description": "The state the job was in. `failed` — the reconciler had abandoned it. `pending` — it was waiting out a retry backoff and has been brought forward.",
+            "enum": [
+              "failed",
+              "pending"
+            ]
           },
           "jobId": {
             "type": "string",
@@ -6548,7 +6557,7 @@
         },
         "additionalProperties": false
       },
-      "VtcRegistrySyncJobsRetryV0_1Response": {
+      "VtcRegistrySyncJobsRetryV0_2Response": {
         "type": "object",
         "required": [
           "requeued",
@@ -6556,26 +6565,26 @@
         ],
         "properties": {
           "ext": {
-            "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_1Ext"
+            "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_2Ext"
           },
           "requeued": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_1Requeued"
+              "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_2Requeued"
             },
-            "description": "Jobs now scheduled for dispatch. Empty is a valid answer and is not an error."
+            "description": "Jobs now scheduled for dispatch on the reconciler's next pass. Empty is a valid answer and is not an error."
           },
           "skipped": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_1Skipped"
+              "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_2Skipped"
             },
             "description": "Jobs the maintainer declined to requeue, each with why. Reported rather than failing the task, so a bulk retry is not defeated by one ineligible row."
           }
         },
         "additionalProperties": false
       },
-      "VtcRegistrySyncJobsRetryV0_1Skipped": {
+      "VtcRegistrySyncJobsRetryV0_2Skipped": {
         "type": "object",
         "required": [
           "jobId",
@@ -6583,7 +6592,7 @@
         ],
         "properties": {
           "ext": {
-            "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_1Ext"
+            "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_2Ext"
           },
           "jobId": {
             "type": "string",
@@ -6591,9 +6600,10 @@
           },
           "reason": {
             "type": "string",
-            "description": "`notFailed` — the reconciler still owns the job, so requeueing it would dispatch the same mutation twice. `notFound` — no such job; it may already have been retried, discarded, or swept.",
+            "description": "`inFlight` — the reconciler is dispatching the job now, so requeueing it would dispatch the same mutation twice. `held` — the job is deliberately delayed, and the delay is the point; it is never brought forward. `notFound` — no such job; it may already have been dispatched, retried, discarded, or swept.",
             "enum": [
-              "notFailed",
+              "inFlight",
+              "held",
               "notFound"
             ]
           }

@@ -790,7 +790,7 @@ export const fetchDiagnostics = (): Promise<DiagnosticsResponse> =>
 const SYNC_JOBS_LIST_TASK =
   "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1";
 const SYNC_JOBS_RETRY_TASK =
-  "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.1";
+  "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.2";
 const SYNC_JOBS_DISCARD_TASK =
   "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1";
 
@@ -800,14 +800,22 @@ export const fetchSyncJobs = (
   postSignedRead<SyncJobsListResponse>(SYNC_JOBS_LIST_TASK, state ? { state } : {});
 
 /**
- * Requeue one job, or every failed job.
+ * Requeue one job, every failed job, or every job waiting out a retry
+ * backoff (`retry/0.2`). A job held for the RTBF window is never moved; the
+ * daemon reports it as `held`.
  *
- * `allFailed` is spelled as its own member rather than an omitted `jobId`,
- * exactly as the specification requires: a bug that dropped the identifier
- * would otherwise turn one operator's retry into a bulk requeue.
+ * `allFailed` and `allWaiting` are spelled as their own members rather than
+ * an omitted `jobId`, exactly as the specification requires: a bug that
+ * dropped the identifier would otherwise turn one operator's retry into a
+ * bulk requeue.
  */
+export type RetryTarget =
+  | { jobId: string }
+  | { allFailed: true }
+  | { allWaiting: true };
+
 export const retrySyncJob = (
-  target: { jobId: string } | { allFailed: true },
+  target: RetryTarget,
 ): Promise<SyncJobsRetryResponse> =>
   postSignedTrustTask<SyncJobsRetryResponse>(SYNC_JOBS_RETRY_TASK, target);
 

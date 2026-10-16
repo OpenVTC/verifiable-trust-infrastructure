@@ -3608,30 +3608,35 @@ export interface components {
          */
         VtcRegistrySyncJobsListV0_1State: "pending" | "inFlight" | "failed";
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRegistrySyncJobsRetryV0_1Ext: {
+        VtcRegistrySyncJobsRetryV0_2Ext: {
             [key: string]: unknown;
         };
-        VtcRegistrySyncJobsRetryV0_1Requeued: {
-            ext?: components["schemas"]["VtcRegistrySyncJobsRetryV0_1Ext"];
+        VtcRegistrySyncJobsRetryV0_2Requeued: {
+            ext?: components["schemas"]["VtcRegistrySyncJobsRetryV0_2Ext"];
+            /**
+             * @description The state the job was in. `failed` — the reconciler had abandoned it. `pending` — it was waiting out a retry backoff and has been brought forward.
+             * @enum {string}
+             */
+            from: "failed" | "pending";
             jobId: string;
             /** @description The member whose record the requeued job carries. */
             memberDid?: string;
         };
-        VtcRegistrySyncJobsRetryV0_1Response: {
-            ext?: components["schemas"]["VtcRegistrySyncJobsRetryV0_1Ext"];
-            /** @description Jobs now scheduled for dispatch. Empty is a valid answer and is not an error. */
-            requeued: components["schemas"]["VtcRegistrySyncJobsRetryV0_1Requeued"][];
+        VtcRegistrySyncJobsRetryV0_2Response: {
+            ext?: components["schemas"]["VtcRegistrySyncJobsRetryV0_2Ext"];
+            /** @description Jobs now scheduled for dispatch on the reconciler's next pass. Empty is a valid answer and is not an error. */
+            requeued: components["schemas"]["VtcRegistrySyncJobsRetryV0_2Requeued"][];
             /** @description Jobs the maintainer declined to requeue, each with why. Reported rather than failing the task, so a bulk retry is not defeated by one ineligible row. */
-            skipped: components["schemas"]["VtcRegistrySyncJobsRetryV0_1Skipped"][];
+            skipped: components["schemas"]["VtcRegistrySyncJobsRetryV0_2Skipped"][];
         };
-        VtcRegistrySyncJobsRetryV0_1Skipped: {
-            ext?: components["schemas"]["VtcRegistrySyncJobsRetryV0_1Ext"];
+        VtcRegistrySyncJobsRetryV0_2Skipped: {
+            ext?: components["schemas"]["VtcRegistrySyncJobsRetryV0_2Ext"];
             jobId: string;
             /**
-             * @description `notFailed` — the reconciler still owns the job, so requeueing it would dispatch the same mutation twice. `notFound` — no such job; it may already have been retried, discarded, or swept.
+             * @description `inFlight` — the reconciler is dispatching the job now, so requeueing it would dispatch the same mutation twice. `held` — the job is deliberately delayed, and the delay is the point; it is never brought forward. `notFound` — no such job; it may already have been dispatched, retried, discarded, or swept.
              * @enum {string}
              */
-            reason: "notFailed" | "notFound";
+            reason: "inFlight" | "held" | "notFound";
         };
         /**
          * @description One of `admin`, `moderator`, `issuer`, `member`, `application`, or                  `custom:<name>` where `<name>` is 1..=64 lowercase                  alphanumerics, `-`, or `_`.

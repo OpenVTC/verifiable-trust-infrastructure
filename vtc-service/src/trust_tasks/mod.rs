@@ -3018,6 +3018,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     admin_tasks::DIAGNOSTICS_TYPE,
     admin_tasks::SYNC_JOBS_LIST_TYPE,
     admin_tasks::SYNC_JOBS_RETRY_TYPE,
+    admin_tasks::SYNC_JOBS_RETRY_0_2_TYPE,
     admin_tasks::SYNC_JOBS_DISCARD_TYPE,
     admin_tasks::RECORDS_LIST_TYPE,
     admin_tasks::AUDIT_LIST_TYPE,

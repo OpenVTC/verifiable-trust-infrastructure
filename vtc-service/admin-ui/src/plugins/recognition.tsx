@@ -18,6 +18,7 @@ import {
   type DriftEntry,
   type FailedSyncJob,
   type RecognitionCheck,
+  type RetryTarget,
   type SyncJobsRetryResponse,
 } from "@/lib/api";
 import { useToast } from "@/lib/toast";
@@ -29,7 +30,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Tabs } from "@/components/Tabs";
 import { InfoTip } from "@/components/InfoTip";
 import { fetchAllRegistryRecords } from "@/plugins/recognition/records";
-import { pendingFoot } from "@/plugins/recognition/pending";
+import { pendingFoot, skipMessage } from "@/plugins/recognition/pending";
 import { TrustRecords } from "@/plugins/recognition/TrustRecords";
 import { formatIso } from "@/lib/format";
 
@@ -111,11 +112,7 @@ export function Recognition() {
     void queryClient.invalidateQueries({ queryKey: ["diagnostics"] });
   };
 
-  const retry = useMutation<
-    SyncJobsRetryResponse,
-    Error,
-    { jobId: string } | { allFailed: true }
-  >({
+  const retry = useMutation<SyncJobsRetryResponse, Error, RetryTarget>({
     mutationFn: retrySyncJob,
     onSuccess: (r) => {
       // The response reports both halves, and the skipped half is the
@@ -130,12 +127,7 @@ export function Recognition() {
         );
       }
       for (const s of r.skipped) {
-        toast.push(
-          "info",
-          s.reason === "notFound"
-            ? `Job ${s.jobId.slice(0, 8)}… is gone — already retried, discarded, or swept.`
-            : `Job ${s.jobId.slice(0, 8)}… is not failed; the reconciler still owns it.`,
-        );
+        toast.push("info", skipMessage(s.jobId, s.reason));
       }
       invalidate();
     },
@@ -323,6 +315,22 @@ export function Recognition() {
                 }
               />
             </div>
+            {/* Jobs waiting out a backoff move on their own, but the wait
+                reaches an hour; once the cause is fixed (or a registry was
+                just configured) there is no reason to make members wait.
+                RTBF-held jobs are never moved — `retry/0.2` reports them
+                as `held`. */}
+            {diagnostics.data.syncerEnabled &&
+              diagnostics.data.ext["org.openvtc"].backingOff.count > 0 && (
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={retry.isPending || discard.isPending}
+                  onClick={() => retry.mutate({ allWaiting: true })}
+                >
+                  {retry.isPending ? "Requeueing…" : "Run waiting jobs now"}
+                </button>
+              )}
             <dl>
               <dt>Last success</dt>
               <dd>

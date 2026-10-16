@@ -109,7 +109,7 @@ use crate::server::AppState;
         // The operational verbs the console signs (`trust_tasks::admin_tasks`).
         health::DiagnosticsResponse,
         vta_sdk::openapi::RegistrySyncJobsList01Response,
-        vta_sdk::openapi::RegistrySyncJobsRetry01Response,
+        vta_sdk::openapi::RegistrySyncJobsRetry02Response,
         vta_sdk::openapi::RegistrySyncJobsDiscard01Response,
         vta_sdk::openapi::RegistryRecordsList01Response,
         // The room-hosting administrator's reads and limit override

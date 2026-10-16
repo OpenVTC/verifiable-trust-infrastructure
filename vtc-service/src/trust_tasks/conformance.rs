@@ -2144,6 +2144,24 @@ fn table() -> Vec<Conformance> {
                 }],
             })
         ),
+        // `sync_jobs_retry_v0_2`: a pending job brought forward says so, and
+        // an RTBF-batched one is `held`.
+        checked!(
+            s::registry::sync_jobs::retry::v0_2::Payload,
+            s::registry::sync_jobs::retry::v0_2::Response,
+            json!({ "allWaiting": true }),
+            json!({
+                "requeued": [{
+                    "jobId": "07c6c189-8272-4761-96e9-0ef869380665",
+                    "memberDid": "did:web:member.example",
+                    "from": "pending",
+                }],
+                "skipped": [{
+                    "jobId": "1f2e3d4c-5b6a-4798-8765-43210fedcba9",
+                    "reason": "held",
+                }],
+            })
+        ),
         checked!(
             s::registry::sync_jobs::discard::v0_1::Payload,
             s::registry::sync_jobs::discard::v0_1::Response,

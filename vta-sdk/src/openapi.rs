@@ -196,6 +196,12 @@ spec_types! {
     RegistrySyncJobsRetry01Payload(sync_jobs::retry::v0_1::Payload);
     /// `vtc/registry/sync-jobs/retry/0.1#response`.
     RegistrySyncJobsRetry01Response(sync_jobs::retry::v0_1::Response);
+    /// `vtc/registry/sync-jobs/retry/0.2` payload: exactly one of `jobId`,
+    /// `allFailed` or `allWaiting`; a pending job waiting out its backoff is
+    /// eligible, a held one never.
+    RegistrySyncJobsRetry02Payload(sync_jobs::retry::v0_2::Payload);
+    /// `vtc/registry/sync-jobs/retry/0.2#response`.
+    RegistrySyncJobsRetry02Response(sync_jobs::retry::v0_2::Response);
     /// `vtc/registry/sync-jobs/discard/0.1` payload.
     RegistrySyncJobsDiscard01Payload(sync_jobs::discard::v0_1::Payload);
     /// `vtc/registry/sync-jobs/discard/0.1#response`.
@@ -597,6 +603,8 @@ mod tests {
         check::<RegistrySyncJobsList01Response>();
         check::<RegistrySyncJobsRetry01Payload>();
         check::<RegistrySyncJobsRetry01Response>();
+        check::<RegistrySyncJobsRetry02Payload>();
+        check::<RegistrySyncJobsRetry02Response>();
         check::<RegistrySyncJobsDiscard01Payload>();
         check::<RegistrySyncJobsDiscard01Response>();
         check::<RegistryRecordsList01Payload>();

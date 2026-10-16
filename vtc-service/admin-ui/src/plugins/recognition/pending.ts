@@ -1,4 +1,4 @@
-import type { BackingOff } from "@/lib/api";
+import type { BackingOff, SyncJobsRetryResponse } from "@/lib/api";
 import { formatDuration } from "@/lib/format";
 
 /**
@@ -23,4 +23,19 @@ export function pendingFoot(
   return inSeconds > 0
     ? `${retrying} — next in ${formatDuration(inSeconds)}`
     : `${retrying} — next attempt due`;
+}
+
+type SkipReason = SyncJobsRetryResponse["skipped"][number]["reason"];
+
+/** What a retry's `skipped` entry means to an operator, per `retry/0.2`. */
+export function skipMessage(jobId: string, reason: SkipReason): string {
+  const job = `Job ${jobId.slice(0, 8)}…`;
+  switch (reason) {
+    case "notFound":
+      return `${job} is gone — already sent, retried, discarded, or swept.`;
+    case "inFlight":
+      return `${job} is being sent to the registry right now.`;
+    case "held":
+      return `${job} is held for the RTBF window and is never sent early.`;
+  }
 }

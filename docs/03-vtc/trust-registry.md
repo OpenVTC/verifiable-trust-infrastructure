@@ -573,15 +573,28 @@ nothing re-derives a `Failed` row.
 Each failed row in the admin console carries **Retry** and **Discard**,
 and a **Retry all failed** control appears when more than one shares a
 cause. Retry reports both halves of what it did: jobs requeued, and jobs
-declined with the reason — `notFailed` when the reconciler still owns
-one, `notFound` when it was swept between the page load and the click.
-Neither is an error, so one ineligible row does not defeat a bulk retry.
-Discard confirms first and is irreversible; it deletes the community's
-record that the change never landed, and does **not** touch the
-registry, so a discarded publish leaves the member unpublished
-permanently with nothing left to show it.
+declined with the reason — `inFlight` when the reconciler is sending one
+right now, `held` for an RTBF-batched job, `notFound` when it was swept
+between the page load and the click. None is an error, so one ineligible
+row does not defeat a bulk retry. Discard confirms first and is
+irreversible; it deletes the community's record that the change never
+landed, and does **not** touch the registry, so a discarded publish
+leaves the member unpublished permanently with nothing left to show it.
 
-These are `vtc/registry/sync-jobs/{list,retry,discard}/0.1`, admin-gated
+A job that is still **pending** but waiting out its retry backoff is not
+failed, and moves on its own — but the backoff reaches an hour. The
+Pending tile says how many are waiting and when the next is due
+("4 retrying — next in 12m"), and **Run waiting jobs now** makes every one
+of them due on the reconciler's next pass with a fresh attempt budget.
+Use it once the cause is fixed, or right after configuring a registry on
+a community that ran without one: the syncer then queues every existing
+member, and the first failures would otherwise set the pace. A job held
+for the RTBF batch window is never brought forward, by this or anything
+else — the delay is what keeps a removal from being timed back to the
+request that caused it.
+
+These are `vtc/registry/sync-jobs/{list,discard}/0.1` and
+`vtc/registry/sync-jobs/retry/0.2` (0.1 is still served), admin-gated
 like the rest of the page.
 
 The same three operations also run offline, on a **stopped** daemon —
@@ -604,8 +617,10 @@ stays unpublished, permanently.
 
 fjall takes an exclusive lock, so these fail while the daemon is
 running, and they are not available in TEE deployments. The online and
-offline surfaces share one eligibility rule — only a `Failed` row may
-move — so they cannot disagree about what a retry does.
+offline surfaces apply one mutation (`sync_jobs_cli::requeue`), so a
+retried job looks the same whichever moved it. The offline `retry` moves
+only `Failed` rows; bringing a pending job forward is online only, since
+a stopped daemon has nothing to hurry.
 
 Doing nothing is also a decision with a deadline. The retention
 sweeper purges `Failed` rows `[join_requests] retentionDays` after

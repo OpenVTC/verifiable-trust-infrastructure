@@ -865,7 +865,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // The administrator's operational verbs (`trust_tasks::admin_tasks`).
     "https://trusttasks.org/spec/vtc/registry/diagnostics/0.1",
     "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1",
-    "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.1",
+    "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.2",
     "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1",
     "https://trusttasks.org/spec/vtc/registry/records/list/0.1",
     "https://trusttasks.org/spec/audit/list/0.1",

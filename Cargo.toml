@@ -640,9 +640,12 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # `memberPresentation`, `vtc/members/personhood/assert/0.2` with
 # `outcomeEvidence`, and `vta/witness/{open,present,accept}/0.2`
 # (trust-tasks-tf #799).
-# 0.31.12 is the FLOOR: `vta/witness/list/0.1`, reading back stored VWCs with
-# their outcome evidence (trust-tasks-tf #800).
-trust-tasks-rs = { version = "0.31.12", default-features = false, features = [
+# 0.31.12: `vta/witness/list/0.1`, reading back stored VWCs with their
+# outcome evidence (trust-tasks-tf #800).
+# 0.31.13 is the FLOOR: `vtc/registry/sync-jobs/retry/0.2` — a pending job
+# waiting out its backoff can be run now, a held one never (trust-tasks-tf
+# #802).
+trust-tasks-rs = { version = "0.31.13", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

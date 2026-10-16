@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { pendingFoot } from "./pending";
+import { pendingFoot, skipMessage } from "./pending";
 
 const NOW = Date.parse("2026-10-16T16:45:00Z");
 
@@ -28,5 +28,14 @@ describe("pendingFoot", () => {
     expect(
       pendingFoot(null, { count: 1, nextAttemptAt: "2026-10-16T16:44:00Z" }, NOW),
     ).toBe("1 retrying — next attempt due");
+  });
+});
+
+describe("skipMessage", () => {
+  it("names each retry/0.2 skip reason", () => {
+    const id = "1f2e3d4c-5b6a-4798-8765-43210fedcba9";
+    expect(skipMessage(id, "notFound")).toMatch(/^Job 1f2e3d4c… is gone/);
+    expect(skipMessage(id, "inFlight")).toMatch(/being sent/);
+    expect(skipMessage(id, "held")).toMatch(/never sent early/);
   });
 });
