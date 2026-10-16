@@ -262,6 +262,21 @@ pub enum StorageOp {
     AbortMultipart,
 }
 
+impl StorageOp {
+    /// Whether this operation acts on an existing multipart upload, and so needs
+    /// the batch's `uploadId` — which a batch names exactly when one of its
+    /// operations needs it (`external/credentials/issue/0.3` Conformance item 4).
+    pub fn needs_upload_id(&self) -> bool {
+        matches!(
+            self,
+            Self::UploadPart { .. }
+                | Self::ListParts { .. }
+                | Self::CompleteMultipart { .. }
+                | Self::AbortMultipart
+        )
+    }
+}
+
 /// One part of a direct upload's plan: its 1-based number, exact length and
 /// SHA-256. A plan of one part is a single-object write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

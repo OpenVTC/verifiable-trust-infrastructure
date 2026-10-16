@@ -2137,3 +2137,172 @@ async fn shutdown_is_noop_for_rest() {
     let c = VtaClient::new("https://vta.example.com");
     c.shutdown().await;
 }
+
+// ── external/credentials/issue/0.3: splitting a presign batch ───────
+
+/// A stand-in VTA for `external/credentials/issue/0.3` presign batches. It
+/// refuses `invalidBatch` a batch whose `uploadId` no operation needs (as
+/// `vta_external::batch::check_batch` does, Conformance item 4), and
+/// `responseTooLarge` one of more than `fits` operations — naming `fits` as
+/// `maxOperations` when `names_max`. Every request's size and whether it
+/// carried `uploadId` is recorded.
+struct PresignVta {
+    fits: usize,
+    names_max: bool,
+    ok: Value,
+    asked: std::sync::Arc<std::sync::Mutex<Vec<(usize, bool)>>>,
+}
+
+impl wiremock::Respond for PresignVta {
+    fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        let presign = &body["payload"]["presign"];
+        let ops = presign["requests"].as_array().unwrap();
+        let has_upload_id = presign.get("uploadId").is_some();
+        self.asked.lock().unwrap().push((ops.len(), has_upload_id));
+        let refuse = |code: &str, details: Value| {
+            ResponseTemplate::new(422).set_body_json(json!({
+                "id": "urn:uuid:00000000-0000-4000-8000-000000000001",
+                "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                "payload": { "code": code, "message": "no", "retryable": false, "details": details },
+            }))
+        };
+        let needs = ops.iter().any(|op| {
+            matches!(
+                op["operation"].as_str(),
+                Some("upload-part" | "list-parts" | "complete-multipart" | "abort-multipart")
+            )
+        });
+        if has_upload_id != needs {
+            return refuse("external/credentials/issue:invalidBatch", json!({}));
+        }
+        if ops.len() > self.fits {
+            let details = if self.names_max {
+                json!({ "maxOperations": self.fits })
+            } else {
+                json!({})
+            };
+            return refuse("external/credentials/issue:responseTooLarge", details);
+        }
+        ResponseTemplate::new(200).set_body_json(self.ok.clone())
+    }
+}
+
+/// Mount a [`PresignVta`] and return what it records.
+async fn mount_presign_vta(
+    server: &MockServer,
+    fits: usize,
+    names_max: bool,
+) -> std::sync::Arc<std::sync::Mutex<Vec<(usize, bool)>>> {
+    let ok = signed_response(json!({
+        "expiresAt": "2030-01-01T00:00:00Z",
+        "sealedCredential": format!(
+            "-----BEGIN VTA SEALED BUNDLE-----\n{}\n-----END VTA SEALED BUNDLE-----\n",
+            "x".repeat(64)
+        ),
+        "presign": { "prefix": "rooms/x/", "objectKey": "o", "requests": [{ "operation": "head" }] },
+    }))
+    .await;
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(auth_match())
+        .respond_with(PresignVta {
+            fits,
+            names_max,
+            ok,
+            asked: asked.clone(),
+        })
+        .mount(server)
+        .await;
+    asked
+}
+
+fn presign_request(
+    upload_id: Option<&str>,
+    ops: Vec<Value>,
+) -> trust_tasks_rs::specs::external::credentials::issue::v0_3::Payload {
+    let mut presign = json!({ "prefix": "rooms/x/", "objectKey": "o", "requests": ops });
+    if let Some(id) = upload_id {
+        presign["uploadId"] = json!(id);
+    }
+    serde_json::from_value(json!({
+        "account": "a", "context": "c", "ttlSeconds": 300, "presign": presign,
+    }))
+    .expect("a valid issue/0.3 presign payload")
+}
+
+/// `issue/0.3` consumer items 4 and 5: the checks-and-completion batch of a
+/// multipart upload, split, sends the trailing `head` without `uploadId` —
+/// carrying it there is `invalidBatch` (Conformance item 4).
+#[tokio::test]
+async fn a_split_part_with_no_multipart_operation_omits_the_upload_id() {
+    let server = MockServer::start().await;
+    let asked = mount_presign_vta(&server, 2, true).await;
+    let c = client(&server).await;
+    let req = presign_request(
+        Some("U"),
+        vec![
+            json!({ "operation": "list-parts" }),
+            json!({ "operation": "complete-multipart", "contentLength": 9 }),
+            json!({ "operation": "head" }),
+        ],
+    );
+    let answers = c.external_credentials_issue_presign(&req).await.unwrap();
+    assert_eq!(answers.len(), 2);
+    assert_eq!(
+        *asked.lock().unwrap(),
+        [(3, true), (2, true), (1, false)],
+        "refused whole, then the multipart part with uploadId, then head without"
+    );
+}
+
+/// `issue/0.3` consumer item 5: `maxOperations` holds for the first part only.
+/// A later part refused `responseTooLarge` again is split again — here in
+/// half, since that refusal names no count — rather than failing the batch.
+#[tokio::test]
+async fn a_part_refused_again_is_split_again() {
+    let server = MockServer::start().await;
+    // Fits 3, but the first refusal names none: 8 → 4 (refused) → 2, 2, 2, 2.
+    let asked = mount_presign_vta(&server, 3, false).await;
+    let c = client(&server).await;
+    let parts = (1..=8)
+        .map(|n| {
+            json!({
+                "operation": "upload-part", "partNumber": n, "contentLength": 5_242_880,
+                "checksumSha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            })
+        })
+        .collect();
+    let answers = c
+        .external_credentials_issue_presign(&presign_request(Some("U"), parts))
+        .await
+        .unwrap();
+    assert_eq!(answers.len(), 4);
+    let sizes: Vec<usize> = asked.lock().unwrap().iter().map(|(n, _)| *n).collect();
+    assert_eq!(sizes, [8, 4, 2, 2, 2, 2]);
+}
+
+/// `issue/0.3` consumer item 5: a single operation refused `responseTooLarge`
+/// cannot be split, and asking for it again will not succeed — the refusal is
+/// returned after exactly one request for it.
+#[tokio::test]
+async fn a_single_operation_too_large_is_not_asked_again() {
+    let server = MockServer::start().await;
+    let asked = mount_presign_vta(&server, 0, false).await;
+    let c = client(&server).await;
+    let err = c
+        .external_credentials_issue_presign(&presign_request(
+            None,
+            vec![json!({ "operation": "head" })],
+        ))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, VtaError::Rejected { code, .. }
+            if code == "external/credentials/issue:responseTooLarge"),
+        "{err:?}"
+    );
+    assert_eq!(*asked.lock().unwrap(), [(1, false)]);
+}

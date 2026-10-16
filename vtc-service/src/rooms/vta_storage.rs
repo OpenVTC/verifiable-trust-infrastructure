@@ -387,7 +387,11 @@ fn batch_request(
         })
         .collect();
     let mut presign = json!({ "prefix": prefix, "objectKey": object, "requests": requests });
-    if let Some(id) = upload_id {
+    // Only when an operation needs it (`issue/0.3` Conformance item 4): a part
+    // split away from the multipart operations, or a chunk of them, names none.
+    if let Some(id) = upload_id
+        && ops.iter().any(StorageOp::needs_upload_id)
+    {
         presign["uploadId"] = json!(id);
     }
     json!({ "account": account, "context": context, "presign": presign, "ttlSeconds": TTL_SECONDS })
@@ -802,6 +806,16 @@ mod tests {
             if type_uri == ISSUE_V3 && !self.serves_0_3 {
                 return error("unsupportedType", json!({}));
             }
+            // Conformance item 4, as `vta_external::batch::check_batch` holds it.
+            let needs = ops.iter().any(|op| {
+                matches!(
+                    op["operation"].as_str(),
+                    Some("upload-part" | "list-parts" | "complete-multipart" | "abort-multipart")
+                )
+            });
+            if payload["presign"].get("uploadId").is_some() != needs {
+                return error("external/credentials/issue:invalidBatch", json!({}));
+            }
             if type_uri == ISSUE_V3 && ops.len() > self.fits {
                 let details = if self.names_max {
                     json!({ "maxOperations": self.fits })
@@ -955,6 +969,26 @@ mod tests {
                 .is_err()
         );
         assert_eq!(none.asked.lock().unwrap().len(), 3, "4, 2, 1");
+
+        // The checks and the completion, split: the `head` cut away from the
+        // multipart operations is asked for without `uploadId`.
+        let checks = vta(2, true, true);
+        let p = batch_presigner(checks.clone(), bytes).await;
+        let ops = [
+            StorageOp::ListParts { marker: None },
+            StorageOp::CompleteMultipart { len: 9 },
+            StorageOp::Head,
+        ];
+        let out = p.presign_ops("rooms/", "o", Some("U"), &ops).await.unwrap();
+        assert_eq!(out.len(), 3);
+        let sizes: Vec<usize> = checks
+            .asked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, n)| *n)
+            .collect();
+        assert_eq!(sizes, [3, 2, 1]);
 
         // A VTA that does not serve 0.3 is asked the same batch at 0.2.
         let old = vta(64, true, false);
