@@ -21,6 +21,11 @@
 //! whole credential: whoever held one could turn it into a cookie session. Now
 //! holding the token is not enough without the subject's key.
 //!
+//! It also binds the browser key named in `ext["org.openvtc"].sessionKey` to
+//! the token's session (`Session::session_pubkey_b58btc`), which then signs
+//! `auth/whoami/0.1` for it (`trust_tasks::whoami_tasks`). A session already
+//! bound to a different key is rebound only on the subject's own signature.
+//!
 //! The task sets cookies, so it is served only on the HTTPS door, which
 //! supplies the [`HttpContext`] the cookies ride on (as `auth/oob/redeem`
 //! does); every other transport is refused `permissionDenied`.
@@ -78,9 +83,9 @@ async fn handle(state: &AppState, ctx: &JoinAuthCtx, doc: TrustTask<Value>) -> T
         Ok(c) => c,
         Err(e) => return task_error_to_reject(&doc, &e),
     };
-    match signer_speaks_for(state, &signer, &claims.sub).await {
-        Ok(true) => {}
-        Ok(false) => {
+    let as_subject = match signer_speaks_for(state, &signer, &claims.sub).await {
+        Ok(Some(as_subject)) => as_subject,
+        Ok(None) => {
             tracing::warn!(
                 signer = %signer,
                 subject = %claims.sub,
@@ -95,6 +100,19 @@ async fn handle(state: &AppState, ctx: &JoinAuthCtx, doc: TrustTask<Value>) -> T
             );
         }
         Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    // The browser key to bind to this session, so the console can sign
+    // `auth/whoami/0.1` for it. Inside the payload, so the signer's proof
+    // covers it — the footing `auth/authenticate/0.2`'s `sessionKey` has.
+    let session_key = match crate::routes::auth::session_key_from_ext(doc.payload.get("ext")) {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if let Some(key) = session_key
+        && let Err(reject) =
+            bind_session_key(state, &doc, &claims.session_id, &key, as_subject).await
+    {
+        return reject;
     }
     // The refresh token rides in `ext`, which the generated payload keeps as
     // an opaque map; read it off the document as received.
@@ -105,27 +123,79 @@ async fn handle(state: &AppState, ctx: &JoinAuthCtx, doc: TrustTask<Value>) -> T
     success_response(&doc, response)
 }
 
-/// Whether `signer` may act as `subject`: it is `subject`, or — having no ACL
-/// row of its own — it is a console key with an active delegation from
-/// `subject`. The same rule [`super::admin_signer`] applies, so a key with a
-/// row of its own is answered by that row alone and never by a delegation.
+/// Bind `key` (an Ed25519 multikey) to the token's session.
+///
+/// A session with no key, or already this one, takes it. A session bound to a
+/// **different** key — by `auth/authenticate/0.2`, say — is rebound only on
+/// the subject's own signature: a console key acts for its administrator, but
+/// does not get to take a session key away from the subject's own client.
+/// A session that has ended is refused, and nothing is set.
+async fn bind_session_key(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    session_id: &str,
+    key: &str,
+    as_subject: bool,
+) -> Result<(), TrustTaskOutcome> {
+    let mut held_by_another = false;
+    let updated =
+        vti_common::auth::session::update_session_with(&state.sessions_ks, session_id, |s| match s
+            .session_pubkey_b58btc
+            .as_deref()
+        {
+            Some(bound) if bound == key => false,
+            Some(_) if !as_subject => {
+                held_by_another = true;
+                false
+            }
+            _ => {
+                held_by_another = false;
+                s.session_pubkey_b58btc = Some(key.to_string());
+                true
+            }
+        })
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?;
+    match updated {
+        None => Err(reject_with_code(
+            doc,
+            TrustTaskCode::Standard(StandardCode::PermissionDenied),
+            "the access token's session has ended",
+            None,
+        )),
+        Some(_) if held_by_another => Err(reject_with_code(
+            doc,
+            TrustTaskCode::Standard(StandardCode::PermissionDenied),
+            "this session is bound to another key; only its subject may rebind it",
+            None,
+        )),
+        Some(_) => Ok(()),
+    }
+}
+
+/// Whether `signer` may act as `subject`: `Some(true)` when it is `subject`,
+/// `Some(false)` when — having no ACL row of its own — it is a console key
+/// with an active delegation from `subject`, `None` otherwise. The same rule
+/// [`super::admin_signer`] applies, so a key with a row of its own is answered
+/// by that row alone and never by a delegation.
 async fn signer_speaks_for(
     state: &AppState,
     signer: &str,
     subject: &str,
-) -> Result<bool, crate::error::AppError> {
+) -> Result<Option<bool>, crate::error::AppError> {
     if signer == subject {
-        return Ok(true);
+        return Ok(Some(true));
     }
     if crate::acl::get_acl_entry(&state.acl_ks, signer)
         .await?
         .is_some()
     {
-        return Ok(false);
+        return Ok(None);
     }
     Ok(
         crate::acl::console_key::resolve_delegated_admin(&state.console_keys_ks, signer)
             .await?
-            .is_some_and(|d| d.admin_did == subject),
+            .is_some_and(|d| d.admin_did == subject)
+            .then_some(false),
     )
 }

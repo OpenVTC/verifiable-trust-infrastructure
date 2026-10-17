@@ -113,28 +113,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/auth/whoami": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * `GET /v1/auth/whoami` — returns the caller's identity claims
-         *     pulled from the access token. Lets browser SPAs render a
-         *     "signed in as" indicator without exposing the JWT to JS (the
-         *     session cookie is HttpOnly by design).
-         */
-        get: operations["whoami"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/community/did-qr.svg": {
         parameters: {
             query?: never;
@@ -340,6 +318,15 @@ export interface components {
         AdminPasskeyLoginFinishRequest: {
             auth_id: string;
             credential: Record<string, never>;
+            /**
+             * @description Extension members. `ext["org.openvtc"].sessionKey` is the browser key
+             *     (an Ed25519 `did:key`) a console login binds to the session it mints,
+             *     so the console can later sign `auth/whoami/0.1` for that session
+             *     ([`session_key_from_ext`]). Whoever submits this finish receives the
+             *     session's cookies anyway; binding the key they hold to it confers
+             *     nothing those cookies do not.
+             */
+            ext?: Record<string, never> | null;
         };
         /**
          * @description Request body for `passkey-login/start`, per
@@ -5471,33 +5458,6 @@ export interface operations {
         responses: {
             /** @description Any session the request names is revoked; the session, refresh and CSRF cookies are cleared */
             204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    whoami: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Caller identity claims */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WhoamiResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
                 headers: {
                     [name: string]: unknown;
                 };

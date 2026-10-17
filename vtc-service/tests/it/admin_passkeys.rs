@@ -672,3 +672,108 @@ async fn revoke_finish_without_start_is_refused() {
         "{doc}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// passkey login binds the browser key (#1641)
+// ---------------------------------------------------------------------------
+
+/// `POST` `body` to a passkey-login leg; the status, the body and the
+/// `Set-Cookie` values.
+async fn login_leg(fix: &Fixture, leg: &str, body: Value) -> (StatusCode, Value, Vec<String>) {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let task = format!("https://trusttasks.org/spec/auth/passkey/login/{leg}/0.2");
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/auth/passkey-login/{leg}"))
+        .header("Trust-Task", task)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let res = fix.vtc.router.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let cookies = res
+        .headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(str::to_string))
+        .collect();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        cookies,
+    )
+}
+
+/// Run a passkey login with `ext`; the finish reply.
+async fn passkey_login(fix: &mut Fixture, ext: Option<Value>) -> (StatusCode, Value, Vec<String>) {
+    let (status, start, _) = login_leg(fix, "start", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "start: {start}");
+    let options: RequestChallengeResponse = wrap_options(&start["options"]);
+    let assertion = fix.authenticator.authenticate(&options, RP_ORIGIN);
+    let mut body = json!({ "auth_id": start["authId"], "credential": assertion });
+    if let Some(ext) = ext {
+        body["ext"] = ext;
+    }
+    login_leg(fix, "finish", body).await
+}
+
+/// A console passkey login binds the browser key it names, which then signs
+/// `auth/whoami/0.1` for that session — the cookie is not what answers.
+#[tokio::test]
+async fn a_passkey_login_binds_the_browser_key_to_its_session() {
+    let mut fix = build_fixture(true).await;
+    let browser = Party::new();
+    let (status, body, cookies) = passkey_login(
+        &mut fix,
+        Some(json!({ "org.openvtc": { "sessionKey": browser.did } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(cookies.iter().any(|c| c.starts_with("vtc_admin_session=")));
+    let session_id = body["session"]["id"].as_str().unwrap().to_string();
+
+    let (status, who) = call(
+        &fix.vtc,
+        &browser,
+        "https://trusttasks.org/spec/auth/whoami/0.1",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{who}");
+    assert_eq!(who["payload"]["session"]["id"], session_id.as_str());
+    assert_eq!(who["payload"]["session"]["subject"], fix.admin.did.as_str());
+}
+
+/// Without a key the login still works, and nothing can sign `whoami` for it.
+#[tokio::test]
+async fn a_passkey_login_with_no_browser_key_binds_none() {
+    let mut fix = build_fixture(true).await;
+    let (status, body, _) = passkey_login(&mut fix, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = call(
+        &fix.vtc,
+        &Party::new(),
+        "https://trusttasks.org/spec/auth/whoami/0.1",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// A key that is not an Ed25519 `did:key` is refused before the ceremony is
+/// spent, and no session is minted.
+#[tokio::test]
+async fn a_passkey_login_refuses_a_malformed_browser_key() {
+    let mut fix = build_fixture(true).await;
+    let (status, body, cookies) = passkey_login(
+        &mut fix,
+        Some(json!({ "org.openvtc": { "sessionKey": "did:web:example.com" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(cookies.is_empty(), "{cookies:?}");
+}

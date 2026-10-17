@@ -733,6 +733,15 @@ pub struct PasskeyLoginFinishRequest {
     pub auth_id: String,
     #[schema(value_type = Object)]
     pub credential: webauthn_rs::prelude::PublicKeyCredential,
+    /// Extension members. `ext["org.openvtc"].sessionKey` is the browser key
+    /// (an Ed25519 `did:key`) a console login binds to the session it mints,
+    /// so the console can later sign `auth/whoami/0.1` for that session
+    /// ([`session_key_from_ext`]). Whoever submits this finish receives the
+    /// session's cookies anyway; binding the key they hold to it confers
+    /// nothing those cookies do not.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub ext: Option<serde_json::Value>,
 }
 
 /// `POST /v1/auth/passkey-login/finish` — verify the WebAuthn assertion and
@@ -764,6 +773,10 @@ pub async fn passkey_login_finish(
         .ok_or_else(|| AppError::Authentication("WebAuthn not configured".into()))?;
     // JWT-keys presence is enforced by `VtcAuthBackend::from_state` at the
     // mint step below (the shared minter owns token issuance now).
+
+    // Refused before the ceremony state is spent, so a malformed key costs
+    // the operator a retry, not the ceremony.
+    let session_key = session_key_from_ext(req.ext.as_ref())?;
 
     let auth_state = take_auth_state(&state.passkey_ks, &req.auth_id)
         .await?
@@ -810,7 +823,7 @@ pub async fn passkey_login_finish(
         session_id,
         minted,
         cookies,
-    } = mint_admin_cookie_session(&state, &user.did, &["passkey"], None, None).await?;
+    } = mint_admin_cookie_session(&state, &user.did, &["passkey"], session_key, None).await?;
     let amr = vec!["passkey".to_string()];
     let acr = "aal2".to_string();
 
@@ -1518,24 +1531,28 @@ pub struct SessionView {
     pub acr: Option<String>,
 }
 
-/// `GET /v1/auth/whoami` — returns the caller's identity claims
-/// pulled from the access token. Lets browser SPAs render a
-/// "signed in as" indicator without exposing the JWT to JS (the
-/// session cookie is HttpOnly by design).
-#[utoipa::path(
-    get, path = "/auth/whoami", tag = "auth",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Caller identity claims", body = WhoamiResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-    ),
-)]
-pub async fn whoami(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    auth: AuthClaims,
-) -> Json<WhoamiResponse> {
+/// `auth/whoami/0.1`'s answer for `session`, whose subject is `did`: the
+/// session as stored, and what the subject's live ACL entry lets it do now
+/// (VTI-ACL-034).
+///
+/// Served only as a signed document (`trust_tasks::whoami_tasks`), whose
+/// signer is the key bound to `session` at sign-in or a console key the
+/// subject enrolled. The bearer route `GET /v1/auth/whoami` is gone (#1641):
+/// the cookie names a session, and a key now has to speak for it.
+///
+/// `session.expiresAt` is when the **session** ends — its refresh expiry,
+/// clamped to any absolute end — which is what the published member means
+/// ("when the session ceases to be valid"). The console's access cookie is
+/// shorter-lived and renewed through `auth/refresh/0.1`, which reports its
+/// own expiry.
+pub(crate) async fn whoami_for(
+    state: &AppState,
+    session: &Session,
+    role: vti_common::acl::Role,
+) -> WhoamiResponse {
+    let did = session.did.as_str();
     // The live entry, read now (VTI-ACL-034): what the console may offer.
-    let entry = crate::acl::get_acl_entry(&state.acl_ks, &auth.did)
+    let entry = crate::acl::get_acl_entry(&state.acl_ks, did)
         .await
         .ok()
         .flatten()
@@ -1559,20 +1576,54 @@ pub async fn whoami(
             "approves": approves,
         }})
     });
-    Json(WhoamiResponse {
+    let ends_at = match (session.refresh_expires_at, session.not_after) {
+        (Some(r), Some(n)) => r.min(n),
+        (Some(r), None) => r,
+        (None, Some(n)) => n,
+        (None, None) => now_epoch(),
+    };
+    WhoamiResponse {
         capabilities,
         ext,
         session: SessionView {
-            id: auth.session_id,
-            subject: auth.did,
-            issued_at: epoch_to_datetime(auth.issued_at),
-            expires_at: epoch_to_datetime(auth.access_expires_at),
-            amr: auth.amr,
-            acr: Some(auth.acr).filter(|a| !a.is_empty()),
+            id: session.session_id.clone(),
+            subject: did.to_string(),
+            issued_at: epoch_to_datetime(session.created_at),
+            expires_at: epoch_to_datetime(ends_at),
+            amr: session.amr.clone(),
+            acr: Some(session.acr.clone()).filter(|a| !a.is_empty()),
         },
-        roles: vec![auth.role.to_string()],
-        scopes: auth.allowed_contexts,
-    })
+        roles: vec![role.to_string()],
+        // A VTC entry holds no contexts (VTI-VTC-010).
+        scopes: Vec::new(),
+    }
+}
+
+/// The `ext["org.openvtc"].sessionKey` a console sign-in asks to bind to the
+/// session it mints, as the Ed25519 multikey `Session::session_pubkey_b58btc`
+/// stores (`z6Mk…`).
+///
+/// The same binding `auth/authenticate/0.2`'s `sessionKey` makes and
+/// `auth/oob/redeem` makes for its `K_b`: a browser key, non-extractable on
+/// the console's side, that later signs `auth/whoami/0.1` for this session.
+/// Absent is `Ok(None)`; anything but an Ed25519 `did:key` is refused, before
+/// any ceremony state is spent.
+pub(crate) fn session_key_from_ext(ext: Option<&JsonValue>) -> Result<Option<String>, AppError> {
+    let Some(value) = ext
+        .and_then(|e| e.get(EXT_NAMESPACE))
+        .and_then(|o| o.get("sessionKey"))
+    else {
+        return Ok(None);
+    };
+    value
+        .as_str()
+        .and_then(crate::member_portal::oob::did_key_multikey)
+        .map(|mk| Some(mk.to_string()))
+        .ok_or_else(|| {
+            AppError::Validation(
+                "ext[\"org.openvtc\"].sessionKey must be an Ed25519 did:key (did:key:z6Mk…)".into(),
+            )
+        })
 }
 
 /// Unix seconds to a `DateTime`, for the `format: date-time` members the

@@ -158,6 +158,8 @@ use crate::server::AppState;
         // passkeys (`trust_tasks::{admin_session_tasks,admin_passkey_tasks}`),
         // signed documents only since #1641's last batch.
         auth::AdminSessionResponse,
+        auth::WhoamiResponse,
+        auth::SessionView,
         admin::passkeys::ListResponse,
         admin::passkeys::RegisteredCredential,
         admin::passkeys::RegisterStartResponse,
@@ -435,8 +437,7 @@ fn build_api_chain(
     // openvtc/vtc/auth/legacy/* slugs were VTC-specific reimplementations
     // of primitives that VTA + did-hosting also have; consolidating here
     // so a multi-service deployment can use one client library.
-    // Browser-SPA convenience surface: `whoami` here, bound to the
-    // access-token session (cookie or bearer). Its partner `sign-out`
+    // Browser-SPA convenience surface: `sign-out`
     // revokes the session and clears the browser cookies in one trip; it
     // is on the unauthenticated chain because it also answers a session
     // that has already ended.
@@ -535,13 +536,10 @@ fn build_api_chain(
         // The session listing and revocation are the signed
         // `auth/sessions/list/0.1` and `auth/revoke-session/0.2`, served by the
         // spine (`trust_tasks::admin_tasks`) on every transport; neither has a
-        // route. `whoami` describes the bearer session the request carries,
-        // which a signed document does not have, so it stays with the session
-        // surface.
-        .routes(tt(
-            routes!(auth::whoami),
-            "https://trusttasks.org/spec/auth/whoami/0.1",
-        ))
+        // route. Nor has `auth/whoami/0.1`: it is answered on the spine
+        // (`trust_tasks::whoami_tasks`) for the key a sign-in bound to the
+        // session, never for a cookie (#1641).
+        //
         // Sign-out is on the unauthenticated chain (`build_unauth_routes`):
         // it answers a caller whose session has already ended.
         // Audit log (super-admin only): `audit/list` and `audit/verify` are
@@ -1286,11 +1284,6 @@ mod openapi_tests {
             "POST",
             "/v1/auth/sign-out",
             "clears the console's cookie session; a browser action, not a protocol verb",
-        ),
-        (
-            "GET",
-            "/v1/auth/whoami",
-            "reads the caller's own cookie session for the console UI; not a Trust Task",
         ),
         (
             "POST",

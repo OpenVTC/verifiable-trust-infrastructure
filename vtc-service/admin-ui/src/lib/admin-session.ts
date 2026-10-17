@@ -27,7 +27,11 @@ import {
   postSignedTrustTask,
   signingAvailable,
 } from "./api";
-import type { SignedTrustTaskDocument } from "./console-key";
+import {
+  adoptBrowserSessionKey,
+  mintBrowserSessionKey,
+  type SignedTrustTaskDocument,
+} from "./console-key";
 import { isWalletSigningAvailable, signWithWallet } from "./wallet";
 
 export const TASK_ADMIN_SESSION = "https://trusttasks.org/spec/vtc/auth/admin-session/0.1";
@@ -59,18 +63,28 @@ export async function openAdminSession(
   accessToken: string,
   subject: string,
 ): Promise<AdminSessionResponse> {
-  const payload = { accessToken };
+  // A fresh browser key, bound to the session in the same signed document —
+  // the signer's proof covers it — and kept only once the VTC has bound it.
+  // It signs `whoami` from then on (`console-key.ts`).
+  const sessionKey = await mintBrowserSessionKey();
+  const payload = {
+    accessToken,
+    ext: { "org.openvtc": { sessionKey: sessionKey.consoleDid } },
+  };
+  let response: AdminSessionResponse;
   if (isWalletSigningAvailable()) {
     const signed = await signWithWallet(
       { ...(await addressedDocument(TASK_ADMIN_SESSION, payload, subject)) },
       subject,
     );
-    return postSignedDocument<AdminSessionResponse>(
+    response = await postSignedDocument<AdminSessionResponse>(
       signed as unknown as SignedTrustTaskDocument,
     );
+  } else if (await signingAvailable()) {
+    response = await postSignedTrustTask<AdminSessionResponse>(TASK_ADMIN_SESSION, payload);
+  } else {
+    throw new AdminSessionSigningError();
   }
-  if (await signingAvailable()) {
-    return postSignedTrustTask<AdminSessionResponse>(TASK_ADMIN_SESSION, payload);
-  }
-  throw new AdminSessionSigningError();
+  await adoptBrowserSessionKey(sessionKey);
+  return response;
 }

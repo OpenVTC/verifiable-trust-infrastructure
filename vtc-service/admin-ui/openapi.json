@@ -138,35 +138,6 @@
         ]
       }
     },
-    "/v1/auth/whoami": {
-      "get": {
-        "tags": [
-          "auth"
-        ],
-        "summary": "`GET /v1/auth/whoami` — returns the caller's identity claims\npulled from the access token. Lets browser SPAs render a\n\"signed in as\" indicator without exposing the JWT to JS (the\nsession cookie is HttpOnly by design).",
-        "operationId": "whoami",
-        "responses": {
-          "200": {
-            "description": "Caller identity claims",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WhoamiResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/community/did-qr.svg": {
       "get": {
         "tags": [
@@ -508,6 +479,13 @@
           },
           "credential": {
             "type": "object"
+          },
+          "ext": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Extension members. `ext[\"org.openvtc\"].sessionKey` is the browser key\n(an Ed25519 `did:key`) a console login binds to the session it mints,\nso the console can later sign `auth/whoami/0.1` for that session\n([`session_key_from_ext`]). Whoever submits this finish receives the\nsession's cookies anyway; binding the key they hold to it confers\nnothing those cookies do not."
           }
         }
       },

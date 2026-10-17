@@ -343,43 +343,124 @@ async fn admin_session_bridges_bearer_to_cookie_and_authenticates() {
 
     // Exchange the bearer for the SPA cookie session, the document signed by
     // the identity the token was issued to — as the console has the wallet
-    // sign it after a SIOP sign-in.
-    let (status, set_cookies, doc) = admin_session_signed_by(&fix, &holder_party(5), &bearer).await;
+    // sign it after a SIOP sign-in — and naming the browser key the console
+    // binds to the session.
+    let browser = vti_rooms_dtg::test_support::Party::new();
+    let doc = signed_to(
+        &holder_party(5),
+        VTC_DID,
+        ADMIN_SESSION_TASK,
+        json!({
+            "accessToken": bearer,
+            "ext": { "org.openvtc": { "sessionKey": browser.did } },
+        }),
+    )
+    .await;
+    let (status, set_cookies, doc) = post_for_cookies(&fix._vtc, &doc).await;
     // `{sessionId, expiresAt}` since #1059 — it was 204 with the result only
     // in `Set-Cookie`, which no non-browser caller could read.
     assert_eq!(status, StatusCode::OK, "{doc}");
     assert_conforms(ADMIN_SESSION_TASK, &doc);
-    assert!(doc["payload"]["sessionId"].is_string(), "{doc}");
+    let session_id = doc["payload"]["sessionId"].as_str().unwrap().to_string();
 
-    // The cookies ride the signed door's response.
+    // The cookies ride the signed door's response, and authenticate the
+    // console's access-token extractor.
     let session_cookie = set_cookies
         .iter()
         .find(|c| c.starts_with("vtc_admin_session="))
         .expect("vtc_admin_session cookie set");
     assert!(set_cookies.iter().any(|c| c.starts_with("csrf=")));
     let cookie_pair = session_cookie.split(';').next().unwrap().to_string();
+    let (status, body) =
+        crate::common::session_probe::probe(&fix._vtc, &[("cookie", cookie_pair)]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
-    // The cookie alone (no Authorization header) authenticates `whoami`.
-    let res = fix
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/v1/auth/whoami")
-                .header("trust-task", WHOAMI_TASK)
-                .header("cookie", cookie_pair)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let who: Value =
-        serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    // `auth/whoami/0.1` answers with the canonical `Session`, whose subject
-    // member is `subject`. The flat `did` was this service's own shape.
-    assert_eq!(who["session"]["subject"].as_str(), Some(holder.as_str()));
+    // And the browser key is bound to that session: it signs `whoami`, which
+    // answers with the session's subject.
+    let whoami = signed_to(&browser, VTC_DID, WHOAMI_TASK, json!({})).await;
+    let (status, _, who) = post_for_cookies(&fix._vtc, &whoami).await;
+    assert_eq!(status, StatusCode::OK, "{who}");
+    assert_eq!(
+        who["payload"]["session"]["subject"].as_str(),
+        Some(holder.as_str())
+    );
+    assert_eq!(
+        who["payload"]["session"]["id"].as_str(),
+        Some(session_id.as_str())
+    );
+}
+
+/// A console key acts for its administrator, but does not take a session key
+/// away from the subject's own client: only the subject's signature rebinds.
+#[tokio::test]
+async fn admin_session_lets_only_the_subject_rebind_a_session_key() {
+    let (sk, holder, kid) = holder_identity(12);
+    let fix = build_fixture(&holder).await;
+    let bearer = wallet_login_bearer(&fix, &sk, &holder, &kid).await;
+    let first = vti_rooms_dtg::test_support::Party::new();
+    let second = vti_rooms_dtg::test_support::Party::new();
+    let console = vti_rooms_dtg::test_support::Party::new();
+    vtc_service::acl::console_key::enrol_delegation(
+        &fix._vtc.state.console_keys_ks,
+        &fix._vtc.state.acl_ks,
+        &console.did,
+        &holder,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let with_key = |key: &str| json!({ "accessToken": bearer, "ext": { "org.openvtc": { "sessionKey": key } } });
+
+    // The subject binds the first key.
+    let doc = signed_to(
+        &holder_party(12),
+        VTC_DID,
+        ADMIN_SESSION_TASK,
+        with_key(&first.did),
+    )
+    .await;
+    assert_eq!(post_for_cookies(&fix._vtc, &doc).await.0, StatusCode::OK);
+    // A console key may not replace it…
+    let doc = signed_to(&console, VTC_DID, ADMIN_SESSION_TASK, with_key(&second.did)).await;
+    let (status, cookies, reply) = post_for_cookies(&fix._vtc, &doc).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert!(cookies.is_empty());
+    // …the subject may.
+    let doc = signed_to(
+        &holder_party(12),
+        VTC_DID,
+        ADMIN_SESSION_TASK,
+        with_key(&second.did),
+    )
+    .await;
+    assert_eq!(post_for_cookies(&fix._vtc, &doc).await.0, StatusCode::OK);
+    let whoami = signed_to(&second, VTC_DID, WHOAMI_TASK, json!({})).await;
+    assert_eq!(post_for_cookies(&fix._vtc, &whoami).await.0, StatusCode::OK);
+    let whoami = signed_to(&first, VTC_DID, WHOAMI_TASK, json!({})).await;
+    assert_eq!(
+        post_for_cookies(&fix._vtc, &whoami).await.0,
+        StatusCode::FORBIDDEN,
+        "the replaced key no longer speaks for the session"
+    );
+}
+
+/// A session key that is not an Ed25519 `did:key` is refused, and sets nothing.
+#[tokio::test]
+async fn admin_session_refuses_a_session_key_that_is_not_an_ed25519_did_key() {
+    let (sk, holder, kid) = holder_identity(13);
+    let fix = build_fixture(&holder).await;
+    let bearer = wallet_login_bearer(&fix, &sk, &holder, &kid).await;
+    let doc = signed_to(
+        &holder_party(13),
+        VTC_DID,
+        ADMIN_SESSION_TASK,
+        json!({ "accessToken": bearer, "ext": { "org.openvtc": { "sessionKey": "did:web:example.com" } } }),
+    )
+    .await;
+    let (status, cookies, reply) = post_for_cookies(&fix._vtc, &doc).await;
+    assert_ne!(status, StatusCode::OK, "{reply}");
+    assert!(cookies.is_empty());
 }
 
 /// VTI-OPS-020: the task declares `proof` REQUIRED, so an access token alone —

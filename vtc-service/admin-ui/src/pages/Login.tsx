@@ -53,6 +53,8 @@ import { openAdminSession } from "@/lib/admin-session";
 import { fetchHealth, postJson, signOut, type HealthResponse } from "@/lib/api";
 import { shortenDid } from "@/lib/format";
 import { WalletSignIn } from "@/members/WalletSignIn";
+import { heldSessionKey } from "@/members/oob";
+import { adoptBrowserSessionKey, mintBrowserSessionKey } from "@/lib/console-key";
 import {
   CommunityTopbar,
   fetchCommunityProfile,
@@ -180,14 +182,20 @@ export function Login() {
         return;
       }
 
+      // A fresh browser key, bound to the session this login mints: it is
+      // what signs `whoami` from now on (`console-key.ts`). Kept only once
+      // the login succeeded.
+      const sessionKey = await mintBrowserSessionKey();
       await postJson<unknown>(
         "/v1/auth/passkey-login/finish",
         {
           auth_id: start.authId,
           credential: serializeAssertion(credential),
+          ext: { "org.openvtc": { sessionKey: sessionKey.consoleDid } },
         },
         { trustTask: TRUST_TASK_FINISH },
       );
+      await adoptBrowserSessionKey(sessionKey);
 
       await queryClient.invalidateQueries({ queryKey: ["whoami"] });
     } catch (err) {
@@ -387,7 +395,13 @@ export function Login() {
         <WalletSignIn
           audience="admin"
           communityName={communityName}
-          onSignedIn={() => queryClient.invalidateQueries({ queryKey: ["whoami"] })}
+          onSignedIn={async () => {
+            // `redeem` bound `K_b` to the console session it set: keep it,
+            // to sign `whoami` with.
+            const kb = heldSessionKey();
+            if (kb) await adoptBrowserSessionKey(kb);
+            await queryClient.invalidateQueries({ queryKey: ["whoami"] });
+          }}
           onNotMe={signOut}
         />
 

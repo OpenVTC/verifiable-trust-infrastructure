@@ -711,6 +711,9 @@ The SIOPv2 path is two calls, both on canonical Trust Tasks:
    escalation: the caller already held a token it could have used as a bearer,
    so this only mirrors it into the cookie the browser SPA expects — and a
    token alone, without the subject's key, no longer does even that. The
+   document also names a fresh browser key (`ext["org.openvtc"].sessionKey`)
+   that the daemon binds to the session; the console signs `auth/whoami/0.1`
+   with it, as it does with the key every other console sign-in binds. The
    bearer route `POST /v1/auth/admin-session` was removed (#1641): the task
    declares a proof REQUIRED. A wallet that cannot sign Trust Tasks, in a
    browser holding no signing key for that identity, cannot finish this

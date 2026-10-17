@@ -29,7 +29,6 @@ use vtc_service::test_support::TestVtc;
 const VTC_DID: &str = "did:webvh:scidvtc:vtc.example.com";
 const AUTH_TYPE: &str = "https://trusttasks.org/spec/auth/authenticate/0.1";
 const REFRESH_TYPE: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
-const WHOAMI_TASK: &str = "https://trusttasks.org/spec/auth/whoami/0.1";
 
 fn holder_identity(seed: u8) -> (SigningKey, String, String) {
     let sk = SigningKey::from_bytes(&[seed; 32]);
@@ -212,17 +211,10 @@ async fn member_token_is_refused_by_the_console_and_vice_versa() {
 
     let member = member_sign_in(&vtc, &sk, &did, &kid).await;
     let member_token = member["tokens"]["accessToken"].as_str().unwrap();
-    let (status, _, _) = send(
-        &vtc.router,
-        "GET",
-        "/v1/auth/whoami",
-        &[
-            ("authorization", &bearer(member_token)),
-            ("trust-task", WHOAMI_TASK),
-        ],
-        None,
-    )
-    .await;
+    // The console's access-token extractor (`common::session_probe`; the
+    // bearer whoami it used to be checked on is a signed document now).
+    let (status, _) =
+        crate::common::session_probe::probe(&vtc, &[("authorization", bearer(member_token))]).await;
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,

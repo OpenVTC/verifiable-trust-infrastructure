@@ -1110,14 +1110,19 @@ fn cookie_value<'a>(r: &'a Reply, name: &str) -> Option<&'a str> {
     })
 }
 
-async fn whoami_with_admin_cookie(f: &Fixture, token: &str) -> StatusCode {
-    let req = Request::builder()
-        .uri("/v1/auth/whoami")
-        .header("Trust-Task", WHOAMI_TASK)
-        .header("cookie", format!("vtc_admin_session={token}"))
-        .body(Body::empty())
-        .unwrap();
-    f.vtc.router.clone().oneshot(req).await.unwrap().status()
+/// Whether the console's access-token extractor admits `token` as its cookie
+/// (`common::session_probe`).
+async fn console_admits_cookie(f: &Fixture, token: &str) -> StatusCode {
+    crate::common::session_probe::probe(&f.vtc, &[("cookie", format!("vtc_admin_session={token}"))])
+        .await
+        .0
+}
+
+/// `auth/whoami/0.1` signed by `key`: the status and reply.
+async fn signed_whoami(f: &Fixture, key: &Party) -> (StatusCode, Value) {
+    let doc = crate::common::signed::signed_to(key, VTC_DID, WHOAMI_TASK, json!({})).await;
+    let (status, _, reply) = crate::common::signed::post_for_cookies(&f.vtc, &doc).await;
+    (status, reply)
 }
 
 async fn member_me_with_cookie(f: &Fixture, token: &str) -> StatusCode {
@@ -1215,7 +1220,11 @@ async fn an_admin_request_by_an_administrator_opens_a_console_session() {
 
     // It opens the console (audience `VTC`) and not the portal.
     let token = cookie_value(&done, "vtc_admin_session").unwrap();
-    assert_eq!(whoami_with_admin_cookie(&f, token).await, StatusCode::OK);
+    assert_eq!(console_admits_cookie(&f, token).await, StatusCode::OK);
+    // `K_b` is bound to the session it redeemed: it signs `whoami` for it.
+    let (status, who) = signed_whoami(&f, &b.key).await;
+    assert_eq!(status, StatusCode::OK, "{who}");
+    assert_eq!(who["payload"]["session"]["subject"], admin.did.as_str());
     assert_eq!(
         member_me_with_cookie(&f, token).await,
         StatusCode::UNAUTHORIZED
@@ -1327,9 +1336,12 @@ async fn a_member_request_by_an_administrator_gives_a_member_session_only() {
     );
     // The member token does not open the console (T19).
     assert_eq!(
-        whoami_with_admin_cookie(&f, token).await,
+        console_admits_cookie(&f, token).await,
         StatusCode::UNAUTHORIZED
     );
+    // Nor does its `K_b`: a member session is no console session, so the key
+    // bound to it speaks for nothing `whoami` answers.
+    assert_eq!(signed_whoami(&f, &b.key).await.0, StatusCode::FORBIDDEN);
     let sessions = vtc_service::auth::session::list_sessions(&f.vtc.state.sessions_ks)
         .await
         .unwrap();

@@ -800,6 +800,9 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/auth/passkey/revoke/start/0.1",
     "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1",
     "https://trusttasks.org/spec/vtc/auth/admin-session/0.1",
+    // Session introspection, signed by the browser key a sign-in bound to the
+    // session (`trust_tasks::whoami_tasks`, `admin-ui/src/lib/api.ts`).
+    "https://trusttasks.org/spec/auth/whoami/0.1",
     // The member portal's wallet sign-in (`trust_tasks::oob_tasks`): the
     // starter's request, long-poll redeem and cancel, signed by the browser's
     // `K_b` (`admin-ui/src/members/oob.ts`).
@@ -1010,10 +1013,11 @@ fn every_admin_ui_task_is_enforced_by_a_route() {
     // `auth/authenticate/0.1` keep theirs (see `routes/mod.rs`'s comment on
     // those mounts). It fell again with #1641's last batch, which moved an
     // administrator's own passkeys and `vtc/auth/admin-session` to the
-    // spine: what is left is `auth/passkey/login/{start,finish}`,
-    // `auth/refresh/0.1` and `auth/whoami/0.1`.
+    // spine: what is left is `auth/passkey/login/{start,finish}`
+    // and `auth/refresh/0.1` (`auth/whoami/0.1` went to the spine with the
+    // browser key a sign-in binds).
     assert!(
-        enforced.len() >= 4,
+        enforced.len() >= 3,
         "found only {} Trust-Task URIs in routes/mod.rs — the scan path is wrong",
         enforced.len()
     );

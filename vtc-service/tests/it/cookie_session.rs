@@ -31,8 +31,8 @@ use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
 const ADMIN_DID: &str = "did:key:z6MkAdminCookie";
-/// A protected route that stays a bearer route: `auth/whoami`, which reads the session.
-const PROTECTED_TASK: &str = "https://trusttasks.org/spec/auth/whoami/0.1";
+
+use crate::common::session_probe::probe;
 
 struct Fixture {
     router: axum::Router,
@@ -137,38 +137,31 @@ async fn request(router: &axum::Router, req: Request<Body>) -> (StatusCode, Stri
 async fn admin_cookie_authenticates_protected_route() {
     let fix = build_fixture().await;
     let jwt = mint_session(&fix, "VTC").await;
-
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/auth/whoami")
-        .header("Trust-Task", PROTECTED_TASK)
-        .header("Cookie", format!("{ADMIN_SESSION_COOKIE}={jwt}"))
-        .body(Body::empty())
-        .unwrap();
-    let (status, _body) = request(&fix.router, req).await;
+    let (status, body) = probe(
+        &fix._vtc,
+        &[("Cookie", format!("{ADMIN_SESSION_COOKIE}={jwt}"))],
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::OK,
-        "cookie-bearing request must authenticate the admin route"
+        "cookie-bearing request must authenticate the admin route: {body}"
     );
+    assert_eq!(body["did"], ADMIN_DID);
 }
 
 #[tokio::test]
 async fn wrong_cookie_name_returns_401() {
     let fix = build_fixture().await;
     let jwt = mint_session(&fix, "VTC").await;
-
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/auth/whoami")
-        .header("Trust-Task", PROTECTED_TASK)
-        // Wrong cookie name — the fallback path requires the
-        // exact `vtc_admin_session` cookie. A bare
-        // `session=<jwt>` value must not authenticate.
-        .header("Cookie", format!("session={jwt}; other=foo"))
-        .body(Body::empty())
-        .unwrap();
-    let (status, _body) = request(&fix.router, req).await;
+    // Wrong cookie name — the fallback path requires the exact
+    // `vtc_admin_session` cookie. A bare `session=<jwt>` value must not
+    // authenticate.
+    let (status, _) = probe(
+        &fix._vtc,
+        &[("Cookie", format!("session={jwt}; other=foo"))],
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -176,20 +169,16 @@ async fn wrong_cookie_name_returns_401() {
 async fn cookie_alongside_other_cookies_authenticates() {
     let fix = build_fixture().await;
     let jwt = mint_session(&fix, "VTC").await;
-
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/auth/whoami")
-        .header("Trust-Task", PROTECTED_TASK)
-        // Order + presence of other cookies must not break the
-        // session-cookie parser.
-        .header(
+    // Order + presence of other cookies must not break the session-cookie
+    // parser.
+    let (status, _) = probe(
+        &fix._vtc,
+        &[(
             "Cookie",
             format!("csrf=abc123; {ADMIN_SESSION_COOKIE}={jwt}; analytics=enabled"),
-        )
-        .body(Body::empty())
-        .unwrap();
-    let (status, _body) = request(&fix.router, req).await;
+        )],
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 }
 
@@ -201,16 +190,14 @@ async fn bearer_takes_precedence_over_cookie() {
     // bearer and authenticate.
     let valid_bearer = mint_session(&fix, "VTC").await;
     let foreign_cookie = mint_session(&fix, "EVIL-AUD").await;
-
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/auth/whoami")
-        .header("Trust-Task", PROTECTED_TASK)
-        .header("Authorization", format!("Bearer {valid_bearer}"))
-        .header("Cookie", format!("{ADMIN_SESSION_COOKIE}={foreign_cookie}"))
-        .body(Body::empty())
-        .unwrap();
-    let (status, _body) = request(&fix.router, req).await;
+    let (status, _) = probe(
+        &fix._vtc,
+        &[
+            ("Authorization", format!("Bearer {valid_bearer}")),
+            ("Cookie", format!("{ADMIN_SESSION_COOKIE}={foreign_cookie}")),
+        ],
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -226,15 +213,11 @@ async fn foreign_audience_cookie_rejected() {
     // time, same as a foreign-audience bearer token would be.
     let fix = build_fixture().await;
     let foreign = mint_session(&fix, "EVIL-AUD").await;
-
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/auth/whoami")
-        .header("Trust-Task", PROTECTED_TASK)
-        .header("Cookie", format!("{ADMIN_SESSION_COOKIE}={foreign}"))
-        .body(Body::empty())
-        .unwrap();
-    let (status, _body) = request(&fix.router, req).await;
+    let (status, _) = probe(
+        &fix._vtc,
+        &[("Cookie", format!("{ADMIN_SESSION_COOKIE}={foreign}"))],
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -244,25 +227,30 @@ async fn foreign_audience_cookie_rejected() {
 // assembled router the harness builds (it used to be attached only in
 // `server.rs`, so CSRF was invisible to integration tests). They also
 // pin the cookie-session gate: a mutating *cookie-session* request is
-// gated, while bearer and no-cookie requests are not.
+// gated, while bearer and no-cookie requests are not. The mutation is
+// sign-out, a cookie-session POST the console really sends.
+
+fn sign_out(headers: &[(&str, String)]) -> Request<Body> {
+    let mut req = Request::builder().method("POST").uri("/v1/auth/sign-out");
+    for (name, value) in headers {
+        req = req.header(*name, value.as_str());
+    }
+    req.body(Body::empty()).unwrap()
+}
 
 #[tokio::test]
 async fn cookie_session_mutation_without_csrf_token_is_forbidden() {
     // A cookie session POSTing with neither a same-origin stamp nor a
     // matching csrf double-submit is the genuine CSRF-exposed case.
-    // The CSRF layer (now wired into the harness) must reject it with
-    // `CsrfFailed` *before* the handler runs.
+    // The CSRF layer must reject it with `CsrfFailed` *before* the
+    // handler runs.
     let fix = build_fixture().await;
     let jwt = mint_session(&fix, "VTC").await;
-
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/auth/whoami")
-        .header("Trust-Task", PROTECTED_TASK)
-        .header("Cookie", format!("{ADMIN_SESSION_COOKIE}={jwt}"))
-        .body(Body::empty())
-        .unwrap();
-    let (status, body) = request(&fix.router, req).await;
+    let (status, body) = request(
+        &fix.router,
+        sign_out(&[("Cookie", format!("{ADMIN_SESSION_COOKIE}={jwt}"))]),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "cookie-session POST: {body}");
     assert!(
         body.contains("CsrfFailed"),
@@ -273,21 +261,17 @@ async fn cookie_session_mutation_without_csrf_token_is_forbidden() {
 #[tokio::test]
 async fn cookie_session_mutation_with_same_origin_passes_csrf() {
     // The same cookie session with a `Sec-Fetch-Site: same-origin`
-    // stamp clears CSRF and reaches the handler — so it is never the
-    // `CsrfFailed` rejection (the handler may still 4xx the body, but
-    // that's past CSRF).
+    // stamp clears CSRF and reaches the handler.
     let fix = build_fixture().await;
     let jwt = mint_session(&fix, "VTC").await;
-
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/auth/whoami")
-        .header("Trust-Task", PROTECTED_TASK)
-        .header("Cookie", format!("{ADMIN_SESSION_COOKIE}={jwt}"))
-        .header("Sec-Fetch-Site", "same-origin")
-        .body(Body::empty())
-        .unwrap();
-    let (_status, body) = request(&fix.router, req).await;
+    let (_status, body) = request(
+        &fix.router,
+        sign_out(&[
+            ("Cookie", format!("{ADMIN_SESSION_COOKIE}={jwt}")),
+            ("Sec-Fetch-Site", "same-origin".to_string()),
+        ]),
+    )
+    .await;
     assert!(
         !body.contains("CsrfFailed"),
         "same-origin cookie POST must clear CSRF, got: {body}"
@@ -301,15 +285,11 @@ async fn bearer_mutation_bypasses_csrf() {
     // programmatic-client case the P3.2 exemption fixes.
     let fix = build_fixture().await;
     let jwt = mint_session(&fix, "VTC").await;
-
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/auth/whoami")
-        .header("Trust-Task", PROTECTED_TASK)
-        .header("Authorization", format!("Bearer {jwt}"))
-        .body(Body::empty())
-        .unwrap();
-    let (_status, body) = request(&fix.router, req).await;
+    let (_status, body) = request(
+        &fix.router,
+        sign_out(&[("Authorization", format!("Bearer {jwt}"))]),
+    )
+    .await;
     assert!(
         !body.contains("CsrfFailed"),
         "bearer POST must bypass CSRF, got: {body}"

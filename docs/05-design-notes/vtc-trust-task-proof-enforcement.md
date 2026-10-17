@@ -10,9 +10,9 @@ specification declares one **REQUIRED**, and applies no acceptance window to
 The first divergence — 49 tasks that declare a proof REQUIRED but were served
 only as flat-payload REST behind a bearer JWT — was not closed by that change;
 §6 says why closing it depended on this one, and §6b records the batches that
-did. **Status (2026-10-17):** 48 of the 49 are served only as signed documents
-and their bearer routes are deleted. One remains, `auth/whoami/0.1`, for the
-reason §6c gives.
+did. **Status (2026-10-17): closed — 49 of 49** are served only as signed
+documents and their bearer routes are deleted. The last, `auth/whoami/0.1`,
+moved once a browser key is bound to the session at sign-in (§6c).
 
 ---
 
@@ -119,8 +119,8 @@ token** — divergence 1.
 The divergence closes per task when the bearer route goes, not when the signed
 door opens. The table above is the count as this note first derived it; §6b
 records the batches that moved the tasks, and **as of the last batch
-(2026-10-17) one remains**: `auth/whoami/0.1` (§6c). Every other one of the 49
-is served only as a signed document, and its bearer route is deleted —
+(2026-10-17) none remains**: every one of the 49 — `auth/whoami/0.1` last
+(§6c) — is served only as a signed document, and its bearer route is deleted —
 `vtc/backup/import/0.1` included, which is superseded by the chunked
 `backup/*` family rather than bound itself (§6b, batch 5).
 
@@ -342,7 +342,7 @@ change is therefore its precondition, and the order is:
    authorization from the verified signer's ACL entry rather than from a bearer
    token. `auth/authenticate/0.1` and `vtc/relationships/publish/0.2` are the
    two routes that already do this and are the model. **In batches — see §6b.**
-   ✅ for 48; `auth/whoami/0.1` waits on §6c.
+   ✅ — `auth/whoami/0.1` last, once a key is bound at sign-in (§6c).
 4. Keep each bearer route as a **documented transitional path** with a stated
    removal point, said so in its OpenAPI description — the clients that call
    them today (the admin SPA, `cnm`, `vtc-client`) need the signed path before
@@ -351,8 +351,8 @@ change is therefore its precondition, and the order is:
    [`vtc-console-signing.md`](vtc-console-signing.md). ✅ — the console signs
    (#1692/#1695/#1899/#1903), `vtc-client` signs (#1840), and no transitional
    route is left.
-5. Remove them, and close the Appendix F.2 entry. ✅ for 48 (#1808, #1840,
-   #1845 and the last batch below); the entry narrows to `auth/whoami/0.1`.
+5. Remove them, and close the Appendix F.2 entry. ✅ (#1808, #1840, #1845 and
+   the last batch below); the entry can be closed.
 
 Steps 3 and 4 were the large ones: 49 routes, three client surfaces, and an
 admin SPA that has broken silently on response reshapes before. They were not
@@ -686,7 +686,8 @@ requires for unrestricted admin, which the VTC lacks on both doors. See
 console's cookie bridge.** The decision on #1641 (2026-10-17): the remaining routes
 that serve a proof-REQUIRED task on a bearer token move to the signed door,
 the console moves with them, and the bearer routes are deleted — not kept
-transitional, not declared exceptions. Six moved:
+transitional, not declared exceptions. Seven moved — six below, and
+`auth/whoami/0.1` in §6c:
 
 - **`auth/passkey/list/0.1`, `enroll/{start,finish}/0.2`,
   `revoke/{start,finish}/0.1`** (`trust_tasks::admin_passkey_tasks`, the
@@ -719,29 +720,52 @@ transitional, not declared exceptions. Six moved:
   key for that identity, can no longer finish this (deprecated, contract C7)
   sign-in, and is told to use the trigger-link wallet sign-in or a passkey.
 
-### 6c. What did not move: `auth/whoami/0.1`
+### 6c. `auth/whoami/0.1`: a key bound at sign-in
 
-`GET /v1/auth/whoami` is the console's probe of **its own cookie session**:
-`App.tsx` asks it on every load whether a session exists, whose it is, its
-expiry and authentication methods, and only then asks whether this browser
-holds a signing key for that identity (`signingStatus(subject)`), sending an
-administrator without one to *Set up signing*. The probe therefore runs, by
-design, **before** this browser may hold any key that could sign — a fresh
-browser after its first sign-in, a cleared profile, a delegation that expired.
+`GET /v1/auth/whoami` was the console's probe of **its own cookie session**:
+`App.tsx` asks on every load whether a session exists, whose it is, and its
+authentication methods, and only then asks whether this browser holds a
+console signing key for that identity (`signingStatus(subject)`). The probe
+runs, by design, **before** this browser may hold an enrolled console key — a
+fresh browser after its first sign-in, a cleared profile, an expired
+delegation. A signed whoami can answer only for a signer it can attribute, and
+answering a fresh key's document from the request's cookie would make the
+cookie the authority again: the bearer route by another name.
 
-`auth/whoami/0.1` declares `proof` REQUIRED and says the proof identifies the
-subject. A signed whoami can answer only for a signer it can attribute; a
-browser with no enrolled key has none, and a fresh `did:key` it signs with
-attributes to nobody. Answering such a document from the request's cookie
-would make the cookie the authority again, which is the bearer route by
-another name. So moving it needs a decision on how a console with no key yet
-learns whose session it holds — for example the sign-in responses carrying the
-subject and the console keeping it per tab, or binding a browser key to the
-session at sign-in (`session_pubkey_b58btc`, the §5B road
-`vtc-console-signing.md` did not take). That is a design decision rather than a
-binding, and this note does not make it. Until it is made the route stays
-mounted, still declares the task, and is the one entry left in Appendix F.2's
-divergence 1.
+**Decided (2026-10-17): bind a key at sign-in.** Every console sign-in binds a
+browser key to the session it mints, in the field the session already had for
+it — `Session::session_pubkey_b58btc`, which `auth/authenticate/0.2`'s
+`sessionKey` and `auth/oob/redeem`'s `K_b` already fill — and whoami is a
+signed document answered for that key.
+
+| Sign-in | How the key is bound |
+|---|---|
+| Wallet sign-in by trigger link (`auth/oob/*`, audience `admin`) | already: `redeem` binds the `K_b` that signed the request. The console now keeps `K_b` after the sign-in instead of dropping it. |
+| Passkey login (`auth/passkey/login/finish/0.2`) | `ext["org.openvtc"].sessionKey`, an Ed25519 `did:key`, refused before the ceremony is spent if malformed. Whoever submits the finish receives the session's cookies anyway, so binding the key they hold confers nothing the cookies do not. |
+| SIOPv2 wallet (`vtc/auth/admin-session/0.1`) | `ext["org.openvtc"].sessionKey` inside the signed document, so the signer's proof covers it — the footing `authenticate/0.2`'s `sessionKey` has. A session already bound to a **different** key is rebound only on the subject's own signature, never a console key's. |
+| `auth/authenticate/0.2` (`cnm`, SDK clients) | unchanged: its `sessionKey`. |
+| Install claim | **nothing to bind** — `vtc/install/claim/*` and `vtc/admin/bootstrap` mint no console session; the founder then signs in by one of the paths above. |
+
+`trust_tasks::whoami_tasks` answers for, in order: the key bound to a **live**
+session (authenticated, inside its refresh expiry and any absolute end, and not
+idle past `auth.admin_idle_timeout` — so a key cannot keep alive a session
+`auth/refresh` would refuse), the most recent if it was bound to several; or a
+**console key** with an active delegation, for a signer with no ACL row of its
+own, answering with its administrator's most recent live session. Anything else,
+including a key whose session was signed out, is `permissionDenied`, and the
+subject must still be an administrator in the live ACL. `session.expiresAt` is
+when the session ends; the console learns its shorter access cookie's expiry by
+renewing through `auth/refresh/0.1`, which it does whenever it holds none.
+
+The console's browser session key is its own IndexedDB record, separate from
+the console signing key (an unenrolled key in that slot would read as "no
+longer accepted"): a non-extractable WebCrypto Ed25519 pair minted for each
+sign-in, kept once the sign-in bound it, forgotten at sign-out
+(`admin-ui/src/lib/console-key.ts`). The bearer route is deleted.
+
+**All 49 are closed.** Every task the VTC serves whose specification declares
+`proof` REQUIRED is served only as a signed document, and Appendix F.2's
+divergence 1 can be closed.
 
 ---
 
