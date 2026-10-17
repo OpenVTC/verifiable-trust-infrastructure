@@ -1570,6 +1570,86 @@ pub async fn grant_from_entry(
     })
 }
 
+/// `acl/grant/0.1` carrying
+/// [`HANDOFF_ROLLOVER_EXT_MEMBER`](vta_sdk::protocols::acl_management::create::HANDOFF_ROLLOVER_EXT_MEMBER)
+/// → [`exercise_handoff`].
+///
+/// The caller's own marked entry is replaced by `entry`'s subject, which the
+/// caller minted and holds (VTI-CLT-017). This is how a TEE VTA's first-boot
+/// claim DID hands its expiring bootstrap entry to the operator's long-term
+/// key without the VTA minting that key (VTI-CLT-002, #2066).
+///
+/// The successor carries only what [`exercise_handoff`] honours: subject,
+/// role, label, scopes and a capability narrowing. Every other member is
+/// refused rather than dropped, so a request never reads as granted when it
+/// was not — in particular `expiresAt`, since the successor takes the
+/// granter's recorded expiry (VTI-ACL-055).
+pub async fn rollover_from_entry(
+    acl_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
+    contexts_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    entry: WireAclEntry,
+    channel: &str,
+) -> Result<CreateAclResponseBody, AppError> {
+    let role = Role::parse(&entry.role)
+        .map_err(|_| AppError::Validation(format!("invalid role: {}", entry.role)))?;
+    if !entry.subject.starts_with("did:") {
+        return Err(AppError::Validation(format!(
+            "a hand-off successor must be a DID, found {}",
+            entry.subject
+        )));
+    }
+    if entry.expires_at.is_some() {
+        return Err(AppError::Validation(
+            "a hand-off successor takes the expiry the granter recorded with the marker \
+             (VTI-ACL-055); omit `expiresAt`"
+                .into(),
+        ));
+    }
+    if entry.step_up.is_some() || entry.approve.is_some() || entry.allowed_keys.is_some() {
+        return Err(AppError::Validation(
+            "a hand-off successor carries the marked entry's key filter and no step-up or \
+             approve authority of its own; omit `stepUp`, `approve` and `allowedKeys`"
+                .into(),
+        ));
+    }
+    if vta_sdk::protocols::acl_management::entry::handoff_from_ext(entry.ext.as_ref())
+        .map_err(AppError::Validation)?
+    {
+        return Err(AppError::Forbidden(
+            "a hand-off successor cannot itself be marked as a hand-off (VTI-ACL-054)".into(),
+        ));
+    }
+    let capabilities = match vta_sdk::protocols::acl_management::entry::capabilities_from_ext(
+        entry.ext.as_ref(),
+    ) {
+        Ok(Some(names)) => parse_capability_names(&names)?,
+        Ok(None) => Vec::new(),
+        Err(reason) => return Err(AppError::Validation(reason)),
+    };
+
+    let stored = exercise_handoff(
+        acl_ks,
+        audit,
+        contexts_ks,
+        auth,
+        HandOffSuccessor {
+            did: entry.subject.clone(),
+            role,
+            label: entry.label.clone(),
+            allowed_contexts: entry.scopes.clone(),
+            capabilities,
+        },
+        channel,
+        None,
+    )
+    .await?;
+    Ok(CreateAclResponseBody {
+        entry: WireAclEntry::from_result(&stored),
+    })
+}
+
 /// `acl/show/0.1` → [`get_acl`].
 pub async fn show_by_subject(
     acl_ks: &KeyspaceHandle,

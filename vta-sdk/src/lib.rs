@@ -214,6 +214,9 @@ pub mod provision_integration;
 pub mod sealed_transfer;
 #[cfg(feature = "session")]
 pub mod session;
+/// TEE first-boot claim wire (`POST /bootstrap/request`, version 2, #2066).
+#[cfg(feature = "sealed-transfer")]
+pub mod tee_bootstrap;
 // One TDK + one ATM per process, with a session per identity on it. Every
 // session type in this SDK runs on a hub; the legacy constructors just build a
 // private one (#830).

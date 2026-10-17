@@ -59,6 +59,54 @@ impl CreateAclBody {
     }
 }
 
+/// The member of the `org.openvtc` namespace in an `acl/grant/0.1`
+/// **payload's** `ext` (not its entry's) — `ext["org.openvtc"].handoffRollover`
+/// — that asks the maintainer to treat the grant as the caller's hand-off rollover
+/// (VTI-ACL-054 – VTI-ACL-057, VTI-CLT-017): write the entry as the caller's
+/// one successor, bounded by the marker rather than by the caller's own
+/// expiry, and remove the caller's marked entry in the same step.
+///
+/// Explicit rather than inferred from the marker (VTI-ACL-058): a marked
+/// caller's ordinary grant stays an ordinary grant, and a rollover asked of an
+/// unmarked caller is refused rather than quietly run as a grant. The
+/// successor's expiry is the granter's recorded one, so the entry must not
+/// carry its own `expiresAt`.
+pub const HANDOFF_ROLLOVER_EXT_MEMBER: &str = "handoffRollover";
+
+/// The `ext` namespace [`HANDOFF_ROLLOVER_EXT_MEMBER`] lives in. Payload `ext`
+/// keys must be reverse-domain names (`^[a-z][a-z0-9-]*(\.[a-z0-9-]+)+$`), so
+/// the member sits inside the namespace object, as `replaceIdentity` does.
+pub const OPENVTC_EXT_NAMESPACE: &str = "org.openvtc";
+
+/// Whether a grant payload's `ext` asks for the hand-off rollover. Anything but
+/// a boolean is an error: this member removes the caller's own entry.
+pub fn handoff_rollover_from_ext(ext: Option<&Value>) -> Result<bool, String> {
+    match ext
+        .and_then(|e| e.get(OPENVTC_EXT_NAMESPACE))
+        .and_then(|ns| ns.get(HANDOFF_ROLLOVER_EXT_MEMBER))
+    {
+        None => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(v) => Err(format!(
+            "`ext[\"{OPENVTC_EXT_NAMESPACE}\"].{HANDOFF_ROLLOVER_EXT_MEMBER}` must be a \
+             boolean, found {v}"
+        )),
+    }
+}
+
+impl CreateAclBody {
+    /// A grant that exercises the caller's hand-off marker onto `entry`'s
+    /// subject ([`HANDOFF_ROLLOVER_EXT_MEMBER`]).
+    pub fn handoff_rollover(entry: AclEntry) -> Self {
+        Self {
+            ext: Some(serde_json::json!({
+                OPENVTC_EXT_NAMESPACE: { HANDOFF_ROLLOVER_EXT_MEMBER: true }
+            })),
+            ..Self::new(entry)
+        }
+    }
+}
+
 /// `acl/grant/0.1` response — the realized entry the maintainer now holds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -151,6 +199,28 @@ pub struct CreateAclResultBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rollover request conforms to the published `acl/grant/0.1` schema
+    /// (whose `ext` keys must be reverse-domain names) and reads back as one.
+    #[cfg(feature = "client")]
+    #[test]
+    fn handoff_rollover_body_conforms_and_is_recognised() {
+        let entry = AclEntry::new("did:key:z6MkSuccessor".into(), "admin".into(), Vec::new());
+        let body = serde_json::to_value(CreateAclBody::handoff_rollover(entry)).unwrap();
+        let schema =
+            trust_tasks_rs::schema_index::schema_for(crate::trust_tasks::TASK_ACL_GRANT_0_1)
+                .expect("acl/grant/0.1 has a published schema");
+        trust_tasks_rs::validate::against_schema(schema, &body)
+            .expect("rollover body conforms to acl/grant/0.1");
+        assert_eq!(handoff_rollover_from_ext(body.get("ext")), Ok(true));
+        assert_eq!(handoff_rollover_from_ext(None), Ok(false));
+        assert!(
+            handoff_rollover_from_ext(Some(&serde_json::json!({
+                "org.openvtc": { "handoffRollover": "yes" }
+            })))
+            .is_err()
+        );
+    }
 
     /// The regression the pre-fold body existed to prevent, restated against
     /// the canonical shape: a scoped, expiring grant must not lose its scope.
