@@ -316,19 +316,24 @@ async fn bearer_mutation_bypasses_csrf() {
     );
 }
 
-fn rest_error_code(body: &serde_json::Value) -> &str {
-    body["code"].as_str().unwrap_or_default()
+fn tt_error_code(doc: &serde_json::Value) -> &str {
+    doc["payload"]["code"].as_str().unwrap_or_default()
 }
 
 /// `vtc/auth/admin-session/0.1` declares `invalidToken`, and this is the
 /// refusal it names: a token that does not decode — wrong signature, wrong
 /// audience, or expired — is answered with the code rather than prose alone,
 /// so a console can tell "sign in again" from "something else broke".
+///
+/// The task is a signed document on `POST /v1/trust-tasks` (#1641); the token
+/// is checked before its subject is compared with the signer, so any signer
+/// reaches this refusal, and none gets a cookie.
 #[tokio::test]
 async fn the_admin_session_task_answers_with_the_invalid_token_code_its_spec_declares() {
     use vtc_service::routes::auth::ADMIN_SESSION_ERR_INVALID_TOKEN;
 
     let fix = build_fixture().await;
+    let signer = vti_rooms_dtg::test_support::Party::new();
 
     for (token, why) in [
         ("not-a-jwt".to_string(), "not a token at all"),
@@ -337,25 +342,21 @@ async fn the_admin_session_task_answers_with_the_invalid_token_code_its_spec_dec
             "a token minted for another audience",
         ),
     ] {
-        let req = Request::builder()
-            .method("POST")
-            .uri("/v1/auth/admin-session")
-            .header("content-type", "application/json")
-            .header(
-                "trust-task",
-                "https://trusttasks.org/spec/vtc/auth/admin-session/0.1",
-            )
-            .body(Body::from(
-                serde_json::json!({ "accessToken": token }).to_string(),
-            ))
-            .unwrap();
-        let (status, body) = request(&fix.router, req).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{why}: {body}");
-        let body: serde_json::Value = serde_json::from_str(&body).expect("json body");
+        let doc = crate::common::signed::signed_to(
+            &signer,
+            "did:key:z6MkTestVTC",
+            "https://trusttasks.org/spec/vtc/auth/admin-session/0.1",
+            serde_json::json!({ "accessToken": token }),
+        )
+        .await;
+        let (status, cookies, body) =
+            crate::common::signed::post_for_cookies(&fix._vtc, &doc).await;
+        assert_ne!(status, StatusCode::OK, "{why}: {body}");
         assert_eq!(
-            rest_error_code(&body),
+            tt_error_code(&body),
             ADMIN_SESSION_ERR_INVALID_TOKEN,
             "{why}"
         );
+        assert!(cookies.is_empty(), "{why}: no cookie on refusal");
     }
 }

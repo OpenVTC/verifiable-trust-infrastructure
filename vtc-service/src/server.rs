@@ -1066,8 +1066,8 @@ pub async fn run(
     // a PasskeyUser but no AdminEntry gets the AdminEntry synthesised
     // from the PasskeyUser's credentials. Covers daemons where
     // `vtc admin invite` ran before `claim_finish` started writing
-    // the AdminEntry — without this, `GET /v1/admin/passkeys` 404s
-    // permanently because list reads AdminEntry, not PasskeyUser.
+    // the AdminEntry — without this, `auth/passkey/list` came back empty
+    // (a 404 on the old bearer route) because it reads AdminEntry, not PasskeyUser.
     if let Err(e) = heal_missing_admin_entries(&state).await {
         warn!(error = %e, "admin-entry heal scan failed");
     }

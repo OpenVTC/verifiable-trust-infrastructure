@@ -26,6 +26,8 @@ use vti_common::auth::session::now_epoch;
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::test_support::TestVtc;
 
+use crate::common::signed::{assert_conforms, error_code, post_for_cookies, signed_to, unsigned};
+
 /// The RP (this VTC's) DID — only ever string-compared as the id_token
 /// `aud`, so it need not be resolvable.
 const VTC_DID: &str = "did:webvh:scidvtc:vtc.example.com";
@@ -275,7 +277,12 @@ async fn wallet_login_rejects_nonce_not_matching_challenge() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-// ─── Phase 3: bearer → cookie bridge (`/v1/auth/admin-session`) ───
+// ─── Phase 3: bearer → cookie bridge (`vtc/auth/admin-session/0.1`) ───
+//
+// A signed document on `POST /v1/trust-tasks` since #1641's last batch: the
+// specification declares `proof` REQUIRED, and the proof's signer must be the
+// access token's subject (or a console key it enrolled). The bearer route
+// `POST /v1/auth/admin-session` is gone.
 
 const ADMIN_SESSION_TASK: &str = "https://trusttasks.org/spec/vtc/auth/admin-session/0.1";
 const WHOAMI_TASK: &str = "https://trusttasks.org/spec/auth/whoami/0.1";
@@ -295,47 +302,61 @@ async fn wallet_login_bearer(fix: &Fixture, sk: &SigningKey, holder: &str, kid: 
     body["tokens"]["accessToken"].as_str().unwrap().to_string()
 }
 
+/// The signing party for `holder_identity(seed)` — the same key, as the
+/// document signer the shared helpers take.
+fn holder_party(seed: u8) -> vti_rooms_dtg::test_support::Party {
+    let sk = SigningKey::from_bytes(&[seed; 32]);
+    let did = format!(
+        "did:key:{}",
+        vta_sdk::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes())
+    );
+    vti_rooms_dtg::test_support::Party {
+        secret: vta_sdk::did_key::secrets_from_did_key(&did, &[seed; 32])
+            .expect("build secrets")
+            .signing,
+        secret_multibase: multibase::encode(multibase::Base::Base58Btc, [seed; 32]),
+        did,
+    }
+}
+
+/// Send `vtc/auth/admin-session/0.1` for `access_token`, signed by `signer`.
+async fn admin_session_signed_by(
+    fix: &Fixture,
+    signer: &vti_rooms_dtg::test_support::Party,
+    access_token: &str,
+) -> (StatusCode, Vec<String>, Value) {
+    let doc = signed_to(
+        signer,
+        VTC_DID,
+        ADMIN_SESSION_TASK,
+        json!({ "accessToken": access_token }),
+    )
+    .await;
+    post_for_cookies(&fix._vtc, &doc).await
+}
+
 #[tokio::test]
 async fn admin_session_bridges_bearer_to_cookie_and_authenticates() {
     let (sk, holder, kid) = holder_identity(5);
     let fix = build_fixture(&holder).await;
     let bearer = wallet_login_bearer(&fix, &sk, &holder, &kid).await;
 
-    // Exchange the bearer for the SPA cookie session. Browser-style:
-    // same-origin stamp carries CSRF, Trust-Task header satisfies the gate.
-    let res = fix
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/auth/admin-session")
-                .header("content-type", "application/json")
-                .header("trust-task", ADMIN_SESSION_TASK)
-                .header("sec-fetch-site", "same-origin")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({ "accessToken": bearer })).unwrap(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    // 200 with `{sessionId, expiresAt}` since #1059 — it was 204 with the
-    // result only in `Set-Cookie`, which no non-browser caller could read.
-    assert_eq!(res.status(), StatusCode::OK);
+    // Exchange the bearer for the SPA cookie session, the document signed by
+    // the identity the token was issued to — as the console has the wallet
+    // sign it after a SIOP sign-in.
+    let (status, set_cookies, doc) = admin_session_signed_by(&fix, &holder_party(5), &bearer).await;
+    // `{sessionId, expiresAt}` since #1059 — it was 204 with the result only
+    // in `Set-Cookie`, which no non-browser caller could read.
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_conforms(ADMIN_SESSION_TASK, &doc);
+    assert!(doc["payload"]["sessionId"].is_string(), "{doc}");
 
-    // The session cookie must still be set; capture it for the follow-up
-    // call. The body is additive — the browser path is unchanged.
-    let set_cookies: Vec<String> = res
-        .headers()
-        .get_all(axum::http::header::SET_COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok().map(str::to_string))
-        .collect();
+    // The cookies ride the signed door's response.
     let session_cookie = set_cookies
         .iter()
         .find(|c| c.starts_with("vtc_admin_session="))
         .expect("vtc_admin_session cookie set");
+    assert!(set_cookies.iter().any(|c| c.starts_with("csrf=")));
     let cookie_pair = session_cookie.split(';').next().unwrap().to_string();
 
     // The cookie alone (no Authorization header) authenticates `whoami`.
@@ -361,31 +382,95 @@ async fn admin_session_bridges_bearer_to_cookie_and_authenticates() {
     assert_eq!(who["session"]["subject"].as_str(), Some(holder.as_str()));
 }
 
+/// VTI-OPS-020: the task declares `proof` REQUIRED, so an access token alone —
+/// what the bearer route took — no longer opens a cookie session.
+#[tokio::test]
+async fn admin_session_refuses_an_unsigned_document() {
+    let (sk, holder, kid) = holder_identity(9);
+    let fix = build_fixture(&holder).await;
+    let bearer = wallet_login_bearer(&fix, &sk, &holder, &kid).await;
+
+    let doc = unsigned(
+        &holder_party(9),
+        ADMIN_SESSION_TASK,
+        json!({ "accessToken": bearer }),
+    );
+    let (status, cookies, reply) = post_for_cookies(&fix._vtc, &doc).await;
+    assert_ne!(status, StatusCode::OK, "{reply}");
+    assert!(error_code(&reply).is_some(), "{reply}");
+    assert!(cookies.is_empty(), "no cookie on refusal: {cookies:?}");
+}
+
+/// A token stolen from its subject cannot be turned into a cookie session by
+/// whoever holds it: the document must be signed by the token's subject.
+#[tokio::test]
+async fn admin_session_refuses_a_signer_who_is_not_the_tokens_subject() {
+    let (sk, holder, kid) = holder_identity(10);
+    let fix = build_fixture(&holder).await;
+    let bearer = wallet_login_bearer(&fix, &sk, &holder, &kid).await;
+
+    let thief = vti_rooms_dtg::test_support::Party::new();
+    let (status, cookies, reply) = admin_session_signed_by(&fix, &thief, &bearer).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert_eq!(error_code(&reply), Some("permissionDenied"), "{reply}");
+    assert!(cookies.is_empty(), "no cookie on refusal: {cookies:?}");
+}
+
+/// A console key the subject enrolled speaks for the subject here, exactly as
+/// it does for every administrator verb — and only while its delegation lasts.
+#[tokio::test]
+async fn admin_session_accepts_a_console_key_its_subject_enrolled() {
+    let (sk, holder, kid) = holder_identity(11);
+    let fix = build_fixture(&holder).await;
+    let bearer = wallet_login_bearer(&fix, &sk, &holder, &kid).await;
+
+    let console = vti_rooms_dtg::test_support::Party::new();
+    vtc_service::acl::console_key::enrol_delegation(
+        &fix._vtc.state.console_keys_ks,
+        &fix._vtc.state.acl_ks,
+        &console.did,
+        &holder,
+        Some("test browser".into()),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let (status, cookies, reply) = admin_session_signed_by(&fix, &console, &bearer).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert!(
+        cookies.iter().any(|c| c.starts_with("vtc_admin_session=")),
+        "{cookies:?}"
+    );
+
+    // Revoked, it speaks for nobody.
+    vtc_service::acl::console_key::revoke_delegation(
+        &fix._vtc.state.console_keys_ks,
+        &console.did,
+        &holder,
+    )
+    .await
+    .unwrap();
+    let (status, cookies, reply) = admin_session_signed_by(&fix, &console, &bearer).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert!(cookies.is_empty(), "{cookies:?}");
+}
+
 #[tokio::test]
 async fn admin_session_rejects_garbage_token() {
     let (_sk, holder, _kid) = holder_identity(6);
     let fix = build_fixture(&holder).await;
 
-    let res = fix
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/auth/admin-session")
-                .header("content-type", "application/json")
-                .header("trust-task", ADMIN_SESSION_TASK)
-                .header("sec-fetch-site", "same-origin")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({ "accessToken": "not.a.jwt" })).unwrap(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    let (status, cookies, reply) =
+        admin_session_signed_by(&fix, &holder_party(6), "not.a.jwt").await;
+    assert_ne!(status, StatusCode::OK, "{reply}");
+    assert_eq!(
+        error_code(&reply),
+        Some(vtc_service::routes::auth::ADMIN_SESSION_ERR_INVALID_TOKEN),
+        "{reply}"
+    );
     // No cookie on rejection.
-    assert!(res.headers().get(axum::http::header::SET_COOKIE).is_none());
+    assert!(cookies.is_empty(), "{cookies:?}");
 }
 
 #[tokio::test]

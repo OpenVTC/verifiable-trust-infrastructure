@@ -410,37 +410,7 @@ async fn authenticate_trust_task(
     Ok(Some(resp))
 }
 
-// ---------- POST /auth/admin-session ----------
-
-/// Request body for [`admin_session`].
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct AdminSessionRequest {
-    /// A valid VTC access token the caller already holds — e.g. from the
-    /// VTA-wallet SIOP login, which returns it in `tokens.accessToken`.
-    pub access_token: String,
-    /// Extension members. Carries the optional refresh token this route
-    /// needs but the canonical payload has no top-level member for.
-    ///
-    /// `spec/vtc/auth/admin-session/0.1` types its payload as
-    /// `{accessToken, ext}` and the conformance witness compares this
-    /// struct against it, so a top-level `refreshToken` would fail the
-    /// build. `ext` is the schema's own escape hatch; see
-    /// [`refresh_token_from_ext`].
-    #[serde(default)]
-    pub ext: Option<JsonValue>,
-}
-
-/// Written by hand so the access token never reaches a log: a derived `Debug` would print it.
-impl std::fmt::Debug for AdminSessionRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AdminSessionRequest")
-            .field("access_token", &"<redacted>")
-            .field("ext", &self.ext.as_ref().map(|_| "<redacted>"))
-            .finish()
-    }
-}
+// ---------- vtc/auth/admin-session/0.1 ----------
 
 /// The `ext` member the console puts the refresh token under.
 const EXT_NAMESPACE: &str = "org.openvtc";
@@ -448,11 +418,15 @@ const EXT_NAMESPACE: &str = "org.openvtc";
 /// Pull `ext["org.openvtc"].refreshToken` out of an admin-session request.
 ///
 /// The wallet login path receives a refresh token from `/v1/auth/` and is
-/// the only party that can hand it to this route — unlike passkey login,
-/// this handler mints nothing and so has no refresh token of its own. A
-/// caller that omits it still gets a working cookie session; it simply
-/// cannot renew, which is the behaviour every caller had before.
-fn refresh_token_from_ext(ext: Option<&JsonValue>) -> Option<String> {
+/// the only party that can hand it to this task — unlike passkey login,
+/// it mints nothing and so has no refresh token of its own. A caller that
+/// omits it still gets a working cookie session; it simply cannot renew,
+/// which is the behaviour every caller had before.
+///
+/// `spec/vtc/auth/admin-session/0.1` types its payload as `{accessToken,
+/// ext}`, so a top-level `refreshToken` would be refused by the schema; `ext`
+/// is the schema's own escape hatch.
+pub(crate) fn refresh_token_from_ext(ext: Option<&JsonValue>) -> Option<String> {
     ext?.get(EXT_NAMESPACE)?
         .get("refreshToken")?
         .as_str()
@@ -460,14 +434,14 @@ fn refresh_token_from_ext(ext: Option<&JsonValue>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `POST /v1/auth/admin-session` — exchange a bearer access token for the
+/// `vtc/auth/admin-session/0.1` — exchange a bearer access token for the
 /// admin SPA's cookie session.
 ///
 /// The VTA-wallet login path returns a bearer token in the response body
 /// (the wallet extension posts the SIOP `id_token` to `/wallet/auth/` and
 /// reads `tokens.accessToken`), but the admin SPA drives the API with the
 /// `vtc_admin_session` cookie + `csrf` double-submit, not an
-/// `Authorization` header. This endpoint bridges the two: it validates the
+/// `Authorization` header. This task bridges the two: it validates the
 /// presented token (signature + VTC audience + expiry) and, on success,
 /// sets the `vtc_admin_session` + `csrf` cookie pair:
 ///
@@ -481,10 +455,15 @@ fn refresh_token_from_ext(ext: Option<&JsonValue>) -> Option<String> {
 ///
 /// No privilege escalation — the caller must already possess a valid VTC
 /// access token, which it could use directly as a bearer; this only mirrors
-/// it into the cookie the browser SPA expects. Browser-only by nature: the
-/// CSRF layer's same-origin check carries the (cookie-less) first call.
+/// it into the cookie the browser SPA expects.
+///
+/// It is served only as a signed document on the HTTPS door
+/// (`trust_tasks::admin_session_tasks`), which checks the proof's signer is
+/// the token's subject (or a console key that subject enrolled) and sets the
+/// cookies [`admin_session_cookies`] returns. Its bearer route is gone (#1641).
+///
 /// `{ sessionId, expiresAt }` — the shape `vtc/auth/admin-session/0.1`
-/// publishes, and which this route did not return until #1059's witness put
+/// publishes, and which the route did not return until #1059's witness put
 /// the handler beside its own schema.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -500,48 +479,44 @@ pub struct AdminSessionResponse {
 pub const ADMIN_SESSION_ERR_INVALID_TOKEN: &str =
     trust_tasks_rs::specs::vtc::auth::admin_session::v0_1::error_codes::INVALID_TOKEN.code;
 
-#[utoipa::path(
-    post, path = "/auth/admin-session", tag = "auth",
-    request_body = AdminSessionRequest,
-    responses(
-        (status = 200, description = "Admin session + CSRF cookies set", body = AdminSessionResponse),
-        (status = 401, description = "Invalid or expired access token"),
-    ),
-)]
-pub async fn admin_session(
-    State(state): State<AppState>,
-    Json(req): Json<AdminSessionRequest>,
-) -> Result<axum::response::Response, TaskError> {
-    use axum::http::HeaderValue;
-    use axum::http::header::SET_COOKIE;
-    use axum::response::IntoResponse;
-    use rand::RngExt;
-
+/// The access token's claims, verified: signature, this VTC's audience
+/// (audience isolation — a foreign-audience token is refused here exactly as
+/// on every other surface) and expiry. A bad token is `invalidToken`, and
+/// never sets a cookie.
+pub(crate) fn decode_admin_session_token(
+    state: &AppState,
+    access_token: &str,
+) -> Result<vti_common::auth::jwt::Claims, TaskError> {
     let jwt_keys = state
         .jwt_keys
         .as_ref()
         .ok_or_else(|| AppError::Internal("JWT keys not configured".into()))?;
-
-    // Validate the token: signature, VTC audience (audience isolation — a
-    // foreign-audience token is rejected here exactly as on every other
-    // surface), and expiry. A bad token never sets a cookie.
-    let claims = jwt_keys.decode(&req.access_token).map_err(|_| {
+    jwt_keys.decode(access_token).map_err(|_| {
         TaskError::declared(
             ADMIN_SESSION_ERR_INVALID_TOKEN,
             AppError::Authentication("invalid or expired access token".into()),
         )
-    })?;
+    })
+}
+
+/// The cookie session for an access token [`decode_admin_session_token`]
+/// verified, and the `Set-Cookie` values that carry it. Nothing is minted:
+/// the session is the token's own, mirrored into cookies.
+pub(crate) async fn admin_session_cookies(
+    state: &AppState,
+    access_token: &str,
+    claims: &vti_common::auth::jwt::Claims,
+    refresh_token: Option<String>,
+) -> (AdminSessionResponse, Vec<String>) {
+    use rand::RngExt;
 
     let max_age = claims.exp.saturating_sub(now_epoch()).max(1);
 
     // A refresh token, if the caller sent one, is what lets this session
-    // renew. This handler mints nothing — it mirrors a token the caller
-    // already held — so unlike the passkey path it has no refresh token
-    // of its own to fall back on. The refresh cookie must outlive the
-    // access cookie or it could never renew it; its own expiry is
-    // enforced server-side on the session row, so a generous Max-Age here
-    // grants nothing the row does not already allow.
-    let refresh_token = refresh_token_from_ext(req.ext.as_ref());
+    // renew. The refresh cookie must outlive the access cookie or it could
+    // never renew it; its own expiry is enforced server-side on the session
+    // row, so a generous Max-Age here grants nothing the row does not already
+    // allow.
     let refresh_max_age = {
         let cfg = state.config.read().await;
         cfg.auth.refresh_token_expiry
@@ -560,48 +535,23 @@ pub async fn admin_session(
     rand::rng().fill(&mut csrf_bytes);
     let csrf = hex::encode(csrf_bytes);
 
-    let session_cookie = build_session_cookie(&req.access_token, max_age);
-    let csrf_cookie = build_csrf_cookie(&csrf, cookie_window);
-
-    // The spec's response is `{sessionId, expiresAt}`, and this handler
-    // returned 204 with both values only in `Set-Cookie` headers.
-    //
-    // A cookie is not a Trust Task response. Nothing but a browser can read
-    // one, so every non-browser caller — the CLIs, a DIDComm binding, any
-    // integration — could authenticate here and learn nothing about the
-    // session it had just been given. The cookies stay, because the admin SPA
-    // relies on them; the body is what makes the route usable by anything
-    // else.
-    let mut response = (
-        StatusCode::OK,
-        Json(AdminSessionResponse {
+    let mut cookies = vec![
+        build_session_cookie(access_token, max_age),
+        build_csrf_cookie(&csrf, cookie_window),
+    ];
+    if let Some(token) = refresh_token {
+        cookies.push(build_refresh_cookie(&token, refresh_max_age));
+    }
+    (
+        AdminSessionResponse {
             session_id: claims.session_id.clone(),
             // Unix seconds, as the schema types it — the same value the
             // cookies' `Max-Age` is derived from, so the body and the headers
             // cannot disagree about when this session ends.
             expires_at: claims.exp,
-        }),
+        },
+        cookies,
     )
-        .into_response();
-    let headers = response.headers_mut();
-    headers.append(
-        SET_COOKIE,
-        HeaderValue::try_from(session_cookie)
-            .map_err(|e| AppError::Internal(format!("invalid session cookie value: {e}")))?,
-    );
-    headers.append(
-        SET_COOKIE,
-        HeaderValue::try_from(csrf_cookie)
-            .map_err(|e| AppError::Internal(format!("invalid csrf cookie value: {e}")))?,
-    );
-    if let Some(token) = refresh_token {
-        headers.append(
-            SET_COOKIE,
-            HeaderValue::try_from(build_refresh_cookie(&token, refresh_max_age))
-                .map_err(|e| AppError::Internal(format!("invalid refresh cookie value: {e}")))?,
-        );
-    }
-    Ok(response)
 }
 
 // ---------- POST /auth/passkey-login/start ----------

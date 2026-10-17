@@ -418,7 +418,7 @@ pub(crate) async fn claim_finish(
     let cred_id_hex = hex::encode(passkey.cred_id().as_ref() as &[u8]);
     store_credential_mapping(&state.passkey_ks, &cred_id_hex, user_uuid).await?;
 
-    // Create or append to the AdminEntry so `GET /v1/admin/passkeys`
+    // Create or append to the AdminEntry so `auth/passkey/list/0.1`
     // can list the just-registered device. The first-admin install
     // flow then takes the same AdminEntry through `/v1/admin/bootstrap`;
     // the `vtc admin invite` flow never reaches bootstrap (carve-out

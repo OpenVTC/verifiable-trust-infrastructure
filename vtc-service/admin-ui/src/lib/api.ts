@@ -121,7 +121,7 @@ export async function daemonErrorMessage(
 
 function csrfTokenFromCookie(): string | null {
   // The CSRF cookie is set by login (`/v1/auth/passkey-login/finish`
-  // or `/v1/auth/admin-session`). HttpOnly is **not** set on this
+  // or the signed `vtc/auth/admin-session/0.1`). HttpOnly is **not** set on this
   // cookie precisely so JS can read it.
   const match = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
   return match?.[1] ?? null;
@@ -694,13 +694,16 @@ async function postDocument<T>(
     // failing one by one. A step-up request is not a refusal of the key, and
     // the signing-key tasks are the check itself. A `task-consent` decision is
     // signed by the approver's own DID through the wallet, not by this
-    // browser's key, so its refusal says nothing about the key.
+    // browser's key, so its refusal says nothing about the key. Nor does the
+    // sign-in's `vtc/auth/admin-session`, usually signed by the wallet before
+    // any session — and any key check — exists.
     if (
       "proof" in signed &&
       apiError.code === "permissionDenied" &&
       !(apiError.details && "stepUpRequest" in apiError.details) &&
       !signed.type.includes("/auth/signing-key/") &&
       !signed.type.includes("/task-consent/") &&
+      !signed.type.includes("/vtc/auth/admin-session/") &&
       typeof window !== "undefined"
     ) {
       window.dispatchEvent(new Event(SIGNING_KEY_REFUSED_EVENT));
