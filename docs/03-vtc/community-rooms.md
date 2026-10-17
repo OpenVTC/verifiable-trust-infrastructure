@@ -416,7 +416,8 @@ against a VTA that serves only 0.1 that retry is `alreadyAccepted`.
 ### From `pnm`
 
 The persona an offer names is held by the member's VTA, so `pnm` builds each request and
-has the VTA sign it as that persona with `rooms/keys/act` — no presentation inserted,
+has the VTA sign it as that persona with `rooms/keys/act/0.5` (0.4 or 0.3 for the offer
+types, against an older VTA) — no presentation inserted,
 and an acceptance completed only with a KeyPackage that VTA minted itself for that member
 and room (`keyPackageNotHeld` otherwise). The signed document goes to the VTC over its
 Trust Task HTTPS endpoint, unchanged.
@@ -440,6 +441,43 @@ the VTA mint the KeyPackage against the offer's invitation on a sealed room, acc
 joins the room's group from the Welcome. If an acceptance's answer is lost, it prints the
 KeyPackage it carried; retry with `--key-package <file>` so the community sees the
 identical request and answers with the same Welcome.
+
+## One record, every surface — `vtc/rooms/memberships/list`
+
+A member reaches the community from more than one surface: the member portal through their
+wallet, `pnm`, OpenVTC. None keeps its own record of which rooms the member accepted. Each
+reads the same two:
+
+- the **community's** — `vtc/rooms/memberships/list/0.1`, signed as the member (through
+  `rooms/keys/act/0.5`): every room the community offered them, `offered`, `admitted` or
+  `removed`, for as long as it keeps the record (an offer withdrawn before acceptance is
+  not listed). `repeatAcceptUntil` says, on a sealed room, until when the Welcome is kept;
+- the **VTA's** — `rooms/keys/list`: which rooms' groups it holds, for which member.
+
+| community | tier | VTA holds the group | shown as |
+|---|---|---|---|
+| `offered` | any | — | an offer to accept |
+| `admitted` | `open` | — | joined |
+| `admitted` | sealed | yes | joined |
+| `admitted` | sealed | no, `repeatAcceptUntil` present | an acceptance to finish |
+| `admitted` | sealed | no, and no `repeatAcceptUntil` | needs an administrator to re-admit |
+| `removed` | any | either | removed |
+
+**Accepting is repeatable end to end**, so any surface finishes what another began: the
+VTA's `rooms/keys/key-package/0.2` returns the KeyPackage it already holds for the same
+room, member and invitation (`alreadyMinted: true`) instead of minting another; the VTC
+answers an acceptance carrying it with the Welcome it kept; and the VTA answers a Welcome it
+already processed — under the same, now spent, invitation — with `alreadyJoined`, which a
+surface reads as success. Under `key-package/0.1` a second surface's mint replaced the
+first's private half, the one the kept Welcome is sealed to.
+
+```bash
+pnm rooms memberships --vtc https://vtc.example.com/v1 --vtc-did <vtc-did> --member <persona-did>
+```
+
+`pnm rooms offers accept` checks the VTA's custody first (a room already joined is said to
+be, and nothing is minted), asks for the KeyPackage at `key-package/0.2` (0.1 against an
+older VTA), and treats `alreadyJoined` as joined.
 
 ## Troubleshooting: permission errors
 

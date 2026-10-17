@@ -1,7 +1,8 @@
-//! Completing a host-bound room request **as the member** — `rooms/keys/act/{0.1,0.2,0.3,0.4}`,
+//! Completing a host-bound room request **as the member** — `rooms/keys/act/{0.1,…,0.5}`,
 //! and the documents `rooms/keys/{read,browse,backfill}` send on the member's behalf. At 0.3
-//! also a member's reply to a community's offer of a room ([`OFFER_TYPES`]), and at 0.4 the
-//! listing that shows each offered room's description too ([`OFFER_TYPES_0_4`]).
+//! also a member's reply to a community's offer of a room ([`OFFER_TYPES`]), at 0.4 the
+//! listing that shows each offered room's description too ([`OFFER_TYPES_0_4`]), and at 0.5
+//! the community's record of the member's admissions ([`COMMUNITY_TYPES`]).
 //!
 //! # Why this exists
 //!
@@ -119,6 +120,25 @@ pub fn is_offer_type(type_uri: &str) -> bool {
 /// completes.
 pub fn is_offer_type_0_4(type_uri: &str) -> bool {
     OFFER_TYPES_0_4.contains(&bare_type(type_uri))
+}
+
+/// The community types `rooms/keys/act/0.5` completes: 0.4's [`OFFER_TYPES_0_4`], and
+/// `vtc/rooms/memberships/list/0.1` — the community's record of the member's admissions,
+/// which every surface reads. All are made to the community as the DID it addresses its
+/// offers to, with no presentation, and resolved by recipient item 2b.
+pub const COMMUNITY_TYPES: &[&str] = &[
+    OFFERS_LIST_0_1,
+    OFFERS_LIST_0_2,
+    OFFERS_ACCEPT_0_1,
+    MEMBERSHIPS_LIST_0_1,
+];
+
+const MEMBERSHIPS_LIST_0_1: &str =
+    <trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// Whether `type_uri` is one of [`COMMUNITY_TYPES`].
+pub fn is_community_type(type_uri: &str) -> bool {
+    COMMUNITY_TYPES.contains(&bare_type(type_uri))
 }
 
 /// Whether `type_uri` is `vtc/rooms/offers/accept/0.1` — the one offer type that can carry
@@ -335,6 +355,40 @@ mod tests {
             .filter(|t| !OFFER_TYPES.contains(t))
             .collect();
         assert_eq!(added, [&OFFERS_LIST_0_2]);
+    }
+
+    /// `rooms/keys/act/0.5` widens 0.4's table by exactly `vtc/rooms/memberships/list/0.1`,
+    /// and 0.4's table still refuses it; still no administrator's task, and only one of them
+    /// can carry key material.
+    #[test]
+    fn rooms_keys_act_0_5_adds_only_memberships_list() {
+        for t in COMMUNITY_TYPES {
+            assert!(is_community_type(t), "{t}");
+            assert_eq!(actable(t), None, "{t} is not in the 0.1/0.2 table");
+            assert!(
+                trust_tasks_rs::schema_index::schema_for(t).is_some(),
+                "{t} has no schema"
+            );
+        }
+        let added: Vec<_> = COMMUNITY_TYPES
+            .iter()
+            .filter(|t| !OFFER_TYPES_0_4.contains(t))
+            .collect();
+        assert_eq!(added, [&MEMBERSHIPS_LIST_0_1]);
+        assert!(is_community_type(&format!(
+            "{MEMBERSHIPS_LIST_0_1}#request"
+        )));
+        assert!(!is_offer_type_0_4(MEMBERSHIPS_LIST_0_1));
+        assert_eq!(
+            COMMUNITY_TYPES
+                .iter()
+                .filter(|t| is_offer_accept(t))
+                .count(),
+            1
+        );
+        assert!(!is_community_type(
+            "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1"
+        ));
     }
 
     /// The deliberate absences: chunk uploads (bytes never pass through the key holder),

@@ -264,6 +264,12 @@ fn witnesses() -> Vec<Witness> {
             "vtc_rooms_offers_refuse_with_their_declared_codes"
         ),
         witness!(
+            s::rooms::memberships::list::v0_1::error_codes::NOT_A_MEMBER,
+            crate::rooms::community::codes::MEMBERSHIPS_LIST_NOT_A_MEMBER,
+            "community_rooms.rs",
+            "vtc_rooms_offers_refuse_with_their_declared_codes"
+        ),
+        witness!(
             s::rooms::offers::accept::v0_1::error_codes::NOT_FOUND,
             crate::rooms::community::codes::ACCEPT_NOT_FOUND,
             "community_rooms.rs",

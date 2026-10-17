@@ -1289,7 +1289,12 @@ new flow, update both this section and the relevant `docs/*.md`.
   issues members' VIC/VMC/VAC (`rooms/owner/*` + `vault/credentials/receive`,
   unchanged VTA tasks, signed as the VTC's DID, which is a persona the VTA
   holds in `[rooms.community] context`). Members are offered admission and
-  pull it (`offers/list`, `offers/accept` with a KeyPackage → Welcome).
+  pull it (`offers/list`, `offers/accept` with a KeyPackage → Welcome), and read
+  where each admission stands with `vtc/rooms/memberships/list` — the one record
+  every surface (portal, `pnm`, OpenVTC) shows, beside the VTA's `rooms/keys/list`.
+  Never give a surface its own record of acceptance: every step of accepting
+  answers a repeat with its first answer (`key-package/0.2` returns the held
+  KeyPackage, the kept Welcome, `alreadyJoined`) so any surface finishes another's.
 - **Invariants to preserve**: the VTC holds no room key or group secret, and
   never falls back to one (`noKeyHolder`). Remote first: a create stores the
   room only after mint + group + credentials; an admission is recorded only

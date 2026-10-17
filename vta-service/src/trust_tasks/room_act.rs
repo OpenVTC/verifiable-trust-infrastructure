@@ -163,22 +163,26 @@ pub(super) async fn act_subject(
 /// Which `rooms/keys/act` is being answered. 0.2 names the member as the subject, which
 /// this VTA records as the audit row's resource; 0.3 also completes the offer types
 /// ([`room_act::OFFER_TYPES`]), which 0.1 and 0.2's schema refuses; 0.4 also
-/// `vtc/rooms/offers/list/0.2` ([`room_act::OFFER_TYPES_0_4`]), which 0.3's table refuses.
+/// `vtc/rooms/offers/list/0.2` ([`room_act::OFFER_TYPES_0_4`]), which 0.3's table refuses;
+/// 0.5 also `vtc/rooms/memberships/list/0.1` ([`room_act::COMMUNITY_TYPES`]), which 0.4's
+/// schema refuses.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ActVersion {
     V0_1,
     V0_2,
     V0_3,
     V0_4,
+    V0_5,
 }
 
 impl ActVersion {
-    /// Whether `type_uri` is an offer type this version's table lists.
-    fn completes_offer(self, type_uri: &str) -> bool {
+    /// Whether this version completes `type_uri` as one of the community's types.
+    fn completes_community_type(self, type_uri: &str) -> bool {
         match self {
             Self::V0_1 | Self::V0_2 => false,
             Self::V0_3 => room_act::is_offer_type(type_uri),
             Self::V0_4 => room_act::is_offer_type_0_4(type_uri),
+            Self::V0_5 => room_act::is_community_type(type_uri),
         }
     }
 }
@@ -225,19 +229,28 @@ pub(super) async fn handle_act_v0_4(
     act_at(state, auth, doc, ActVersion::V0_4).await
 }
 
+/// `rooms/keys/act/0.5`: 0.4, and `vtc/rooms/memberships/list/0.1` — the member's own read
+/// of where each admission stands, which every surface shows alike. An acceptance's
+/// KeyPackage is one minted by `rooms/keys/key-package` at 0.1 or 0.2 (item 10).
+pub(super) async fn handle_act_v0_5(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    act_at(state, auth, doc, ActVersion::V0_5).await
+}
+
 /// `rooms/keys/act`, at any version. The request is checked against the asked version's
-/// schema — 0.1 and 0.2 share one, which refuses the offer types — and read through 0.4's
-/// generated type, whose schema is 0.3's (it differs from 0.2's only in admitting the offer
-/// types). Which offer types are completed is the asked version's table
-/// ([`ActVersion::completes_offer`]). The answer is checked against the asked version's
-/// response type.
+/// schema — 0.1 and 0.2 share one, which refuses the offer types; 0.3's and 0.4's refuse
+/// `vtc/rooms/memberships/*` — and read through 0.5's generated type, whose schema differs
+/// only in admitting them. The answer is checked against the asked version's response type.
 async fn act_at(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
     at: ActVersion,
 ) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::rooms::keys::act::v0_4 as spec;
+    use trust_tasks_rs::specs::rooms::keys::act::v0_5 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -254,10 +267,19 @@ async fn act_at(
         return r;
     }
 
-    if matches!(at, ActVersion::V0_1 | ActVersion::V0_2)
-        && let Err(resp) =
-            parse_payload::<trust_tasks_rs::specs::rooms::keys::act::v0_2::Payload>(&doc)
-    {
+    let narrower = match at {
+        ActVersion::V0_1 | ActVersion::V0_2 => {
+            parse_payload::<trust_tasks_rs::specs::rooms::keys::act::v0_2::Payload>(&doc).err()
+        }
+        ActVersion::V0_3 => {
+            parse_payload::<trust_tasks_rs::specs::rooms::keys::act::v0_3::Payload>(&doc).err()
+        }
+        ActVersion::V0_4 => {
+            parse_payload::<trust_tasks_rs::specs::rooms::keys::act::v0_4::Payload>(&doc).err()
+        }
+        ActVersion::V0_5 => None,
+    };
+    if let Some(resp) = narrower {
         return resp;
     }
     if at == ActVersion::V0_3
@@ -279,7 +301,7 @@ async fn act_at(
     // it too, with no action: they take no presentation. Each version's table is its own —
     // `vtc/rooms/offers/list/0.2` only from 0.4, so 0.3 refuses it here.
     let type_uri = req.document.type_.as_str();
-    let offer = at.completes_offer(type_uri);
+    let offer = at.completes_community_type(type_uri);
     let Some(action) = (if offer {
         Some(None)
     } else {
@@ -487,7 +509,7 @@ async fn act_at(
     let bare = room_act::bare_type(type_uri);
     let (resource, detail) = match at {
         ActVersion::V0_1 => (room_id.clone(), format!("type={bare}")),
-        ActVersion::V0_2 | ActVersion::V0_3 | ActVersion::V0_4 => (
+        ActVersion::V0_2 | ActVersion::V0_3 | ActVersion::V0_4 | ActVersion::V0_5 => (
             Some(principal.clone()),
             match &room_id {
                 Some(room) => format!("type={bare} roomId={room}"),
@@ -530,7 +552,11 @@ async fn act_at(
             trust_tasks_rs::specs::rooms::keys::act::v0_3::Response,
         >(response)
         .and_then(serde_json::to_value),
-        ActVersion::V0_4 => {
+        ActVersion::V0_4 => serde_json::from_value::<
+            trust_tasks_rs::specs::rooms::keys::act::v0_4::Response,
+        >(response)
+        .and_then(serde_json::to_value),
+        ActVersion::V0_5 => {
             serde_json::from_value::<spec::Response>(response).and_then(serde_json::to_value)
         }
     };
@@ -925,6 +951,8 @@ mod tests {
     const ACT_0_4: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_4;
     const OFFERS_LIST: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1";
     const OFFERS_LIST_0_2: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2";
+    const MEMBERSHIPS_LIST: &str = "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1";
+    const ACT_0_5: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5;
     const OFFERS_ACCEPT: &str = "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1";
     const COMMUNITY: &str = "did:webvh:example.com:northwind-community";
     const SEAL: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2;
@@ -1107,6 +1135,17 @@ mod tests {
         )
     }
 
+    async fn act_v0_5(state: &AppState, auth: &AuthClaims, document: Value) -> Value {
+        body(
+            handle_act_v0_5(
+                state,
+                auth,
+                request(ACT_0_5, json!({ "document": document })),
+            )
+            .await,
+        )
+    }
+
     /// A reply to a community's offer, as a member's client builds one: addressed to the
     /// community, `issuer` the DID the offer names (when given).
     fn offer(type_uri: &str, issuer: Option<&str>, payload: Value) -> Value {
@@ -1207,6 +1246,57 @@ mod tests {
             )
             .await;
             assert_eq!(code(&out), "rooms/keys/act:issuerNotPrincipal", "{out}");
+        }
+    }
+
+    /// `rooms/keys/act/0.5`: every community type — 0.3's two, `offers/list/0.2` and
+    /// `memberships/list/0.1` — is completed as its named `issuer`, with nothing inserted,
+    /// and the response is 0.5's. `issuer` is still required, and never picked.
+    #[tokio::test]
+    async fn act_0_5_completes_every_community_type_as_its_issuer() {
+        let f = fixture(&["read"]).await;
+        let board = Party::new();
+        for (type_uri, payload) in [
+            (OFFERS_LIST, json!({})),
+            (OFFERS_LIST_0_2, json!({})),
+            (MEMBERSHIPS_LIST, json!({ "limit": 10 })),
+            (OFFERS_ACCEPT, json!({ "roomId": board.did })),
+        ] {
+            let document = offer(type_uri, Some(&f.alice.did), payload.clone());
+            let out = act_v0_5(&f.state, &alice_client(), document.clone()).await;
+            assert_eq!(
+                out["payload"]["principal"], f.alice.did,
+                "{type_uri}: {out}"
+            );
+            let completed = &out["payload"]["document"];
+            assert_eq!(completed["issuer"], f.alice.did, "{out}");
+            assert_eq!(completed["payload"], payload, "nothing inserted: {out}");
+            assert_eq!(
+                completed["proof"]["proofPurpose"], "authentication",
+                "{out}"
+            );
+            serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_5::Response>(
+                out["payload"].clone(),
+            )
+            .expect("a 0.5 response");
+
+            let out = act_v0_5(&f.state, &alice_client(), offer(type_uri, None, payload)).await;
+            assert_eq!(code(&out), "rooms/keys/act:principalAmbiguous", "{out}");
+        }
+    }
+
+    /// 0.3 and 0.4 do not complete `memberships/list`, which their schema's `type` pattern
+    /// refuses.
+    #[tokio::test]
+    async fn act_0_3_and_0_4_do_not_complete_memberships() {
+        let f = fixture(&["read"]).await;
+        let document = offer(MEMBERSHIPS_LIST, Some(&f.alice.did), json!({}));
+        for out in [
+            act_v0_3(&f.state, &alice_client(), document.clone()).await,
+            act_v0_4(&f.state, &alice_client(), document).await,
+        ] {
+            assert!(out["payload"].get("principal").is_none(), "{out}");
+            assert!(!code(&out).is_empty(), "{out}");
         }
     }
 

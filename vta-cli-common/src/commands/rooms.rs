@@ -1801,8 +1801,17 @@ pub async fn cmd_rooms_owner_group_add(
 //
 // On a sealed tier the acceptance carries a KeyPackage, and the VTA completes it only with
 // one it minted itself for that member and room (act 0.3 recipient item 10) — so this
-// client mints it there (`rooms/keys/key-package`, against the offer's invitation), never
-// itself.
+// client asks for it there (`rooms/keys/key-package`, against the offer's invitation),
+// never makes it itself.
+//
+// **This is one surface of several.** The member may accept the same offer in their
+// community's member portal, or in OpenVTC, and each reads the same two records — the
+// community's (`vtc/rooms/memberships/list`) and the VTA's (`rooms/keys/list`) — and keeps
+// none of its own. So an acceptance is a sequence each of whose steps answers a repeat with
+// its first answer: `key-package/0.2` returns the KeyPackage another surface may already
+// have sent, the community answers it with the Welcome it kept, and the VTA answers a
+// Welcome it already processed `alreadyJoined`. Whatever another surface began, this one
+// finishes; and a room already joined is said to be, not accepted again.
 
 /// The community an offer came from, and the DID it is addressed to.
 pub struct OfferTarget<'a> {
@@ -1847,8 +1856,9 @@ impl OfferStepError {
             Self::Act(e) => {
                 let text = e.to_string();
                 let hint = if matches!(e, VtaError::UnsupportedTaskType { .. }) {
-                    "\n\nYour VTA does not serve rooms/keys/act/0.3 or later, the versions that \
-                     sign a reply to a community's offer: upgrade it."
+                    "\n\nYour VTA does not serve the rooms/keys/act version that signs this \
+                     request as you (0.5 for memberships, 0.4 for offers/list 0.2, 0.3 for the \
+                     rest): upgrade it."
                         .to_string()
                 } else if text.contains("issuerNotPrincipal") {
                     format!(
@@ -1872,8 +1882,9 @@ impl OfferStepError {
     }
 }
 
-/// Have the VTA complete an offer document as `target.member` (`rooms/keys/act`, at the
-/// version the type needs) and send it to the community. Returns the community's response
+/// Have the VTA complete a request to the community as `target.member`
+/// (`rooms/keys/act/0.5`, or the newest version below it that completes the type) and send
+/// it to the community. Returns the community's response
 /// payload, or the party that failed.
 async fn act_and_send_offer(
     client: &VtaClient,
@@ -1881,15 +1892,15 @@ async fn act_and_send_offer(
     type_uri: &str,
     payload: Value,
 ) -> Result<Value, OfferStepError> {
-    let document = vta_sdk::client::unsigned_room_request(
+    let document = vta_sdk::client::unsigned_community_request(
         type_uri,
         target.vtc_did,
-        Some(target.member),
+        target.member,
         payload,
     )
     .map_err(|e| OfferStepError::Local(e.into()))?;
     let completed = client
-        .room_act(&document)
+        .room_act_community(&document)
         .await
         .map_err(OfferStepError::Act)?;
     let document =
@@ -2114,17 +2125,23 @@ pub async fn cmd_rooms_offers_accept(
     }
     let invitation = offer.credentials.invitation.as_str();
 
+    // Joined already — here, or from another surface: nothing to accept, and minting
+    // again would only make a KeyPackage nobody admits.
+    if sealed && holds_group(client, room_id, target.member).await? {
+        println!(
+            "{room_id} is already joined as {} by your VTA — accepted here or from another \
+             surface. Nothing to do.",
+            target.member
+        );
+        return Ok(());
+    }
+
     let key_package = match (sealed, key_package) {
         (false, _) => None,
         (true, Some(src)) => Some(std::fs::read_to_string(src)?.trim().to_string()),
-        // Minted by the VTA, never here: act 0.3 completes an acceptance only with a
-        // KeyPackage the same key holder minted for this member and room.
-        (true, None) => {
-            let minted = client
-                .idempotent(|| client.room_key_package(room_id, invitation))
-                .await?;
-            Some(minted.key_package.to_string())
-        }
+        // From the VTA, never made here: act completes an acceptance only with a KeyPackage
+        // the same key holder minted for this member and room.
+        (true, None) => Some(offered_key_package(client, room_id, invitation).await?),
     };
 
     let mut payload = serde_json::json!({ "roomId": room_id });
@@ -2154,19 +2171,28 @@ pub async fn cmd_rooms_offers_accept(
                         accepted.ratchet_tree.as_ref().map(|t| t.as_str()),
                     )
                 })
-                .await
-                .map_err(|e| {
-                    format!(
-                        "admitted at room epoch {}, but your VTA did not join from the Welcome: \
-                         {e}",
+                .await;
+            match joined {
+                Ok(joined) => println!(
+                    "Accepted {room_id} as {} and joined its group at room epoch {}.",
+                    target.member,
+                    joined.epoch + 1
+                ),
+                // Another surface handed the same Welcome over first: joined all the same.
+                Err(e) if e.to_string().contains("alreadyJoined") => println!(
+                    "Accepted {room_id} as {}; your VTA had already joined its group from \
+                     another surface.",
+                    target.member
+                ),
+                Err(e) => {
+                    return Err(format!(
+                        "admitted at room epoch {}, but your VTA did not join from the \
+                         Welcome: {e}",
                         accepted.epoch
                     )
-                })?;
-            println!(
-                "Accepted {room_id} as {} and joined its group at room epoch {}.",
-                target.member,
-                joined.epoch + 1
-            );
+                    .into());
+                }
+            }
         }
         None if sealed => {
             return Err(format!(
@@ -2187,10 +2213,190 @@ pub async fn cmd_rooms_offers_accept(
     Ok(())
 }
 
+/// Whether the VTA holds `room`'s group for `member` (`rooms/keys/list`): custody, which
+/// with the community's record is what every surface shows the member.
+async fn holds_group(
+    client: &VtaClient,
+    room: &str,
+    member: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let held = client.room_list(false).await?;
+    Ok(held
+        .rooms
+        .iter()
+        .any(|r| r.room_id.as_str() == room && r.member.as_str() == member))
+}
+
+/// The KeyPackage for an acceptance: the one the VTA already holds for this room, member
+/// and invitation — which another surface may already have sent — or a new one
+/// (`rooms/keys/key-package/0.2`). A VTA without 0.2 mints a new one at 0.1, which
+/// replaces any it held: an acceptance another surface began cannot then be finished here.
+async fn offered_key_package(
+    client: &VtaClient,
+    room: &str,
+    invitation: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    match client.room_key_package_v0_2(room, invitation).await {
+        Ok(kp) => {
+            if kp.already_minted {
+                eprintln!(
+                    "Your VTA already held a KeyPackage for this offer — another surface may \
+                     have begun this acceptance; finishing it."
+                );
+            }
+            Ok(kp.key_package.to_string())
+        }
+        Err(VtaError::UnsupportedTaskType { .. }) => {
+            let minted = client
+                .idempotent(|| client.room_key_package(room, invitation))
+                .await?;
+            Ok(minted.key_package.to_string())
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// `vtc/rooms/memberships/list/0.1`, signed as the member: the community's whole record of
+/// their admissions (one page at a time).
+async fn list_memberships(
+    client: &VtaClient,
+    target: &OfferTarget<'_>,
+) -> Result<
+    Vec<trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1::RoomMembership>,
+    Box<dyn std::error::Error>,
+> {
+    use trust_tasks_rs::Payload as _;
+    use trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1 as list;
+    let mut items = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let payload = match &cursor {
+            Some(c) => serde_json::json!({ "cursor": c }),
+            None => serde_json::json!({}),
+        };
+        let reply = act_and_send_offer(client, target, list::Payload::TYPE_URI, payload)
+            .await
+            .map_err(|e| e.report(target))?;
+        let page: list::Response = parse_reply("vtc/rooms/memberships/list", reply)?;
+        items.extend(page.items);
+        match page.next_cursor {
+            Some(next) => cursor = Some(next.to_string()),
+            None => return Ok(items),
+        }
+    }
+}
+
+/// What a surface shows for one room — `vtc/rooms/memberships/list/0.1` *One record, every
+/// surface*: the community's state and the key holder's custody, read the same way by
+/// every surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomStanding {
+    /// Offered and not yet accepted.
+    Offered,
+    /// Admitted, and openable: an open room, or a sealed one whose group the VTA holds.
+    Joined,
+    /// Admitted to a sealed room whose group the VTA does not hold, while the community
+    /// still keeps the Welcome: an acceptance to finish.
+    Unfinished,
+    /// Admitted to a sealed room whose group the VTA does not hold, and the Welcome is no
+    /// longer kept: only an administrator re-admitting the member repairs it.
+    NeedsReadmission,
+    /// Removed by an administrator.
+    Removed,
+}
+
+impl RoomStanding {
+    /// The table in `vtc/rooms/memberships/list/0.1`.
+    pub fn of(state: &str, sealed: bool, held: bool, welcome_kept: bool) -> Self {
+        match state {
+            "offered" => Self::Offered,
+            "removed" => Self::Removed,
+            _ if !sealed || held => Self::Joined,
+            _ if welcome_kept => Self::Unfinished,
+            _ => Self::NeedsReadmission,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Offered => "offered",
+            Self::Joined => "joined",
+            Self::Unfinished => "accepted, not finished",
+            Self::NeedsReadmission => "admitted, not openable here",
+            Self::Removed => "removed",
+        }
+    }
+}
+
+/// `pnm rooms memberships` — every room the community has offered you and where each
+/// stands, as every surface you use shows it: the community's record
+/// (`vtc/rooms/memberships/list`) beside your VTA's custody (`rooms/keys/list`).
+pub async fn cmd_rooms_memberships(
+    client: &VtaClient,
+    target: OfferTarget<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let rooms = list_memberships(client, &target).await?;
+    if rooms.is_empty() {
+        println!(
+            "{} has offered no rooms to {}.",
+            target.vtc_did, target.member
+        );
+        return Ok(());
+    }
+    let held = client.room_list(false).await?;
+    for r in &rooms {
+        let room_id = r.room_id.as_str();
+        let holds = held
+            .rooms
+            .iter()
+            .any(|h| h.room_id.as_str() == room_id && h.member.as_str() == target.member);
+        let standing = RoomStanding::of(
+            &r.state.to_string(),
+            r.visibility.to_string() != "open",
+            holds,
+            r.repeat_accept_until.is_some(),
+        );
+        let actions: Vec<String> = r.actions.0.iter().map(ToString::to_string).collect();
+        println!(
+            "{room_id}  {}  [{}]  {}  {}",
+            inert(r.label.as_str()),
+            r.visibility,
+            actions.join(","),
+            standing.label(),
+        );
+        match standing {
+            RoomStanding::Offered | RoomStanding::Unfinished => {
+                println!("  accept: {}", accept_command(room_id, &target));
+            }
+            RoomStanding::NeedsReadmission => println!(
+                "  Your VTA never joined this room's group and the community no longer keeps \
+                 the Welcome: ask an administrator to remove and re-admit you."
+            ),
+            RoomStanding::Joined | RoomStanding::Removed => {}
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// `vtc/rooms/memberships/list/0.1`'s table: the same answers, the same standing.
+    #[test]
+    fn a_rooms_standing_follows_the_one_record() {
+        use RoomStanding::*;
+        assert_eq!(RoomStanding::of("offered", true, false, false), Offered);
+        assert_eq!(RoomStanding::of("admitted", false, false, false), Joined);
+        assert_eq!(RoomStanding::of("admitted", true, true, true), Joined);
+        assert_eq!(RoomStanding::of("admitted", true, false, true), Unfinished);
+        assert_eq!(
+            RoomStanding::of("admitted", true, false, false),
+            NeedsReadmission
+        );
+        assert_eq!(RoomStanding::of("removed", true, true, false), Removed);
+    }
 
     fn minted(authority: Value) -> Value {
         json!({

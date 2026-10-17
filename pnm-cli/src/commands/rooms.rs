@@ -332,6 +332,21 @@ pub(crate) async fn run(
                 }
             };
         }
+        RoomCommands::Memberships {
+            vtc,
+            vtc_did,
+            member,
+        } => {
+            return rooms::cmd_rooms_memberships(
+                client,
+                rooms::OfferTarget {
+                    vtc_url: &vtc,
+                    vtc_did: &vtc_did,
+                    member: &member,
+                },
+            )
+            .await;
+        }
         // The key holder's verbs are calls to this VTA alone, all but one: fetching
         // commits from a host signs a request there, so it needs the session below.
         RoomCommands::Keys { command } => match command {
@@ -582,7 +597,7 @@ pub(crate) async fn run(
         RoomCommands::Owner { .. } => {
             unreachable!("the owner's group verbs are answered above, before the session is read")
         }
-        RoomCommands::Offers { .. } => {
+        RoomCommands::Offers { .. } | RoomCommands::Memberships { .. } => {
             unreachable!("the offer verbs are answered above, before the session is read")
         }
         RoomCommands::Profile { .. } => {

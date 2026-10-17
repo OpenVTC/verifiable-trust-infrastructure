@@ -991,6 +991,13 @@ pub const TASK_ROOMS_KEYS_OPEN_0_2: &str =
 pub const TASK_ROOMS_KEYS_KEY_PACKAGE_0_1: &str =
     "https://trusttasks.org/spec/rooms/keys/key-package/0.1";
 
+/// `spec/rooms/keys/key-package/0.2` — `key-package` 0.1, but the KeyPackage already held
+/// for the same room, member and invitation is returned (`alreadyMinted: true`) while it
+/// is outstanding, so any surface can finish an acceptance another began. Auth: as 0.1;
+/// the invitation is required.
+pub const TASK_ROOMS_KEYS_KEY_PACKAGE_0_2: &str =
+    <trust_tasks_rs::specs::rooms::keys::key_package::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/keys/welcome/0.1` — a room's owner delivers an MLS Welcome and
 /// this VTA joins the group. Auth: the invitation, consumed.
 pub const TASK_ROOMS_KEYS_WELCOME_0_1: &str = "https://trusttasks.org/spec/rooms/keys/welcome/0.1";
@@ -1080,6 +1087,12 @@ pub const TASK_ROOMS_KEYS_ACT_0_3: &str =
 /// required, no presentation. 0.3's table stays closed to it. Auth: as 0.1.
 pub const TASK_ROOMS_KEYS_ACT_0_4: &str =
     <trust_tasks_rs::specs::rooms::keys::act::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/act/0.5` — `act` 0.4, and `vtc/rooms/memberships/list/0.1`: every
+/// request a member makes to a community about the rooms it offers them, completed as the
+/// `issuer` named, with no presentation. Auth: as 0.1.
+pub const TASK_ROOMS_KEYS_ACT_0_5: &str =
+    <trust_tasks_rs::specs::rooms::keys::act::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/file-key/0.1` — one file's key, for the member's own client
 /// to seal or open that file itself, so file bytes never pass through the VTA.
@@ -2687,6 +2700,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_OPEN_0_1,
     TASK_ROOMS_KEYS_OPEN_0_2,
     TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
+    TASK_ROOMS_KEYS_KEY_PACKAGE_0_2,
     TASK_ROOMS_KEYS_WELCOME_0_1,
     TASK_ROOMS_KEYS_COMMIT_0_1,
     TASK_ROOMS_KEYS_CHAIN_0_1,
@@ -2699,6 +2713,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_ACT_0_2,
     TASK_ROOMS_KEYS_ACT_0_3,
     TASK_ROOMS_KEYS_ACT_0_4,
+    TASK_ROOMS_KEYS_ACT_0_5,
     TASK_ROOMS_KEYS_FILE_KEY_0_1,
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
     TASK_ROOMS_KEYS_LIST_0_1,

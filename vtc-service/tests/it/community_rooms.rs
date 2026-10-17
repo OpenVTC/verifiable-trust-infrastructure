@@ -49,6 +49,7 @@ const GET_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.2"
 const UPDATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/update/0.1";
 const OFFERS_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2";
 const ACCEPT: &str = "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1";
+const MEMBERSHIPS: &str = "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1";
 
 const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.1";
 const GROUP_CREATE: &str = "https://trusttasks.org/spec/rooms/owner/group/create/0.1";
@@ -867,6 +868,128 @@ async fn a_sealed_community_room_admits_and_removes_through_the_vta() {
     assert_eq!(remove_call.1["host"], TEST_VTC_DID);
 }
 
+/// `vtc/rooms/memberships/list/0.1`: the community's one record of a member's rooms, which
+/// every surface reads. An offer is `offered`; an acceptance — from any surface — is
+/// `admitted` at once, with `repeatAcceptUntil` while a sealed room's Welcome is kept; a
+/// removal is `removed` and keeps when they were admitted; a withdrawn offer is not listed.
+#[tokio::test]
+async fn every_surface_reads_one_record_of_a_members_rooms() {
+    let mut fix = fixture().await;
+    let sealed = create_room(&mut fix, "attributed").await;
+    let open = create_room(&mut fix, "open").await;
+    let withdrawn = create_room(&mut fix, "open").await;
+    let alice = member(&fix).await;
+    for room in [&sealed, &open, &withdrawn] {
+        add_member(&mut fix, room, &alice.did, &in_a_year()).await;
+    }
+    let by_room = |list: &Value| -> std::collections::BTreeMap<String, Value> {
+        list["payload"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| (i["roomId"].as_str().unwrap().to_string(), i.clone()))
+            .collect()
+    };
+
+    let list = call_as(&fix, &alice, MEMBERSHIPS, json!({})).await;
+    let rooms = by_room(&list);
+    assert_eq!(rooms.len(), 3, "{list}");
+    assert!(rooms.values().all(|r| r["state"] == "offered"), "{list}");
+    assert!(
+        rooms.values().all(|r| r.get("credentials").is_none()),
+        "never a credential: those are collected with offers/list"
+    );
+    assert_eq!(rooms[&sealed]["host"], TEST_VTC_DID);
+    assert_eq!(rooms[&sealed]["label"], "Board pack");
+
+    // Withdrawn before it was accepted: never listed (item 3).
+    admin_call(
+        &mut fix,
+        REMOVE,
+        json!({ "roomId": withdrawn, "member": alice.did, "reason": "offered in error" }),
+    )
+    .await;
+
+    // One surface accepts the open room, another the sealed one.
+    let r = call_as(&fix, &alice, ACCEPT, json!({ "roomId": open })).await;
+    assert_eq!(r["payload"]["state"], "admitted", "{r}");
+    let first = call_as(
+        &fix,
+        &alice,
+        ACCEPT,
+        json!({ "roomId": sealed, "keyPackage": "S1A" }),
+    )
+    .await;
+    assert_eq!(first["payload"]["state"], "admitted", "{first}");
+
+    let list = call_as(&fix, &alice, MEMBERSHIPS, json!({})).await;
+    let rooms = by_room(&list);
+    assert_eq!(rooms.len(), 2, "the withdrawn offer is gone: {list}");
+    assert_eq!(rooms[&open]["state"], "admitted");
+    assert!(rooms[&open]["admittedAt"].is_string());
+    assert!(
+        rooms[&open].get("repeatAcceptUntil").is_none(),
+        "an open room has no Welcome"
+    );
+    assert_eq!(rooms[&sealed]["state"], "admitted");
+    let until = rooms[&sealed]["repeatAcceptUntil"].as_str().unwrap();
+    let admitted = rooms[&sealed]["admittedAt"].as_str().unwrap();
+    let span = chrono::DateTime::parse_from_rfc3339(until).unwrap()
+        - chrono::DateTime::parse_from_rfc3339(admitted).unwrap();
+    assert_eq!(span, chrono::Duration::days(7), "{list}");
+
+    // A second surface finishing the acceptance with the same KeyPackage changes nothing.
+    let again = call_as(
+        &fix,
+        &alice,
+        ACCEPT,
+        json!({ "roomId": sealed, "keyPackage": "S1A" }),
+    )
+    .await;
+    assert_eq!(again["payload"]["welcome"], first["payload"]["welcome"]);
+    assert_eq!(
+        by_room(&call_as(&fix, &alice, MEMBERSHIPS, json!({})).await)[&sealed],
+        rooms[&sealed]
+    );
+
+    // Paged in a stable order.
+    let page = call_as(&fix, &alice, MEMBERSHIPS, json!({ "limit": 1 })).await;
+    assert_eq!(page["payload"]["items"].as_array().unwrap().len(), 1);
+    let cursor = page["payload"]["nextCursor"].as_str().unwrap().to_string();
+    let rest = call_as(
+        &fix,
+        &alice,
+        MEMBERSHIPS,
+        json!({ "limit": 1, "cursor": cursor }),
+    )
+    .await;
+    assert_eq!(rest["payload"]["items"].as_array().unwrap().len(), 1);
+    assert!(rest["payload"].get("nextCursor").is_none(), "{rest}");
+    assert_ne!(
+        page["payload"]["items"][0]["roomId"],
+        rest["payload"]["items"][0]["roomId"]
+    );
+
+    // Removed: still listed, with when they were admitted and removed.
+    admin_call(
+        &mut fix,
+        REMOVE,
+        json!({ "roomId": sealed, "member": alice.did, "reason": "left the board" }),
+    )
+    .await;
+    let list = call_as(&fix, &alice, MEMBERSHIPS, json!({})).await;
+    let removed = &by_room(&list)[&sealed];
+    assert_eq!(removed["state"], "removed", "{list}");
+    assert!(removed["admittedAt"].is_string());
+    assert!(removed["removedAt"].is_string());
+    assert!(removed.get("repeatAcceptUntil").is_none());
+
+    // Another member sees none of it.
+    let bob = member(&fix).await;
+    let theirs = call_as(&fix, &bob, MEMBERSHIPS, json!({})).await;
+    assert_eq!(theirs["payload"]["items"], json!([]), "{theirs}");
+}
+
 /// `rooms/owner/group/add/0.2` item 8, end to end: the VTA admitted the member and its
 /// answer was lost, so the acceptance is `admissionPending` and nothing is recorded here.
 /// The member's identical retry reaches the VTA again, which answers with the Welcome it
@@ -1326,6 +1449,12 @@ async fn vtc_rooms_offers_refuse_with_their_declared_codes() {
 
     let r = call_as(&fix, &stranger, OFFERS, json!({})).await;
     assert_eq!(tt_error_code(&r), Some(OFFERS_LIST_NOT_A_MEMBER), "{r}");
+    let r = call_as(&fix, &stranger, MEMBERSHIPS, json!({})).await;
+    assert_eq!(
+        tt_error_code(&r),
+        Some(MEMBERSHIPS_LIST_NOT_A_MEMBER),
+        "{r}"
+    );
     let r = call_as(&fix, &stranger, ACCEPT, json!({ "roomId": open })).await;
     assert_eq!(tt_error_code(&r), Some(ACCEPT_NOT_A_MEMBER), "{r}");
     let r = call_as(&fix, &alice, ACCEPT, json!({ "roomId": open })).await;

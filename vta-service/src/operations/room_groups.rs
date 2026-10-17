@@ -231,6 +231,12 @@ pub struct PendingKeyPackage {
     pub key_package: String,
     /// Unix seconds after which this is discarded unused.
     pub expires_at: u64,
+    /// The credential id of the invitation it was minted against, for one minted by
+    /// `rooms/keys/key-package/0.2` — which returns it again, while it is outstanding, to
+    /// a request for the same room, member and invitation ([`outstanding_or_mint`]).
+    /// Absent for one `0.1` minted, which no later request returns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invitation_id: Option<String>,
 }
 
 /// What this VTA holds for one room.
@@ -279,12 +285,66 @@ pub async fn mint_key_package(
         snapshot,
         key_package: B64.encode(&package),
         expires_at: now + lifetime_secs,
+        invitation_id: None,
     };
     groups
         .insert(member.key(KEY_PACKAGE), &pending)
         .await
         .map_err(|e| AppError::Internal(format!("store the pending key package: {e}")))?;
     Ok(pending)
+}
+
+/// Serialises [`outstanding_or_mint`]'s read-then-mint, so two requests for the same room,
+/// member and invitation arriving together are given the same KeyPackage
+/// (`rooms/keys/key-package/0.2` recipient item 7). One lock for every member: a mint is
+/// cheap, and a second KeyPackage minted by a race would overwrite the first's private half
+/// — the one a Welcome the owner already made may be sealed to.
+static OUTSTANDING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// `rooms/keys/key-package/0.2`: the KeyPackage this VTA already holds for `member` against
+/// the invitation `invitation_id`, while it is outstanding (recipient item 3), or a new one
+/// minted against it (item 4). Answers whether it was already minted.
+///
+/// **Outstanding** is item 5's: minted, not yet consumed by a Welcome ([`join`] discards
+/// it), not expired. A package minted against another invitation — before a removal and
+/// re-admission (item 6) — or by `0.1`, which records no invitation, is not returned; a new
+/// one replaces it.
+///
+/// This is what lets a member finish, from any surface, an acceptance another began: the
+/// surface asks again, is given the KeyPackage the community already admitted, and the
+/// community answers that acceptance with the Welcome it kept.
+pub async fn outstanding_or_mint(
+    groups: &KeyspaceHandle,
+    member: &Member,
+    invitation_id: &str,
+    lifetime_secs: u64,
+    now: u64,
+) -> Result<(PendingKeyPackage, bool), AppError> {
+    let _one_at_a_time = OUTSTANDING.lock().await;
+    let held: Option<PendingKeyPackage> = groups
+        .get(member.key(KEY_PACKAGE))
+        .await
+        .map_err(|e| AppError::Internal(format!("read the pending key package: {e}")))?;
+    if let Some(held) = held.filter(|p| {
+        p.expires_at > now
+            && p.snapshot.member_did() == member.persona()
+            && p.invitation_id.as_deref() == Some(invitation_id)
+    }) {
+        return Ok((held, true));
+    }
+    let (snapshot, package) = IdentitySnapshot::mint(member.persona())
+        .map_err(|e| AppError::Internal(format!("mint a key package: {e}")))?;
+    let pending = PendingKeyPackage {
+        snapshot,
+        key_package: B64.encode(&package),
+        expires_at: now + lifetime_secs,
+        invitation_id: Some(invitation_id.to_string()),
+    };
+    groups
+        .insert(member.key(KEY_PACKAGE), &pending)
+        .await
+        .map_err(|e| AppError::Internal(format!("store the pending key package: {e}")))?;
+    Ok((pending, false))
 }
 
 /// Whether `key_package` is one this VTA minted for `member` with
@@ -2606,6 +2666,7 @@ mod per_member_storage_tests {
             snapshot,
             key_package: B64.encode(kp),
             expires_at: 9,
+            invitation_id: None,
         };
         ks.insert(legacy::key_package(ROOM), &bobs_package)
             .await

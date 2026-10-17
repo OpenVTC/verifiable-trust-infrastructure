@@ -53,6 +53,7 @@ pub mod codes {
         members::list::v0_1 as members_list, members::remove::v0_1 as remove,
         update::v0_1 as update,
     };
+    use trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
     use trust_tasks_rs::specs::vtc::rooms::offers::{accept::v0_1 as accept, list::v0_1 as list};
 
     pub const UPDATE_NOT_FOUND: &str = update::error_codes::NOT_FOUND.code;
@@ -78,6 +79,8 @@ pub mod codes {
     pub const REMOVE_KEY_HOLDER_REFUSED: &str = remove::error_codes::KEY_HOLDER_REFUSED.code;
     pub const MEMBERS_LIST_NOT_FOUND: &str = members_list::error_codes::NOT_FOUND.code;
     pub const OFFERS_LIST_NOT_A_MEMBER: &str = list::error_codes::NOT_A_MEMBER.code;
+    pub const MEMBERSHIPS_LIST_NOT_A_MEMBER: &str =
+        memberships_list::error_codes::NOT_A_MEMBER.code;
     pub const ACCEPT_NOT_FOUND: &str = accept::error_codes::NOT_FOUND.code;
     pub const ACCEPT_NOT_A_MEMBER: &str = accept::error_codes::NOT_A_MEMBER.code;
     pub const ACCEPT_OFFER_EXPIRED: &str = accept::error_codes::OFFER_EXPIRED.code;

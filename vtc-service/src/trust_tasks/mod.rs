@@ -3036,6 +3036,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     community_room_tasks::OFFERS_LIST_TYPE,
     community_room_tasks::OFFERS_LIST_V0_2_TYPE,
     community_room_tasks::OFFERS_ACCEPT_TYPE,
+    community_room_tasks::MEMBERSHIPS_LIST_TYPE,
     // The OpenID4VP verifier identities, as a holder of `vtc.config.admin`
     // sees them (#1988). A read; no REST route.
     oid4vp_tasks::IDENTITIES_LIST_TYPE,

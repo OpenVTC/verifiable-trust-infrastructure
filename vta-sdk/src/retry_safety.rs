@@ -600,6 +600,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // consume at most one — a duplicate that costs real key material, which is
     // exactly the case a key exists for.
     (trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1, Keyed),
+    // 0.2 converges: a repeat for the same room, member and invitation returns the
+    // KeyPackage the first one minted (recipient item 3), and leaves nothing behind.
+    (trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_2, RetrySafe),
     // Joining is once. A retry after a lost reply finds the group already
     // present and fails `alreadyJoined` — so without a key the caller cannot
     // tell "my join was lost" from "my join worked and the reply was", and the
@@ -657,6 +660,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_3, RetrySafe),
     // 0.4 adds `vtc/rooms/offers/list/0.2` to the offer row, a listing: still nothing stored.
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_4, RetrySafe),
+    // 0.5 adds `vtc/rooms/memberships/list/0.1`, a read: still nothing stored.
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_5, RetrySafe),
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_1, RetrySafe),
     // 0.2 names each entry's member and can carry the member's own labels: still a read.
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_2, RetrySafe),

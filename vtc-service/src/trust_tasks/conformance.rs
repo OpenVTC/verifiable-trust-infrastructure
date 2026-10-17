@@ -1322,6 +1322,18 @@ fn table() -> Vec<Conformance> {
             }] })
         ),
         checked!(
+            s::rooms::memberships::list::v0_1::Payload,
+            s::rooms::memberships::list::v0_1::Response,
+            json!({ "limit": 10 }),
+            json!({ "items": [{
+                "roomId": "did:key:z6MkRoom", "host": "did:example:community",
+                "label": "Board pack", "visibility": "attributed", "actions": ["read"],
+                "validUntil": "2027-10-01T00:00:00Z", "state": "admitted",
+                "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
+                "repeatAcceptUntil": "2026-10-21T11:00:00Z",
+            }] })
+        ),
+        checked!(
             s::rooms::offers::accept::v0_1::Payload,
             s::rooms::offers::accept::v0_1::Response,
             json!({ "roomId": "did:key:z6MkRoom", "keyPackage": "AAEAAgADAAQ" }),

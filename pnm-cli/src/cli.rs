@@ -599,12 +599,30 @@ pub(crate) enum RoomCommands {
     /// A community's offers of its rooms to you: list them, and accept one.
     ///
     /// Each request is signed as the DID the community addressed its offer to — a
-    /// persona your VTA holds — by your VTA (`rooms/keys/act/0.3`), and sent to the
+    /// persona your VTA holds — by your VTA (`rooms/keys/act`), and sent to the
     /// community unchanged. On a sealed room your VTA mints the KeyPackage and joins
     /// with the Welcome the community answers with.
     Offers {
         #[command(subcommand)]
         command: RoomOffersCommands,
+    },
+
+    /// Every room the community has offered you and where each stands — offered,
+    /// joined, accepted but not finished, or removed — as your member portal and
+    /// OpenVTC show it too: the community's record (`vtc/rooms/memberships/list`),
+    /// signed as you by your VTA (`rooms/keys/act/0.5`), beside your VTA's own
+    /// (`rooms/keys/list`).
+    Memberships {
+        /// Base URL of the community's Trust Task endpoint (e.g.
+        /// `https://vtc.example.com/v1`).
+        #[arg(long)]
+        vtc: String,
+        /// The community's DID.
+        #[arg(long)]
+        vtc_did: String,
+        /// The DID the community addressed its offers to: a persona your VTA holds.
+        #[arg(long)]
+        member: String,
     },
 
     /// Register a room with a host, signed with this CLI's own key — for a

@@ -427,7 +427,8 @@ mod rooms;
 mod witness;
 pub use rooms::{
     RoomAction, RoomLabelEdit, RoomRegistration, RoomRetentionPolicy, RoomVisibility,
-    is_offer_type, room_label_payload, unsigned_room_request,
+    is_community_type, is_offer_type, room_label_payload, unsigned_community_request,
+    unsigned_room_request,
 };
 mod secrets;
 mod vault;

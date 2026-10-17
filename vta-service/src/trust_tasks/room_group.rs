@@ -63,6 +63,16 @@ pub struct KeyPackageResponse {
     pub expires_at: String,
 }
 
+/// `rooms/keys/key-package/0.2#response`: 0.1's, with `expiresAt` required and
+/// `alreadyMinted` saying whether this is the KeyPackage already held.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyPackageResponseV0_2 {
+    pub key_package: String,
+    pub expires_at: String,
+    pub already_minted: bool,
+}
+
 /// `rooms/keys/welcome/0.1#response`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -131,6 +141,62 @@ pub(super) async fn handle_key_package(
     )
 }
 
+/// `rooms/keys/key-package/0.2`: the KeyPackage already held for this room, member and
+/// invitation while it is outstanding (recipient item 3), else a new one (item 4).
+///
+/// What lets a member finish, from any surface, an acceptance another began: the second
+/// surface is given the KeyPackage the community already admitted, and the community
+/// answers its acceptance with the Welcome it kept. Under 0.1 the second surface's mint
+/// replaced the first's private half — the one that Welcome is sealed to.
+pub(super) async fn handle_key_package_v0_2(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: trust_tasks_rs::specs::rooms::keys::key_package::v0_2::Payload =
+        match parse_payload(&doc) {
+            Ok(r) => r,
+            Err(resp) => return resp,
+        };
+    let room_id = req.room_id.to_string();
+    // Item 1: never without a valid invitation to the room. Item 2: the member is its
+    // subject, and the caller must act as them.
+    let invitation =
+        match require_invitation(state, Some(req.invitation.as_str()), &room_id, auth).await {
+            Ok(i) => i,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
+    let member = match room_member::member_as(state, auth, &room_id, invitation.subject()).await {
+        Ok(m) => m,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+    // Item 6: the invitation is identified by its credential id, never by what it says.
+    let (pending, already_minted) = match room_groups::outstanding_or_mint(
+        &state.room_groups_ks,
+        &member,
+        invitation.credential_id(),
+        KEY_PACKAGE_LIFETIME_SECS,
+        now(),
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    if !already_minted {
+        record(state, "rooms.keys.key-package", auth, &room_id).await;
+    }
+    success_response(
+        &doc,
+        KeyPackageResponseV0_2 {
+            key_package: pending.key_package,
+            expires_at: rfc3339(pending.expires_at),
+            already_minted,
+        },
+    )
+}
+
 /// `rooms/keys/welcome/0.1`.
 pub(super) async fn handle_welcome(
     state: &AppState,
@@ -146,10 +212,43 @@ pub(super) async fn handle_welcome(
     // The load-bearing gate. A Welcome carries a group's secrets; without a matching
     // invitation this VTA would be accepting key material for a room nobody agreed to join.
     let invitation =
-        match require_invitation(state, req.invitation.as_deref(), &req.room_id, auth).await {
+        match verify_invitation(state, req.invitation.as_deref(), &req.room_id, auth).await {
             Ok(i) => i,
             Err(e) => return app_error_to_reject(&doc, e),
         };
+    // A spent invitation is the join already made — by this request's lost answer, or by
+    // another surface finishing the same acceptance. For the member who joined with it,
+    // that is `alreadyJoined` (welcome/0.1: a recipient already holding group state for the
+    // member the invitation names MUST answer it), which a surface reads as success; for
+    // anyone else it is a used invitation.
+    match room_invitation::is_consumed(&state.room_invitations_ks, invitation.credential_id()).await
+    {
+        Ok(false) => {}
+        Ok(true) => {
+            let joined =
+                match room_member::member_as(state, auth, &req.room_id, invitation.subject()).await
+                {
+                    Ok(member) => room_groups::load(&state.room_groups_ks, &member)
+                        .await
+                        .is_ok_and(|g| g.is_some()),
+                    Err(_) => false,
+                };
+            if joined {
+                return super::helpers::reject_declared(
+                    &doc,
+                    trust_tasks_rs::specs::rooms::keys::welcome::v0_1::error_codes::ALREADY_JOINED,
+                    format!(
+                        "this VTA already holds group state for `{}` in room `{}`, joined with \
+                         this invitation",
+                        invitation.subject(),
+                        req.room_id
+                    ),
+                );
+            }
+            return app_error_to_reject(&doc, used_invitation(&invitation));
+        }
+        Err(e) => return app_error_to_reject(&doc, e),
+    }
 
     let welcome = match decode_b64(&req.welcome, "welcome") {
         Ok(b) => b,
@@ -1713,6 +1812,29 @@ async fn require_invitation(
     room_id: &str,
     auth: &AuthClaims,
 ) -> Result<room_invitation::VerifiedInvitation, vti_common::error::AppError> {
+    let invitation = verify_invitation(state, encoded, room_id, auth).await?;
+    if room_invitation::is_consumed(&state.room_invitations_ks, invitation.credential_id()).await? {
+        return Err(used_invitation(&invitation));
+    }
+    Ok(invitation)
+}
+
+fn used_invitation(
+    invitation: &room_invitation::VerifiedInvitation,
+) -> vti_common::error::AppError {
+    vti_common::error::AppError::Conflict(format!(
+        "invitation `{}` has already been used",
+        invitation.credential_id()
+    ))
+}
+
+/// [`require_invitation`] without the check that it is unspent.
+async fn verify_invitation(
+    state: &AppState,
+    encoded: Option<&str>,
+    room_id: &str,
+    auth: &AuthClaims,
+) -> Result<room_invitation::VerifiedInvitation, vti_common::error::AppError> {
     let encoded = encoded.ok_or_else(|| {
         vti_common::error::AppError::Validation(format!(
             "no invitation presented for room `{room_id}`; joining a room is a two-party \
@@ -1735,13 +1857,6 @@ async fn require_invitation(
         &keys,
     )
     .await?;
-
-    if room_invitation::is_consumed(&state.room_invitations_ks, invitation.credential_id()).await? {
-        return Err(vti_common::error::AppError::Conflict(format!(
-            "invitation `{}` has already been used",
-            invitation.credential_id()
-        )));
-    }
     Ok(invitation)
 }
 
@@ -2760,6 +2875,139 @@ mod per_member_tests {
             .await
             .unwrap();
         assert_eq!(held.len(), 2, "{held:?}");
+    }
+
+    async fn key_package_v0_2(
+        state: &AppState,
+        caller: &AuthClaims,
+        room: &str,
+        vic: &str,
+    ) -> Value {
+        body(
+            handle_key_package_v0_2(
+                state,
+                caller,
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_2,
+                    serde_json::json!({ "roomId": room, "invitation": vic }),
+                ),
+            )
+            .await,
+        )
+    }
+
+    /// `rooms/keys/key-package/0.2`, end to end: an acceptance one surface began — it
+    /// obtained the KeyPackage, the owner admitted it, and the surface stopped before the
+    /// Welcome — is finished by another. The second surface is given the same KeyPackage
+    /// (item 3), the Welcome sealed to it joins, and the first surface's late Welcome is
+    /// `alreadyJoined`, which a surface reads as success.
+    #[tokio::test]
+    async fn an_acceptance_begun_on_one_surface_is_finished_on_another() {
+        let (state, _d, alice, _bob) = shared_vta().await;
+        let room = Party::new();
+        let (owner_state, _od, owner) = owner(&room.did).await;
+        let vic = invitation(&room, &alice.did).await;
+
+        let portal = key_package_v0_2(&state, &alice_caller(), &room.did, &vic).await;
+        assert_eq!(portal["payload"]["alreadyMinted"], false, "{portal}");
+        let terminal = key_package_v0_2(&state, &alice_caller(), &room.did, &vic).await;
+        assert_eq!(terminal["payload"]["alreadyMinted"], true, "{terminal}");
+        assert_eq!(
+            terminal["payload"]["keyPackage"], portal["payload"]["keyPackage"],
+            "the same KeyPackage, so the community answers with the Welcome it kept"
+        );
+        assert_eq!(
+            terminal["payload"]["expiresAt"], portal["payload"]["expiresAt"],
+            "returning it again does not extend it"
+        );
+
+        let kp = B64
+            .decode(portal["payload"]["keyPackage"].as_str().unwrap())
+            .unwrap();
+        let admission = room_groups::prepare_add(
+            &owner_state.room_groups_ks,
+            &owner,
+            HOST,
+            &alice.did,
+            &kp,
+            0,
+        )
+        .await
+        .unwrap();
+        room_groups::promote_pending_advance(&owner_state.room_groups_ks, &owner, &admission, 0)
+            .await
+            .unwrap();
+
+        let welcome = |state: &AppState| {
+            let request = request(
+                vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WELCOME_0_1,
+                serde_json::json!({
+                    "roomId": room.did, "welcome": admission.welcome, "invitation": vic,
+                }),
+            );
+            let state = state.clone();
+            async move { body(handle_welcome(&state, &alice_caller(), request).await) }
+        };
+        let joined = welcome(&state).await;
+        assert!(joined["payload"]["epoch"].is_u64(), "{joined}");
+        let late = welcome(&state).await;
+        assert_eq!(
+            late["payload"]["code"], "rooms/keys/welcome:alreadyJoined",
+            "{late}"
+        );
+        let listed = list(&state, &alice_caller()).await;
+        assert_eq!(
+            listed["payload"]["rooms"][0]["roomId"], room.did,
+            "{listed}"
+        );
+    }
+
+    /// Item 6: a different invitation for the same room and member — after a removal and
+    /// re-admission — is given a different KeyPackage; and a KeyPackage 0.1 minted, which
+    /// records no invitation, is never returned by 0.2. Item 7: requests arriving together
+    /// are given the same one.
+    #[tokio::test]
+    async fn only_the_same_invitation_is_given_the_held_key_package() {
+        let (state, _d, alice, _bob) = shared_vta().await;
+        let room = Party::new();
+        let caller = alice_caller();
+
+        let legacy = body(
+            handle_key_package(
+                &state,
+                &caller,
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
+                    serde_json::json!({
+                        "roomId": room.did,
+                        "invitation": invitation(&room, &alice.did).await,
+                    }),
+                ),
+            )
+            .await,
+        );
+        let first_vic = invitation(&room, &alice.did).await;
+        let first = key_package_v0_2(&state, &caller, &room.did, &first_vic).await;
+        assert_eq!(first["payload"]["alreadyMinted"], false, "{first}");
+        assert_ne!(
+            first["payload"]["keyPackage"],
+            legacy["payload"]["keyPackage"]
+        );
+
+        let second_vic = invitation(&room, &alice.did).await;
+        let second = key_package_v0_2(&state, &caller, &room.did, &second_vic).await;
+        assert_eq!(second["payload"]["alreadyMinted"], false, "{second}");
+        assert_ne!(
+            second["payload"]["keyPackage"],
+            first["payload"]["keyPackage"]
+        );
+
+        let (a, b) = tokio::join!(
+            key_package_v0_2(&state, &caller, &room.did, &second_vic),
+            key_package_v0_2(&state, &caller, &room.did, &second_vic),
+        );
+        assert_eq!(a["payload"]["keyPackage"], second["payload"]["keyPackage"]);
+        assert_eq!(b["payload"]["keyPackage"], second["payload"]["keyPackage"]);
     }
 
     /// The same member twice is still `alreadyJoined` — the spec's rule, asked of the member.

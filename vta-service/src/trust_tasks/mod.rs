@@ -2682,6 +2682,10 @@ dispatch_table! {
     // `open` is capability-gated, because only it is our own principal asking.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1 => room_group::handle_key_package
         [ Mutating None false ],
+    // 0.2: the outstanding KeyPackage for the same room, member and invitation is
+    // returned rather than replaced, so any surface can finish an acceptance.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_2 => room_group::handle_key_package_v0_2
+        [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WELCOME_0_1 => room_group::handle_welcome
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_COMMIT_0_1 => room_group::handle_commit
@@ -2739,6 +2743,9 @@ dispatch_table! {
     // 0.4: 0.3, and `vtc/rooms/offers/list/0.2` — the offer listing with each room's
     // description — on the same terms as 0.1 (trust-tasks-tf #810).
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_4 => room_act::handle_act_v0_4
+        [ None Metadata true ],
+    // 0.5: also `vtc/rooms/memberships/list/0.1`.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5 => room_act::handle_act_v0_5
         [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1 => room_group::handle_list
         [ None Metadata false ],

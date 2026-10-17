@@ -1,7 +1,7 @@
 //! Rooms the community itself owns — `vtc/rooms/community/{create,list,get}/{0.1,0.2}`,
 //! `vtc/rooms/community/update/0.1` and `vtc/rooms/community/members/{add,remove,list}/0.1`
-//! for its administrators, and `vtc/rooms/offers/list/{0.1,0.2}` and
-//! `vtc/rooms/offers/accept/0.1` for its members
+//! for its administrators, and `vtc/rooms/offers/list/{0.1,0.2}`,
+//! `vtc/rooms/offers/accept/0.1` and `vtc/rooms/memberships/list/0.1` for its members
 //! (`docs/05-design-notes/data-rooms-files.md` §8.4; [`crate::rooms::community`]).
 //!
 //! # Authority
@@ -9,7 +9,7 @@
 //! | task | signed by | authority (read at execution time) |
 //! |---|---|---|
 //! | `community/*`, `community/members/*` | an administrator | `vtc.rooms.manage` on the signer's live entry (or a console key's administrator's) |
-//! | `offers/list`, `offers/accept` | a member | being the member the offer names, and an **active** member now |
+//! | `offers/list`, `offers/accept`, `memberships/list` | a member | being the member the offer names, and an **active** member now |
 //!
 //! `vtc.rooms.manage` is the owner's authority, distinct from hosting's `vtc.rooms.admin`.
 //! No room-issued credential is required or accepted from an administrator: the community
@@ -54,6 +54,7 @@ use trust_tasks_rs::specs::vtc::rooms::community::{
     members::remove::v0_1 as remove, members::remove::v0_2 as remove_v0_2, update::v0_1 as update,
     update::v0_2 as update_v0_2,
 };
+use trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
 use trust_tasks_rs::specs::vtc::rooms::offers::{
     accept::v0_1 as accept, list::v0_1 as offers_list, list::v0_2 as offers_list_v0_2,
 };
@@ -91,6 +92,7 @@ pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::T
 pub(crate) const OFFERS_LIST_TYPE: &str = <offers_list::Payload as Payload>::TYPE_URI;
 pub(crate) const OFFERS_LIST_V0_2_TYPE: &str = <offers_list_v0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const OFFERS_ACCEPT_TYPE: &str = <accept::Payload as Payload>::TYPE_URI;
+pub(crate) const MEMBERSHIPS_LIST_TYPE: &str = <memberships_list::Payload as Payload>::TYPE_URI;
 
 /// Every URI [`dispatch`] routes.
 pub(crate) const URIS: &[&str] = &[
@@ -110,6 +112,7 @@ pub(crate) const URIS: &[&str] = &[
     OFFERS_LIST_TYPE,
     OFFERS_LIST_V0_2_TYPE,
     OFFERS_ACCEPT_TYPE,
+    MEMBERSHIPS_LIST_TYPE,
 ];
 
 const OWNER_GROUP_CREATE: &str = <owner_group_create::Payload as Payload>::TYPE_URI;
@@ -128,6 +131,7 @@ const DEFAULT_PAGE: usize = 50;
 const ROOMS_CURSOR: &str = "community-rooms:";
 const MEMBERS_CURSOR: &str = "community-room-members:";
 const OFFERS_CURSOR: &str = "community-room-offers:";
+const MEMBERSHIPS_CURSOR: &str = "community-room-memberships:";
 
 use crate::rooms::departures::REMOVAL_NOTICE;
 
@@ -165,6 +169,7 @@ pub(super) async fn dispatch(
         OFFERS_LIST_TYPE => handle_offers_list(state, ctx, doc, Shape::V0_1).await,
         OFFERS_LIST_V0_2_TYPE => handle_offers_list(state, ctx, doc, Shape::V0_2).await,
         OFFERS_ACCEPT_TYPE => handle_offers_accept(state, ctx, doc).await,
+        MEMBERSHIPS_LIST_TYPE => handle_memberships_list(state, ctx, doc).await,
         _ => return None,
     })
 }
@@ -1814,6 +1819,107 @@ async fn handle_offers_list(
         Shape::V0_1 => respond::<offers_list::Response>(&doc, body),
         Shape::V0_2 => respond::<offers_list_v0_2::Response>(&doc, body),
     }
+}
+
+/// `vtc/rooms/memberships/list/0.1`: the community's own record of the signer's
+/// admissions to the rooms it owns, in every state, so that every surface the member uses
+/// — the member portal through their wallet, `pnm`, OpenVTC — shows the same rooms in the
+/// same state. The same record `offers/accept` writes (item 4), never a credential.
+async fn handle_memberships_list(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::rooms::community::codes as c;
+    let signer = match active_signer(state, ctx, &doc, c::MEMBERSHIPS_LIST_NOT_A_MEMBER).await {
+        Ok(s) => s,
+        Err(reject) => return reject,
+    };
+    let checked: memberships_list::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let host = state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .unwrap_or_default();
+    let at = now();
+    // Items 1 and 3: the signer's own, in every state, but never an offer withdrawn before
+    // it was accepted — recorded as `removed` with no admission.
+    let records = match state.community_rooms.records_of(&signer).await {
+        Ok(r) => r
+            .into_iter()
+            .filter(|r| !(r.state == MemberRecord::REMOVED && r.admitted_at.is_none()))
+            .collect::<Vec<_>>(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    // Item 7: `records_of` is ordered by room, and the cursor names the last room.
+    let (records, next) = match page(
+        &doc,
+        records,
+        |r| r.room_id.clone(),
+        MEMBERSHIPS_CURSOR,
+        checked.cursor.as_ref().map(|c| c.as_str()),
+        checked.limit,
+    ) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let mut items = Vec::with_capacity(records.len());
+    for r in &records {
+        let room = match state.community_rooms.room(&r.room_id).await {
+            Ok(Some(room)) => room,
+            Ok(None) => continue,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
+        items.push(membership(&host, &room, r, at));
+    }
+    let mut body = json!({ "items": items });
+    if let Some(n) = next {
+        body["nextCursor"] = json!(n);
+    }
+    respond::<memberships_list::Response>(&doc, body)
+}
+
+/// The `RoomMembership` of `vtc/_shared/0.1/community-room` for one record, at `at`.
+fn membership(host: &str, room: &OwnedRoom, r: &MemberRecord, at: DateTime<Utc>) -> Value {
+    let mut v = json!({
+        "roomId": r.room_id,
+        "host": host,
+        "label": room.label,
+        "visibility": room.visibility,
+        "actions": r.actions,
+        "validUntil": r.valid_until,
+        "state": r.state,
+        "offeredAt": r.offered_at,
+    });
+    if let Some(a) = &r.admitted_at {
+        v["admittedAt"] = json!(a);
+    }
+    if let Some(a) = &r.removed_at {
+        v["removedAt"] = json!(a);
+    }
+    // Item 5: exactly while the Welcome of a sealed-tier admission is kept.
+    if let Some(until) = repeat_accept_until(room, r, at) {
+        v["repeatAcceptUntil"] = json!(rfc3339(until));
+    }
+    v
+}
+
+/// Until when a repeated accept is answered with the kept Welcome, while it still is.
+fn repeat_accept_until(
+    room: &OwnedRoom,
+    r: &MemberRecord,
+    at: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    if !sealed(room) || r.welcome.is_none() || !r.welcome_kept(at) {
+        return None;
+    }
+    let admitted = DateTime::parse_from_rfc3339(r.admitted_at.as_deref()?).ok()?;
+    Some(admitted.with_timezone(&Utc) + crate::rooms::community::WELCOME_KEPT)
 }
 
 async fn handle_offers_accept(

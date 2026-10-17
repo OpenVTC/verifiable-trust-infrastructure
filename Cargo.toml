@@ -653,9 +653,13 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # and `vtc/rooms/community/update/0.1`, the 0.2 community-room reads and create,
 # and `vtc/rooms/offers/list/0.2` — a community-owned room's description and
 # tags (trust-tasks-tf #805).
-# 0.31.15 is the FLOOR: `rooms/keys/act/0.4`, whose table adds
-# `vtc/rooms/offers/list/0.2` beside 0.1 (trust-tasks-tf #810).
-trust-tasks-rs = { version = "0.31.15", default-features = false, features = [
+# 0.31.15: `rooms/keys/act/0.4`, which completes `vtc/rooms/offers/list/0.2`
+# (trust-tasks-tf #810).
+# 0.31.16 is the FLOOR: `vtc/rooms/memberships/list/0.1`,
+# `rooms/keys/key-package/0.2` and `rooms/keys/act/0.5` — every surface shows a
+# member the same rooms, and finishes an acceptance any other began
+# (trust-tasks-tf #813).
+trust-tasks-rs = { version = "0.31.16", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

@@ -304,6 +304,48 @@ impl VtaClient {
         })
     }
 
+    /// `rooms/keys/act/0.5` — have the VTA complete one of a member's requests to a
+    /// community about the rooms it offers them ([`is_community_type`]) **as the member**,
+    /// and get it back to send to the community unaltered. Build `document` with
+    /// [`unsigned_community_request`].
+    ///
+    /// A VTA that does not serve 0.5 is asked at the newest version that completes the
+    /// type, with the same document, and the answer read as 0.5's: 0.4 for the offer types
+    /// and `vtc/rooms/offers/list/0.2`, 0.3 for `vtc/rooms/offers/{list,accept}/0.1`. For a
+    /// type no version it serves completes — `vtc/rooms/memberships/list/0.1` below 0.5 —
+    /// it is [`VtaError::UnsupportedTaskType`].
+    pub async fn room_act_community(
+        &self,
+        document: &trust_tasks_rs::specs::rooms::keys::act::v0_5::UnsignedRoomRequest,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_5::Response, VtaError> {
+        let payload = json!({ "document": document });
+        let type_uri = document.type_.as_str();
+        let mut versions = vec![trust_tasks::TASK_ROOMS_KEYS_ACT_0_5];
+        if is_offer_type(type_uri) {
+            versions.push(trust_tasks::TASK_ROOMS_KEYS_ACT_0_4);
+        }
+        if is_offer_type(type_uri) && !needs_act_0_4(type_uri) {
+            versions.push(trust_tasks::TASK_ROOMS_KEYS_ACT_0_3);
+        }
+        let mut versions = versions.into_iter().peekable();
+        let value = loop {
+            let task = versions.next().expect("0.5 is always asked");
+            match self
+                .dispatch_trust_task(task, payload.clone(), ROOM_TT_TIMEOUT)
+                .await
+            {
+                // Not a retry: the ask was never routed.
+                Err(VtaError::UnsupportedTaskType { .. }) if versions.peek().is_some() => {}
+                other => break other?,
+            }
+        };
+        serde_json::from_value(value).map_err(|e| {
+            VtaError::Protocol(format!(
+                "rooms/keys/act response does not match its schema: {e}"
+            ))
+        })
+    }
+
     /// `rooms/keys/file-key/0.2` — one file's key, so the caller seals or opens
     /// that file itself and its bytes never pass through the VTA. A VTA that does not
     /// serve 0.2 (`unsupportedType` / `unsupportedVersion`) is asked at 0.1, whose
@@ -761,6 +803,35 @@ impl VtaClient {
         let value = self
             .dispatch_trust_task(
                 trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
+                serde_json::to_value(payload)?,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/key-package")
+    }
+
+    /// `rooms/keys/key-package/0.2` — the KeyPackage this VTA already holds for the member
+    /// the invitation names, in this room and against this invitation, while it is
+    /// outstanding (`alreadyMinted: true`), or a new one.
+    ///
+    /// This is what lets any surface finish an acceptance another began: asked again, the
+    /// VTA returns the KeyPackage the community may already have admitted, and the community
+    /// answers that acceptance with the Welcome it kept. Converges, so it needs no
+    /// idempotency key. A VTA that does not serve 0.2 answers
+    /// [`VtaError::UnsupportedTaskType`]; [`VtaClient::room_key_package`] is 0.1, which mints
+    /// a new KeyPackage every time and replaces the one held.
+    pub async fn room_key_package_v0_2(
+        &self,
+        room_id: &str,
+        invitation: &str,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::key_package::v0_2::Response, VtaError> {
+        use trust_tasks_rs::specs::rooms::keys::key_package::v0_2::Payload;
+        let payload = Payload::builder().room_id(room_id).invitation(invitation);
+        let payload = Payload::try_from(payload)
+            .map_err(|e| VtaError::Validation(format!("rooms/keys/key-package request: {e}")))?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_2,
                 serde_json::to_value(payload)?,
                 ROOM_TT_TIMEOUT,
             )
@@ -1387,6 +1458,47 @@ fn needs_act_0_4(type_uri: &str) -> bool {
     bare == trust_tasks_rs::specs::vtc::rooms::offers::list::v0_2::Payload::TYPE_URI
 }
 
+/// Whether `type_uri` is one of the community types `rooms/keys/act/0.5` completes —
+/// `vtc/rooms/offers/list/{0.1,0.2}`, `vtc/rooms/offers/accept/0.1` and
+/// `vtc/rooms/memberships/list/0.1`, with or without `#request`.
+pub fn is_community_type(type_uri: &str) -> bool {
+    use trust_tasks_rs::Payload as _;
+    use trust_tasks_rs::specs::vtc::rooms::memberships;
+    let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
+    is_offer_type(bare) || bare == memberships::list::v0_1::Payload::TYPE_URI
+}
+
+/// An unsigned request to a community about the rooms it offers the member, for
+/// [`VtaClient::room_act_community`]: a fresh `id`, `issuedAt` now, addressed to
+/// `community`, `issuer` the DID the community addresses its offers to — always
+/// (`rooms/keys/act/0.5` producer item 2).
+///
+/// # Errors
+///
+/// [`VtaError::Validation`] when `type_uri` is not one of [`is_community_type`]'s, or a
+/// member does not fit the generated type.
+pub fn unsigned_community_request(
+    type_uri: &str,
+    community: &str,
+    issuer: &str,
+    payload: Value,
+) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_5::UnsignedRoomRequest, VtaError> {
+    if !is_community_type(type_uri) {
+        return Err(VtaError::Validation(format!(
+            "`{type_uri}` is not a request to a community about the rooms it offers you"
+        )));
+    }
+    serde_json::from_value(json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": type_uri,
+        "issuer": issuer,
+        "recipient": community,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "payload": payload,
+    }))
+    .map_err(|e| VtaError::Validation(format!("not a request act completes: {e}")))
+}
+
 #[cfg(test)]
 mod act_tests {
     use super::*;
@@ -1472,6 +1584,40 @@ mod act_tests {
                 "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1",
                 "did:key:zVtc",
                 Some("did:key:zAlice"),
+                json!({ "roomId": "did:key:zRoom" }),
+            )
+            .is_err()
+        );
+    }
+
+    /// `rooms/keys/act/0.5`: the community types, and nothing else of the `vtc` family.
+    #[test]
+    fn a_community_request_is_one_of_the_community_types() {
+        for t in [
+            "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1",
+            "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2",
+            "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1",
+            "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1",
+        ] {
+            assert!(is_community_type(t), "{t}");
+            let payload = if t.ends_with("accept/0.1") {
+                json!({ "roomId": "did:key:zRoom" })
+            } else {
+                json!({})
+            };
+            let v = serde_json::to_value(
+                unsigned_community_request(t, "did:key:zVtc", "did:key:zAlice", payload).expect(t),
+            )
+            .unwrap();
+            assert_eq!(v["issuer"], "did:key:zAlice");
+            assert_eq!(v["recipient"], "did:key:zVtc");
+            assert!(v.get("proof").is_none());
+        }
+        assert!(
+            unsigned_community_request(
+                "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1",
+                "did:key:zVtc",
+                "did:key:zAlice",
                 json!({ "roomId": "did:key:zRoom" }),
             )
             .is_err()
