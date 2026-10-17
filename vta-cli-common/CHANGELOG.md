@@ -2,6 +2,100 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.44.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.43.0...vta-cli-common-v0.44.0) — 2026-10-17
+
+
+### Added
+
+- **rooms**: A room's own profile — rooms/keys/profile/{read,write}, sealed inside the room ([#2171](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2171))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#807 on the key holder's side. A
+  room's name, description, tags and emoji (RoomProfile) now live inside the
+  room: one record per epoch at profile_key(E) — HKDF-SHA256 over the epoch's
+  storage key, info "openvtc/room/profile/v1" || roomId || u64be(E), 16 bytes,
+  base64url — sealed like any record, so the host stores one more opaque record
+  and cannot tell which one names the room. An open room's is the record at
+  `room-profile`, its signed body in cleartext.body.
+
+  VTA (vta-service):
+  - rooms/keys/profile/read/0.1: walks from the current epoch down (bound 32),
+    fetching each location as the member under their own `read` grant,
+    verifying the host's reply as rooms/keys/read does, and takes the newest
+    profile it accepts (`found`, `stale` below the current epoch), stops at a
+    retraction (`cleared`), or answers `absent`, with `searched`.
+  - Readers decide who may name the room
+    (operations::room_profile::check_statement): the SealedRecordBody rules
+    (1)-(4) — no unknown member, the author's assertionMethod proof, signed for
+    the location read, the host-recorded author on attributed — plus
+    RoomProfileStatement items 1-4: a profile and nothing a record carries,
+    sealed under the epoch that located it, issuedAt within
+    [updatedAt − 1h, updatedAt + 5m], and an authority chain conferring
+    `curate` or `admin` on the author at the room's scope, every link valid at
+    issuedAt (vti_rooms_dtg::profile::verify_profile_authority). Anything that
+    fails is ignored and reported in `rejected` with its reason and author; a
+    rename by a member holding only `write` is `noAuthority` and the room keeps
+    the profile before it. This VTA holds no RevocationList, so item 5 never
+    applies (revocation is not retroactive).
+  - rooms/keys/profile/write/0.1: refuses `noAuthority` before contacting the
+    host without `write` and `curate`/`admin` (`curate` to clear); signs the
+    statement as the principal (assertionMethod, through the gated oracle) with
+    the room-issued chain inside, pads the signed body to a 1 KiB multiple,
+    seals it under the current epoch and puts it as the member under a `write`
+    grant; re-seals for the version the host assigned, then `contended`.
+    `clear` retracts the current location with a `curate` grant, storing a
+    profile there first when it holds none. Delegates are refused.
+  - The epoch-advance re-write: rooms/owner/group/{add,remove,renew} read the
+    profile before the advance and write it again under the new epoch as the
+    owner once the host accepts — never failing, delaying or undoing the
+    advance (tried a few times, then logged), never for `absent`/`cleared`,
+    never retracting the earlier one (add 0.1 and 0.2, remove, renew; the
+    speaker is HostCall::profile_speaker, so a later version reuses it).
+  - rooms/keys/read does not open a profile location (answers
+    ext["org.openvtc.rooms"].roomProfile) and rooms/keys/browse leaves profile
+    records out, counting against everything the host listed.
+  - Both tasks dispatched ([None Secret true] / [Mutating Metadata true]),
+    classified RetrySafe in vta_sdk::retry_safety, counted in budget, guarded in
+    vta-mcp, with conformance entries.
+
+- **rooms**: A member's own private name, description, notes and tags for each room they hold ([#2167](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2167))
+
+* build(deps): trust-tasks-rs 0.31.14 — rooms/keys/label/0.1 and rooms/keys/list/0.2
+
+
+
+### Fixed
+
+- **rooms**: Say whose each rooms/keys/list entry is, and let a client name the member a custody task acts as ([#2161](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2161))
+
+One VTA can hold two members of one room: an administrator whose VTA is also
+  the community's holds the community's own place in a room the community owns
+  and their own membership in it. rooms/keys/list then returned the room twice
+  with nothing saying whose each entry was, and every custody task refused as
+  ambiguous ("act from the context of the one you mean") — which a client whose
+  session acts in both contexts cannot do. The wallet and the member portal hit
+  both in a live test: the room listed twice, and sharing it with the portal
+  refused as rooms/keys/act:principalAmbiguous.
+
+  - rooms/keys/list: one entry per (room, member) as before, and
+    ext["org.openvtc.rooms"].held, index for index with rooms: the member
+    (persona DID), the trust context its key lives in, and the actions the
+    room's grant to it confers. The specification's entry has no member of its
+    own and forbids extra members, so it rides in ext.
+  - read, browse, backfill, open, seal 0.1, file-key, commit and chain take
+    ext["org.openvtc.rooms"].member, naming the persona to act as. It only
+    narrows: a persona the caller may not act as answers as "no group state",
+    the same as one nobody here holds. Naming none keeps the refusal for two
+    (rooms/keys/read/0.1: "acts as the one its caller acts as, and refuses
+    rather than choose"); rooms/keys/act keeps taking the member as issuer
+    (act 0.3 recipient item 2).
+  - pnm rooms keys list prints the member of each entry.
+  - Member portal: Share rooms passes the signed-in member to the wallet
+    (choose({ hostDid, member })), which only picks among the identities it
+    holds for this community; each shared room says whom it is shared as; a
+    wallet refusal for a room held as two identities is explained in plain words.
+
+
+
 ## [0.43.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.42.0...vta-cli-common-v0.43.0) — 2026-10-16
 
 

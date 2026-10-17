@@ -2,7 +2,7 @@
 name = "vta-cli-common"
 description = "Shared CLI command handlers and rendering helpers for VTA CLIs"
 readme = "README.md"
-version = "0.43.0"
+version = "0.44.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -21,7 +21,7 @@ agent-names = ["vta-sdk/agent-names"]
 trust-tasks-rs = { workspace = true }
 # `time` for the consent loop's bounded wait between polls.
 tokio = { workspace = true, features = ["time"] }
-vta-sdk = { path = "../vta-sdk", version = "0.70", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.71", features = [
   "client",
   "session",
   "sealed-transfer",
@@ -31,16 +31,16 @@ vta-sdk = { path = "../vta-sdk", version = "0.70", features = [
   "acl-setup",
 ] }
 # Owner-only file-permission helper (`secure_file`), shared workspace-wide.
-vti-common = { path = "../vti-common", version = "0.46" }
+vti-common = { path = "../vti-common", version = "0.47" }
 # The room client. Named for the VTC, but host-neutral by construction: a room's
 # protocol is the same whether a community or a standalone `room-host` serves it,
 # and `room-host`'s own example drives itself with this crate. Taking a second
 # copy of the `rooms/*` wire types into this crate is what the type duplication
 # in `vtc-client` was deleted to avoid.
-vtc-client = { path = "../vtc-client", version = "0.25" }
+vtc-client = { path = "../vtc-client", version = "0.26" }
 # `pnm rooms file …`: a file's STREAM sealing, without the group layer. The key
 # comes from the operator's VTA (`rooms/keys/file-key/0.2`), so OpenMLS is not needed.
-vti-rooms = { path = "../vti-rooms", version = "0.17", default-features = false, features = [
+vti-rooms = { path = "../vti-rooms", version = "0.18", default-features = false, features = [
   "files",
 ] }
 affinidi-crypto = { workspace = true }
