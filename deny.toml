@@ -32,6 +32,32 @@ all-features = true
 version = 2
 ignore = [
 
+  { id = "RUSTSEC-2026-0367", reason = """
+  zip 2.x: ZIP extraction preserves SUID/SGID bits. Patched only in >= 9.0.
+
+  The only path is `nitro_attest` 0.2.0's *build script* (a dev-dependency of
+  vta-sdk, for the attestation tests). It opens AWS's Nitro root-certificate
+  archive, vendored inside the crate and SHA-256-pinned before it is opened,
+  and reads the one `root.pem` entry with `by_name` + `read_to_end`. It never
+  calls `extract()`, which is where all three of these advisories live, and
+  never sees an archive anyone else supplies.
+
+  0.2.0 is nitro_attest's latest release and it requires zip ^2. Drop all
+  three ignores when it moves to zip >= 9.
+  """ },
+
+  { id = "RUSTSEC-2026-0368", reason = """
+  zip 2.x: `ZipArchive::extract` follows attacker-controlled symlink targets
+  out of the destination. Same sole path as RUSTSEC-2026-0367 (nitro_attest's
+  build script, which never extracts); drop with it.
+  """ },
+
+  { id = "RUSTSEC-2026-0369", reason = """
+  zip 2.x: `extract()` applies Unix permissions through symlinks. Same sole
+  path as RUSTSEC-2026-0367 (nitro_attest's build script, which never
+  extracts); drop with it.
+  """ },
+
   { id = "RUSTSEC-2023-0071", reason = """
   rsa 0.9 "Marvin Attack": decrypting or signing with an RSA *private* key
   leaks timing that can recover it. No patched 0.9 release exists.
