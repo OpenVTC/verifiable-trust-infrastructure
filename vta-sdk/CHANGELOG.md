@@ -2,6 +2,111 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.71.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.70.0...vta-sdk-v0.71.0) — 2026-10-17
+
+
+### Added
+
+- **vtc**: Community rooms carry their own name — create 0.3 and update 0.2 write the label and description into the room ([#2179](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2179))
+
+Implements the community side of trustoverip/dtgwg-trust-tasks-tf#807:
+  vtc/rooms/community/create/0.3 and vtc/rooms/community/update/0.2, on top
+  of the community-room details ([#805](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/805)).
+
+  - create 0.3 (step 5, items 8-9): once the room is stored, the community's
+    own VTA is asked (rooms/keys/profile/write, as the community, with this
+    VTC as host) to write the label as the profile's `name` and the
+    description as its `description` — never the tags. The answer's
+    `roomProfile` is `written` only when the VTA answered written, otherwise
+    `pending`; the room stands either way.
+  - update 0.2 (items 10-12): a change of label or description writes the
+    profile again, first reading the current one and carrying over the tags,
+    emoji and ext a curator set in the room; a room made before create 0.3 (or
+    one still pending) is written even when nothing changed, and that is not
+    audited as a change; a tags-only change answers `unchanged`. The change to
+    the owner's record never depends on the write. Update 0.1 still never
+    reaches the VTA.
+  - rooms::community_profile: the one retry owner for `pending` profiles — a
+    record per room (`room-profile:<room>`, beside the owner's record),
+    written pending before the VTA is asked and written only after it
+    answered, one attempt per due room per pass with a capped backoff and
+    jitter (1 min to 6 h), always writing the room's label and description as
+    they are at the attempt, so a later update supersedes a pending one.
+  - get/list carry ext["org.openvtc"].roomProfile (written / pending with the
+    retry state / none); the console shows it on a room's page and creates at
+    0.3 and updates at 0.2, toasting a `pending`; cnm rooms create/update use
+    0.3/0.2 (falling back to 0.2/0.1 against an older VTC) and get/list show
+    the state.
+  - The community's entry at its VTA needs `room-open` for the profile tasks:
+    added to the capabilities the VTA-access fix commands name, and to the
+    docs. The community's own authority already confers admin, write and
+    curate (create item 6), so item 12's re-issue is never needed here.
+  - Both new versions dispatched, with conformance entries, OpenAPI wrappers
+    (openapi.json and wire.ts regenerated) and the console manifest.
+
+- **rooms**: A room's own profile — rooms/keys/profile/{read,write}, sealed inside the room ([#2171](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2171))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#807 on the key holder's side. A
+  room's name, description, tags and emoji (RoomProfile) now live inside the
+  room: one record per epoch at profile_key(E) — HKDF-SHA256 over the epoch's
+  storage key, info "openvtc/room/profile/v1" || roomId || u64be(E), 16 bytes,
+  base64url — sealed like any record, so the host stores one more opaque record
+  and cannot tell which one names the room. An open room's is the record at
+  `room-profile`, its signed body in cleartext.body.
+
+  VTA (vta-service):
+  - rooms/keys/profile/read/0.1: walks from the current epoch down (bound 32),
+    fetching each location as the member under their own `read` grant,
+    verifying the host's reply as rooms/keys/read does, and takes the newest
+    profile it accepts (`found`, `stale` below the current epoch), stops at a
+    retraction (`cleared`), or answers `absent`, with `searched`.
+  - Readers decide who may name the room
+    (operations::room_profile::check_statement): the SealedRecordBody rules
+    (1)-(4) — no unknown member, the author's assertionMethod proof, signed for
+    the location read, the host-recorded author on attributed — plus
+    RoomProfileStatement items 1-4: a profile and nothing a record carries,
+    sealed under the epoch that located it, issuedAt within
+    [updatedAt − 1h, updatedAt + 5m], and an authority chain conferring
+    `curate` or `admin` on the author at the room's scope, every link valid at
+    issuedAt (vti_rooms_dtg::profile::verify_profile_authority). Anything that
+    fails is ignored and reported in `rejected` with its reason and author; a
+    rename by a member holding only `write` is `noAuthority` and the room keeps
+    the profile before it. This VTA holds no RevocationList, so item 5 never
+    applies (revocation is not retroactive).
+  - rooms/keys/profile/write/0.1: refuses `noAuthority` before contacting the
+    host without `write` and `curate`/`admin` (`curate` to clear); signs the
+    statement as the principal (assertionMethod, through the gated oracle) with
+    the room-issued chain inside, pads the signed body to a 1 KiB multiple,
+    seals it under the current epoch and puts it as the member under a `write`
+    grant; re-seals for the version the host assigned, then `contended`.
+    `clear` retracts the current location with a `curate` grant, storing a
+    profile there first when it holds none. Delegates are refused.
+  - The epoch-advance re-write: rooms/owner/group/{add,remove,renew} read the
+    profile before the advance and write it again under the new epoch as the
+    owner once the host accepts — never failing, delaying or undoing the
+    advance (tried a few times, then logged), never for `absent`/`cleared`,
+    never retracting the earlier one (add 0.1 and 0.2, remove, renew; the
+    speaker is HostCall::profile_speaker, so a later version reuses it).
+  - rooms/keys/read does not open a profile location (answers
+    ext["org.openvtc.rooms"].roomProfile) and rooms/keys/browse leaves profile
+    records out, counting against everything the host listed.
+  - Both tasks dispatched ([None Secret true] / [Mutating Metadata true]),
+    classified RetrySafe in vta_sdk::retry_safety, counted in budget, guarded in
+    vta-mcp, with conformance entries.
+
+- **vtc**: Community-room details administrators can see, edit and track (trust-tasks-tf #805) ([#2170](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2170))
+
+* build: raise the trust-tasks-rs floor to 0.31.14 (trust-tasks-tf #805)
+
+  0.31.14 carries vtc/rooms/community/update/0.1, the 0.2 community-room
+  create/get/list and vtc/rooms/offers/list/0.2.
+
+- **rooms**: A member's own private name, description, notes and tags for each room they hold ([#2167](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2167))
+
+* build(deps): trust-tasks-rs 0.31.14 — rooms/keys/label/0.1 and rooms/keys/list/0.2
+
+
+
 ## [0.70.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.69.0...vta-sdk-v0.70.0) — 2026-10-16
 
 
