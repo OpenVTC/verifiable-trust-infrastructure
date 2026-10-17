@@ -86,48 +86,6 @@ ignore = [
   """ },
 
 
-  { id = "RUSTSEC-2026-0367", reason = """
-  zip 2.4.2 is only a build-dependency of nitro_attest 0.2.0 (itself a
-  dev-dependency of vta-sdk, `builder` feature). Its build script reads one
-  member (`root.pem`) of the AWS Nitro root-certificate archive bundled in the
-  crate, after checking the archive's SHA-256 against a pinned value, with
-  `ZipArchive::by_name` — it never calls `extract()`, writes no file from the
-  archive, and sees no attacker-controlled input. All three advisories are
-  about `extract()` (SUID/SGID bits, symlink targets, permissions through
-  symlinks). nitro_attest 0.2.0 is the latest release and requires zip ^2.2;
-  the fix is zip >= 9.
-
-  Drop when nitro_attest moves to zip >= 9 or drops the build-time unzip.
-  """ },
-
-  { id = "RUSTSEC-2026-0368", reason = """
-  zip 2.4.2 is only a build-dependency of nitro_attest 0.2.0 (itself a
-  dev-dependency of vta-sdk, `builder` feature). Its build script reads one
-  member (`root.pem`) of the AWS Nitro root-certificate archive bundled in the
-  crate, after checking the archive's SHA-256 against a pinned value, with
-  `ZipArchive::by_name` — it never calls `extract()`, writes no file from the
-  archive, and sees no attacker-controlled input. All three advisories are
-  about `extract()` (SUID/SGID bits, symlink targets, permissions through
-  symlinks). nitro_attest 0.2.0 is the latest release and requires zip ^2.2;
-  the fix is zip >= 9.
-
-  Drop when nitro_attest moves to zip >= 9 or drops the build-time unzip.
-  """ },
-
-  { id = "RUSTSEC-2026-0369", reason = """
-  zip 2.4.2 is only a build-dependency of nitro_attest 0.2.0 (itself a
-  dev-dependency of vta-sdk, `builder` feature). Its build script reads one
-  member (`root.pem`) of the AWS Nitro root-certificate archive bundled in the
-  crate, after checking the archive's SHA-256 against a pinned value, with
-  `ZipArchive::by_name` — it never calls `extract()`, writes no file from the
-  archive, and sees no attacker-controlled input. All three advisories are
-  about `extract()` (SUID/SGID bits, symlink targets, permissions through
-  symlinks). nitro_attest 0.2.0 is the latest release and requires zip ^2.2;
-  the fix is zip >= 9.
-
-  Drop when nitro_attest moves to zip >= 9 or drops the build-time unzip.
-  """ },
-
   { id = "RUSTSEC-2024-0436", reason = """
   paste 1.0.x is unmaintained. Build-time only: a proc-macro for token
   pasting pulled by uniffi_core / uniffi_bindgen (again via
