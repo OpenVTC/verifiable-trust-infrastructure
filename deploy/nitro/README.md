@@ -66,7 +66,9 @@ storage, and signed enclave images.
 > `admin_did` unset and use the attested sealed-bootstrap flow (Mode B,
 > `POST /bootstrap/request`). Only the overlay's `bootstrap_claim_did` — minted
 > by the operator with `pnm bootstrap claim-did create` before the VTA exists —
-> can claim it; without one, no claim is accepted. Because the parent delivers
+> can claim it, and the enclave enrols that DID itself as an expiring bootstrap
+> admin that `connect` hands over to a key it mints locally (#2066); without
+> one, no claim is accepted. Because the parent delivers
 > that DID, it is part of the attested config digest below: verify it like
 > `key_arn`, and treat a `403` from `pnm bootstrap connect` as a substituted
 > claim DID.

@@ -5716,6 +5716,61 @@ mod response_coverage {
         .await;
     }
 
+    /// `acl/grant` with `ext["org.openvtc"].handoffRollover` — a hand-off
+    /// marked caller writes its own long-term successor (VTI-CLT-017), which
+    /// outlives the caller's expiring entry and replaces it. This is the step
+    /// `pnm bootstrap connect` takes as the TEE claim DID (#2066).
+    #[tokio::test]
+    async fn acl_grant_handoff_rollover_replaces_the_marked_caller() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let claims = crate::test_support::super_admin_claims();
+        let now = crate::auth::session::now_epoch();
+        let marked = crate::acl::AclEntry::new(&claims.did, crate::acl::Role::Admin, "test")
+            .with_expires_at(Some(now + 3600))
+            .with_handoff(Some(crate::acl::HandOff {
+                granted_by: "did:key:z6MkFirstBootAuthority".into(),
+                granted_at: now,
+                bound: crate::acl::HandOffBound {
+                    role: crate::acl::Role::Admin,
+                    allowed_contexts: Vec::new(),
+                    capabilities: Vec::new(),
+                    approve_scope: crate::acl::ApproveScope::None,
+                    allowed_keys: None,
+                    expires_at: None,
+                },
+            }));
+        crate::acl::store_acl_entry(&state.acl_ks, &marked)
+            .await
+            .unwrap();
+        let (successor, _vm) = crate::test_support::did_for_seed(0xD2);
+
+        ok(
+            &state,
+            t::TASK_ACL_GRANT_0_1,
+            json!({
+                "entry": { "subject": successor, "role": "admin" },
+                "ext": { "org.openvtc": { "handoffRollover": true } },
+            }),
+        )
+        .await;
+
+        let written = crate::acl::get_acl_entry(&state.acl_ks, &successor)
+            .await
+            .unwrap()
+            .expect("successor written");
+        assert_eq!(
+            written.expires_at, None,
+            "bounded by the marker, not the caller"
+        );
+        assert!(
+            crate::acl::get_acl_entry(&state.acl_ks, &claims.did)
+                .await
+                .unwrap()
+                .is_none(),
+            "the marked entry is removed in the same step"
+        );
+    }
+
     /// `services/drain/cancel` — call off a drain before its deadline.
     ///
     /// Needs an active drain to cancel, which is a registry record rather than

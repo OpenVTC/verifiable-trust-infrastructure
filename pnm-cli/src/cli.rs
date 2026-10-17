@@ -1402,11 +1402,15 @@ pub(crate) enum BootstrapCommands {
 
     /// One-command TEE first-boot bootstrap against a running VTA.
     ///
-    /// Signs the request with the claim DID created by `claim-did create`
-    /// for `--slug`, POSTs to `/bootstrap/request`, verifies the attestation
-    /// quote, and installs the minted admin credential. Only works against a
+    /// Signs a claim on the VTA's DID with the claim DID created by
+    /// `claim-did create` for `--slug`, POSTs it to `/bootstrap/request`, and
+    /// verifies the attested acknowledgement: the VTA enrolled the claim DID
+    /// itself as its bootstrap admin (it mints no key for you). Then
+    /// authenticates as the claim DID, hands that entry over to a long-term
+    /// did:key minted here, and destroys the claim key. Only works against a
     /// fresh TEE VTA that has not yet bootstrapped an admin — the carve-out
-    /// closes permanently on first success.
+    /// closes permanently on first success; re-running after an interrupted
+    /// hand-over resumes it.
     ///
     /// For non-TEE VTAs use `pnm setup` (temp did:key + ACL grant +
     /// auto-rotate on first connect).
@@ -1419,21 +1423,17 @@ pub(crate) enum BootstrapCommands {
         /// Unlike --vta-did, this does not pin the VTA's identity.
         #[arg(long, required_unless_present = "vta_did", conflicts_with = "vta_did")]
         vta_url: Option<String>,
-        /// Out-of-band digest anchor. Compared against the server's
-        /// reported digest and the locally computed one. Not needed with
-        /// --expect-pcr0: connect generates the digest server-side during the call.
-        #[arg(long)]
-        expect_digest: Option<String>,
-        /// Skip out-of-band digest verification (testing only — prints a warning).
-        /// Only needed when neither --expect-digest nor --expect-pcr0 is provided.
-        #[arg(long)]
-        no_verify_digest: bool,
-        /// Pin the enclave image measurement (PCR0, hex). When set, refuse to
-        /// bootstrap unless the attested PCR0 matches — defense-in-depth so a
-        /// genuine-but-wrong enclave build can't complete the handshake. Match
-        /// the value baked into the KMS key policy (see the TEE runbook).
-        #[arg(long)]
+        /// Pin the enclave image measurement (PCR0, hex). Required: the
+        /// acknowledgement carries no bundle and no digest, so the attested
+        /// image is the anchor — refuse to bootstrap unless the attested PCR0
+        /// matches. Match the value baked into the KMS key policy (see the TEE
+        /// runbook).
+        #[arg(long, required_unless_present = "no_verify_pcr0")]
         expect_pcr0: Option<String>,
+        /// Accept any genuine Nitro enclave image (testing only — prints a
+        /// warning). Without a PCR0 pin, any enclave build can answer the claim.
+        #[arg(long, conflicts_with = "expect_pcr0")]
+        no_verify_pcr0: bool,
         /// Pin the EIF signing-certificate measurement (PCR8, hex). As
         /// `--expect-pcr0`, but for the signing cert.
         #[arg(long)]

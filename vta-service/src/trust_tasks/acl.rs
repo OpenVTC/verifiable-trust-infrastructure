@@ -67,6 +67,30 @@ pub(super) async fn handle_create(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    // A hand-off rollover rides `acl/grant` (VTI-CLT-017: the long-term entry
+    // "written by the bootstrap identifier itself"), asked for explicitly so a
+    // marked caller's ordinary grant is never turned into one (VTI-ACL-058).
+    let rollover = match vta_sdk::protocols::acl_management::create::handoff_rollover_from_ext(
+        req.ext.as_ref(),
+    ) {
+        Ok(r) => r,
+        Err(reason) => return app_error_to_reject(&doc, AppError::Validation(reason)),
+    };
+    if rollover {
+        return match operations::acl::rollover_from_entry(
+            &state.acl_ks,
+            &state.audit_sink,
+            &state.contexts_ks,
+            auth,
+            req.entry,
+            TRANSPORT_TRUST_TASK,
+        )
+        .await
+        {
+            Ok(body) => success_response(&doc, body),
+            Err(e) => app_error_to_reject(&doc, e),
+        };
+    }
     match operations::acl::grant_from_entry(
         &state.acl_ks,
         &state.audit_sink,

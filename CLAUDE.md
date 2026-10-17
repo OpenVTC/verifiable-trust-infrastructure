@@ -419,16 +419,15 @@ Invariants (do not relax):
   new variants are **additive**. Never reshape an existing variant — you
   break every existing opener. Add a new variant and let consumers migrate.
 - Digest pinning is mandatory at the CLI (`--expect-digest`). `--no-verify-digest`
-  exists only as an explicit opt-out with a warning. **One exception, and it is
-  not a loophole**: `pnm bootstrap connect` mints its bundle *during* the call,
-  so no out-of-band digest can exist beforehand and the rule was in practice
-  forcing every operator onto `--no-verify-digest`. There, `--expect-pcr0` is an
-  accepted anchor instead — a pre-computable pin on the enclave image,
-  enforced by `check_pcrs` against the attestation quote, which already binds
-  `SHA256(client_ed25519 || bundle_id || producer_ed25519)`. Every other path
-  (offline `bootstrap open`, provision flows) still requires a digest or the
-  warning-bearing opt-out. An anchor is only substitutable when the substitute
-  is checked; do not read this as permission to drop one.
+  exists only as an explicit opt-out with a warning. `pnm bootstrap connect` is
+  **not** an exception any more, because since #2066 it is not a sealed transfer:
+  the TEE enrols the operator's claim DID and answers with an attested
+  acknowledgement carrying no key, so there is no bundle and no digest. Its
+  anchor is the pinned enclave image — `--expect-pcr0` (required, or the warned
+  `--no-verify-pcr0`), enforced by `check_pcrs` against a quote binding
+  `SHA256(client_ed25519 || nonce || producer_ed25519)` — plus the claim
+  signature's binding of the VTA DID. Every sealed path (offline `bootstrap
+  open`, provision flows) still requires a digest or the warning-bearing opt-out.
 - `DID_SIGNED_DOMAIN_TAG = b"vta-sealed-transfer/v1\0"` prefixes the bytes
   that Ed25519 signs. Don't reuse this tag elsewhere.
 
@@ -563,7 +562,9 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Docs**: `docs/05-design-notes/pnm-setup-deferred-vta-did.md`.
 
 ### TEE Mode B bootstrap (attested first-boot)
-- **What**: One-command admin provisioning against a fresh Nitro-Enclave VTA.
+- **What**: One-command admin onboarding against a fresh Nitro-Enclave VTA. The
+  enclave **enrols the operator's claim DID**; it mints no key and returns none
+  (#2066, VTI-CLT-001/002 — a node never holds a client's private key).
 - **Entry point**: `pnm bootstrap claim-did create --slug <slug>` **before the
   VTA exists**, then `pnm bootstrap connect --slug <slug> --vta-did <did>
   --expect-pcr0 <hex>`. `--vta-did` and `--vta-url` are mutually exclusive and exactly one is
@@ -572,30 +573,50 @@ new flow, update both this section and the relevant `docs/*.md`.
   uses the `VTARest` endpoint that document advertises — never a URL guessed
   from the DID's host, and never a fallback on resolution failure. `--vta-url`
   is the explicit alternative when the log is not yet resolvable; it gives up
-  identity pinning.
-- **Transport**: REST `POST /bootstrap/request` (unauth, rate-limited).
+  identity pinning, and `pnm` learns the DID to sign from `GET
+  /bootstrap/request` (safe to trust only because a pinned image refuses a
+  claim naming a DID other than its own).
+- **Transport**: REST `POST /bootstrap/request` (unauth, rate-limited), wire
+  version 2 (`vta_sdk::tee_bootstrap`). Version 1 is refused with an upgrade
+  hint — a clean break, no compatibility window.
 - **Claimant**: only `tee.bootstrap_claim_did` — an Ed25519 `did:key` the
   operator minted (key in the OS keyring only) and delivered in the baked config
-  or the tenant overlay — may claim; the request names it as `client_did` and
-  carries `claim_signature` over `vti/bootstrap-claim/v1\0 ‖ pub ‖ nonce`
-  (verified before the lock). Unset admits nobody. The claimant is checked
-  **before** the carve-out, so a stranger gets 403 whatever the carve-out's
-  state. The claim DID authorizes the claim only; it is not the admin identity.
-  In a fleet build the parent delivers it, so it is in the attested config
-  digest — a `403` at the real operator's `connect` is the substitution signal.
+  or the tenant overlay — may claim; the claim names it as `clientDid`, names
+  the target `vtaDid`, and carries `claimSignature` over
+  `vti/bootstrap-claim/v2\0 ‖ pub ‖ nonce ‖ vtaDid` (verified before the lock).
+  Unset admits nobody. The claimant and the VTA DID are checked **before** the
+  carve-out, so a stranger or a claim for another VTA gets 403 whatever the
+  carve-out's state. In a fleet build the parent delivers the claim DID, so it is
+  in the attested config digest — a `403` at the real operator's `connect` is
+  the substitution signal (VTI-CLT-016).
+- **What is written**: an ACL entry for the claim DID itself — `Admin`,
+  unrestricted, expiring after 24h (VTI-CLT-014), marked as a **hand-off**
+  (VTI-ACL-054) whose granter is the VTA DID as first-boot authority and whose
+  bound is an unrestricted permanent admin. The answer (`FirstBootAck`) is the
+  attested acknowledgement: no key, no bundle.
+- **Then**: `pnm` mints the long-term `did:key` locally, persists it, and as the
+  claim DID exercises the hand-off with `acl/grant` +
+  `ext["org.openvtc"].handoffRollover` (VTI-CLT-017), confirms by authenticating as the new key,
+  and destroys the claim key (VTI-CLT-034). **Not `acl/swap-key`**: a rotation
+  preserves expiry exactly (VTI-CLT-029), which would leave the VTA's only admin
+  expiring. An interrupted run is resumed by re-running `connect` (410 + the slug
+  already registered after a verified ack) before the entry expires.
 - **Trust anchor**: Nitro attestation quote committing to the client's
-  Ed25519 pubkey + bundle_id + producer's Ed25519 pubkey via SHA-256.
-  `--expect-pcr0` pins the enclave image on top of it and is the anchor this
-  path requires (see the sealed-transfer exception above); `--expect-pcr8` is
+  Ed25519 pubkey + nonce + producer's Ed25519 pubkey via SHA-256 (unchanged),
+  plus the claim signature's binding of the VTA DID. `--expect-pcr0` pins the
+  enclave image and is the anchor this path requires; `--expect-pcr8` is
   an additional pin, never an anchor on its own — it measures the signing
   certificate, not the image.
 - **Carve-out**: Single-use. `BOOTSTRAP_CARVEOUT_CLOSED_KEY` flips on
   first success; subsequent calls return 410. It closes server-side **before
-  the bundle is returned**, so every client-side pin must be syntax-checked
-  before the POST — a malformed `--expect-pcr0/8` caught at `check_pcrs` is
-  caught after the VTA's one and only first boot has been spent.
-- **Code**: `vta-service/src/routes/bootstrap.rs`, `vta-tee/src/`.
-- **Docs**: `docs/05-design-notes/sealed-bootstrap.md`, `docs/02-vta/tee-architecture.md`.
+  the acknowledgement is returned**, so every client-side pin must be
+  syntax-checked before the POST — a malformed `--expect-pcr0/8` caught at
+  `check_pcrs` is caught after the VTA's one and only first boot has been spent.
+- **Code**: `vta-service/src/routes/bootstrap.rs`, `vta-sdk/src/tee_bootstrap.rs`,
+  `vta-service/src/operations/acl.rs` (`rollover_from_entry`),
+  `pnm-cli/src/bootstrap.rs` (`run_connect`, `hand_over_claim`), `vta-tee/src/`.
+- **Docs**: `docs/05-design-notes/sealed-bootstrap.md` (*Mode B since #2066*),
+  `docs/02-vta/tee-architecture.md`.
 
 ### DIDComm challenge-response auth
 - **What**: Session initiation for any authenticated call.
@@ -1646,9 +1667,9 @@ These are load-bearing — know they exist before adjusting nearby code.
   detects KMS ciphertext tampering or key rotation. Do not widen the
   "first boot after upgrade" silent-store path.
 - **Carve-out** (`BOOTSTRAP_CARVEOUT_CLOSED_KEY`) on `/bootstrap/request`
-  is single-use. The whole check-then-mint-then-set sequence is gated
+  is single-use. The whole check-then-enrol-then-set sequence is gated
   by a process-wide async mutex (`MODE_B_LOCK`) — without it, two
-  concurrent requests both pass the `is_some()` check and both mint
+  concurrent requests both pass the `is_some()` check and both enrol
   admins. New TEE flows must not provide a back door.
 
 ## Branches: where a PR goes

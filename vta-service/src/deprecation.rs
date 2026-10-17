@@ -115,6 +115,14 @@ const REST_EXCEPTIONS: &[RestException] = &[
     },
     RestException {
         method: "GET",
+        path: "/bootstrap/request",
+        protocol: "pre-identity bootstrap",
+        twin: None,
+        reason: "names the DID a TEE first-boot claim signs, for a claimant that reached the \
+                 VTA by URL and holds no identity on it yet",
+    },
+    RestException {
+        method: "GET",
         path: "/backup/blob/{bundle_id}",
         protocol: "bulk byte transfer",
         twin: None,

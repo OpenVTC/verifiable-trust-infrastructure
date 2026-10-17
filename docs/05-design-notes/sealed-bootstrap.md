@@ -230,7 +230,7 @@ DID; the X25519 conversion is an internal detail of the HPKE layer.
 Server authorization logic (in order):
 
 1. If `token` is present: look up `PendingBootstrap` by `hash(token)`. Must exist, not be expired. Mint credential with **exactly** the stored `target_role` + `target_contexts`. Atomic transaction: delete `PendingBootstrap`, insert `AclEntry`. Assertion = `DidSigned`.
-2. Else if TEE and first-boot carve-out is active (no admin configured and no prior successful bootstrap): generate attestation quote with `user_data = SHA256(client_pubkey || nonce || vta_pubkey)`, mint Admin credential (no context restriction), disable the carve-out permanently, record the swap. Assertion = `Attested(quote)`.
+2. Else if TEE and first-boot carve-out is active (no admin configured and no prior successful bootstrap): generate attestation quote with `user_data = SHA256(client_pubkey || nonce || producer_pubkey)`, mint Admin credential (no context restriction), disable the carve-out permanently, record the swap. Assertion = `Attested(quote)`. **Superseded by #2066** — see *Mode B since #2066* below: the enclave no longer mints or seals an admin key.
 3. Else: reject.
 
 **Unknown fields in the request body are rejected** (strict JSON deserialization) — a client cannot smuggle in `requested_role` or similar fields that would influence minting.
@@ -270,6 +270,74 @@ Preserves existing role hierarchy; issuance is itself ACL-gated:
 
 The `Bootstrap` role exists only inside the single `POST /bootstrap/request` transaction. It is deleted atomically with the creation of the new `AclEntry`. Post-bootstrap, the client is a normal ACL subject with no residual bootstrap authority.
 
+### Mode B since #2066 (wire version 2)
+
+The TEE first-boot path no longer mints anything for the client. Minting an
+admin `did:key` inside the enclave and sealing its private key back
+(`SealedPayloadV1::AdminCredential`) contradicted VTI-CLT-001 / VTI-CLT-002:
+the client generates its own key, and its private key never leaves it. The
+claimant already arrives with a key of its own — the pre-registered claim DID
+(#1987) — so the enclave enrols that.
+
+```
+GET  /bootstrap/request  → { version: 2, vtaDid }            # for --vta-url clients
+POST /bootstrap/request
+Body:     { version: 2, clientDid, vtaDid, nonce, label?, claimSignature }
+Response: { version: 2, vtaDid, adminDid, expiresAt, producerDid,
+            attestation: { format, quoteB64 } }               # no key material
+```
+
+(`vta_sdk::tee_bootstrap::{FirstBootClaim, FirstBootClaimInfo, FirstBootAck}`.)
+
+1. `claimSignature` covers `vti/bootstrap-claim/v2\0 ‖ client_pub ‖ nonce ‖
+   utf8(vtaDid)`. Version 1's tag (`…/v1\0`, no DID) is not accepted; a
+   version-1 body is refused with `400` and an upgrade hint. Clean break, no
+   compatibility window.
+2. Under `MODE_B_LOCK`: claimant check (`403` for anyone but
+   `tee.bootstrap_claim_did`), then `vtaDid` must be this VTA's own (`403`),
+   then the carve-out (`410`). Both refusals precede the carve-out check.
+3. Attest first (`user_data = SHA256(client_pub ‖ nonce ‖ producer_pub)`,
+   unchanged), then write the ACL entry for the **claim DID** — `Admin`,
+   unrestricted, `expires_at = now + 24h` (VTI-CLT-014), carrying a hand-off
+   marker (VTI-ACL-054) whose granter is the VTA DID acting as the first-boot
+   authority and whose bound is an unrestricted, permanent admin — then claim
+   the sentinel with `insert_raw_if_absent`, `persist()`, reseal the integrity
+   manifest, and only then answer. Same ordering and durability as before.
+4. The client verifies the acknowledgement (`FirstBootAck::verify`: same claim
+   DID, same signed VTA DID, genuine Nitro quote over its key and nonce) and
+   pins PCR0. There is nothing sealed, so nothing to pin a digest on: the
+   pinned image is the anchor, and `connect` takes `--expect-pcr0` or the
+   warned `--no-verify-pcr0`.
+5. The client mints its long-term `did:key`, persists it, and — authenticated
+   as the claim DID — exercises the hand-off onto it with `acl/grant` carrying
+   `ext["org.openvtc"].handoffRollover: true` (VTI-CLT-017). The successor is
+   bounded by the marker, so it is permanent. It then authenticates as the new
+   key and destroys the claim key (VTI-CLT-034).
+
+Why a hand-off and not `acl/swap-key`: a rotation preserves expiry exactly
+(VTI-CLT-029, `acl/swap-key` step 6), so rotating off an expiring bootstrap
+entry yields an expiring long-term administrator, and on a TEE VTA nobody could
+lift it. The hand-off marker is the spec's mechanism for exactly this (rationale
+to VTI-ACL-054 – 058).
+
+**Why the quote need not cover the VTA DID.** The image only quotes after
+checking that the signed `vtaDid` is its own, and the client signs one DID per
+fresh nonce, so a quote for that nonce from a pinned image already says "the
+enclave holding the DID you signed accepted your claim". A host that rewrites
+`vtaDid` in the acknowledgement fails the comparison with what was signed; a
+host that lies in `GET /bootstrap/request` gets a claim no genuine enclave
+accepts. `--vta-url` still does not pin *which* VTA answered — an attacker can
+run the genuine image under its own DID with the (public) claim DID configured
+— which is the identity pinning `--vta-did` adds and `--vta-url` was always
+documented to give up.
+
+**Recovery.** If `connect` dies between the acknowledgement and the hand-off,
+re-running it gets `410`; `pnm` resumes the hand-off when this slug already
+registers that VTA DID (written only after a verified, pinned acknowledgement)
+and the claim key is still in the keyring. A long-term key staged by the
+interrupted run is reused, so a commit whose response was lost is confirmed
+rather than repeated.
+
 ## Unified client UX
 
 ### Online (Modes A + B, identical command)
@@ -281,7 +349,7 @@ cnm-cli bootstrap connect ...                              # mirrors pnm-cli
 openvtc-cli2                                               # setup wizard → same flow under the hood
 ```
 
-- Connecting to a first-boot TEE VTA: `--token` omitted. Only the holder of the VTA's configured `tee.bootstrap_claim_did` may claim: the operator mints it with `pnm bootstrap claim-did create --slug <slug>` before the VTA exists, supplies it in the baked config or tenant overlay, and `connect --slug <slug>` sends it as `client_did` with a `claim_signature` proving control (#1987). Client verifies attestation quote; quote's `user_data` must match `SHA256(client_ed25519_pub || nonce || producer_ed25519_pub)` — the raw Ed25519 pubkeys underlying `client_did` (what the client sent) and `producer_did` (what the bundle's `ProducerAssertion` carries).
+- Connecting to a first-boot TEE VTA: `--token` omitted. **As of #2066 this bullet describes the retired version-1 wire; see *Mode B since #2066*.** Only the holder of the VTA's configured `tee.bootstrap_claim_did` may claim: the operator mints it with `pnm bootstrap claim-did create --slug <slug>` before the VTA exists, supplies it in the baked config or tenant overlay, and `connect --slug <slug>` sends it as `client_did` with a `claim_signature` proving control (#1987). Client verifies attestation quote; quote's `user_data` must match `SHA256(client_ed25519_pub || nonce || producer_ed25519_pub)` — the raw Ed25519 pubkeys underlying `client_did` (what the client sent) and `producer_did` (what the bundle's `ProducerAssertion` carries).
 - Any other VTA: `--token` required.
 
 ### Offline (Mode C)

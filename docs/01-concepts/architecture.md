@@ -207,7 +207,8 @@ export/import route.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | /bootstrap/request | None (rate-limited) | TEE Mode B sealed first-boot |
+| GET | /bootstrap/request | None (rate-limited) | TEE Mode B: the DID a first-boot claim signs |
+| POST | /bootstrap/request | None (rate-limited) | TEE Mode B first-boot claim: enrols the claim DID, attested acknowledgement |
 | GET | /did/{did}/log | None (rate-limited) | Public webvh `did.jsonl` retrieval |
 
 Auth levels: **Auth** = any valid JWT, **Manage** = Admin or

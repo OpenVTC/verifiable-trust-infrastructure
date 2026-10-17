@@ -9,24 +9,20 @@
 //! `provision-integration`.
 //!
 //! Offline opening requires `--expect-digest` or an explicit warning-bearing
-//! `--no-verify-digest`. Online connect also accepts `--expect-pcr0` as its
-//! anchor: the fresh server-generated digest cannot be known before the call.
+//! `--no-verify-digest`. Online connect is not a sealed transfer at all since
+//! #2066 — the VTA enrols the claim DID and returns an attested
+//! acknowledgement with no key in it — so its anchor is the pinned enclave
+//! image (`--expect-pcr0`), not a digest.
 
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use serde::Deserialize;
-use vta_sdk::attestation::verify_nitro_assertion;
-use vta_sdk::sealed_transfer::{
-    BootstrapRequest, SealedPayloadV1, armor, bundle_digest, ed25519_seed_to_x25519_secret,
-    open_bundle,
-};
+use vta_sdk::sealed_transfer::SealedPayloadV1;
+use vta_sdk::tee_bootstrap::{FirstBootAck, FirstBootClaim, FirstBootClaimInfo};
 
 use crate::auth;
 use crate::config;
-
-use vta_sdk::hex::lower as hex_lower;
 
 /// `pnm bootstrap request --out <PATH> [--label <NAME>]`
 pub async fn run_request(
@@ -393,13 +389,7 @@ fn write_credential_bundle(
     Ok(())
 }
 
-// ── online flow (Mode B — TEE first-boot attestation) ──────────────────
-
-#[derive(Debug, Deserialize)]
-struct BootstrapResponseWire {
-    bundle: String,
-    digest: String,
-}
+// ── online flow (Mode B — TEE first-boot claim, wire version 2) ──────────
 
 /// Resolve without the session helper's URL-guessing fallback. Bootstrap must
 /// fail closed on an invalid WebVH log, not silently trust the DID's DNS host.
@@ -419,14 +409,13 @@ async fn resolve_connect_url(
 
 /// Deliberately ignores `PNM_RESOLVER_URL` / `[resolver_url]`, which every
 /// other `DIDCacheClient` in PNM honours (see `main.rs`). The document
-/// resolved here selects the endpoint that mints a super-admin credential,
-/// and the VTA's first-boot carve-out is single-use — a remote resolver
-/// returning a document of its choosing would pick that endpoint on the
-/// operator's behalf, once, irreversibly. Local mode verifies the SCID and
-/// the signed log chain on this machine instead. The resolution error names
-/// the exception, because an operator whose egress only reaches a resolver
-/// sidecar would otherwise be told to wait for a DID log that is already
-/// published.
+/// resolved here selects the endpoint that is handed the VTA's single-use
+/// first-boot claim — a remote resolver returning a document of its choosing
+/// would pick that endpoint on the operator's behalf, once, irreversibly.
+/// Local mode verifies the SCID and the signed log chain on this machine
+/// instead. The resolution error names the exception, because an operator
+/// whose egress only reaches a resolver sidecar would otherwise be told to
+/// wait for a DID log that is already published.
 async fn resolve_connect_url_with_policy(
     vta_did: &str,
     resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
@@ -465,35 +454,18 @@ async fn resolve_connect_url_with_policy(
     Ok(url.trim_end_matches('/').to_string())
 }
 
-fn check_connect_vta_did(
-    expected: Option<&str>,
-    actual: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(expected) = expected
-        && expected != actual
-    {
-        return Err(format!(
-            "bootstrap credential VTA DID {actual} does not match requested VTA DID {expected}; \
-             refusing to install credentials"
-        )
-        .into());
-    }
-    Ok(())
-}
-
-/// The online digest is generated during connect; a pre-computable PCR0 pin
-/// also satisfies its anchor requirement. PCR8 alone is not an image pin.
+/// The connect anchor is the attested enclave image: the acknowledgement
+/// carries no key, no bundle and so no digest to pin (#2066). `--expect-pcr0`
+/// pins it; `--no-verify-pcr0` is the explicit, warned opt-out. PCR8 alone is
+/// not an image pin.
 ///
 /// Every pin is syntax-checked here, before any network I/O, because
 /// `/bootstrap/request` closes `BOOTSTRAP_CARVEOUT_CLOSED_KEY` server-side
-/// *before* it returns the bundle (`routes/bootstrap.rs`). A pin that is only
-/// rejected later, at `VerifiedAttestation::check_pcrs`, is rejected after
-/// the VTA's one-shot first boot has already been spent — so a typo in
-/// `--expect-pcr8` would leave the operator with no way to bootstrap that VTA
-/// at all. Malformed in, nothing sent.
+/// *before* it answers (`routes/bootstrap.rs`). A pin that is only rejected
+/// later, at `VerifiedAttestation::check_pcrs`, is rejected after the VTA's
+/// one-shot first boot has already been spent. Malformed in, nothing sent.
 fn validate_connect_anchor(
-    expect_digest: Option<&str>,
-    no_verify_digest: bool,
+    no_verify_pcr0: bool,
     expect_pcr0: Option<&str>,
     expect_pcr8: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -503,36 +475,89 @@ fn validate_connect_anchor(
     if let Some(pcr8) = expect_pcr8 {
         vta_sdk::attestation::validate_expected_pcr(8, pcr8)?;
     }
-    if expect_digest.is_some() || no_verify_digest {
-        // Preserve the shared conflict error and explicit opt-out warning.
-        return vta_cli_common::sealed_consumer::validate_digest_flags(
-            expect_digest,
-            no_verify_digest,
-        );
+    match (expect_pcr0.is_some(), no_verify_pcr0) {
+        (true, false) => Ok(()),
+        (true, true) => Err("--expect-pcr0 and --no-verify-pcr0 are mutually exclusive".into()),
+        (false, true) => {
+            eprintln!(
+                "WARNING: --no-verify-pcr0 — any genuine Nitro enclave image will be accepted. \
+                 The acknowledgement has no other anchor: an enclave built from different code \
+                 could answer this claim. Use only for testing."
+            );
+            Ok(())
+        }
+        (false, false) => Err(
+            "connect requires --expect-pcr0 <hex>, or --no-verify-pcr0 (explicit opt-out with \
+             a warning). The VTA's acknowledgement carries no key material and no digest; the \
+             pinned enclave image measurement is what makes it trustworthy."
+                .into(),
+        ),
     }
-    if expect_pcr0.is_some() {
-        return Ok(());
-    }
-    Err(
-        "connect requires --expect-pcr0 <hex>, --expect-digest <hex>, or \
-         --no-verify-digest (explicit opt-out with a warning). The connect digest is \
-         generated server-side during this call and cannot be pre-shared; pin \
-         --expect-pcr0 to the expected enclave image measurement."
-            .into(),
-    )
 }
 
-/// `pnm bootstrap connect --vta-did <DID> [--expect-digest <HEX>]
-///   [--expect-pcr0 <HEX>] [--expect-pcr8 <HEX>]`
+/// Largest bootstrap response read into memory: an acknowledgement plus an
+/// attestation document, a few KiB in practice.
+const MAX_BOOTSTRAP_RESPONSE_BYTES: usize = 1024 * 1024;
+
+/// With `--vta-url` there is no DID to sign, so ask the VTA which DID a claim
+/// on it names (`GET /bootstrap/request`).
 ///
-/// Online TEE first-boot bootstrap. Loads the claim DID created by
-/// `pnm bootstrap claim-did create` for the slug from the OS keyring, POSTs it
-/// as `client_did` to `/bootstrap/request` with a signature proving control
-/// of it, verifies the attestation quote (optionally pinning the enclave
-/// PCR0/PCR8 — P3.4), installs the minted admin credential, and registers the
-/// VTA under a slug in `pnm` config. Only the first successful
-/// call against a fresh TEE VTA succeeds — the carve-out closes on success,
-/// and the claim key is discarded once a genuine enclave has minted for it.
+/// Trusting the server's answer weakens nothing that `--vta-url` had not
+/// already given up. The claim signature binds the DID, and a pinned enclave
+/// image refuses a claim naming any DID but its own, so the acknowledgement of
+/// a claim on this DID can only come from an enclave holding it: a host that
+/// lies here gets a claim no genuine enclave accepts. What it cannot tell you
+/// is *which* VTA you reached — that is what `--vta-did` pins.
+async fn fetch_claim_vta_did(
+    client: &reqwest::Client,
+    base_url: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let url = format!("{base_url}/bootstrap/request");
+    let resp = client.get(&url).send().await?;
+    let status = resp.status();
+    let bytes = vta_sdk::http::read_body_capped(resp, MAX_BOOTSTRAP_RESPONSE_BYTES)
+        .await
+        .map_err(|e| format!("bootstrap claim info ({status}): {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "could not learn the VTA's DID from {url} ({status}): {}. A VTA predating \
+             wire version 2 does not serve it — upgrade the VTA, or use --vta-did.",
+            String::from_utf8_lossy(&bytes)
+        )
+        .into());
+    }
+    let info: FirstBootClaimInfo = serde_json::from_slice(&bytes)?;
+    if info.version != vta_sdk::tee_bootstrap::CLAIM_VERSION {
+        return Err(format!(
+            "the VTA speaks bootstrap claim version {}, this pnm speaks {}",
+            info.version,
+            vta_sdk::tee_bootstrap::CLAIM_VERSION
+        )
+        .into());
+    }
+    Ok(info.vta_did)
+}
+
+/// `pnm bootstrap connect (--vta-did <DID> | --vta-url <URL> --slug <SLUG>)
+///   (--expect-pcr0 <HEX> | --no-verify-pcr0) [--expect-pcr8 <HEX>]`
+///
+/// Online TEE first-boot bootstrap (#2066):
+///
+/// 1. Load the claim DID created by `pnm bootstrap claim-did create` for the
+///    slug from the OS keyring.
+/// 2. Sign a claim on the VTA's DID with it and POST it to
+///    `/bootstrap/request`. The VTA enrols the claim DID itself as an
+///    expiring, hand-off-marked bootstrap admin — it mints no key for us
+///    (VTI-CLT-002) — and answers with an attested acknowledgement, which is
+///    checked against the claim and the pinned enclave image.
+/// 3. Mint the long-term did:key here, persist it, and — authenticated as the
+///    claim DID — exercise the hand-off onto it (VTI-CLT-017; see
+///    [`hand_over_claim`]).
+/// 4. Destroy the claim key (VTI-CLT-034).
+///
+/// A 403 at step 2 is the substitution signal (VTI-CLT-016). A 410 means the
+/// carve-out is spent; if this machine's earlier run got as far as an
+/// acknowledgement, the hand-over is resumed instead.
 ///
 /// For non-TEE VTAs use `pnm setup` (temp did:key + admin grant via
 /// `vta acl create` + auto-rotate on first authenticated connect).
@@ -540,16 +565,14 @@ fn validate_connect_anchor(
 pub async fn run_connect(
     vta_did: Option<String>,
     vta_url: Option<String>,
-    expect_digest: Option<String>,
-    no_verify_digest: bool,
+    no_verify_pcr0: bool,
     expect_pcr0: Option<String>,
     expect_pcr8: Option<String>,
     vta_slug: Option<String>,
     pnm_config: &mut crate::config::PnmConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_connect_anchor(
-        expect_digest.as_deref(),
-        no_verify_digest,
+        no_verify_pcr0,
         expect_pcr0.as_deref(),
         expect_pcr8.as_deref(),
     )?;
@@ -558,35 +581,36 @@ pub async fn run_connect(
     let slug = connect_slug(vta_slug, vta_did.as_deref())?;
     let claim = crate::bootstrap_claim::load_for_connect(&slug)?;
 
-    let vta_url = match (vta_did.as_deref(), vta_url) {
+    // The SDK client: finite timeouts, and no redirect off the VTA's origin.
+    let client = vta_sdk::http::rest_client();
+    let (base_url, target_vta_did) = match (vta_did, vta_url) {
         (Some(did), None) => {
             let resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
                 vta_sdk::resolver::build_did_cache_config(None),
             )
             .await?;
-            resolve_connect_url(did, &resolver).await?
+            (resolve_connect_url(&did, &resolver).await?, did)
         }
-        (None, Some(url)) => url,
+        (None, Some(url)) => {
+            let url = url.trim_end_matches('/').to_string();
+            let did = fetch_claim_vta_did(&client, &url).await?;
+            eprintln!(
+                "The VTA at {url} names itself {did}. --vta-url does not pin which VTA this is; \
+                 the claim is bound to that DID, so only an enclave holding it can accept."
+            );
+            (url, did)
+        }
         _ => return Err("provide exactly one of --vta-did or --vta-url".into()),
     };
 
     let nonce: [u8; 16] = rand::random();
-    let bundle_id_hex = hex_lower(&nonce);
+    // The claim is checked locally too: the typed claim is what the
+    // acknowledgement is verified against.
+    let signed = FirstBootClaim::new_signed(&claim.seed, &target_vta_did, nonce, None);
+    let verified_claim = signed.verify()?;
 
-    // Reuse the SDK's canonical wire type so pnm speaks the same shape the
-    // server `BootstrapRequestBody` deserializes. `client_did` is the
-    // pre-registered claim DID, signed so the enclave can refuse anyone else.
-    let body = BootstrapRequest::new_signed_claim(&claim.seed, nonce, None);
-    let ed_pub = body.decode_client_ed25519_pub()?;
-
-    // Largest bootstrap response read into memory: one armored bundle plus an
-    // attestation document, a few KiB in practice.
-    const MAX_BOOTSTRAP_RESPONSE_BYTES: usize = 1024 * 1024;
-
-    let url = format!("{}/bootstrap/request", vta_url.trim_end_matches('/'));
-    // The SDK client: finite timeouts, and no redirect off the VTA's origin.
-    let client = vta_sdk::http::rest_client();
-    let resp = client.post(&url).json(&body).send().await?;
+    let url = format!("{base_url}/bootstrap/request");
+    let resp = client.post(&url).json(&signed).send().await?;
     let status = resp.status();
     // Capture the headers before the body consumes the response: a 429 from the
     // VTA's unauth limiter carries `x-rate-limit-source` / `retry-after`, which
@@ -605,13 +629,24 @@ pub async fn run_connect(
             vta_sdk::error::VtaError::rate_limited_from_http(status, &headers, &body, &url)
         {
             eprintln!(
-                "The rate limit rejected this request before the enclave minted anything, \
+                "The rate limit rejected this request before the enclave did anything, \
                  so the one-time bootstrap is not spent — retry after the wait."
             );
             return Err(rl.into());
         }
-        // Not auto-discarded: an unauthenticated 410 could come from anyone.
         if status == reqwest::StatusCode::GONE {
+            // An earlier run of this command reached the acknowledgement and
+            // was interrupted before the hand-over finished: resume it. Only
+            // when that run recorded an *attested* acknowledgement for this
+            // slug and VTA — an unauthenticated 410 could come from anyone,
+            // so it never discards the claim key on its own.
+            if pending_hand_over(pnm_config, &slug, &target_vta_did) {
+                eprintln!(
+                    "The claim on {target_vta_did} was already accepted by an earlier run; \
+                     resuming the hand-over."
+                );
+                return finish_connect(&slug, &claim, &target_vta_did, &base_url).await;
+            }
             eprintln!(
                 "This VTA's first-boot claim is already used. If its claim DID is no longer \
                  needed, remove it with: pnm bootstrap claim-did discard --slug {slug}"
@@ -621,67 +656,43 @@ pub async fn run_connect(
         // signal that the registration was substituted, not a transport fault.
         if status == reqwest::StatusCode::FORBIDDEN {
             eprintln!(
-                "The VTA refused this claim before minting anything. Check that the DID it was \
+                "The VTA refused this claim before enrolling anything. Check that the DID it was \
                  created with is this slug's claim DID:\n  {}\n\
-                 If it was, and the VTA still refuses it, the VTA is not configured with your \
-                 claim DID — someone else may hold its first admin. Do not trust this VTA; \
+                 and that {target_vta_did} is the VTA you meant to claim.\n\
+                 If both are right and the VTA still refuses, the VTA is not configured with \
+                 your claim DID — someone else may hold its first admin. Do not trust this VTA; \
                  recreate it.",
                 claim.did
             );
         }
+        if status == reqwest::StatusCode::BAD_REQUEST && body.contains("version") {
+            eprintln!(
+                "The VTA and this pnm speak different first-boot claim versions. Wire version 2 \
+                 (#2066) is a clean break: upgrade whichever side is older. The carve-out is \
+                 not spent."
+            );
+        }
         return Err(format!("bootstrap request failed ({status}): {body}").into());
     }
-    let wire: BootstrapResponseWire = serde_json::from_slice(&bytes)?;
+    let ack: FirstBootAck = serde_json::from_slice(&bytes)?;
 
-    // Optional client-side digest verification. Attestation + TLS give the
-    // primary integrity anchor; this is a belt-and-suspenders check the
-    // operator can opt into by communicating the digest out-of-band.
-    if let Some(expected) = &expect_digest
-        && !expected.eq_ignore_ascii_case(&wire.digest)
-    {
-        return Err(format!(
-            "server-reported digest {} does not match expected {}",
-            wire.digest, expected
-        )
-        .into());
-    }
-
-    let bundles = armor::decode(&wire.bundle)?;
-    if bundles.len() != 1 {
-        return Err(format!(
-            "expected exactly one armored bundle from server, got {}",
-            bundles.len()
-        )
-        .into());
-    }
-    let bundle = &bundles[0];
-    if hex_lower(&bundle.bundle_id) != bundle_id_hex {
-        return Err("server-returned bundle_id does not match our nonce".into());
-    }
-
-    // HPKE decryption uses the X25519 secret derived from our Ed25519 seed.
-    let x_secret = ed25519_seed_to_x25519_secret(&claim.seed);
-    let opened = open_bundle(&x_secret, bundle, expect_digest.as_deref())?;
-
-    // The attestation quote binds the did:key-visible bytes end-to-end:
-    //   SHA256(client_ed25519 || bundle_id || producer_ed25519)
-    // so we pass the raw Ed25519 pubkey we generated (the same bytes the
-    // server decoded from `client_did`) rather than any X25519 derivative.
-    let attest = verify_nitro_assertion(&opened.producer, &ed_pub, &nonce)?;
+    // The quote binds the did:key-visible bytes end-to-end —
+    // SHA256(client_ed25519 || nonce || producer_ed25519) — and the ack must
+    // acknowledge *this* claim: same claim DID, same signed VTA DID.
+    let verified = ack.verify(&verified_claim)?;
     // Client-side PCR pinning (P3.4): refuse a genuine-but-WRONG enclave image
-    // / signing cert. No-op unless the operator passed --expect-pcr0/8.
+    // / signing cert.
+    let attest = verified.attestation();
     attest
         .check_pcrs(expect_pcr0.as_deref(), expect_pcr8.as_deref())
         .map_err(|e| {
             format!(
                 "{e}. The attestation is cryptographically valid but the enclave does not \
                  match the pinned measurement — refusing to bootstrap. Confirm the expected \
-                 PCR against the deployed EIF / KMS key policy."
+                 PCR against the deployed EIF / KMS key policy. The claim DID is enrolled on \
+                 that enclave; do not use it."
             )
         })?;
-    // A genuine enclave minted for this key, so its carve-out is closed and
-    // the claim DID is spent.
-    crate::bootstrap_claim::discard_after_claim(&slug);
     println!("TEE attestation verified.");
     println!("  Enclave module: {}", attest.module_id);
     if !attest.pcr0_hex.is_empty() {
@@ -700,25 +711,20 @@ pub async fn run_connect(
         };
         println!("  PCR8:           {}{pinned}", attest.pcr8_hex);
     }
+    println!(
+        "  Bootstrap admin: {} (valid until {} unless handed over)",
+        verified.ack().admin_did,
+        format_epoch(verified.ack().expires_at)
+    );
 
-    let credential = match opened.payload {
-        SealedPayloadV1::AdminCredential(c) => c,
-        other => {
-            return Err(format!(
-                "expected AdminCredential payload from online bootstrap, got {}",
-                variant_name(&other)
-            )
-            .into());
-        }
-    };
-
-    check_connect_vta_did(vta_did.as_deref(), &credential.vta_did)?;
-
+    // Recorded before the hand-over, so an interrupted run can resume it: the
+    // VTA is registered only once a genuine, pinned enclave has acknowledged
+    // this slug's claim on this DID.
     pnm_config.vtas.insert(
         slug.clone(),
         crate::config::VtaConfig {
             name: slug.clone(),
-            vta_did: Some(credential.vta_did.clone()),
+            vta_did: Some(target_vta_did.clone()),
             url: None,
             mediator_did: None,
         },
@@ -728,26 +734,135 @@ pub async fn run_connect(
     }
     crate::config::save_config(pnm_config)?;
 
-    // The bootstrap URL is only needed for the immediate `auth::ensure_authenticated`
-    // call below — every subsequent command resolves the REST endpoint
-    // from the VTA DID document at runtime.
-    let keyring_key = crate::config::vta_keyring_key(&slug);
-    auth::store_session(
-        &keyring_key,
-        &credential.did,
-        &credential.private_key_multibase,
-        &credential.vta_did,
-    )?;
-    // Verify the credential works end-to-end before declaring success.
-    auth::ensure_authenticated(&vta_url, &keyring_key).await?;
+    finish_connect(&slug, &claim, &target_vta_did, &base_url).await
+}
 
+/// The hand-over and the summary — shared by a fresh connect and a resumed one.
+async fn finish_connect(
+    slug: &str,
+    claim: &crate::bootstrap_claim::ClaimKey,
+    vta_did: &str,
+    base_url: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let admin_did = hand_over_claim(slug, claim, vta_did, base_url).await?;
     println!();
     println!("Bootstrap complete.");
     println!("  VTA slug:   {slug}");
-    println!("  Client DID: {}", credential.did);
-    println!("  VTA DID:    {}", credential.vta_did);
-    println!("  Digest:     {}", bundle_digest(bundle));
+    println!("  Admin DID:  {admin_did}");
+    println!("  VTA DID:    {vta_did}");
     Ok(())
+}
+
+/// Whether this slug holds an acknowledged-but-unfinished claim on `vta_did`:
+/// the config registered it (which happens only after a verified, pinned
+/// acknowledgement) and the claim key, which a finished hand-over destroys,
+/// is still here (the caller loaded it).
+fn pending_hand_over(pnm_config: &crate::config::PnmConfig, slug: &str, vta_did: &str) -> bool {
+    pnm_config.vtas.get(slug).and_then(|v| v.vta_did.as_deref()) == Some(vta_did)
+}
+
+/// Hand the claim DID's bootstrap entry over to a long-term did:key minted
+/// here, then destroy the claim key. Returns the long-term DID.
+///
+/// Ordering (VTI-CLT-033 – VTI-CLT-035):
+///
+/// 1. **Mint and persist** the long-term key as this slug's session *before*
+///    anything is committed. If a previous run already staged one for this
+///    VTA, reuse it — it may be the DID a lost-response commit already
+///    enrolled. Persisting first closes the window VTI-CLT-033 is about: at
+///    the commit the replacement key is already durable.
+/// 2. **Commit**: authenticated as the claim DID, `acl/grant` with the
+///    hand-off rollover (VTI-ACL-054 – VTI-ACL-057). Not `acl/swap-key`: a
+///    rotation preserves expiry exactly (VTI-CLT-029), so rotating off the
+///    expiring bootstrap entry would leave the VTA's only administrator
+///    expiring with it. The rollover writes the successor bounded by the
+///    first-boot authority instead — a permanent unrestricted admin.
+/// 3. **Confirm** by authenticating as the long-term DID. This, not the
+///    grant's answer, is the evidence: a retried grant after a lost response
+///    is refused (the claim DID no longer has an entry) although the commit
+///    happened.
+/// 4. **Destroy** the claim key (VTI-CLT-034).
+async fn hand_over_claim(
+    slug: &str,
+    claim: &crate::bootstrap_claim::ClaimKey,
+    vta_did: &str,
+    base_url: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let keyring_key = crate::config::vta_keyring_key(slug);
+
+    // 1. Stage the long-term key.
+    let staged = auth::loaded_session(&keyring_key)
+        .filter(|s| s.vta_did.as_deref() == Some(vta_did) && s.client_did != claim.did);
+    let admin_did = match staged {
+        Some(s) => s.client_did,
+        None => {
+            let (did, private_key_multibase) =
+                vta_cli_common::local_keygen::generate_unbound_admin_did_key();
+            auth::store_session(&keyring_key, &did, &private_key_multibase, vta_did)?;
+            did
+        }
+    };
+
+    // 2. Commit, as the claim DID.
+    let committed = async {
+        let token = vta_sdk::session::challenge_response(
+            base_url,
+            &claim.did,
+            &claim.private_key_multibase,
+            vta_did,
+        )
+        .await?;
+        let client = vta_sdk::client::VtaClient::authenticated(
+            base_url,
+            vta_sdk::client::ClientIdentity {
+                client_did: claim.did.clone(),
+                private_key_multibase: claim.private_key_multibase.to_string(),
+                vta_did: vta_did.to_string(),
+                verification_method: None,
+            },
+            token.access_token,
+        )
+        .await;
+        client
+            .roll_over_handoff(
+                &admin_did,
+                "admin",
+                Vec::new(),
+                Some("TEE first-boot admin".to_string()),
+            )
+            .await?;
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    // 3. Confirm as the long-term DID, whatever the commit reported.
+    match auth::ensure_authenticated(base_url, &keyring_key).await {
+        Ok(_) => {}
+        Err(confirm) => {
+            let cause = match committed {
+                Err(e) => e.to_string(),
+                Ok(()) => confirm.to_string(),
+            };
+            return Err(format!(
+                "the VTA enrolled the claim DID, but handing its entry over to the long-term \
+                 DID {admin_did} did not complete: {cause}\n\n\
+                 The claim key is kept. Re-run the same `pnm bootstrap connect` command before \
+                 the bootstrap entry expires to resume the hand-over."
+            )
+            .into());
+        }
+    }
+
+    // 4. The claim DID has no standing left; its key goes (VTI-CLT-034).
+    crate::bootstrap_claim::discard_after_claim(slug);
+    Ok(admin_did)
+}
+
+/// Epoch seconds as RFC 3339, for messages.
+fn format_epoch(epoch: u64) -> String {
+    chrono::DateTime::from_timestamp(epoch as i64, 0)
+        .map(|t| t.to_rfc3339())
+        .unwrap_or_else(|| epoch.to_string())
 }
 
 /// `pnm bootstrap provision-integration` — bridge a VP-framed
@@ -941,24 +1056,6 @@ fn resolve_target_context_wire(
     }
 }
 
-fn variant_name(p: &SealedPayloadV1) -> &'static str {
-    match p {
-        SealedPayloadV1::AdminCredential(_) => "AdminCredential",
-        SealedPayloadV1::ContextProvision(_) => "ContextProvision",
-        SealedPayloadV1::DidSecrets(_) => "DidSecrets",
-        SealedPayloadV1::AdminKeySet(_) => "AdminKeySet",
-        SealedPayloadV1::RawPrivateKey(_) => "RawPrivateKey",
-        SealedPayloadV1::TemplateBootstrap(_) => "TemplateBootstrap",
-        SealedPayloadV1::TemplateBootstrapV2(_) => "TemplateBootstrapV2",
-        SealedPayloadV1::AdminRotation(_) => "AdminRotation",
-        SealedPayloadV1::IssuedCredential(_) => "IssuedCredential",
-        SealedPayloadV1::MessagingBridgeCredentials(_) => "MessagingBridgeCredentials",
-        SealedPayloadV1::SeedMnemonic(_) => "SeedMnemonic",
-        SealedPayloadV1::ExternalSecret(_) => "ExternalSecret",
-        SealedPayloadV1::ExternalCredential(_) => "ExternalCredential",
-    }
-}
-
 /// `--slug`, else the VTA DID's tail. `--vta-url` has no DID to derive from.
 fn connect_slug(
     explicit: Option<String>,
@@ -1134,29 +1231,19 @@ mod tests {
     }
 
     #[test]
-    fn connect_pins_credential_identity_but_preserves_url_fallback() {
-        assert!(super::check_connect_vta_did(Some(VTA_DID), VTA_DID).is_ok());
-        assert!(super::check_connect_vta_did(None, VTA_DID).is_ok());
-        assert!(super::check_connect_vta_did(Some(VTA_DID), "did:web:other.example.com").is_err());
-    }
-
-    #[test]
     fn connect_anchor_flag_matrix() {
         let valid = "ab12".repeat(24);
-        for digest in [None, Some("digest")] {
-            for opt_out in [false, true] {
-                for pcr0 in [None, Some(valid.as_str())] {
-                    // PCR8 is an additional pin, never an anchor on its own:
-                    // it measures the signing certificate, not the image.
-                    for pcr8 in [None, Some(valid.as_str())] {
-                        let expected = !(digest.is_some() && opt_out)
-                            && (digest.is_some() || opt_out || pcr0.is_some());
-                        assert_eq!(
-                            super::validate_connect_anchor(digest, opt_out, pcr0, pcr8).is_ok(),
-                            expected,
-                            "digest={digest:?}, opt_out={opt_out}, pcr0={pcr0:?}, pcr8={pcr8:?}",
-                        );
-                    }
+        for opt_out in [false, true] {
+            for pcr0 in [None, Some(valid.as_str())] {
+                // PCR8 is an additional pin, never an anchor on its own:
+                // it measures the signing certificate, not the image.
+                for pcr8 in [None, Some(valid.as_str())] {
+                    let expected = pcr0.is_some() != opt_out;
+                    assert_eq!(
+                        super::validate_connect_anchor(opt_out, pcr0, pcr8).is_ok(),
+                        expected,
+                        "opt_out={opt_out}, pcr0={pcr0:?}, pcr8={pcr8:?}",
+                    );
                 }
             }
         }
@@ -1171,13 +1258,13 @@ mod tests {
             format!("0x{pcr0}"),
             format!(" \t0X{}\n ", "AB12 \t".repeat(24)),
         ] {
-            super::validate_connect_anchor(None, false, Some(&value), None).unwrap();
-            super::validate_connect_anchor(None, false, Some(&value), Some(&value)).unwrap();
+            super::validate_connect_anchor(false, Some(&value), None).unwrap();
+            super::validate_connect_anchor(false, Some(&value), Some(&value)).unwrap();
         }
     }
 
     /// Both pins, not just PCR0. `/bootstrap/request` closes the first-boot
-    /// carve-out server-side before it returns the bundle, so a pin rejected
+    /// carve-out server-side before it answers, so a pin rejected
     /// only at `check_pcrs` — after the POST — is rejected once the VTA's
     /// one-shot bootstrap has already been spent. A typo'd `--expect-pcr8`
     /// must therefore fail here, with nothing sent.
@@ -1204,7 +1291,7 @@ mod tests {
                 // the pin is checked, not merely consulted when it is load-bearing.
                 (8, None, Some(value.clone())),
             ] {
-                for (digest, opt_out) in [(None, false), (Some("digest"), false), (None, true)] {
+                for opt_out in [false, true] {
                     for by_did in [true, false] {
                         let mut config = crate::config::PnmConfig::default();
                         // Invalid targets fail differently if preflight is skipped.
@@ -1212,7 +1299,6 @@ mod tests {
                         let error = super::run_connect(
                             by_did.then(|| "did:unsupported:bootstrap-target".into()),
                             (!by_did).then(|| "not-a-url".into()),
-                            digest.map(str::to_string),
                             opt_out,
                             pcr0.clone(),
                             pcr8.clone(),
@@ -1242,15 +1328,38 @@ mod tests {
         // PCR8 alone leaves the image unpinned, so it must land on the same
         // error rather than reading as a satisfied anchor.
         for pcr8 in [None, Some("ab12".repeat(24))] {
-            let error = super::validate_connect_anchor(None, false, None, pcr8.as_deref())
+            let error = super::validate_connect_anchor(false, None, pcr8.as_deref())
                 .unwrap_err()
                 .to_string();
-            for route in ["--expect-pcr0", "--expect-digest", "--no-verify-digest"] {
+            for route in ["--expect-pcr0", "--no-verify-pcr0"] {
                 assert!(error.contains(route), "{error}");
             }
-            assert!(error.contains("generated server-side"), "{error}");
+            assert!(error.contains("no key material"), "{error}");
         }
-        assert!(vta_cli_common::sealed_consumer::validate_digest_flags(None, false).is_err());
+    }
+
+    /// A resume is offered only for a VTA this slug registered — which pnm
+    /// does only after a verified, pinned acknowledgement.
+    #[test]
+    fn hand_over_resumes_only_an_acknowledged_claim() {
+        let mut config = crate::config::PnmConfig::default();
+        assert!(!super::pending_hand_over(&config, "acme", VTA_DID));
+        config.vtas.insert(
+            "acme".into(),
+            crate::config::VtaConfig {
+                name: "acme".into(),
+                vta_did: Some(VTA_DID.into()),
+                url: None,
+                mediator_did: None,
+            },
+        );
+        assert!(super::pending_hand_over(&config, "acme", VTA_DID));
+        assert!(!super::pending_hand_over(
+            &config,
+            "acme",
+            "did:web:other.example.com"
+        ));
+        assert!(!super::pending_hand_over(&config, "other", VTA_DID));
     }
 
     #[test]

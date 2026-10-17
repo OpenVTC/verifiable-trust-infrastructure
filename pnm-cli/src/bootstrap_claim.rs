@@ -3,8 +3,10 @@
 //!
 //! The operator mints it before the VTA exists and registers only the public
 //! DID with the provisioning stack, which delivers it to the enclave. At
-//! `pnm bootstrap connect` the same key is the request's `client_did` and signs
-//! it, so the enclave can refuse any other caller before minting an admin.
+//! `pnm bootstrap connect` the same key is the claim's `clientDid` and signs
+//! it, so the enclave can refuse any other caller; the enclave then enrols this
+//! DID itself as its expiring bootstrap admin (#2066), and `connect` hands that
+//! entry over to a long-term key before destroying this one (VTI-CLT-034).
 //!
 //! The private key lives only in the OS keyring, never on disk, and a build or
 //! environment that would put it anywhere else is refused.
@@ -18,10 +20,12 @@ pub(crate) fn claim_keyring_key(slug: &str) -> String {
     format!("bootstrap-claim:{slug}")
 }
 
-/// A loaded claim key: the public `did:key` and its Ed25519 seed.
+/// A loaded claim key: the public `did:key`, its Ed25519 seed, and the same
+/// key in multibase (what authentication as the claim DID signs with).
 pub(crate) struct ClaimKey {
     pub did: String,
     pub seed: Zeroizing<[u8; 32]>,
+    pub private_key_multibase: Zeroizing<String>,
 }
 
 /// Fail closed unless the session store is the OS keyring.
@@ -89,7 +93,7 @@ pub(crate) fn load_for_connect(slug: &str) -> Result<ClaimKey, Box<dyn std::erro
     load(&crate::auth::store(), slug)
 }
 
-/// Drop the claim key once the enclave has minted for it.
+/// Drop the claim key once its bootstrap entry has been handed over.
 pub(crate) fn discard_after_claim(slug: &str) {
     discard(&crate::auth::store(), slug);
 }
@@ -147,6 +151,7 @@ fn load(store: &SessionStore, slug: &str) -> Result<ClaimKey, Box<dyn std::error
     Ok(ClaimKey {
         did: info.client_did,
         seed,
+        private_key_multibase: Zeroizing::new(info.private_key_multibase),
     })
 }
 
@@ -189,10 +194,14 @@ mod tests {
 
         let key = super::load(&store, "acme").unwrap();
         assert_eq!(key.did, did);
-        let signed =
-            vta_sdk::sealed_transfer::BootstrapRequest::new_signed_claim(&key.seed, [3; 16], None);
+        let signed = vta_sdk::tee_bootstrap::FirstBootClaim::new_signed(
+            &key.seed,
+            "did:webvh:QmScid:vta.example.com",
+            [3; 16],
+            None,
+        );
         assert_eq!(signed.client_did, did);
-        signed.verify_claim_signature().unwrap();
+        signed.verify().unwrap();
     }
 
     #[test]

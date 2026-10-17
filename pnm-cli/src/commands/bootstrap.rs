@@ -49,17 +49,15 @@ pub(crate) async fn run_offline(
         BootstrapCommands::Connect {
             vta_did,
             vta_url,
-            expect_digest,
-            no_verify_digest,
             expect_pcr0,
+            no_verify_pcr0,
             expect_pcr8,
             slug,
         } => Some(
             bootstrap::run_connect(
                 vta_did.clone(),
                 vta_url.clone(),
-                expect_digest.clone(),
-                *no_verify_digest,
+                *no_verify_pcr0,
                 expect_pcr0.clone(),
                 expect_pcr8.clone(),
                 slug.clone(),

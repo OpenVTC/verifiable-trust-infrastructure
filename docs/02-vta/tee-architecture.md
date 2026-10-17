@@ -339,28 +339,54 @@ It mints an Ed25519 `did:key`, keeps the private key in the OS keyring (it refus
 `VTI_SECURE_STORE=file` or a build without the keyring), and prints the DID.
 Supply that DID as `[tee] bootstrap_claim_did` in a baked config, or as
 `--bootstrap-claim-did` to `render-tenant-overlay.sh` for a fleet image. The
-enclave verifies the request's signature by that key and refuses any other
-caller with `403` **before** looking at the carve-out; with no claim DID
-configured it accepts no claim at all. `connect` removes the claim key once a
-genuine enclave has minted for it (`claim-did show` / `discard` reprint or
-remove it otherwise).
+enclave verifies the claim's signature by that key, and that the claim names
+**its own VTA DID**, and refuses anything else with `403` **before** looking at
+the carve-out; with no claim DID configured it accepts no claim at all.
+
+**The enclave mints no key for you (#2066).** On a verified claim it enrols the
+claim DID *itself* as the bootstrap administrator — unrestricted, but expiring
+after 24 hours and marked as a hand-off (VTI-CLT-014, VTI-ACL-054) — closes the
+carve-out, and answers with an attested acknowledgement that carries no key
+material (VTI-CLT-002). `connect` then mints the long-term admin `did:key` on
+this machine, stores it in the keyring, authenticates as the claim DID and
+exercises the hand-off onto the new key (an `acl/grant` carrying
+`ext["org.openvtc"].handoffRollover`), confirms by authenticating as the new
+key, and only then removes the claim key (VTI-CLT-034). The long-term entry is
+permanent: it is bounded by the first-boot authority recorded with the marker,
+not by the claim DID's expiry. It is a hand-off rather than an `acl/swap-key`
+rotation because a rotation preserves the expiry exactly (VTI-CLT-029), which
+would leave the VTA's only administrator expiring with the claim DID.
+
+If `connect` is interrupted after the acknowledgement, run the same command
+again before the bootstrap entry expires: the VTA answers `410` (the carve-out
+is spent), and `pnm` — which registered the VTA only after a verified, pinned
+acknowledgement — resumes the hand-over with the claim key it still holds.
+After the expiry the VTA has no administrator and must be redeployed.
+(`claim-did show` / `discard` reprint or remove the claim key otherwise.)
+
+Claims are wire version 2: the signature covers
+`vti/bootstrap-claim/v2\0 ‖ claim pubkey ‖ nonce ‖ VTA DID`. A VTA refuses a
+version-1 claim with `400` and an upgrade hint, and a version-1 `pnm` cannot
+read a version-2 VTA's answer — upgrade both together.
 
 In a fleet build the parent delivers the claim DID, so a hostile parent could
 deliver its own. It is part of the attested effective-config digest — verify it
 there as you verify `key_arn` — and if `connect` with your own claim DID gets a
 `403`, the VTA was not configured with your DID: do not trust it.
 
-The attestation is always cryptographically verified; `--expect-pcr0/--expect-pcr8`
-add defense-in-depth — a genuine-but-*wrong* enclave build produces a valid quote
-with a different PCR0, and the pin makes `pnm` refuse to install the admin
-credential (typed `PcrMismatch`). Use the **same** `nitro-cli build-enclave` hashes
-you put in the KMS policy; when PCR0 rotates on a rebuild, update both. Omit the
-PCR0 only if supplying `--expect-digest` or explicitly opting out with
-`--no-verify-digest` (which warns). PCR8 is an optional additional pin,
-not a standalone image anchor.
+The attestation is always cryptographically verified; `--expect-pcr0` is what
+makes it mean anything — a genuine-but-*wrong* enclave build produces a valid
+quote with a different PCR0, and the pin makes `pnm` refuse to use the
+acknowledgement (typed `PcrMismatch`). The acknowledgement carries no bundle and
+no digest, so `--expect-pcr0` is required; `--no-verify-pcr0` is the explicit,
+warned opt-out for testing. (The `--expect-digest` / `--no-verify-digest` flags
+`connect` used to take are gone with the sealed bundle.) Use the **same**
+`nitro-cli build-enclave` hashes you put in the KMS policy; when PCR0 rotates
+on a rebuild, update both. PCR8 is an optional additional pin, not a
+standalone image anchor.
 
 Get both hashes right the first time. The carve-out closes server-side
-*before* the bundle is returned, so a pin that only fails at comparison time
+*before* the acknowledgement is returned, so a pin that only fails at comparison time
 fails after this VTA's one and only bootstrap has been spent — there is no
 second attempt, and `PcrMismatch` is then a permanent condition rather than a
 retryable one. `pnm` checks both pins for well-formedness before it sends
@@ -370,10 +396,14 @@ well-formed hash from the wrong build.
 Set `VTA_DID` to the deployed VTA's DID and `EXPECTED_PCR0` to the trusted
 build's full 96-character hex measurement. The DID must already resolve:
 bootstrap verifies the WebVH log locally and uses its advertised REST URL,
-not a URL guessed from the DID host. The returned credential must name the
-same VTA DID. If the log is not yet available, `--vta-url <base-url>` is an
-explicit alternative to `--vta-did`, not an additional flag; it gives up DID
-identity pinning.
+not a URL guessed from the DID host. The claim is signed for that DID, and the
+acknowledgement must name it. If the log is not yet available, `--vta-url
+<base-url>` is an explicit alternative to `--vta-did`, not an additional flag;
+it gives up DID identity pinning. With `--vta-url`, `pnm` asks the VTA which DID
+to sign for (`GET /bootstrap/request`). That answer is the server's word, but a
+pinned enclave image refuses a claim naming a DID other than its own, so a
+host that lies about it gets a claim no genuine enclave accepts; what
+`--vta-url` cannot tell you is *which* VTA you reached.
 
 On first boot, configure `services.rest = true` and the top-level `public_url`
 to the externally reachable REST base URL. TEE identity generation includes

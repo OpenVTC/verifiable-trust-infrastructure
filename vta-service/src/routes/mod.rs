@@ -227,8 +227,9 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     // is itself a gate, and legitimate operator traffic against the
     // management plane shouldn't be rate-limited.
     let unauth = OpenApiRouter::new()
-        // Sealed-transfer bootstrap (token or attestation gated inside)
-        .routes(routes!(bootstrap::request))
+        // TEE first-boot claim (claim-DID signed, attested acknowledgement;
+        // GET names the DID a claim must sign)
+        .routes(routes!(bootstrap::request, bootstrap::claim_info))
         // Passkey login (DID-VM-resolved WebAuthn assertions).
         // Trust-task URIs: vta/auth/passkey-login-{start,finish}/1.0.
         // Unauthenticated — the user has no session before
@@ -583,6 +584,11 @@ mod cors_tests {
             "POST",
             "/bootstrap/request",
             "sealed-bootstrap Mode B; there is no identity yet to sign a Trust Task document with",
+        ),
+        (
+            "GET",
+            "/bootstrap/request",
+            "the DID a Mode B claim signs, for a claimant that knows only the VTA's URL",
         ),
         (
             "GET",
