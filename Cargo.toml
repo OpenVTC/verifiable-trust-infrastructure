@@ -257,7 +257,7 @@ affinidi-messaging-core = "0.1"
 #
 # 0.36.0 is the `trust-tasks-rs` 0.31 release (affinidi-tdk-rs #944), so
 # `MediatorAcl` stays one type. It carries 0.34.1's fix.
-affinidi-messaging-sdk = { version = "0.36.0", default-features = false }
+affinidi-messaging-sdk = { version = "0.36.3", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
