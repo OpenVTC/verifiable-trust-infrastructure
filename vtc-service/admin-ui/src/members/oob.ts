@@ -17,6 +17,7 @@ import {
   type ConsoleSigningKey,
 } from "@/lib/console-key";
 import { ed25519Multikey } from "@/lib/jcs";
+import { guardPreviewRequest } from "@/lib/theme-preview";
 
 // TODO: replace with generated trust-tasks types
 export const OOB_TYPES = {
@@ -185,6 +186,8 @@ async function send(
   signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
   if (!sessionKey) throw new Error("No sign-in key; start again.");
+  // Signing in is a write; a theme preview never does it.
+  guardPreviewRequest("POST", "/v1/trust-tasks");
   const doc = await signTrustTaskDocument(
     buildTrustTaskDocument({
       typeUri: type,

@@ -6,6 +6,9 @@
 // share an origin, and keeping their clients apart is what keeps one from
 // ever sending the other's credentials (`crate::member_portal`).
 
+import { guardPreviewRequest, isThemePreview } from "@/lib/theme-preview";
+import { previewMemberResponse } from "./preview";
+
 const CSRF_COOKIE = "vtc_member_csrf";
 
 export class MemberApiError extends Error {
@@ -36,9 +39,16 @@ export async function errorMessage(res: Response): Promise<string> {
 }
 
 async function send(path: string, init: RequestInit): Promise<Response> {
+  const method = (init.method ?? "GET").toUpperCase();
+  if (isThemePreview()) {
+    // Writes are refused before anything is sent; reads of the portal's own
+    // routes answer from the sample member (`./preview`).
+    guardPreviewRequest(method, path);
+    const sample = await previewMemberResponse(path);
+    if (sample) return sample;
+  }
   const headers = new Headers(init.headers);
   if (init.body !== undefined) headers.set("Content-Type", "application/json");
-  const method = (init.method ?? "GET").toUpperCase();
   if (method !== "GET") {
     const csrf = memberCsrfToken();
     if (csrf) headers.set("X-CSRF-Token", csrf);
@@ -52,6 +62,8 @@ let renewing: Promise<boolean> | null = null;
 /** Renew the cookie session from the refresh cookie. `false` when there is
  *  none, or it was refused — the caller is signed out. */
 export function renewSession(): Promise<boolean> {
+  // A preview has no session to renew.
+  if (isThemePreview()) return Promise.resolve(false);
   renewing ??= send("/v1/member/auth/refresh", { method: "POST" })
     .then((r) => r.ok)
     .catch(() => false)

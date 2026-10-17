@@ -162,6 +162,8 @@ async function request<T>(
   init: RequestInit = {},
   requires?: string[],
 ): Promise<T> {
+  // A theme preview sends reads only (`lib/theme-preview.ts`).
+  guardPreviewRequest(init.method ?? "GET", path);
   // Renew first if the token is nearly out. A no-op unless we know the
   // expiry (i.e. unless `whoami` has run), so the login ceremony's own
   // unauthenticated calls are untouched.
@@ -396,6 +398,7 @@ import {
 } from "./console-key";
 import { assertWithinListLimit } from "./list-limits";
 import { parkedActionFromDocument } from "./parked-action";
+import { guardPreviewDocument, guardPreviewRequest } from "./theme-preview";
 
 /**
  * Thrown when this browser cannot produce a signed document — no WebCrypto
@@ -635,6 +638,8 @@ function retryAfterSecs(res: Response, body: unknown): number | null {
 async function postDocument<T>(
   signed: UnsignedTrustTaskDocument | SignedTrustTaskDocument,
 ): Promise<T> {
+  // A theme preview sends read tasks only (`lib/theme-preview.ts`).
+  guardPreviewDocument(signed.type);
   const headers = new Headers({ "Content-Type": "application/json" });
   const csrf = csrfTokenFromCookie();
   if (csrf) headers.set("X-CSRF-Token", csrf);

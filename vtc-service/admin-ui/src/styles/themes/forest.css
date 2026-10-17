@@ -1,0 +1,23 @@
+/* Forest — deep greens on a warm paper ground. */
+:root {
+  --brand-50: #ecf8f2;
+  --brand-100: #d3efe2;
+  --brand-200: #a6dec4;
+  --brand-300: #6fc6a0;
+  --brand-400: #3fa97e;
+  --brand-500: #1f8a63;
+  --brand-600: #17714f;
+  --brand-700: #125a3f;
+  --accent-violet: #c2a14a;
+  --bg: light-dark(#f8f7f2, #0b120e);
+  --bg-elev: light-dark(#ffffff, #121c16);
+  --bg-subtle: light-dark(#f0efe7, #18241d);
+  --bg-hover: light-dark(#e9e8de, #1d2b23);
+  --border: light-dark(#e1dfd2, #233229);
+  --border-strong: light-dark(#cfccbc, #2f4236);
+  --text: light-dark(#14201a, #eef4ef);
+  --text-muted: light-dark(#4d5a52, #a3b2a8);
+  --text-faint: light-dark(#76827a, #6c7a71);
+  --radius-md: 10px;
+  --radius-lg: 14px;
+}
