@@ -40,6 +40,7 @@ use trust_tasks_rs::specs::vtc::community::{
     branding::{show::v0_1 as branding_show, update::v0_1 as branding_update},
     join_discovery::{show::v0_1 as join_discovery_show, update::v0_1 as join_discovery_update},
     requested_attributes::{show::v0_1 as requested_show, update::v0_1 as requested_update},
+    theme::{show::v0_1 as theme_show, update::v0_1 as theme_update},
 };
 use trust_tasks_rs::specs::vtc::join_requests::{
     query::v0_1 as join_query, vetting::show::v0_1 as join_vetting_show,
@@ -77,6 +78,8 @@ use crate::server::AppState;
 
 pub(crate) const BRANDING_SHOW_TYPE: &str = <branding_show::Payload as Payload>::TYPE_URI;
 pub(crate) const BRANDING_UPDATE_TYPE: &str = <branding_update::Payload as Payload>::TYPE_URI;
+pub(crate) const THEME_SHOW_TYPE: &str = <theme_show::Payload as Payload>::TYPE_URI;
+pub(crate) const THEME_UPDATE_TYPE: &str = <theme_update::Payload as Payload>::TYPE_URI;
 pub(crate) const REQUESTED_SHOW_TYPE: &str = <requested_show::Payload as Payload>::TYPE_URI;
 pub(crate) const REQUESTED_UPDATE_TYPE: &str = <requested_update::Payload as Payload>::TYPE_URI;
 pub(crate) const JOIN_DISCOVERY_SHOW_TYPE: &str =
@@ -103,6 +106,8 @@ pub(crate) const ROOMS_LIST_TYPE: &str = <rooms_list::Payload as Payload>::TYPE_
 
 // ─── the codes these tasks declare, as the error-code census witnesses them ─
 
+pub(crate) const THEME_UPDATE_ERR_OUTSIDE_PROFILE: &str =
+    theme_update::error_codes::OUTSIDE_PROFILE.code;
 pub(crate) const REQUESTED_ERR_DUPLICATE_TYPE: &str =
     requested_update::error_codes::DUPLICATE_TYPE.code;
 pub(crate) const SCHEMAS_REGISTER_ERR_INVALID_CREDENTIAL_SCHEMA: &str =
@@ -139,6 +144,8 @@ pub(crate) const JOIN_QUERY_ERR_CRITERION_NOT_FOUND: &str =
 pub(crate) const URIS: &[&str] = &[
     BRANDING_SHOW_TYPE,
     BRANDING_UPDATE_TYPE,
+    THEME_SHOW_TYPE,
+    THEME_UPDATE_TYPE,
     REQUESTED_SHOW_TYPE,
     REQUESTED_UPDATE_TYPE,
     JOIN_DISCOVERY_SHOW_TYPE,
@@ -171,6 +178,8 @@ pub(super) async fn dispatch(
     Some(match type_uri {
         BRANDING_SHOW_TYPE => handle_branding_show(state, ctx, doc).await,
         BRANDING_UPDATE_TYPE => handle_branding_update(state, ctx, doc).await,
+        THEME_SHOW_TYPE => handle_theme_show(state, doc).await,
+        THEME_UPDATE_TYPE => handle_theme_update(state, ctx, doc).await,
         REQUESTED_SHOW_TYPE => handle_requested_show(state, ctx, doc).await,
         REQUESTED_UPDATE_TYPE => handle_requested_update(state, ctx, doc).await,
         JOIN_DISCOVERY_SHOW_TYPE => handle_join_discovery_show(state, ctx, doc).await,
@@ -440,6 +449,73 @@ async fn handle_branding_update(
     match crate::routes::community::branding::update_branding(state, &actor, &body).await {
         Ok(b) => success_response(&doc, json!({ "branding": b })),
         Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/community/theme/show/0.1`. Answered to anyone, identified or not
+/// (show item 1): the sign-in pages draw the theme before the visitor holds an
+/// identity, and the stylesheet is what every loaded page shows anyway.
+async fn handle_theme_show(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+    if let Err(reject) = parse_spec_payload::<theme_show::Payload>(&doc) {
+        return reject;
+    }
+    match crate::community::theme::shown_stylesheet(&state.community_ks).await {
+        Ok(Some(t)) => success_response(
+            &doc,
+            json!({ "stylesheet": t.stylesheet, "updatedAt": t.updated_at }),
+        ),
+        Ok(None) => success_response(&doc, json!({ "stylesheet": "" })),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/community/theme/update/0.1` — administrator standing, as for branding.
+async fn handle_theme_update(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::routes::community::theme::{ThemeUpdateError, update_theme};
+
+    let actor = match as_capable::<theme_update::Payload>(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::SurfaceAdmin,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let stylesheet = doc
+        .payload
+        .get("stylesheet")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let dry_run = doc
+        .payload
+        .get("dryRun")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    match update_theme(state, &actor, &stylesheet, dry_run).await {
+        Ok(u) => {
+            let mut body = json!({ "stylesheet": u.stylesheet, "stored": u.stored });
+            if let Some(at) = u.updated_at {
+                body["updatedAt"] = json!(at);
+            }
+            success_response(&doc, body)
+        }
+        Err(ThemeUpdateError::OutsideProfile(v)) => reject_with_code(
+            &doc,
+            extended_code(THEME_UPDATE_ERR_OUTSIDE_PROFILE),
+            v.message.clone(),
+            Some(json!({ "line": v.line, "column": v.column, "rule": v.rule })),
+        ),
+        // Item 2's byte bound arrives here as a validation error, so it is
+        // `malformedRequest`, not `outsideProfile`.
+        Err(ThemeUpdateError::App(e)) => app_error_to_reject(&doc, &e),
     }
 }
 

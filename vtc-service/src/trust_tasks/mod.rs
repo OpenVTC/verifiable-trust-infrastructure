@@ -2241,6 +2241,10 @@ mod spine_proof_tests {
             "declares no request-level proof as a specification matter; the handler's own authorization refuses an unsigned caller regardless",
         ),
         (surface_tasks::BRANDING_SHOW_TYPE, "a public read"),
+        (
+            surface_tasks::THEME_SHOW_TYPE,
+            "a public read, answered to an unidentified caller too: the sign-in pages draw the theme before the visitor has an identity",
+        ),
         (surface_tasks::REQUESTED_SHOW_TYPE, "a public read"),
         (surface_tasks::JOIN_DISCOVERY_SHOW_TYPE, "a public read"),
         (surface_tasks::SCHEMAS_LIST_TYPE, "a public read"),
@@ -3150,6 +3154,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // notices keep their routes while `vtc-client` calls them.
     surface_tasks::BRANDING_SHOW_TYPE,
     surface_tasks::BRANDING_UPDATE_TYPE,
+    surface_tasks::THEME_SHOW_TYPE,
+    surface_tasks::THEME_UPDATE_TYPE,
     surface_tasks::REQUESTED_SHOW_TYPE,
     surface_tasks::REQUESTED_UPDATE_TYPE,
     surface_tasks::JOIN_DISCOVERY_SHOW_TYPE,

@@ -586,6 +586,12 @@ pub enum AuditEvent {
     /// which `join-requests/manifest/0.2` publishes.
     CommunityBrandingUpdated(CommunityBrandingUpdatedData),
 
+    /// An admin replaced or removed the community's theme — the stylesheet the
+    /// console and member portal are drawn with
+    /// (`vtc/community/theme/update/0.1`). Names the stylesheet by digest,
+    /// never its text (update item 6).
+    CommunityThemeUpdated(CommunityThemeUpdatedData),
+
     /// An admin changed whether the join manifest answers a caller the
     /// community cannot identify (`PUT /v1/community/join-discovery`).
     ///
@@ -1096,6 +1102,7 @@ impl AuditEvent {
             Self::VetterAutoGrantConfigured(..) => "VetterAutoGrantConfigured",
             Self::VetterAutoGrantSwept(..) => "VetterAutoGrantSwept",
             Self::CommunityBrandingUpdated(..) => "CommunityBrandingUpdated",
+            Self::CommunityThemeUpdated(..) => "CommunityThemeUpdated",
             Self::CommunityJoinDiscoveryUpdated(..) => "CommunityJoinDiscoveryUpdated",
             Self::CommunityRequestedAttributesUpdated(..) => "CommunityRequestedAttributesUpdated",
             Self::EndorsementTypeRegistered(..) => "EndorsementTypeRegistered",
@@ -2596,6 +2603,18 @@ pub struct CommunityBrandingUpdatedData {
     pub fields_changed: Vec<String>,
 }
 
+/// Payload for [`AuditEvent::CommunityThemeUpdated`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityThemeUpdatedData {
+    /// Lowercase hex SHA-256 of the stored stylesheet; `None` when the theme
+    /// was removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    /// Its length in UTF-8 bytes; 0 when removed.
+    pub bytes: u32,
+}
+
 /// Payload for [`AuditEvent::CommunityRequestedAttributesUpdated`].
 ///
 /// Claim types only — what the community now asks for, never anything an
@@ -4057,6 +4076,13 @@ mod tests {
                     fields_changed: vec![],
                 }),
                 "CommunityBrandingUpdated",
+            ),
+            (
+                AuditEvent::CommunityThemeUpdated(CommunityThemeUpdatedData {
+                    digest: None,
+                    bytes: 0,
+                }),
+                "CommunityThemeUpdated",
             ),
             (
                 AuditEvent::CommunityRequestedAttributesUpdated(
