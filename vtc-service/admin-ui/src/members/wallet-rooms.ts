@@ -103,9 +103,25 @@ export interface RoomRecord {
 }
 
 /**
- * One of this community's offers of its rooms to the member, as the wallet
- * shows it (`PageOfferView`): never the offer's credentials. A wallet without
- * offers support has no `offers` method.
+ * Where one room stands, as every surface the member uses shows it — this
+ * portal, their wallet's console, `pnm`, OpenVTC: the community's record
+ * (`vtc/rooms/memberships/list`) beside the member's agent's keys
+ * (`rooms/keys/list`).
+ *
+ * - `offered`: an offer to accept;
+ * - `joined`: in the room (an open room, or a sealed one their agent holds);
+ * - `unfinished`: accepted somewhere — here or elsewhere — and not joined yet:
+ *   accepting again finishes it;
+ * - `needsReadmission`: accepted too long ago to finish: an administrator
+ *   removes and re-admits them;
+ * - `removed`.
+ */
+export type RoomStanding = "offered" | "joined" | "unfinished" | "needsReadmission" | "removed";
+
+/**
+ * One room this community has offered the member, as the wallet shows it
+ * (`PageOfferView`): never the offer's credentials. A wallet without offers
+ * support has no `offers` method.
  */
 export interface PageOffer {
   roomId: string;
@@ -124,9 +140,11 @@ export interface PageOffer {
   actions: string[];
   validUntil: string;
   offeredAt: string;
-  state: "open" | "accepted";
-  /** An accept began in the wallet and did not finish: accepting again finishes it. */
-  inProgress: boolean;
+  admittedAt?: string;
+  removedAt?: string;
+  /** While a sealed room's acceptance can still be finished, from any surface. */
+  repeatAcceptUntil?: string;
+  state: RoomStanding;
 }
 
 /** What the wallet reports after an accept. */
@@ -226,9 +244,14 @@ export function shareRefusalHint(reason: string): string | null {
   return null;
 }
 
-/** The offers a member can still act on: open ones, and any whose accept began in the wallet. */
+/** The rooms a member can still act on: offers, and acceptances begun anywhere and not finished. */
 export function actionableOffers(offers: readonly PageOffer[]): PageOffer[] {
-  return offers.filter((o) => o.state === "open" || o.inProgress);
+  return offers.filter((o) => o.state === "offered" || o.state === "unfinished");
+}
+
+/** The rest of the record: joined, needing re-admission, removed. */
+export function settledOffers(offers: readonly PageOffer[]): PageOffer[] {
+  return offers.filter((o) => o.state !== "offered" && o.state !== "unfinished");
 }
 
 /** Whether a wallet answer says the member chose not to accept here (the offer stays open). */

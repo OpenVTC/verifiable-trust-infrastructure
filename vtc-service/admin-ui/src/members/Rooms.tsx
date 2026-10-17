@@ -16,6 +16,7 @@ import { InstallWallet } from "./InstallWallet";
 import {
   actionableOffers,
   offerDeclined,
+  settledOffers,
   adverseVerification,
   fileWontFit,
   formatBytes,
@@ -151,13 +152,14 @@ function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: 
     );
   }
   const waiting = actionableOffers(offers.data.offers);
-  if (waiting.length === 0 && !done && !offers.data.needsOrigin) return null;
+  const settled = settledOffers(offers.data.offers);
+  if (waiting.length === 0 && settled.length === 0 && !done && !offers.data.needsOrigin) return null;
 
   return (
     <section className="card" aria-labelledby="offers-heading">
       <div className="card-head">
         <Gift size={18} aria-hidden="true" />
-        <h2 id="offers-heading">Offers from this community</h2>
+        <h2 id="offers-heading">Rooms from this community</h2>
       </div>
       {offers.data.needsOrigin ? (
         <p className="muted">
@@ -166,8 +168,9 @@ function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: 
         </p>
       ) : (
         <p className="muted">
-          Rooms the community has offered you. Accepting is your decision in your wallet, which shows you the room
-          and the identity you join as before anything happens.
+          Every room the community has offered you, and where each stands — the same as your wallet and your other
+          apps show. Accepting is your decision in your wallet, which shows you the room and the identity you join
+          as before anything happens.
         </p>
       )}
       {waiting.length > 0 && (
@@ -181,7 +184,7 @@ function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: 
               <span className="muted small">
                 {o.visibility} · {o.actions.join(", ")} · until {new Date(o.validUntil).toLocaleDateString()}
                 {o.member === member ? " · as you" : ` · as ${shortDid(o.member)}`}
-                {o.inProgress ? " · not finished" : ""}
+                {o.state === "unfinished" ? " · accepted, not finished — finish it here" : ""}
               </span>
               <div className="actions">
                 <button
@@ -192,11 +195,48 @@ function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: 
                 >
                   {accept.isPending && accept.variables?.roomId === o.roomId
                     ? "Waiting for your wallet…"
-                    : o.inProgress
+                    : o.state === "unfinished"
                       ? "Finish accepting…"
                       : "Accept…"}
                 </button>
               </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {settled.length > 0 && (
+        <ul className="room-list" aria-label="Rooms you have answered">
+          {settled.map((o) => (
+            <li key={`${o.roomId}|${o.member}`}>
+              <span>
+                {o.label ? <strong className="wrap">{o.label}</strong> : <code className="wrap">{shortDid(o.roomId)}</code>}
+              </span>
+              <span className="muted small">
+                {o.visibility} · {o.member === member ? "as you" : `as ${shortDid(o.member)}`} ·{" "}
+                {o.state === "joined"
+                  ? "joined"
+                  : o.state === "removed"
+                    ? `removed${o.removedAt ? ` ${new Date(o.removedAt).toLocaleDateString()}` : ""}`
+                    : "needs re-admission"}
+              </span>
+              {o.state === "needsReadmission" && (
+                <span className="muted small">
+                  Your agent never joined this room, and the community no longer keeps what it needs to finish. Ask
+                  an administrator to remove and re-admit you.
+                </span>
+              )}
+              {o.state === "joined" && (
+                <div className="actions">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => share.mutate(o.roomId)}
+                    disabled={share.isPending}
+                  >
+                    <Share2 size={14} aria-hidden="true" /> Open it here…
+                  </button>
+                </div>
+              )}
             </li>
           ))}
         </ul>
