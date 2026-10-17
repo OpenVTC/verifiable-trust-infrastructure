@@ -1069,26 +1069,37 @@ The proxy starts four channels:
 | Storage | `Enclave → vsock:5500 → fjall on EBS` | Persistent K/V store |
 | DID Resolver | `Enclave → vsock:5600 → resolver sidecar` | DID resolution (WebSocket) |
 
-### Storage: atomic operations and version compatibility
+### Storage: atomic operations, bounded scan, and version compatibility
 
 The storage channel carries ciphertext only: the enclave encrypts every value
 (AES-256-GCM, bound to keyspace and key) before it reaches the parent. Beyond
-get / insert / delete / prefix scans, the proxy serves four atomic operations
-the enclave uses for claims and moves: **take** (get + delete — a refresh
-token is single-use because of it), **insert-if-absent**, **swap-if-absent**
-and **move-if-equal**. Each runs under the keyspace's lock in the parent, in
-one round trip instead of two to four. Move-if-equal compares the stored
-ciphertext with bytes the enclave has just read and compared in plaintext
-itself, so the parent never needs plaintext for any of them.
+get / insert / delete / prefix scans, the proxy serves five opcodes negotiated
+the same way: four atomic operations the enclave uses for claims and moves —
+**take** (get + delete — a refresh token is single-use because of it),
+**insert-if-absent**, **swap-if-absent** and **move-if-equal** — each running
+under the keyspace's lock in the parent in one round trip instead of two to
+four; and **bounded scan**, which returns an ordered, size-capped page of a
+keyspace (prefix, optional cursor, limit, direction) in one round trip instead
+of transferring the whole prefix and paging client-side. Move-if-equal
+compares the stored ciphertext with bytes the enclave has just read and
+compared in plaintext itself, so the parent never needs plaintext for any of
+them; scan returns ciphertext rows unchanged, same as get.
 
-**Either side may be upgraded first.** At connect the enclave asks the proxy
-which atomic operations it serves (`HELLO`). A proxy that predates them
-answers "unknown opcode", and the enclave uses single operations instead, under
-its own per-key locks — the same exactly-one guarantee, more round trips. A
-proxy replaced by an older build while the enclave runs is detected the same
-way on the next atomic operation, which falls back without failing. A newer
-proxy serves an older enclave unchanged: the older enclave never sends the new
-opcodes.
+**Either side may be upgraded first.** At connect the enclave sends one
+`HELLO` and caches the bitmask of opcodes the proxy answers with — one bit per
+atomic operation plus one for scan. A proxy that predates `HELLO` answers
+"unknown opcode" to it, read as "none" rather than an error, and the enclave
+uses the older per-operation path for everything instead: single operations
+under its own per-key locks for the atomic ops (same exactly-one guarantee,
+more round trips), and one unbounded `prefix_iter_raw` filtered and paged
+client-side for scan (bounded to 16 MiB; a response that would exceed it is a
+proxy-upgrade error, not a retry). A proxy replaced by an older build while
+the enclave runs is detected the same way on the next call to an opcode the
+enclave believed was supported: that one request falls back without failing,
+the affected capability bit is cleared, and a re-probe is scheduled 60 seconds
+out so the enclave picks it back up without restarting if the proxy is
+upgraded again. A newer proxy serves an older enclave unchanged: the older
+enclave never sends the new opcodes.
 
 The HTTPS channel implements an **HTTP CONNECT proxy** with an allowlist.
 Inside the enclave, `HTTPS_PROXY=http://127.0.0.1:4444` routes all HTTPS

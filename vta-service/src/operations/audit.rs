@@ -10,10 +10,13 @@ use crate::audit::{self, audit};
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
 use crate::error::AppError;
-use crate::store::KeyspaceHandle;
+use crate::store::{KeyspaceHandle, ScanOpts};
 
 /// Page size used when the caller omits `pageSize`.
 const DEFAULT_PAGE_SIZE: u64 = 50;
+/// Internal batch size for full-chain verification. Listing uses `MAX_LIMIT`
+/// because it cannot return more than the public page-size maximum.
+const AUDIT_VERIFY_SCAN_BATCH_SIZE: usize = 500;
 
 /// Does this stored row pass every supplied filter?
 ///
@@ -158,9 +161,6 @@ pub async fn verify_audit_chain(
 ) -> Result<AuditChainReport, AppError> {
     use vti_common::audit::envelope::{ChainBreak, ChainVerifier};
 
-    let mut pairs = audit_ks.prefix_iter_raw("log:").await?;
-    pairs.sort_by(|(a, _), (b, _)| a.cmp(b)); // ascending: write order
-
     // Retention deletes the oldest entries, so the oldest survivor points back
     // at something that is gone. Resuming from the sweep's watermark is what
     // tells an intact-but-pruned log apart from one an entry was removed from
@@ -186,44 +186,72 @@ pub async fn verify_audit_chain(
     // a continuation rather than an opening.
     let mut chain_opened = resumed.is_some();
 
-    for (key, value) in &pairs {
-        let env = match serde_json::from_slice::<vti_common::audit::AuditEnvelope>(value) {
-            Ok(env) => env,
-            Err(_) => {
-                // Before the first envelope this is a row from before the
-                // chain existed. After it, nothing this sink writes looks like
-                // this, so something else put it there.
-                if chain_opened {
-                    extra.unchained_after_open += 1;
-                    tracing::warn!(
-                        key = %String::from_utf8_lossy(key),
-                        "audit row after the chain opened is not an envelope",
-                    );
-                } else {
-                    extra.pre_chain_rows += 1;
-                }
-                continue;
-            }
-        };
-        chain_opened = true;
+    let mut entries_examined = 0usize;
+    // A pager, not a `scan_raw` loop: verification always walks the whole
+    // retained log, so the page count is a function of the log's size. On a
+    // backend that cannot bound a read itself, a `scan_raw` loop would
+    // re-read every row once per page.
+    let mut pages = audit_ks.scan_pager(ScanOpts::new("log:", AUDIT_VERIFY_SCAN_BATCH_SIZE));
+    loop {
+        let pairs = pages.next_page().await?;
+        if pairs.is_empty() {
+            break;
+        }
 
-        if let Err(brk) = verifier.push(&env) {
-            let (kind, index, event_id) = match brk {
-                ChainBreak::TamperedEntry { index, event_id } => ("tamperedEntry", index, event_id),
-                ChainBreak::BrokenLink { index, event_id } => ("brokenLink", index, event_id),
+        for (key, value) in &pairs {
+            // Counted here, per row actually looked at — not per page fetched.
+            // `entriesExamined` is "rows examined, chainable or not", and the
+            // VTC reports exactly that (`verifier.index()`, which counts the
+            // breaking row too). Counting a whole page up front would report
+            // rows the walk never reached, and make the number move with the
+            // batch size.
+            entries_examined += 1;
+            let env = match serde_json::from_slice::<vti_common::audit::AuditEnvelope>(value) {
+                Ok(env) => env,
+                Err(_) => {
+                    // Before the first envelope this is a row from before the
+                    // chain existed. After it, nothing this sink writes looks like
+                    // this, so something else put it there.
+                    if chain_opened {
+                        extra.unchained_after_open += 1;
+                        tracing::warn!(
+                            key = %String::from_utf8_lossy(key),
+                            "audit row after the chain opened is not an envelope",
+                        );
+                    } else {
+                        extra.pre_chain_rows += 1;
+                    }
+                    continue;
+                }
             };
-            chain_break = Some(AuditChainBreak {
-                kind: kind.to_string(),
-                index,
-                event_id: Some(event_id.to_string()),
-            });
+            chain_opened = true;
+
+            if let Err(brk) = verifier.push(&env) {
+                let (kind, index, event_id) = match brk {
+                    ChainBreak::TamperedEntry { index, event_id } => {
+                        ("tamperedEntry", index, event_id)
+                    }
+                    ChainBreak::BrokenLink { index, event_id } => ("brokenLink", index, event_id),
+                };
+                chain_break = Some(AuditChainBreak {
+                    kind: kind.to_string(),
+                    index,
+                    event_id: Some(event_id.to_string()),
+                });
+                break;
+            }
+        }
+
+        if chain_break.is_some() {
+            // The chain is a strict left fold, so nothing past the break can
+            // be verified and reading on would examine rows for no purpose.
             break;
         }
     }
 
     Ok(AuditChainReport {
         verified: chain_break.is_none(),
-        entries_examined: pairs.len(),
+        entries_examined,
         entries_verified: verifier.verified(),
         legacy_skipped: verifier.skipped_legacy(),
         // The canonical shape has one bucket for what would not parse; the two
@@ -294,6 +322,22 @@ fn flatten(env: &vti_common::audit::AuditEnvelope) -> AuditLogEntry {
     }
 }
 
+/// List audit entries, newest first, filtered and paged.
+///
+/// **A selective filter reads to the end of the log.** The walk stops early
+/// only once it holds `limit` matches *and* one more, so `truncated` means
+/// "more *matching* entries remain" rather than "more rows remain". The price
+/// is that a log which cannot satisfy a filter `limit + 1` times is answered
+/// by reading every remaining row — "there is nothing further" is a claim
+/// about everything this call does not return. It applies to successful
+/// queries too: three matches return three entries, `truncated: false`, after
+/// scanning to the end. An unfiltered list exits after one page.
+///
+/// Deliberately unbounded. A row budget would have to report
+/// `truncated: true` at its cut-off without knowing whether anything further
+/// matches, handing back a cursor whose next page may be empty — the reading
+/// as results-withheld this ordering exists to prevent. Revisit the budget
+/// and the guarantee together, or not at all.
 pub async fn list_audit_logs(
     audit_ks: &KeyspaceHandle,
     auth: &AuthClaims,
@@ -314,71 +358,64 @@ pub async fn list_audit_logs(
         None => None,
     };
 
-    // The storage key is `log:{timestamp:020}:{uuid}`, so a
-    // lexicographic walk is chronological and the key itself is a
-    // stable cursor position — stable under concurrent appends in a
-    // way an offset is not.
-    //
-    // This materialises the whole keyspace per page, as the offset
-    // implementation it replaces also did — retention caps how large
-    // that gets. The fix, when it is needed, is the cursor-aware
-    // `prefix_iter_after` sketched in `vti_common::pagination`'s module
-    // docs; it does not change the wire shape, because the cursor is
-    // already the storage key this would seek to.
-    let mut pairs = audit_ks.prefix_iter_raw("log:").await?;
-    pairs.sort_by(|(a, _), (b, _)| b.cmp(a)); // newest first
-
-    // Descending order means "the next page" is everything strictly
-    // less than the last key already returned.
-    let start = match &resume_from {
-        Some(c) => pairs
-            .iter()
-            .position(|(k, _)| k.as_slice() < c.last_key.as_slice())
-            .unwrap_or(pairs.len()),
-        None => 0,
-    };
-
     let mut entries: Vec<AuditEnvelope> = Vec::with_capacity(limit);
     let mut last_seen_key: Option<Vec<u8>> = None;
-    let mut idx = start;
-    while entries.len() < limit && idx < pairs.len() {
-        let (key, value) = &pairs[idx];
-        match read_row(value) {
-            Some(row) => {
-                if matches(params, &row) {
-                    entries.push(AuditEnvelope::from(&row));
-                    last_seen_key = Some(key.clone());
-                }
-            }
-            None => {
-                tracing::warn!(
-                    key = %String::from_utf8_lossy(key),
-                    "skipping unparseable audit row",
-                );
-            }
-        }
-        idx += 1;
-    }
-
-    // `truncated` must mean "more *matching* entries remain", not "more
-    // rows remain": under a filter the tail may hold nothing that
-    // matches, and handing back a cursor for an empty next page would
-    // read as results being withheld. Scan ahead only as far as the
-    // first further match.
     let mut more_matches = false;
-    while idx < pairs.len() {
-        if let Ok(row) = serde_json::from_slice::<AuditLogEntry>(&pairs[idx].1)
-            && matches(params, &row)
-        {
-            more_matches = true;
+    let mut scanned_rows = 0u64;
+
+    // A filter that matches nothing in the newest rows walks on until it
+    // finds `limit` matches plus one, so the page count is bounded only by
+    // the log's size — the same reason verification pages rather than loops
+    // on `scan_raw`.
+    let mut opts = ScanOpts::newest_first("log:", MAX_LIMIT);
+    if let Some(cursor) = resume_from {
+        opts = opts.after(cursor.last_key);
+    }
+    let mut pages = audit_ks.scan_pager(opts);
+
+    loop {
+        let pairs = pages.next_page().await?;
+        if pairs.is_empty() {
             break;
         }
-        idx += 1;
+        scanned_rows += pairs.len() as u64;
+
+        for (key, value) in &pairs {
+            if entries.len() < limit {
+                match read_row(value) {
+                    Some(row) => {
+                        if matches(params, &row) {
+                            entries.push(AuditEnvelope::from(&row));
+                            last_seen_key = Some(key.clone());
+                        }
+                    }
+                    None => {
+                        tracing::warn!(
+                            key = %String::from_utf8_lossy(key),
+                            "skipping unparseable audit row",
+                        );
+                    }
+                }
+            } else if let Some(row) = read_row(value)
+                && matches(params, &row)
+            {
+                // `truncated` must mean "more *matching* entries remain", not
+                // "more rows remain": under a filter the tail may hold nothing
+                // that matches, and handing back a cursor for an empty next
+                // page would read as results being withheld. So the scan runs
+                // on only as far as the first further match.
+                more_matches = true;
+                break;
+            }
+        }
+
+        if more_matches {
+            break;
+        }
     }
 
     let cursor = if more_matches {
-        last_seen_key
-            .map(|k| Cursor::new(k, pairs.len() as u64).encode_bound(&cursor_key, &binding))
+        last_seen_key.map(|k| Cursor::new(k, scanned_rows).encode_bound(&cursor_key, &binding))
     } else {
         None
     };
@@ -755,5 +792,149 @@ mod retention_tests {
             !report.verified,
             "removing an entry after the sweep must still break the chain"
         );
+    }
+}
+
+#[cfg(test)]
+mod paged_reader_tests {
+    use super::verify_tests_support::{entry, keyspaces};
+    use super::*;
+    use vta_audit::{AuditSink, ChainedKeyspaceAuditSink};
+    use vta_sdk::protocols::audit_management::list::ListAuditLogsBody;
+
+    #[tokio::test]
+    async fn verify_reads_across_a_scan_page_boundary() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks);
+        for index in 0..501 {
+            sink.record(&entry(&format!("operation.{index}")))
+                .await
+                .expect("record audit entry");
+        }
+
+        let report = verify_audit_chain(&audit_ks).await.expect("verify");
+
+        assert!(report.verified);
+        assert_eq!(report.entries_examined, 502);
+        assert_eq!(report.entries_verified, 502);
+    }
+
+    /// A break stops the count where it stops the verification.
+    ///
+    /// `entriesExamined` is "rows examined, chainable or not" — what the walk
+    /// actually looked at, including the row that broke. It is **not** the
+    /// size of the log: reading on after a break would examine rows for no
+    /// purpose, and reporting rows the walk never reached would be a number
+    /// that moves with the internal batch size rather than describing
+    /// anything.
+    ///
+    /// This matches the VTC, which reports `verifier.index()` from the same
+    /// shared verifier and stops at its break the same way. The VTA used to
+    /// report the whole log's row count here, which agreed with neither.
+    ///
+    /// The log is deliberately longer than one scan batch, with the tamper
+    /// near the start, so a per-page count would show up as the batch size.
+    #[tokio::test]
+    async fn a_break_stops_the_examined_count_where_it_stops_verifying() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks);
+        for index in 0..600 {
+            sink.record(&entry(&format!("operation.{index}")))
+                .await
+                .expect("record audit entry");
+        }
+        let total = audit_ks.prefix_iter_raw("log:").await.expect("scan").len();
+        assert!(
+            total > AUDIT_VERIFY_SCAN_BATCH_SIZE,
+            "the log must span more than one page for this to mean anything"
+        );
+
+        // Rewrite the third row's outcome in place, leaving its hashes alone.
+        let mut pairs = audit_ks.prefix_iter_raw("log:").await.expect("scan");
+        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+        let (key, raw) = pairs.get(2).expect("an early row");
+        let mut env: vti_common::audit::AuditEnvelope =
+            serde_json::from_slice(raw).expect("envelope");
+        if let vti_common::audit::event::AuditEvent::VtaOperation(op) = &mut env.event {
+            op.outcome = "failure".to_string();
+        }
+        audit_ks
+            .insert(String::from_utf8(key.clone()).expect("utf8 key"), &env)
+            .await
+            .expect("rewrite the row");
+
+        let report = verify_audit_chain(&audit_ks).await.expect("verify");
+
+        assert!(!report.verified, "the tampered row must be caught");
+        let brk = report.chain_break.expect("a break is reported");
+        assert_eq!(brk.kind, "tamperedEntry");
+        assert_eq!(brk.index, 2, "the third row is the one that broke");
+        assert_eq!(
+            report.entries_examined, 3,
+            "two good rows and the one that broke — not the batch size, not the log size"
+        );
+        assert_eq!(
+            report.entries_verified, 2,
+            "the breaking row is examined but not verified"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_pages_filtered_rows_with_a_signed_cursor() {
+        let (audit_ks, _key_ks, _dir) = keyspaces();
+        for index in 0..5u64 {
+            let action = if index % 2 == 0 { "target" } else { "other" };
+            audit_ks
+                .insert(format!("log:{index:020}:entry"), &entry(action))
+                .await
+                .expect("seed audit entry");
+        }
+
+        let auth = crate::test_support::super_admin_claims();
+        let params = ListAuditLogsBody {
+            action: Some("target".into()),
+            page_size: Some(2),
+            ..Default::default()
+        };
+        let first = list_audit_logs(&audit_ks, &auth, &params, "test")
+            .await
+            .expect("first page");
+
+        assert_eq!(first.entries.len(), 2);
+        assert!(first.entries.iter().all(|row| row.action == "target"));
+        let cursor = first.cursor.clone().expect("second page cursor");
+
+        let second = list_audit_logs(
+            &audit_ks,
+            &auth,
+            &ListAuditLogsBody {
+                action: Some("target".into()),
+                page_size: Some(2),
+                cursor: Some(cursor.clone()),
+                ..Default::default()
+            },
+            "test",
+        )
+        .await
+        .expect("second page");
+
+        assert_eq!(second.entries.len(), 1);
+        assert!(second.entries.iter().all(|row| row.action == "target"));
+        assert!(second.cursor.is_none());
+
+        let error = list_audit_logs(
+            &audit_ks,
+            &auth,
+            &ListAuditLogsBody {
+                action: Some("other".into()),
+                page_size: Some(2),
+                cursor: Some(cursor),
+                ..Default::default()
+            },
+            "test",
+        )
+        .await
+        .expect_err("a cursor must not cross filter bindings");
+        assert!(matches!(error, AppError::InvalidCursor));
     }
 }

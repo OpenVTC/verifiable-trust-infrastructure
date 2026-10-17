@@ -36,6 +36,10 @@ use crate::error::AppError;
 /// parent can make the enclave allocate.
 pub(crate) const MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024;
 
+fn is_deterministic_oversized_response(error: &AppError) -> bool {
+    error.to_string().starts_with("vsock response too large:")
+}
+
 /// Largest request coalesced with its length prefix into one write. Storage
 /// requests are almost all far below this; the rare large value (a backup
 /// bundle chunk) is not copied.
@@ -120,7 +124,12 @@ impl ConnectionPool {
                     self.put_idle(stream);
                     return Ok(resp);
                 }
-                Err(e) => warn!(error = %e.error(), "storage request failed, reconnecting"),
+                Err(e) => {
+                    if is_deterministic_oversized_response(e.error()) {
+                        return Err(e.into_error());
+                    }
+                    warn!(error = %e.error(), "storage request failed, reconnecting");
+                }
             }
         }
 

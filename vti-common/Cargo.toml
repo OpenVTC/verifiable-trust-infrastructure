@@ -131,6 +131,10 @@ hex = { workspace = true }
 # `MAX_BODY_BYTES`) so it can hash inputs + cache outputs.
 http-body-util = "0.1"
 bytes = "1"
+# `audit::writer::AUDIT_CHAIN_RECOVERY_FAILURES` — same pattern and version as
+# `vta_audit::AUDIT_WRITE_FAILURES`, so the two counters compose on one
+# dashboard without a version mismatch between exporters.
+metrics = "0.24"
 
 # Secrets resolver (for error type)
 affinidi-tdk = { workspace = true }
@@ -199,6 +203,10 @@ bytes = "1"
 # `blob_store::presigned` streams a staged file as a request body; its tests
 # run without the `blob-presigned` feature, so they ask for the same here.
 reqwest = { workspace = true, features = ["stream"] }
+# Captures `metrics` counters in-process so the audit chain-recovery tests can
+# assert what was emitted. Matches the `metrics 0.24` the crate records
+# through; no exporter is involved.
+metrics-util = { version = "0.20", features = ["debugging"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 # `umask` in the secure_file tests, to prove a secret file is 0600 regardless
