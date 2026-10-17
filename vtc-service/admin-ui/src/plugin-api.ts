@@ -136,6 +136,14 @@ export interface PluginManifest {
    */
   readonly reactComponent?: ComponentType;
   /**
+   * **Built-in plugins only**: draw the whole page out of the community
+   * theme's reach (`components/Protected.tsx`). For the pages whose purpose
+   * is deciding — another administrator's request, an applicant, a member's
+   * standing, a break-glass grant — where `vtc/community/theme/show/0.1`
+   * client item 2 says the theme must not change what is shown.
+   */
+  readonly protected?: boolean;
+  /**
    * Optional: the nav group the entry is listed under (see
    * {@link PluginGroup}). `account` puts it in the top bar's account menu
    * instead of the sidebar. Absent, or a value this shell does not know: the

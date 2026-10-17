@@ -19,6 +19,7 @@
 
 import { useState, type ReactNode } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
+import { Protected } from "@/components/Protected";
 
 export type AttentionSeverity = "critical" | "standing" | "warning" | "info";
 
@@ -65,7 +66,7 @@ function countSentence(n: number): string {
   return n === 1 ? "1 thing needs attention" : `${n} things need attention`;
 }
 
-export function AttentionStrip({ items }: { items: readonly AttentionItem[] }) {
+function AttentionStripSurface({ items }: { items: readonly AttentionItem[] }) {
   const [expanded, setExpanded] = useState(false);
   if (items.length === 0) return null;
 
@@ -106,5 +107,14 @@ export function AttentionStrip({ items }: { items: readonly AttentionItem[] }) {
         ))}
       </div>
     </section>
+  );
+}
+
+/** AttentionStrip, out of the community theme's reach (`vtc/community/theme/show/0.1`, client item 2). */
+export function AttentionStrip(props: Parameters<typeof AttentionStripSurface>[0]) {
+  return (
+    <Protected>
+      <AttentionStripSurface {...props} />
+    </Protected>
   );
 }

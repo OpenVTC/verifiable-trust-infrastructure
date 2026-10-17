@@ -17,6 +17,7 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Fingerprint, Wallet } from "lucide-react";
 
+import { Protected } from "@/components/Protected";
 import { shortenDid } from "@/lib/format";
 
 import { HomeLink, OlderWalletOptions, SignInPage } from "../signin/SignInLayout";
@@ -133,29 +134,31 @@ export function SignIn({ communityName }: { communityName?: string | null }) {
       }
       after={
         phase.kind === "error" && (
-          <div className="alert" role="alert">
-            <p className="alert-title">{phase.message}</p>
-            {phase.presentedDid && (
-              <p>
-                Your VTA signed in as{" "}
-                <code className="did-inline" title={phase.presentedDid}>
-                  {shortenDid(phase.presentedDid)}
-                </code>
-                .
-              </p>
-            )}
-            {phase.hint && <p>{phase.hint}</p>}
-            {phase.presentedDid && canChoose && (
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={chooseIdentity}
-                disabled={busy}
-              >
-                Sign in as a different identity…
-              </button>
-            )}
-          </div>
+          <Protected>
+            <div className="alert" role="alert">
+              <p className="alert-title">{phase.message}</p>
+              {phase.presentedDid && (
+                <p>
+                  Your VTA signed in as{" "}
+                  <code className="did-inline" title={phase.presentedDid}>
+                    {shortenDid(phase.presentedDid)}
+                  </code>
+                  .
+                </p>
+              )}
+              {phase.hint && <p>{phase.hint}</p>}
+              {phase.presentedDid && canChoose && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={chooseIdentity}
+                  disabled={busy}
+                >
+                  Sign in as a different identity…
+                </button>
+              )}
+            </div>
+          </Protected>
         )
       }
       foot={[
@@ -170,10 +173,15 @@ export function SignIn({ communityName }: { communityName?: string | null }) {
         <HomeLink communityName={communityName} />,
       ]}
     >
-      <WalletSignIn
-        communityName={communityName}
-        onSignedIn={() => qc.invalidateQueries({ queryKey: ["member-me"] })}
-      />
+      {/* The number a member matches against their wallet, and the identity
+          they confirm: out of the community theme's reach
+          (`vtc/community/theme/show/0.1`, client item 2). */}
+      <Protected>
+        <WalletSignIn
+          communityName={communityName}
+          onSignedIn={() => qc.invalidateQueries({ queryKey: ["member-me"] })}
+        />
+      </Protected>
 
       <button
         type="button"
@@ -227,36 +235,38 @@ export function SignIn({ communityName }: { communityName?: string | null }) {
         )}
 
         {choices && (
-          <section className="identity-picker" aria-labelledby="identity-picker-heading">
-            <h2 id="identity-picker-heading">Choose an identity</h2>
-            <p className="option-note">
-              Your wallet holds these identities for this community. Pick the
-              one the community admitted you as.
-            </p>
-            <ul className="identity-choices">
-              {choices.map((c) => (
-                <li key={c.entryId}>
-                  <button
-                    type="button"
-                    className="identity-choice"
-                    onClick={() => attempt("vta", () => signInWithVtaAs(c))}
-                    disabled={busy}
-                    title={c.did}
-                  >
-                    <span className="identity-choice-label">{c.label || "Identity"}</span>
-                    <code className="identity-choice-did">{shortenDid(c.did)}</code>
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => setChoices(null)}
-            >
-              Cancel
-            </button>
-          </section>
+          <Protected>
+            <section className="identity-picker" aria-labelledby="identity-picker-heading">
+              <h2 id="identity-picker-heading">Choose an identity</h2>
+              <p className="option-note">
+                Your wallet holds these identities for this community. Pick the
+                one the community admitted you as.
+              </p>
+              <ul className="identity-choices">
+                {choices.map((c) => (
+                  <li key={c.entryId}>
+                    <button
+                      type="button"
+                      className="identity-choice"
+                      onClick={() => attempt("vta", () => signInWithVtaAs(c))}
+                      disabled={busy}
+                      title={c.did}
+                    >
+                      <span className="identity-choice-label">{c.label || "Identity"}</span>
+                      <code className="identity-choice-did">{shortenDid(c.did)}</code>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setChoices(null)}
+              >
+                Cancel
+              </button>
+            </section>
+          </Protected>
         )}
 
         <InstallWallet open={false} />

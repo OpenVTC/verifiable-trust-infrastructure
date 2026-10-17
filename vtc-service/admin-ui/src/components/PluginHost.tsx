@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+import { Protected } from "@/components/Protected";
 import { PluginContext } from "@/lib/plugin-context";
 import type { PluginManifest } from "@/plugin-api";
 
@@ -27,11 +28,12 @@ export function PluginHost({ plugin }: { plugin: PluginManifest }) {
     const Component = plugin.reactComponent;
     // Built-ins read which plugin they are (the page header's breadcrumb,
     // `lib/plugin-context.ts`). A custom element gets nothing new.
-    return (
+    const page = (
       <PluginContext.Provider value={plugin}>
         <Component />
       </PluginContext.Provider>
     );
+    return plugin.protected ? <Protected ground="page">{page}</Protected> : page;
   }
   if (!plugin.elementTag) {
     return <PluginMisconfigured id={plugin.id} />;

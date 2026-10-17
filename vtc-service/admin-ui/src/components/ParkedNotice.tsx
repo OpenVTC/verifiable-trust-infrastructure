@@ -11,8 +11,9 @@ import { Link } from "react-router-dom";
 
 import { formatIso } from "@/lib/format";
 import { parkedOf, type ParkedAction } from "@/lib/parked-action";
+import { Protected } from "@/components/Protected";
 
-export function ParkedNotice({ action }: { action: ParkedAction }) {
+function ParkedNoticeSurface({ action }: { action: ParkedAction }) {
   // A cooling-off (VTI-APV-019) asks nobody for approval: it lands by itself
   // unless the requester cancels it, so "N must approve" would be false.
   if (action.coolingOffUntil) {
@@ -42,7 +43,7 @@ export function ParkedNotice({ action }: { action: ParkedAction }) {
 }
 
 /** `error` as an error card titled `title`, or as a [`ParkedNotice`]. */
-export function ErrorOrParked({ title, error }: { title: string; error: unknown }) {
+function ErrorOrParkedSurface({ title, error }: { title: string; error: unknown }) {
   if (!error) return null;
   const parked = parkedOf(error);
   if (parked) return <ParkedNotice action={parked} />;
@@ -51,5 +52,23 @@ export function ErrorOrParked({ title, error }: { title: string; error: unknown 
       <h3>{title}</h3>
       <p>{(error as Error).message}</p>
     </section>
+  );
+}
+
+/** ParkedNotice, out of the community theme's reach (`vtc/community/theme/show/0.1`, client item 2). */
+export function ParkedNotice(props: Parameters<typeof ParkedNoticeSurface>[0]) {
+  return (
+    <Protected>
+      <ParkedNoticeSurface {...props} />
+    </Protected>
+  );
+}
+
+/** ErrorOrParked, out of the community theme's reach (`vtc/community/theme/show/0.1`, client item 2). */
+export function ErrorOrParked(props: Parameters<typeof ErrorOrParkedSurface>[0]) {
+  return (
+    <Protected>
+      <ErrorOrParkedSurface {...props} />
+    </Protected>
   );
 }
