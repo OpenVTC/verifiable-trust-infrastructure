@@ -184,7 +184,7 @@ use vti_common::vault::VaultStatus;
 use super::dispatched_uris;
 
 /// The sweep's scope: dispatched ∩ published. Derived, never hand-listed.
-fn resolved_uris() -> BTreeSet<&'static str> {
+pub(super) fn resolved_uris() -> BTreeSet<&'static str> {
     dispatched_uris()
         .into_iter()
         .filter(|u| trust_tasks_rs::schema_index::schema_for(u).is_some())

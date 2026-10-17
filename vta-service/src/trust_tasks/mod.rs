@@ -71,6 +71,8 @@ mod credentials;
 mod device;
 mod did_templates;
 mod discovery;
+#[cfg(test)]
+mod error_code_census;
 mod external;
 mod health;
 mod helpers;
