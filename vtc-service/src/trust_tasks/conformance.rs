@@ -1220,6 +1220,26 @@ fn table() -> Vec<Conformance> {
             }),
             json!({ "room": sample_community_room_v2(), "changed": true })
         ),
+        // 0.3: as 0.2, and the community's VTA writes the label and description into the
+        // room as its profile — here it did not answer yet, so `pending`.
+        checked!(
+            s::rooms::community::create::v0_3::Payload,
+            s::rooms::community::create::v0_3::Response,
+            json!({
+                "label": "Board pack", "visibility": "attributed", "reason": "the board",
+                "description": "Papers for the board's meetings.", "tags": ["board"],
+            }),
+            json!({ "room": sample_community_room_v2(), "roomProfile": "pending" })
+        ),
+        checked!(
+            s::rooms::community::update::v0_2::Payload,
+            s::rooms::community::update::v0_2::Response,
+            json!({
+                "roomId": "did:key:z6MkRoom", "label": "Board pack — 2027",
+                "reason": "the 2027 cycle",
+            }),
+            json!({ "room": sample_community_room_v2(), "changed": true, "roomProfile": "written" })
+        ),
         checked!(
             s::rooms::community::members::add::v0_1::Payload,
             s::rooms::community::members::add::v0_1::Response,

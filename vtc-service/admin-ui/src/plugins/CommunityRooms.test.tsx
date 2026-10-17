@@ -441,6 +441,32 @@ describe("a community room's page", () => {
     expect(screen.queryByText(/renewal failing/)).toBeNull();
   });
 
+  it("says whether the room's own name is written into the room", async () => {
+    for (const [roomProfile, said] of [
+      [{ state: "written", writtenAt: "2026-10-16T09:00:00Z" }, /Written into the room/],
+      [
+        { state: "pending", attempts: 2, lastError: "the community's VTA could not be reached" },
+        /Not written into the room yet/,
+      ],
+      [{ state: "none" }, /Never written/],
+    ] as const) {
+      mockFetch([
+        ...NAME_BOOK_ROUTES,
+        taskRoute(COMMUNITY_ROOMS_GET_TASK, {
+          room: communityRoom(),
+          ext: { "org.openvtc": { roomProfile } },
+        }),
+        taskRoute(COMMUNITY_ROOMS_MEMBERS_LIST_TASK, { items: [] }),
+      ]);
+      const { unmount } = mount(page);
+      expect(await screen.findByText(said)).toBeTruthy();
+      if (roomProfile.state === "pending") {
+        expect(screen.getByText(/could not be reached/)).toBeTruthy();
+      }
+      unmount();
+    }
+  });
+
   it("lists who was offered and who is admitted", async () => {
     const requests = mockFetch(routes());
     mount(page);

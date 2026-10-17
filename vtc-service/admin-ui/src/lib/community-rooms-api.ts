@@ -49,10 +49,10 @@ import type {
   CommunityRoomUpdateResponse,
 } from "./wire-types";
 
-export const COMMUNITY_ROOMS_CREATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/create/0.2";
+export const COMMUNITY_ROOMS_CREATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/create/0.3";
 export const COMMUNITY_ROOMS_LIST_TASK = "https://trusttasks.org/spec/vtc/rooms/community/list/0.2";
 export const COMMUNITY_ROOMS_GET_TASK = "https://trusttasks.org/spec/vtc/rooms/community/get/0.2";
-export const COMMUNITY_ROOMS_UPDATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/update/0.1";
+export const COMMUNITY_ROOMS_UPDATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/update/0.2";
 export const COMMUNITY_ROOMS_MEMBERS_ADD_TASK =
   "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1";
 export const COMMUNITY_ROOMS_MEMBERS_REMOVE_TASK =
@@ -163,6 +163,41 @@ function renewalExt(ext: unknown): Record<string, unknown> | undefined {
   return (ext as { "org.openvtc"?: { authorityRenewal?: Record<string, unknown> } } | undefined)?.[
     "org.openvtc"
   ]?.authorityRenewal;
+}
+
+/** Whether the room's own profile — its label and description, written into the
+ *  room by the community's VTA so its members can read what it is — is written,
+ *  still being retried, or was never written (a room made before create 0.3,
+ *  until its next update). The VTC's `ext["org.openvtc"].roomProfile`. */
+export interface RoomProfileState {
+  state: "written" | "pending" | "none";
+  attempts?: number;
+  writtenAt?: string;
+  nextAttemptAt?: string;
+  lastError?: string;
+}
+
+/** One room's profile state, from a `get`'s `ext`. */
+export function roomProfileStateOf(ext: unknown): RoomProfileState | null {
+  const r = (ext as { "org.openvtc"?: { roomProfile?: Record<string, unknown> } } | undefined)?.[
+    "org.openvtc"
+  ]?.roomProfile;
+  if (!r || (r.state !== "written" && r.state !== "pending" && r.state !== "none")) return null;
+  const str = (k: string) => (typeof r[k] === "string" ? { [k]: r[k] as string } : {});
+  return {
+    state: r.state,
+    ...(typeof r.attempts === "number" ? { attempts: r.attempts } : {}),
+    ...str("writtenAt"),
+    ...str("nextAttemptAt"),
+    ...str("lastError"),
+  };
+}
+
+/** What a create or update's `roomProfile` means, in words — `null` when it needs none. */
+export function roomProfileNotice(roomProfile: string | undefined): string | null {
+  return roomProfile === "pending"
+    ? "Its members cannot read the new name in the room yet: the community's VTA has not written it. The VTC keeps trying."
+    : null;
 }
 
 /** One room's renewal, from a `get`'s `ext`, and the window it renews in. */
@@ -301,7 +336,9 @@ export async function fetchCommunityRoomMembers(
   return { items, truncated: true, departures: departures ?? [] };
 }
 
-/** `vtc/rooms/community/create/0.2`, after the requester's bound gesture. */
+/** `vtc/rooms/community/create/0.3`, after the requester's bound gesture: the
+ *  community's VTA also writes the label and description into the room as its
+ *  profile (`roomProfile` says whether it did yet). */
 export function createCommunityRoom(
   payload: CommunityRoomCreatePayload,
   confirmGesture: ConfirmGesture,
@@ -313,7 +350,8 @@ export function createCommunityRoom(
   );
 }
 
-/** `vtc/rooms/community/update/0.1`. It asks for no gesture; one is given only
+/** `vtc/rooms/community/update/0.2` — and a new label or description is written
+ *  into the room as its profile. It asks for no gesture; one is given only
  *  if the community's policy asks for it all the same. */
 export function updateCommunityRoom(
   payload: CommunityRoomUpdatePayload,

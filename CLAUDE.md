@@ -1260,7 +1260,13 @@ new flow, update both this section and the relevant `docs/*.md`.
   the only retry owner (capped backoff + jitter); failures are `warn`ed,
   audited at the start of a run, and shown in `get`/`list`'s
   `ext["org.openvtc"].authorityRenewal`. No "renew now" task exists.
-- **Code**: `vtc-service/src/rooms/community.rs`,
+- **The room's profile** (create 0.3 / update 0.2, `rooms::community_profile`): the label
+  and description — never the tags — go only to the community's own VTA in
+  `rooms/keys/profile/write`, as the community, and into the room sealed; never the host
+  record, a credential or `register`. A write that did not land is `pending`, never a failed
+  request; the profile sweeper is its one retry owner and always writes the room as it is
+  then. Needs `room-open` on the community's VTA entry.
+- **Code**: `vtc-service/src/rooms/{community,community_profile}.rs`,
   `vtc-service/src/trust_tasks/community_room_tasks.rs`,
   `cnm-cli/src/rooms.rs` (`cnm rooms …`).
 - **Docs**: `docs/03-vtc/community-rooms.md`.

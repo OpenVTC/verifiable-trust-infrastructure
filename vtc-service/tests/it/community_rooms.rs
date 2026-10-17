@@ -59,6 +59,10 @@ const INVITE: &str = "https://trusttasks.org/spec/rooms/owner/invite/0.1";
 const ISSUE_MEMBERSHIP: &str = "https://trusttasks.org/spec/rooms/owner/issue-membership/0.1";
 const ISSUE_AUTHORITY: &str = "https://trusttasks.org/spec/rooms/owner/issue-authority/0.2";
 const RECEIVE: &str = "https://trusttasks.org/spec/vault/credentials/receive/0.1";
+const CREATE_V0_3: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.3";
+const UPDATE_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/update/0.2";
+const PROFILE_READ: &str = "https://trusttasks.org/spec/rooms/keys/profile/read/0.1";
+const PROFILE_WRITE: &str = "https://trusttasks.org/spec/rooms/keys/profile/write/0.1";
 
 /// A `trust-task-error` reply's code — the census reads witnesses by this name.
 fn tt_error_code(doc: &Value) -> Option<&str> {
@@ -95,6 +99,9 @@ struct VtaState {
     admitted: HashMap<String, (String, String, u64, String)>,
     /// A VTA that predates `rooms/owner/group/add/0.2`: it refuses it `unsupportedType`.
     add_0_1_only: bool,
+    /// Each room's profile as the stand-in holds it — what `rooms/keys/profile/write`
+    /// last wrote, or what a test set as a curator's edit in the room.
+    profiles: HashMap<String, Value>,
 }
 
 #[derive(Clone, Default)]
@@ -177,8 +184,41 @@ impl FakeVta {
         serde_json::to_string(&c).unwrap()
     }
 
+    fn profile(&self, room: &str) -> Option<Value> {
+        self.0.lock().unwrap().profiles.get(room).cloned()
+    }
+
+    fn set_profile(&self, room: &str, profile: Value) {
+        self.0
+            .lock()
+            .unwrap()
+            .profiles
+            .insert(room.to_string(), profile);
+    }
+
     async fn serve(&self, type_uri: &str, p: &Value) -> Result<Value, (&'static str, String)> {
         match type_uri {
+            PROFILE_READ => {
+                let room = p["roomId"].as_str().unwrap_or_default().to_string();
+                Ok(match self.profile(&room) {
+                    Some(profile) => json!({
+                        "roomId": room, "status": "found", "profile": profile,
+                        "author": TEST_VTC_DID, "issuedAt": "2026-10-16T09:00:00Z",
+                        "epoch": 1, "version": 3, "stale": false,
+                        "searched": { "fromEpoch": 1, "toEpoch": 1 },
+                        "verification": { "trace": "verified", "priorRoots": "noneHeld" },
+                    }),
+                    None => json!({ "roomId": room, "status": "absent" }),
+                })
+            }
+            PROFILE_WRITE => {
+                let room = p["roomId"].as_str().unwrap_or_default().to_string();
+                self.set_profile(&room, p["profile"].clone());
+                Ok(json!({
+                    "roomId": room, "outcome": "written", "key": "Qm4c8XkR2pVt7sLw0aJbYg",
+                    "version": 4, "epoch": 1,
+                }))
+            }
             MINT => {
                 let room = Party::new();
                 let did = room.did.clone();
@@ -2081,4 +2121,282 @@ async fn vtc_rooms_offers_list_shows_the_rooms_description_and_never_its_tags() 
     let offer = &offers["payload"]["items"][0];
     assert_eq!(offer["label"], "Board pack — 2027");
     assert!(offer.get("description").is_none(), "{offer}");
+}
+
+// ─── the room's own profile (create 0.3, update 0.2) ────────────────────
+
+/// The `rooms/keys/profile/write` requests the stand-in received, in order.
+fn profile_writes(fix: &Fixture) -> Vec<Value> {
+    fix.vta
+        .calls()
+        .into_iter()
+        .filter(|(t, _)| t == PROFILE_WRITE)
+        .map(|(_, p)| p)
+        .collect()
+}
+
+async fn create_v0_3(fix: &mut Fixture, label: &str, visibility: &str) -> Value {
+    let (status, reply) = admin_call(
+        fix,
+        CREATE_V0_3,
+        json!({
+            "label": label, "visibility": visibility, "reason": "the board's papers",
+            "description": "Papers for the board's meetings.", "tags": ["board", "finance"],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    reply
+}
+
+/// `vtc/rooms/community/create/0.3` step 5 and items 8–9: once the room is stored, the
+/// community's own VTA is asked to write the label as the profile's `name` and the
+/// description as its `description` — **never the tags** — as the community, with this
+/// community as the host; the answer is `written`, and the room's `get` says so.
+#[tokio::test]
+async fn vtc_rooms_community_create_0_3_writes_label_and_description_as_the_rooms_profile() {
+    let mut fix = fixture().await;
+    let reply = create_v0_3(&mut fix, "Board pack", "attributed").await;
+    let room = reply["payload"]["room"]["room"]["roomId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(reply["payload"]["roomProfile"], "written", "{reply}");
+
+    let writes = profile_writes(&fix);
+    assert_eq!(writes.len(), 1, "{:?}", fix.vta.types_called());
+    let w = &writes[0];
+    assert_eq!(w["roomId"], room);
+    assert_eq!(w["host"], TEST_VTC_DID, "the community is the room's host");
+    assert_eq!(
+        w["profile"],
+        json!({ "name": "Board pack", "description": "Papers for the board's meetings." }),
+        "tags are administrators' filing and never go into the room"
+    );
+    assert_eq!(
+        w["ext"]["org.openvtc.rooms"]["member"], TEST_VTC_DID,
+        "written as the community's own place in the room"
+    );
+    // Remote first: the room was stored before the profile was asked for.
+    let types = fix.vta.types_called();
+    assert_eq!(
+        types.last().map(String::as_str),
+        Some(PROFILE_WRITE),
+        "{types:?}"
+    );
+
+    let (_, got) = admin_call(&mut fix, GET_V0_2, json!({ "roomId": room })).await;
+    assert_eq!(
+        got["payload"]["ext"]["org.openvtc"]["roomProfile"]["state"], "written",
+        "{got}"
+    );
+    // Nothing of the profile reached the host's record of the room.
+    let hosted = vti_rooms::storage::get_room(&fix.vtc.state.rooms_ks, &room)
+        .await
+        .unwrap();
+    assert!(
+        !serde_json::to_string(&hosted)
+            .unwrap()
+            .contains("Board pack")
+    );
+}
+
+/// Item 9: a profile the VTA did not write does not fail the create or remove the room —
+/// the answer is `pending`, the room stands, and the sweeper, the one retry owner, writes
+/// it on a later pass.
+#[tokio::test]
+async fn vtc_rooms_community_create_0_3_answers_pending_and_the_sweeper_writes_it() {
+    let mut fix = fixture().await;
+    fix.vta.script(
+        PROFILE_WRITE,
+        Script::Refuse("rooms/keys/profile/write:hostUnreachable"),
+    );
+    let reply = create_v0_3(&mut fix, "Board pack", "attributed").await;
+    assert_eq!(reply["payload"]["roomProfile"], "pending", "{reply}");
+    let room = reply["payload"]["room"]["room"]["roomId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        fix.vtc
+            .state
+            .community_rooms
+            .room(&room)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let (_, got) = admin_call(&mut fix, GET_V0_2, json!({ "roomId": room })).await;
+    let state = &got["payload"]["ext"]["org.openvtc"]["roomProfile"];
+    assert_eq!(state["state"], "pending", "{got}");
+    assert_eq!(state["attempts"], 1);
+    assert!(
+        state["lastError"]
+            .as_str()
+            .unwrap()
+            .contains("hostUnreachable")
+    );
+
+    // Before its backoff ends the sweeper leaves it; after, it writes it.
+    let report = vtc_service::rooms::community_profile::sweep(&fix.vtc.state, Utc::now())
+        .await
+        .unwrap();
+    assert!(report.written.is_empty(), "{report:?}");
+    let later = Utc::now() + chrono::Duration::hours(7);
+    let report = vtc_service::rooms::community_profile::sweep(&fix.vtc.state, later)
+        .await
+        .unwrap();
+    assert_eq!(report.written, vec![room.clone()]);
+    assert_eq!(fix.vta.profile(&room).unwrap()["name"], "Board pack");
+    let (_, got) = admin_call(&mut fix, GET_V0_2, json!({ "roomId": room })).await;
+    assert_eq!(
+        got["payload"]["ext"]["org.openvtc"]["roomProfile"]["state"], "written",
+        "{got}"
+    );
+    // And a written room is not written again.
+    fix.vta.clear_calls();
+    let report = vtc_service::rooms::community_profile::sweep(&fix.vtc.state, later)
+        .await
+        .unwrap();
+    assert!(report.written.is_empty() && profile_writes(&fix).is_empty());
+}
+
+/// `vtc/rooms/community/update/0.2` items 10–11: a rename writes the profile again,
+/// carrying over the tags and emoji a curator set in the room; a change of the
+/// administrators' tags alone writes nothing (`unchanged`); and the change to the
+/// community's own record stands whatever the VTA answers.
+#[tokio::test]
+async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() {
+    let mut fix = fixture().await;
+    let reply = create_v0_3(&mut fix, "Board pack", "attributed").await;
+    let room = reply["payload"]["room"]["room"]["roomId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // A curator gave the room tags and an emoji of its own, in the room.
+    fix.vta.set_profile(
+        &room,
+        json!({ "name": "Board pack", "description": "Papers for the board's meetings.",
+                "tags": ["minutes"], "emoji": "📋" }),
+    );
+    fix.vta.clear_calls();
+
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V0_2,
+        json!({ "roomId": room, "label": "Board pack — 2027", "reason": "the 2027 cycle" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], true, "{r}");
+    assert_eq!(r["payload"]["roomProfile"], "written", "{r}");
+    assert_eq!(
+        fix.vta.profile(&room).unwrap(),
+        json!({ "name": "Board pack — 2027", "description": "Papers for the board's meetings.",
+                "tags": ["minutes"], "emoji": "📋" }),
+        "the members the community does not manage are carried over"
+    );
+
+    // Tags only: the administrators' filing, never in the room.
+    fix.vta.clear_calls();
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V0_2,
+        json!({ "roomId": room, "tags": ["archive"], "reason": "filed" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], true, "{r}");
+    assert_eq!(r["payload"]["roomProfile"], "unchanged", "{r}");
+    assert!(profile_writes(&fix).is_empty());
+
+    // Nothing at all: unchanged, nothing written.
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V0_2,
+        json!({ "roomId": room, "label": "Board pack — 2027", "reason": "again" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], false, "{r}");
+    assert_eq!(r["payload"]["roomProfile"], "unchanged", "{r}");
+
+    // Removing the description writes a profile without one; a VTA that refuses leaves
+    // it pending and the update stands.
+    fix.vta.script(
+        PROFILE_WRITE,
+        Script::Refuse("rooms/keys/profile/write:contended"),
+    );
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V0_2,
+        json!({ "roomId": room, "removeDescription": true, "reason": "named a supplier" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], true, "{r}");
+    assert_eq!(r["payload"]["roomProfile"], "pending", "{r}");
+    assert!(r["payload"]["room"].get("description").is_none(), "{r}");
+    // A later update supersedes the pending one: what is written is the room as it is.
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V0_2,
+        json!({ "roomId": room, "tags": ["archive", "minutes"], "reason": "refiled" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["roomProfile"], "written", "{r}");
+    let written = fix.vta.profile(&room).unwrap();
+    assert_eq!(written["name"], "Board pack — 2027");
+    assert!(written.get("description").is_none(), "{written}");
+}
+
+/// Item 10: a room made before create 0.3 has never had its profile written, so the first
+/// update 0.2 writes it even when it changes nothing — and audits no change. Update 0.1
+/// never reaches the VTA.
+#[tokio::test]
+async fn vtc_rooms_community_update_0_2_writes_the_profile_of_a_room_made_before_create_0_3() {
+    let mut fix = fixture().await;
+    let room = create_described(&mut fix, "Board pack", json!(["board"])).await;
+    fix.vta.clear_calls();
+
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE,
+        json!({ "roomId": room, "label": "Board pack", "reason": "nothing" }),
+    )
+    .await;
+    assert!(r["payload"].get("roomProfile").is_none(), "{r}");
+    assert!(
+        fix.vta.calls().is_empty(),
+        "0.1 keeps the details out of the VTA"
+    );
+
+    let audited = details_rows(&fix).await.len();
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V0_2,
+        json!({ "roomId": room, "label": "Board pack", "reason": "nothing" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], false, "{r}");
+    assert_eq!(r["payload"]["roomProfile"], "written", "{r}");
+    assert_eq!(fix.vta.profile(&room).unwrap()["name"], "Board pack");
+    assert_eq!(
+        details_rows(&fix).await.len(),
+        audited,
+        "not audited as a change"
+    );
+
+    // Written once; the next no-op update has nothing to write.
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V0_2,
+        json!({ "roomId": room, "label": "Board pack", "reason": "nothing" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["roomProfile"], "unchanged", "{r}");
 }

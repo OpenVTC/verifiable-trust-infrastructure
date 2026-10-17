@@ -134,6 +134,11 @@ use crate::server::AppState;
         vta_sdk::openapi::RoomsCommunityGet02Response,
         vta_sdk::openapi::RoomsCommunityUpdate01Payload,
         vta_sdk::openapi::RoomsCommunityUpdate01Response,
+        // 0.3 / 0.2: the label and description also written into the room as its profile.
+        vta_sdk::openapi::RoomsCommunityCreate03Payload,
+        vta_sdk::openapi::RoomsCommunityCreate03Response,
+        vta_sdk::openapi::RoomsCommunityUpdate02Payload,
+        vta_sdk::openapi::RoomsCommunityUpdate02Response,
         vta_sdk::openapi::RoomsCommunityMembersAdd01Payload,
         vta_sdk::openapi::RoomsCommunityMembersAdd01Response,
         vta_sdk::openapi::RoomsCommunityMembersRemove01Payload,

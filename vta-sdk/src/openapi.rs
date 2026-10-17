@@ -260,6 +260,18 @@ spec_types! {
     /// `vtc/rooms/community/update/0.1#response` — the room as it now stands,
     /// and whether the request changed it.
     RoomsCommunityUpdate01Response(rooms_community::update::v0_1::Response);
+    /// `vtc/rooms/community/create/0.3` payload — as 0.2; the label and
+    /// description are also written into the room as its profile.
+    RoomsCommunityCreate03Payload(rooms_community::create::v0_3::Payload);
+    /// `vtc/rooms/community/create/0.3#response` — the room, and whether its
+    /// profile was written (`roomProfile`).
+    RoomsCommunityCreate03Response(rooms_community::create::v0_3::Response);
+    /// `vtc/rooms/community/update/0.2` payload — as 0.1; a new label or
+    /// description is also written into the room as its profile.
+    RoomsCommunityUpdate02Payload(rooms_community::update::v0_2::Payload);
+    /// `vtc/rooms/community/update/0.2#response` — the room, whether the
+    /// request changed it, and its profile's state (`roomProfile`).
+    RoomsCommunityUpdate02Response(rooms_community::update::v0_2::Response);
     /// `vtc/rooms/community/members/add/0.1` payload — admit an active member
     /// with actions, an expiry and a reason.
     RoomsCommunityMembersAdd01Payload(rooms_community::members::add::v0_1::Payload);

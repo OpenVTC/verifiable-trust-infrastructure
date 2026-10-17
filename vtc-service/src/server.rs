@@ -1539,6 +1539,9 @@ pub async fn run(
     // lapses. Always spawned: it reads `[rooms.community]` on every pass and does nothing
     // while community rooms are off or there is no VTA link.
     crate::rooms::community_renewal::spawn(state.clone(), shutdown_rx.clone());
+    // The profile of each room the community owns, written into the room by its VTA:
+    // the one retry owner for a create or update that answered `roomProfile: pending`.
+    crate::rooms::community_profile::spawn(state.clone(), shutdown_rx.clone());
     // Room files deleted, orphaned past their grace, or abandoned mid-transfer.
     crate::rooms::files::spawn_sweeper(
         state.room_files.clone(),

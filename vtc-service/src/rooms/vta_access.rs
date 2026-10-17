@@ -39,8 +39,9 @@ use serde_json::{Value, json};
 use crate::server::AppState;
 
 /// The capabilities the community's own rooms use at its VTA: mint each room's DID,
-/// issue its credentials, keep the community's own in the vault.
-const ROOM_CAPABILITIES: &[&str] = &["key-mint", "credential-write", "vault-write"];
+/// issue its credentials, keep the community's own in the vault, and write each room's
+/// profile into it (`rooms/keys/profile/*`, gated on `room-open`).
+const ROOM_CAPABILITIES: &[&str] = &["key-mint", "credential-write", "vault-write", "room-open"];
 
 /// For `vta-account` storage: the community's DID consumes an external account.
 const STORAGE_CAPABILITY: &str = "external-auth-use";
@@ -520,7 +521,7 @@ mod tests {
             command_of(&fix, "pnm acl create"),
             format!(
                 "pnm acl create --did {VTC} --role initiator --contexts vtc --capabilities \
-                 key-mint,credential-write,vault-write --label \"community (rooms)\""
+                 key-mint,credential-write,vault-write,room-open --label \"community (rooms)\""
             )
         );
         // `noKeyHolder` gets the same entry to add.
@@ -544,7 +545,7 @@ mod tests {
         assert!(
             command_of(&fix, "pnm acl create").contains(
                 "--contexts vtc-test,storage --capabilities \
-                 key-mint,credential-write,vault-write,external-auth-use"
+                 key-mint,credential-write,vault-write,room-open,external-auth-use"
             ),
             "{fix:?}"
         );
@@ -563,7 +564,9 @@ mod tests {
         );
         assert_eq!(
             command_of(&fix, "pnm acl update"),
-            format!("pnm acl update {VTC} --capabilities key-mint,credential-write,vault-write")
+            format!(
+                "pnm acl update {VTC} --capabilities key-mint,credential-write,vault-write,room-open"
+            )
         );
     }
 

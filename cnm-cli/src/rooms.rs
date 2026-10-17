@@ -347,6 +347,45 @@ async fn change(
     }
 }
 
+/// [`change`] at the newest of `versions` (task URI and payload, newest first) the VTC
+/// serves: a refusal saying it does not serve one (`unsupportedType` /
+/// `unsupportedVersion`) asks again at the next. The first was never routed, so asking
+/// again is not a retry of the change.
+async fn change_at_newest(
+    client: &VtcClient,
+    base: &str,
+    versions: Vec<(&str, Value)>,
+    did: &str,
+    key: &HolderKey,
+) -> CliResult<Value> {
+    let last = versions.len().saturating_sub(1);
+    for (i, (type_uri, payload)) in versions.into_iter().enumerate() {
+        match change(client, base, type_uri, payload, did, key).await {
+            Err(e)
+                if i < last
+                    && refused_code(&e.to_string())
+                        .is_some_and(|c| matches!(c, "unsupportedType" | "unsupportedVersion")) => {
+            }
+            other => return other,
+        }
+    }
+    Err("no version of this task to send".into())
+}
+
+/// What `roomProfile` in a create 0.3 / update 0.2 answer means, in words — `None` when it
+/// was not sent (an older VTC) or needs no comment.
+fn room_profile_said(v: &Value) -> Option<&'static str> {
+    match v["roomProfile"].as_str()? {
+        "written" => Some(
+            "The room's label and description are written into the room: its members read them as its name.",
+        ),
+        "pending" => Some(
+            "The room's name is not written into the room yet: the community's VTA has not answered. The VTC keeps trying; `rooms get` shows how it stands.",
+        ),
+        _ => None,
+    }
+}
+
 /// Whether a refusal could be one the community's entry at its VTA explains.
 fn may_be_vta_permission(code: &str) -> bool {
     code.starts_with("vtc/rooms/community/")
@@ -467,6 +506,35 @@ fn print_room(room: &Value) {
     }
 }
 
+/// How a room's own profile stands, from `ext["org.openvtc"].roomProfile`: written into
+/// the room, still being written, or never (a room made before create 0.3).
+fn room_profile_state(state: &Value) -> String {
+    match state["state"].as_str().unwrap_or_default() {
+        "written" => format!(
+            "name written into the room{}",
+            state["writtenAt"]
+                .as_str()
+                .map(|t| format!(" {}", terminal_safe(t)))
+                .unwrap_or_default()
+        ),
+        "pending" => format!(
+            "name not written into the room yet — retrying{}{}",
+            state["nextAttemptAt"]
+                .as_str()
+                .map(|t| format!(", next {}", terminal_safe(t)))
+                .unwrap_or_default(),
+            state["lastError"]
+                .as_str()
+                .map(|e| format!(" (last: {})", terminal_safe(e)))
+                .unwrap_or_default()
+        ),
+        _ => format!(
+            "name never written into the room: `{} rooms update <room> --label <its label> --reason …` writes it",
+            bin_name()
+        ),
+    }
+}
+
 fn room_tags(room: &Value) -> Vec<&str> {
     room["tags"]
         .as_array()
@@ -579,30 +647,40 @@ async fn run_task(
             if let Some(c) = storage_config {
                 payload["storageConfig"] = json!(c);
             }
-            // 0.2 only when it carries what 0.1 cannot, so a VTC that predates it still
-            // creates a room without them.
-            let (payload, type_uri) = if description.is_some() || !tags.is_empty() {
-                if let Some(d) = description {
-                    payload["description"] = json!(d);
-                }
-                if !tags.is_empty() {
-                    payload["tags"] = json!(dedup(tags));
-                }
+            // 0.3, which also writes the label and description into the room as its profile;
+            // a VTC that predates it gets 0.2 — and 0.1 when there is nothing only 0.2 carries.
+            let v0_1 = typed::<spec::create::v0_1::Payload>(payload.clone())?;
+            let plain = description.is_none() && tags.is_empty();
+            if let Some(d) = description {
+                payload["description"] = json!(d);
+            }
+            if !tags.is_empty() {
+                payload["tags"] = json!(dedup(tags));
+            }
+            let mut versions = vec![
                 (
-                    typed::<spec::create::v0_2::Payload>(payload)?,
+                    <spec::create::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                    typed::<spec::create::v0_3::Payload>(payload.clone())?,
+                ),
+                (
                     <spec::create::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                )
-            } else {
-                (
-                    typed::<spec::create::v0_1::Payload>(payload)?,
+                    typed::<spec::create::v0_2::Payload>(payload)?,
+                ),
+            ];
+            if plain {
+                versions.push((
                     <spec::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                )
-            };
-            let v = change(client, &target.base, type_uri, payload, &did, &key).await?;
+                    v0_1,
+                ));
+            }
+            let v = change_at_newest(client, &target.base, versions, &did, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
             print_room(&v["room"]);
+            if let Some(said) = room_profile_said(&v) {
+                println!("{said}");
+            }
             println!(
                 "The community's VTA holds the room's keys. Offer members admission with \
                  `{} rooms members add {} --member <did> --action read --valid-for 90d --reason …`.",
@@ -670,6 +748,13 @@ async fn run_task(
             }
             for room in &items {
                 print_room(room);
+                let id = room["room"]["roomId"].as_str().unwrap_or_default();
+                if let Some(state) = v
+                    .pointer("/ext/org.openvtc/roomProfile")
+                    .and_then(|p| p.get(id))
+                {
+                    println!("  {DIM}{}{RESET}", room_profile_state(state));
+                }
             }
             print_next(&v);
             Ok(())
@@ -686,6 +771,9 @@ async fn run_task(
                 return Ok(print_json(&v)?);
             }
             print_room(&v["room"]);
+            if let Some(state) = v.pointer("/ext/org.openvtc/roomProfile") {
+                println!("  {DIM}{}{RESET}", room_profile_state(state));
+            }
             Ok(())
         }
         RoomsCommands::Update {
@@ -706,8 +794,19 @@ async fn run_task(
                 clear_tags,
                 reason,
             )?;
-            let type_uri = <spec::update::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-            let v = change(client, &target.base, type_uri, payload, &did, &key).await?;
+            // 0.2 writes a new label or description into the room as its profile too; a VTC
+            // that predates it gets 0.1, which takes the same request.
+            let versions = vec![
+                (
+                    <spec::update::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                    typed::<spec::update::v0_2::Payload>(payload.clone())?,
+                ),
+                (
+                    <spec::update::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                    payload,
+                ),
+            ];
+            let v = change_at_newest(client, &target.base, versions, &did, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
@@ -716,6 +815,9 @@ async fn run_task(
                 println!("Changed. The earlier values are in the community's audit trail.");
             } else {
                 println!("Nothing changed: the room already had those details.");
+            }
+            if let Some(said) = room_profile_said(&v) {
+                println!("{said}");
             }
             Ok(())
         }
@@ -822,6 +924,33 @@ async fn run_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// create 0.3 / update 0.2's `roomProfile`, and get/list's profile state, in words —
+    /// nothing said for an older VTC that sends neither.
+    #[test]
+    fn the_rooms_profile_state_is_said_in_words() {
+        assert!(
+            room_profile_said(&json!({ "roomProfile": "written" }))
+                .unwrap()
+                .contains("written into the room")
+        );
+        assert!(
+            room_profile_said(&json!({ "roomProfile": "pending" }))
+                .unwrap()
+                .contains("keeps trying")
+        );
+        assert!(room_profile_said(&json!({ "roomProfile": "unchanged" })).is_none());
+        assert!(room_profile_said(&json!({})).is_none());
+        assert!(room_profile_state(&json!({ "state": "written" })).starts_with("name written"));
+        let pending = room_profile_state(&json!({
+            "state": "pending", "nextAttemptAt": "2026-10-17T10:00:00Z", "lastError": "unreachable",
+        }));
+        assert!(
+            pending.contains("retrying") && pending.contains("unreachable"),
+            "{pending}"
+        );
+        assert!(room_profile_state(&json!({ "state": "none" })).contains("rooms update"));
+    }
 
     #[test]
     fn an_expiry_is_named_one_way() {

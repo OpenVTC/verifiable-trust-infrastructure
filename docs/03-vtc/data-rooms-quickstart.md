@@ -576,7 +576,7 @@ here are minted in `vtc` itself, so `vtc` covers both.
 export PNM_HOME=/tmp/vdr/pnm-community
 pnm acl change-role --did "$VTC" --from application --to initiator
 pnm acl update "$VTC" --contexts vtc \
-    --capabilities key-mint,credential-write,vault-write,external-auth-use
+    --capabilities key-mint,credential-write,vault-write,room-open,external-auth-use
 pnm acl list --context vtc --direction any     # check: the VTC's entry, role initiator
 ```
 

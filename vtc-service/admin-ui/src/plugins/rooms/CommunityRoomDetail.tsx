@@ -46,7 +46,10 @@ import {
   parseTags,
   updateCommunityRoom,
   fetchCommunityRoom,
+  roomProfileNotice,
+  roomProfileStateOf,
   roomRenewalOf,
+  type RoomProfileState,
   fetchCommunityRoomMembers,
   type DepartureRemoval,
   removalOutcome,
@@ -131,7 +134,7 @@ export function CommunityRoomDetail() {
           "A room this community owns. Its VTA holds the room's keys; the community admits and removes its members."
         }
       />
-      <RoomFacts room={room} renewal={roomRenewalOf(q.data.ext)} />
+      <RoomFacts room={room} renewal={roomRenewalOf(q.data.ext)} profile={roomProfileStateOf(q.data.ext)} />
       <Members room={room} />
     </section>
   );
@@ -140,9 +143,11 @@ export function CommunityRoomDetail() {
 function RoomFacts({
   room,
   renewal,
+  profile,
 }: {
   room: CommunityRoom;
   renewal: ReturnType<typeof roomRenewalOf>;
+  profile: RoomProfileState | null;
 }) {
   const nameBook = useNameBook();
   const hostAdmin = useCan("vtc.rooms.admin", "*");
@@ -200,6 +205,14 @@ function RoomFacts({
         <dd>
           {room.admitted} admitted, {room.offered} offered
         </dd>
+        {profile && (
+          <>
+            <dt>Name in the room</dt>
+            <dd>
+              <RoomProfileFact profile={profile} />
+            </dd>
+          </>
+        )}
         <dt>Community&rsquo;s authority until</dt>
         <dd>
           <AuthorityExpiry until={room.ownerAuthorityValidUntil} />
@@ -272,6 +285,8 @@ function EditDetails({ room, onDone }: { room: CommunityRoom; onDone: () => void
         "success",
         r.changed ? `Saved the details of “${r.room.label}”.` : "Nothing to change: the room already had those details.",
       );
+      const notice = roomProfileNotice(r.roomProfile);
+      if (notice) toast.push("info", notice);
       void queryClient.invalidateQueries({ queryKey: COMMUNITY_ROOMS_KEY });
       onDone();
     },
@@ -636,5 +651,32 @@ function RemoveMember({
         />
       )}
     </>
+  );
+}
+
+/** Whether the room's own profile — its label and description, sealed inside the room
+ *  so its members can read what it is — has been written there by the community's VTA. */
+function RoomProfileFact({ profile }: { profile: RoomProfileState }) {
+  if (profile.state === "written") {
+    return (
+      <span className="muted">
+        Written into the room{profile.writtenAt ? ` ${formatIso(profile.writtenAt)}` : ""}: members see this
+        label and description as the room&rsquo;s name.
+      </span>
+    );
+  }
+  if (profile.state === "pending") {
+    return (
+      <span>
+        Not written into the room yet — the VTC keeps trying
+        {profile.nextAttemptAt ? ` (next ${formatIso(profile.nextAttemptAt)})` : ""}.
+        {profile.lastError && <div className="muted rooms-sub">Last attempt: {profile.lastError}</div>}
+      </span>
+    );
+  }
+  return (
+    <span className="muted">
+      Never written: this room was made before rooms carried their own name. The next edit of its details writes it.
+    </span>
   );
 }

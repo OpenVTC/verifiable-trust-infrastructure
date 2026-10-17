@@ -2976,11 +2976,13 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // and create that carry them) take no gesture: they reach no key holder.
     community_room_tasks::CREATE_TYPE,
     community_room_tasks::CREATE_V0_2_TYPE,
+    community_room_tasks::CREATE_V0_3_TYPE,
     community_room_tasks::LIST_TYPE,
     community_room_tasks::LIST_V0_2_TYPE,
     community_room_tasks::GET_TYPE,
     community_room_tasks::GET_V0_2_TYPE,
     community_room_tasks::UPDATE_TYPE,
+    community_room_tasks::UPDATE_V0_2_TYPE,
     community_room_tasks::MEMBERS_ADD_TYPE,
     community_room_tasks::MEMBERS_REMOVE_TYPE,
     community_room_tasks::MEMBERS_LIST_TYPE,

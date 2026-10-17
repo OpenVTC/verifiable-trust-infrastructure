@@ -38,6 +38,7 @@ import {
   daysUntil,
   fetchCommunityRooms,
   parseTags,
+  roomProfileNotice,
   tagsOf,
   type AuthorityRenewal,
   type CommunityRoomsSetting,
@@ -318,6 +319,8 @@ function NewCommunityRoom({ onDone }: { onDone: () => void }) {
     },
     onSuccess: (r) => {
       toast.push("success", `Created the community room “${r.room.label}”.`);
+      const notice = roomProfileNotice(r.roomProfile);
+      if (notice) toast.push("info", notice);
       void queryClient.invalidateQueries({ queryKey: ["rooms"] });
     },
   });

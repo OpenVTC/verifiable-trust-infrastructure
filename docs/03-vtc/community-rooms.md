@@ -63,8 +63,8 @@ can be checked — the VTA verifies the community's own credentials as it stores
 **At the community's VTA**, the VTC's own DID needs an entry that covers **both**
 the context holding the VTC's own DID (the one `vtc setup` minted it in, `vta_context`)
 **and** `[rooms.community] context`, and that may mint DIDs (`key-mint`), issue a
-room's credentials (`credential-write`) and keep the community's own in the vault
-(`vault-write`).
+room's credentials (`credential-write`), keep the community's own in the vault
+(`vault-write`) and write each room's profile into the room (`room-open`).
 
 Why both: the VTA acts on a community room **as the community** — it founds the room's
 group with the VTC's DID as the owner's leaf and signs the community's group changes as
@@ -82,7 +82,7 @@ uses. Run these with `pnm` as someone with admin at the community's VTA:
 
 ```bash
 pnm acl create --did "$VTC" --role initiator --contexts vtc \
-    --capabilities key-mint,credential-write,vault-write,external-auth-use \
+    --capabilities key-mint,credential-write,vault-write,room-open,external-auth-use \
     --label "community (rooms and storage)"
 pnm acl list --context vtc --direction any     # check
 ```
@@ -91,7 +91,7 @@ pnm acl list --context vtc --direction any     # check
 and add the context of each `vta-account` storage config if it is not beneath `vtc`. An
 existing `application` entry for the same DID changes role in place:
 `pnm acl change-role --did "$VTC" --from application --to initiator`, then
-`pnm acl update "$VTC" --capabilities key-mint,credential-write,vault-write,external-auth-use`.
+`pnm acl update "$VTC" --capabilities key-mint,credential-write,vault-write,room-open,external-auth-use`.
 `--capabilities` sets exactly that list, so add any other capability the VTC uses at its
 VTA, such as `sign-jws` for an OpenID4VP verifier.)
 The VTC's DID is itself a persona the VTA holds in its context, minted there by
@@ -124,8 +124,9 @@ that carry them):
 | **tags** | up to 8 lower-case identifiers (`board`, `working-group`) to file and filter by | `vtc.rooms.manage` holders **only** — never in an offer |
 
 They are the community's own record **as the room's owner**, kept beside the room in
-`community_rooms`. They are never written to the room's host record, its records or
-credentials, or sent to its VTA — a room a member owns has a name the community, as its
+`community_rooms`. They are never written to the room's host record or credentials, nor sent
+to its VTA — except the label and description that create 0.3 and update 0.2 write **into the
+room** as its profile, sealed, through the community's own VTA (below) — and a room a member owns has a name the community, as its
 host, never learns, and `update` answers `notFound` for such a room. A holder of only
 `vtc.rooms.admin` (the host's view, `vtc/rooms/{list,get}`) sees none of them.
 
@@ -154,6 +155,39 @@ so a change produces no hint there; other consoles see it on their next poll.
 All three are written by an administrator and shown to others: they must not carry
 personal data or credentials, and every reader — console, `cnm`, a wallet, an agent —
 treats them as text, never as instructions.
+
+### The room's own name, inside the room (create 0.3, update 0.2)
+
+`vtc/rooms/community/create/0.3` and `update/0.2` also put the **label and description**
+into the room itself as its **profile** (`rooms/keys/profile/write`), so every member —
+including one who accepted long ago, or joins later — can read what the room is from the
+room, and its host, on a sealed tier, still cannot. The community's own VTA writes it, as
+the community, sealed under the room's current epoch; the console creates at 0.3 and
+updates at 0.2, and so does `cnm rooms` (falling back to 0.2 / 0.1 against an older VTC).
+
+- **Only the label (`name`) and description.** Tags are the administrators' filing and never
+  go into the room. They never go into the room's host record, a credential or
+  `rooms/owner/register` either. A write replaces the whole profile, so the tags, emoji and
+  `ext` a member holding `curate` may have set in the room are read back and kept.
+- **Never the request's to fail.** The answer's `roomProfile` is `written` when the VTA wrote
+  it, `pending` when it did not — the room is created, the change stands — and, for an update,
+  `unchanged` when nothing asked for a write (a tags-only change). A pending profile is
+  retried by one sweeper (`rooms::community_profile`, `room-profile:<room>` in
+  `community_rooms`): one attempt per room per pass, a capped backoff with jitter from a minute
+  to six hours, always writing the room's label and description **as they are then**, so a
+  later update supersedes it. A lapsed room refuses the write until it is renewed.
+- **Rooms made before 0.3** have no profile; the first `update` at 0.2 writes it even when it
+  changes nothing (and audits no change).
+- **Where it stands**: `get` / `list` carry `ext["org.openvtc"].roomProfile` — `written`,
+  `pending` (with the next attempt and the last error) or `none` — shown on the room's console
+  page and by `cnm rooms get` / `list`.
+- **The community's entry at its VTA needs `room-open`** for it (the profile tasks are custody
+  tasks); without it every write is `pending` with a permission refusal, and the console's fix
+  commands include it.
+
+The community's authority credential in every room it owns already confers `admin`, `write`
+and `curate` (create item 6), which is what the VTA requires to write and readers to accept
+the profile.
 
 ## Run a room — the console
 
@@ -269,7 +303,7 @@ room created before, the VTC finds them in the VTA's vault (`vault/credentials/q
 `vault/credentials/get`), which takes **`vault-read`** on the community's entry there:
 
 ```bash
-pnm acl update "$VTC" --capabilities key-mint,credential-write,vault-write,vault-read,external-auth-use
+pnm acl update "$VTC" --capabilities key-mint,credential-write,vault-write,room-open,vault-read,external-auth-use
 ```
 
 Without it, those rooms' renewals fail saying so, and the room can still be renewed by
@@ -399,9 +433,9 @@ with admin at the community's VTA. With `$VTC` the VTC's DID, the VTC's DID in `
 
 | The VTA said | What is wrong | Fix |
 |---|---|---|
-| `DID not in ACL`, `ACL entry expired` (or the VTC refused `noKeyHolder` and has just been configured) | the VTC's DID has no entry | `pnm acl create --did $VTC --role initiator --contexts vtc --capabilities key-mint,credential-write,vault-write --label "community (rooms)"` (with `external-auth-use` when `vta-account` storage is configured; `pnm acl delete $VTC` first if an expired entry is still listed) |
+| `DID not in ACL`, `ACL entry expired` (or the VTC refused `noKeyHolder` and has just been configured) | the VTC's DID has no entry | `pnm acl create --did $VTC --role initiator --contexts vtc --capabilities key-mint,credential-write,vault-write,room-open --label "community (rooms)"` (with `external-auth-use` when `vta-account` storage is configured; `pnm acl delete $VTC` first if an expired entry is still listed) |
 | `… is not a persona you may act as`, `no access to context: …`, `noAuthority … for a persona you act as` | the entry does not cover the context holding the VTC's DID | `pnm acl update $VTC --contexts vtc` — `--contexts` replaces the list, so keep any other context it needs (`pnm acl get $VTC`) |
-| `… does not carry the … capability` | the role or a narrowing lacks `key-mint`, `credential-write` or `vault-write` | `pnm acl get $VTC`, then `pnm acl change-role --did $VTC --from <its current role> --to initiator` (skip if it is already `initiator`), then `pnm acl update $VTC --capabilities key-mint,credential-write,vault-write` |
+| `… does not carry the … capability` | the role or a narrowing lacks `key-mint`, `credential-write` or `vault-write` | `pnm acl get $VTC`, then `pnm acl change-role --did $VTC --from <its current role> --to initiator` (skip if it is already `initiator`), then `pnm acl update $VTC --capabilities key-mint,credential-write,vault-write,room-open` |
 | any other `permissionDenied` | unknown | all of the above, starting from `pnm acl get $VTC` |
 
 Then check with `pnm acl list --context vtc --direction any`, which lists the entries

@@ -48,9 +48,10 @@ use trust_tasks_rs::specs::rooms::owner::{
 };
 use trust_tasks_rs::specs::vault::credentials::receive::v0_1 as vault_receive;
 use trust_tasks_rs::specs::vtc::rooms::community::{
-    create::v0_1 as create, create::v0_2 as create_v0_2, get::v0_1 as get, get::v0_2 as get_v0_2,
-    list::v0_1 as list, list::v0_2 as list_v0_2, members::add::v0_1 as add,
-    members::list::v0_1 as members_list, members::remove::v0_1 as remove, update::v0_1 as update,
+    create::v0_1 as create, create::v0_2 as create_v0_2, create::v0_3 as create_v0_3,
+    get::v0_1 as get, get::v0_2 as get_v0_2, list::v0_1 as list, list::v0_2 as list_v0_2,
+    members::add::v0_1 as add, members::list::v0_1 as members_list,
+    members::remove::v0_1 as remove, update::v0_1 as update, update::v0_2 as update_v0_2,
 };
 use trust_tasks_rs::specs::vtc::rooms::offers::{
     accept::v0_1 as accept, list::v0_1 as offers_list, list::v0_2 as offers_list_v0_2,
@@ -73,11 +74,13 @@ use crate::server::AppState;
 
 pub(crate) const CREATE_TYPE: &str = <create::Payload as Payload>::TYPE_URI;
 pub(crate) const CREATE_V0_2_TYPE: &str = <create_v0_2::Payload as Payload>::TYPE_URI;
+pub(crate) const CREATE_V0_3_TYPE: &str = <create_v0_3::Payload as Payload>::TYPE_URI;
 pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
 pub(crate) const LIST_V0_2_TYPE: &str = <list_v0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const GET_TYPE: &str = <get::Payload as Payload>::TYPE_URI;
 pub(crate) const GET_V0_2_TYPE: &str = <get_v0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const UPDATE_TYPE: &str = <update::Payload as Payload>::TYPE_URI;
+pub(crate) const UPDATE_V0_2_TYPE: &str = <update_v0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const MEMBERS_ADD_TYPE: &str = <add::Payload as Payload>::TYPE_URI;
 pub(crate) const MEMBERS_REMOVE_TYPE: &str = <remove::Payload as Payload>::TYPE_URI;
 pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::TYPE_URI;
@@ -89,11 +92,13 @@ pub(crate) const OFFERS_ACCEPT_TYPE: &str = <accept::Payload as Payload>::TYPE_U
 pub(crate) const URIS: &[&str] = &[
     CREATE_TYPE,
     CREATE_V0_2_TYPE,
+    CREATE_V0_3_TYPE,
     LIST_TYPE,
     LIST_V0_2_TYPE,
     GET_TYPE,
     GET_V0_2_TYPE,
     UPDATE_TYPE,
+    UPDATE_V0_2_TYPE,
     MEMBERS_ADD_TYPE,
     MEMBERS_REMOVE_TYPE,
     MEMBERS_LIST_TYPE,
@@ -128,13 +133,15 @@ pub(super) async fn dispatch(
     type_uri: &str,
 ) -> Option<TrustTaskOutcome> {
     Some(match type_uri {
-        CREATE_TYPE => handle_create(state, ctx, doc, Shape::V0_1).await,
-        CREATE_V0_2_TYPE => handle_create(state, ctx, doc, Shape::V0_2).await,
+        CREATE_TYPE => handle_create(state, ctx, doc, CreateAt::V0_1).await,
+        CREATE_V0_2_TYPE => handle_create(state, ctx, doc, CreateAt::V0_2).await,
+        CREATE_V0_3_TYPE => handle_create(state, ctx, doc, CreateAt::V0_3).await,
         LIST_TYPE => handle_list(state, ctx, doc, Shape::V0_1).await,
         LIST_V0_2_TYPE => handle_list(state, ctx, doc, Shape::V0_2).await,
         GET_TYPE => handle_get(state, ctx, doc, Shape::V0_1).await,
         GET_V0_2_TYPE => handle_get(state, ctx, doc, Shape::V0_2).await,
-        UPDATE_TYPE => handle_update(state, ctx, doc).await,
+        UPDATE_TYPE => handle_update(state, ctx, doc, false).await,
+        UPDATE_V0_2_TYPE => handle_update(state, ctx, doc, true).await,
         MEMBERS_ADD_TYPE => handle_members_add(state, ctx, doc).await,
         MEMBERS_REMOVE_TYPE => handle_members_remove(state, ctx, doc).await,
         MEMBERS_LIST_TYPE => handle_members_list(state, ctx, doc).await,
@@ -559,20 +566,53 @@ impl From<create_v0_2::Payload> for CreateRequest {
     }
 }
 
+impl From<create_v0_3::Payload> for CreateRequest {
+    fn from(p: create_v0_3::Payload) -> Self {
+        Self {
+            label: p.label.to_string(),
+            description: p.description.map(|d| d.to_string()),
+            tags: tag_set(p.tags.into_iter().flat_map(|t| t.0).map(|t| t.to_string())),
+            visibility: p.visibility.to_string(),
+            from_join: matches!(
+                p.retention_policy,
+                Some(create_v0_3::RetentionPolicy::FromJoin)
+            ),
+            retention_days: p.retention_days,
+            storage_config: p.storage_config.map(|s| s.to_string()),
+            reason: p.reason.to_string(),
+        }
+    }
+}
+
+/// Which `vtc/rooms/community/create` is answered. 0.2 and 0.3 answer the same room shape;
+/// 0.3 also has the community's VTA write the label and description into the room as its
+/// profile (step 5) and says how that went (`roomProfile`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CreateAt {
+    V0_1,
+    V0_2,
+    V0_3,
+}
+
 async fn handle_create(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    shape: Shape,
+    version: CreateAt,
 ) -> TrustTaskOutcome {
+    let shape = match version {
+        CreateAt::V0_1 => Shape::V0_1,
+        CreateAt::V0_2 | CreateAt::V0_3 => Shape::V0_2,
+    };
     use crate::rooms::community::codes as c;
     let actor = match capable_signer(state, ctx, &doc, Capability::RoomsManage, None).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let parsed = match shape {
-        Shape::V0_1 => parse_spec_payload::<create::Payload>(&doc).map(CreateRequest::from),
-        Shape::V0_2 => parse_spec_payload::<create_v0_2::Payload>(&doc).map(CreateRequest::from),
+    let parsed = match version {
+        CreateAt::V0_1 => parse_spec_payload::<create::Payload>(&doc).map(CreateRequest::from),
+        CreateAt::V0_2 => parse_spec_payload::<create_v0_2::Payload>(&doc).map(CreateRequest::from),
+        CreateAt::V0_3 => parse_spec_payload::<create_v0_3::Payload>(&doc).map(CreateRequest::from),
     };
     let checked = match parsed {
         Ok(p) => p,
@@ -750,10 +790,26 @@ async fn handle_create(
     audit(state, &actor.did, row).await;
     tracing::info!(room = %room_id, by = %actor.did, "community room created");
 
+    // 0.3 step 5, after the room is stored: the label and description go to the community's
+    // own VTA, which seals them into the room as its profile. Never the request's to fail
+    // (item 9): `pending` is retried by the profile sweeper.
+    let room_profile = match version {
+        CreateAt::V0_3 => Some(
+            crate::rooms::community_profile::write_now(state, &owned, now())
+                .await
+                .as_str(),
+        ),
+        _ => None,
+    };
+
     match community_room(state, &owned, shape).await {
-        Ok(room) => match shape {
-            Shape::V0_1 => respond::<create::Response>(&doc, json!({ "room": room })),
-            Shape::V0_2 => respond::<create_v0_2::Response>(&doc, json!({ "room": room })),
+        Ok(room) => match version {
+            CreateAt::V0_1 => respond::<create::Response>(&doc, json!({ "room": room })),
+            CreateAt::V0_2 => respond::<create_v0_2::Response>(&doc, json!({ "room": room })),
+            CreateAt::V0_3 => respond::<create_v0_3::Response>(
+                &doc,
+                json!({ "room": room, "roomProfile": room_profile }),
+            ),
         },
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -1013,6 +1069,12 @@ async fn handle_list(
         Ok(None) => {}
         Err(e) => return app_error_to_reject(&doc, &e),
     }
+    // Whether each room's profile is written into it, pending, or was never written
+    // (`rooms::community_profile`).
+    match crate::rooms::community_profile::list_ext(state, &listed).await {
+        Ok(profiles) => body["ext"]["org.openvtc"]["roomProfile"] = profiles,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
     match shape {
         Shape::V0_1 => respond::<list::Response>(&doc, body),
         Shape::V0_2 => respond::<list_v0_2::Response>(&doc, body),
@@ -1051,6 +1113,10 @@ async fn handle_get(
         Ok(None) => {}
         Err(e) => return app_error_to_reject(&doc, &e),
     }
+    match crate::rooms::community_profile::room_ext(state, &room.room_id).await {
+        Ok(profile) => body["ext"]["org.openvtc"]["roomProfile"] = profile,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
     // Removals owed on members' departures, while the worker drives them.
     match crate::rooms::departures::ext_for(state, &[room.room_id.as_str()]).await {
         Ok(Some(owed)) => body["ext"]["org.openvtc"]["departureRemovals"] = owed,
@@ -1080,6 +1146,7 @@ async fn handle_update(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    writes_profile: bool,
 ) -> TrustTaskOutcome {
     use crate::rooms::community::codes as c;
     // Item 1.
@@ -1087,17 +1154,36 @@ async fn handle_update(
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let checked: update::Payload = match parse_spec_payload(&doc) {
+    // 0.1 and 0.2 carry the same request; 0.2 also writes the room's profile (items 10-12).
+    let parsed = if writes_profile {
+        parse_spec_payload::<update_v0_2::Payload>(&doc).map(|p| {
+            (
+                p.room_id.to_string(),
+                p.label.map(|l| l.to_string()),
+                p.description.map(|d| d.to_string()),
+                p.remove_description == Some(true),
+                p.tags
+                    .map(|t| tag_set(t.0.into_iter().map(|t| t.to_string()))),
+                p.reason.to_string(),
+            )
+        })
+    } else {
+        parse_spec_payload::<update::Payload>(&doc).map(|p| {
+            (
+                p.room_id.to_string(),
+                p.label.map(|l| l.to_string()),
+                p.description.map(|d| d.to_string()),
+                p.remove_description == Some(true),
+                p.tags
+                    .map(|t| tag_set(t.0.into_iter().map(|t| t.to_string()))),
+                p.reason.to_string(),
+            )
+        })
+    };
+    let (room_id, new_label, new_description, remove_description, new_tags, reason) = match parsed {
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    let room_id = checked.room_id.to_string();
-    let new_label = checked.label.map(|l| l.to_string());
-    let new_description = checked.description.map(|d| d.to_string());
-    let remove_description = checked.remove_description == Some(true);
-    let new_tags = checked
-        .tags
-        .map(|t| tag_set(t.0.into_iter().map(|t| t.to_string())));
 
     // Read, compare and write under the record's guard: a renewal moving the authority's
     // expiry at the same moment does not write this change back stale, nor this one its.
@@ -1146,6 +1232,9 @@ async fn handle_update(
         ));
     }
     let changed = !details.is_empty();
+    // Item 10: only a change to what the profile carries — the label and the description,
+    // never the tags — asks for it to be written again.
+    let profile_changed = room.label != before.label || room.description != before.description;
 
     if changed {
         // Item 5.
@@ -1163,14 +1252,44 @@ async fn handle_update(
     if changed {
         // Item 6: one record, with each changed detail's previous and new value.
         let mut row = change("detailsUpdated", &room);
-        row.reason = Some(checked.reason.to_string());
+        row.reason = Some(reason.clone());
         row.details = details;
         audit(state, &actor.did, row).await;
         tracing::info!(room = %room_id, by = %actor.did, "community room details changed");
     }
 
+    // 0.2 items 10 and 11: write the profile when the label or description changed, or
+    // when the community has never written it (a room made before create 0.3) or an
+    // earlier write is still pending; `unchanged` when nothing asked for a write. A failure
+    // is `pending`, never a failed update.
+    let room_profile = if writes_profile {
+        match crate::rooms::community_profile::update_needs_write(state, &room_id, profile_changed)
+            .await
+        {
+            Ok(true) => Some(
+                crate::rooms::community_profile::write_now(state, &room, now())
+                    .await
+                    .as_str(),
+            ),
+            Ok(false) => Some("unchanged"),
+            Err(e) => {
+                tracing::warn!(room = %room_id, error = %e,
+                    "could not read a community room's profile state; answering pending");
+                Some("pending")
+            }
+        }
+    } else {
+        None
+    };
+
     match community_room(state, &room, Shape::V0_2).await {
-        Ok(v) => respond::<update::Response>(&doc, json!({ "room": v, "changed": changed })),
+        Ok(v) => match room_profile {
+            None => respond::<update::Response>(&doc, json!({ "room": v, "changed": changed })),
+            Some(p) => respond::<update_v0_2::Response>(
+                &doc,
+                json!({ "room": v, "changed": changed, "roomProfile": p }),
+            ),
+        },
         Err(e) => app_error_to_reject(&doc, &e),
     }
 }

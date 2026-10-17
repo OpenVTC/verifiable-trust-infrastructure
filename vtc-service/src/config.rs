@@ -162,8 +162,9 @@ pub struct RoomsConfig {
 /// community's place in a sealed room's group. This community holds no room key. It
 /// reaches the VTA over the messaging link it already keeps, so `vta_did` and
 /// `[messaging]` are needed too, and this community's DID needs an entry at the VTA in
-/// `context` with `key-mint`, `credential-write` and `vault-write` (and `vault-read` to
-/// renew the authority over a room created before renewal recorded where it is kept).
+/// `context` with `key-mint`, `credential-write`, `vault-write` and `room-open` (which
+/// writes each room's profile into it), and `vault-read` to renew the authority over a
+/// room created before renewal recorded where it is kept.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CommunityRoomsConfig {
