@@ -10,6 +10,7 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
 
 import { Field } from "@/components/Field";
+import { Protected } from "@/components/Protected";
 
 export interface TypedConfirmProps {
   title: string;
@@ -24,7 +25,7 @@ export interface TypedConfirmProps {
   onCancel: () => void;
 }
 
-export function TypedConfirmDialog(props: TypedConfirmProps) {
+function TypedConfirmDialogSurface(props: TypedConfirmProps) {
   const [typed, setTyped] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const ok = props.matches(typed);
@@ -90,5 +91,14 @@ export function TypedConfirmDialog(props: TypedConfirmProps) {
         </form>
       </div>
     </div>
+  );
+}
+
+/** TypedConfirmDialog, out of the community theme's reach (`vtc/community/theme/show/0.1`, client item 2). */
+export function TypedConfirmDialog(props: Parameters<typeof TypedConfirmDialogSurface>[0]) {
+  return (
+    <Protected ground="none">
+      <TypedConfirmDialogSurface {...props} />
+    </Protected>
   );
 }

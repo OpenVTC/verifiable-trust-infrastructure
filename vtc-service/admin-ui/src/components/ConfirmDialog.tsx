@@ -38,6 +38,8 @@ import {
   useState,
 } from "react";
 
+import { Protected, activeElementOf } from "@/components/Protected";
+
 export interface ConfirmOptions {
   title: string;
   message?: ReactNode;
@@ -83,7 +85,13 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={api}>
       {children}
-      {pending && <Dialog options={pending} onClose={close} />}
+      {pending && (
+        // A destructive confirmation is drawn out of the theme's reach
+        // (`vtc/community/theme/show/0.1`, client item 2).
+        <Protected ground="none">
+          <Dialog options={pending} onClose={close} />
+        </Protected>
+      )}
     </Ctx.Provider>
   );
 }
@@ -131,10 +139,11 @@ function Dialog({
       const first = tabbable[0];
       const last = tabbable[tabbable.length - 1];
       if (!first || !last) return;
-      if (e.shiftKey && document.activeElement === first) {
+      const active = activeElementOf(surface);
+      if (e.shiftKey && active === first) {
         e.preventDefault();
         last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
+      } else if (!e.shiftKey && active === last) {
         e.preventDefault();
         first.focus();
       }

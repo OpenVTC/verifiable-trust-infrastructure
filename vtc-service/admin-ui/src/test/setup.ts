@@ -6,6 +6,12 @@
 import { cleanup } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 
+import { setProtectedIsolationForTests } from "@/components/Protected";
+
+// Testing Library's queries do not enter shadow roots, so protected surfaces
+// render inline under test; `Protected.test.tsx` checks the isolation itself.
+setProtectedIsolationForTests(false);
+
 afterEach(() => {
   cleanup();
   // `mockFetch` stubs `fetch`; put the real one back for the next test.
