@@ -182,6 +182,12 @@ pub const REST_SERVICE_TYPE: &str = "VTCRest";
 /// full API base including the mount (`https://vtc.example.com/v1`), which is
 /// what [`VtcClient::connect`] takes.
 ///
+/// A bare origin (`https://vtc.example.com`, no path) is read as that origin
+/// mounted at `/v1`. The `vtc-host` template emitted the endpoint without its
+/// mount until #1615 (Keyring KR-15), and a DID minted then still says so;
+/// the VTC serves its API nowhere but `/v1`, so the bare form names nothing
+/// else.
+///
 /// This is the direction discovery has to run in: from the community's DID to
 /// its URL. The reverse — asking a URL which DID it is — would let whoever
 /// answers at that URL choose the audience a client signs for, and the audience
@@ -207,6 +213,12 @@ pub fn api_base_from_did_document(doc: &serde_json::Value) -> Option<String> {
         .find_map(|svc| uri(svc.get("serviceEndpoint")?))
         .map(|u| u.trim_end_matches('/').to_string())
         .filter(|u| !u.is_empty())
+        .map(|u| {
+            let bare_origin = u
+                .split_once("://")
+                .is_some_and(|(_, rest)| !rest.contains(['/', '?', '#']));
+            if bare_origin { format!("{u}/v1") } else { u }
+        })
 }
 
 /// Largest audit-verification report [`VtcClient::audit_verify`] reads. The
@@ -2355,6 +2367,28 @@ mod tests {
         });
         assert_eq!(api_base_from_did_document(&vta_only), None);
         assert_eq!(api_base_from_did_document(&serde_json::json!({})), None);
+    }
+
+    /// KR-15: a DID minted before #1615 advertises the bare origin; it is read
+    /// as the `/v1` mount, and an endpoint that names a path is left alone.
+    #[test]
+    fn a_bare_origin_vtc_rest_endpoint_is_read_as_the_v1_mount() {
+        let with = |endpoint: &str| {
+            api_base_from_did_document(&serde_json::json!({
+                "service": [{ "type": "VTCRest", "serviceEndpoint": endpoint }],
+            }))
+        };
+        for bare in ["https://vtc.example.com", "https://vtc.example.com/"] {
+            assert_eq!(with(bare).as_deref(), Some("https://vtc.example.com/v1"));
+        }
+        assert_eq!(
+            with("https://vtc.example.com:8443/v1").as_deref(),
+            Some("https://vtc.example.com:8443/v1")
+        );
+        assert_eq!(
+            with("https://example.com/vtc/v1").as_deref(),
+            Some("https://example.com/vtc/v1")
+        );
     }
 
     #[tokio::test]
