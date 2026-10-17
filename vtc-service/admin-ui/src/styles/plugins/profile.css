@@ -4,3 +4,54 @@
 .join-discovery-toggle {
   margin-bottom: var(--space-1);
 }
+
+/* The theme card: built-in theme picker and the stylesheet editor. */
+.theme-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 var(--space-4);
+}
+
+.theme-preset {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.theme-preset[aria-checked="true"] {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 1px var(--brand);
+}
+
+.theme-swatches {
+  display: inline-flex;
+}
+
+.theme-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  margin-left: -4px;
+}
+
+.theme-swatch:first-child {
+  margin-left: 0;
+}
+
+.theme-editor {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-leading);
+  tab-size: 2;
+  resize: vertical;
+}

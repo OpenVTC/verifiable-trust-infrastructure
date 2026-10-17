@@ -1,0 +1,20 @@
+/* High contrast — black and white grounds, strong borders, a vivid accent. */
+:root {
+  --brand-300: #b3ccff;
+  --brand-400: #80aaff;
+  --brand-500: #0044cc;
+  --brand-600: #003399;
+  --bg: light-dark(#ffffff, #000000);
+  --bg-elev: light-dark(#ffffff, #000000);
+  --bg-subtle: light-dark(#f2f2f2, #111111);
+  --bg-hover: light-dark(#e6e6e6, #1f1f1f);
+  --border: light-dark(#000000, #ffffff);
+  --border-strong: light-dark(#000000, #ffffff);
+  --text: light-dark(#000000, #ffffff);
+  --text-muted: light-dark(#1a1a1a, #e6e6e6);
+  --text-faint: light-dark(#333333, #cccccc);
+}
+
+a {
+  text-decoration-line: underline;
+}

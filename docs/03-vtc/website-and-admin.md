@@ -219,6 +219,73 @@ switcher stays hidden and the page follows the system. An operator site
 under `website.root_dir` can do the same by setting `data-theme="light"`
 or `"dark"` on `<html>` over the shared `tokens.css`.
 
+### Community theme, and the theme preview
+
+The console's **Community profile** page has a **Theme** card: the
+colours, fonts and corners the console and the member portal are drawn
+with. Start from a built-in theme (Default, Forest, Ocean, Slate,
+Sunset, High contrast) or **Upload .css**, edit it in place, and
+**Download** it to keep or share. A theme is one stylesheet in the
+*theme profile* of `vtc/community/theme/update/0.1`
+([dtgwg-trust-tasks-tf#811](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/811)):
+
+- design tokens (`--brand`, `--bg`, `--radius-md`, …, see
+  `admin-ui/src/styles/tokens.css`) on `:root`, `:root[data-theme=…]`
+  or inside `@media (prefers-color-scheme: light|dark)`;
+- on elements, only colours, gradients, borders (at most 4px wide,
+  32px round), font family / weight / style, letter-spacing (±0.2em),
+  text decoration and case;
+- nothing that loads a file (`url()`, `@import`, `@font-face`), no
+  `!important`, no escapes or `<`, and nothing that moves, sizes, hides,
+  overlays or adds content.
+
+The card checks the draft as you type and names the line, column and
+profile item of the first thing outside it
+(`admin-ui/src/lib/theme-profile.ts`; the cases it must agree on with
+the community's own check are `theme-profile.vectors.json`).
+
+**Preview console** and **Preview member portal** open that surface in
+a new tab drawn with the draft, under a bar that says nothing there is
+saved. The preview follows the draft live as you edit. In a preview
+tab:
+
+- the console sends **reads only** — a Trust Task document goes only
+  when its task is a read (`show`, `list`, `get`, …), a plain request
+  only when it is a `GET`; every other action is refused in the
+  browser before it is sent, and the bar says *Nothing was changed*
+  (`admin-ui/src/lib/theme-preview.ts`, default-deny);
+- the console loads no third-party plugin, since a plugin could send a
+  write past that guard;
+- the member portal answers its own routes from a sample member, so an
+  administrator who is not a member can preview it; the bar switches
+  between the signed-in home and the sign-in page. Public reads (the
+  community's name and logo) are real. Rooms never reach the member's
+  wallet.
+
+Leave the preview with **Exit preview**; the flag lives in that tab
+only. Preview first asks the community to check the draft without
+storing it (`dryRun`), so the preview draws exactly what **Save theme**
+would store.
+
+**Save theme** stores it for everyone (`vtc/community/theme/update/0.1`,
+`vtc.surface.admin`, audited as `CommunityThemeUpdated` with the
+stylesheet's SHA-256, never its text); **Remove theme** goes back to the
+standard look. The theme lives in the `community` keyspace beside the
+profile and branding, so it is backed up with them. Every page — the
+console, the portal and its sign-in page — reads it with
+`vtc/community/theme/show/0.1`, which answers an unidentified caller,
+checks it again, and draws it; a stored theme the daemon's check now
+refuses is answered as none.
+
+**What a theme never reaches.** Approvals, confirmations, step-ups and
+warnings are drawn in a shadow tree with the standard tokens and their
+own ground (`admin-ui/src/components/Protected.tsx`), so no theme can
+recolour, hide or restyle them: the confirm dialogs, the action-list and
+break-glass banners, the attention strip, the step-up page, the whole
+Actions, Join requests, Members and Repos pages, and in the portal the
+wallet sign-in number and identity choice. While a theme is drawn, the
+console's top bar says **Custom theme**, out of the theme's reach too.
+
 ### Community DID as a QR code
 
 The default landing page shows the community DID as a QR code beside

@@ -24,6 +24,7 @@ import { SigningUnavailableError } from "@/lib/api";
 import { BREAK_GLASS_PATH, isNotAdministrator } from "@/plugins/repos/ui";
 import { useNameBook } from "@/lib/names";
 import { shortenDid } from "@/lib/format";
+import { Protected } from "@/components/Protected";
 
 /** How often the banner re-reads, so a break-glass made elsewhere reaches a
  *  console that is merely open. The notice push reaches the administrator's
@@ -72,7 +73,7 @@ export function useBreakGlassState(): BreakGlassState {
 }
 
 /** The banner for a state from {@link useBreakGlassState}. */
-export function BreakGlassNotice({ state }: { state: BreakGlassState }) {
+function BreakGlassNoticeSurface({ state }: { state: BreakGlassState }) {
   if (state.kind === "cannotCheck") {
     return (
       <div className="breakglass-banner attention-item attention-item--critical" role="status">
@@ -115,4 +116,13 @@ export function BreakGlassNotice({ state }: { state: BreakGlassState }) {
 
 export function BreakGlassBanner() {
   return <BreakGlassNotice state={useBreakGlassState()} />;
+}
+
+/** BreakGlassNotice, out of the community theme's reach (`vtc/community/theme/show/0.1`, client item 2). */
+export function BreakGlassNotice(props: Parameters<typeof BreakGlassNoticeSurface>[0]) {
+  return (
+    <Protected>
+      <BreakGlassNoticeSurface {...props} />
+    </Protected>
+  );
 }

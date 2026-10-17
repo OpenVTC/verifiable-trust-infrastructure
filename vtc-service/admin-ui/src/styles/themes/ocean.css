@@ -1,0 +1,21 @@
+/* Ocean — cool blues and teal, crisp white surfaces. */
+:root {
+  --brand-50: #eaf5fd;
+  --brand-100: #cfe8fb;
+  --brand-200: #9fd0f6;
+  --brand-300: #62b1ee;
+  --brand-400: #2f92e0;
+  --brand-500: #1673c4;
+  --brand-600: #105ca0;
+  --brand-700: #0d477c;
+  --accent-violet: #14b8a6;
+  --bg: light-dark(#f6fafd, #070d14);
+  --bg-elev: light-dark(#ffffff, #0e1722);
+  --bg-subtle: light-dark(#edf3f9, #14202e);
+  --bg-hover: light-dark(#e4eef7, #182637);
+  --border: light-dark(#dbe5ef, #1e2d3f);
+  --border-strong: light-dark(#c6d4e2, #2a3d53);
+  --text: light-dark(#0c1724, #eef4fa);
+  --text-muted: light-dark(#4a5a6c, #9fb0c3);
+  --text-faint: light-dark(#738396, #6a7b8e);
+}

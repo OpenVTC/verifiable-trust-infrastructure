@@ -14,6 +14,8 @@
 // the portal imports nothing from the extension, and a member without it sees
 // how to get it instead.
 
+import { isThemePreview } from "@/lib/theme-preview";
+
 /** A room the member shared with this portal. */
 export interface PageRoom {
   roomId: string;
@@ -189,6 +191,9 @@ export interface WalletRooms {
 
 /** The wallet's room methods, or `null` when no wallet (or an older one) is on this page. */
 export function walletRooms(): WalletRooms | null {
+  // A theme preview never reaches the member's agent: the wallet acts as the
+  // member through their VTA, and nothing done in a preview may happen.
+  if (isThemePreview()) return null;
   const w = (window as { vtaWallet?: { rooms?: WalletRooms } }).vtaWallet;
   return w?.rooms && typeof w.rooms.list === "function" ? w.rooms : null;
 }
