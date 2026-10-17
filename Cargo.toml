@@ -642,10 +642,12 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # (trust-tasks-tf #799).
 # 0.31.12: `vta/witness/list/0.1`, reading back stored VWCs with their
 # outcome evidence (trust-tasks-tf #800).
-# 0.31.13 is the FLOOR: `vtc/registry/sync-jobs/retry/0.2` — a pending job
+# 0.31.13: `vtc/registry/sync-jobs/retry/0.2` — a pending job
 # waiting out its backoff can be run now, a held one never (trust-tasks-tf
 # #802).
-trust-tasks-rs = { version = "0.31.13", default-features = false, features = [
+# 0.31.14 is the FLOOR: `rooms/keys/label/0.1` and `rooms/keys/list/0.2` — a
+# member's own private label for each room they hold (trust-tasks-tf #806).
+trust-tasks-rs = { version = "0.31.14", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
