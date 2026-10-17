@@ -263,8 +263,28 @@ tab:
   wallet.
 
 Leave the preview with **Exit preview**; the flag lives in that tab
-only. Until `vtc/community/theme/*` reaches the daemon, a draft is kept
-in this browser and is not stored for the community.
+only. Preview first asks the community to check the draft without
+storing it (`dryRun`), so the preview draws exactly what **Save theme**
+would store.
+
+**Save theme** stores it for everyone (`vtc/community/theme/update/0.1`,
+`vtc.surface.admin`, audited as `CommunityThemeUpdated` with the
+stylesheet's SHA-256, never its text); **Remove theme** goes back to the
+standard look. The theme lives in the `community` keyspace beside the
+profile and branding, so it is backed up with them. Every page — the
+console, the portal and its sign-in page — reads it with
+`vtc/community/theme/show/0.1`, which answers an unidentified caller,
+checks it again, and draws it; a stored theme the daemon's check now
+refuses is answered as none.
+
+**What a theme never reaches.** Approvals, confirmations, step-ups and
+warnings are drawn in a shadow tree with the standard tokens and their
+own ground (`admin-ui/src/components/Protected.tsx`), so no theme can
+recolour, hide or restyle them: the confirm dialogs, the action-list and
+break-glass banners, the attention strip, the step-up page, the whole
+Actions, Join requests, Members and Repos pages, and in the portal the
+wallet sign-in number and identity choice. While a theme is drawn, the
+console's top bar says **Custom theme**, out of the theme's reach too.
 
 ### Community DID as a QR code
 
