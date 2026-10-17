@@ -9,6 +9,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ThemePreviewBar } from "@/components/ThemePreviewBar";
+import { applyStoredCommunityTheme } from "@/lib/community-theme";
 import { applyStoredTheme } from "@/lib/theme";
 import { isThemePreview, startThemePreview } from "@/lib/theme-preview";
 import { Portal } from "./Portal";
@@ -31,6 +32,8 @@ applyStoredTheme();
 // A theme-preview tab draws the editor's candidate, answers the portal's own
 // routes from a sample member and sends no write (`./preview`).
 startThemePreview();
+// Anywhere else, the community's stored theme, sign-in page included.
+if (!isThemePreview()) void applyStoredCommunityTheme();
 
 /** The preview bar's switch between the portal's two faces. */
 function PreviewViewSwitch() {

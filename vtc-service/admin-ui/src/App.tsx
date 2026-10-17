@@ -9,6 +9,7 @@ import { CommandPalette, usePaletteShortcut } from "@/components/CommandPalette"
 import { AttentionStrip, type AttentionItem } from "@/components/AttentionStrip";
 import { BreakGlassNotice, useBreakGlassState } from "@/components/BreakGlassBanner";
 import { LegacyRedirect } from "@/components/LegacyRedirect";
+import { CustomThemeMarker } from "@/components/CustomThemeMarker";
 import { LiveIndicator } from "@/components/LiveIndicator";
 import { PluginHost } from "@/components/PluginHost";
 import { PluginIcon } from "@/components/PluginIcon";
@@ -431,6 +432,7 @@ export default function App() {
               <kbd aria-hidden="true">{paletteShortcutLabel()}</kbd>
             </button>
             {needsSigning && <LiveIndicator />}
+            <CustomThemeMarker />
             <AccountMenu
               whoami={probe.data}
               plugins={nav.account}

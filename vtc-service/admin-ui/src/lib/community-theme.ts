@@ -60,6 +60,57 @@ export function applyCommunityTheme(css: string): ProfileCheck {
   return check;
 }
 
+export const THEME_SHOW_TYPE = "https://trusttasks.org/spec/vtc/community/theme/show/0.1";
+export const THEME_UPDATE_TYPE = "https://trusttasks.org/spec/vtc/community/theme/update/0.1";
+
+/** `vtc/community/theme/show/0.1`'s answer. */
+export interface StoredTheme {
+  stylesheet: string;
+  updatedAt?: string;
+}
+
+/**
+ * The community's stored theme, read without an identity: the show task is
+ * answered to anyone (show item 1), because the sign-in pages draw it before
+ * the visitor has one. A document with no `issuer` and no proof.
+ */
+export async function fetchStoredTheme(): Promise<StoredTheme> {
+  const health = (await (await fetch("/health", { credentials: "same-origin" })).json()) as {
+    vtc_did?: string | null;
+  };
+  if (!health.vtc_did) return { stylesheet: "" };
+  const res = await fetch("/v1/trust-tasks", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      id: `urn:uuid:${crypto.randomUUID()}`,
+      type: THEME_SHOW_TYPE,
+      recipient: health.vtc_did,
+      issuedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+      payload: {},
+    }),
+  });
+  const doc = (await res.json().catch(() => null)) as { type?: string; payload?: StoredTheme } | null;
+  if (!res.ok || !doc?.type?.endsWith("#response") || typeof doc.payload?.stylesheet !== "string") {
+    throw new Error(`theme/show: ${res.status}`);
+  }
+  return doc.payload;
+}
+
+/**
+ * Draw the community's stored theme on this page. Outside a preview only — a
+ * preview draws its candidate instead. A failed read leaves the built-in look:
+ * a theme is cosmetic, and nothing should wait on it.
+ */
+export async function applyStoredCommunityTheme(): Promise<void> {
+  try {
+    applyCommunityTheme((await fetchStoredTheme()).stylesheet);
+  } catch {
+    /* the built-in look */
+  }
+}
+
 /** Offer `css` to the browser as a file to save. */
 export function downloadStylesheet(css: string, filename = "community-theme.css"): void {
   const url = URL.createObjectURL(new Blob([css], { type: "text/css" }));

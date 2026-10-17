@@ -7,6 +7,7 @@ import App from "@/App";
 import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
 import { loadThirdPartyPlugins } from "@/lib/plugin-loader";
 import { ThemePreviewBar } from "@/components/ThemePreviewBar";
+import { applyStoredCommunityTheme } from "@/lib/community-theme";
 import { applyStoredTheme } from "@/lib/theme";
 import { isThemePreview, startThemePreview } from "@/lib/theme-preview";
 import { ToastProvider } from "@/lib/toast";
@@ -32,6 +33,8 @@ applyStoredTheme();
 // A theme-preview tab draws the editor's candidate and sends reads only
 // (`lib/theme-preview.ts`).
 startThemePreview();
+// Anywhere else, the community's stored theme (`lib/community-theme.ts`).
+if (!isThemePreview()) void applyStoredCommunityTheme();
 
 // Single QueryClient instance per page load. Sane defaults: short
 // stale time so the operator's view stays fresh, no automatic
