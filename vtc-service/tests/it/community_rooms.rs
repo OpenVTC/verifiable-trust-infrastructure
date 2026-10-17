@@ -1,7 +1,8 @@
 //! Rooms the community owns (`docs/05-design-notes/data-rooms-files.md` §8.4):
-//! `vtc/rooms/community/{create,list,get}/0.1`, `vtc/rooms/community/members/{add,remove,
-//! list}/0.1` and `vtc/rooms/offers/{list,accept}/0.1`, driven through the signed-document
-//! door as an administrator's and a member's clients do.
+//! `vtc/rooms/community/{create,list,get}/{0.1,0.2}`, `vtc/rooms/community/update/0.1`,
+//! `vtc/rooms/community/members/{add,remove,list}/0.1` and `vtc/rooms/offers/list/{0.1,0.2}`
+//! and `vtc/rooms/offers/accept/0.1`, driven through the signed-document door as an
+//! administrator's and a member's clients do.
 //!
 //! The community's VTA is a stand-in that keeps a real room key: it signs the room's
 //! membership and authority credentials as a real VTA would, so the credentials an offer
@@ -42,6 +43,11 @@ const ADD: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/add/0
 const REMOVE: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.1";
 const MEMBERS: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1";
 const OFFERS: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1";
+const CREATE_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.2";
+const LIST_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/list/0.2";
+const GET_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.2";
+const UPDATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/update/0.1";
+const OFFERS_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2";
 const ACCEPT: &str = "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1";
 
 const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.1";
@@ -1655,4 +1661,424 @@ async fn owed_removals_survive_a_restart_and_yield_to_a_manual_removal() {
         "{removed}"
     );
     assert!(owed(&fix).await.is_empty());
+}
+
+// ─── a room's details: label, description, tags ─────────────────────────
+
+/// An administrator holding hosting's `vtc.rooms.admin` and not the owner's
+/// `vtc.rooms.manage`.
+async fn host_admin_only(fix: &Fixture) -> Party {
+    let narrow = Party::new();
+    let row = vtc_service::acl::VtcAclEntry {
+        did: narrow.did.clone(),
+        role: VtcRole::Admin,
+        label: None,
+        admin: {
+            let mut a = AdminAuthority::community_admin();
+            a.capabilities = vtc_service::acl::CapabilityScope::listed(vec![
+                vtc_service::acl::CapabilityGrant::from(
+                    "vtc.rooms.admin"
+                        .parse::<vtc_service::acl::CapRef>()
+                        .unwrap(),
+                ),
+            ])
+            .unwrap();
+            a
+        },
+        delegated_by: None,
+        created_at: 0,
+        created_by: "did:key:vtc-install".into(),
+        updated_at: None,
+        updated_by: None,
+        expires_at: None,
+        resource_grants: Vec::new(),
+        label_set_by_subject: false,
+        suspension: None,
+    };
+    vtc_service::acl::store_acl_entry(&fix.vtc.state.acl_ks, &row)
+        .await
+        .unwrap();
+    narrow
+}
+
+/// A room created at 0.2 with a description and tags.
+async fn create_described(fix: &mut Fixture, label: &str, tags: Value) -> String {
+    let (status, reply) = admin_call(
+        fix,
+        CREATE_V0_2,
+        json!({
+            "label": label, "visibility": "open", "reason": "the board's papers",
+            "description": "Papers for the board's meetings.", "tags": tags,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let room = &reply["payload"]["room"];
+    assert_eq!(room["description"], "Papers for the board's meetings.");
+    assert!(
+        room.get("detailsUpdatedAt").is_none(),
+        "absent until the first change after creation"
+    );
+    room["room"]["roomId"].as_str().unwrap().to_string()
+}
+
+/// Every `detailsUpdated` row, parsed.
+async fn details_rows(fix: &Fixture) -> Vec<Value> {
+    let mut out = Vec::new();
+    for (_, raw) in fix
+        .vtc
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+    {
+        let Ok(v) = serde_json::from_slice::<Value>(&raw) else {
+            continue;
+        };
+        if v.to_string().contains("\"detailsUpdated\"") {
+            out.push(v);
+        }
+    }
+    out
+}
+
+/// The one row's `details`, wherever the audit envelope nests the event data.
+fn row_details(row: &Value) -> Value {
+    fn find(v: &Value) -> Option<Value> {
+        match v {
+            Value::Object(m) => {
+                if m.get("event").and_then(Value::as_str) == Some("detailsUpdated") {
+                    return Some(Value::Object(m.clone()));
+                }
+                m.values().find_map(find)
+            }
+            Value::Array(a) => a.iter().find_map(find),
+            _ => None,
+        }
+    }
+    find(row).expect("a detailsUpdated event")
+}
+
+/// `vtc/rooms/community/update/0.1` items 3–6: each detail given replaces the stored one
+/// and the rest are left alone, `tags: []` clears, `removeDescription` removes, a request
+/// that changes nothing writes nothing — no details, no `detailsUpdated*`, no audit row —
+/// and every change is one audit row with each changed detail's previous and new value.
+#[tokio::test]
+async fn vtc_rooms_community_update_replaces_what_it_names_and_nothing_else() {
+    let mut fix = fixture().await;
+    let room = create_described(&mut fix, "Board pack", json!(["finance", "board"])).await;
+    let hosted_before = vti_rooms::storage::get_room(&fix.vtc.state.rooms_ks, &room)
+        .await
+        .unwrap();
+    fix.vta.clear_calls();
+
+    // A rename: label only, so the description and tags stay. No step-up is asked for:
+    // `call_as` sends with none.
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE,
+        json!({ "roomId": room, "label": "Board pack — 2027", "reason": "the 2027 cycle" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], true, "{r}");
+    let after = &r["payload"]["room"];
+    assert_eq!(after["label"], "Board pack — 2027");
+    assert_eq!(after["description"], "Papers for the board's meetings.");
+    assert_eq!(after["tags"], json!(["board", "finance"]));
+    assert_eq!(after["detailsUpdatedBy"], fix.admin.did);
+    let first_change = after["detailsUpdatedAt"].clone();
+    assert!(first_change.is_string());
+
+    // Item 8: nothing reached the VTA, and the host record did not move.
+    assert!(fix.vta.calls().is_empty(), "{:?}", fix.vta.types_called());
+    let hosted_after = vti_rooms::storage::get_room(&fix.vtc.state.rooms_ks, &room)
+        .await
+        .unwrap();
+    assert_eq!(hosted_after.updated_at, hosted_before.updated_at);
+    assert_eq!(hosted_after.epoch, hosted_before.epoch);
+
+    // Item 6: one row, naming the requester, the room, the label before and after, and
+    // the reason — and only the detail that changed.
+    let rows = details_rows(&fix).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let d = row_details(&rows[0]);
+    assert_eq!(d["roomId"], room);
+    assert_eq!(d["reason"], "the 2027 cycle");
+    assert_eq!(
+        d["details"],
+        json!([{ "field": "label", "old": "Board pack", "new": "Board pack — 2027" }])
+    );
+    assert_eq!(
+        rows[0]["actor_did_plain"], fix.admin.did,
+        "the requester is recorded: {}",
+        rows[0]
+    );
+
+    // Item 4: the same values again — tags in another order, a set — change nothing,
+    // write nothing and audit nothing.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE,
+        json!({
+            "roomId": room, "label": "Board pack — 2027",
+            "description": "Papers for the board's meetings.",
+            "tags": ["finance", "board"], "reason": "again",
+        }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], false, "{r}");
+    assert_eq!(r["payload"]["room"]["detailsUpdatedAt"], first_change);
+    assert_eq!(details_rows(&fix).await.len(), 1, "a no-op is not audited");
+
+    // `tags: []` clears them; the description is untouched.
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE,
+        json!({ "roomId": room, "tags": [], "reason": "no filing" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], true, "{r}");
+    assert!(r["payload"]["room"].get("tags").is_none(), "{r}");
+    assert_eq!(
+        r["payload"]["room"]["description"],
+        "Papers for the board's meetings."
+    );
+    let rows = details_rows(&fix).await;
+    assert_eq!(
+        row_details(rows.last().unwrap())["details"],
+        json!([{ "field": "tags", "old": ["board", "finance"] }])
+    );
+
+    // `removeDescription` removes it.
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE,
+        json!({ "roomId": room, "removeDescription": true, "reason": "named a supplier" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], true, "{r}");
+    assert!(r["payload"]["room"].get("description").is_none(), "{r}");
+    // Removing what is not there is a no-op.
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE,
+        json!({ "roomId": room, "removeDescription": true, "reason": "again" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], false, "{r}");
+
+    // The schema's own rules: a description and its removal together, and a request
+    // naming no detail, are malformed.
+    for bad in [
+        json!({ "roomId": room, "description": "x", "removeDescription": true, "reason": "r" }),
+        json!({ "roomId": room, "reason": "r" }),
+        json!({ "roomId": room, "tags": ["Not A Tag"], "reason": "r" }),
+    ] {
+        let r = call_as(&fix, &fix.admin, UPDATE, bad.clone()).await;
+        assert_eq!(tt_error_code(&r), Some("malformedRequest"), "{bad}: {r}");
+    }
+}
+
+/// Item 2: `notFound` for a room the community only hosts, and nothing kept for it.
+/// Item 1: `permissionDenied` without `vtc.rooms.manage`, `vtc.rooms.admin` alone
+/// included.
+#[tokio::test]
+async fn vtc_rooms_community_update_answers_not_found_for_a_room_it_only_hosts() {
+    let mut fix = fixture().await;
+    let hosted = vti_rooms::Room {
+        room_id: "did:key:z6MkMembersRoom".into(),
+        owner_did: "did:key:z6MkAMember".into(),
+        visibility: vti_rooms::Visibility::Open,
+        retention_policy: vti_rooms::RetentionPolicy::Chained,
+        anchor_cadence: Default::default(),
+        epoch: 1,
+        next_version: 1,
+        retention_days: 90,
+        epoch_expires_at: None,
+        created_at: 0,
+        updated_at: 0,
+        mirror_of: None,
+    };
+    vti_rooms::storage::create_room(&fix.vtc.state.rooms_ks, &hosted)
+        .await
+        .unwrap();
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE,
+        json!({ "roomId": hosted.room_id, "label": "Somebody's room", "reason": "naming it" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), Some(UPDATE_NOT_FOUND), "{r}");
+    assert!(
+        fix.vtc
+            .state
+            .community_rooms
+            .room(&hosted.room_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "no label is kept for a room the community does not own"
+    );
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE,
+        json!({ "roomId": "did:key:z6MkNobody", "label": "x", "reason": "r" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), Some(UPDATE_NOT_FOUND), "{r}");
+
+    let room = create_room(&mut fix, "open").await;
+    let narrow = host_admin_only(&fix).await;
+    let r = call_as(
+        &fix,
+        &narrow,
+        UPDATE,
+        json!({ "roomId": room, "label": "Mine now", "reason": "r" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), Some("permissionDenied"), "{r}");
+    let alice = member(&fix).await;
+    let r = call_as(
+        &fix,
+        &alice,
+        UPDATE,
+        json!({ "roomId": room, "label": "Mine now", "reason": "r" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), Some("permissionDenied"), "{r}");
+    let got = call_as(&fix, &fix.admin, GET, json!({ "roomId": room })).await;
+    assert_eq!(got["payload"]["room"]["label"], "Board pack");
+}
+
+/// 0.1 keeps exactly the shape it published; 0.2 carries the details. `list/0.2`'s `tag`
+/// lists only the rooms carrying it, paged within the filter.
+#[tokio::test]
+async fn vtc_rooms_community_reads_answer_each_version_in_its_shape() {
+    let mut fix = fixture().await;
+    let board = create_described(&mut fix, "Board pack", json!(["board"])).await;
+    let library = create_described(&mut fix, "Library", json!(["library"])).await;
+    let plain = create_room(&mut fix, "open").await;
+
+    // 0.1: no description, tags or `detailsUpdated*`, whatever the room has.
+    let got = call_as(&fix, &fix.admin, GET, json!({ "roomId": board })).await;
+    for absent in [
+        "description",
+        "tags",
+        "detailsUpdatedAt",
+        "detailsUpdatedBy",
+    ] {
+        assert!(
+            got["payload"]["room"].get(absent).is_none(),
+            "{absent}: {got}"
+        );
+    }
+    let listed = call_as(&fix, &fix.admin, LIST, json!({})).await;
+    assert_eq!(listed["payload"]["items"].as_array().unwrap().len(), 3);
+    assert!(
+        listed["payload"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i.get("tags").is_none())
+    );
+
+    // 0.2.
+    let got = call_as(&fix, &fix.admin, GET_V0_2, json!({ "roomId": board })).await;
+    assert_eq!(got["payload"]["room"]["tags"], json!(["board"]), "{got}");
+    let got = call_as(&fix, &fix.admin, GET_V0_2, json!({ "roomId": plain })).await;
+    assert!(got["payload"]["room"].get("tags").is_none(), "{got}");
+    assert!(got["payload"]["room"].get("description").is_none(), "{got}");
+
+    let ids = |v: &Value| -> Vec<String> {
+        v["payload"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["room"]["roomId"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let all = call_as(&fix, &fix.admin, LIST_V0_2, json!({})).await;
+    assert_eq!(ids(&all).len(), 3, "{all}");
+    let tagged = call_as(&fix, &fix.admin, LIST_V0_2, json!({ "tag": "board" })).await;
+    assert_eq!(ids(&tagged), vec![board.clone()], "{tagged}");
+    let none = call_as(&fix, &fix.admin, LIST_V0_2, json!({ "tag": "nothing" })).await;
+    assert_eq!(none["payload"]["items"], json!([]), "{none}");
+
+    // Paging within the filter: tag both, one per page.
+    for r in [&board, &library] {
+        call_as(
+            &fix,
+            &fix.admin,
+            UPDATE,
+            json!({ "roomId": r, "tags": ["shared"], "reason": "file together" }),
+        )
+        .await;
+    }
+    let page1 = call_as(
+        &fix,
+        &fix.admin,
+        LIST_V0_2,
+        json!({ "tag": "shared", "limit": 1 }),
+    )
+    .await;
+    assert_eq!(ids(&page1).len(), 1);
+    let next = page1["payload"]["nextCursor"].as_str().unwrap().to_string();
+    let page2 = call_as(
+        &fix,
+        &fix.admin,
+        LIST_V0_2,
+        json!({ "tag": "shared", "cursor": next, "limit": 1 }),
+    )
+    .await;
+    assert_eq!(ids(&page2).len(), 1);
+    assert!(page2["payload"].get("nextCursor").is_none(), "{page2}");
+    let mut both = [ids(&page1), ids(&page2)].concat();
+    both.sort();
+    let mut want = vec![board, library];
+    want.sort();
+    assert_eq!(both, want);
+}
+
+/// `vtc/rooms/offers/list/0.2` item 4: the room's current label and description — a rename
+/// reaches an open offer — and never its tags. 0.1 shows the label only.
+#[tokio::test]
+async fn vtc_rooms_offers_list_shows_the_rooms_description_and_never_its_tags() {
+    let mut fix = fixture().await;
+    let room = create_described(&mut fix, "Board pack", json!(["board"])).await;
+    let alice = member(&fix).await;
+    add_member(&mut fix, &room, &alice.did, &in_a_year()).await;
+    call_as(
+        &fix,
+        &fix.admin,
+        UPDATE,
+        json!({
+            "roomId": room, "label": "Board pack — 2027",
+            "description": "Agendas, minutes and the finance pack.", "reason": "2027",
+        }),
+    )
+    .await;
+
+    let offers = call_as(&fix, &alice, OFFERS_V0_2, json!({})).await;
+    let offer = &offers["payload"]["items"][0];
+    assert_eq!(offer["label"], "Board pack — 2027", "{offers}");
+    assert_eq!(
+        offer["description"],
+        "Agendas, minutes and the finance pack."
+    );
+    assert!(offer.get("tags").is_none(), "{offer}");
+    assert!(!offers.to_string().contains("\"board\""), "{offers}");
+
+    let offers = call_as(&fix, &alice, OFFERS, json!({})).await;
+    let offer = &offers["payload"]["items"][0];
+    assert_eq!(offer["label"], "Board pack — 2027");
+    assert!(offer.get("description").is_none(), "{offer}");
 }

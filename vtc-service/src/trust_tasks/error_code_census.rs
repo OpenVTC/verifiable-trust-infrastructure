@@ -192,6 +192,12 @@ fn witnesses() -> Vec<Witness> {
             "vtc_rooms_community_reads_answer_not_found"
         ),
         witness!(
+            s::rooms::community::update::v0_1::error_codes::NOT_FOUND,
+            crate::rooms::community::codes::UPDATE_NOT_FOUND,
+            "community_rooms.rs",
+            "vtc_rooms_community_update_answers_not_found_for_a_room_it_only_hosts"
+        ),
+        witness!(
             s::rooms::community::members::list::v0_1::error_codes::NOT_FOUND,
             crate::rooms::community::codes::MEMBERS_LIST_NOT_FOUND,
             "community_rooms.rs",

@@ -442,6 +442,11 @@ function RoomCell({ roomId, name }: { roomId: string; name: RoomName }) {
           {name.label}
         </Link>{" "}
         <CommunityRoomBadge roomId={roomId} />
+        {name.description && (
+          <div className="muted rooms-sub rooms-description-preview" title={name.description}>
+            {name.description}
+          </div>
+        )}
         <div className="muted rooms-sub">
           <code title={roomId}>{shorten(roomId)}</code> <CopyButton value={roomId} />
         </div>

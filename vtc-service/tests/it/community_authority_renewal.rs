@@ -327,6 +327,10 @@ async fn seed_owner_record(fix: &Fixture, room_id: &str, authority_until: DateTi
         created_at: Utc::now().to_rfc3339(),
         owner_authority_valid_until: rfc3339(authority_until),
         did_path: None,
+        description: Some("Papers for the board's meetings.".into()),
+        tags: vec!["board".into()],
+        details_updated_at: None,
+        details_updated_by: None,
     };
     fix.vtc
         .state
@@ -734,6 +738,20 @@ async fn a_lapsed_authority_is_renewed() {
     let room = seed_room(&fix, now - chrono::Duration::days(2)).await;
     assert_eq!(sweep(&fix, now).await.renewed, vec![room.clone()]);
     assert_one_each(&fix, &room, now + chrono::Duration::days(365));
+    // The renewal rewrites the owner's record; the room's details survive it.
+    let r = fix
+        .vtc
+        .state
+        .community_rooms
+        .room(&room)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        r.description.as_deref(),
+        Some("Papers for the board's meetings.")
+    );
+    assert_eq!(r.tags, vec!["board".to_string()]);
 }
 
 /// Community rooms off, or no link to a VTA: no pass does anything, and nothing is

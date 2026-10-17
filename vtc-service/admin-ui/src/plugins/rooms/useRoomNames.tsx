@@ -5,8 +5,9 @@
 // member-owned room's never reaches this community. The one exception is a room
 // the community owns itself, whose label it chose at `vtc/rooms/community/create`
 // and keeps in its own record. So for a viewer who may read that record
-// (`vtc.rooms.manage`), the owner's list (`vtc/rooms/community/list/0.1`) is
-// joined on room DID and the host pages show the label; a viewer with only the
+// (`vtc.rooms.manage`), the owner's list (`vtc/rooms/community/list/0.2`) is
+// joined on room DID and the host pages show the label and description (never
+// the tags, which are the Community rooms tab's filing); a viewer with only the
 // host's authority (`vtc.rooms.admin`) sees the DID, as before, and is not
 // shown an error for a read they were never going to be allowed.
 //
@@ -25,8 +26,9 @@ import { communityRoomPath } from "./shared";
 
 /** What the console knows about whose a room is. */
 export type RoomName =
-  /** The community owns it, and this is the label it gave the room. */
-  | { readonly kind: "community"; readonly label: string }
+  /** The community owns it, and these are the label and description it gave
+   *  the room. */
+  | { readonly kind: "community"; readonly label: string; readonly description?: string }
   /** The community's own list was read in full and the room is not in it, so a
    *  member owns it — and named it, out of this community's sight. */
   | { readonly kind: "member" }
@@ -50,11 +52,17 @@ export function useRoomNames(): (roomId: string) => RoomName {
     retry: false,
   });
   if (!manager || !q.data) return () => UNKNOWN;
-  const labels = new Map(q.data.rooms.map((r) => [r.room.roomId, r.label]));
+  const owned = new Map(q.data.rooms.map((r) => [r.room.roomId, r]));
   const complete = !q.data.truncated;
   return (roomId) => {
-    const label = labels.get(roomId);
-    if (label !== undefined) return { kind: "community", label };
+    const r = owned.get(roomId);
+    if (r !== undefined) {
+      return {
+        kind: "community",
+        label: r.label,
+        ...(r.description ? { description: r.description } : {}),
+      };
+    }
     return complete ? { kind: "member" } : UNKNOWN;
   };
 }

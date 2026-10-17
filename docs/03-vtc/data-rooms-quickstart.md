@@ -596,15 +596,19 @@ before `vtc setup` recorded `vta_context` names that context by a placeholder un
 `vta_context = "vtc"` is added to its `config.toml`.
 
 ```bash
-cnm rooms create --label "Board pack" --visibility attributed --reason "the board's papers"
+cnm rooms create --label "Board pack" --visibility attributed --reason "the board's papers" \
+    --description "Papers for the board's meetings." --tag board
 export CROOM=<the room DID it prints>
+# Rename it, or change what it says, at any time — no passkey; audited with the reason.
+cnm rooms update "$CROOM" --label "Board pack — 2027" --reason "the 2027 cycle"
 cnm rooms members add "$CROOM" --member "$ALICE" --action read --action write \
     --valid-for 90d --reason "joins the board"
 cnm rooms members list "$CROOM"
 ```
 
 Or, in the console (`http://localhost:8200/admin/rooms/community`): **New community
-room** with the same label, tier and reason, then on the room's page **Add a member**
+room** with the same label, description, tags, tier and reason (**Edit details** on the
+room's page changes the first three later), then on the room's page **Add a member**
 with `$ALICE`, `read` and `write`, 90 days and a reason. Each asks for your passkey for
 that one request.
 

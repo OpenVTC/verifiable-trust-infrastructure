@@ -51,8 +51,11 @@ pub mod codes {
     use trust_tasks_rs::specs::vtc::rooms::community::{
         create::v0_1 as create, get::v0_1 as get, members::add::v0_1 as add,
         members::list::v0_1 as members_list, members::remove::v0_1 as remove,
+        update::v0_1 as update,
     };
     use trust_tasks_rs::specs::vtc::rooms::offers::{accept::v0_1 as accept, list::v0_1 as list};
+
+    pub const UPDATE_NOT_FOUND: &str = update::error_codes::NOT_FOUND.code;
 
     pub const CREATE_VISIBILITY_NOT_PERMITTED: &str =
         create::error_codes::VISIBILITY_NOT_PERMITTED.code;
@@ -124,6 +127,21 @@ pub struct OwnedRoom {
     /// The `<id>` this service serves the room's log under, for a serverless identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub did_path: Option<String>,
+    /// What the room is for (`vtc/rooms/community/update/0.1`). Like [`Self::label`], the
+    /// owner's record only: never in the host record, the room or anything sent to its VTA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// What administrators file the room under, as a set kept sorted. Shown to holders of
+    /// `vtc.rooms.manage` only — never in an offer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// When the label, description or tags last changed, RFC 3339. Absent until the first
+    /// change after creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details_updated_at: Option<String>,
+    /// The administrator who made that change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details_updated_by: Option<String>,
 }
 
 /// The three credentials issued to a member, kept for them to collect.
@@ -390,6 +408,10 @@ pub struct CommunityRooms {
     /// only delays a removal by one grace period.
     pub(crate) seen_inactive:
         std::sync::Mutex<std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>>,
+    /// Held across every read-modify-write of a room's record ([`Self::record_lock`]): a
+    /// renewal moving the authority's expiry and an administrator changing the details
+    /// never write back each other's stale copy. Never held across a call to the VTA.
+    record_lock: tokio::sync::Mutex<()>,
 }
 
 /// Wakes the departure worker: a departure was recorded.
@@ -452,6 +474,7 @@ impl CommunityRooms {
             holder: std::sync::RwLock::new(holder.map(KeyHolder)),
             write_lock: tokio::sync::Mutex::new(()),
             seen_inactive: Default::default(),
+            record_lock: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -475,6 +498,12 @@ impl CommunityRooms {
         self.write_lock.lock().await
     }
 
+    /// Hold this across a read-modify-write of one room's record — re-read it under the
+    /// guard, change it, write it. Brief: nothing is asked of the VTA while it is held.
+    pub async fn record_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.record_lock.lock().await
+    }
+
     pub async fn room(&self, room_id: &str) -> Result<Option<OwnedRoom>, AppError> {
         self.ks.get(room_key(room_id)).await
     }
@@ -484,6 +513,13 @@ impl CommunityRooms {
         // A hint only: an open console re-reads what it shows (`admin_events`).
         crate::admin_events::notify(crate::admin_events::Topic::Rooms);
         Ok(())
+    }
+
+    /// Store a change to a room's details only. No live hint: the `rooms` topic covers the
+    /// host's view, which carries no room's details (`vtc/rooms/community/update/0.1`
+    /// *Live updates*).
+    pub async fn put_room_details(&self, room: &OwnedRoom) -> Result<(), AppError> {
+        self.ks.insert(room_key(&room.room_id), room).await
     }
 
     /// Every room the community owns, by identifier.

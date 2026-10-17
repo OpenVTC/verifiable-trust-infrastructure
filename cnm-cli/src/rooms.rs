@@ -6,8 +6,9 @@
 //! profile's administrator identity, and the VTC has its VTA do the rest — mint the room's
 //! identity, found its group, issue a member's credentials. A change (`create`,
 //! `members add`, `members remove`) takes a passkey gesture bound to that one request,
-//! answered in a browser as `cnm git` changes are; reads take none. Every one needs
-//! `vtc.rooms.manage` on this profile's entry.
+//! answered in a browser as `cnm git` changes are; reads take none, and neither does
+//! `update` — a room's label, description and tags are the community's own record and
+//! reach no key holder. Every one needs `vtc.rooms.manage` on this profile's entry.
 //!
 //! Members collect and accept their offers with their own DID (`vtc/rooms/offers/*`), from
 //! the member portal or their wallet — not from an administrator's profile.
@@ -36,6 +37,14 @@ pub enum RoomsCommands {
         /// A name administrators and invited members see. Not personal data.
         #[arg(long)]
         label: String,
+        /// What the room is for, shown to administrators and to the members it is offered
+        /// to. Plain text, up to 1000 characters; not personal data.
+        #[arg(long)]
+        description: Option<String>,
+        /// A tag to file the room under (repeat, up to 8): lower-case letters, digits and
+        /// hyphens. Administrators only — never shown to members.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
         #[arg(long, value_enum)]
         visibility: VisibilityArg,
         /// Whether a member reads the room's history from before they joined. Default
@@ -54,6 +63,9 @@ pub enum RoomsCommands {
     },
     /// The rooms the community owns.
     List {
+        /// Only the rooms filed under this tag.
+        #[arg(long)]
+        tag: Option<String>,
         #[arg(long)]
         limit: Option<u32>,
         #[arg(long)]
@@ -63,6 +75,31 @@ pub enum RoomsCommands {
     Get {
         /// The room's DID.
         room: String,
+    },
+    /// Rename a room the community owns, or change its description or tags. Each one given
+    /// replaces what the room has; the rest are left as they are. Takes no passkey: it
+    /// reaches no key holder and changes nobody's access.
+    Update {
+        /// The room's DID.
+        room: String,
+        /// Its new name.
+        #[arg(long)]
+        label: Option<String>,
+        /// Its new description, replacing any it has.
+        #[arg(long, conflicts_with = "remove_description")]
+        description: Option<String>,
+        /// Remove its description.
+        #[arg(long)]
+        remove_description: bool,
+        /// Its tags (repeat), replacing the whole set.
+        #[arg(long = "tag", conflicts_with = "clear_tags")]
+        tags: Vec<String>,
+        /// Remove every tag.
+        #[arg(long)]
+        clear_tags: bool,
+        /// Why — recorded in the audit trail with the earlier values.
+        #[arg(long)]
+        reason: String,
     },
     /// Who the community has admitted to one of its rooms, or offered admission.
     Members {
@@ -212,6 +249,10 @@ fn hint(code: &str) -> &'static str {
             "\nThe community's `rooms` policy decides which tiers it may own a room at; \
              `private` is off until an operator uploads a policy that permits it."
         }
+        "vtc/rooms/community/update:notFound" | "vtc/rooms/community/get:notFound" => {
+            "\nThis community owns no room with that DID. A room it only hosts belongs to its \
+             member owner, and its name is theirs: `cnm rooms list` shows the community's own."
+        }
         "vtc/rooms/community/members/add:notAMember" => {
             "\nOnly active members of the community are admitted to its rooms."
         }
@@ -235,6 +276,36 @@ fn explain(err: VtcError) -> Box<dyn std::error::Error> {
         )
         .into(),
         None => err.to_string().into(),
+    }
+}
+
+/// Whether a refusal says the VTC does not serve the version asked for.
+fn unsupported(err: &VtcError) -> bool {
+    task_error(err)
+        .is_some_and(|(code, _)| matches!(code.as_str(), "unsupportedType" | "unsupportedVersion"))
+}
+
+/// A signed read at 0.2, the version that carries each room's description and tags — and,
+/// from a VTC that does not serve it yet, the same read at 0.1 when `fallback` is given.
+async fn read_v0_2(
+    client: &VtcClient,
+    type_uri: &str,
+    payload: Value,
+    fallback: Option<(&str, Value)>,
+    key: &HolderKey,
+) -> CliResult<Value> {
+    let doc = client.git_ns_sign(type_uri, &payload, key).await?;
+    match client.git_ns_send_signed::<Value>(type_uri, &doc).await {
+        Ok(v) => Ok(v),
+        Err(e) if unsupported(&e) => match fallback {
+            Some((uri, p)) => read(client, uri, p, key).await,
+            None => Err(format!(
+                "{}\nThis VTC does not serve {type_uri} yet: upgrade it to filter by tag.",
+                explain(e)
+            )
+            .into()),
+        },
+        Err(e) => Err(explain(e)),
     }
 }
 
@@ -359,14 +430,24 @@ fn valid_until(valid_for: Option<&str>, valid_until: Option<&str>) -> CliResult<
 
 fn print_room(room: &Value) {
     let r = &room["room"];
+    let tags = room_tags(room);
     println!(
-        "{BOLD}{}{RESET} — {} · {} · epoch {} · {}",
+        "{BOLD}{}{RESET} — {} · {} · epoch {} · {}{}",
         terminal_safe(room["label"].as_str().unwrap_or_default()),
         terminal_safe(r["roomId"].as_str().unwrap_or_default()),
         r["visibility"].as_str().unwrap_or_default(),
         r["epoch"],
         r["lifecycle"].as_str().unwrap_or_default(),
+        if tags.is_empty() {
+            String::new()
+        } else {
+            format!(" · [{}]", terminal_safe(&tags.join(", ")))
+        },
     );
+    // Administrator-written text: printed as text, never followed as instructions.
+    if let Some(d) = room["description"].as_str() {
+        println!("  {}", terminal_safe(d));
+    }
     println!(
         "  {DIM}admitted {} · offered {} · storage {} · the community's authority until {}{RESET}",
         room["admitted"],
@@ -374,6 +455,71 @@ fn print_room(room: &Value) {
         terminal_safe(room["storageConfig"].as_str().unwrap_or("-")),
         room["ownerAuthorityValidUntil"].as_str().unwrap_or("-"),
     );
+    if let (Some(at), Some(by)) = (
+        room["detailsUpdatedAt"].as_str(),
+        room["detailsUpdatedBy"].as_str(),
+    ) {
+        println!(
+            "  {DIM}details last changed {} by {}{RESET}",
+            terminal_safe(at),
+            terminal_safe(by)
+        );
+    }
+}
+
+fn room_tags(room: &Value) -> Vec<&str> {
+    room["tags"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
+}
+
+/// `vtc/rooms/community/update/0.1`'s payload. `None` when nothing would change.
+#[allow(clippy::too_many_arguments)]
+fn update_payload(
+    room: &str,
+    label: Option<String>,
+    description: Option<String>,
+    remove_description: bool,
+    tags: Vec<String>,
+    clear_tags: bool,
+    reason: String,
+) -> CliResult<Value> {
+    let mut payload = json!({ "roomId": room, "reason": reason });
+    if let Some(l) = label {
+        payload["label"] = json!(l);
+    }
+    if let Some(d) = description {
+        payload["description"] = json!(d);
+    } else if remove_description {
+        payload["removeDescription"] = json!(true);
+    }
+    if clear_tags {
+        payload["tags"] = json!([]);
+    } else if !tags.is_empty() {
+        payload["tags"] = json!(dedup(tags));
+    }
+    if payload.as_object().is_some_and(|o| o.len() < 3) {
+        return Err(
+            "name what to change: --label, --description, --remove-description, \
+             --tag or --clear-tags"
+                .into(),
+        );
+    }
+    typed::<spec::update::v0_1::Payload>(payload)
+}
+
+/// Tags as a set, in the order first given.
+fn dedup(tags: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in tags {
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    out
 }
 
 fn print_member(m: &Value) {
@@ -408,6 +554,8 @@ async fn run_task(
     match command {
         RoomsCommands::Create {
             label,
+            description,
+            tags,
             visibility,
             retention_policy,
             retention_days,
@@ -431,8 +579,25 @@ async fn run_task(
             if let Some(c) = storage_config {
                 payload["storageConfig"] = json!(c);
             }
-            let payload = typed::<spec::create::v0_1::Payload>(payload)?;
-            let type_uri = <spec::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            // 0.2 only when it carries what 0.1 cannot, so a VTC that predates it still
+            // creates a room without them.
+            let (payload, type_uri) = if description.is_some() || !tags.is_empty() {
+                if let Some(d) = description {
+                    payload["description"] = json!(d);
+                }
+                if !tags.is_empty() {
+                    payload["tags"] = json!(dedup(tags));
+                }
+                (
+                    typed::<spec::create::v0_2::Payload>(payload)?,
+                    <spec::create::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                )
+            } else {
+                (
+                    typed::<spec::create::v0_1::Payload>(payload)?,
+                    <spec::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                )
+            };
             let v = change(client, &target.base, type_uri, payload, &did, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
@@ -446,7 +611,7 @@ async fn run_task(
             );
             Ok(())
         }
-        RoomsCommands::List { limit, cursor } => {
+        RoomsCommands::List { tag, limit, cursor } => {
             let mut payload = json!({});
             if let Some(l) = limit {
                 payload["limit"] = json!(l);
@@ -454,9 +619,20 @@ async fn run_task(
             if let Some(c) = cursor {
                 payload["cursor"] = json!(c);
             }
-            let payload = typed::<spec::list::v0_1::Payload>(payload)?;
-            let type_uri = <spec::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-            let v = read(client, type_uri, payload, &key).await?;
+            // Without a tag, a VTC that serves only 0.1 still lists its rooms.
+            let fallback = match &tag {
+                Some(_) => None,
+                None => Some((
+                    <spec::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                    typed::<spec::list::v0_1::Payload>(payload.clone())?,
+                )),
+            };
+            if let Some(t) = &tag {
+                payload["tag"] = json!(t);
+            }
+            let payload = typed::<spec::list::v0_2::Payload>(payload)?;
+            let type_uri = <spec::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let v = read_v0_2(client, type_uri, payload, fallback, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
@@ -487,7 +663,10 @@ async fn run_task(
             }
             let items = v["items"].as_array().cloned().unwrap_or_default();
             if items.is_empty() {
-                println!("The community owns no rooms.");
+                match &tag {
+                    Some(t) => println!("No room is filed under `{}`.", terminal_safe(t)),
+                    None => println!("The community owns no rooms."),
+                }
             }
             for room in &items {
                 print_room(room);
@@ -496,13 +675,48 @@ async fn run_task(
             Ok(())
         }
         RoomsCommands::Get { room } => {
-            let payload = typed::<spec::get::v0_1::Payload>(json!({ "roomId": room }))?;
-            let type_uri = <spec::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-            let v = read(client, type_uri, payload, &key).await?;
+            let payload = typed::<spec::get::v0_2::Payload>(json!({ "roomId": room }))?;
+            let type_uri = <spec::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let fallback = (
+                <spec::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                typed::<spec::get::v0_1::Payload>(json!({ "roomId": room }))?,
+            );
+            let v = read_v0_2(client, type_uri, payload, Some(fallback), &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
             print_room(&v["room"]);
+            Ok(())
+        }
+        RoomsCommands::Update {
+            room,
+            label,
+            description,
+            remove_description,
+            tags,
+            clear_tags,
+            reason,
+        } => {
+            let payload = update_payload(
+                &room,
+                label,
+                description,
+                remove_description,
+                tags,
+                clear_tags,
+                reason,
+            )?;
+            let type_uri = <spec::update::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let v = change(client, &target.base, type_uri, payload, &did, &key).await?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            print_room(&v["room"]);
+            if v["changed"] == true {
+                println!("Changed. The earlier values are in the community's audit trail.");
+            } else {
+                println!("Nothing changed: the room already had those details.");
+            }
             Ok(())
         }
         RoomsCommands::Members { command } => match command {
@@ -687,10 +901,74 @@ mod tests {
     }
 
     #[test]
+    fn an_update_names_only_what_changes() {
+        let p = update_payload(
+            "did:key:z6MkRoom",
+            Some("Board pack — 2027".into()),
+            None,
+            true,
+            vec!["board".into(), "finance".into(), "board".into()],
+            false,
+            "the 2027 cycle".into(),
+        )
+        .unwrap();
+        assert_eq!(p["label"], "Board pack — 2027");
+        assert_eq!(p["removeDescription"], true);
+        assert!(p.get("description").is_none());
+        assert_eq!(p["tags"], json!(["board", "finance"]));
+
+        let cleared = update_payload(
+            "did:key:z6MkRoom",
+            None,
+            None,
+            false,
+            Vec::new(),
+            true,
+            "r".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            cleared["tags"],
+            json!([]),
+            "--clear-tags sends an empty set"
+        );
+        assert!(cleared.get("label").is_none());
+
+        let nothing = update_payload(
+            "did:key:z6MkRoom",
+            None,
+            None,
+            false,
+            Vec::new(),
+            false,
+            "r".into(),
+        );
+        assert!(
+            nothing.is_err(),
+            "an update that names nothing is caught before signing"
+        );
+
+        let bad_tag = update_payload(
+            "did:key:z6MkRoom",
+            None,
+            None,
+            false,
+            vec!["Board Pack".into()],
+            false,
+            "r".into(),
+        );
+        assert!(
+            bad_tag.is_err(),
+            "a tag outside the specification is caught before signing"
+        );
+    }
+
+    #[test]
     fn a_refusal_names_its_fix() {
         assert!(hint("permissionDenied").contains("vtc.rooms.manage"));
         assert!(hint("vtc/rooms/community/create:noKeyHolder").contains("[rooms.community]"));
         assert!(hint("something-else").is_empty());
+        assert!(hint("vtc/rooms/community/update:notFound").contains("cnm rooms list"));
         assert_eq!(
             refused_code("the community refused it (permissionDenied): no"),
             Some("permissionDenied")

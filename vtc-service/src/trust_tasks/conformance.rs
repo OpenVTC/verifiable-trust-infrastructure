@@ -431,6 +431,16 @@ fn sample_community_room() -> serde_json::Value {
     })
 }
 
+/// The same room as `vtc/rooms/community/*` 0.2 answers it: with its details.
+fn sample_community_room_v2() -> serde_json::Value {
+    let mut room = sample_community_room();
+    room["description"] = json!("Papers for the board's meetings.");
+    room["tags"] = json!(["board", "finance"]);
+    room["detailsUpdatedAt"] = json!("2026-10-15T09:30:01Z");
+    room["detailsUpdatedBy"] = json!("did:key:z6MkAdmin");
+    room
+}
+
 /// A stored storage config as `crate::rooms::storage_configs` keeps it.
 fn sample_storage_config() -> serde_json::Value {
     json!({
@@ -1178,6 +1188,39 @@ fn table() -> Vec<Conformance> {
             json!({ "room": sample_community_room() })
         ),
         checked!(
+            s::rooms::community::create::v0_2::Payload,
+            s::rooms::community::create::v0_2::Response,
+            json!({
+                "label": "Board pack", "visibility": "attributed", "reason": "the board",
+                "description": "Papers for the board's meetings.", "tags": ["board", "finance"],
+            }),
+            json!({ "room": sample_community_room_v2() })
+        ),
+        checked!(
+            s::rooms::community::list::v0_2::Payload,
+            s::rooms::community::list::v0_2::Response,
+            json!({ "limit": 10, "tag": "board" }),
+            json!({
+                "items": [sample_community_room_v2()],
+                "nextCursor": "community-rooms:did:key:z6MkRoom",
+            })
+        ),
+        checked!(
+            s::rooms::community::get::v0_2::Payload,
+            s::rooms::community::get::v0_2::Response,
+            json!({ "roomId": "did:key:z6MkRoom" }),
+            json!({ "room": sample_community_room_v2() })
+        ),
+        checked!(
+            s::rooms::community::update::v0_1::Payload,
+            s::rooms::community::update::v0_1::Response,
+            json!({
+                "roomId": "did:key:z6MkRoom", "label": "Board pack — 2027",
+                "tags": [], "reason": "the 2027 cycle",
+            }),
+            json!({ "room": sample_community_room_v2(), "changed": true })
+        ),
+        checked!(
             s::rooms::community::members::add::v0_1::Payload,
             s::rooms::community::members::add::v0_1::Response,
             json!({
@@ -1223,6 +1266,19 @@ fn table() -> Vec<Conformance> {
             json!({ "items": [{
                 "roomId": "did:key:z6MkRoom", "host": "did:example:community",
                 "label": "Board pack", "visibility": "attributed", "actions": ["read"],
+                "validUntil": "2027-10-01T00:00:00Z", "offeredAt": "2026-10-14T10:00:00Z",
+                "state": "open",
+                "credentials": { "invitation": "{}", "membership": "{}", "authority": "{}" },
+            }] })
+        ),
+        checked!(
+            s::rooms::offers::list::v0_2::Payload,
+            s::rooms::offers::list::v0_2::Response,
+            json!({}),
+            json!({ "items": [{
+                "roomId": "did:key:z6MkRoom", "host": "did:example:community",
+                "label": "Board pack", "description": "Papers for the board's meetings.",
+                "visibility": "attributed", "actions": ["read"],
                 "validUntil": "2027-10-01T00:00:00Z", "offeredAt": "2026-10-14T10:00:00Z",
                 "state": "open",
                 "credentials": { "invitation": "{}", "membership": "{}", "authority": "{}" },

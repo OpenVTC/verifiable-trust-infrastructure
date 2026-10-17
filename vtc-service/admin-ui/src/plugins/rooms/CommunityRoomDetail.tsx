@@ -1,5 +1,12 @@
 // One room the community owns, `/rooms/community/<roomId>` — the owner's view
-// (`vtc/rooms/community/get/0.1`) and its members (`…/members/{list,add,remove}`).
+// (`vtc/rooms/community/get/0.2`), its details (`…/update/0.1`) and its members
+// (`…/members/{list,add,remove}`).
+//
+// **Its details** — label, description, tags — are how administrators tell the
+// community's rooms apart, and the label and description are what a member
+// offered a place sees. Edit details changes them with no gesture (they reach
+// no key holder), audited with the earlier values and a reason; the page says
+// who last changed them and when.
 //
 // **Admission is an offer.** Adding a member has the community's VTA issue the
 // room's invitation, membership and authority credentials to them, and the VTC
@@ -20,7 +27,7 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { UserMinus, UserPlus, Users } from "lucide-react";
+import { Pencil, UserMinus, UserPlus, Users } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
 import { CopyButton } from "@/components/CopyButton";
@@ -32,8 +39,12 @@ import { PageHeader } from "@/components/PageHeader";
 import { Tabs } from "@/components/Tabs";
 import { TypedConfirmDialog } from "@/components/TypedConfirmDialog";
 import {
+  MAX_DESCRIPTION,
   MEMBER_ACTIONS,
   addCommunityRoomMember,
+  detailsUpdate,
+  parseTags,
+  updateCommunityRoom,
   fetchCommunityRoom,
   roomRenewalOf,
   fetchCommunityRoomMembers,
@@ -57,7 +68,7 @@ import type {
 } from "@/lib/wire-types";
 
 import { RefusalCard } from "./CommunityRefusal";
-import { AuthorityExpiry, COMMUNITY_ROOMS_KEY, RenewalFailing } from "./CommunityRooms";
+import { AuthorityExpiry, COMMUNITY_ROOMS_KEY, RenewalFailing, TagChips } from "./CommunityRooms";
 import { COMMUNITY_PATH, LifecyclePill, TIER_BLURB, roomPath, type Tier } from "./shared";
 
 /** The Audit trail (`plugins/audit.tsx`). It has no per-room filter: a
@@ -115,7 +126,10 @@ export function CommunityRoomDetail() {
       <PageHeader
         title={room.label}
         trail={trail}
-        lead="A room this community owns. Its VTA holds the room's keys; the community admits and removes its members."
+        lead={
+          room.description ??
+          "A room this community owns. Its VTA holds the room's keys; the community admits and removes its members."
+        }
       />
       <RoomFacts room={room} renewal={roomRenewalOf(q.data.ext)} />
       <Members room={room} />
@@ -133,11 +147,42 @@ function RoomFacts({
   const nameBook = useNameBook();
   const hostAdmin = useCan("vtc.rooms.admin", "*");
   const auditor = useCan("vtc.audit.read", "*");
+  const [editing, setEditing] = useState(false);
   const r = room.room;
   return (
     <section className="card">
-      <h2>Room</h2>
+      <div className="rooms-toolbar">
+        <h2>Room</h2>
+        {!editing && (
+          <button type="button" className="secondary" onClick={() => setEditing(true)}>
+            <Pencil size={14} aria-hidden="true" /> Edit details
+          </button>
+        )}
+      </div>
+      {editing && <EditDetails room={room} onDone={() => setEditing(false)} />}
       <dl className="rooms-facts">
+        <dt>Description</dt>
+        <dd>
+          {room.description ? (
+            <span className="rooms-description">{room.description}</span>
+          ) : (
+            <span className="muted">None — members offered a place see only its label.</span>
+          )}
+        </dd>
+        <dt>Tags</dt>
+        <dd>
+          {room.tags?.length ? <TagChips tags={room.tags} /> : <span className="muted">None</span>}
+          <div className="muted rooms-sub">For administrators only; never shown to members.</div>
+        </dd>
+        {room.detailsUpdatedAt && room.detailsUpdatedBy && (
+          <>
+            <dt>Details last changed</dt>
+            <dd>
+              <NamedDid did={room.detailsUpdatedBy} book={nameBook} /> on {formatIso(room.detailsUpdatedAt)}
+              <div className="muted rooms-sub">Earlier values, and why they changed, are in the audit log.</div>
+            </dd>
+          </>
+        )}
         <dt>Identifier</dt>
         <dd>
           <code className="rooms-id">{r.roomId}</code> <CopyButton value={r.roomId} label="Copy the room's DID" />
@@ -185,9 +230,6 @@ function RoomFacts({
           )}
         </dd>
       </dl>
-      {/* Renaming the room and giving it a description go here, once the
-          community-room update task is specified (a spec PR is being drafted);
-          today's wire sets the label only at create. */}
       {auditor && (
         <p className="muted rooms-sub">
           What was done to it, and by whom: the <Link to={AUDIT_PATH}>Audit trail</Link>. It
@@ -200,6 +242,93 @@ function RoomFacts({
           <Link to={roomPath(r.roomId)}>the room on the Rooms tab</Link>.
         </p>
       )}
+    </section>
+  );
+}
+
+/** Change the room's label, description and tags. Only what differs is sent;
+ *  each replaces what the room has. */
+function EditDetails({ room, onDone }: { room: CommunityRoom; onDone: () => void }) {
+  const confirm = useConfirm();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [label, setLabel] = useState(room.label);
+  const [description, setDescription] = useState(room.description ?? "");
+  const [tagText, setTagText] = useState((room.tags ?? []).join(", "));
+  const [reason, setReason] = useState("");
+
+  const parsed = parseTags(tagText);
+  const tagError = "error" in parsed ? parsed.error : undefined;
+  const payload =
+    "tags" in parsed && label.trim() !== ""
+      ? detailsUpdate(room, { label, description, tags: parsed.tags, reason })
+      : null;
+  const ready = payload !== null && reason.trim() !== "";
+
+  const save = useMutation({
+    mutationFn: () => updateCommunityRoom(payload!, gestureFromConfirm(confirm)),
+    onSuccess: (r) => {
+      toast.push(
+        "success",
+        r.changed ? `Saved the details of “${r.room.label}”.` : "Nothing to change: the room already had those details.",
+      );
+      void queryClient.invalidateQueries({ queryKey: COMMUNITY_ROOMS_KEY });
+      onDone();
+    },
+  });
+
+  return (
+    <section className="card" aria-labelledby="edit-community-room-details">
+      <h3 id="edit-community-room-details">Edit details</h3>
+      <p className="muted">
+        What administrators keep track of this room by. The label and description are also what a
+        member offered a place sees. Nothing reaches the room, its keys or anyone&rsquo;s access, so
+        this takes no passkey; it is audited with the earlier values and your reason.
+      </p>
+      <form
+        className="form-stack"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (ready) save.mutate();
+        }}
+      >
+        <Field label="Label" hint="Not personal data.">
+          <input required maxLength={128} value={label} onChange={(e) => setLabel(e.target.value)} />
+        </Field>
+        <Field
+          label="Description"
+          hint={`What the room is for, in plain text (up to ${MAX_DESCRIPTION} characters). Empty removes it.`}
+        >
+          <textarea
+            rows={3}
+            maxLength={MAX_DESCRIPTION}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+        </Field>
+        <Field
+          label="Tags"
+          hint="Up to 8, separated by commas: lower-case letters, digits and hyphens. For administrators only."
+          error={tagError}
+        >
+          <input placeholder="board, finance" value={tagText} onChange={(e) => setTagText(e.target.value)} />
+        </Field>
+        <Field label="Reason" hint="Recorded in the audit trail.">
+          <input required maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
+        </Field>
+        <div className="form-actions">
+          <button type="submit" className="primary" disabled={!ready || save.isPending}>
+            {save.isPending ? "Saving…" : "Save details"}
+          </button>
+          <button type="button" className="secondary" onClick={onDone}>
+            Cancel
+          </button>
+        </div>
+        {payload === null && !tagError && label.trim() !== "" && (
+          <p className="muted rooms-sub">Nothing has changed yet.</p>
+        )}
+      </form>
+      <RefusalCard title="Not saved" error={save.error} />
     </section>
   );
 }

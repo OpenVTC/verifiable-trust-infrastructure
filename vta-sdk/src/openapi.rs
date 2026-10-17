@@ -239,6 +239,27 @@ spec_types! {
     RoomsCommunityList01Response(rooms_community::list::v0_1::Response);
     /// `vtc/rooms/community/get/0.1#response` — one room the community owns.
     RoomsCommunityGet01Response(rooms_community::get::v0_1::Response);
+    /// `vtc/rooms/community/create/0.2` payload — as 0.1, plus the room's
+    /// description and tags.
+    RoomsCommunityCreate02Payload(rooms_community::create::v0_2::Payload);
+    /// `vtc/rooms/community/create/0.2#response` — the room as the community
+    /// owns it, with its details.
+    RoomsCommunityCreate02Response(rooms_community::create::v0_2::Response);
+    /// `vtc/rooms/community/list/0.2` payload — a page, optionally only the
+    /// rooms carrying one tag.
+    RoomsCommunityList02Payload(rooms_community::list::v0_2::Payload);
+    /// `vtc/rooms/community/list/0.2#response` — one page of the rooms the
+    /// community owns, with their details.
+    RoomsCommunityList02Response(rooms_community::list::v0_2::Response);
+    /// `vtc/rooms/community/get/0.2#response` — one room the community owns,
+    /// with its details.
+    RoomsCommunityGet02Response(rooms_community::get::v0_2::Response);
+    /// `vtc/rooms/community/update/0.1` payload — a room's new label,
+    /// description or tags, and the reason recorded with them.
+    RoomsCommunityUpdate01Payload(rooms_community::update::v0_1::Payload);
+    /// `vtc/rooms/community/update/0.1#response` — the room as it now stands,
+    /// and whether the request changed it.
+    RoomsCommunityUpdate01Response(rooms_community::update::v0_1::Response);
     /// `vtc/rooms/community/members/add/0.1` payload — admit an active member
     /// with actions, an expiry and a reason.
     RoomsCommunityMembersAdd01Payload(rooms_community::members::add::v0_1::Payload);

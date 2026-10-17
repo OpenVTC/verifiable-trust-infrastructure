@@ -182,3 +182,34 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* A community room's description: administrator-written plain text, its line
+   breaks kept, long words wrapped. */
+.rooms-description {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+/* In a table row, a description is a preview: two lines at most. */
+.rooms-description-preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* The community rooms list's tag filter: one pressable chip per tag. */
+.rooms-tag-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+}
+button.chip {
+  cursor: pointer;
+}
+button.chip[aria-pressed="true"] {
+  color: var(--brand);
+  border-color: var(--brand);
+}

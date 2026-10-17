@@ -354,6 +354,7 @@ async fn drive_one(
         epoch,
         note: (!withdrawn).then(|| REMOVAL_NOTICE.to_string()),
         reason: Some(pending.cause.reason().to_string()),
+        details: Vec::new(),
     };
     if let Some(writer) = state.audit_writer.as_ref()
         && let Err(e) = writer

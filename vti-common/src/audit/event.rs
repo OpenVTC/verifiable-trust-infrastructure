@@ -901,8 +901,9 @@ pub struct RoomLimitsChangedData {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CommunityRoomChangedData {
-    /// `created`, `memberOffered`, `memberAdmitted`, `memberRemoved`,
-    /// `offerWithdrawn`, `authorityRenewed` or `authorityRenewalFailed`.
+    /// `created`, `detailsUpdated`, `memberOffered`, `memberAdmitted`,
+    /// `memberRemoved`, `offerWithdrawn`, `authorityRenewed` or
+    /// `authorityRenewalFailed`.
     pub event: String,
     /// The room: its DID.
     pub room_id: String,
@@ -924,6 +925,14 @@ pub struct CommunityRoomChangedData {
     /// The requester's stated reason; absent on a member's own acceptance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The room's details that changed — `field` is `label`, `description` or
+    /// `tags` — each with its value before (`old`, absent when it had none)
+    /// and after (`new`, absent when removed): on `detailsUpdated`
+    /// (`vtc/rooms/community/update/0.1` item 6), and on `created` the details
+    /// it was created with. The earlier values are kept here and nowhere on
+    /// the wire.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub details: Vec<FieldChange>,
 }
 
 /// Payload for [`AuditEvent::CapabilityModuleChanged`].

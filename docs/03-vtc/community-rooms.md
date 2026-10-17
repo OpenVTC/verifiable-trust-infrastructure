@@ -5,7 +5,8 @@ It can also **own** rooms itself — the board's papers, a working group's draft
 members' library — run by its administrators and outliving any one of them. This page
 is how to turn that on and run one. The design is
 [`data-rooms-files.md` §8.4](../05-design-notes/data-rooms-files.md#84-community-owned-rooms);
-the wire is `vtc/rooms/community/*` and `vtc/rooms/offers/*` (trust-tasks-tf #768).
+the wire is `vtc/rooms/community/*` and `vtc/rooms/offers/*` (trust-tasks-tf #768; a
+room's description and tags, and `update`, trust-tasks-tf #805).
 
 ## Who holds what
 
@@ -110,6 +111,50 @@ operator's own `rooms` policy is left alone and must allow `communityOwned` room
 from `vtc.rooms.admin` (hosting: storage, limits, usage): a community may let someone run
 its board room without letting them reassign every room's storage, and the reverse.
 
+## A room's details: label, description, tags
+
+A room's DID says nothing about it, so the community keeps three **details** to tell its
+rooms apart (`vtc/rooms/community/update/0.1`, and the 0.2 `create`, `get` and `list`
+that carry them):
+
+| Detail | What | Who sees it |
+|---|---|---|
+| **label** | its name, up to 128 characters | `vtc.rooms.manage` holders, and each member offered a place |
+| **description** | what it is for, plain text up to 1000 characters | the same |
+| **tags** | up to 8 lower-case identifiers (`board`, `working-group`) to file and filter by | `vtc.rooms.manage` holders **only** — never in an offer |
+
+They are the community's own record **as the room's owner**, kept beside the room in
+`community_rooms`. They are never written to the room's host record, its records or
+credentials, or sent to its VTA — a room a member owns has a name the community, as its
+host, never learns, and `update` answers `notFound` for such a room. A holder of only
+`vtc.rooms.admin` (the host's view, `vtc/rooms/{list,get}`) sees none of them.
+
+**Changing them** takes `vtc.rooms.manage` and a reason, and **no passkey**: it reaches no
+key holder, confers nothing, changes nobody's access, and the same task undoes it. The
+document must be signed and carry `issuedAt` (a replayed earlier update would silently
+revert a rename). Each detail named replaces the stored one; the rest are left alone;
+`tags: []` clears the tags and `removeDescription: true` removes the description. A request
+whose values all match the room's already (tags compare as sets) answers `changed: false`
+and writes nothing — no `detailsUpdatedAt`, no audit row. A change sets `detailsUpdatedAt`
+/ `detailsUpdatedBy` (shown in 0.2 reads, separate from `room.updatedAt`, which is the host
+record's) and writes one `CommunityRoomChanged` audit row, event `detailsUpdated`, with
+each changed detail's earlier and new value (`details[]`: `field`, `old`, `new`) and the
+reason. The earlier values live only there. A create's row records the details it started
+with the same way.
+
+Any lifecycle state the community still owns the room in is fine — a lapsed or dormant room
+is the one an administrator most needs to recognise. There is no version precondition: two
+administrators renaming at once, the later wins, and both are in the audit trail.
+
+A member offered a place sees the room's **current** label and description in
+`vtc/rooms/offers/list/0.2` — a rename reaches an open offer. Once they have accepted, no
+member-side read shows a later rename yet. The live channel's `rooms` topic is the host's,
+so a change produces no hint there; other consoles see it on their next poll.
+
+All three are written by an administrator and shown to others: they must not carry
+personal data or credentials, and every reader — console, `cnm`, a wallet, an agent —
+treats them as text, never as instructions.
+
 ## Run a room — the console
 
 **Data rooms → Community rooms** (`/admin/rooms/community`) is the same surface as
@@ -118,16 +163,22 @@ holds only `vtc.rooms.admin` sees the host's tabs and not this one). Every read 
 change is a signed `vtc/rooms/community/*` document through the console's key; there is
 no REST route.
 
-- **The list**: each room's label, tier, lifecycle, how many members are admitted and
-  offered, and when the community's own authority over it lapses (flagged 30 days
-  before). When `[rooms.community]` is absent the tab says so and shows the section to
-  add, from the list's `ext["org.openvtc"].communityRooms`.
-- **New community room**: label, tier (`attributed` by default; `open`; `private` is
+- **The list**: each room's label, the start of its description and its tags, then
+  tier, lifecycle, how many members are admitted and offered, and when the community's
+  own authority over it lapses (flagged 30 days before). The tags above the table filter
+  it (`?tag=`), and so does clicking a room's tag. When `[rooms.community]` is absent the
+  tab says so and shows the section to add, from the list's
+  `ext["org.openvtc"].communityRooms`.
+- **New community room**: label, an optional description and tags, tier (`attributed` by default; `open`; `private` is
   shown but not offered — it is not served for community rooms yet and the shipped
   `rooms` policy refuses it), history (`chained` / `fromJoin`), retention days,
   storage location (listed only to a holder of `vtc.rooms.admin`; otherwise the
   default), and a reason.
-- **A room's page** (`/admin/rooms/community/<room DID>`): its facts, and its members
+- **A room's page** (`/admin/rooms/community/<room DID>`): titled with its label, its
+  description as the page's lead; its facts — description, tags, and who last changed
+  the details and when — and **Edit details** (label, description, tags and a reason;
+  only what differs is sent, an emptied description is removed, emptied tags cleared, and
+  no passkey is asked for); and its members
   filtered by offered / admitted / removed. **Add a member** takes the member's DID,
   actions (`read`, `write`, `curate`), how many days the admission is valid and a
   reason, and makes an **offer**. **Remove** (or **Withdraw**, for an open offer) says
@@ -135,6 +186,7 @@ no REST route.
   honoured **before** anything is signed, takes a reason, and reports the answer's
   `validUntil` and, on a sealed tier, the first epoch sealed without them.
 
+The console reads and creates at 0.2 (it ships inside the VTC, so the two always match).
 Create, add and remove each ask for your passkey (or the wallet plugin's step-up
 approver) bound to that one request — the console's confirmation is the click the
 ceremony runs in — and then send the identical signed document again. A refusal is shown
@@ -155,14 +207,19 @@ is what another administrator's console waits for.
 
 ## Run a room — `cnm rooms`
 
-Each change takes a passkey gesture bound to that one request (answered in a browser,
-as `cnm git` changes are) and is audited with its reason. None is parked for a second
-administrator: a room the community owns is its own, and membership is reversible.
+Create and the membership changes take a passkey gesture bound to that one request
+(answered in a browser, as `cnm git` changes are); `update` takes none. Each is audited
+with its reason. None is parked for a second administrator: a room the community owns is
+its own, and membership is reversible.
 
 ```bash
-cnm rooms create --label "Board pack" --visibility attributed --reason "the board's papers"
-cnm rooms list
+cnm rooms create --label "Board pack" --visibility attributed --reason "the board's papers" \
+    [--description "Papers for the board's meetings."] [--tag board --tag finance]
+cnm rooms list [--tag board]
 cnm rooms get <room DID>
+cnm rooms update <room DID> [--label "Board pack — 2027"] \
+    [--description "…" | --remove-description] [--tag board ... | --clear-tags] \
+    --reason "the 2027 cycle"
 
 cnm rooms members add <room DID> --member <member's persona DID> \
     --action read --action write --valid-for 90d --reason "joins the board"
@@ -175,6 +232,11 @@ cnm rooms members remove <room DID> --member <DID> --reason "left the board"
   the community its own membership and `admin` authority and keeps them in its vault —
   **then** the VTC stores the room. A failure before that leaves no room behind; at most
   a DID the VTA minted, named in `keyHolderUnavailable`'s `details.roomId`.
+- **list / get** read at 0.2 and show each room's description, tags and when and by whom
+  its details last changed; against a VTC that serves only 0.1 they fall back to it
+  (without `--tag`). **create** uses 0.2 only when given a description or tags.
+- **update**: names only what to change; prints `Changed.` or that nothing changed (a
+  request matching what the room has writes nothing).
 - **members add**: only an **active member** of the community. The VTA issues the
   member's invitation, membership and authority (`read`, `write`, `curate` — never
   `admin`), and the VTC keeps them as an **offer**. Nothing is delivered: the member's VTA
@@ -282,7 +344,8 @@ The member, signed with **their own DID** (the persona named in the offer):
 
 1. `vtc/rooms/offers/list/0.1` — their offers, each with the three credentials. They
    store the membership and authority in their own VTA's vault
-   (`pnm cred-vault receive`).
+   (`pnm cred-vault receive`). At `0.2` each offer also carries the room's current
+   description; never its tags.
 2. On a sealed room, their VTA mints a KeyPackage against the offer's invitation
    (`pnm rooms keys key-package --invitation …`).
 3. `vtc/rooms/offers/accept/0.1` with the KeyPackage (none on an `open` room). The VTC has
@@ -353,6 +416,12 @@ already created can also mean the community's own authority over it has lapsed
 (`ownerAuthorityValidUntil`).
 
 ## What is not here yet
+
+- **The description in `pnm rooms offers list`**: `pnm` has the member's VTA sign the
+  request with `rooms/keys/act/0.3`, whose table lists `vtc/rooms/offers/list/0.1` only,
+  so it stays on 0.1 (label, no description) until that table admits 0.2.
+- **A member-side read of rooms they are in**: an admitted member sees the label and
+  description only while their offer is listed.
 
 - **Offers in the member portal**: a member lists and accepts their offers with `pnm
   rooms offers` (below); the portal has no screen for them yet.

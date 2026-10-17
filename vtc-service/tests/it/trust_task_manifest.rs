@@ -927,9 +927,12 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1",
     "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.1",
     // Community rooms, the Community rooms tab (`trust_tasks::community_room_tasks`).
-    "https://trusttasks.org/spec/vtc/rooms/community/create/0.1",
-    "https://trusttasks.org/spec/vtc/rooms/community/get/0.1",
-    "https://trusttasks.org/spec/vtc/rooms/community/list/0.1",
+    // The console is baked into this binary, so it reads and creates at 0.2 only: the
+    // shape with each room's description, tags and who last changed them.
+    "https://trusttasks.org/spec/vtc/rooms/community/create/0.2",
+    "https://trusttasks.org/spec/vtc/rooms/community/get/0.2",
+    "https://trusttasks.org/spec/vtc/rooms/community/list/0.2",
+    "https://trusttasks.org/spec/vtc/rooms/community/update/0.1",
     "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1",
     "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1",
     "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.1",

@@ -470,8 +470,10 @@ reads report them, and hints only when the digest moves. The pages also poll
 administrator without the topic still sees changes. The Community rooms tab
 (rooms the community owns, [`community-rooms.md`](community-rooms.md)) polls at
 60 s regardless: the topic hints when a community room is created, but not when
-one is offered to, accepted by or removed from a member, and it goes only to
-holders of `vtc.rooms.admin`, not of `vtc.rooms.manage`.
+one is offered to, accepted by or removed from a member, nor when its label,
+description or tags change (`vtc/rooms/community/update` — the owner's record,
+not the host's view the topic covers), and it goes only to holders of
+`vtc.rooms.admin`, not of `vtc.rooms.manage`.
 
 The console reacts to a hint only by invalidating the react-query keys of that
 topic's own signed read, so authorization stays on every read: a hint can

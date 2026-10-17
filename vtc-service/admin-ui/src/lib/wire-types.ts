@@ -277,11 +277,16 @@ export type RoomStorageAssignResponse = Schemas["VtcRoomsStorageAssignV0_1Respon
 // The published `vtc/rooms/community/*` shapes (`lib/community-rooms-api.ts`),
 // answered from `vtc.rooms.manage` — the owner's authority, not the host's.
 // Signed documents only; no REST route.
-export type CommunityRoom = Schemas["VtcRoomsCommunityListV0_1CommunityRoom"];
-export type CommunityRoomsListResponse = Schemas["VtcRoomsCommunityListV0_1Response"];
-export type CommunityRoomGetResponse = Schemas["VtcRoomsCommunityGetV0_1Response"];
-export type CommunityRoomCreatePayload = Schemas["VtcRoomsCommunityCreateV0_1Payload"];
-export type CommunityRoomCreateResponse = Schemas["VtcRoomsCommunityCreateV0_1Response"];
+// The console reads and creates at 0.2 — `CommunityRoomV2`, with each room's
+// description, tags and who last changed them — and changes them with
+// `update/0.1`.
+export type CommunityRoom = Schemas["VtcRoomsCommunityListV0_2CommunityRoomV2"];
+export type CommunityRoomsListResponse = Schemas["VtcRoomsCommunityListV0_2Response"];
+export type CommunityRoomGetResponse = Schemas["VtcRoomsCommunityGetV0_2Response"];
+export type CommunityRoomCreatePayload = Schemas["VtcRoomsCommunityCreateV0_2Payload"];
+export type CommunityRoomCreateResponse = Schemas["VtcRoomsCommunityCreateV0_2Response"];
+export type CommunityRoomUpdatePayload = Schemas["VtcRoomsCommunityUpdateV0_1Payload"];
+export type CommunityRoomUpdateResponse = Schemas["VtcRoomsCommunityUpdateV0_1Response"];
 export type CommunityRoomMember = Schemas["VtcRoomsCommunityMembersListV0_1RoomMember"];
 export type CommunityRoomMemberState = Schemas["VtcRoomsCommunityMembersListV0_1MemberState"];
 export type CommunityRoomMemberAction = Schemas["VtcRoomsCommunityMembersAddV0_1MemberAction"];

@@ -2019,6 +2019,14 @@ mod spine_proof_tests {
             "reads one room the community owns; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
+            community_room_tasks::LIST_V0_2_TYPE,
+            "lists the rooms the community owns, with their details; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            community_room_tasks::GET_V0_2_TYPE,
+            "reads one room the community owns, with its details; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
             room_admin_tasks::USAGE_TYPE,
             "reads rooms' usage; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
         ),
@@ -2964,14 +2972,20 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // Rooms the community owns (`data-rooms-files.md` §8.4): an administrator's
     // create, reads and membership changes under `vtc.rooms.manage`, the changes
     // behind the requester's bound gesture; a member's offers on their own DID. No
-    // REST route.
+    // REST route. The details administrators keep a room by (`update`, and the 0.2 reads
+    // and create that carry them) take no gesture: they reach no key holder.
     community_room_tasks::CREATE_TYPE,
+    community_room_tasks::CREATE_V0_2_TYPE,
     community_room_tasks::LIST_TYPE,
+    community_room_tasks::LIST_V0_2_TYPE,
     community_room_tasks::GET_TYPE,
+    community_room_tasks::GET_V0_2_TYPE,
+    community_room_tasks::UPDATE_TYPE,
     community_room_tasks::MEMBERS_ADD_TYPE,
     community_room_tasks::MEMBERS_REMOVE_TYPE,
     community_room_tasks::MEMBERS_LIST_TYPE,
     community_room_tasks::OFFERS_LIST_TYPE,
+    community_room_tasks::OFFERS_LIST_V0_2_TYPE,
     community_room_tasks::OFFERS_ACCEPT_TYPE,
     // The OpenID4VP verifier identities, as a holder of `vtc.config.admin`
     // sees them (#1988). A read; no REST route.

@@ -130,6 +130,7 @@ function Identity({ data, name }: { data: RoomGetResponse; name: RoomName }) {
               {name.kind === "community" ? (
                 <>
                   {name.label}
+                  {name.description && <div className="rooms-description">{name.description}</div>}
                   <div className="muted rooms-sub">
                     This community owns the room;{" "}
                     <Link to={communityRoomPath(r.roomId)}>run it from Community rooms</Link>.

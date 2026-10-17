@@ -291,8 +291,8 @@ describe("Room usage", () => {
 // read the community's rooms (`rooms/useRoomNames.tsx`); nobody else is shown
 // a name, or an error for not being allowed to read one.
 describe("Room names on the host pages", () => {
-  const COMMUNITY_LIST = "https://trusttasks.org/spec/vtc/rooms/community/list/0.1";
-  const COMMUNITY_GET = "https://trusttasks.org/spec/vtc/rooms/community/get/0.1";
+  const COMMUNITY_LIST = "https://trusttasks.org/spec/vtc/rooms/community/list/0.2";
+  const COMMUNITY_GET = "https://trusttasks.org/spec/vtc/rooms/community/get/0.2";
   const COMMUNITY_MEMBERS = "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1";
   const OTHER_ROOM = "did:webvh:QmOther:alice.example.com:notes";
   const BOTH = whoamiWith(["vtc.rooms.admin", "vtc.rooms.manage"]);
@@ -321,6 +321,22 @@ describe("Room names on the host pages", () => {
     expect(screen.getAllByRole("button", { name: /Copy/ }).length).toBeGreaterThan(0);
     // The other room is a member's: no name, and the note says why.
     expect(screen.getByText(/Named by its owner; this community never sees room names/)).toBeTruthy();
+  });
+
+  it("shows a community room's description on the list and its page, never its tags", async () => {
+    const described = {
+      ...communityRoom,
+      description: "Papers for the board's meetings.",
+      tags: ["board"],
+    };
+    mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(LIST, { items: [hostedRoom("attributed")] }),
+      taskRoute(COMMUNITY_LIST, { items: [described] }),
+    ]);
+    mount("/rooms", BOTH);
+    expect(await screen.findByText("Papers for the board's meetings.")).toBeTruthy();
+    expect(screen.queryByText("board", { selector: ".chip" })).toBeNull();
   });
 
   it("searches by name and filters by tier and lifecycle", async () => {

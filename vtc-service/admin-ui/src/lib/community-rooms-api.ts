@@ -1,5 +1,8 @@
-// Rooms the community itself owns — `vtc/rooms/community/*/0.1`
+// Rooms the community itself owns — `vtc/rooms/community/*`
 // (docs/03-vtc/community-rooms.md, docs/05-design-notes/data-rooms-files.md §8.4).
+// The console is baked into the VTC it talks to, so it reads and creates at 0.2
+// only: the shape that carries each room's description, tags and who last
+// changed them (`CommunityRoomV2`).
 //
 // The community is the room's **owner** here, not only its host: its VTA mints
 // the room's DID and holds its keys, and the VTC keeps the owner's record of
@@ -13,6 +16,12 @@
 // is sent again once the gesture is recorded (`postSignedWithStepUp`). None is
 // parked for a second administrator: a room the community owns is its own, and
 // membership is reversible by removal.
+//
+// `update` changes a room's label, description and tags and takes no gesture:
+// it reaches no key holder and changes nobody's access. They are the
+// community's own record as the room's owner; tags are for administrators only
+// and never reach an offer. All three are administrator-written free text,
+// rendered as text and never as markup.
 //
 // Admission is pull-shaped: `members/add` makes an **offer** the member collects
 // with their own VTA (`vtc/rooms/offers/*`, `pnm rooms offers accept`). Nothing
@@ -36,11 +45,14 @@ import type {
   CommunityRoomMembersRemovePayload,
   CommunityRoomMembersRemoveResponse,
   CommunityRoomsListResponse,
+  CommunityRoomUpdatePayload,
+  CommunityRoomUpdateResponse,
 } from "./wire-types";
 
-export const COMMUNITY_ROOMS_CREATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/create/0.1";
-export const COMMUNITY_ROOMS_LIST_TASK = "https://trusttasks.org/spec/vtc/rooms/community/list/0.1";
-export const COMMUNITY_ROOMS_GET_TASK = "https://trusttasks.org/spec/vtc/rooms/community/get/0.1";
+export const COMMUNITY_ROOMS_CREATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/create/0.2";
+export const COMMUNITY_ROOMS_LIST_TASK = "https://trusttasks.org/spec/vtc/rooms/community/list/0.2";
+export const COMMUNITY_ROOMS_GET_TASK = "https://trusttasks.org/spec/vtc/rooms/community/get/0.2";
+export const COMMUNITY_ROOMS_UPDATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/update/0.1";
 export const COMMUNITY_ROOMS_MEMBERS_ADD_TASK =
   "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1";
 export const COMMUNITY_ROOMS_MEMBERS_REMOVE_TASK =
@@ -289,13 +301,26 @@ export async function fetchCommunityRoomMembers(
   return { items, truncated: true, departures: departures ?? [] };
 }
 
-/** `vtc/rooms/community/create/0.1`, after the requester's bound gesture. */
+/** `vtc/rooms/community/create/0.2`, after the requester's bound gesture. */
 export function createCommunityRoom(
   payload: CommunityRoomCreatePayload,
   confirmGesture: ConfirmGesture,
 ): Promise<CommunityRoomCreateResponse> {
   return postSignedWithStepUp<CommunityRoomCreateResponse>(
     COMMUNITY_ROOMS_CREATE_TASK,
+    payload,
+    confirmGesture,
+  );
+}
+
+/** `vtc/rooms/community/update/0.1`. It asks for no gesture; one is given only
+ *  if the community's policy asks for it all the same. */
+export function updateCommunityRoom(
+  payload: CommunityRoomUpdatePayload,
+  confirmGesture: ConfirmGesture,
+): Promise<CommunityRoomUpdateResponse> {
+  return postSignedWithStepUp<CommunityRoomUpdateResponse>(
+    COMMUNITY_ROOMS_UPDATE_TASK,
     payload,
     confirmGesture,
   );
@@ -323,6 +348,61 @@ export function removeCommunityRoomMember(
     payload,
     confirmGesture,
   );
+}
+
+// ── A room's details ────────────────────────────────────────────────────
+
+/** The most tags a room carries (`RoomTags`). */
+export const MAX_TAGS = 8;
+/** The longest description (`RoomDescription`). */
+export const MAX_DESCRIPTION = 1000;
+const TAG = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/** Tags as typed — separated by commas or spaces — read as a set, in the order
+ *  first given; or what is wrong with them. Case is not changed: `Board` is
+ *  refused rather than silently filed as `board`. */
+export function parseTags(text: string): { tags: string[] } | { error: string } {
+  const tags: string[] = [];
+  for (const t of text.split(/[\s,]+/).filter((t) => t !== "")) {
+    if (!TAG.test(t)) {
+      return {
+        error: `“${t}” is not a tag: lower-case letters, digits and hyphens, starting with a letter or digit, at most 32.`,
+      };
+    }
+    if (!tags.includes(t)) tags.push(t);
+  }
+  if (tags.length > MAX_TAGS) return { error: `At most ${MAX_TAGS} tags.` };
+  return { tags };
+}
+
+/** The details an Edit details form holds. */
+export interface RoomDetailsForm {
+  label: string;
+  description: string;
+  tags: string[];
+  reason: string;
+}
+
+const sameSet = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((t) => b.includes(t));
+
+/** The `update` payload naming only what `form` changes on `room` — each member
+ *  given replaces the stored one — or `null` when it changes nothing. An emptied
+ *  description is `removeDescription`, emptied tags are `tags: []`. */
+export function detailsUpdate(room: CommunityRoom, form: RoomDetailsForm): CommunityRoomUpdatePayload | null {
+  const payload: CommunityRoomUpdatePayload = { roomId: room.room.roomId, reason: form.reason.trim() };
+  const label = form.label.trim();
+  if (label !== room.label) payload.label = label;
+  const description = form.description.trim();
+  if (description === "" && room.description) payload.removeDescription = true;
+  else if (description !== "" && description !== room.description) payload.description = description;
+  if (!sameSet(form.tags, room.tags ?? [])) payload.tags = form.tags;
+  return Object.keys(payload).length > 2 ? payload : null;
+}
+
+/** Every tag the rooms carry, sorted, for the list's filter. */
+export function tagsOf(rooms: readonly CommunityRoom[]): string[] {
+  return [...new Set(rooms.flatMap((r) => r.tags ?? []))].sort();
 }
 
 // ── Dates ───────────────────────────────────────────────────────────────
@@ -443,7 +523,7 @@ export function refusalFix(err: unknown): string | null {
     case "notInRoom":
       return "They hold neither an admission nor an open offer here; the list below may be out of date.";
     case "notFound":
-      return "This community owns no room with that identifier. A room it only hosts is on the Rooms tab.";
+      return "This community owns no room with that identifier. A room it only hosts is on the Rooms tab, and its name is its owner's.";
     default:
       return null;
   }

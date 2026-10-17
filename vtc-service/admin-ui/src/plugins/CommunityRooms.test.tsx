@@ -9,6 +9,9 @@ import {
   COMMUNITY_ROOMS_MEMBERS_ADD_TASK,
   COMMUNITY_ROOMS_MEMBERS_LIST_TASK,
   COMMUNITY_ROOMS_MEMBERS_REMOVE_TASK,
+  COMMUNITY_ROOMS_UPDATE_TASK,
+  detailsUpdate,
+  parseTags,
   refusalFix,
   removalOutcome,
   removalPreview,
@@ -213,6 +216,39 @@ describe("Community rooms tab", () => {
     expect(screen.getByText("the community's VTA could not be reached")).toBeTruthy();
   });
 
+  it("shows each room's description and tags, and filters by a tag", async () => {
+    const LIBRARY = "did:webvh:QmScid:vtc.example.com:room-dids:lib";
+    mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_LIST_TASK, {
+        items: [
+          {
+            ...communityRoom(),
+            description: "Papers for the board's meetings.",
+            tags: ["board", "finance"],
+          },
+          { ...communityRoom(), room: { ...hosted(), roomId: LIBRARY }, label: "Library", tags: ["library"] },
+        ],
+      }),
+    ]);
+    mount("/rooms/community");
+    expect(await screen.findByText("Papers for the board's meetings.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Library" })).toBeTruthy();
+    const filter = screen.getByRole("group", { name: "Filter by tag" });
+    expect([...filter.querySelectorAll("button")].map((b) => b.textContent)).toEqual([
+      "All",
+      "board",
+      "finance",
+      "library",
+    ]);
+    fireEvent.click(within(filter).getByRole("button", { name: "library" }));
+    await waitFor(() => expect(screen.queryByRole("link", { name: "Board pack" })).toBeNull());
+    expect(screen.getByRole("link", { name: "Library" })).toBeTruthy();
+    expect(screen.getByTestId("where").textContent).toBe("/rooms/community?tag=library");
+    fireEvent.click(within(filter).getByRole("button", { name: "All" }));
+    expect(await screen.findByRole("link", { name: "Board pack" })).toBeTruthy();
+  });
+
   it("shows what to add when community rooms are off", async () => {
     mockFetch([
       ...NAME_BOOK_ROUTES,
@@ -246,6 +282,35 @@ describe("Community rooms tab", () => {
       { label: "Board pack", visibility: "attributed", reason: "the board's papers" },
     ]);
     expect(stepUp.calls).toEqual([COMMUNITY_ROOMS_CREATE_TASK]);
+  });
+
+  it("creates a room with a description and tags", async () => {
+    const requests = mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_LIST_TASK, { items: [] }),
+      taskRoute(COMMUNITY_ROOMS_CREATE_TASK, { room: communityRoom() }),
+    ]);
+    mount("/rooms/community?create=1");
+    fireEvent.change(await screen.findByLabelText(/^Label/), { target: { value: "Board pack" } });
+    fireEvent.change(screen.getByLabelText(/^Description/), {
+      target: { value: "Papers for the board's meetings." },
+    });
+    fireEvent.change(screen.getByLabelText(/^Tags/), { target: { value: "Board" } });
+    expect(await screen.findByText(/is not a tag/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Create room" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText(/^Tags/), { target: { value: "board, finance board" } });
+    fireEvent.change(screen.getByLabelText(/^Reason/), { target: { value: "the board's papers" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create room" }));
+    expect(await screen.findByText("Created")).toBeTruthy();
+    expect(sentPayloads(requests, COMMUNITY_ROOMS_CREATE_TASK)).toEqual([
+      {
+        label: "Board pack",
+        visibility: "attributed",
+        reason: "the board's papers",
+        description: "Papers for the board's meetings.",
+        tags: ["board", "finance"],
+      },
+    ]);
   });
 
   it("says what to configure when the community has no key holder", async () => {
@@ -459,6 +524,60 @@ describe("a community room's page", () => {
     ]);
   });
 
+  it("shows the room's details and who last changed them", async () => {
+    mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_GET_TASK, {
+        room: {
+          ...communityRoom(),
+          description: "Papers for the board's meetings.",
+          tags: ["board"],
+          detailsUpdatedAt: "2026-10-15T09:30:01Z",
+          detailsUpdatedBy: "did:key:z6MkSecretary",
+        },
+      }),
+      taskRoute(COMMUNITY_ROOMS_MEMBERS_LIST_TASK, { items: [] }),
+    ]);
+    mount(page);
+    expect(await screen.findByRole("heading", { name: "Board pack" })).toBeTruthy();
+    // The description is the page's lead and the room's first fact.
+    expect(screen.getAllByText("Papers for the board's meetings.").length).toBeGreaterThan(0);
+    expect(screen.getByText("board", { selector: ".chip" })).toBeTruthy();
+    expect(screen.getByText("Details last changed")).toBeTruthy();
+  });
+
+  it("edits a room's details, sending only what changed and asking for no gesture", async () => {
+    const requests = mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_GET_TASK, {
+        room: { ...communityRoom(), description: "Old words.", tags: ["board", "finance"] },
+      }),
+      taskRoute(COMMUNITY_ROOMS_MEMBERS_LIST_TASK, { items: [] }),
+      taskRoute(COMMUNITY_ROOMS_UPDATE_TASK, (p) => ({
+        room: { ...communityRoom(), label: (p as { label?: string }).label ?? "Board pack" },
+        changed: true,
+      })),
+    ]);
+    mount(page);
+    fireEvent.click(await screen.findByRole("button", { name: /Edit details/ }));
+    const form = screen.getByRole("region", { name: "Edit details" });
+    const save = within(form).getByRole("button", { name: "Save details" }) as HTMLButtonElement;
+    fireEvent.change(within(form).getByLabelText(/^Reason/), { target: { value: "the 2027 cycle" } });
+    expect(save.disabled).toBe(true);
+    expect(within(form).getByText("Nothing has changed yet.")).toBeTruthy();
+    fireEvent.change(within(form).getByLabelText(/^Label/), { target: { value: "Board pack — 2027" } });
+    fireEvent.change(within(form).getByLabelText(/^Description/), { target: { value: "" } });
+    fireEvent.change(within(form).getByLabelText(/^Tags/), { target: { value: "finance, board" } });
+    fireEvent.click(save);
+    await waitFor(() => expect(sentPayloads(requests, COMMUNITY_ROOMS_UPDATE_TASK)).toHaveLength(1));
+    expect(sentPayloads(requests, COMMUNITY_ROOMS_UPDATE_TASK)[0]).toEqual({
+      roomId: ROOM,
+      reason: "the 2027 cycle",
+      label: "Board pack — 2027",
+      removeDescription: true,
+    });
+  });
+
   it("names a room the community does not own", async () => {
     mockFetch([
       ...NAME_BOOK_ROUTES,
@@ -501,6 +620,35 @@ describe("community-rooms-api", () => {
     );
     expect(refusalFix(new GestureDeclinedError())).toBeNull();
     expect(refusalFix({ code: "somethingElse" })).toBeNull();
+  });
+
+  it("reads tags as a set, and refuses one outside the specification", () => {
+    expect(parseTags("board, finance board ,, ")).toEqual({ tags: ["board", "finance"] });
+    expect(parseTags("")).toEqual({ tags: [] });
+    expect("error" in parseTags("Board")).toBe(true);
+    expect("error" in parseTags("-board")).toBe(true);
+    expect("error" in parseTags("a b c d e f g h i")).toBe(true);
+  });
+
+  it("names only the details a form changes", () => {
+    const room = { ...communityRoom(), description: "Old words.", tags: ["board"] } as Parameters<
+      typeof detailsUpdate
+    >[0];
+    const form = { label: "Board pack", description: "Old words.", tags: ["board"], reason: " r " };
+    expect(detailsUpdate(room, form)).toBeNull();
+    expect(detailsUpdate(room, { ...form, tags: [] })).toEqual({ roomId: ROOM, reason: "r", tags: [] });
+    expect(detailsUpdate(room, { ...form, description: "  " })).toEqual({
+      roomId: ROOM,
+      reason: "r",
+      removeDescription: true,
+    });
+    expect(detailsUpdate(room, { ...form, description: "New words." })).toEqual({
+      roomId: ROOM,
+      reason: "r",
+      description: "New words.",
+    });
+    // Without a description, an empty one is no change.
+    expect(detailsUpdate({ ...room, description: undefined }, { ...form, description: "" })).toBeNull();
   });
 
   it("writes validUntil as a whole-second RFC 3339 instant", () => {

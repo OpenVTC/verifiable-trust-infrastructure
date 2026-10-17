@@ -125,6 +125,15 @@ use crate::server::AppState;
         vta_sdk::openapi::RoomsCommunityCreate01Response,
         vta_sdk::openapi::RoomsCommunityList01Response,
         vta_sdk::openapi::RoomsCommunityGet01Response,
+        // 0.2 — each room's description, tags and who last changed them — and the
+        // update that changes them.
+        vta_sdk::openapi::RoomsCommunityCreate02Payload,
+        vta_sdk::openapi::RoomsCommunityCreate02Response,
+        vta_sdk::openapi::RoomsCommunityList02Payload,
+        vta_sdk::openapi::RoomsCommunityList02Response,
+        vta_sdk::openapi::RoomsCommunityGet02Response,
+        vta_sdk::openapi::RoomsCommunityUpdate01Payload,
+        vta_sdk::openapi::RoomsCommunityUpdate01Response,
         vta_sdk::openapi::RoomsCommunityMembersAdd01Payload,
         vta_sdk::openapi::RoomsCommunityMembersAdd01Response,
         vta_sdk::openapi::RoomsCommunityMembersRemove01Payload,

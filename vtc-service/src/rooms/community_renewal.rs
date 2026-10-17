@@ -324,8 +324,10 @@ pub async fn sweep(state: &AppState, now: DateTime<Utc>) -> Result<SweepReport, 
         let new_until = now + chrono::Duration::days(i64::from(community.authority_valid_days()));
         match renew(&holder, &community, &vtc_did, &room, &mut rec, new_until).await {
             Ok(()) => {
-                // The one local write, now that the VTA holds both credentials. Re-read, so
-                // nothing else on the record is written back stale.
+                // The one local write, now that the VTA holds both credentials. Re-read under
+                // the record's guard, so nothing else on it — an administrator's change to
+                // its details — is written back stale.
+                let guard = state.community_rooms.record_lock().await;
                 let mut current = state
                     .community_rooms
                     .room(&room.room_id)
@@ -333,6 +335,7 @@ pub async fn sweep(state: &AppState, now: DateTime<Utc>) -> Result<SweepReport, 
                     .unwrap_or(room.clone());
                 current.owner_authority_valid_until = rfc3339(new_until);
                 state.community_rooms.put_room(&current).await?;
+                drop(guard);
                 let failures = rec.attempts;
                 rec.attempts = 0;
                 rec.next_attempt_at = None;
@@ -404,6 +407,7 @@ async fn audit(state: &AppState, actor: &str, room: &OwnedRoom, event: &str, not
         epoch: None,
         note: Some(note),
         reason: None,
+        details: Vec::new(),
     };
     if let Err(e) = writer
         .write(actor, None, AuditEvent::CommunityRoomChanged(data))
