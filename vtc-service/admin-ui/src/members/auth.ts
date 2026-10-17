@@ -15,6 +15,7 @@ import {
   serializeRegistration,
   type JsonPublicKeyOptions,
 } from "@/lib/webauthn";
+import { guardPreviewRequest } from "@/lib/theme-preview";
 
 import {
   errorMessage,
@@ -132,6 +133,8 @@ function requireVtaSignIn(): void {
  *  only an active member → the bearer becomes the portal's cookies. */
 async function runSiop(rp: string, did: string, entryId: string): Promise<void> {
   const base = memberWalletBase();
+  // Signing in is a write; a theme preview never does it.
+  guardPreviewRequest("POST", `${base}/auth/challenge`);
 
   const ch = await fetch(`${base}/auth/challenge`, {
     method: "POST",

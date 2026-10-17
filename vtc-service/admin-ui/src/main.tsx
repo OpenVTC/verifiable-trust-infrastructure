@@ -6,7 +6,9 @@ import { BrowserRouter } from "react-router-dom";
 import App from "@/App";
 import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
 import { loadThirdPartyPlugins } from "@/lib/plugin-loader";
+import { ThemePreviewBar } from "@/components/ThemePreviewBar";
 import { applyStoredTheme } from "@/lib/theme";
+import { isThemePreview, startThemePreview } from "@/lib/theme-preview";
 import { ToastProvider } from "@/lib/toast";
 import { registerBuiltinPlugins } from "@/plugins";
 // Self-hosted type: IBM Plex Sans (body and headings) and IBM Plex Mono
@@ -27,6 +29,9 @@ import "@/styles/index.css";
 // Apply the persisted theme before first paint so the cascade picks
 // the right `color-scheme` without a flash.
 applyStoredTheme();
+// A theme-preview tab draws the editor's candidate and sends reads only
+// (`lib/theme-preview.ts`).
+startThemePreview();
 
 // Single QueryClient instance per page load. Sane defaults: short
 // stale time so the operator's view stays fresh, no automatic
@@ -60,13 +65,18 @@ registerBuiltinPlugins();
 // Avoid top-level await (esbuild's default target doesn't permit
 // it). Mount after the loader resolves; the registry is fully
 // populated by first paint either way.
-loadThirdPartyPlugins().finally(() => {
+//
+// A theme preview loads no third-party plugin: a plugin is code with the
+// page's own reach, so it could send a write without passing the preview's
+// guard in `lib/api.ts`. The preview shows the built-ins only.
+(isThemePreview() ? Promise.resolve() : loadThirdPartyPlugins()).finally(() => {
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>
         <ToastProvider>
           <ConfirmDialogProvider>
             <BrowserRouter basename="/admin">
+              {isThemePreview() && <ThemePreviewBar />}
               <App />
             </BrowserRouter>
           </ConfirmDialogProvider>
