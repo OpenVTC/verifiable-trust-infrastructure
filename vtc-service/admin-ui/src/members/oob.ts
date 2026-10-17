@@ -116,6 +116,12 @@ export async function generateSessionKey(): Promise<ConsoleSigningKey> {
   return sessionKey;
 }
 
+/** `K_b` as it stands. The operator console keeps it once `redeem` has
+ *  bound it to the console session, to sign `auth/whoami/0.1` with. */
+export function heldSessionKey(): ConsoleSigningKey | null {
+  return sessionKey;
+}
+
 /** Forget `K_b` — at sign-out, or when a sign-in ends without a session. */
 export function forgetSessionKey(): void {
   sessionKey = null;

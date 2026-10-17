@@ -122,3 +122,4 @@ mod wallet_session;
 mod webauthn_harness;
 mod website_spine;
 mod website_task_gating;
+mod whoami_signed;

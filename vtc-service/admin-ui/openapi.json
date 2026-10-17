@@ -14,236 +14,6 @@
     "version": "0.11.58"
   },
   "paths": {
-    "/v1/admin/passkeys": {
-      "get": {
-        "tags": [
-          "admin"
-        ],
-        "operationId": "adminPasskeyList",
-        "responses": {
-          "200": {
-            "description": "Registered admin passkeys; empty when the                                       caller has enrolled none",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PasskeyListResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/passkeys/register/finish": {
-      "post": {
-        "tags": [
-          "admin"
-        ],
-        "operationId": "register_finish",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RegisterFinishRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "New passkey registered",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RegisterFinishResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing/invalid bearer token, or step-up UV failed"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/passkeys/register/start": {
-      "post": {
-        "tags": [
-          "admin"
-        ],
-        "operationId": "register_start",
-        "responses": {
-          "200": {
-            "description": "New-device registration + step-up UV challenges",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RegisterStartResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          },
-          "404": {
-            "description": "No passkey user for caller"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/passkeys/revoke/finish": {
-      "post": {
-        "tags": [
-          "admin"
-        ],
-        "operationId": "revoke_finish",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RevokeFinishRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Passkey revoked",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RevokeFinishResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing/invalid bearer token, or step-up UV failed"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          },
-          "404": {
-            "description": "credential_id not registered for this admin"
-          },
-          "409": {
-            "description": "Refusing to leave the admin with zero passkeys"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/passkeys/revoke/start": {
-      "post": {
-        "tags": [
-          "admin"
-        ],
-        "operationId": "revoke_start",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RevokeStartRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Step-up UV challenge for the revocation",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RevokeStartResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          },
-          "404": {
-            "description": "credential_id not registered for this admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/auth/admin-session": {
-      "post": {
-        "tags": [
-          "auth"
-        ],
-        "operationId": "admin_session",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminSessionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Admin session + CSRF cookies set",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminSessionResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Invalid or expired access token"
-          }
-        }
-      }
-    },
     "/v1/auth/passkey-login/finish": {
       "post": {
         "tags": [
@@ -362,35 +132,6 @@
         },
         "security": [
           {},
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/auth/whoami": {
-      "get": {
-        "tags": [
-          "auth"
-        ],
-        "summary": "`GET /v1/auth/whoami` — returns the caller's identity claims\npulled from the access token. Lets browser SPAs render a\n\"signed in as\" indicator without exposing the JWT to JS (the\nsession cookie is HttpOnly by design).",
-        "operationId": "whoami",
-        "responses": {
-          "200": {
-            "description": "Caller identity claims",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WhoamiResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          }
-        },
-        "security": [
           {
             "bearer_jwt": []
           }
@@ -738,6 +479,13 @@
           },
           "credential": {
             "type": "object"
+          },
+          "ext": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Extension members. `ext[\"org.openvtc\"].sessionKey` is the browser key\n(an Ed25519 `did:key`) a console login binds to the session it mints,\nso the console can later sign `auth/whoami/0.1` for that session\n([`session_key_from_ext`]). Whoever submits this finish receives the\nsession's cookies anyway; binding the key they hold to it confers\nnothing those cookies do not."
           }
         }
       },
@@ -780,33 +528,9 @@
           }
         }
       },
-      "AdminSessionRequest": {
-        "type": "object",
-        "description": "Request body for [`admin_session`].",
-        "required": [
-          "accessToken"
-        ],
-        "properties": {
-          "accessToken": {
-            "type": "string",
-            "description": "A valid VTC access token the caller already holds — e.g. from the\nVTA-wallet SIOP login, which returns it in `tokens.accessToken`."
-          },
-          "ext": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/Value",
-                "description": "Extension members. Carries the optional refresh token this route\nneeds but the canonical payload has no top-level member for.\n\n`spec/vtc/auth/admin-session/0.1` types its payload as\n`{accessToken, ext}` and the conformance witness compares this\nstruct against it, so a top-level `refreshToken` would fail the\nbuild. `ext` is the schema's own escape hatch; see\n[`refresh_token_from_ext`]."
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        }
-      },
       "AdminSessionResponse": {
         "type": "object",
-        "description": "`POST /v1/auth/admin-session` — exchange a bearer access token for the\nadmin SPA's cookie session.\n\nThe VTA-wallet login path returns a bearer token in the response body\n(the wallet extension posts the SIOP `id_token` to `/wallet/auth/` and\nreads `tokens.accessToken`), but the admin SPA drives the API with the\n`vtc_admin_session` cookie + `csrf` double-submit, not an\n`Authorization` header. This endpoint bridges the two: it validates the\npresented token (signature + VTC audience + expiry) and, on success,\nsets the `vtc_admin_session` + `csrf` cookie pair:\n\n- `vtc_admin_session=<jwt>; Path=/; SameSite=Strict; Secure; HttpOnly` —\n  the access-token JWT, scoped to the daemon's whole origin so the browser\n  sends it on `/v1/*` API calls. `HttpOnly` keeps JS from reading it;\n  `SameSite=Strict` prevents cross-site CSRF.\n- `csrf=<random>; Path=/; SameSite=Strict; Secure` (HttpOnly **false**, so\n  SPA JS can mirror the value into the `X-CSRF-Token` header for the\n  double-submit check in `routing::csrf`).\n\nNo privilege escalation — the caller must already possess a valid VTC\naccess token, which it could use directly as a bearer; this only mirrors\nit into the cookie the browser SPA expects. Browser-only by nature: the\nCSRF layer's same-origin check carries the (cookie-less) first call.\n`{ sessionId, expiresAt }` — the shape `vtc/auth/admin-session/0.1`\npublishes, and which this route did not return until #1059's witness put\nthe handler beside its own schema.",
+        "description": "`vtc/auth/admin-session/0.1` — exchange a bearer access token for the\nadmin SPA's cookie session.\n\nThe VTA-wallet login path returns a bearer token in the response body\n(the wallet extension posts the SIOP `id_token` to `/wallet/auth/` and\nreads `tokens.accessToken`), but the admin SPA drives the API with the\n`vtc_admin_session` cookie + `csrf` double-submit, not an\n`Authorization` header. This task bridges the two: it validates the\npresented token (signature + VTC audience + expiry) and, on success,\nsets the `vtc_admin_session` + `csrf` cookie pair:\n\n- `vtc_admin_session=<jwt>; Path=/; SameSite=Strict; Secure; HttpOnly` —\n  the access-token JWT, scoped to the daemon's whole origin so the browser\n  sends it on `/v1/*` API calls. `HttpOnly` keeps JS from reading it;\n  `SameSite=Strict` prevents cross-site CSRF.\n- `csrf=<random>; Path=/; SameSite=Strict; Secure` (HttpOnly **false**, so\n  SPA JS can mirror the value into the `X-CSRF-Token` header for the\n  double-submit check in `routing::csrf`).\n\nNo privilege escalation — the caller must already possess a valid VTC\naccess token, which it could use directly as a bearer; this only mirrors\nit into the cookie the browser SPA expects.\n\nIt is served only as a signed document on the HTTPS door\n(`trust_tasks::admin_session_tasks`), which checks the proof's signer is\nthe token's subject (or a console key that subject enrolled) and sets the\ncookies [`admin_session_cookies`] returns. Its bearer route is gone (#1641).\n\n`{ sessionId, expiresAt }` — the shape `vtc/auth/admin-session/0.1`\npublishes, and which the route did not return until #1059's witness put\nthe handler beside its own schema.",
         "required": [
           "sessionId",
           "expiresAt"
@@ -4966,36 +4690,6 @@
           }
         }
       },
-      "RegisterFinishRequest": {
-        "type": "object",
-        "required": [
-          "registration_id",
-          "register_response",
-          "uv_response",
-          "label"
-        ],
-        "properties": {
-          "label": {
-            "type": "string",
-            "description": "Operator-supplied label (e.g. `\"YubiKey 5C\"`)."
-          },
-          "register_response": {
-            "type": "object"
-          },
-          "registration_id": {
-            "type": "string"
-          },
-          "transports": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "uv_response": {
-            "type": "object"
-          }
-        }
-      },
       "RegisterFinishResponse": {
         "type": "object",
         "required": [
@@ -5006,6 +4700,13 @@
         "properties": {
           "credentialId": {
             "type": "string"
+          },
+          "deviceLabel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The label the credential was stored with, absent when none was given."
           },
           "registeredAt": {
             "type": "string",
@@ -5044,7 +4745,7 @@
           },
           "options": {
             "type": "object",
-            "description": "The value for `navigator.credentials.create({ publicKey: … })`.\n\nThe **inner** options, not webauthn-rs's `{publicKey: …}` wrapper.\n`CredentialCreationOptions` in the published schema describes itself as\n\"server-issued options for `navigator.credentials.create({ publicKey:\n... })`\" — the value that goes *inside* the key, not the object\ncontaining it.\n\nThe wrapper was pure ceremony: the admin SPA unwrapped it with\n`start.registerOptions.publicKey` and immediately re-wrapped it as\n`create({ publicKey: … })`. Sending the inner object means the client\nwrites `create({ publicKey: start.options })` and nothing is undone on\nthe way."
+            "description": "The value for `navigator.credentials.create({ publicKey: … })`.\n\nThe **inner** options, not webauthn-rs's `{publicKey: …}` wrapper.\n`CredentialCreationOptions` in the published schema describes itself as\n\"server-issued options for `navigator.credentials.create({ publicKey:\n... })`\" — the value that goes *inside* the key, not the object\ncontaining it."
           },
           "uvOptions": {
             "type": "object",
@@ -5301,21 +5002,6 @@
           "needsReview"
         ]
       },
-      "RevokeFinishRequest": {
-        "type": "object",
-        "required": [
-          "revocation_id",
-          "uv_response"
-        ],
-        "properties": {
-          "revocation_id": {
-            "type": "string"
-          },
-          "uv_response": {
-            "type": "object"
-          }
-        }
-      },
       "RevokeFinishResponse": {
         "type": "object",
         "required": [
@@ -5361,17 +5047,6 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
-          }
-        }
-      },
-      "RevokeStartRequest": {
-        "type": "object",
-        "required": [
-          "credential_id"
-        ],
-        "properties": {
-          "credential_id": {
-            "type": "string"
           }
         }
       },

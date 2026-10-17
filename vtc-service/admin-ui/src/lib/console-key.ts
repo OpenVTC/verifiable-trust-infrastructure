@@ -405,6 +405,7 @@ export function resetConsoleKeyCacheForTests(): void {
   cached = null;
   restoreInFlight = null;
   ed25519Supported = null;
+  sessionCached = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -478,7 +479,7 @@ const IDB_VERSION = 1;
 /** One key per origin; a second VTC is a second origin. */
 const RECORD_KEY = "console-signing-key";
 
-let memoryFallback: StoredKey | null = null;
+const memoryFallback = new Map<string, StoredKey>();
 
 function openDb(): Promise<IDBDatabase | null> {
   return new Promise((resolve, reject) => {
@@ -500,7 +501,10 @@ function openDb(): Promise<IDBDatabase | null> {
   });
 }
 
-async function persist(identity: ConsoleSigningKey): Promise<StorageDurability> {
+async function persist(
+  identity: ConsoleSigningKey,
+  slot: string = RECORD_KEY,
+): Promise<StorageDurability> {
   const record: StoredKey = { keypair: identity.keypair };
   let db: IDBDatabase | null;
   try {
@@ -511,13 +515,13 @@ async function persist(identity: ConsoleSigningKey): Promise<StorageDurability> 
     );
   }
   if (!db) {
-    memoryFallback = record;
+    memoryFallback.set(slot, record);
     return "memory";
   }
   try {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(IDB_STORE, "readwrite");
-      tx.objectStore(IDB_STORE).put(record, RECORD_KEY);
+      tx.objectStore(IDB_STORE).put(record, slot);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error ?? new Error("IDB put failed"));
       tx.onabort = () => reject(tx.error ?? new Error("IDB put aborted"));
@@ -532,7 +536,7 @@ async function persist(identity: ConsoleSigningKey): Promise<StorageDurability> 
   // operator is still here, not then.
   let back: StoredKey | null;
   try {
-    back = await read();
+    back = await read(slot);
   } catch (e) {
     throw new KeyStorageError(`the signing key was stored but could not be read back: ${messageOf(e)}`);
   }
@@ -544,13 +548,13 @@ async function persist(identity: ConsoleSigningKey): Promise<StorageDurability> 
 }
 
 /** The stored record, or `null` when there is none. Throws if the store fails. */
-async function read(): Promise<StoredKey | null> {
+async function read(slot: string = RECORD_KEY): Promise<StoredKey | null> {
   const db = await openDb();
-  if (!db) return memoryFallback;
+  if (!db) return memoryFallback.get(slot) ?? null;
   try {
     const record = await new Promise<StoredKey | undefined>((resolve, reject) => {
       const tx = db.transaction(IDB_STORE, "readonly");
-      const req = tx.objectStore(IDB_STORE).get(RECORD_KEY);
+      const req = tx.objectStore(IDB_STORE).get(slot);
       req.onsuccess = () => resolve(req.result as StoredKey | undefined);
       req.onerror = () => reject(req.error ?? new Error("IDB get failed"));
     });
@@ -560,8 +564,8 @@ async function read(): Promise<StoredKey | null> {
   }
 }
 
-async function remove(): Promise<void> {
-  memoryFallback = null;
+async function remove(slot: string = RECORD_KEY): Promise<void> {
+  memoryFallback.delete(slot);
   let db: IDBDatabase | null = null;
   try {
     db = await openDb();
@@ -572,12 +576,74 @@ async function remove(): Promise<void> {
   try {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(IDB_STORE, "readwrite");
-      tx.objectStore(IDB_STORE).delete(RECORD_KEY);
+      tx.objectStore(IDB_STORE).delete(slot);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error ?? new Error("IDB delete failed"));
       tx.onabort = () => reject(tx.error ?? new Error("IDB delete aborted"));
     });
   } finally {
     db.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The browser session key
+// ---------------------------------------------------------------------------
+//
+// Every console sign-in binds a key of this browser to the session it mints
+// (`Session::session_pubkey_b58btc` on the daemon) — `auth/oob/*`'s `K_b`,
+// or the `ext["org.openvtc"].sessionKey` a passkey login or the SIOPv2
+// cookie bridge names — and `auth/whoami/0.1` is signed with it (#1641). The
+// cookie confers nothing on its own: whoami answers for a key.
+//
+// It is **not** the console signing key above. That one is a delegation the
+// VTC must enrol, and an unenrolled key in its place reads as "no longer
+// accepted". This one is minted fresh for every sign-in, kept only once the
+// sign-in has bound it, and forgotten at sign-out. Same custody: a
+// non-extractable WebCrypto Ed25519 pair, stored as `CryptoKey` objects.
+
+const SESSION_RECORD_KEY = "console-session-key";
+
+let sessionCached: ConsoleSigningKey | null = null;
+
+/** A fresh browser session key, not yet kept — for a sign-in to bind. */
+export function mintBrowserSessionKey(): Promise<ConsoleSigningKey> {
+  return mintConsoleKey();
+}
+
+/**
+ * Keep `identity` as this browser's session key, once a sign-in has bound it.
+ * A write the browser refuses does not fail the sign-in: the key still signs
+ * for this page, and after a reload the operator signs in again.
+ */
+export async function adoptBrowserSessionKey(identity: ConsoleSigningKey): Promise<void> {
+  sessionCached = identity;
+  try {
+    await persist(identity, SESSION_RECORD_KEY);
+  } catch {
+    // Held for this page only.
+  }
+}
+
+/** The session key this browser holds, or `null`. Never throws. */
+export async function loadBrowserSessionKey(): Promise<ConsoleSigningKey | null> {
+  if (sessionCached) return sessionCached;
+  try {
+    const stored = await read(SESSION_RECORD_KEY);
+    if (!stored) return null;
+    sessionCached = await identityFor(stored.keypair);
+    return sessionCached;
+  } catch {
+    return null;
+  }
+}
+
+/** Forget the session key — at sign-out. Never throws. */
+export async function forgetBrowserSessionKey(): Promise<void> {
+  sessionCached = null;
+  try {
+    await remove(SESSION_RECORD_KEY);
+  } catch {
+    // Nothing to forget.
   }
 }

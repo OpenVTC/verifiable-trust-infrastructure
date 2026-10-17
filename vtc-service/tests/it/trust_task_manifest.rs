@@ -789,6 +789,20 @@ const FEATURE_GATED_DOCUMENT_TYPES: &[(&str, bool)] = &[
 /// of a redemption the member's `cnm` started; and the admin verbs whose REST
 /// routes are gone.
 const SPINE_DOCUMENT_TYPES: &[&str] = &[
+    // An administrator's own passkeys (`trust_tasks::admin_passkey_tasks`),
+    // signed by the console key (`admin-ui/src/lib/my-passkeys-api.ts`), and
+    // the SIOPv2 sign-in's cookie bridge (`trust_tasks::admin_session_tasks`),
+    // signed by the wallet or the console key (`lib/admin-session.ts`). Their
+    // bearer routes went with #1641's last batch.
+    "https://trusttasks.org/spec/auth/passkey/list/0.1",
+    "https://trusttasks.org/spec/auth/passkey/enroll/start/0.2",
+    "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2",
+    "https://trusttasks.org/spec/auth/passkey/revoke/start/0.1",
+    "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1",
+    "https://trusttasks.org/spec/vtc/auth/admin-session/0.1",
+    // Session introspection, signed by the browser key a sign-in bound to the
+    // session (`trust_tasks::whoami_tasks`, `admin-ui/src/lib/api.ts`).
+    "https://trusttasks.org/spec/auth/whoami/0.1",
     // The member portal's wallet sign-in (`trust_tasks::oob_tasks`): the
     // starter's request, long-poll redeem and cancel, signed by the browser's
     // `K_b` (`admin-ui/src/members/oob.ts`).
@@ -1000,9 +1014,13 @@ fn every_admin_ui_task_is_enforced_by_a_route() {
     // signed-document spine (`trust_tasks::{auth_tasks,install_tasks,
     // recognise_tasks,website_tasks}` / `member_tasks`); `auth/challenge` and
     // `auth/authenticate/0.1` keep theirs (see `routes/mod.rs`'s comment on
-    // those mounts).
+    // those mounts). It fell again with #1641's last batch, which moved an
+    // administrator's own passkeys and `vtc/auth/admin-session` to the
+    // spine: what is left is `auth/passkey/login/{start,finish}`
+    // and `auth/refresh/0.1` (`auth/whoami/0.1` went to the spine with the
+    // browser key a sign-in binds).
     assert!(
-        enforced.len() >= 10,
+        enforced.len() >= 3,
         "found only {} Trust-Task URIs in routes/mod.rs — the scan path is wrong",
         enforced.len()
     );

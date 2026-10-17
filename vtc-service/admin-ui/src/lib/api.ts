@@ -12,6 +12,7 @@
 import {
   renewIfNeeded,
   resetSession,
+  sessionExpiry,
   setSessionExpiry,
   watchSessionDeadline,
 } from "@/lib/session";
@@ -121,7 +122,7 @@ export async function daemonErrorMessage(
 
 function csrfTokenFromCookie(): string | null {
   // The CSRF cookie is set by login (`/v1/auth/passkey-login/finish`
-  // or `/v1/auth/admin-session`). HttpOnly is **not** set on this
+  // or the signed `vtc/auth/admin-session/0.1`). HttpOnly is **not** set on this
   // cookie precisely so JS can read it.
   const match = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
   return match?.[1] ?? null;
@@ -385,6 +386,8 @@ export const deleteJson = <T>(
 import {
   buildTrustTaskDocument,
   ed25519Available,
+  forgetBrowserSessionKey,
+  loadBrowserSessionKey,
   loadConsoleKey,
   signTrustTaskDocument,
   type ConsoleSigningKey,
@@ -694,13 +697,17 @@ async function postDocument<T>(
     // failing one by one. A step-up request is not a refusal of the key, and
     // the signing-key tasks are the check itself. A `task-consent` decision is
     // signed by the approver's own DID through the wallet, not by this
-    // browser's key, so its refusal says nothing about the key.
+    // browser's key, so its refusal says nothing about the key. Nor does the
+    // sign-in's `vtc/auth/admin-session`, usually signed by the wallet before
+    // any session — and any key check — exists.
     if (
       "proof" in signed &&
       apiError.code === "permissionDenied" &&
       !(apiError.details && "stepUpRequest" in apiError.details) &&
       !signed.type.includes("/auth/signing-key/") &&
       !signed.type.includes("/task-consent/") &&
+      !signed.type.includes("/vtc/auth/admin-session/") &&
+      !signed.type.includes("/auth/whoami/") &&
       typeof window !== "undefined"
     ) {
       window.dispatchEvent(new Event(SIGNING_KEY_REFUSED_EVENT));
@@ -845,7 +852,7 @@ export interface SessionView {
   acr?: string;
 }
 
-/** Shape returned by `GET /v1/auth/whoami`. */
+/** `auth/whoami/0.1`'s response payload. */
 export interface WhoamiResponse {
   session: SessionView;
   /** The caller's roles. A single role is one entry — was the scalar `role`. */
@@ -869,16 +876,42 @@ export interface WhoamiResponse {
 
 const WHOAMI_TASK = "https://trusttasks.org/spec/auth/whoami/0.1";
 
-/** Fetch the caller's session identity. Throws on 401/403. */
-export const fetchWhoami = (): Promise<WhoamiResponse> =>
-  getJson<WhoamiResponse>("/v1/auth/whoami", {
-    trustTask: WHOAMI_TASK,
-    // The shell renders the session badge from this before anything else, so
-    // a mismatch here takes the whole console down rather than one view. That
-    // is how #1186 was reported: `shortenDid(undefined)`, on load, with the
-    // stack in minified bundle frames.
-    requires: ["session.subject", "roles", "scopes"],
-  });
+/**
+ * The signed-in session's identity: `auth/whoami/0.1`, signed with the
+ * browser session key a sign-in bound to the session
+ * (`console-key.ts` § "The browser session key"). The cookie confers nothing
+ * here — the VTC answers for the key (#1641).
+ *
+ * Throws an [`ApiError`] with status 401 when this browser holds no session
+ * key (nobody signed in here), and the VTC's 403 when the key's session has
+ * ended.
+ */
+export async function fetchWhoami(): Promise<WhoamiResponse> {
+  const key = await loadBrowserSessionKey();
+  if (!key) {
+    const err: ApiError = { status: 401, message: "not signed in on this browser" };
+    throw err;
+  }
+  const signed = await signTrustTaskDocument(
+    buildTrustTaskDocument({
+      typeUri: WHOAMI_TASK,
+      payload: {},
+      issuer: key.consoleDid,
+      recipient: await communityDid(),
+    }),
+    key,
+    // A session key speaks as the subject for this session, with
+    // `proofPurpose: authentication` (`auth/authenticate/0.2`).
+    { proofPurpose: "authentication" },
+  );
+  const who = await postDocument<WhoamiResponse>(signed);
+  // The shell renders the session badge from this before anything else, so
+  // a mismatch here takes the whole console down rather than one view. That
+  // is how #1186 was reported: `shortenDid(undefined)`, on load, with the
+  // stack in minified bundle frames.
+  assertShape(WHOAMI_TASK, who, ["session.subject", "roles", "scopes"]);
+  return who;
+}
 
 // ── Runtime config ──────────────────────────────────────────────────────
 //
@@ -924,8 +957,10 @@ export const signOut = async (): Promise<void> => {
     }
   } finally {
     // Drop the expiry so a subsequent sign-in starts from that session's
-    // own deadline rather than renewing against the dead one's.
+    // own deadline rather than renewing against the dead one's — and the
+    // session key, which speaks for nothing once the session is gone.
     resetSession();
+    await forgetBrowserSessionKey();
   }
 };
 
@@ -1128,10 +1163,20 @@ export const watchSession = (): (() => void) => {
 export async function probeSession(): Promise<WhoamiResponse | null> {
   try {
     const who = await fetchWhoami();
-    // The one place the console learns when its cookie dies. It has
-    // always been in this response; nothing read it until renewal
-    // needed something to schedule against.
-    setSessionExpiry(who.session?.expiresAt ?? null);
+    // `whoami`'s `expiresAt` is when the *session* ends; the access cookie
+    // is shorter-lived, and only a renewal says when it dies. So with no
+    // live expiry on record — a fresh load, or one that has passed — renew
+    // now, which also learns it. A refused renewal is a session the daemon
+    // will not keep (idled out, revoked): signed out.
+    const known = sessionExpiry();
+    if (known === null || known <= Math.floor(Date.now() / 1000)) {
+      const expires = await renewSession();
+      if (expires === null) {
+        resetSession();
+        return null;
+      }
+      setSessionExpiry(expires);
+    }
     return who;
   } catch (e) {
     const err = e as ApiError;

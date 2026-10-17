@@ -703,12 +703,23 @@ The SIOPv2 path is two calls, both on canonical Trust Tasks:
 1. `POST /v1/auth/` (`spec/auth/authenticate/0.1`) — the DIDComm-packed or
    SIOP challenge response, returning `{ session, tokens }` with a bearer
    access token.
-2. `POST /v1/auth/admin-session` (`spec/vtc/auth/admin-session/0.1`) — post
-   that access token back; the daemon validates it (signature, VTC audience,
-   expiry) and returns `Set-Cookie` headers carrying the session JWT + CSRF
-   token. No privilege escalation: the caller already held a token it could
-   have used as a bearer, so this only mirrors it into the cookie the browser
-   SPA expects.
+2. `spec/vtc/auth/admin-session/0.1`, a signed document on
+   `POST /v1/trust-tasks` — post that access token back; the daemon validates
+   it (signature, VTC audience, expiry), checks the document is **signed by
+   the token's subject** (or by a console key that subject enrolled), and
+   answers with `Set-Cookie` headers carrying the session JWT + CSRF token. The
+   console has the wallet sign it as the identity that just signed in, or
+   signs with this browser's console key when the wallet cannot. No privilege
+   escalation: the caller already held a token it could have used as a bearer,
+   so this only mirrors it into the cookie the browser SPA expects — and a
+   token alone, without the subject's key, no longer does even that. The
+   document also names a fresh browser key (`ext["org.openvtc"].sessionKey`)
+   that the daemon binds to the session; the console signs `auth/whoami/0.1`
+   with it, as it does with the key every other console sign-in binds. The
+   bearer route `POST /v1/auth/admin-session` was removed (#1641): the task
+   declares a proof REQUIRED. A wallet that cannot sign Trust Tasks, in a
+   browser holding no signing key for that identity, cannot finish this
+   sign-in; use the wallet sign-in above or a passkey.
 
 Passkey login is a single call — `POST /v1/auth/passkey-login/finish` mints
 the same cookie pair directly.

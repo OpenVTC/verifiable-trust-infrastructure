@@ -4,102 +4,6 @@
  */
 
 export interface paths {
-    "/v1/admin/passkeys": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["adminPasskeyList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/admin/passkeys/register/finish": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["register_finish"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/admin/passkeys/register/start": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["register_start"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/admin/passkeys/revoke/finish": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["revoke_finish"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/admin/passkeys/revoke/start": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["revoke_start"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/auth/admin-session": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["admin_session"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/auth/passkey-login/finish": {
         parameters: {
             query?: never;
@@ -203,28 +107,6 @@ export interface paths {
          *     cookies are still cleared.
          */
         post: operations["sign_out"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/auth/whoami": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * `GET /v1/auth/whoami` — returns the caller's identity claims
-         *     pulled from the access token. Lets browser SPAs render a
-         *     "signed in as" indicator without exposing the JWT to JS (the
-         *     session cookie is HttpOnly by design).
-         */
-        get: operations["whoami"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -436,6 +318,15 @@ export interface components {
         AdminPasskeyLoginFinishRequest: {
             auth_id: string;
             credential: Record<string, never>;
+            /**
+             * @description Extension members. `ext["org.openvtc"].sessionKey` is the browser key
+             *     (an Ed25519 `did:key`) a console login binds to the session it mints,
+             *     so the console can later sign `auth/whoami/0.1` for that session
+             *     ([`session_key_from_ext`]). Whoever submits this finish receives the
+             *     session's cookies anyway; binding the key they hold to it confers
+             *     nothing those cookies do not.
+             */
+            ext?: Record<string, never> | null;
         };
         /**
          * @description Request body for `passkey-login/start`, per
@@ -495,24 +386,15 @@ export interface components {
              */
             options: Record<string, never>;
         };
-        /** @description Request body for [`admin_session`]. */
-        AdminSessionRequest: {
-            /**
-             * @description A valid VTC access token the caller already holds — e.g. from the
-             *     VTA-wallet SIOP login, which returns it in `tokens.accessToken`.
-             */
-            accessToken: string;
-            ext?: components["schemas"]["Value"] | null;
-        };
         /**
-         * @description `POST /v1/auth/admin-session` — exchange a bearer access token for the
+         * @description `vtc/auth/admin-session/0.1` — exchange a bearer access token for the
          *     admin SPA's cookie session.
          *
          *     The VTA-wallet login path returns a bearer token in the response body
          *     (the wallet extension posts the SIOP `id_token` to `/wallet/auth/` and
          *     reads `tokens.accessToken`), but the admin SPA drives the API with the
          *     `vtc_admin_session` cookie + `csrf` double-submit, not an
-         *     `Authorization` header. This endpoint bridges the two: it validates the
+         *     `Authorization` header. This task bridges the two: it validates the
          *     presented token (signature + VTC audience + expiry) and, on success,
          *     sets the `vtc_admin_session` + `csrf` cookie pair:
          *
@@ -526,10 +408,15 @@ export interface components {
          *
          *     No privilege escalation — the caller must already possess a valid VTC
          *     access token, which it could use directly as a bearer; this only mirrors
-         *     it into the cookie the browser SPA expects. Browser-only by nature: the
-         *     CSRF layer's same-origin check carries the (cookie-less) first call.
+         *     it into the cookie the browser SPA expects.
+         *
+         *     It is served only as a signed document on the HTTPS door
+         *     (`trust_tasks::admin_session_tasks`), which checks the proof's signer is
+         *     the token's subject (or a console key that subject enrolled) and sets the
+         *     cookies [`admin_session_cookies`] returns. Its bearer route is gone (#1641).
+         *
          *     `{ sessionId, expiresAt }` — the shape `vtc/auth/admin-session/0.1`
-         *     publishes, and which this route did not return until #1059's witness put
+         *     publishes, and which the route did not return until #1059's witness put
          *     the handler beside its own schema.
          */
         AdminSessionResponse: {
@@ -2822,16 +2709,10 @@ export interface components {
             description?: string | null;
             typeUri: string;
         };
-        RegisterFinishRequest: {
-            /** @description Operator-supplied label (e.g. `"YubiKey 5C"`). */
-            label: string;
-            register_response: Record<string, never>;
-            registration_id: string;
-            transports?: string[];
-            uv_response: Record<string, never>;
-        };
         RegisterFinishResponse: {
             credentialId: string;
+            /** @description The label the credential was stored with, absent when none was given. */
+            deviceLabel?: string | null;
             /**
              * Format: date-time
              * @description When the credential was registered. Required by the task, and the same
@@ -2873,12 +2754,6 @@ export interface components {
              *     "server-issued options for `navigator.credentials.create({ publicKey:
              *     ... })`" — the value that goes *inside* the key, not the object
              *     containing it.
-             *
-             *     The wrapper was pure ceremony: the admin SPA unwrapped it with
-             *     `start.registerOptions.publicKey` and immediately re-wrapped it as
-             *     `create({ publicKey: … })`. Sending the inner object means the client
-             *     writes `create({ publicKey: start.options })` and nothing is undone on
-             *     the way.
              */
             options: Record<string, never>;
             /**
@@ -3042,10 +2917,6 @@ export interface components {
          * @enum {string}
          */
         RevocationReviewState: "noAdmission" | "needsReview";
-        RevokeFinishRequest: {
-            revocation_id: string;
-            uv_response: Record<string, never>;
-        };
         RevokeFinishResponse: {
             credentialId: string;
             /**
@@ -3071,9 +2942,6 @@ export interface components {
         RevokeSessionResponse: {
             /** Format: int64 */
             revokedCount: number;
-        };
-        RevokeStartRequest: {
-            credential_id: string;
         };
         RevokeStartResponse: {
             revocationId: string;
@@ -5810,247 +5678,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    adminPasskeyList: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Registered admin passkeys; empty when the                                       caller has enrolled none */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PasskeyListResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    register_finish: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RegisterFinishRequest"];
-            };
-        };
-        responses: {
-            /** @description New passkey registered */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RegisterFinishResponse"];
-                };
-            };
-            /** @description Missing/invalid bearer token, or step-up UV failed */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    register_start: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description New-device registration + step-up UV challenges */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RegisterStartResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No passkey user for caller */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    revoke_finish: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RevokeFinishRequest"];
-            };
-        };
-        responses: {
-            /** @description Passkey revoked */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RevokeFinishResponse"];
-                };
-            };
-            /** @description Missing/invalid bearer token, or step-up UV failed */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description credential_id not registered for this admin */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Refusing to leave the admin with zero passkeys */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    revoke_start: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RevokeStartRequest"];
-            };
-        };
-        responses: {
-            /** @description Step-up UV challenge for the revocation */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RevokeStartResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description credential_id not registered for this admin */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    admin_session: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AdminSessionRequest"];
-            };
-        };
-        responses: {
-            /** @description Admin session + CSRF cookies set */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AdminSessionResponse"];
-                };
-            };
-            /** @description Invalid or expired access token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     passkey_login_finish: {
         parameters: {
             query?: never;
@@ -6154,33 +5781,6 @@ export interface operations {
         responses: {
             /** @description Any session the request names is revoked; the session, refresh and CSRF cookies are cleared */
             204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    whoami: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Caller identity claims */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WhoamiResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
                 headers: {
                     [name: string]: unknown;
                 };

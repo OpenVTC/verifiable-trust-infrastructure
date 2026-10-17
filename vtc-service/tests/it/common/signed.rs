@@ -113,6 +113,37 @@ pub async fn post(vtc: &TestVtc, doc: &Value) -> (StatusCode, Value) {
     )
 }
 
+/// As [`post`], also returning the `Set-Cookie` values the reply carries — for
+/// the tasks that set the console's cookie session on the HTTPS door
+/// (`vtc/auth/admin-session/0.1`).
+pub async fn post_for_cookies(vtc: &TestVtc, doc: &Value) -> (StatusCode, Vec<String>, Value) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/v1/trust-tasks")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(doc).unwrap()))
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [10, 255, 0, 1],
+            40_000,
+        ))));
+    let res = vtc.router.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let cookies = res
+        .headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(str::to_string))
+        .collect();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        cookies,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
 /// Sign `payload` as `from` and send it: the reply's status and document.
 ///
 /// A success reply is held to its task's published `#response` schema — the

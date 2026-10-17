@@ -141,7 +141,8 @@ export default function App() {
     };
   }, [qc, toast]);
 
-  // Probe the session cookie via `/v1/auth/whoami`. Returning the
+  // Probe the session with a signed `auth/whoami/0.1` from the key the
+  // sign-in bound to it (`lib/api.ts` `fetchWhoami`). Returning the
   // claim payload (not just a bool) lets the navbar show "Signed
   // in as …" without a second round trip. 401/403 → show Login.
   //

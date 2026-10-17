@@ -163,6 +163,18 @@ use crate::server::AppState;
         admin::invites::RevokeInviteResponse,
         auth::SessionListResponse,
         auth::RevokeSessionResponse,
+        // The console's bearer → cookie bridge and an administrator's own
+        // passkeys (`trust_tasks::{admin_session_tasks,admin_passkey_tasks}`),
+        // signed documents only since #1641's last batch.
+        auth::AdminSessionResponse,
+        auth::WhoamiResponse,
+        auth::SessionView,
+        admin::passkeys::ListResponse,
+        admin::passkeys::RegisteredCredential,
+        admin::passkeys::RegisterStartResponse,
+        admin::passkeys::RegisterFinishResponse,
+        admin::passkeys::RevokeStartResponse,
+        admin::passkeys::RevokeFinishResponse,
         // The community verbs the console signs (`trust_tasks::community_tasks`).
         community::profile::CommunityProfileResponse,
         ceremonies::CeremonyListResponse,
@@ -434,8 +446,7 @@ fn build_api_chain(
     // openvtc/vtc/auth/legacy/* slugs were VTC-specific reimplementations
     // of primitives that VTA + did-hosting also have; consolidating here
     // so a multi-service deployment can use one client library.
-    // Browser-SPA convenience surface: `whoami` here, bound to the
-    // access-token session (cookie or bearer). Its partner `sign-out`
+    // Browser-SPA convenience surface: `sign-out`
     // revokes the session and clears the browser cookies in one trip; it
     // is on the unauthenticated chain because it also answers a session
     // that has already ended.
@@ -534,13 +545,10 @@ fn build_api_chain(
         // The session listing and revocation are the signed
         // `auth/sessions/list/0.1` and `auth/revoke-session/0.2`, served by the
         // spine (`trust_tasks::admin_tasks`) on every transport; neither has a
-        // route. `whoami` describes the bearer session the request carries,
-        // which a signed document does not have, so it stays with the session
-        // surface.
-        .routes(tt(
-            routes!(auth::whoami),
-            "https://trusttasks.org/spec/auth/whoami/0.1",
-        ))
+        // route. Nor has `auth/whoami/0.1`: it is answered on the spine
+        // (`trust_tasks::whoami_tasks`) for the key a sign-in bound to the
+        // session, never for a cookie (#1641).
+        //
         // Sign-out is on the unauthenticated chain (`build_unauth_routes`):
         // it answers a caller whose session has already ended.
         // Audit log (super-admin only): `audit/list` and `audit/verify` are
@@ -594,44 +602,12 @@ fn build_api_chain(
         // required and no REST route binds them. Their dedicated,
         // `Trust-Task`-header-gated REST mounts had no caller once the admin
         // console signed the documents instead.
-        // Admin passkey management (M0.6.3), on the canonical
-        // `auth/passkey/*` tasks (trust-tasks-tf#145).
-        //
-        // Each leg now carries its OWN task, where the retired
-        // `admin/passkeys/{register,revoke}/1.0` pair had start and
-        // finish sharing one URI. A shared URI could not describe
-        // either leg honestly: start takes no assertion and returns a
-        // challenge, finish takes the assertion and returns nothing
-        // like a challenge, so one schema covering both had to permit
-        // every member of each — which is how a finish missing its UV
-        // assertion validated cleanly.
-        //
-        // Step-up UV is unchanged in behaviour and is now *specified*:
-        // `enroll/start/0.2` returns `uvOptions` alongside the
-        // registration challenge and `enroll/finish/0.2` requires the
-        // matching `uvCredential`; revoke's two legs do the same. The
-        // canonical specs were written from this implementation, so
-        // the wire shape is what it always was.
-        .routes(tt(
-            routes!(admin::passkeys::list),
-            "https://trusttasks.org/spec/auth/passkey/list/0.1",
-        ))
-        .routes(tt(
-            routes!(admin::passkeys::register_start),
-            "https://trusttasks.org/spec/auth/passkey/enroll/start/0.2",
-        ))
-        .routes(tt(
-            routes!(admin::passkeys::register_finish),
-            "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2",
-        ))
-        .routes(tt(
-            routes!(admin::passkeys::revoke_start),
-            "https://trusttasks.org/spec/auth/passkey/revoke/start/0.1",
-        ))
-        .routes(tt(
-            routes!(admin::passkeys::revoke_finish),
-            "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1",
-        ))
+        // An administrator's own passkeys (M0.6.3) — `auth/passkey/list/0.1`,
+        // `enroll/{start,finish}/0.2`, `revoke/{start,finish}/0.1` — have no
+        // route: each declares `proof` REQUIRED and is served only as a signed
+        // document by the spine (`trust_tasks::admin_passkey_tasks`), on every
+        // transport. The `/v1/admin/passkeys/*` bearer routes were removed
+        // with #1641's last batch, once the console signed them.
         // Members' step-up passkeys (`crate::step_up_passkey`) have no route
         // here: issuing, redeeming, revoking and an administrator's listing
         // (`auth/passkey/admin-list/0.1`) are Trust Tasks served only by the
@@ -823,13 +799,11 @@ fn build_api_chain(
 fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState> {
     // Canonical cross-cutting auth tasks from trusttasks-tf.
     //
-    // Bearer→cookie bridge: the SPA posts an access token it already
-    // holds (from the VTA-wallet login or `POST /v1/auth/`), the daemon
-    // validates it and mirrors it into the `vtc_admin_session` + `csrf`
-    // cookies. This is the *only* cookie-session mint besides passkey
-    // login — the fused `/v1/auth/admin-login` that authenticated and set
-    // cookies in one call was removed in #710, since it re-implemented
-    // `POST /v1/auth/` to add a side-effect this task already provides.
+    // Bearer→cookie bridge: `vtc/auth/admin-session/0.1`, now a signed
+    // document only (`trust_tasks::admin_session_tasks`, #1641). The fused
+    // `/v1/auth/admin-login` that authenticated and set cookies in one call
+    // was removed in #710, since it re-implemented `POST /v1/auth/` to add a
+    // side-effect this task already provides.
     // Browser-friendly passkey login — one canonical spec serves both
     // initial login and AAL step-up, selected by the start payload's
     // `purpose` field (0.2's camelCase `stepUp`). Login is genuinely
@@ -972,10 +946,11 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         // `[oid4vp] max_response_bytes`, not this chain's cap.
         .routes(routes!(oid4vp::request_object))
         .routes(routes!(oid4vp::response))
-        .routes(tt(
-            routes!(auth::admin_session),
-            "https://trusttasks.org/spec/vtc/auth/admin-session/0.1",
-        ))
+        // The bearer → cookie bridge (`vtc/auth/admin-session/0.1`) has no
+        // route: its specification declares `proof` REQUIRED, so it is served
+        // only as a signed document on `POST /v1/trust-tasks`
+        // (`trust_tasks::admin_session_tasks`), signed by the access token's
+        // subject, which sets the cookies there (#1641).
         .routes(tt(
             routes!(auth::passkey_login_start),
             "https://trusttasks.org/spec/auth/passkey/login/start/0.2",
@@ -1310,16 +1285,6 @@ mod openapi_tests {
     /// moment a conscious decision should be recorded.
     const REST_EXCEPTIONS: &[(&str, &str, &str)] = &[
         (
-            "GET",
-            "/v1/admin/passkeys",
-            "lists the console's own registered WebAuthn credentials for its passkey-management UI",
-        ),
-        (
-            "POST",
-            "/v1/auth/admin-session",
-            "bootstraps the admin console's cookie session; no signed-document equivalent exists before a session does",
-        ),
-        (
             "POST",
             "/v1/auth/refresh",
             "the admin console's cookie-bound session renewal; it has no signed-document equivalent",
@@ -1328,11 +1293,6 @@ mod openapi_tests {
             "POST",
             "/v1/auth/sign-out",
             "clears the console's cookie session; a browser action, not a protocol verb",
-        ),
-        (
-            "GET",
-            "/v1/auth/whoami",
-            "reads the caller's own cookie session for the console UI; not a Trust Task",
         ),
         (
             "POST",
@@ -1472,7 +1432,6 @@ mod openapi_tests {
         // cross-community recognition (`auth/recognise/*`) moved there too —
         // neither has a dedicated REST mount any more.
         ("POST", "/v1/auth/refresh"),
-        ("POST", "/v1/auth/admin-session"),
         ("POST", "/v1/auth/passkey-login/start"),
         ("POST", "/v1/auth/passkey-login/finish"),
         // The single Trust Task document endpoint — the holder-facing join

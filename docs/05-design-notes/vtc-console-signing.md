@@ -694,6 +694,20 @@ lookup, so the migration later is a server-side change with no client churn.
 
 ## 8. Decisions this note does not make
 
+> **Decided (2026-09-23, #1684).** All four as recommended: (1) **A**, a
+> durable per-device delegation; (2) **non-extractable WebCrypto Ed25519**,
+> modern browsers only; (3) **several devices per operator**, N delegations per
+> admin DID; (4) the key **survives sign-out** and is reused on the next
+> sign-in, revocable at any time. Built in #1692 (server), #1695 (client),
+> #1899 and #1903 (setup gate, `auth/signing-key/enroll/0.2`); the delegation
+> lifetime is capped at 30 days (§6e). Item 5, PRF-wrapping, remains open as
+> later hardening. With the console signing, the bearer routes §7 describes are
+> gone (#1808, #1840, #1641's last batch). The last, `auth/whoami/0.1`, is
+> signed by a separate browser *session* key each sign-in binds to its session
+> (`session_pubkey_b58btc` — the §5B road, taken for whoami alone; the console
+> signing key stays Option A) (`vtc-trust-task-proof-enforcement.md` §6c). The
+> list below is kept as the question was put.
+
 1. **A or B** — durable per-device delegation (§5A) or ephemeral session-bound
    (§5B). A is recommended; B is materially cheaper and forward-compatible.
 2. **The browser-support floor.** WebCrypto Ed25519 needs Chrome 137+,

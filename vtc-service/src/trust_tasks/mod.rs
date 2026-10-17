@@ -37,9 +37,16 @@
 //! `endorsement-types/{register,delete}` the fourth and `backup/export` the
 //! fifth. Their authority is not a bearer token (this endpoint reads none) but
 //! the **verified signer's ACL entry**, read at execution time; see
-//! [`admin_signer`]. The remaining operator-facing verbs (`list`, `show`, the
-//! admin-invite pair, `backup/import`, …) are still served only on their
-//! JWT-gated REST routes, and moving them is what the rest of phase 2 is.
+//! [`admin_signer`]. Every later batch followed, and the last (#1641) moved
+//! an administrator's own passkeys (`auth/passkey/{list,enroll,revoke}`,
+//! [`admin_passkey_tasks`]) and the console's bearer → cookie bridge
+//! (`vtc/auth/admin-session/0.1`, [`admin_session_tasks`]) and session
+//! introspection (`auth/whoami/0.1`, [`whoami_tasks`], answered for the key a
+//! sign-in bound to the session). No task whose specification declares
+//! `proof` REQUIRED is served on a bearer route any more
+//! (`docs/05-design-notes/vtc-trust-task-proof-enforcement.md` §6c).
+//! `vtc/backup/import/0.1` is not served at all: the chunked `backup/*` family
+//! ([`backup_tasks`]) supersedes it.
 //!
 //! The personhood pair (`members/personhood/{challenge,assert}`) is the
 //! member-facing half of the family; its `revoke` verb is served here too,
@@ -93,6 +100,16 @@ pub(crate) mod policy_tasks;
 pub(crate) mod surface_tasks;
 // `auth/signing-key/*`: the console's signing keys, as delegations.
 pub(crate) mod signing_key_tasks;
+// An administrator's own login passkeys: `auth/passkey/list/0.1`,
+// `enroll/{start,finish}/0.2`, `revoke/{start,finish}/0.1` (#1641, which
+// removed their `/v1/admin/passkeys/*` bearer routes).
+pub(crate) mod admin_passkey_tasks;
+// The console's bearer → cookie bridge, `vtc/auth/admin-session/0.1` (#1641,
+// which removed `POST /v1/auth/admin-session`). HTTPS only: it sets cookies.
+pub(crate) mod admin_session_tasks;
+// `auth/whoami/0.1`, answered for the key bound to a session at sign-in (or a
+// console key acting for its administrator), never for a cookie (#1641).
+pub(crate) mod whoami_tasks;
 // The website's content: chunked upload, deploy, ranged reads, the listing,
 // delete, generation history and rollback.
 #[cfg(feature = "website")]
@@ -1262,6 +1279,31 @@ fn dispatch_typed<'a>(
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("website_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
+        uri if admin_passkey_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match admin_passkey_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => {
+                    unreachable!("admin_passkey_tasks::URIS names {uri}, which it does not route")
+                }
+            }
+        }),
+        uri if whoami_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match whoami_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("whoami_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
+        uri if admin_session_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match admin_session_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => {
+                    unreachable!("admin_session_tasks::URIS names {uri}, which it does not route")
+                }
             }
         }),
         uri if signing_key_tasks::URIS.contains(&uri) => Box::pin(async move {
@@ -3134,6 +3176,21 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     signing_key_tasks::ENROLL_V0_2_TYPE,
     signing_key_tasks::LIST_TYPE,
     signing_key_tasks::REVOKE_TYPE,
+    // An administrator's own login passkeys, which replaced the
+    // `/v1/admin/passkeys/*` bearer routes (#1641). Each change takes a
+    // user-verified assertion of an existing passkey beside the signer's
+    // authority.
+    admin_passkey_tasks::LIST_TYPE,
+    admin_passkey_tasks::ENROLL_START_TYPE,
+    admin_passkey_tasks::ENROLL_FINISH_TYPE,
+    admin_passkey_tasks::REVOKE_START_TYPE,
+    admin_passkey_tasks::REVOKE_FINISH_TYPE,
+    // The console's bearer → cookie bridge, which replaced
+    // `POST /v1/auth/admin-session` (#1641): signed by the token's subject.
+    admin_session_tasks::ADMIN_SESSION_TYPE,
+    // Session introspection, which replaced `GET /v1/auth/whoami` (#1641):
+    // signed by the key bound to the session at sign-in.
+    whoami_tasks::WHOAMI_TYPE,
     // The website's content, which replaced the raw-byte routes.
     #[cfg(feature = "website")]
     website_tasks::BEGIN_TYPE,
@@ -5224,9 +5281,10 @@ async fn handle_endorsement_type_delete(
 /// of the backup in `accepted_ids` for the acceptance window. The keyspace is
 /// excluded from backup, so a copy never ends up inside a later export.
 ///
-/// Only the export moves. `vtc/backup/import/0.1` carries the whole envelope in
-/// its request, which a 64 KiB document cannot hold — see §6b of the design
-/// note for the chunked transfer that would.
+/// Only the export moved. `vtc/backup/import/0.1` carries the whole envelope in
+/// its request, which a 64 KiB document cannot hold; it is not served, and the
+/// chunked `backup/*` family ([`backup_tasks`]) is the restore — §6b of the
+/// design note.
 async fn handle_backup_export(
     state: &AppState,
     ctx: &JoinAuthCtx,
