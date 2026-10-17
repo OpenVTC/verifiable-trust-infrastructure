@@ -50,6 +50,18 @@ use super::helpers::{
 /// never joined has left a key behind, and one that minted repeatedly has left a pile.
 const KEY_PACKAGE_LIFETIME_SECS: u64 = 7 * 24 * 60 * 60;
 
+/// How long a KeyPackage `rooms/keys/key-package/0.2` minted is held.
+///
+/// Longer than 0.1's because 0.2's KeyPackage is the one an acceptance begun on one
+/// surface is finished with on another, and the community keeps the Welcome for it for
+/// seven days **from the admission**, which comes after the mint. Held seven days from
+/// the mint, the KeyPackage would expire first and an acceptance the community still
+/// offers to finish could not be (key-package 0.2 *The private half is retained*: a
+/// recipient SHOULD NOT expire one sooner than the communities it serves keep theirs).
+/// Fourteen covers an admission up to a week after the mint; the private half is still
+/// discarded the moment the Welcome is processed.
+const KEY_PACKAGE_V0_2_LIFETIME_SECS: u64 = 14 * 24 * 60 * 60;
+
 // ─── Response types ──────────────────────────────────────────────────────
 //
 // Requests come from the generated bindings; only the responses are written
@@ -175,7 +187,7 @@ pub(super) async fn handle_key_package_v0_2(
         &state.room_groups_ks,
         &member,
         invitation.credential_id(),
-        KEY_PACKAGE_LIFETIME_SECS,
+        KEY_PACKAGE_V0_2_LIFETIME_SECS,
         now(),
     )
     .await
@@ -2920,6 +2932,11 @@ mod per_member_tests {
             terminal["payload"]["expiresAt"], portal["payload"]["expiresAt"],
             "returning it again does not extend it"
         );
+        // It outlives the week the community keeps the Welcome from the admission.
+        let expires =
+            chrono::DateTime::parse_from_rfc3339(portal["payload"]["expiresAt"].as_str().unwrap())
+                .unwrap();
+        assert!(expires > Utc::now() + Span::days(13), "{portal}");
 
         let kp = B64
             .decode(portal["payload"]["keyPackage"].as_str().unwrap())
