@@ -204,9 +204,6 @@ impl FakeVta {
         serde_json::to_string(&c).unwrap()
     }
 
-    /// Sign the room's next list withdrawing `subject`, as the room, and put it in force at
-    /// the community (the room's host). Returns the list, its head and the `revokedAt`.
-
     fn profile(&self, room: &str) -> Option<Value> {
         self.0.lock().unwrap().profiles.get(room).cloned()
     }
