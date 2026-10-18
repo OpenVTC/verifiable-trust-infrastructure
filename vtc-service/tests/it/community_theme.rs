@@ -13,6 +13,12 @@ use vtc_service::test_support::{TEST_VTC_DID, TestVtc};
 
 const SHOW: &str = "https://trusttasks.org/spec/vtc/community/theme/show/0.1";
 const UPDATE: &str = "https://trusttasks.org/spec/vtc/community/theme/update/0.1";
+const THEME_UPDATE_ERR_OUTSIDE_PROFILE: &str = "vtc/community/theme/update:outsideProfile";
+
+/// A refusal's declared code.
+fn tt_error_code(doc: &Value) -> Option<&str> {
+    error_code(doc)
+}
 
 async fn vtc() -> TestVtc {
     TestVtc::builder().with_audit(true).build().await
@@ -108,8 +114,8 @@ async fn a_theme_outside_the_profile_is_refused_where_it_breaks_it() {
     .await;
     assert!(status.is_client_error(), "{status} {doc}");
     assert_eq!(
-        error_code(&doc),
-        Some("vtc/community/theme/update:outsideProfile"),
+        tt_error_code(&doc),
+        Some(THEME_UPDATE_ERR_OUTSIDE_PROFILE),
         "{doc}"
     );
     let details = &doc["payload"]["details"];

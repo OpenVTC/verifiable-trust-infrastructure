@@ -1099,6 +1099,12 @@ fn witnesses() -> Vec<Witness> {
             "the_recognise_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
+            s::community::theme::update::v0_1::error_codes::OUTSIDE_PROFILE,
+            crate::trust_tasks::surface_tasks::THEME_UPDATE_ERR_OUTSIDE_PROFILE,
+            "community_theme.rs",
+            "a_theme_outside_the_profile_is_refused_where_it_breaks_it"
+        ),
+        witness!(
             s::community::requested_attributes::update::v0_1::error_codes::DUPLICATE_TYPE,
             crate::trust_tasks::surface_tasks::REQUESTED_ERR_DUPLICATE_TYPE,
             "surface_verbs_spine.rs",

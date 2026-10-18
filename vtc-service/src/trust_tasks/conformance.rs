@@ -2709,6 +2709,18 @@ fn table() -> Vec<Conformance> {
             json!({ "branding": branding() })
         ),
         checked!(
+            s::community::theme::show::v0_1::Payload,
+            s::community::theme::show::v0_1::Response,
+            json!({}),
+            json!({ "stylesheet": ":root { --brand: #0a7f5c; }", "updatedAt": TS })
+        ),
+        checked!(
+            s::community::theme::update::v0_1::Payload,
+            s::community::theme::update::v0_1::Response,
+            json!({ "stylesheet": ":root { --brand: #0a7f5c; }", "dryRun": true }),
+            json!({ "stylesheet": ":root { --brand: #0a7f5c; }", "stored": false })
+        ),
+        checked!(
             s::community::requested_attributes::show::v0_1::Payload,
             s::community::requested_attributes::show::v0_1::Response,
             json!({}),

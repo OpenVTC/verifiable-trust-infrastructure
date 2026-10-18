@@ -917,6 +917,10 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // (`trust_tasks::surface_tasks`).
     "https://trusttasks.org/spec/vtc/community/branding/show/0.1",
     "https://trusttasks.org/spec/vtc/community/branding/update/0.1",
+    // The community theme: show unsigned and issuer-less from every page
+    // (`lib/community-theme.ts`), update signed from the Theme card.
+    "https://trusttasks.org/spec/vtc/community/theme/show/0.1",
+    "https://trusttasks.org/spec/vtc/community/theme/update/0.1",
     "https://trusttasks.org/spec/vtc/community/join-discovery/show/0.1",
     "https://trusttasks.org/spec/vtc/community/join-discovery/update/0.1",
     "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.2",
