@@ -453,9 +453,11 @@ pub async fn put_record(
         ));
     }
 
-    // A new body is sealed for the version it is about to take; whatever an earlier body at
-    // this key was sealed at no longer applies.
-    record.sealed_version = None;
+    // A new body is sealed for the version it is about to take, and that is recorded now —
+    // the one moment it is known (rooms `_shared/0.1` `SealedRecord.version`: "MUST record
+    // the version a body was sealed at when it stores it"). Whatever an earlier body at this
+    // key was sealed at no longer applies.
+    record.sealed_version = record.sealed.as_ref().map(|_| room.next_version);
     record.version = room.next_version;
     record.updated_at = now;
     room.next_version += 1;
@@ -861,12 +863,12 @@ pub async fn curate_record(
         record.pinned = pinned;
     }
 
-    // A kept sealed body stays bound to the version it was sealed at; the record is about to
-    // move past it, so remember it — once, at the first curation. A later curation moves the
-    // record again and the body with it stays where it was sealed.
-    if record.sealed.is_some() && record.sealed_version.is_none() {
-        record.sealed_version = Some(record.version);
-    }
+    // A kept sealed body stays bound to the version it was sealed at, which `put_record`
+    // recorded; a curation moves the record and leaves that alone. Where nothing was recorded
+    // — a record stored before `sealed_version` existed — it is not inferred from the version
+    // here: a host that predates the field may already have curated the record, so its
+    // version need not be the one the body was sealed at. Unknown stays unknown, and readers
+    // search for it.
     record.version = room.next_version;
     record.updated_at = now;
     room.next_version += 1;
@@ -1621,9 +1623,9 @@ mod tests {
 
     /// rooms `_shared/0.1` `SealedRecord.version`, curate/0.1 *Curation assigns a new
     /// version*: a curation moves the record and keeps its body, and the body stays bound
-    /// to the version it was sealed at — so that version is kept, and served, from the
-    /// first curation on. Every curation after it moves the record again and the body
-    /// with it stays where it was sealed.
+    /// to the version it was sealed at — so that version is recorded when the body is
+    /// stored, and served from the first curation on. Every curation after it moves the
+    /// record again and the body with it stays where it was sealed.
     #[tokio::test]
     async fn curating_a_sealed_record_keeps_the_version_its_body_was_sealed_at() {
         let (_d, rooms, rec) = open().await;
@@ -1635,8 +1637,9 @@ mod tests {
             .unwrap();
         assert_eq!(put.version, 1);
         assert_eq!(
-            put.sealed_version, None,
-            "a fresh body is at its own version"
+            put.sealed_version,
+            Some(1),
+            "recorded when the body is stored"
         );
         assert_eq!(
             put.committed().sealed.unwrap().version,
@@ -1681,9 +1684,9 @@ mod tests {
     }
 
     /// A new body is sealed for the version it takes, so an earlier body's sealed-at
-    /// version no longer applies; a retraction drops the body and has nothing to keep.
+    /// version is replaced by that one; a retraction drops the body and has nothing to keep.
     #[tokio::test]
-    async fn a_new_body_or_a_retraction_clears_the_sealed_at_version() {
+    async fn a_new_body_replaces_the_sealed_at_version_and_a_retraction_clears_it() {
         let (_d, rooms, rec) = open().await;
         create_room(&rooms, &room("r1", Visibility::Private))
             .await
@@ -1710,7 +1713,7 @@ mod tests {
         let rewritten = put_record(&rooms, &rec, "r1", sealed_record("a", 1), Some(3), 5)
             .await
             .unwrap();
-        assert_eq!(rewritten.sealed_version, None);
+        assert_eq!(rewritten.sealed_version, Some(rewritten.version));
         assert_eq!(rewritten.committed().sealed.unwrap().version, None);
 
         let retracted = curate_record(
@@ -1725,6 +1728,52 @@ mod tests {
         .unwrap();
         assert_eq!(retracted.sealed_version, None);
         assert!(retracted.committed().sealed.is_none());
+    }
+
+    /// A record stored before `sealed_version` existed carries none, and a host that
+    /// predates it may already have curated it — so its version is not evidence of where the
+    /// body was sealed. A curation must leave it unknown, never stamp the version it finds:
+    /// stamped, a record archived by the old host and restored by this one was served with a
+    /// `sealed.version` it was never sealed at, and opened for nobody.
+    #[tokio::test]
+    async fn a_curation_does_not_guess_the_sealed_at_version_of_an_older_record() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Private))
+            .await
+            .unwrap();
+        put_record(&rooms, &rec, "r1", sealed_record("a", 1), None, 1)
+            .await
+            .unwrap();
+        // As an older host left it: sealed at 1, archived to 2, nothing recorded.
+        let mut legacy = get_record(&rec, "r1", "a").await.unwrap();
+        legacy.sealed_version = None;
+        legacy.status = RecordStatus::Deprecated;
+        legacy.version = 2;
+        rec.insert(record_key("r1", "a"), &legacy).await.unwrap();
+        let mut r = get_room(&rooms, "r1").await.unwrap();
+        r.next_version = 3;
+        rooms.insert(room_key("r1"), &r).await.unwrap();
+
+        let restored = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "a",
+            curation(Some(RecordStatus::Active), None),
+            3,
+        )
+        .await
+        .unwrap();
+        assert_eq!(restored.version, 3);
+        assert_eq!(
+            restored.sealed_version, None,
+            "not 2, which it was never sealed at"
+        );
+        assert_eq!(
+            restored.committed().sealed.unwrap().version,
+            None,
+            "served without one, so readers search earlier versions"
+        );
     }
 
     /// An open room's record has no sealed body, so a curation has nothing to bind.

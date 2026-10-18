@@ -442,15 +442,23 @@ pub struct Record {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
 
-    /// The version `sealed` was sealed at, where a curation has since moved the record past
-    /// it — served as `sealed.version` (rooms `_shared/0.1` `SealedRecord`).
+    /// The version `sealed` was sealed at — served as `sealed.version` where a curation has
+    /// since moved the record past it (rooms `_shared/0.1` `SealedRecord`).
     ///
     /// A curation MUST assign a new version (`rooms/records/curate/0.1`) and keeps the body
     /// unless it retracts, but the body is bound — by the AEAD and by its author's signed
     /// location — to the version it was written at. Without this, every curated sealed
-    /// record opened for nobody. `None` where the two are equal (every record not curated
-    /// since it was written), on a tombstone, and on a record curated by a host that predates
-    /// this field, whose readers fall back to trying earlier versions.
+    /// record opened for nobody.
+    ///
+    /// Recorded when the body is **stored** ([`storage::put_record`]), never inferred later:
+    /// `None` means *not known*, not *equal to `version`*. A record a host stored before this
+    /// field existed carries `None`, and if that host had already curated it, its version
+    /// has moved past the body with nothing to say so — a curation stamping its version then
+    /// would name a version the body was never sealed at, and the record would open for
+    /// nobody again, this time with a host asserting the wrong answer. Left `None`, it is
+    /// served without `sealed.version` and readers search earlier versions for it. Also
+    /// `None` on a tombstone, on an `Open` room, and on a record read from the wire without
+    /// one ([`Record::from_wire`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sealed_version: Option<u64>,
 
@@ -542,7 +550,9 @@ impl Record {
                 ciphertext: ciphertext.clone(),
                 nonce: nonce.clone(),
                 epoch,
-                version: self.sealed_version,
+                // Only where it differs from the record's own: absent is "sealed here", so an
+                // uncurated record's commitment is the same as before this field existed.
+                version: self.sealed_version.filter(|v| *v != self.version),
             }),
             _ => None,
         };
