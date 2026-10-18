@@ -165,35 +165,35 @@ vti-common = { path = "../vti-common", version = "0.47", features = ["encryption
 # Seed-store backends + `create_seed_store` factory + `SecretsConfig` (lifted
 # from this crate into a shared crate so external integrations can reuse them).
 # Per-backend features are activated by this crate's matching features below.
-vti-secrets = { path = "../vti-secrets", version = "0.19" }
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.19" }
+vti-secrets = { path = "../vti-secrets", version = "0.20" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.20" }
 # Structured audit logging (the `audit!` macro + audit-keyspace helpers),
 # extracted and re-exported as `crate::audit`.
-vta-audit = { path = "../vta-audit", version = "0.18" }
+vta-audit = { path = "../vta-audit", version = "0.19" }
 # VTA configuration types (AppConfig + sub-configs), extracted and re-exported
 # as `crate::config`. `vta-config/tee` is always on: it only adds the
 # `AppConfig.tee` field and its types, and a sibling crate (vta-tee) turns it
 # on anyway, so gating our struct literals on this crate's own `tee` feature
 # broke any build that unified the two. Behaviour stays behind `tee`.
-vta-config = { path = "../vta-config", version = "0.23", features = ["tee"] }
+vta-config = { path = "../vta-config", version = "0.24", features = ["tee"] }
 # Shared mid-layer services (contexts, seal, sealed_nonce_store), re-exported
 # as crate::{contexts,seal,sealed_nonce_store}.
-vta-support = { path = "../vta-support", version = "0.20" }
+vta-support = { path = "../vta-support", version = "0.21" }
 # Key management (seed store, BIP-32 derivation, wrapping), extracted and
 # re-exported as `crate::keys`. Backend features chain to `vta-keys/*`.
-vta-keys = { path = "../vta-keys", version = "0.23" }
+vta-keys = { path = "../vta-keys", version = "0.24" }
 # Holder credential vault (storage/query/receive/present/status), extracted to
 # its own crate and re-exported as `crate::vault`. Feature edges: this crate's
 # `bbs` / `webvh` features enable `vta-vault/bbs` / `vta-vault/webvh`.
-vta-persona = { path = "../vta-persona", version = "0.23" }
-vta-vault = { path = "../vta-vault", version = "0.21" }
+vta-persona = { path = "../vta-persona", version = "0.24" }
+vta-vault = { path = "../vta-vault", version = "0.22" }
 # External accounts — the VTA as the key authority for cloud and third-party
 # accounts (`external/*`), re-exported as `crate::external`.
-vta-external = { path = "../vta-external", version = "0.6" }
+vta-external = { path = "../vta-external", version = "0.7" }
 # The hidden-vetting PCS engine (`vta/pcs/*`): the member-side vetter and
 # applicant engines this VTA runs for its principal. Always compiled — a hosted
 # VTA is what serves a wallet that cannot run PCS itself.
-vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.3" }
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.4" }
 # The PCS crate itself, for the multibase codec of the blinding state an
 # enrolment in flight is stored as. Pinned with `vti-vetting-pcs`.
 predicate-credential-system = { version = "0.1", features = ["serde"] }
@@ -212,21 +212,21 @@ vti-rooms = { path = "../vti-rooms", version = "0.18", default-features = false,
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.20" }
 # Background TTL sweepers (acl/consent/vault), extracted and re-exported as
 # crate::{acl_sweeper,consent_sweeper,vault_sweeper}.
-vta-sweepers = { path = "../vta-sweepers", version = "0.18" }
+vta-sweepers = { path = "../vta-sweepers", version = "0.19" }
 # Backup/restore subsystem (export/import ops + backup-bundle store/sweeper),
 # extracted and re-exported as crate::operations::backup +
 # crate::{backup_bundle_store,backup_bundle_sweeper}. Feature edges: this
 # crate's `webvh` / `tee` features enable `vta-backup/webvh` / `vta-backup/tee`.
-vta-backup = { path = "../vta-backup", version = "0.22" }
+vta-backup = { path = "../vta-backup", version = "0.23" }
 # TEE bootstrap subsystem (attestation, KMS, anchor MAC, DID autogen),
 # extracted and re-exported as crate::tee behind this crate's `tee` feature.
-vta-tee = { path = "../vta-tee", version = "0.22", optional = true }
+vta-tee = { path = "../vta-tee", version = "0.23", optional = true }
 # Policy subsystem (regorus engine, default bundle, consent model), extracted
 # and re-exported as crate::policy.
-vta-policy = { path = "../vta-policy", version = "0.18" }
+vta-policy = { path = "../vta-policy", version = "0.19" }
 # The local did:webvh store, extracted to its own crate and re-exported as
 # crate::webvh_store behind this crate's `webvh` feature.
-vta-webvh = { path = "../vta-webvh", version = "0.19", optional = true }
+vta-webvh = { path = "../vta-webvh", version = "0.20", optional = true }
 vta-sdk = { path = "../vta-sdk", version = "0.71", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup", "x509-issuers"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.
@@ -421,7 +421,7 @@ rcgen = { version = "0.14", features = ["x509-parser"] }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.20", features = ["test-support"] }
 # An in-process community (`vtc::Vtc`) for driving the PCS engine end to end:
 # enrolment, the drip, attestation, the proof and the community's decision.
-vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.3", features = ["harness"] }
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.4", features = ["harness"] }
 # A real room host, dispatched in process, for the end-to-end check that a record a
 # member's own client writes through `rooms/keys/act` is recorded as the persona's.
 # Path-only (no version): `room-host` is `publish = false`, and a dev-dependency
