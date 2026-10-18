@@ -898,6 +898,54 @@ pub async fn open_record_detailed(
     nonce: &str,
     epoch: u32,
 ) -> Result<Vec<u8>, OpenError> {
+    open_record_at(
+        groups,
+        member,
+        key,
+        version,
+        ciphertext,
+        nonce,
+        epoch,
+        Search::Exact,
+    )
+    .await
+    .map(|(plaintext, _)| plaintext)
+}
+
+/// Where [`open_record_at`] looks for the version a body was sealed at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Search {
+    /// The version given, only: the caller knows it, from `sealed.version` or because the
+    /// record has not been curated since it was written.
+    Exact,
+    /// The version given, then each earlier one, newest first.
+    ///
+    /// For a record a host curated before it kept `sealed.version` (rooms `_shared/0.1`
+    /// `SealedRecord`, `SealedRecordBody` *A record curated before `sealed.version`
+    /// existed*): its version moved, the body stayed bound to the one it was sealed at, and
+    /// nothing recorded which. The AEAD makes a wrong guess fail rather than mislead, and a
+    /// reader checks the author's signed location against the version that opened, so the
+    /// search recovers the record without trusting the host for the answer. Never above the
+    /// version given: a body cannot have been sealed for a version the room had not reached.
+    Earlier,
+}
+
+/// Open a record at the version its body was sealed at, and say which version that was.
+///
+/// The returned version is the one the AEAD opened at — the location a reader verifies
+/// the author's signature against. It differs from `version` only where `search` is
+/// [`Search::Earlier`] and an earlier version opened.
+#[allow(clippy::too_many_arguments)]
+pub async fn open_record_at(
+    groups: &KeyspaceHandle,
+    member: &Member,
+    key: &str,
+    version: u64,
+    ciphertext: &str,
+    nonce: &str,
+    epoch: u32,
+    search: Search,
+) -> Result<(Vec<u8>, u64), OpenError> {
     let room_id = member.room_id();
     let record = load(groups, member)
         .await?
@@ -925,23 +973,35 @@ pub async fn open_record_detailed(
     // delivered, not a record that failed to decrypt.
     let mut room = SealedRoom::new(room_id, group);
     room.add_links(record.links);
-
-    room.open_record(
-        key,
-        version,
-        &vti_rooms::wire::SealedContent {
-            ciphertext: ciphertext.to_string(),
-            nonce: nonce.to_string(),
-            epoch,
-        },
-    )
-    .map_err(|e| match e {
+    let sealed = vti_rooms::wire::SealedContent {
+        ciphertext: ciphertext.to_string(),
+        nonce: nonce.to_string(),
+        epoch,
+        version: None,
+    };
+    let refuse = |e: RoomKeyError| match e {
         RoomKeyError::EpochUnreachable { sealed, earliest } => OpenError::BeyondChain {
             epoch: sealed,
             earliest,
         },
         e => OpenError::App(AppError::Validation(e.to_string())),
-    })
+    };
+
+    let first = match room.open_record(key, version, &sealed) {
+        Ok(plaintext) => return Ok((plaintext, version)),
+        Err(e) => e,
+    };
+    if search == Search::Exact || !matches!(first, RoomKeyError::DidNotOpen) {
+        return Err(refuse(first));
+    }
+    for earlier in (1..version).rev() {
+        match room.open_record(key, earlier, &sealed) {
+            Ok(plaintext) => return Ok((plaintext, earlier)),
+            Err(RoomKeyError::DidNotOpen) => {}
+            Err(e) => return Err(refuse(e)),
+        }
+    }
+    Err(refuse(first))
 }
 
 /// The first room epoch `member` cannot open because a commit removed them, if one did.
@@ -2636,6 +2696,62 @@ mod removal_tests {
 
     const ROOM: &str = "did:webvh:example.com:rooms:northwind";
     const BOB: &str = "did:key:zBob";
+
+    /// rooms `_shared/0.1` `SealedRecord.version`: a curation moves a record past the
+    /// version its body was sealed at, and the body stays bound to that version. Opened at
+    /// the record's own version it fails for everyone (the defect); opened at the sealed-at
+    /// version it opens; and a record curated by a host that predates `sealed.version` is
+    /// found by searching earlier versions — never later ones.
+    #[tokio::test]
+    async fn a_curated_record_opens_at_the_version_its_body_was_sealed_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace(crate::keyspaces::ROOM_GROUPS).unwrap();
+        let bob = Member::new(ROOM, BOB).unwrap();
+        let pending = mint_key_package(&ks, &bob, 3600, 0).await.unwrap();
+        let mut alice = SealedRoom::new(ROOM, RoomGroup::create("did:key:zAlice").unwrap());
+        let (added, _) = alice
+            .add_member(&B64.decode(&pending.key_package).unwrap())
+            .unwrap();
+        join(&ks, &bob, &added.welcome.unwrap(), 0).await.unwrap();
+
+        // Written at version 3; curated since, so the record is now at 7.
+        let s = alice.seal_record("k", 3, b"archived").unwrap();
+        let open = |version, search| {
+            open_record_at(
+                &ks,
+                &bob,
+                "k",
+                version,
+                &s.ciphertext,
+                &s.nonce,
+                s.epoch,
+                search,
+            )
+        };
+
+        assert!(
+            open(7, Search::Exact).await.is_err(),
+            "at the version a curation moved it to, the body does not open"
+        );
+        assert_eq!(
+            open(3, Search::Exact).await.unwrap(),
+            (b"archived".to_vec(), 3),
+            "at `sealed.version` it does"
+        );
+        assert_eq!(
+            open(7, Search::Earlier).await.unwrap(),
+            (b"archived".to_vec(), 3),
+            "with no `sealed.version`, earlier versions are searched and the one that opened is named"
+        );
+        assert!(
+            open(2, Search::Earlier).await.is_err(),
+            "never a version later than the one given"
+        );
+    }
 
     /// After the commit that removes this VTA's member is applied, a record sealed after
     /// the removal says "removed" — not "a commit has not been delivered", whose remedy

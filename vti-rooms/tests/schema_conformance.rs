@@ -104,6 +104,7 @@ fn put_record_conforms_on_both_tiers() {
             ciphertext: "1ep1PJuf8-yNmTndwcuMxA".into(),
             nonce: "AAAAAAAAAAAAAAAA".into(),
             epoch: 1,
+            version: None,
         }),
         cleartext: None,
         expected_version: Some(0),
@@ -327,6 +328,7 @@ fn responses_conform() {
             pinned: false,
             sealed: None,
             nonce: None,
+            sealed_version: None,
             cleartext: Some(json!({
                 "title": "Pricing holds through Q3",
                 "body": "Agreed not to reprice before the renewal closes.",
@@ -343,6 +345,7 @@ fn responses_conform() {
             pinned: false,
             sealed: None,
             nonce: None,
+            sealed_version: None,
             cleartext: None,
             author: None,
             updated_at: 1_756_000_100,
@@ -419,6 +422,7 @@ fn get_record_response_conforms() {
         pinned: true,
         sealed: Some("c2VhbGVkLWJvZHk".into()),
         nonce: Some("bm9uY2UtMTI".into()),
+        sealed_version: None,
         cleartext: None,
         author: None,
         updated_at: 1_756_000_000,
@@ -483,6 +487,7 @@ fn get_record_response_conforms() {
         pinned: false,
         sealed: None,
         nonce: None,
+        sealed_version: None,
         cleartext: Some(json!({ "body": "Agreed not to reprice before the renewal closes." })),
         author: Some("did:key:z6MkAlice".into()),
         updated_at: 1_756_000_100,
@@ -508,6 +513,7 @@ fn get_record_response_conforms() {
         pinned: false,
         sealed: None,
         nonce: None,
+        sealed_version: None,
         cleartext: None,
         author: None,
         updated_at: 1_756_000_200,
@@ -536,6 +542,7 @@ fn a_reader_verifies_a_trace_from_the_response_alone() {
             pinned: false,
             sealed: Some("c2VhbGVkLWJvZHk".into()),
             nonce: Some("bm9uY2UtMTI".into()),
+            sealed_version: None,
             cleartext: None,
             author: None,
             updated_at: 1_756_000_000,
@@ -591,6 +598,7 @@ fn a_record_round_trips_through_its_committed_form() {
         pinned: true,
         sealed: Some("c2VhbGVkLWJvZHk".into()),
         nonce: Some("bm9uY2UtMTI".into()),
+        sealed_version: None,
         cleartext: None,
         author: Some("did:key:z6MkAlice".into()),
         updated_at: 1_756_000_000,
@@ -600,6 +608,23 @@ fn a_record_round_trips_through_its_committed_form() {
         serde_json::to_value(&back).expect("serialise"),
         serde_json::to_value(&sealed).expect("serialise"),
         "a sealed record must survive the wire form unchanged"
+    );
+
+    // A curated record keeps the version its body was sealed at (`SealedRecord.version`).
+    // A mirror has to keep it too: its copy otherwise opens for nobody.
+    let curated = Record {
+        sealed_version: Some(5),
+        ..sealed.clone()
+    };
+    assert_eq!(
+        curated.committed().sealed.as_ref().and_then(|s| s.version),
+        Some(5)
+    );
+    let back = Record::from_wire(&curated.committed()).expect("reads back");
+    assert_eq!(
+        back.sealed_version,
+        Some(5),
+        "a mirror keeps the sealed-at version"
     );
 
     // The one documented loss: a tombstone's epoch has nowhere to live on the
@@ -746,6 +771,7 @@ fn a_half_sealed_record_loses_its_body() {
         pinned: false,
         sealed: Some("c2VhbGVkLWJvZHk".into()),
         nonce: Some("bm9uY2UtMTI".into()),
+        sealed_version: None,
         cleartext: None,
         author: None,
         updated_at: 1_756_000_000,

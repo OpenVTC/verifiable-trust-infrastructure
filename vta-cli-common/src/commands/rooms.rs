@@ -1029,6 +1029,11 @@ fn capitalised(word: &str) -> String {
 }
 
 /// Open a sealed record through the VTA and check its body before anything in it is used.
+///
+/// `version` is the record's; the body is opened, and its signed location checked, at the
+/// version it was **sealed** at — `sealed.version` where the host served one, because a
+/// curation moves a record past its body. A record curated by a host that predates that
+/// member carries none, and the VTA searches earlier versions and says which opened.
 async fn open_and_verify(
     client: &VtaClient,
     target: &RoomTarget<'_>,
@@ -1037,11 +1042,14 @@ async fn open_and_verify(
     sealed: &SealedContent,
     host_author: Option<&str>,
 ) -> Result<VerifiedRecordBody, Box<dyn std::error::Error>> {
+    let sealed_at = sealed
+        .sealed_at(version)
+        .map_err(|why| format!("refusing record {key}: the host says {why}"))?;
     let opened = client
         .room_open(
             target.room_id,
             key,
-            version,
+            sealed_at,
             &sealed.ciphertext,
             &sealed.nonce,
             sealed.epoch,
@@ -1060,10 +1068,21 @@ async fn open_and_verify(
     let resolver = vta_sdk::trust_task_proof::TrustTaskVmResolver::from_optional(
         vta_sdk::resolver::shared_did_resolver_from_env().await.ok(),
     );
+    // Where the VTA found it sealed, if not where it was asked to look.
+    let opened_at = opened
+        .pointer("/ext/org.openvtc.rooms/sealedAt")
+        .and_then(Value::as_u64)
+        .unwrap_or(sealed_at);
+    if opened_at > sealed_at {
+        return Err(format!(
+            "refusing record {key}: the VTA opened it at version {opened_at}, past the {sealed_at} it was asked for"
+        )
+        .into());
+    }
     let location = RecordLocation {
         room_id: target.room_id,
         key,
-        version,
+        version: opened_at,
     };
     Ok(verify_record_body(&bytes, location, host_author, &resolver)
         .await
@@ -1372,6 +1391,7 @@ pub async fn cmd_rooms_file_get(
         nonce: sealed.nonce.clone(),
         epoch: u32::try_from(sealed.epoch.get())
             .map_err(|_| "the record's epoch is beyond what this client can represent")?,
+        version: None,
     };
     let verified = open_and_verify(
         client,

@@ -442,6 +442,18 @@ pub struct Record {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
 
+    /// The version `sealed` was sealed at, where a curation has since moved the record past
+    /// it — served as `sealed.version` (rooms `_shared/0.1` `SealedRecord`).
+    ///
+    /// A curation MUST assign a new version (`rooms/records/curate/0.1`) and keeps the body
+    /// unless it retracts, but the body is bound — by the AEAD and by its author's signed
+    /// location — to the version it was written at. Without this, every curated sealed
+    /// record opened for nobody. `None` where the two are equal (every record not curated
+    /// since it was written), on a tombstone, and on a record curated by a host that predates
+    /// this field, whose readers fall back to trying earlier versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed_version: Option<u64>,
+
     /// Cleartext content. Present only on an `Open` room.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cleartext: Option<serde_json::Value>,
@@ -530,6 +542,7 @@ impl Record {
                 ciphertext: ciphertext.clone(),
                 nonce: nonce.clone(),
                 epoch,
+                version: self.sealed_version,
             }),
             _ => None,
         };
@@ -590,6 +603,7 @@ impl Record {
             pinned: record.pinned,
             sealed: record.sealed.as_ref().map(|s| s.ciphertext.clone()),
             nonce: record.sealed.as_ref().map(|s| s.nonce.clone()),
+            sealed_version: record.sealed.as_ref().and_then(|s| s.version),
             cleartext: record.cleartext.clone(),
             author: record.author.clone(),
             updated_at,

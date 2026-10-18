@@ -274,6 +274,7 @@ impl SealedRoom {
             ciphertext: B64.encode(ciphertext),
             nonce: B64.encode(nonce_bytes),
             epoch,
+            version: None,
         })
     }
 

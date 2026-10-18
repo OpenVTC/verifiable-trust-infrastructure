@@ -382,6 +382,7 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
                 ciphertext: sealed.ciphertext.clone(),
                 nonce: sealed.nonce.clone(),
                 epoch: sealed.epoch,
+                version: None,
             }),
             None,
             Some(0),
@@ -402,6 +403,7 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
         ciphertext: fetched["sealed"].as_str().unwrap_or_default().to_string(),
         nonce: fetched["nonce"].as_str().unwrap_or_default().to_string(),
         epoch: fetched["epoch"].as_u64().unwrap_or(0) as u32,
+        version: None,
     };
     let opened = bob_room.open_record(&key, put.version, &from_host)?;
     note(&format!("Bob reads: {}", String::from_utf8_lossy(&opened)));

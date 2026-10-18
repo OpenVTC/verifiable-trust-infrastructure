@@ -373,6 +373,7 @@ mod tests {
             pinned: false,
             sealed: Some("Zm9v".into()),
             nonce: Some("YmFy".into()),
+            sealed_version: None,
             cleartext: None,
             author: None,
             updated_at: 1_700_000_000,

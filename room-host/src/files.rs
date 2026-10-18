@@ -2408,6 +2408,7 @@ mod tests {
                     ciphertext: b64(&signed),
                     nonce: b64(&[0u8; 12]),
                     epoch: 1,
+                    version: None,
                 },
                 std::slice::from_ref(&blob_ref),
                 Some(0),

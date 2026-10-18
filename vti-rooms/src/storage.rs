@@ -453,6 +453,9 @@ pub async fn put_record(
         ));
     }
 
+    // A new body is sealed for the version it is about to take; whatever an earlier body at
+    // this key was sealed at no longer applies.
+    record.sealed_version = None;
     record.version = room.next_version;
     record.updated_at = now;
     room.next_version += 1;
@@ -850,6 +853,7 @@ pub async fn curate_record(
         if matches!(status, RecordStatus::Retracted) {
             record.sealed = None;
             record.nonce = None;
+            record.sealed_version = None;
             record.cleartext = None;
         }
     }
@@ -857,6 +861,12 @@ pub async fn curate_record(
         record.pinned = pinned;
     }
 
+    // A kept sealed body stays bound to the version it was sealed at; the record is about to
+    // move past it, so remember it — once, at the first curation. A later curation moves the
+    // record again and the body with it stays where it was sealed.
+    if record.sealed.is_some() && record.sealed_version.is_none() {
+        record.sealed_version = Some(record.version);
+    }
     record.version = room.next_version;
     record.updated_at = now;
     room.next_version += 1;
@@ -948,6 +958,7 @@ mod tests {
             pinned: false,
             sealed: Some("c2VhbGVk".into()),
             nonce: Some("bm9uY2U".into()),
+            sealed_version: None,
             cleartext: None,
             author: None,
             updated_at: 0,
@@ -963,6 +974,7 @@ mod tests {
             pinned: false,
             sealed: None,
             nonce: None,
+            sealed_version: None,
             cleartext: Some(serde_json::json!({ "body": "hello" })),
             author: Some("did:key:zBob".into()),
             updated_at: 0,
@@ -1597,6 +1609,145 @@ mod tests {
         .await
         .unwrap_err();
         assert!(format!("{err}").contains("is at version 1"), "{err}");
+    }
+
+    fn curation(status: Option<RecordStatus>, pinned: Option<bool>) -> Curation {
+        Curation {
+            status,
+            pinned,
+            expected_version: None,
+        }
+    }
+
+    /// rooms `_shared/0.1` `SealedRecord.version`, curate/0.1 *Curation assigns a new
+    /// version*: a curation moves the record and keeps its body, and the body stays bound
+    /// to the version it was sealed at — so that version is kept, and served, from the
+    /// first curation on. Every curation after it moves the record again and the body
+    /// with it stays where it was sealed.
+    #[tokio::test]
+    async fn curating_a_sealed_record_keeps_the_version_its_body_was_sealed_at() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Private))
+            .await
+            .unwrap();
+        let put = put_record(&rooms, &rec, "r1", sealed_record("a", 1), None, 1)
+            .await
+            .unwrap();
+        assert_eq!(put.version, 1);
+        assert_eq!(
+            put.sealed_version, None,
+            "a fresh body is at its own version"
+        );
+        assert_eq!(
+            put.committed().sealed.unwrap().version,
+            None,
+            "nothing changes shape until a curation needs it"
+        );
+
+        let archived = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "a",
+            curation(Some(RecordStatus::Deprecated), None),
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(archived.version, 2);
+        assert_eq!(archived.sealed_version, Some(1));
+        assert_eq!(archived.committed().sealed.unwrap().version, Some(1));
+
+        let pinned = curate_record(&rooms, &rec, "r1", "a", curation(None, Some(true)), 3)
+            .await
+            .unwrap();
+        let restored = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "a",
+            curation(Some(RecordStatus::Active), None),
+            4,
+        )
+        .await
+        .unwrap();
+        assert_eq!((pinned.version, pinned.sealed_version), (3, Some(1)));
+        assert_eq!((restored.version, restored.sealed_version), (4, Some(1)));
+        assert_eq!(
+            get_record(&rec, "r1", "a").await.unwrap().sealed_version,
+            Some(1),
+            "it is stored, not derived"
+        );
+    }
+
+    /// A new body is sealed for the version it takes, so an earlier body's sealed-at
+    /// version no longer applies; a retraction drops the body and has nothing to keep.
+    #[tokio::test]
+    async fn a_new_body_or_a_retraction_clears_the_sealed_at_version() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Private))
+            .await
+            .unwrap();
+        put_record(&rooms, &rec, "r1", sealed_record("a", 1), None, 1)
+            .await
+            .unwrap();
+        put_record(&rooms, &rec, "r1", sealed_record("b", 1), None, 1)
+            .await
+            .unwrap();
+        for key in ["a", "b"] {
+            curate_record(
+                &rooms,
+                &rec,
+                "r1",
+                key,
+                curation(Some(RecordStatus::Deprecated), None),
+                2,
+            )
+            .await
+            .unwrap();
+        }
+
+        let rewritten = put_record(&rooms, &rec, "r1", sealed_record("a", 1), Some(3), 5)
+            .await
+            .unwrap();
+        assert_eq!(rewritten.sealed_version, None);
+        assert_eq!(rewritten.committed().sealed.unwrap().version, None);
+
+        let retracted = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "b",
+            curation(Some(RecordStatus::Retracted), None),
+            6,
+        )
+        .await
+        .unwrap();
+        assert_eq!(retracted.sealed_version, None);
+        assert!(retracted.committed().sealed.is_none());
+    }
+
+    /// An open room's record has no sealed body, so a curation has nothing to bind.
+    #[tokio::test]
+    async fn curating_an_open_record_records_no_sealed_at_version() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        put_record(&rooms, &rec, "r1", open_record("a"), None, 1)
+            .await
+            .unwrap();
+        let archived = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "a",
+            curation(Some(RecordStatus::Deprecated), None),
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(archived.sealed_version, None);
     }
 
     #[tokio::test]

@@ -485,18 +485,34 @@ pub(super) async fn resolve(
             ));
             continue;
         }
-        let plaintext = match room_groups::open_record(
+        // Opened, and its location checked, at the version the body was sealed at — which a
+        // curation (a pin, say) moves the record past (`SealedRecord.version`).
+        let Ok(sealed_at) = sealed_content.sealed_at(r.version) else {
+            res.rejected.push((
+                Some(*epoch),
+                r.version,
+                reject(Rejection::Location, r.author.as_deref()),
+            ));
+            continue;
+        };
+        let search = if sealed_content.version.is_some() {
+            room_groups::Search::Exact
+        } else {
+            room_groups::Search::Earlier
+        };
+        let (plaintext, sealed_at) = match room_groups::open_record_at(
             &sp.state.room_groups_ks,
             &sp.member,
             key,
-            r.version,
+            sealed_at,
             &sealed_content.ciphertext,
             &sealed_content.nonce,
             sealed_content.epoch,
+            search,
         )
         .await
         {
-            Ok(p) => p,
+            Ok(opened) => opened,
             // The AEAD binds room, key, version and epoch: a record that does not open here
             // was not sealed for this location — a version race lost, or a copy.
             Err(_) => {
@@ -511,7 +527,7 @@ pub(super) async fn resolve(
         let at = ReadAt {
             room_id: sp.room_id(),
             key,
-            version: r.version,
+            version: sealed_at,
             located_at: Some(*epoch),
             sealed_epoch: Some(sealed_content.epoch),
             host_author: r.author.as_deref(),

@@ -797,6 +797,7 @@ async fn put_with_blobs(
         pinned: false,
         sealed: req.sealed.as_ref().map(|s| s.ciphertext.clone()),
         nonce: req.sealed.as_ref().map(|s| s.nonce.clone()),
+        sealed_version: None,
         cleartext: req
             .cleartext
             .as_ref()

@@ -185,12 +185,39 @@ pub struct AuthorityPresentation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SealedContent {
-    /// The sealed record, base64url. AEAD-bound to `roomId|key|version|epoch`.
+    /// The sealed record, base64url. AEAD-bound to `roomId|key|version|epoch`, where
+    /// `version` is the one it was sealed at ([`SealedContent::version`]).
     pub ciphertext: String,
     /// AEAD nonce, base64url.
     pub nonce: String,
     /// The epoch it was sealed under.
     pub epoch: u32,
+    /// The version it was sealed at, where a curation has since moved the record past it.
+    /// Absent when that is the record's own `version`. A reader opens and verifies the body
+    /// here ([`SealedContent::sealed_at`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u64>,
+}
+
+impl SealedContent {
+    /// The version this body was sealed at, for a record now at `record_version`: its own
+    /// `version` where it carries one, else the record's.
+    ///
+    /// # Errors
+    ///
+    /// A `version` above the record's own: a body cannot have been sealed for a version the
+    /// room had not reached, so the host is pairing a record with a body that is not its.
+    pub fn sealed_at(&self, record_version: u64) -> Result<u64, String> {
+        match self.version {
+            Some(v) if v > record_version => Err(format!(
+                "the host says this body was sealed at version {v}, after the record's own \
+                 version {record_version}; a body cannot be sealed for a version the room had \
+                 not reached"
+            )),
+            Some(v) => Ok(v),
+            None => Ok(record_version),
+        }
+    }
 }
 
 /// One rung of the epoch key chain: epoch `epoch - 1`'s storage key, sealed under

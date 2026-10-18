@@ -1035,20 +1035,48 @@ pub(super) async fn handle_read(
     }
 
     if let Some(sealed) = &served.record.sealed {
-        let plaintext = match room_groups::open_record(
+        // Opened at the version the body was sealed at, which a curation moves the record
+        // past (rooms `_shared/0.1` `SealedRecord.version`). A record curated by a host that
+        // predates that member carries none, and is searched for.
+        let sealed_at = match sealed.sealed_at(served.record.version) {
+            Ok(v) => v,
+            Err(why) => {
+                return app_error_to_reject(
+                    &doc,
+                    vti_common::error::AppError::Validation(format!(
+                        "room host `{}` {why}",
+                        req.host
+                    )),
+                );
+            }
+        };
+        let search = if sealed.version.is_some() {
+            room_groups::Search::Exact
+        } else {
+            room_groups::Search::Earlier
+        };
+        let (plaintext, opened_at) = match room_groups::open_record_at(
             &state.room_groups_ks,
             &member,
             &served.record.key,
-            served.record.version,
+            sealed_at,
             &sealed.ciphertext,
             &sealed.nonce,
             sealed.epoch,
+            search,
         )
         .await
         {
-            Ok(p) => p,
-            Err(e) => return app_error_to_reject(&doc, e),
+            Ok(opened) => opened,
+            Err(e) => return app_error_to_reject(&doc, vti_common::error::AppError::from(e)),
         };
+        // A reader checks the author's signed location against the version the body was
+        // sealed at; where that is not the record's own, say which it is.
+        if opened_at != served.record.version {
+            payload["ext"] = serde_json::json!({
+                room_member::MEMBER_EXT: { "sealedAt": opened_at },
+            });
+        }
         // base64url, as the spec gives it — not the bytes, which serialize as an array.
         payload["plaintext"] = serde_json::json!(base64::Engine::encode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
@@ -1365,7 +1393,12 @@ async fn open_at(
             Ok(m) => m,
             Err(e) => return app_error_to_reject(&doc, e),
         };
-    let plaintext = match room_groups::open_record_detailed(
+    // `version` is where the caller believes the body was sealed: `sealed.version` from the
+    // host where it served one, else the record's own. A record curated by a host that
+    // predates `sealed.version` opens at neither, so earlier versions are searched — and the
+    // answer says which opened, because the caller verifies the author's signed location
+    // against it (rooms `_shared/0.1` `SealedRecordBody`).
+    let (plaintext, opened_at) = match room_groups::open_record_at(
         &state.room_groups_ks,
         &member,
         &req.key,
@@ -1373,23 +1406,27 @@ async fn open_at(
         &req.ciphertext,
         &req.nonce,
         u32::try_from(req.epoch).unwrap_or(u32::MAX),
+        room_groups::Search::Earlier,
     )
     .await
     {
-        Ok(p) => p,
+        Ok(opened) => opened,
         Err(e) => return open_refused(&doc, e, at),
     };
 
     record(state, "rooms.keys.open", auth, &req.room_id).await;
-    success_response(
-        &doc,
-        serde_json::json!({
-            "plaintext": base64::Engine::encode(
-                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-                &plaintext,
-            )
-        }),
-    )
+    let mut payload = serde_json::json!({
+        "plaintext": base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            &plaintext,
+        )
+    });
+    if opened_at != req.version {
+        payload["ext"] = serde_json::json!({
+            room_member::MEMBER_EXT: { "sealedAt": opened_at },
+        });
+    }
+    success_response(&doc, payload)
 }
 
 /// `rooms/keys/file-key/0.1`.
@@ -1766,6 +1803,7 @@ mod verification_tests {
                 pinned: false,
                 sealed: Some("c2VhbGVkLWJvZHk".into()),
                 nonce: Some("bm9uY2UtMTI".into()),
+                sealed_version: None,
                 cleartext: None,
                 author: None,
                 updated_at: 1_756_000_000,
