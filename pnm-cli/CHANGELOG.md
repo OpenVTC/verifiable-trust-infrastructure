@@ -2,6 +2,77 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.44.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.43.0...pnm-cli-v0.44.0) — 2026-10-18
+
+
+### Added
+
+- **rooms**: Rooms/owner/register 0.2 and group/remove 0.3 — a room's revocation list is reported and redelivered, and a refused redelivery never loses a withdrawal (trust-tasks-tf #821) ([#2191](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2191))
+
+* feat(rooms)!: rooms/owner/register 0.2 and group/remove 0.3 — a room's revocation list is reported and redelivered, and a refused redelivery never loses a withdrawal (trust-tasks-tf #821)
+
+  Implements trust-tasks-tf #821 on trust-tasks-rs 0.32.
+
+  rooms/owner/register/0.2
+  - A registration the host accepted answers success whatever became of the
+    room's revocation list, with `revocation {head, status, code?}`: `inForce`
+    only when the host answered with that list's head, `refused` with the host's
+    code, `pending` otherwise (item 3). `hostUnreachable` / `hostRefused` report
+    the registration alone, now mapped from the host's answer (they were bare
+    task failures before, at 0.1 too; the census baseline loses both rows).
+  - The outstanding delivery (room, host, sequence, and the persona whose `admin`
+    grant delivers it) is retained durably *before* the delivery is attempted, so
+    a process dying mid-delivery leaves it for the sweeper.
+  - `trust_tasks::room_list_delivery` is the single retry owner (item 4): every
+    30 s it attempts what is due, as that persona under authority confined to the
+    persona key's own context, delivering the latest list held; capped
+    exponential backoff (30 s .. 1 h) with full jitter; `inForce` and `refused`
+    both end it, and a refused list is never delivered again (item 5). `stale`
+    with no later list of this agent's own is logged at warn with
+    `security_alert` as possible key equivocation. Remote first: the record is
+    dropped only after the host's answer. Any delivery that reaches the host
+    (revoke, a removal) settles it; a revoke the host refuses ends it.
+  - 0.1 is still served as before: a failed delivery is refused with a message
+    saying the room is registered and naming `pnm rooms owner revoke`.
+
+  rooms/owner/group/remove/0.3
+  - Item 8.2, by refusal code, when a pending removal's list is refused on
+    redelivery: `listInvalid` / `entryNotPermitted` / `sequenceConflict` discard
+    the whole removal (the list only while it is still the one held;
+    `sequenceConflict` surfaced as equivocation); `stale` with a later held list
+    delivers that list and confirms the withdrawal through it; anything else
+    discards the advance and keeps the list. Whatever is discarded, the request
+    is refused and does none of its own work: `earlierRemovalRefused`
+    `{member, code, listKept}` at 0.3; `hostRefused` with the same details at
+    add / renew / remove 0.1.
+  - The settle path is shared, so this fixes every version: 0.2 used to discard
+    the list on any refusal and carry on, losing an entry a host may enforce.
+    0.2 has no `earlierRemovalRefused`, so it answers its closest declared code,
+    `hostRefused` at `stage: revocation` (details closed to `{stage, code}`),
+    with the earlier member and whether the list was kept in the message.
+  - An unanswered epoch query while settling now carries `details.stage:
+    advance` at 0.2/0.3, which their schema requires.
+
+  Clients
+  - SDK: `room_owner_register` asks 0.2 and falls back to 0.1 on
+    `unsupportedType`/`unsupportedVersion`, returning 0.2's response;
+    `room_group_remove_v0_3` asks 0.3 and falls back to 0.2. Both new URIs are
+    classified in `retry_safety` (RetrySafe / Keyed) and in the budget set.
+  - pnm: `rooms owner register` says plainly when the list is not in force and
+    prints the `pnm rooms owner revoke` fix (never re-register);
+    `rooms owner group-remove` uses 0.3 and explains `earlierRemovalRefused`.
+  - VTC: community `members/remove` and the departure worker ask
+    `group/remove/0.3`, falling back to 0.2; an `earlierRemovalRefused` is
+    surfaced to the administrator as `keyHolderRefused` saying what to do.
+
+  trust-tasks-rs 0.32 breaks handled
+  - `SealedRecord` gains `version` ([#816](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/816)): `pnm rooms file get` now opens and
+    verifies at `sealed.version`, which the previous release could not read.
+  - The device `Capability` enum gains `sign-document` ([#819](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/819)): this VTA neither
+    grants nor serves it; mapping goes through serde, so nothing else moves.
+
+
+
 ## [0.43.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.42.0...pnm-cli-v0.43.0) — 2026-10-18
 
 

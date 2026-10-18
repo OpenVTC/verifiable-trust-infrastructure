@@ -2,6 +2,31 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.18.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.18.0...vti-rooms-v0.18.1) — 2026-10-18
+
+
+### Fixed
+
+- **rooms**: Record a sealed body's version when it is stored, never guess it at curation ([#2187](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2187))
+
+#2185 recorded the sealed-at version at a record's first curation, taking the
+  record's version then as the one its body was sealed at. That holds only if the
+  record had never been curated — and a record stored by a host that predates
+  `sealed_version` may already have been, with nothing recorded. Restoring such a
+  record (archived by the old host) stamped the archived version as sealed-at; the
+  VTA then opened it only there, and it opened for nobody, with the host now
+  asserting the wrong answer instead of saying nothing.
+
+  The spec already says when to record it: "A host MUST record the version a body
+  was sealed at when it stores it" (rooms `_shared/0.1` `SealedRecord.version`).
+  `put_record` now does, and `curate_record` leaves it alone, so an older record's
+  stays unknown and is served without `sealed.version`, which is what tells readers
+  to search earlier versions. `committed()` serves it only where it differs from the
+  record's own version, so an uncurated record's wire form and commitment are
+  unchanged.
+
+
+
 ## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.17.0...vti-rooms-v0.18.0) — 2026-10-18
 
 
