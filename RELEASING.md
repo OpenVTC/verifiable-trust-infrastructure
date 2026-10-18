@@ -137,9 +137,13 @@ ships the **built** bundles and not the npm project:
   before the single-crate recovery publish).
 - `build.rs`, finding no `admin-ui/package.json`, bakes the bundles it was
   given — and fails, naming the script, when they are missing.
+- Cargo counts gitignored files that `include` names as uncommitted changes, so
+  vtc-service publishes with `--allow-dirty` (`publish_allow_dirty` in
+  `release-plz.toml`; the recovery hatch passes it too). The build step in
+  `publish.yml` fails if anything else in the tree differs from the commit.
 
 To package it by hand: `bash scripts/build-vtc-web-bundles.sh && cargo package
--p vtc-service`. The package is about 6 MB compressed against crates.io's 10 MB
+-p vtc-service --allow-dirty`. The package is about 6 MB compressed against crates.io's 10 MB
 limit; most of it is the two bundles.
 
 ### Why `vta-service` publishes again

@@ -1838,7 +1838,9 @@ ships the admin console and member portal **pre-built** (`admin-ui/dist`,
 `admin-ui/dist-members`, listed in its `include` though gitignored), never the
 npm project: `publish.yml` runs `scripts/build-vtc-web-bundles.sh` before
 release-plz, and `build.rs`, finding no `admin-ui/package.json`, bakes those
-bundles instead of running npm. A new `include_dir!` / `include_str!` outside
+bundles instead of running npm. Cargo counts those gitignored-but-included
+files as uncommitted, so it publishes with `--allow-dirty`
+(`publish_allow_dirty`), the build step checking nothing else differs. A new `include_dir!` / `include_str!` outside
 tests must stay inside that `include` list, or the published crate stops
 building.
 

@@ -123,6 +123,14 @@ semver_check = false
 # the same cost-for-no-signal as the subsystem crates above, on the largest
 # crate here. Bumps come from conventional commits. `scripts/semver-report.sh`
 # excludes it to match.
+#
+# `publish_allow_dirty`: cargo counts gitignored files that `include` names as
+# uncommitted, and the package's two web bundles are exactly that (built by
+# publish.yml just before this runs). Without it `cargo publish` refuses
+# vtc-service with "154 files in the working directory contain changes". The
+# step that builds them also checks the tree is otherwise clean, so this admits
+# the bundles and nothing else.
 [[package]]
 name = "vtc-service"
 semver_check = false
+publish_allow_dirty = true
