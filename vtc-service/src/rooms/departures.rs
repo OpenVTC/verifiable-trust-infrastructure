@@ -11,7 +11,8 @@
 //! completion, exactly as an administrator's `members/remove/0.2` does ([`remove_member`],
 //! trust-tasks-tf #804): on `open` and `attributed` rooms the member's credentials — an open
 //! offer's too — are withdrawn at the host (`rooms/owner/revoke`, or
-//! `rooms/owner/group/remove/0.2`, which also advances an `attributed` room past them); on a
+//! `rooms/owner/group/remove/0.3` — 0.2 on an older VTA — which also advances an `attributed`
+//! room past them); on a
 //! `private` room they leave the group (`group/remove/0.1`) and an open offer is withdrawn
 //! here. All of it **before** the removal is recorded (R2.1). The removal and the dropping of the owed row are one batch.
 //!
@@ -45,6 +46,7 @@ use serde_json::{Value, json};
 use trust_tasks_rs::Payload;
 use trust_tasks_rs::specs::rooms::owner::group::remove::v0_1 as owner_remove;
 use trust_tasks_rs::specs::rooms::owner::group::remove::v0_2 as owner_remove_v0_2;
+use trust_tasks_rs::specs::rooms::owner::group::remove::v0_3 as owner_remove_v0_3;
 use trust_tasks_rs::specs::rooms::owner::revoke::v0_1 as owner_revoke;
 use vti_common::audit::{AuditEvent, CommunityRoomChangedData};
 use vti_common::error::AppError;
@@ -79,6 +81,7 @@ pub const REMOVAL_NOTICE: &str = "Removal ends access to what is written from no
 
 const OWNER_GROUP_REMOVE: &str = <owner_remove::Payload as Payload>::TYPE_URI;
 const OWNER_GROUP_REMOVE_V0_2: &str = <owner_remove_v0_2::Payload as Payload>::TYPE_URI;
+const OWNER_GROUP_REMOVE_V0_3: &str = <owner_remove_v0_3::Payload as Payload>::TYPE_URI;
 const OWNER_REVOKE: &str = <owner_revoke::Payload as Payload>::TYPE_URI;
 
 /// What a removal at `vtc/rooms/community/members/remove/0.2` does not do, per tier — the
@@ -130,8 +133,11 @@ fn shape<R: serde::de::DeserializeOwned>(task: &str, answer: &Value) -> Result<R
 /// - `open`, or an open offer on `attributed`: the VTA **withdraws** them —
 ///   `rooms/owner/revoke`, one `subject` withdrawal, delivered to `host` (this community,
 ///   the room's host) — and the removal holds only once the host accepted it;
-/// - `attributed`, admitted: `rooms/owner/group/remove` at 0.2 — withdrawn first, then the
-///   room advances; a member with no leaf is withdrawn alone;
+/// - `attributed`, admitted: `rooms/owner/group/remove` at 0.3 (0.2 on a VTA that does not
+///   serve it) — withdrawn first, then the room advances; a member with no leaf is withdrawn
+///   alone. An earlier removal the VTA was still settling and had to give up is refused
+///   `earlierRemovalRefused`, with nothing of this one done: a refusal like any other here,
+///   and the next attempt proceeds;
 /// - `private`, admitted: `rooms/owner/group/remove` at 0.1 — the group alone, since a
 ///   private room's host cannot be told whom to refuse. (A private room's open offer asks
 ///   the VTA nothing; the caller does not call this for one.)
@@ -156,19 +162,29 @@ pub async fn remove_member(
             });
     }
     if room.visibility != "open" && !offered {
-        let req = request::<owner_remove_v0_2::Payload>(json!({
+        // 0.3, so an earlier removal the VTA was still settling is never discarded inside
+        // this one (item 8); 0.2 on a VTA that does not serve 0.3, whose request and
+        // response are the same. Every code 0.2 declares, 0.3 declares under the same string.
+        let req = request::<owner_remove_v0_3::Payload>(json!({
             "roomId": room_id,
             "host": host,
             "member": member,
             "signingKeyId": room.signing_key_id,
             "reason": reason,
         }))?;
-        match holder
-            .ask(OWNER_GROUP_REMOVE_V0_2, req, ADVANCE_TIMEOUT)
-            .await
+        let mut asked = holder
+            .ask(OWNER_GROUP_REMOVE_V0_3, req.clone(), ADVANCE_TIMEOUT)
+            .await;
+        if matches!(&asked, Err(HolderError::Refused { code, .. })
+            if code == "unsupportedType" || code == "unsupportedVersion")
         {
+            asked = holder
+                .ask(OWNER_GROUP_REMOVE_V0_2, req, ADVANCE_TIMEOUT)
+                .await;
+        }
+        match asked {
             Ok(answer) => {
-                let r: owner_remove_v0_2::Response = shape("rooms/owner/group/remove", &answer)?;
+                let r: owner_remove_v0_3::Response = shape("rooms/owner/group/remove", &answer)?;
                 return Ok(Removed {
                     epoch: u64::try_from(r.epoch).ok(),
                     revocation: Some((
@@ -179,9 +195,9 @@ pub async fn remove_member(
             }
             // No leaf — admitted here, never joined at the VTA: withdrawn alone, below.
             Err(HolderError::Refused { code, .. })
-                if code == owner_remove_v0_2::error_codes::NOT_MEMBER.code => {}
+                if code == owner_remove_v0_3::error_codes::NOT_MEMBER.code => {}
             Err(HolderError::Refused { code, message })
-                if code == owner_remove_v0_2::error_codes::HOST_UNREACHABLE.code =>
+                if code == owner_remove_v0_3::error_codes::HOST_UNREACHABLE.code =>
             {
                 return Err(HolderError::Unavailable(message));
             }

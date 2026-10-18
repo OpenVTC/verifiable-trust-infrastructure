@@ -122,7 +122,9 @@ pub fn parse_actions(actions: &[String]) -> Result<Vec<RoomAction>, Box<dyn std:
 // ─── Owner ───────────────────────────────────────────────────────────────
 
 /// `rooms owner register` — have this VTA register the room with its host
-/// (`rooms/owner/register/0.1`), signing `rooms/create` as `owner`.
+/// (`rooms/owner/register/0.2`, falling back to 0.1 on a VTA that does not serve it),
+/// signing `rooms/create` as `owner`, and say plainly when the room's revocation list is
+/// not in force there.
 pub async fn cmd_rooms_owner_register(
     client: &VtaClient,
     room_id: &str,
@@ -169,6 +171,39 @@ pub async fn cmd_rooms_owner_register(
         "Registered {} with {} as {owner}; the room is at epoch {}.",
         resp.room_id, resp.host, resp.epoch
     );
+    // `rooms/owner/register/0.2`: anything but `inForce` is a room its host serves without
+    // its withdrawals, and the person who asked has to be told so rather than shown a room
+    // that looks ready.
+    if let Some(revocation) = &resp.revocation {
+        let r = serde_json::to_value(revocation).unwrap_or_default();
+        let sequence = &r["head"]["sequence"];
+        let fix = format!(
+            "pnm rooms owner revoke --room {} --signing-key <the room's signing key> --host {}",
+            resp.room_id, resp.host
+        );
+        match r["status"].as_str() {
+            Some("inForce") => {
+                println!("  The room's revocation list (sequence {sequence}) is in force there.")
+            }
+            Some("refused") => println!(
+                "  WARNING: {} refused the room's revocation list (sequence {sequence}): {}. \
+                 It serves this room WITHOUT its withdrawals — every credential the room \
+                 withdrew is honoured there. Your VTA will not deliver it again on its own. \
+                 Do not register again to fix this: deliver the list with\n    {fix}\n  \
+                 and if the host refuses again, the refusal says why.",
+                resp.host,
+                r["code"].as_str().unwrap_or("no code given"),
+            ),
+            _ => println!(
+                "  WARNING: the room's revocation list (sequence {sequence}) is not yet in \
+                 force at {}: it serves this room WITHOUT its withdrawals until it is — every \
+                 credential the room withdrew is honoured there. Your VTA keeps delivering it \
+                 on its own; to bring the host up to date now, without registering again, run\n    \
+                 {fix}",
+                resp.host
+            ),
+        }
+    }
     println!(
         "  Next: issue {owner} the room's credentials — `pnm rooms owner issue-membership` and \
          `pnm rooms owner issue-authority --action read,write,curate,admin`, each with --store — \

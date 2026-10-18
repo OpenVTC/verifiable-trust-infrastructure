@@ -27,6 +27,7 @@ use trust_tasks_rs::TrustTask;
 use vti_common::acl::Capability;
 
 use crate::auth::AuthClaims;
+use crate::operations::room_host::RoomTaskError;
 use crate::operations::room_issuance::{SigningContext, sign_as_room};
 use crate::server::AppState;
 
@@ -409,7 +410,39 @@ async fn anchor_inner(
     }
 }
 
+/// Which `rooms/owner/register` is answered. The request schemas are the same; they differ
+/// in what becomes of the room's revocation list (`0.2`, *The room's revocation list*).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RegisterVersion {
+    V0_1,
+    V0_2,
+}
+
 /// `rooms/owner/register/0.1` — tell a host about a room that already exists.
+///
+/// A list that did not reach the host is refused `hostUnreachable` / `hostRefused` with a
+/// message saying the room **is** registered and naming the remedy: 0.1 declares no other
+/// outcome, and `0.2` says that is the least harmful answer it can give.
+pub(super) async fn handle_register(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    register_at(state, auth, doc, RegisterVersion::V0_1).await
+}
+
+/// `rooms/owner/register/0.2` — 0.1, and a registration the host accepted is answered with
+/// success whatever became of the room's revocation list, which `revocation` reports:
+/// `inForce` only when the host answered with the list's head (trust-tasks-tf #821).
+pub(super) async fn handle_register_v0_2(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    register_at(state, auth, doc, RegisterVersion::V0_2).await
+}
+
+/// `rooms/owner/register`, at either version — tell a host about a room that already exists.
 ///
 /// `rooms/create` performed by the agent, for the same reason as
 /// [`super::room_group::handle_backfill`]: the surfaces owners create rooms from
@@ -427,11 +460,15 @@ async fn anchor_inner(
 /// registration signed by this agent while naming someone else is refused by every
 /// host. Signing as the room would claim the room is asking to be stored, which is
 /// neither true nor something the host can check.
-pub(super) async fn handle_register(
+async fn register_at(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
+    at: RegisterVersion,
 ) -> TrustTaskOutcome {
+    // Both versions declare the same two codes under the same strings (the slug carries no
+    // version), so 0.2's generated constants serve both.
+    use trust_tasks_rs::specs::rooms::owner::register::v0_2::error_codes as codes;
     if let Err(r) = super::helpers::require_capability(
         state,
         auth,
@@ -444,7 +481,8 @@ pub(super) async fn handle_register(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::owner::register::v0_1::Payload =
+    // The request schemas are identical; the envelope was validated against its own.
+    let req: trust_tasks_rs::specs::rooms::owner::register::v0_2::Payload =
         match parse_payload(&doc) {
             Ok(r) => r,
             Err(resp) => return resp,
@@ -480,6 +518,7 @@ pub(super) async fn handle_register(
     // Signed as the owner, not as this agent: `rooms/create` is issued by its Owner, and a
     // host records as owner only the party whose proof is on the request. This is what
     // `rooms/owner/register` means by the key holder speaking "as its principal".
+    // Authorization item 2: `permissionDenied`, before the host is contacted.
     let owner_key = match crate::operations::room_host::owner_signing_key(
         crate::operations::room_host::OwnerKeyStores {
             keys_ks: &state.keys_ks,
@@ -501,7 +540,7 @@ pub(super) async fn handle_register(
         Ok(m) => m,
         Err(e) => return app_error_to_reject(&doc, e),
     };
-    let reply = match crate::operations::room_host::send_room_task(
+    let reply = match crate::operations::room_host::send_room_task_typed(
         signing_context(state, auth),
         &state.room_groups_ks,
         &member,
@@ -517,7 +556,30 @@ pub(super) async fn handle_register(
     .await
     {
         Ok(v) => v,
-        Err(e) => return app_error_to_reject(&doc, e),
+        // These two report the registration alone (0.2): the host's own reason, carried in
+        // `details`.
+        Err(RoomTaskError::Refused { code, reason, .. }) => {
+            return super::helpers::reject_with_code(
+                &doc,
+                super::room_group::declared(codes::HOST_REFUSED),
+                format!(
+                    "host `{}` declined to register room `{}`: {code}: {reason}",
+                    req.host, req.room_id
+                ),
+                Some(serde_json::json!({ "code": code, "reason": reason })),
+            );
+        }
+        Err(RoomTaskError::Unknown(e)) => {
+            return super::helpers::reject_with_code(
+                &doc,
+                super::room_group::declared(codes::HOST_UNREACHABLE),
+                format!(
+                    "host `{}` did not answer the registration of room `{}`: {e}",
+                    req.host, req.room_id
+                ),
+                None,
+            );
+        }
     };
 
     // What `rooms/owner/revoke` item 2 means by knowing the tier "from registering the
@@ -535,33 +597,147 @@ pub(super) async fn handle_register(
         tracing::warn!(room = %req.room_id, error = %e, "could not record the room's tier");
     }
 
-    // `rooms/owner/revoke`: a key holder that registers a room with a host delivers the list
-    // it holds for the room to that host **before answering** — a room moving hosts would
-    // otherwise arrive without its withdrawals, and its new host honour what the old one
-    // refused (trust-tasks-tf #804).
-    if let Err(r) = deliver_held_list(state, auth, &doc, &resolver, &req.room_id, &req.host).await {
-        return r;
-    }
-
     // The host's own answer for the epoch, not an assumption that a new room
     // starts at 1: a host that already held this room reports where it actually
     // stands, and a caller recording 1 over a live room would be recording a
     // fiction.
     let epoch = reply.get("epoch").and_then(Value::as_u64).unwrap_or(1);
+    let mut body = serde_json::json!({
+        "roomId": req.room_id,
+        // Echoed from what was reached, per the specification.
+        "host": req.host,
+        "epoch": epoch,
+    });
 
-    success_response(
-        &doc,
-        serde_json::json!({
-            "roomId": req.room_id,
-            // Echoed from what was reached, per the specification.
-            "host": req.host,
-            "epoch": epoch,
-        }),
+    // `rooms/owner/revoke`: a key holder that registers a room with a host delivers the list
+    // it holds for the room to that host **after** the host accepted the registration and
+    // **before answering** — a room moving hosts would otherwise arrive without its
+    // withdrawals, and its new host honour what the old one refused (trust-tasks-tf #804).
+    match at {
+        RegisterVersion::V0_1 => {
+            if let Err(r) =
+                deliver_held_list(state, auth, &doc, &resolver, &req.room_id, &req.host).await
+            {
+                return r;
+            }
+        }
+        RegisterVersion::V0_2 => {
+            let delivered = deliver_after_registration(
+                state,
+                auth,
+                &resolver,
+                &req.room_id,
+                &req.host,
+                &owner_did,
+            )
+            .await;
+            match delivered {
+                Ok(Some(revocation)) => body["revocation"] = revocation,
+                Ok(None) => {}
+                // Item 2: the registration took effect, so this answers a `#response`
+                // whatever became of the delivery. Reading the list this agent holds is the
+                // one thing that can fail before a delivery is known to be owed at all.
+                Err(e) => {
+                    tracing::error!(room = %req.room_id, host = %req.host, error = %e,
+                        "could not read the room's revocation list after registering it");
+                    return app_error_to_reject(&doc, e);
+                }
+            }
+        }
+    }
+
+    success_response(&doc, body)
+}
+
+/// `rooms/owner/register/0.2`, *The room's revocation list*: deliver the list this agent
+/// holds for `room_id` to `host`, which has just accepted the registration, and say what
+/// became of it — `None` when no list is held (item 3: `revocation` is then omitted).
+///
+/// Before the delivery is attempted it is retained as outstanding (the room, the host, the
+/// sequence and the persona that delivers it), so a delivery left `pending` — or cut off by
+/// the process dying — is carried on by the redelivery sweeper
+/// ([`super::room_list_delivery`]), the single retry owner (item 4). `inForce` and `refused`
+/// leave nothing behind; a refused list is never delivered again on its own (item 5).
+async fn deliver_after_registration(
+    state: &AppState,
+    auth: &AuthClaims,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    room_id: &str,
+    host: &str,
+    owner_did: &str,
+) -> Result<Option<Value>, vti_common::error::AppError> {
+    use super::room_owner_group::{Delivery, HostCall};
+    use crate::operations::room_revocation as revocation;
+    let Some(list) = revocation::held(&state.room_groups_ks, room_id).await? else {
+        return Ok(None);
+    };
+    let head = list.head().to_wire();
+    let pending = || serde_json::json!({ "head": head, "status": "pending" });
+
+    // The persona whose `admin` grant the delivery presents; the owner the room was
+    // registered as when this agent holds no such grant for one the caller acts as — the
+    // sweeper keeps trying as that persona, whose grant may yet be stored.
+    let host_call = HostCall::for_persona(state, auth, resolver, room_id, None).await;
+    let persona = match &host_call {
+        Ok(h) => h.persona().to_string(),
+        Err(_) => owner_did.to_string(),
+    };
+    if let Err(e) = revocation::retain_delivery(
+        &state.room_groups_ks,
+        &revocation::OutstandingDelivery {
+            room_id: room_id.to_string(),
+            host: host.to_string(),
+            sequence: list.sequence(),
+            persona,
+        },
     )
+    .await
+    {
+        tracing::error!(room = %room_id, %host, error = %e,
+            "could not retain the room's revocation list as outstanding; if it is not \
+             delivered now, deliver it with rooms/owner/revoke");
+    }
+
+    let host_call = match host_call {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(room = %room_id, %host, error = %e,
+                "the room is registered, but this agent holds no `admin` grant to deliver its \
+                 revocation list with; it is pending");
+            return Ok(Some(pending()));
+        }
+    };
+    let presentation = match host_call.presentation_as_admin().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(room = %room_id, %host, error = %e,
+                "the room is registered, but its revocation list could not be presented for; \
+                 it is pending");
+            return Ok(Some(pending()));
+        }
+    };
+    Ok(Some(
+        match host_call.deliver_list(host, &list, &presentation).await {
+            // `deliver_list` reports `Accepted` only when the host answered with this list's
+            // head, and settles the outstanding delivery itself.
+            Delivery::Accepted { .. } => serde_json::json!({ "head": head, "status": "inForce" }),
+            Delivery::Refused { code, reason } => {
+                tracing::warn!(room = %room_id, %host, %code, %reason,
+                    "the room is registered, and its host refused the room's revocation list");
+                revocation::drop_delivery(&state.room_groups_ks, room_id, host).await?;
+                serde_json::json!({ "head": head, "status": "refused", "code": code })
+            }
+            Delivery::Unreachable(why) => {
+                tracing::warn!(room = %room_id, %host, reason = %why,
+                    "the room is registered, and its revocation list is pending at the host");
+                pending()
+            }
+        },
+    ))
 }
 
 /// Deliver the revocation list this agent holds for `room_id`, if any, to `host`, for
-/// `rooms/owner/register`. The room is registered whatever this answers; a failure says so
+/// `rooms/owner/register/0.1`. The room is registered whatever this answers; a failure says so
 /// and names the remedy, which is re-delivering with `rooms/owner/revoke` and no `withdraw`.
 async fn deliver_held_list(
     state: &AppState,

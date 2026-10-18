@@ -1391,7 +1391,10 @@ pub async fn cmd_rooms_file_get(
         nonce: sealed.nonce.clone(),
         epoch: u32::try_from(sealed.epoch.get())
             .map_err(|_| "the record's epoch is beyond what this client can represent")?,
-        version: None,
+        // The version the body was sealed at, where a curation moved the record past it
+        // (rooms `_shared/0.1` `SealedRecord.version`): opened and verified there, and a
+        // `sealed.version` above the record's own refused by `open_and_verify`.
+        version: sealed.version.map(std::num::NonZeroU64::get),
     };
     let verified = open_and_verify(
         client,
@@ -1526,11 +1529,16 @@ pub async fn cmd_rooms_owner_group_create(
 
 /// `rooms owner group-remove` — remove a member from a room.
 ///
-/// With `signing_key_id`, `rooms/owner/group/remove/0.2`: the room's key withdraws the
-/// member's credentials at the host first, and then the room advances — the removal takes
-/// effect at the host at once. On a `private` room, where the host cannot be told whom to
-/// refuse, 0.2 refuses and this falls back to 0.1, which the specification keeps as that
-/// tier's removal. Without `signing_key_id`, 0.1: the group alone, credentials left valid.
+/// With `signing_key_id`, `rooms/owner/group/remove/0.3` (0.2 on a VTA that does not serve
+/// it): the room's key withdraws the member's credentials at the host first, and then the
+/// room advances — the removal takes effect at the host at once. On a `private` room, where
+/// the host cannot be told whom to refuse, it refuses and this falls back to 0.1, which the
+/// specification keeps as that tier's removal. Without `signing_key_id`, 0.1: the group
+/// alone, credentials left valid.
+///
+/// An earlier removal the VTA was still settling, whose list the host refused on
+/// redelivery, is reported as `earlierRemovalRefused`: that removal did not take effect, and
+/// nothing of this one was done — this says which member, and what to run.
 #[allow(clippy::too_many_arguments)]
 pub async fn cmd_rooms_owner_group_remove(
     client: &VtaClient,
@@ -1557,7 +1565,7 @@ pub async fn cmd_rooms_owner_group_remove(
         match client
             .idempotent(|| {
                 client
-                    .room_group_remove_v0_2(room_id, host_did, member, key, mirrors, until, reason)
+                    .room_group_remove_v0_3(room_id, host_did, member, key, mirrors, until, reason)
             })
             .await
         {
@@ -1583,6 +1591,33 @@ pub async fn cmd_rooms_owner_group_remove(
                      now on. Nothing they already read can be recalled."
                 );
                 return Ok(());
+            }
+            // 0.3 item 8.2: an earlier removal did not take effect, and this one was not
+            // started. Say which member, whether their withdrawal survives, and what to run.
+            Err(VtaError::Rejected { code, details, .. })
+                if code == "rooms/owner/group/remove:earlierRemovalRefused" =>
+            {
+                let d = details.unwrap_or_default();
+                let earlier = d["member"].as_str().unwrap_or("an earlier member");
+                let host_code = d["code"].as_str().unwrap_or("no code given");
+                let kept = if d["listKept"].as_bool() == Some(true) {
+                    format!(
+                        "Their withdrawal is kept in the room's revocation list and carried by \
+                         every later one; the host enforces it only if it ever accepted that \
+                         list — deliver it again with\n    pnm rooms owner revoke --room \
+                         {room_id} --signing-key {key} --host {host_did}"
+                    )
+                } else {
+                    "Their withdrawal was discarded: no host accepted it.".to_string()
+                };
+                return Err(format!(
+                    "Nothing was done: an earlier removal of {earlier} from {room_id} did not \
+                     take effect — {host_did} refused its revocation list when your VTA \
+                     delivered it again ({host_code}). {earlier} is still in the room's group. \
+                     {kept}\n\nRun this command again to remove {member}; then remove \
+                     {earlier} again if that is still wanted."
+                )
+                .into());
             }
             // The one case the specification hands to 0.1: a private room's host cannot be
             // told whom to refuse.

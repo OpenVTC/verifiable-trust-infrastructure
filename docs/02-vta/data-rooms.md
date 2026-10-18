@@ -85,7 +85,7 @@ knowing which half you are standing on saves an afternoon.
 | Succession: nomination, transfer, claim | **Work**, including the "renewing defeats a pending claim" property |
 | **A CLI** | **`pnm rooms {list,get,put,curate,renew,file}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key; `put` seals on `attributed` and `private` (§9). **`pnm rooms owner {register,invite,issue-membership,issue-authority,group-create,group-add,group-remove,group-renew,revoke}`** — the owner's, run by the owner's VTA. **`pnm rooms keys {key-package,welcome,commit,list}`** — the joiner's key holder. A sealed room can be run end to end from the CLI (§5, §6) |
 | **Credential issuance** | **Works, on the owner's own VTA.** `rooms/owner/{invite,issue-membership,issue-authority}` mint the VIC, VMC and VAC in the *room's* name, signing through the gated key oracle so the room's key never materialises (§5.3). `pnm rooms owner {invite,issue-membership,issue-authority}` drive them, over `VtaClient::room_owner_*` |
-| **The owner's MLS half** | **Works, in the owner's VTA.** `rooms/owner/group/create` founds the group with the owner as its only member; `rooms/owner/group/add` admits a member's KeyPackage, advances the room's epoch at its host first, and returns the Welcome to deliver; `rooms/owner/group/remove` (0.2) withdraws the member's credentials at the host and then drops their leaf, host first; `rooms/owner/revoke` withdraws credentials alone, signed as the room; `rooms/owner/group/renew` renews a sealed room with a commit that changes no membership, host first. `pnm rooms owner group-create` / `group-add` / `group-remove` / `group-renew` drive them (§5.4, §6, §10.1) |
+| **The owner's MLS half** | **Works, in the owner's VTA.** `rooms/owner/group/create` founds the group with the owner as its only member; `rooms/owner/group/add` admits a member's KeyPackage, advances the room's epoch at its host first, and returns the Welcome to deliver; `rooms/owner/group/remove` (0.3, and 0.2) withdraws the member's credentials at the host and then drops their leaf, host first; `rooms/owner/revoke` withdraws credentials alone, signed as the room; `rooms/owner/group/renew` renews a sealed room with a commit that changes no membership, host first. `pnm rooms owner group-create` / `group-add` / `group-remove` / `group-renew` drive them (§5.4, §6, §10.1) |
 | **A browser as a member** | **Works.** `vti-rooms-wasm` compiles the member half — group custody, sealing, opening, the epoch chain — to WebAssembly; `room-host --allow-origin` is what lets a page reach a host at all. No key ever crosses into JavaScript |
 | **Governance (`rooms.rego`)** | **On a VTC.** A community decides who may create a room on it, in Rego, with the shipped default hosting `open`/`attributed` for its own members. A standalone `room-host` has no policy engine — T1's governance is its owner (§8.4) |
 | **Read mirrors** (T3) | **`room-host --mirror-config`** — a host serves a read-only copy fed by `sinceVersion` pulls and refuses every write, naming the primary. A mirror pulls **as a member**, presenting a room-issued `read` chain |
@@ -339,7 +339,7 @@ version counter. **Sign this one as the owner**: creation is the single verb no
 chain can authorize, so the request's own proof is the check, and a signer who
 is not the `ownerDid` they name is refused (§8.4).
 
-**Through your VTA instead** — `rooms/owner/register/0.1`, the way to register
+**Through your VTA instead** — `rooms/owner/register/0.2` (0.1 on an older VTA), the way to register
 on a community (VTC), and for any surface that can reach its own agent and no
 host (a wallet extension, a phone):
 
@@ -359,6 +359,29 @@ message saying to name an `ownerDid` the VTA holds — a `pnm` session's
 `did:key`, whose key lives in your client, is not one. `pnm rooms owner register --owner` has no default.
 On a **VTC** the owner must also be a member of the
 community: its `rooms` policy decides creation against the party that signed.
+
+**The room's revocation list goes with it.** When the VTA holds a list for the
+room — a room moving hosts — it delivers it there once the host has accepted the
+registration, and the answer says what became of it (trust-tasks-tf #821):
+
+- `inForce` — the host answered with the list's head. The room is ready there.
+- `pending` — the host did not answer, or answered with another head. **The host
+  serves the room without its withdrawals**: every credential the room withdrew
+  is honoured there until it takes the list. The VTA keeps delivering it on its
+  own (one sweeper, capped back-off with jitter, the latest list each time) until
+  the host takes it or refuses it; it keeps only the room, the host, the list's
+  sequence and the persona that delivers it, and only until then.
+- `refused` — the host refused the list, with its code. The VTA never delivers a
+  refused list again on its own; a `stale` refusal (the host holds a list this VTA
+  did not sign) is logged as the room's key possibly in more than one party's
+  hands.
+
+`pnm` says plainly when the list is not in force. **Never register again to fix
+it** — the registration is done; deliver the list with `pnm rooms owner revoke
+--room <room-did> --signing-key <room's key> --host <host-did>` and no
+withdrawal. `hostUnreachable` and `hostRefused` report the registration alone. A
+`0.1` request still gets 0.1's answer: a failed delivery is refused, with a
+message saying the room **is** registered and naming that command.
 
 `pnm rooms create` is the other path: it signs `rooms/create` with the CLI's own
 session key, which makes that client key the owner. It is for a standalone
@@ -654,7 +677,8 @@ serve it.
 
 ### Remove a member
 
-Removal is two acts, and at `rooms/owner/group/remove/0.2` the owner's VTA does
+Removal is two acts, and at `rooms/owner/group/remove/0.3` (0.2 on an older
+VTA; `pnm` asks at 0.3 and falls back) the owner's VTA does
 both, **withdrawing first** (trust-tasks-tf #804):
 
 1. **Withdraw their credentials at the host.** A host authorizes from the
@@ -700,6 +724,23 @@ the host as your owner persona:
   (`hostUnreachable` with its `stage`), the removal is kept and the next
   admission, removal or renewal settles it: it delivers the list again first,
   then asks the host's epoch.
+- **A redelivery the host refuses** (item 8, trust-tasks-tf #821). The first
+  delivery's outcome was never learned, so only a refusal of the list itself
+  (`listInvalid`, `entryNotPermitted`, `sequenceConflict` — the last logged as
+  the room's key possibly in more than one party's hands) discards the whole
+  removal, and the list only while nothing was signed on it. `stale`, when the
+  VTA has signed a later list since, delivers that one and confirms the
+  withdrawal through it. Anything else keeps the list as the room's and discards
+  only the advance. Whatever is discarded, **the request that found it is refused
+  and does none of its own work**: `group-remove` answers
+  `earlierRemovalRefused` (`details`: the earlier `member`, the host's `code`,
+  `listKept`) and `pnm` says which member is still in the group and what to run;
+  `group-add`, `group-renew` and `group-remove` 0.1 answer their own `hostRefused`
+  with the same details; 0.2, which has no such code, answers `hostRefused` at
+  `stage: revocation` with the member in the message. Repeat the request — the
+  earlier removal is no longer pending — and remove that member again if that is
+  still wanted. A VTC's `members/remove` reports it as `keyHolderRefused`, saying
+  the same.
 - **Mirrors** are delivered the list once the host has accepted it; one that
   does not answer is named in `mirrorsPending` — deliver it later with
   `pnm rooms owner revoke` and no withdrawal.
@@ -740,7 +781,9 @@ pnm rooms owner revoke --room <room-did> --signing-key <room's key> --host <host
 
 The list is the **room's**, so it moves with the room: the VTA keeps it with the
 room's key (in `room_groups`, backed up), signs one list per sequence, and
-delivers the one it holds to a host before answering `rooms/owner/register`.
+delivers the one it holds to a host before answering `rooms/owner/register`
+(§5.2). A revoke that reaches a host settles any delivery the VTA was still
+carrying on there.
 Before signing it asks each host for the list it holds (`rooms/revocations/get`)
 and adopts a later one the room signed — a VTA restored from an old backup
 recovers instead of signing a list every host refuses as `stale`. A host that
@@ -1674,7 +1717,7 @@ holds the room's key:
 | `rooms/owner/invite/0.1` | a VIC — single-use consent to join | `credentialWrite` + control of the room's key |
 | `rooms/owner/issue-membership/0.1` | a VMC — the room's statement that a DID is a member | same |
 | `rooms/owner/issue-authority/0.2` | a VAC chain root; `validUntil` required | same |
-| `rooms/owner/register/0.1` | nothing — asks this VTA to call `rooms/create` on a host, signing **as the owner** (your persona: a DID it holds the key for, in a context you act in), not as the room or the agent | same, plus a resolver |
+| `rooms/owner/register/0.2` (and 0.1) | nothing — asks this VTA to call `rooms/create` on a host, signing **as the owner** (your persona: a DID it holds the key for, in a context you act in), not as the room or the agent; 0.2 reports the room's revocation list there (`inForce` / `pending` / `refused`) | same, plus a resolver |
 
 **Constants**
 

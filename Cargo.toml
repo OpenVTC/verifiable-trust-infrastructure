@@ -655,16 +655,22 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # tags (trust-tasks-tf #805).
 # 0.31.15: `rooms/keys/act/0.4`, which completes `vtc/rooms/offers/list/0.2`
 # (trust-tasks-tf #810).
-# 0.31.16 is the FLOOR: `vtc/rooms/memberships/list/0.1`,
+# 0.31.16: `vtc/rooms/memberships/list/0.1`,
 # `rooms/keys/key-package/0.2` and `rooms/keys/act/0.5` — every surface shows a
 # member the same rooms, and finishes an acceptance any other began
 # (trust-tasks-tf #813).
-trust-tasks-rs = { version = "0.31.16", default-features = false, features = [
+# 0.32 is the FLOOR (a breaking minor, so every `trust-tasks-*` crate moves with it):
+# `rooms/owner/register/0.2` (the room's revocation list `inForce` / `pending` /
+# `refused`) and `rooms/owner/group/remove/0.3` (`earlierRemovalRefused`), both
+# trust-tasks-tf #821. Its breaks: `SealedRecord` gains `version` (#816, which
+# `pnm rooms file get` now reads), and the device `Capability` enum gains
+# `sign-document` (#819), which this VTA neither grants nor serves.
+trust-tasks-rs = { version = "0.32", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
-trust-tasks-capability-client = "0.31"
-trust-tasks-https = { version = "0.31", default-features = false, features = ["server", "client", "jwt"] }
+trust-tasks-capability-client = "0.32"
+trust-tasks-https = { version = "0.32", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
 # and the `pack_trust_task`/`unpack_trust_task` pair that enforce it.
@@ -675,7 +681,7 @@ trust-tasks-https = { version = "0.31", default-features = false, features = ["s
 # A conformant peer rejects that, silently, because "not an envelope" is
 # indistinguishable from "not addressed to me". One constant, from the crate
 # that defines it.
-trust-tasks-didcomm = { version = "0.31", default-features = false }
+trust-tasks-didcomm = { version = "0.32", default-features = false }
 # The TSP binding. Carries `ENVELOPE_TYPE` — the payload wrapper every
 # Trust-Task TSP frame must use: `{"type": …, "document": …}`.
 #
@@ -694,8 +700,8 @@ trust-tasks-didcomm = { version = "0.31", default-features = false }
 # keys in that shape; it signs through `operations::keys::sign_payload`, where
 # the context gates live. Using the crate's sealing API needs a signer seam
 # upstream, of the shape `affinidi_data_integrity::Signer` already provides.
-trust-tasks-tsp = { version = "0.31", default-features = false }
-trust-tasks-proof = { version = "0.31", default-features = false, features = ["affinidi"] }
+trust-tasks-tsp = { version = "0.32", default-features = false }
+trust-tasks-proof = { version = "0.32", default-features = false, features = ["affinidi"] }
 
 # Axum extras (typed headers for Bearer auth)
 axum-extra = { version = "0.12", features = ["typed-header"] }

@@ -1151,6 +1151,13 @@ pub const TASK_ROOMS_OWNER_INVITE_0_1: &str = "https://trusttasks.org/spec/rooms
 pub const TASK_ROOMS_OWNER_REGISTER_0_1: &str =
     "https://trusttasks.org/spec/rooms/owner/register/0.1";
 
+/// `spec/rooms/owner/register/0.2` — 0.1, and a registration the host accepted is answered
+/// with success whatever became of the room's revocation list, reported in `revocation`
+/// (`inForce`, `pending` or `refused`). Anything but `inForce` is a room its host serves
+/// without its withdrawals; the agent goes on delivering a `pending` list on its own.
+pub const TASK_ROOMS_OWNER_REGISTER_0_2: &str =
+    <trust_tasks_rs::specs::rooms::owner::register::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/owner/issue-membership/0.1` — mint the membership credential a member
 /// presents on every subsequent room operation. The room has no roster; this
 /// credential IS the membership.
@@ -1207,6 +1214,14 @@ pub const TASK_ROOMS_OWNER_GROUP_REMOVE_0_1: &str =
 /// Auth: as 0.1, plus control of the room's signing key (`signingKeyId`).
 pub const TASK_ROOMS_OWNER_GROUP_REMOVE_0_2: &str =
     <trust_tasks_rs::specs::rooms::owner::group::remove::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/owner/group/remove/0.3` — 0.2, and a pending removal whose list the host
+/// refuses when it is delivered again is settled by what the refusal shows; the request at
+/// which it settled is refused `earlierRemovalRefused` (`{member, code, listKept}`) and does
+/// none of its own work.
+/// Auth: as 0.2.
+pub const TASK_ROOMS_OWNER_GROUP_REMOVE_0_3: &str =
+    <trust_tasks_rs::specs::rooms::owner::group::remove::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/owner/revoke/0.1` — withdraw credentials a room issued: the agent signs the
 /// room's next revocation list as the room, keeps it, and delivers it to each host serving
@@ -2723,6 +2738,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_PROFILE_WRITE_0_1,
     TASK_ROOMS_OWNER_INVITE_0_1,
     TASK_ROOMS_OWNER_REGISTER_0_1,
+    TASK_ROOMS_OWNER_REGISTER_0_2,
     TASK_ROOMS_OWNER_ANCHOR_0_1,
     TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
     TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,
@@ -2731,6 +2747,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_OWNER_GROUP_ADD_0_2,
     TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
     TASK_ROOMS_OWNER_GROUP_REMOVE_0_2,
+    TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
     TASK_ROOMS_OWNER_REVOKE_0_1,
     TASK_ROOMS_OWNER_GROUP_RENEW_0_1,
     TASK_VTA_MEMORY_DELETE_0_1,

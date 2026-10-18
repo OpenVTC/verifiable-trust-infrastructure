@@ -3325,6 +3325,31 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_OWNER_REGISTER_0_2,
+            checked!(
+                specs::rooms::owner::register::v0_2::Payload,
+                specs::rooms::owner::register::v0_2::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.org:rooms-mirror",
+                    "visibility": "attributed"
+                }),
+                // Registered, and the list not yet in force there: the host serves the room
+                // without its withdrawals, and the agent goes on delivering it.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.org:rooms-mirror",
+                    "epoch": 4,
+                    "revocation": {
+                        "head": { "sequence": 2,
+                            "digest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR" },
+                        "status": "refused",
+                        "code": "rooms/revocations/put:notAppendOnly"
+                    }
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_OWNER_GROUP_CREATE_0_1,
             checked!(
                 specs::rooms::owner::group::create::v0_1::Payload,
@@ -3397,6 +3422,25 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     "revokedAt": "2026-10-16T09:29:58Z",
                     "epoch": 4,
                     "mirrorsPending": ["did:webvh:mirror.example.com:northwind"] })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
+            checked!(
+                specs::rooms::owner::group::remove::v0_3::Payload,
+                specs::rooms::owner::group::remove::v0_3::Response,
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "signingKeyId": "room-northwind-signing",
+                    "until": "2027-01-01T00:00:00Z",
+                    "reason": "Left the deal team" }),
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "revocation": { "sequence": 2,
+                        "digest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR" },
+                    "revokedAt": "2026-10-16T09:29:58Z",
+                    "epoch": 4 })
             ),
         ),
         (

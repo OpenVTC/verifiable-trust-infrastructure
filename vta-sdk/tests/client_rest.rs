@@ -2460,6 +2460,63 @@ async fn room_group_add_falls_back_to_0_1() {
     assert_eq!(resp.epoch, 2);
 }
 
+/// `rooms/owner/register/0.2` first; a VTA that does not serve it is asked at 0.1, the
+/// same request, and its answer — 0.2's without `revocation` — read as 0.2's.
+#[tokio::test]
+async fn room_owner_register_falls_back_to_0_1() {
+    let server = MockServer::start().await;
+    let room = "did:webvh:example.com:rooms:northwind";
+    let host = "did:webvh:example.com:northwind-community";
+    let _m = mount_only_0_1(
+        &server,
+        "https://trusttasks.org/spec/rooms/owner/register/0.2",
+        "https://trusttasks.org/spec/rooms/owner/register/0.1",
+        json!({ "roomId": room, "host": host, "epoch": 1 }),
+    )
+    .await;
+    let c = client(&server).await;
+    let resp = c
+        .room_owner_register(vta_sdk::client::RoomRegistration {
+            room_id: room,
+            host_did: host,
+            visibility: "attributed".parse().unwrap(),
+            owner_did: Some("did:webvh:example.com:people:alice"),
+            retention_days: None,
+            retention_policy: None,
+        })
+        .await
+        .expect("answered at 0.1");
+    assert_eq!(resp.epoch.get(), 1);
+    assert!(resp.revocation.is_none());
+}
+
+/// `rooms/owner/group/remove/0.3` first; a VTA that does not serve it is asked at 0.2, the
+/// same request, and its answer read as 0.3's.
+#[tokio::test]
+async fn room_group_remove_v0_3_falls_back_to_0_2() {
+    let server = MockServer::start().await;
+    let room = "did:webvh:example.com:rooms:northwind";
+    let member = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+    let _m = mount_only_0_1(
+        &server,
+        "https://trusttasks.org/spec/rooms/owner/group/remove/0.3",
+        "https://trusttasks.org/spec/rooms/owner/group/remove/0.2",
+        json!({
+            "roomId": room, "member": member,
+            "revocation": { "sequence": 2,
+                "digest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR" },
+            "revokedAt": "2026-10-16T09:29:58Z", "epoch": 4,
+        }),
+    )
+    .await;
+    let c = client(&server).await;
+    let resp = c
+        .room_group_remove_v0_3(room, "did:key:zHost", member, "room-key", &[], None, None)
+        .await
+        .expect("answered at 0.2");
+    assert_eq!(resp.epoch, 4);
+}
+
 /// A reply to a community's offer is completed at `rooms/keys/act/0.4` or 0.3, or not at
 /// all: the earlier versions' schema refuses its type, so a VTA without either is reported
 /// as such and never asked at 0.2.

@@ -991,11 +991,20 @@ new flow, update both this section and the relevant `docs/*.md`.
   list per sequence under `room_revocation::signing_lock`, through the gated oracle, and
   delivers it before answering `rooms/owner/register`. `group/remove/0.2` withdraws
   first, then advances; a private room is never withdrawn per member.
+  `register/0.2` answers success once the host took the registration, with
+  `revocation.status` `inForce` only when the host answered with the list's head; a
+  `pending` list is retained (room, host, sequence, persona) **before** the delivery and
+  redelivered by `trust_tasks::room_list_delivery`, the one retry owner — latest list,
+  capped backoff + jitter, never a `refused` one. A pending removal's list refused on
+  redelivery is settled by `group/remove/0.3` item 8 at **every** version and task
+  (`HostCall::settle_refused_list`): only `listInvalid`/`entryNotPermitted`/
+  `sequenceConflict` discard the list (and only while still held); the request is then
+  refused and never goes on to its own work.
 - **Code**: `vti-rooms/src/{revocation,revocation_tasks,authz}.rs`,
   `vti-rooms-dtg/src/lib.rs` (`verify_room_signed`, `credential_facts`),
   `room-host/src/files.rs`, `vtc-service/src/rooms/{handlers,files}.rs`,
   `vta-service/src/operations/room_revocation.rs`,
-  `vta-service/src/trust_tasks/{room_owner_revoke,room_owner_group}.rs`,
+  `vta-service/src/trust_tasks/{room_owner,room_owner_revoke,room_owner_group,room_list_delivery}.rs`,
   `vtc-service/src/rooms/departures.rs` (`remove_member`).
 - **Docs**: `docs/02-vta/data-rooms.md` (§6), `docs/03-vtc/community-rooms.md`.
 

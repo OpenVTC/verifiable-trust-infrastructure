@@ -57,6 +57,7 @@ const GROUP_ADD: &str = "https://trusttasks.org/spec/rooms/owner/group/add/0.2";
 const GROUP_ADD_V0_1: &str = "https://trusttasks.org/spec/rooms/owner/group/add/0.1";
 const GROUP_REMOVE: &str = "https://trusttasks.org/spec/rooms/owner/group/remove/0.1";
 const GROUP_REMOVE_V0_2: &str = "https://trusttasks.org/spec/rooms/owner/group/remove/0.2";
+const GROUP_REMOVE_V0_3: &str = "https://trusttasks.org/spec/rooms/owner/group/remove/0.3";
 const OWNER_REVOKE: &str = "https://trusttasks.org/spec/rooms/owner/revoke/0.1";
 const REMOVE_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2";
 const INVITE: &str = "https://trusttasks.org/spec/rooms/owner/invite/0.1";
@@ -103,6 +104,8 @@ struct VtaState {
     admitted: HashMap<String, (String, String, u64, String)>,
     /// A VTA that predates `rooms/owner/group/add/0.2`: it refuses it `unsupportedType`.
     add_0_1_only: bool,
+    /// A VTA that predates `rooms/owner/group/remove/0.3`: it refuses it `unsupportedType`.
+    remove_0_2_only: bool,
     /// Each room's profile as the stand-in holds it — what `rooms/keys/profile/write`
     /// last wrote, or what a test set as a curator's edit in the room.
     profiles: HashMap<String, Value>,
@@ -276,7 +279,10 @@ impl FakeVta {
                     }],
                 }))
             }
-            GROUP_REMOVE_V0_2 => {
+            GROUP_REMOVE_V0_2 | GROUP_REMOVE_V0_3 => {
+                if type_uri == GROUP_REMOVE_V0_3 && self.0.lock().unwrap().remove_0_2_only {
+                    return Err(("unsupportedType", format!("{type_uri} is not served here")));
+                }
                 let room = p["roomId"].as_str().unwrap().to_string();
                 let member = p["member"].as_str().unwrap().to_string();
                 if !self.group(&room).is_some_and(|(m, _)| m.contains(&member)) {
@@ -1665,13 +1671,13 @@ async fn a_member_who_leaves_is_removed_from_every_community_room() {
     // The sealed room's group was asked once, withdrawing first; the open room and the
     // offer were withdrawn at the host.
     let mut types = fix.vta.types_called();
-    types.retain(|t| t == GROUP_REMOVE_V0_2 || t == OWNER_REVOKE);
+    types.retain(|t| t == GROUP_REMOVE_V0_3 || t == OWNER_REVOKE);
     types.sort();
-    assert_eq!(types, vec![GROUP_REMOVE_V0_2, OWNER_REVOKE, OWNER_REVOKE]);
+    assert_eq!(types, vec![GROUP_REMOVE_V0_3, OWNER_REVOKE, OWNER_REVOKE]);
     let calls = fix.vta.calls();
     let call = &calls
         .iter()
-        .find(|(t, _)| t == GROUP_REMOVE_V0_2)
+        .find(|(t, _)| t == GROUP_REMOVE_V0_3)
         .unwrap()
         .1;
     assert_eq!(call["member"], alice.did);
@@ -1841,7 +1847,7 @@ async fn an_unreachable_vta_is_retried_until_the_removal_completes() {
     )
     .await;
 
-    fix.vta.script(GROUP_REMOVE_V0_2, Script::Silent);
+    fix.vta.script(GROUP_REMOVE_V0_3, Script::Silent);
     let left = call_as(&fix, &alice, SELF_REMOVE, json!({})).await;
     assert_eq!(
         left["payload"]["removed"], true,
@@ -1871,7 +1877,7 @@ async fn an_unreachable_vta_is_retried_until_the_removal_completes() {
     assert!(fix.vta.calls().is_empty());
 
     // Due: the VTA removes them, and the answer is lost.
-    fix.vta.script(GROUP_REMOVE_V0_2, Script::ServeThenSilent);
+    fix.vta.script(GROUP_REMOVE_V0_3, Script::ServeThenSilent);
     let t1 = t0 + departures::backoff(1);
     let report = departures::run_once(&fix.vtc.state, t1).await.unwrap();
     assert_eq!(report.retrying, 1, "{report:?}");
@@ -1897,7 +1903,7 @@ async fn owed_removals_survive_a_restart_and_yield_to_a_manual_removal() {
     let mut fix = fixture().await;
     let alice = member(&fix).await;
     let (sealed, open, offered) = in_three_rooms(&mut fix, &alice).await;
-    fix.vta.script(GROUP_REMOVE_V0_2, Script::Silent);
+    fix.vta.script(GROUP_REMOVE_V0_3, Script::Silent);
     call_as(&fix, &alice, SELF_REMOVE, json!({})).await;
     // The sealed room's VTA does not answer. Every removal asks the VTA now — the open
     // room's and the offer's withdraw their credentials at the host — so the pass stops at
@@ -2718,7 +2724,7 @@ async fn removal_0_2_on_an_open_room_withdraws_the_member_at_the_host() {
     assert_eq!(error_code(&refused), Some("permissionDenied"), "{refused}");
 }
 
-/// Item 2, `attributed`: `rooms/owner/group/remove` at 0.2 — withdraw first, then advance.
+/// Item 2, `attributed`: `rooms/owner/group/remove` at 0.3 — withdraw first, then advance.
 #[tokio::test]
 async fn removal_0_2_on_an_attributed_room_withdraws_then_advances() {
     let mut fix = fixture().await;
@@ -2744,7 +2750,7 @@ async fn removal_0_2_on_an_attributed_room_withdraws_then_advances() {
     assert_eq!(p["epoch"], 3, "{removed}");
     assert_eq!(p["revocation"]["sequence"], 1);
     assert!(p["revokedAt"].is_string());
-    assert_eq!(fix.vta.types_called(), vec![GROUP_REMOVE_V0_2]);
+    assert_eq!(fix.vta.types_called(), vec![GROUP_REMOVE_V0_3]);
     let call = &fix.vta.calls()[0].1;
     assert_eq!(call["host"], TEST_VTC_DID);
     assert!(call["signingKeyId"].is_string());
@@ -2844,4 +2850,84 @@ async fn a_member_removed_at_0_2_can_be_admitted_again() {
     });
     let read = read_as(&fix, &alice, &room, &presentation).await;
     assert!(read["payload"]["records"].is_array(), "re-admitted: {read}");
+}
+
+/// An `attributed` room with Alice admitted and joined, ready for a removal.
+async fn joined_on_attributed_room(fix: &mut Fixture) -> (String, Party) {
+    let room = create_room(fix, "attributed").await;
+    let alice = member(fix).await;
+    add_member(fix, &room, &alice.did, &in_a_year()).await;
+    call_as(
+        fix,
+        &alice,
+        ACCEPT,
+        json!({ "roomId": room, "keyPackage": "S1A" }),
+    )
+    .await;
+    fix.vta.clear_calls();
+    (room, alice)
+}
+
+/// A community's VTA that does not serve `rooms/owner/group/remove/0.3` is asked at 0.2,
+/// the same request, and the removal completes as before.
+#[tokio::test]
+async fn removal_falls_back_to_group_remove_0_2_on_an_older_vta() {
+    let mut fix = fixture().await;
+    let (room, alice) = joined_on_attributed_room(&mut fix).await;
+    fix.vta.0.lock().unwrap().remove_0_2_only = true;
+    let (_, removed) = admin_call(
+        &mut fix,
+        REMOVE_V0_2,
+        json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
+    )
+    .await;
+    assert_eq!(removed["payload"]["epoch"], 3, "{removed}");
+    assert_eq!(
+        fix.vta.types_called(),
+        vec![GROUP_REMOVE_V0_3, GROUP_REMOVE_V0_2]
+    );
+    assert_eq!(state_in(&fix, &room, &alice.did).await, "removed");
+}
+
+/// `rooms/owner/group/remove/0.3` item 8.2: the VTA gave up an earlier removal it was
+/// settling and did nothing of this one. The administrator is told so — and what to do —
+/// nothing is recorded, and repeating the removal proceeds.
+#[tokio::test]
+async fn an_earlier_removal_the_vta_gave_up_is_surfaced_and_nothing_is_recorded() {
+    let mut fix = fixture().await;
+    let (room, alice) = joined_on_attributed_room(&mut fix).await;
+    fix.vta.script(
+        GROUP_REMOVE_V0_3,
+        Script::Refuse("rooms/owner/group/remove:earlierRemovalRefused"),
+    );
+    let (_, refused) = admin_call(
+        &mut fix,
+        REMOVE_V0_2,
+        json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
+    )
+    .await;
+    assert_eq!(
+        error_code(&refused),
+        Some(REMOVE_KEY_HOLDER_REFUSED),
+        "{refused}"
+    );
+    assert_eq!(
+        refused["payload"]["details"]["code"], "rooms/owner/group/remove:earlierRemovalRefused",
+        "{refused}"
+    );
+    let message = refused["payload"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("did not take effect") && message.contains("Repeat this removal"),
+        "{message}"
+    );
+    assert_eq!(state_in(&fix, &room, &alice.did).await, "admitted");
+
+    let (_, removed) = admin_call(
+        &mut fix,
+        REMOVE_V0_2,
+        json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
+    )
+    .await;
+    assert_eq!(removed["payload"]["epoch"], 3, "{removed}");
+    assert_eq!(state_in(&fix, &room, &alice.did).await, "removed");
 }

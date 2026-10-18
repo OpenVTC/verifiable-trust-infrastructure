@@ -1292,6 +1292,20 @@ pub async fn run(
             });
         }
 
+        // A room's revocation list that a registration left `pending` at its host is
+        // delivered again by one sweeper, its single retry owner (`rooms/owner/register/0.2`
+        // item 4). Off the startup path, and ended with everything else at shutdown.
+        {
+            let state = app_state.clone();
+            let mut stop = shutdown_rx.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = stop.changed() => {}
+                    _ = crate::trust_tasks::room_list_delivery::redelivery_loop(state) => {}
+                }
+            });
+        }
+
         // The tombstone sweeper takes a namespace's lock to reap it, so it must
         // hold the *same* map the request path writes through. Cloned from the
         // built `AppState` rather than injected through `AppStateParts`: adding

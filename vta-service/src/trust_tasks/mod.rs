@@ -99,6 +99,7 @@ mod room_act;
 mod room_group;
 mod room_keys;
 mod room_label;
+pub(crate) mod room_list_delivery;
 mod room_owner;
 mod room_owner_group;
 mod room_owner_revoke;
@@ -2770,6 +2771,11 @@ dispatch_table! {
     // third party as its principal.
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1 => room_owner::handle_register
         [ Mutating Metadata true ],
+    // 0.2: a registration the host accepted answers success whatever became of the room's
+    // revocation list, which `revocation` reports; a `pending` list is redelivered by
+    // `room_list_delivery`, the one retry owner (trust-tasks-tf #821).
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2 => room_owner::handle_register_v0_2
+        [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1 => room_owner::handle_issue_membership
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2 => room_owner::handle_issue_authority
@@ -2790,6 +2796,10 @@ dispatch_table! {
     // 0.2: the member's credentials are withdrawn at the host first, then the room
     // advances (trust-tasks-tf #804). Same host, same authority, and the room's key.
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_2 => room_owner_group::handle_remove_v0_2
+        [ Mutating Metadata true ],
+    // 0.3: a pending removal whose redelivered list the host refuses is settled by what the
+    // refusal shows, and the request refused `earlierRemovalRefused` (trust-tasks-tf #821).
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3 => room_owner_group::handle_remove_v0_3
         [ Mutating Metadata true ],
     // Signs as the room and delivers to every host serving it, presenting the
     // principal's `admin` authority — `actsAsSubject`, like the group verbs.

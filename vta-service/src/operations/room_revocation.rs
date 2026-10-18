@@ -40,8 +40,104 @@ const LIST_PREFIX: &str = "room-revocations/";
 /// room".
 const TIER_PREFIX: &str = "room-tier/";
 
+/// Prefix of an outstanding delivery: `room-revocation-delivery/<roomId>|<host>`
+/// (`rooms/owner/register/0.2`, *The room's revocation list* item 4). `|` appears in no DID.
+const DELIVERY_PREFIX: &str = "room-revocation-delivery/";
+
 fn list_key(room_id: &str) -> String {
     format!("{LIST_PREFIX}{room_id}")
+}
+
+fn delivery_key(room_id: &str, host: &str) -> String {
+    format!("{DELIVERY_PREFIX}{room_id}|{host}")
+}
+
+/// A room's revocation list that did not reach a host the room was registered with —
+/// `rooms/owner/register/0.2` item 4: the recipient goes on delivering a `pending` list on
+/// its own, and "keeps for this only the room, the host and the sequence, and only until"
+/// the host answers with its head or refuses it.
+///
+/// `persona` is the one thing kept beside those three, and it is not a fact about the room
+/// or where it lives: it is which of the identities this agent already holds for the room
+/// signs the delivery — the persona whose `admin` grant the first delivery presented. A
+/// redelivery made as anyone else would be a different party speaking to the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OutstandingDelivery {
+    pub room_id: String,
+    pub host: String,
+    /// The list's sequence when it was first delivered. Each attempt delivers the latest
+    /// list held, which keeps every live entry of this one.
+    pub sequence: u64,
+    pub persona: String,
+}
+
+/// Retain `delivery` durably — **before** the delivery it stands for is attempted, so a
+/// process that dies mid-delivery leaves the record for the redelivery sweeper rather than a
+/// host silently serving the room without its withdrawals.
+pub async fn retain_delivery(
+    groups: &KeyspaceHandle,
+    delivery: &OutstandingDelivery,
+) -> Result<(), AppError> {
+    groups
+        .insert(delivery_key(&delivery.room_id, &delivery.host), delivery)
+        .await?;
+    groups.persist().await
+}
+
+/// Every outstanding delivery, in key order. A row that does not read is one no build can
+/// act on, and is dropped rather than retried forever.
+pub async fn outstanding_deliveries(
+    groups: &KeyspaceHandle,
+) -> Result<Vec<OutstandingDelivery>, AppError> {
+    let mut out = Vec::new();
+    for (key, raw) in groups.prefix_iter_raw(DELIVERY_PREFIX).await? {
+        match serde_json::from_slice::<OutstandingDelivery>(&raw) {
+            Ok(d) => out.push(d),
+            Err(e) => {
+                tracing::warn!(error = %e, "an outstanding revocation-list delivery does not read; dropped");
+                groups.remove(key).await?;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The outstanding delivery of `room_id`'s list to `host`, if there is one.
+pub async fn outstanding_delivery(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+    host: &str,
+) -> Result<Option<OutstandingDelivery>, AppError> {
+    groups.get(delivery_key(room_id, host)).await
+}
+
+/// Forget the outstanding delivery of `room_id`'s list to `host`: the host has the list, or
+/// refused it (register/0.2 item 5: a refused list is never delivered again on its own).
+pub async fn drop_delivery(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+    host: &str,
+) -> Result<(), AppError> {
+    groups.remove(delivery_key(room_id, host)).await?;
+    groups.persist().await
+}
+
+/// `host` answered with the head of `room_id`'s list at `accepted`: an outstanding delivery
+/// of that list or an earlier one is done, whoever delivered it. Returns whether one was.
+pub async fn settle_delivery(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+    host: &str,
+    accepted: u64,
+) -> Result<bool, AppError> {
+    match outstanding_delivery(groups, room_id, host).await? {
+        Some(d) if d.sequence <= accepted => {
+            drop_delivery(groups, room_id, host).await?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
 }
 
 fn tier_key(room_id: &str) -> String {
@@ -343,5 +439,39 @@ mod tests {
             3,
             "a list built on the discarded one stays"
         );
+    }
+
+    /// `rooms/owner/register/0.2` item 4: an outstanding delivery is kept per room and host
+    /// until a host answers with that list or a later one.
+    #[tokio::test]
+    async fn an_outstanding_delivery_is_settled_only_by_its_list_or_a_later_one() {
+        let (_d, groups) = ks().await;
+        let d = OutstandingDelivery {
+            room_id: "did:example:room".into(),
+            host: "did:example:host".into(),
+            sequence: 3,
+            persona: "did:example:owner".into(),
+        };
+        retain_delivery(&groups, &d).await.unwrap();
+        assert_eq!(
+            outstanding_deliveries(&groups).await.unwrap(),
+            vec![d.clone()]
+        );
+        assert!(
+            !settle_delivery(&groups, &d.room_id, "did:example:other", 9)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !settle_delivery(&groups, &d.room_id, &d.host, 2)
+                .await
+                .unwrap()
+        );
+        assert!(
+            settle_delivery(&groups, &d.room_id, &d.host, 3)
+                .await
+                .unwrap()
+        );
+        assert!(outstanding_deliveries(&groups).await.unwrap().is_empty());
     }
 }

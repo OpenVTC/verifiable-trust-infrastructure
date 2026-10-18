@@ -239,9 +239,17 @@ pub(super) async fn handle_revoke(
                 Delivery::Accepted { head, in_force_at } => serde_json::json!({
                     "host": host, "outcome": "accepted", "head": head, "inForceAt": in_force_at,
                 }),
-                Delivery::Refused { code, .. } => serde_json::json!({
-                    "host": host, "outcome": "refused", "code": code,
-                }),
+                Delivery::Refused { code, .. } => {
+                    // The latest list, refused: a delivery this agent was still carrying on
+                    // to that host would only repeat it (`rooms/owner/register/0.2` item 5).
+                    if let Err(e) =
+                        revocation::drop_delivery(&state.room_groups_ks, &room_id, host).await
+                    {
+                        tracing::warn!(room = %room_id, %host, error = %e,
+                            "could not drop an outstanding revocation-list delivery");
+                    }
+                    serde_json::json!({ "host": host, "outcome": "refused", "code": code })
+                }
                 Delivery::Unreachable(why) => {
                     tracing::warn!(room = %room_id, %host, reason = %why,
                     "a host did not answer the room's revocation list");

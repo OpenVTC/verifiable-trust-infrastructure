@@ -577,6 +577,71 @@ impl VtaClient {
         })
     }
 
+    /// `rooms/owner/group/remove/0.3` — [`Self::room_group_remove_v0_2`], and a removal
+    /// left pending by an earlier request is settled safely: when the host refuses its
+    /// list on redelivery, this request is refused
+    /// `rooms/owner/group/remove:earlierRemovalRefused` (`details`: `member`, the host's
+    /// `code`, `listKept`), does nothing of its own, and can simply be repeated — the
+    /// earlier removal is no longer pending and did not take effect, so remove that member
+    /// again if that is still wanted. A VTA that does not serve 0.3 (`unsupportedType` /
+    /// `unsupportedVersion`) is asked at 0.2, whose request and response are 0.3's.
+    ///
+    /// Call inside [`VtaClient::idempotent`]: the task is `Keyed`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn room_group_remove_v0_3(
+        &self,
+        room_id: &str,
+        host_did: &str,
+        member: &str,
+        signing_key_id: &str,
+        mirrors: &[String],
+        until: Option<chrono::DateTime<chrono::Utc>>,
+        reason: Option<&str>,
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::remove::v0_3::Response, VtaError> {
+        let mut payload = json!({
+            "roomId": room_id,
+            "host": host_did,
+            "member": member,
+            "signingKeyId": signing_key_id,
+        });
+        if !mirrors.is_empty() {
+            payload["mirrors"] = json!(mirrors);
+        }
+        if let Some(u) = until {
+            payload["until"] = json!(u.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        }
+        if let Some(r) = reason {
+            payload["reason"] = json!(r);
+        }
+        // An earlier advance settled, the list delivered, the advance, the mirrors.
+        let timeout = ROOM_TT_TIMEOUT * 6;
+        // A VTA that does not serve 0.3 never routed the first ask, so asking again at 0.2
+        // is not a second removal.
+        let value = match self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
+                payload.clone(),
+                timeout,
+            )
+            .await
+        {
+            Err(VtaError::UnsupportedTaskType { .. }) => {
+                self.dispatch_trust_task(
+                    trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_2,
+                    payload,
+                    timeout,
+                )
+                .await?
+            }
+            other => other?,
+        };
+        serde_json::from_value(value).map_err(|e| {
+            VtaError::Protocol(format!(
+                "rooms/owner/group/remove response does not match its schema: {e}"
+            ))
+        })
+    }
+
     /// `rooms/owner/revoke/0.1` — withdraw credentials a room issued: the VTA signs the
     /// room's next revocation list as the room with `signing_key_id`, keeps it, and
     /// delivers it to each of `hosts` (every host serving the room).
@@ -663,8 +728,10 @@ impl VtaClient {
     // specification refuses (an empty action list, an over-long key id) is
     // refused here rather than by the VTA.
 
-    /// `rooms/owner/register/0.1` — ask this VTA to register a room with a host
-    /// (`rooms/create`), signed **as the owner**.
+    /// `rooms/owner/register/0.2` — ask this VTA to register a room with a host
+    /// (`rooms/create`), signed **as the owner**, and say whether the room's revocation
+    /// list is in force there. A VTA that does not serve 0.2 (`unsupportedType` /
+    /// `unsupportedVersion`) is asked at 0.1, whose request is 0.2's.
     ///
     /// `owner_did` must be a DID this VTA holds the signing key for, in a context
     /// the caller acts in — a `did:webvh` it minted, a `did:key` whose key it
@@ -672,19 +739,44 @@ impl VtaClient {
     /// caller's DID is one of those (a CLI session's `did:key` is not: its key
     /// lives in the client). On a VTC the owner must also be a member of the
     /// community, whose `rooms` policy decides creation against the signer.
+    ///
+    /// **A `revocation.status` other than `inForce` is a room its host serves without
+    /// its withdrawals** — every credential the room withdrew is honoured there — and the
+    /// caller MUST treat it so: say so rather than present the room as ready. The VTA goes
+    /// on delivering a `pending` list on its own; bring the host up to date at once with
+    /// [`Self::room_owner_revoke`] naming it and no withdrawal. Never register again to
+    /// repair it. A 0.1 VTA answers no `revocation`: it refuses a delivery that failed, with
+    /// a message saying the room is registered, so its successful answer means the list —
+    /// if it holds one — reached the host.
     pub async fn room_owner_register(
         &self,
         request: RoomRegistration<'_>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::register::v0_1::Response, VtaError> {
-        let payload = room_register_payload(&request)?;
-        let value = self
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::register::v0_2::Response, VtaError> {
+        let payload = serde_json::to_value(room_register_payload(&request)?)?;
+        // One host round trip for the registration and one for the room's list, over
+        // whatever transport the host speaks.
+        let timeout = ROOM_TT_TIMEOUT * 3;
+        // A VTA that does not serve 0.2 never routed the first ask, so asking again at 0.1 is
+        // not a second registration.
+        let value = match self
             .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1,
-                serde_json::to_value(payload)?,
-                // One host round trip, over whatever transport the host speaks.
-                ROOM_TT_TIMEOUT * 2,
+                trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2,
+                payload.clone(),
+                timeout,
             )
-            .await?;
+            .await
+        {
+            Err(VtaError::UnsupportedTaskType { .. }) => {
+                self.dispatch_trust_task(
+                    trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1,
+                    payload,
+                    timeout,
+                )
+                .await?
+            }
+            other => other?,
+        };
+        // 0.1's response is 0.2's without `revocation`.
         parse_response(value, "rooms/owner/register")
     }
 
@@ -1238,13 +1330,13 @@ fn list_0_1_as_0_2(
 pub type RoomAction =
     trust_tasks_rs::specs::rooms::owner::issue_authority::v0_2::PayloadActionsItem;
 
-/// A room's visibility tier, as `rooms/owner/register/0.1` names it (`open`,
+/// A room's visibility tier, as `rooms/owner/register/0.2` names it (`open`,
 /// `attributed`, `private`; parse one with `str::parse`).
-pub type RoomVisibility = trust_tasks_rs::specs::rooms::owner::register::v0_1::Visibility;
+pub type RoomVisibility = trust_tasks_rs::specs::rooms::owner::register::v0_2::Visibility;
 
 /// Whether a room keeps its history readable across a membership change
 /// (`chained`, `fromJoin`; parse one with `str::parse`).
-pub type RoomRetentionPolicy = trust_tasks_rs::specs::rooms::owner::register::v0_1::RetentionPolicy;
+pub type RoomRetentionPolicy = trust_tasks_rs::specs::rooms::owner::register::v0_2::RetentionPolicy;
 
 /// What [`VtaClient::room_owner_register`] asks for.
 #[derive(Debug, Clone)]
@@ -1265,8 +1357,8 @@ pub struct RoomRegistration<'a> {
 
 fn room_register_payload(
     r: &RoomRegistration<'_>,
-) -> Result<trust_tasks_rs::specs::rooms::owner::register::v0_1::Payload, VtaError> {
-    use trust_tasks_rs::specs::rooms::owner::register::v0_1::Payload;
+) -> Result<trust_tasks_rs::specs::rooms::owner::register::v0_2::Payload, VtaError> {
+    use trust_tasks_rs::specs::rooms::owner::register::v0_2::Payload;
     let payload = Payload::builder()
         .room_id(r.room_id)
         .host(r.host_did)

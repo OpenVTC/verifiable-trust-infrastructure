@@ -281,11 +281,17 @@ cnm rooms members remove <room DID> --member <DID> --reason "left the board"
   the member — it signs the room's next revocation list as the room (one `subject`
   entry) and delivers it to this community, the room's host (`rooms/owner/revoke`). On
   an `attributed` room it does that first and then removes their leaf and advances the
-  room (`rooms/owner/group/remove/0.2`). From the answer's `revokedAt` the host refuses
+  room (`rooms/owner/group/remove/0.3`, or 0.2 on a VTA that does not serve it). From
+  the answer's `revokedAt` the host refuses
   every credential the room issued them — and anything they delegated to an agent — on
   every task; the answer carries the list's head (`revocation`). An open offer is
   withdrawn, and on those tiers its credentials too, since a member may already have
   collected them. The removal is recorded only once the host accepted the withdrawal.
+  If the VTA was still settling an earlier removal from the room and had to give it up
+  (the host refused its list when the VTA delivered it again), the request is refused
+  `keyHolderRefused` with the VTA's `earlierRemovalRefused` in `details.code`: nothing of
+  this removal was done, the earlier one did not take effect, and the message names that
+  member — repeat the removal, then remove them again if that is still wanted.
   On a `private` room a member cannot be withdrawn one at a time — the host verifies
   membership in zero knowledge and does not know who they are — so they leave the
   group (`group/remove/0.1`) and their credentials are honoured until `validUntil`.
@@ -359,7 +365,7 @@ recorded:
   VTA signs the room's revocation list (`rooms/owner/revoke`) and this community, the
   room's host, refuses their credentials from then on;
 - on an `attributed` room, an admission is withdrawn and then removed from the group,
-  the room advancing past them (`rooms/owner/group/remove/0.2`); an open offer is
+  the room advancing past them (`rooms/owner/group/remove/0.3`, 0.2 on an older VTA); an open offer is
   withdrawn at the host;
 - on a `private` room, an admission leaves the group (`group/remove/0.1`) and an open
   offer is withdrawn here; their credentials last until they expire.

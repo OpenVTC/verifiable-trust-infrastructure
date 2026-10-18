@@ -233,8 +233,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::rooms::owner::issue_authority::v0_2::error_codes::EMPTY_ACTIONS,
         s::rooms::owner::issue_authority::v0_2::error_codes::NO_SIGNING_KEY,
         s::rooms::owner::issue_membership::v0_1::error_codes::NO_SIGNING_KEY,
-        s::rooms::owner::register::v0_1::error_codes::HOST_REFUSED,
-        s::rooms::owner::register::v0_1::error_codes::HOST_UNREACHABLE,
         s::task_consent::decision::v0_1::error_codes::CHALLENGE_MISMATCH,
         s::task_consent::decision::v0_1::error_codes::NO_PENDING,
         s::task_consent::decision::v0_1::error_codes::NOT_AN_APPROVER,
@@ -440,7 +438,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// The ceiling [`unwitnessed`]'s length may never exceed — a ratchet, not a
 /// count. Only *growing* the baseline past it needs an edit, which always
 /// wants a human decision.
-const UNWITNESSED_CEILING: usize = 374;
+const UNWITNESSED_CEILING: usize = 372;
 
 /// Every declared code in scope, keyed by code, with the URI declaring it.
 fn declared_in_scope() -> BTreeMap<&'static str, (&'static str, DeclaredErrorCode)> {

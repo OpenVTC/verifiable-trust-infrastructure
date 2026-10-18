@@ -696,6 +696,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // That is a worse *message*, not a worse world, which is the distinction
     // this axis is about.
     (trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1, RetrySafe),
+    // Convergent as 0.1, and a second execution also delivers the room's list again, which
+    // a host answers as accepted. Its `revocation` reports the list at the host *now*, so a
+    // retry's answer is the more current one, not a worse one.
+    (trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2, RetrySafe),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1, Keyed),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2, Keyed),
     // Founding converges: a second execution is refused `alreadyExists` and
@@ -724,6 +728,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // member has no leaf: `notMember`), and reads as though the wrong member was named;
     // the first answer — the list in force and the epoch — is what happened.
     (trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_2, Keyed),
+    // `Keyed`, like 0.2: the same second execution, and the same first answer worth
+    // replaying. An `earlierRemovalRefused` refusal changed nothing of the request, so its
+    // repeat under a new key is a new request, as the code's meaning says.
+    (trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3, Keyed),
     // `Keyed`. With withdrawals, a second execution signs a second list carrying the same
     // withdrawals again at a later `revokedAt` — harmless to a host, but a list that grows
     // with every lost reply and a second sequence the caller asked for once. Replaying the

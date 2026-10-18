@@ -812,7 +812,10 @@ pub(crate) enum ExternalCommands {
 #[derive(Subcommand)]
 pub(crate) enum RoomOwnerCommands {
     /// Register the room with its host (`rooms/owner/register`). Your VTA sends
-    /// `rooms/create` itself, signed as `--owner`.
+    /// `rooms/create` itself, signed as `--owner`, then delivers the room's
+    /// revocation list there and says whether it is in force. A room whose list
+    /// is not is served without its withdrawals: deliver it with `pnm rooms owner
+    /// revoke --host` (no withdrawal) — never by registering again.
     ///
     /// The owner must be a persona DID your VTA holds the signing key for, in a
     /// context you act in — typically a `did:webvh` minted there — never this
@@ -972,7 +975,7 @@ pub(crate) enum RoomOwnerCommands {
         out: std::path::PathBuf,
     },
     /// Remove a member from the room (`rooms/owner/group/remove`). With
-    /// `--signing-key` (0.2) your VTA first withdraws their credentials at the
+    /// `--signing-key` (0.3, or 0.2 on an older VTA) your VTA first withdraws their credentials at the
     /// host — signed as the room, refused from then on, and anything they
     /// delegated with them — and then removes their leaf and advances the room. A
     /// private room cannot withdraw one member, so there it removes the leaf alone
