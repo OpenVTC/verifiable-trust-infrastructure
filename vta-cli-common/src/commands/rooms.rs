@@ -1635,9 +1635,15 @@ pub async fn cmd_rooms_owner_group_add(
 // (`vtc/rooms/community/members/add`). The member lists their offers and accepts one with
 // documents signed as the DID the offer is addressed to — a persona their VTA holds — so
 // this client builds each request unsigned and has the VTA complete it as that DID with
-// `rooms/keys/act/0.3`, which inserts no presentation for these types. The completed
+// `rooms/keys/act`, which inserts no presentation for these types. The completed
 // document goes to the community over its Trust Task HTTPS endpoint, unchanged: a
 // persona-signed document rides HTTPS, never this client's own DIDComm session.
+//
+// The listing is `vtc/rooms/offers/list/0.2`, which shows each room's description, completed
+// at `rooms/keys/act/0.4` — the first version whose table lists it. Members and communities
+// upgrade on their own schedules, so a VTA without act 0.4, or a community without list 0.2
+// (`unsupportedType` / `unsupportedVersion` from either), is read at list 0.1 instead, which
+// act 0.3 completes; those offers carry no description.
 //
 // On a sealed tier the acceptance carries a KeyPackage, and the VTA completes it only with
 // one it minted itself for that member and room (act 0.3 recipient item 10) — so this
@@ -1654,57 +1660,117 @@ pub struct OfferTarget<'a> {
     pub member: &'a str,
 }
 
-/// Have the VTA complete an offer document as `target.member` (`rooms/keys/act/0.3`) and
-/// send it to the community. Returns the community's response payload.
+/// Which party an offer document failed at: the member's VTA, completing it as the member,
+/// or the community, answering it. A refusal means something different from each —
+/// `unsupportedType` from the VTA is an agent to upgrade, from the community a community
+/// that does not serve that version — so each is kept apart until it is reported.
+enum OfferStepError {
+    /// The member's VTA did not complete the document (`rooms/keys/act`).
+    Act(VtaError),
+    /// The community refused the completed document, or did not answer it.
+    Community(vtc_client::VtcError),
+    /// Neither: the document could not be built or serialised.
+    Local(Box<dyn std::error::Error>),
+}
+
+impl OfferStepError {
+    /// Whether the party that answered does not serve the task at the version asked
+    /// (`unsupportedType` / `unsupportedVersion`): the cue to ask at an older one.
+    fn unsupported(&self) -> bool {
+        match self {
+            Self::Act(e) => matches!(e, VtaError::UnsupportedTaskType { .. }),
+            Self::Community(e) => vtc_client::git_ns::task_error(e).is_some_and(|(code, _)| {
+                let local = code.rsplit(':').next().unwrap_or(&code);
+                local == "unsupportedType" || local == "unsupportedVersion"
+            }),
+            Self::Local(_) => false,
+        }
+    }
+
+    /// The error to report, with a hint where the operator's fix is known.
+    fn report(self, target: &OfferTarget<'_>) -> Box<dyn std::error::Error> {
+        match self {
+            Self::Act(e) => {
+                let text = e.to_string();
+                let hint = if matches!(e, VtaError::UnsupportedTaskType { .. }) {
+                    "\n\nYour VTA does not serve rooms/keys/act/0.3 or later, the versions that \
+                     sign a reply to a community's offer: upgrade it."
+                        .to_string()
+                } else if text.contains("issuerNotPrincipal") {
+                    format!(
+                        "\n\nYour VTA holds no `authentication` key of `{}` that you may act as. \
+                         Pass the persona DID the community knows you by as --member.",
+                        target.member
+                    )
+                } else if text.contains("keyPackageNotHeld") {
+                    "\n\nThe KeyPackage was not minted by your VTA for this member and room, or \
+                     it has been used or has expired: run this again without --key-package to \
+                     mint one."
+                        .to_string()
+                } else {
+                    String::new()
+                };
+                format!("{e}{hint}").into()
+            }
+            Self::Community(e) => format!("{}: {e}", target.vtc_did).into(),
+            Self::Local(e) => e,
+        }
+    }
+}
+
+/// Have the VTA complete an offer document as `target.member` (`rooms/keys/act`, at the
+/// version the type needs) and send it to the community. Returns the community's response
+/// payload, or the party that failed.
 async fn act_and_send_offer(
     client: &VtaClient,
     target: &OfferTarget<'_>,
     type_uri: &str,
     payload: Value,
-) -> Result<Value, Box<dyn std::error::Error>> {
+) -> Result<Value, OfferStepError> {
     let document = vta_sdk::client::unsigned_room_request(
         type_uri,
         target.vtc_did,
         Some(target.member),
         payload,
-    )?;
-    let completed = client.room_act(&document).await.map_err(|e| {
-        let text = e.to_string();
-        let hint = if matches!(e, VtaError::UnsupportedTaskType { .. }) {
-            "\n\nYour VTA does not serve rooms/keys/act/0.3, the version that signs a reply to \
-             a community's offer: upgrade it."
-                .to_string()
-        } else if text.contains("issuerNotPrincipal") {
-            format!(
-                "\n\nYour VTA holds no `authentication` key of `{}` that you may act as. Pass \
-                 the persona DID the community knows you by as --member.",
-                target.member
-            )
-        } else if text.contains("keyPackageNotHeld") {
-            "\n\nThe KeyPackage was not minted by your VTA for this member and room, or it \
-             has been used or has expired: run this again without --key-package to mint one."
-                .to_string()
-        } else {
-            String::new()
-        };
-        format!("{e}{hint}")
-    })?;
-    let document = serde_json::to_value(&completed.document)?;
-    Ok(VtcClient::anonymous(target.vtc_url, target.vtc_did)
+    )
+    .map_err(|e| OfferStepError::Local(e.into()))?;
+    let completed = client
+        .room_act(&document)
+        .await
+        .map_err(OfferStepError::Act)?;
+    let document =
+        serde_json::to_value(&completed.document).map_err(|e| OfferStepError::Local(e.into()))?;
+    VtcClient::anonymous(target.vtc_url, target.vtc_did)
         .send_signed_room_document(&document)
-        .await?)
+        .await
+        .map_err(OfferStepError::Community)
 }
 
-/// `vtc/rooms/offers/list/0.1`, signed as the member: every offer (one page at a time).
-async fn list_offers(
+/// One offer as this client shows it: `vtc/rooms/offers/list/0.2`'s, which is 0.1's with
+/// the room's `description` when it has one. An offer read at 0.1 has none.
+type CommunityOffer = trust_tasks_rs::specs::vtc::rooms::offers::list::v0_2::OfferV2;
+
+/// The listing version asked: 0.2 (with descriptions) through act 0.4, or 0.1 through act
+/// 0.3 for a VTA or a community that does not serve the newer one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OffersListVersion {
+    V0_2,
+    V0_1,
+}
+
+/// `vtc/rooms/offers/list` at `at`, signed as the member: every offer (one page at a time),
+/// read as [`CommunityOffer`].
+async fn list_offers_at(
     client: &VtaClient,
     target: &OfferTarget<'_>,
-) -> Result<
-    Vec<trust_tasks_rs::specs::vtc::rooms::offers::list::v0_1::Offer>,
-    Box<dyn std::error::Error>,
-> {
+    at: OffersListVersion,
+) -> Result<Vec<CommunityOffer>, OfferStepError> {
     use trust_tasks_rs::Payload as _;
-    use trust_tasks_rs::specs::vtc::rooms::offers::list::v0_1 as list;
+    use trust_tasks_rs::specs::vtc::rooms::offers::list::{v0_1, v0_2};
+    let type_uri = match at {
+        OffersListVersion::V0_2 => v0_2::Payload::TYPE_URI,
+        OffersListVersion::V0_1 => v0_1::Payload::TYPE_URI,
+    };
     let mut items = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
@@ -1712,22 +1778,68 @@ async fn list_offers(
             Some(c) => serde_json::json!({ "cursor": c }),
             None => serde_json::json!({}),
         };
-        let reply = act_and_send_offer(client, target, list::Payload::TYPE_URI, payload).await?;
-        let page: list::Response = parse_reply("vtc/rooms/offers/list", reply)?;
-        items.extend(page.items);
-        match page.next_cursor {
-            Some(next) => cursor = Some(next.to_string()),
+        let reply = act_and_send_offer(client, target, type_uri, payload).await?;
+        let page = offers_page(at, reply).map_err(OfferStepError::Local)?;
+        items.extend(page.0);
+        match page.1 {
+            Some(next) => cursor = Some(next),
             None => return Ok(items),
         }
     }
 }
 
-/// `pnm rooms offers list` — the rooms the community has offered you.
+/// One page of the community's answer at `at`: its offers, each read as a [`CommunityOffer`]
+/// (an `Offer` is an `OfferV2` without `description`), and the next cursor.
+fn offers_page(
+    at: OffersListVersion,
+    reply: Value,
+) -> Result<(Vec<CommunityOffer>, Option<String>), Box<dyn std::error::Error>> {
+    use trust_tasks_rs::specs::vtc::rooms::offers::list::{v0_1, v0_2};
+    match at {
+        OffersListVersion::V0_2 => {
+            let page: v0_2::Response = parse_reply("vtc/rooms/offers/list/0.2", reply)?;
+            Ok((page.items, page.next_cursor.map(|c| c.to_string())))
+        }
+        OffersListVersion::V0_1 => {
+            let page: v0_1::Response = parse_reply("vtc/rooms/offers/list/0.1", reply)?;
+            let items = page
+                .items
+                .into_iter()
+                .map(|o| {
+                    serde_json::to_value(o)
+                        .and_then(serde_json::from_value::<CommunityOffer>)
+                        .map_err(|e| format!("an offer read at 0.1 does not read as 0.2's: {e}"))
+                })
+                .collect::<Result<_, _>>()?;
+            Ok((items, page.next_cursor.map(|c| c.to_string())))
+        }
+    }
+}
+
+/// Every offer the community has made to the member: at `vtc/rooms/offers/list/0.2` (act
+/// 0.4), and at 0.1 (act 0.3) when the member's VTA or the community does not serve the
+/// newer version. Which one answered is returned beside the offers.
+async fn list_offers(
+    client: &VtaClient,
+    target: &OfferTarget<'_>,
+) -> Result<(Vec<CommunityOffer>, OffersListVersion), Box<dyn std::error::Error>> {
+    match list_offers_at(client, target, OffersListVersion::V0_2).await {
+        Ok(offers) => Ok((offers, OffersListVersion::V0_2)),
+        Err(e) if e.unsupported() => list_offers_at(client, target, OffersListVersion::V0_1)
+            .await
+            .map(|offers| (offers, OffersListVersion::V0_1))
+            .map_err(|e| e.report(target)),
+        Err(e) => Err(e.report(target)),
+    }
+}
+
+/// `pnm rooms offers list` — the rooms the community has offered you, each with what it is
+/// for when the community says.
 pub async fn cmd_rooms_offers_list(
     client: &VtaClient,
     target: OfferTarget<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let offers = list_offers(client, &target).await?;
+    let (offers, _) = list_offers(client, &target).await?;
     if offers.is_empty() {
         println!(
             "No offers from {} are addressed to {}.",
@@ -1736,21 +1848,47 @@ pub async fn cmd_rooms_offers_list(
         return Ok(());
     }
     for o in &offers {
-        let actions: Vec<String> = o.actions.0.iter().map(ToString::to_string).collect();
-        println!(
-            "{}  {}  [{}]  {}  {}  until {}",
-            o.room_id.as_str(),
-            inert(o.label.as_str()),
-            o.visibility,
-            actions.join(","),
-            o.state,
-            o.valid_until.to_rfc3339(),
-        );
-        if o.state == trust_tasks_rs::specs::vtc::rooms::offers::list::v0_1::OfferState::Open {
-            println!("  accept: {}", accept_command(o.room_id.as_str(), &target));
-        }
+        print!("{}", offer_lines(o, &target));
     }
     Ok(())
+}
+
+/// The lines `pnm rooms offers list` prints for one offer. The label and description are
+/// the community's text: control characters in them never reach the terminal, and the
+/// description is kept to one line.
+fn offer_lines(o: &CommunityOffer, target: &OfferTarget<'_>) -> String {
+    use trust_tasks_rs::specs::vtc::rooms::offers::list::v0_2::OfferV2State;
+    let actions: Vec<String> = o.actions.0.iter().map(ToString::to_string).collect();
+    let mut out = format!(
+        "{}  {}  [{}]  {}  {}  until {}\n",
+        o.room_id.as_str(),
+        inert(o.label.as_str()),
+        o.visibility,
+        actions.join(","),
+        o.state,
+        o.valid_until.to_rfc3339(),
+    );
+    if let Some(description) = &o.description {
+        out.push_str(&format!("  about: {}\n", one_line(description.as_str())));
+    }
+    if o.state == OfferV2State::Open {
+        out.push_str(&format!(
+            "  accept: {}\n",
+            accept_command(o.room_id.as_str(), target)
+        ));
+    }
+    out
+}
+
+/// `text` on one line: every control character — line breaks and tabs included — replaced
+/// with a space, so a description the community wrote cannot move the cursor, start a
+/// line that looks like this client's own, or ring the terminal.
+fn one_line(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// The `pnm rooms offers accept` line for one offer, ready to paste: every value filled in,
@@ -1794,7 +1932,7 @@ pub async fn cmd_rooms_offers_accept(
     use trust_tasks_rs::Payload as _;
     use trust_tasks_rs::specs::vtc::rooms::offers::accept::v0_1 as accept;
 
-    let offers = list_offers(client, &target).await?;
+    let (offers, _) = list_offers(client, &target).await?;
     let offer = offers
         .into_iter()
         .find(|o| o.room_id.as_str() == room_id)
@@ -1841,6 +1979,7 @@ pub async fn cmd_rooms_offers_accept(
     }
     let reply = act_and_send_offer(client, &target, accept::Payload::TYPE_URI, payload)
         .await
+        .map_err(|e| e.report(&target))
         .map_err(|e| match &key_package {
             Some(kp) => format!(
                 "{e}\n\nIf the community may have admitted you, retry the identical acceptance \
@@ -1933,6 +2072,136 @@ mod tests {
             "pnm rooms offers accept --room did:webvh:Qm3:vtc.example:room-dids:ab12 \
              --vtc https://vtc.example/v1 --vtc-did did:webvh:Qm1:vtc.example \
              --member did:webvh:Qm2:alice.example"
+        );
+    }
+
+    fn offer_v2(description: Option<&str>) -> Value {
+        let mut o = json!({
+            "roomId": "did:webvh:Qm3:vtc.example:room-dids:ab12",
+            "host": "did:webvh:Qm1:vtc.example",
+            "label": "Board\u{1b}[2J papers",
+            "visibility": "private",
+            "actions": ["read", "write"],
+            "validUntil": "2026-12-01T00:00:00Z",
+            "offeredAt": "2026-10-01T00:00:00Z",
+            "state": "open",
+            "credentials": {
+                "membership": "{}",
+                "authority": "{}",
+                "invitation": "inv"
+            }
+        });
+        if let Some(d) = description {
+            o["description"] = json!(d);
+        }
+        o
+    }
+
+    fn offer_target() -> OfferTarget<'static> {
+        OfferTarget {
+            vtc_url: "https://vtc.example/v1",
+            vtc_did: "did:webvh:Qm1:vtc.example",
+            member: "did:webvh:Qm2:alice.example",
+        }
+    }
+
+    /// `vtc/rooms/offers/list/0.2`: an offer shows what its room is for, on one line of its
+    /// own, with every control character the community wrote replaced — a line break
+    /// cannot forge a line of this client's, an escape cannot reach the terminal.
+    #[test]
+    fn an_offer_shows_its_description_on_one_inert_line() {
+        let offer: CommunityOffer = serde_json::from_value(offer_v2(Some(
+            "Papers for the board:\nagenda\tminutes\u{7}\r\n  accept: rm -rf ~",
+        )))
+        .unwrap();
+        let text = offer_lines(&offer, &offer_target());
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3, "{text}");
+        assert!(lines[0].contains("Board[2J papers"), "{text}");
+        assert!(
+            !text.contains('\u{1b}') && !text.contains('\u{7}'),
+            "{text}"
+        );
+        assert_eq!(
+            lines[1],
+            "  about: Papers for the board: agenda minutes     accept: rm -rf ~"
+        );
+        assert!(
+            lines[2].starts_with("  accept: pnm rooms offers accept"),
+            "{text}"
+        );
+
+        // A room without a description (or an offer read at 0.1) prints no `about` line.
+        let bare: CommunityOffer = serde_json::from_value(offer_v2(None)).unwrap();
+        assert!(!offer_lines(&bare, &offer_target()).contains("about:"));
+    }
+
+    /// An offer read at `vtc/rooms/offers/list/0.1` reads as 0.2's, with no description.
+    #[test]
+    fn an_offers_list_0_1_page_reads_as_0_2() {
+        let mut v1 = offer_v2(None);
+        v1["label"] = json!("Board");
+        let (items, next) = offers_page(
+            OffersListVersion::V0_1,
+            json!({ "items": [v1], "nextCursor": "c2" }),
+        )
+        .expect("a 0.1 page");
+        assert_eq!(items.len(), 1);
+        assert!(items[0].description.is_none());
+        assert_eq!(next.as_deref(), Some("c2"));
+
+        let (items, next) = offers_page(
+            OffersListVersion::V0_2,
+            json!({ "items": [offer_v2(Some("What it is for"))] }),
+        )
+        .expect("a 0.2 page");
+        assert_eq!(
+            items[0].description.as_ref().map(|d| d.as_str()),
+            Some("What it is for")
+        );
+        assert!(next.is_none());
+    }
+
+    /// The fallback cue: `unsupportedType` / `unsupportedVersion` from either party — the
+    /// member's VTA (act 0.4) or the community (offers/list 0.2) — and nothing else.
+    #[test]
+    fn only_an_unsupported_answer_falls_back_to_offers_list_0_1() {
+        let community = |code: &str| {
+            OfferStepError::Community(vtc_client::VtcError::Http {
+                status: 400,
+                body: json!({
+                    "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+                    "payload": { "code": code, "message": "no" }
+                })
+                .to_string(),
+            })
+        };
+        assert!(community("unsupportedType").unsupported());
+        assert!(community("unsupportedVersion").unsupported());
+        assert!(!community("vtc/rooms/offers/list:notAMember").unsupported());
+        assert!(!community("permissionDenied").unsupported());
+        assert!(
+            !OfferStepError::Community(vtc_client::VtcError::Http {
+                status: 502,
+                body: "bad gateway".into(),
+            })
+            .unsupported()
+        );
+
+        assert!(
+            OfferStepError::Act(VtaError::UnsupportedTaskType {
+                type_uri: "https://trusttasks.org/spec/rooms/keys/act/0.4".into(),
+                served_versions: vec![],
+            })
+            .unsupported()
+        );
+        assert!(
+            !OfferStepError::Act(VtaError::Rejected {
+                code: "rooms/keys/act:issuerNotPrincipal".into(),
+                message: "no".into(),
+                details: None,
+            })
+            .unsupported()
         );
     }
 

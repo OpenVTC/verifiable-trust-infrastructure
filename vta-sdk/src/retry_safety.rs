@@ -655,6 +655,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // the KeyPackage this VTA minted and leaves it unused — a Welcome consumes it — so a
     // repeat completes it again, as the lost-answer retry of the acceptance needs.
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_3, RetrySafe),
+    // 0.4 adds `vtc/rooms/offers/list/0.2` to the offer row, a listing: still nothing stored.
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_4, RetrySafe),
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_1, RetrySafe),
     // 0.2 names each entry's member and can carry the member's own labels: still a read.
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_2, RetrySafe),

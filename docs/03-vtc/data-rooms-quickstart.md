@@ -613,7 +613,10 @@ with `$ALICE`, `read` and `write`, 90 days and a reason. Each asks for your pass
 that one request.
 
 Alice then lists her offers and accepts one. Her VTA signs each request as `$ALICE`
-(`rooms/keys/act` 0.3) and `pnm` carries it to the VTC (`vtc/rooms/offers/{list,accept}/0.1`):
+(`rooms/keys/act` 0.4) and `pnm` carries it to the VTC (`vtc/rooms/offers/list/0.2`, then
+`vtc/rooms/offers/accept/0.1`). Each offer prints with an `about:` line, the room's
+description (`Papers for the board's meetings.`); against a VTA or a VTC from before act 0.4 /
+list 0.2, `pnm` lists at 0.1 through act 0.3 and the offer has no `about:` line:
 
 ```bash
 export PNM_HOME=/tmp/vdr/pnm-alice

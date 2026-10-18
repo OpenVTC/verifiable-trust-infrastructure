@@ -1217,6 +1217,15 @@ KeyPackage minted anywhere else would become the member's leaf with keys
 somebody else holds. 0.1 and 0.2 refuse the offer types. `pnm rooms offers
 {list,accept}` drives them (see `docs/03-vtc/community-rooms.md`).
 
+**The listing with descriptions (0.4).** `rooms/keys/act/0.4` adds
+`vtc/rooms/offers/list/0.2` — which shows each offered room's description — to
+the same row as `0.1`, on the same terms. Nothing else changes, but 0.3's table
+is closed, so a 0.3 request wrapping a `0.2` listing is still refused
+`typeNotActable`. The SDK's `room_act` asks 0.4 first; it falls back to 0.3 for
+the 0.3 offer types and further for room requests, never for a `0.2` listing,
+and `pnm` lists at 0.1 when either the VTA or the community does not serve the
+newer version.
+
 `act` is not a signing oracle: only the table's host-bound room requests are
 completed, never `rooms/epoch/prune`, ownership changes, `rooms/create` or a
 chunk upload, and a delegate (§7) is refused. A `rooms/epoch/mint` for a room

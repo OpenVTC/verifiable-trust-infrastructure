@@ -227,6 +227,23 @@ describe("data rooms in the portal", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("shows what an offered room is for, as text and never as markup", async () => {
+    const wallet = fakeWallet({
+      offers: vi.fn(async () => ({
+        offers: [
+          { ...OFFER, description: "Papers for the board <img src=x onerror=alert(1)>" },
+          { ...OFFER, roomId: "did:webvh:QmBare:rooms.example", label: "No words" },
+        ],
+      })),
+      acceptOffer: vi.fn(),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    await screen.findByText("Papers for the board <img src=x onerror=alert(1)>");
+    expect(document.querySelector("img[src='x']")).toBeNull();
+    expect(screen.getByText("No words")).toBeTruthy();
+  });
+
   it("a member who declines in the wallet sees the offer stays open, not an error", async () => {
     const wallet = fakeWallet({
       offers: vi.fn(async () => ({ offers: [OFFER] })),

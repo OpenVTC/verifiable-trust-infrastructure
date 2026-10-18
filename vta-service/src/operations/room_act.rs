@@ -1,6 +1,7 @@
-//! Completing a host-bound room request **as the member** — `rooms/keys/act/{0.1,0.2,0.3}`,
+//! Completing a host-bound room request **as the member** — `rooms/keys/act/{0.1,0.2,0.3,0.4}`,
 //! and the documents `rooms/keys/{read,browse,backfill}` send on the member's behalf. At 0.3
-//! also a member's reply to a community's offer of a room ([`OFFER_TYPES`]).
+//! also a member's reply to a community's offer of a room ([`OFFER_TYPES`]), and at 0.4 the
+//! listing that shows each offered room's description too ([`OFFER_TYPES_0_4`]).
 //!
 //! # Why this exists
 //!
@@ -89,20 +90,41 @@ pub const ACT_TABLE: &[ActRow] = &[
 /// room credential to insert — and the member is the document's `issuer`, required
 /// (producer item 2) and resolved by recipient item 2b. Not in [`ACT_TABLE`]: 0.1 and 0.2
 /// do not complete them, and nothing else of the `vtc` family is actable at any version.
-pub const OFFER_TYPES: &[&str] = &[
-    <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-    <trust_tasks_rs::specs::vtc::rooms::offers::accept::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-];
+///
+/// 0.3's table is closed at exactly these two: a 0.3 request wrapping
+/// `vtc/rooms/offers/list/0.2` is `typeNotActable` (0.3 recipient item 1). 0.4 admits that
+/// one too ([`OFFER_TYPES_0_4`]).
+pub const OFFER_TYPES: &[&str] = &[OFFERS_LIST_0_1, OFFERS_ACCEPT_0_1];
 
-/// Whether `type_uri` is one of [`OFFER_TYPES`].
+/// The offer types `rooms/keys/act/0.4` completes: 0.3's, and `vtc/rooms/offers/list/0.2`
+/// in the same row as `0.1` and on the same terms — no presentation, `issuer` required and
+/// resolved without a room credential (0.4 *What changed from 0.3*). 0.2 changes only what
+/// the community answers (each room's description); its request is the same empty payload.
+pub const OFFER_TYPES_0_4: &[&str] = &[OFFERS_LIST_0_1, OFFERS_LIST_0_2, OFFERS_ACCEPT_0_1];
+
+const OFFERS_LIST_0_1: &str =
+    <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+const OFFERS_LIST_0_2: &str =
+    <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+const OFFERS_ACCEPT_0_1: &str =
+    <trust_tasks_rs::specs::vtc::rooms::offers::accept::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// Whether `type_uri` is one of [`OFFER_TYPES`] — an offer type `rooms/keys/act/0.3`
+/// completes.
 pub fn is_offer_type(type_uri: &str) -> bool {
     OFFER_TYPES.contains(&bare_type(type_uri))
+}
+
+/// Whether `type_uri` is one of [`OFFER_TYPES_0_4`] — an offer type `rooms/keys/act/0.4`
+/// completes.
+pub fn is_offer_type_0_4(type_uri: &str) -> bool {
+    OFFER_TYPES_0_4.contains(&bare_type(type_uri))
 }
 
 /// Whether `type_uri` is `vtc/rooms/offers/accept/0.1` — the one offer type that can carry
 /// key material, and so the one `rooms/keys/act/0.3` recipient item 10 checks.
 pub fn is_offer_accept(type_uri: &str) -> bool {
-    bare_type(type_uri) == OFFER_TYPES[1]
+    bare_type(type_uri) == OFFERS_ACCEPT_0_1
 }
 
 /// The bare type URI a document names — `#request` is the same type.
@@ -280,23 +302,39 @@ mod tests {
         }
     }
 
-    /// The offer types are actable at 0.3 only, apart from the host-bound table, and they
-    /// are the only `vtc` types that are: an administrator's `members/add` is not.
+    /// The offer types are actable at 0.3 and later only, apart from the host-bound table,
+    /// and they are the only `vtc` types that are: an administrator's `members/add` is not.
     #[test]
     fn the_offer_types_are_apart_from_the_host_bound_table() {
-        for t in OFFER_TYPES {
-            assert!(is_offer_type(t), "{t}");
+        for t in OFFER_TYPES_0_4 {
+            assert!(is_offer_type_0_4(t), "{t}");
             assert_eq!(actable(t), None, "{t} is not in the 0.1/0.2 table");
             assert!(
                 trust_tasks_rs::schema_index::schema_for(t).is_some(),
                 "{t} has no schema"
             );
         }
-        assert!(is_offer_accept(&format!("{}#request", OFFER_TYPES[1])));
-        assert!(!is_offer_accept(OFFER_TYPES[0]));
-        assert!(!is_offer_type(
-            "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1"
-        ));
+        for t in OFFER_TYPES {
+            assert!(is_offer_type(t) && is_offer_type_0_4(t), "{t}");
+        }
+        assert!(is_offer_accept(&format!("{OFFERS_ACCEPT_0_1}#request")));
+        assert!(!is_offer_accept(OFFERS_LIST_0_1));
+        assert!(!is_offer_accept(OFFERS_LIST_0_2));
+        let members_add = "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1";
+        assert!(!is_offer_type(members_add) && !is_offer_type_0_4(members_add));
+    }
+
+    /// `rooms/keys/act/0.4` widens the table by exactly `vtc/rooms/offers/list/0.2`, and
+    /// 0.3's closed table still refuses it (0.3 recipient item 1).
+    #[test]
+    fn rooms_keys_act_0_4_adds_only_offers_list_0_2() {
+        assert!(!is_offer_type(OFFERS_LIST_0_2));
+        assert!(is_offer_type_0_4(&format!("{OFFERS_LIST_0_2}#request")));
+        let added: Vec<_> = OFFER_TYPES_0_4
+            .iter()
+            .filter(|t| !OFFER_TYPES.contains(t))
+            .collect();
+        assert_eq!(added, [&OFFERS_LIST_0_2]);
     }
 
     /// The deliberate absences: chunk uploads (bytes never pass through the key holder),

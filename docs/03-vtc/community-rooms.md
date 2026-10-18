@@ -396,10 +396,18 @@ against a VTA that serves only 0.1 that retry is `alreadyAccepted`.
 ### From `pnm`
 
 The persona an offer names is held by the member's VTA, so `pnm` builds each request and
-has the VTA sign it as that persona with `rooms/keys/act/0.3` — no presentation inserted,
+has the VTA sign it as that persona with `rooms/keys/act` — no presentation inserted,
 and an acceptance completed only with a KeyPackage that VTA minted itself for that member
 and room (`keyPackageNotHeld` otherwise). The signed document goes to the VTC over its
-Trust Task HTTPS endpoint, unchanged:
+Trust Task HTTPS endpoint, unchanged.
+
+`list` asks for `vtc/rooms/offers/list/0.2`, signed with `rooms/keys/act/0.4` — the first
+version whose table lists it — so each offer shows what its room is for, on an `about:` line
+under it (control characters replaced, as in the label). Members and communities upgrade on
+their own schedules: when the member's VTA does not serve act 0.4, or the VTC does not serve
+list 0.2 (`unsupportedType` / `unsupportedVersion` from either), `pnm` lists at 0.1 through
+act 0.3 instead, and the offers show no description. `accept` reads the offer the same way
+before it accepts (`vtc/rooms/offers/accept/0.1`, at act 0.4 or 0.3):
 
 ```bash
 pnm rooms offers list   --vtc https://vtc.example.com/v1 --vtc-did <vtc-did> --member <persona-did>
@@ -451,14 +459,16 @@ already created can also mean the community's own authority over it has lapsed
 
 ## What is not here yet
 
-- **The description in `pnm rooms offers list`**: `pnm` has the member's VTA sign the
-  request with `rooms/keys/act/0.3`, whose table lists `vtc/rooms/offers/list/0.1` only,
-  so it stays on 0.1 (label, no description) until that table admits 0.2.
+- **The description from an older member VTA**: `pnm rooms offers list` shows a room's
+  description only when the member's VTA serves `rooms/keys/act/0.4` (the first version
+  that signs `vtc/rooms/offers/list/0.2`) and the VTC serves list 0.2; otherwise it lists
+  at 0.1, label only, until both are upgraded.
 - **A member-side read of rooms they are in**: an admitted member sees the label and
   description only while their offer is listed.
 
-- **Offers in the member portal**: a member lists and accepts their offers with `pnm
-  rooms offers` (below); the portal has no screen for them yet.
+- **Offers in the member portal without the wallet**: the portal's *Offers from this
+  community* card (label, the room's description, tier, actions, dates) reads and accepts
+  through the member's wallet only; without it, a member uses `pnm rooms offers` (above).
 - **Live updates for the owner's record**: `vtc/admin/events` 0.2's `rooms` topic is the
   host's (`vtc.rooms.admin`, rooms registered, lifecycle, usage bands). An offer,
   admission or removal is in no topic, so the console's Community rooms pages poll for

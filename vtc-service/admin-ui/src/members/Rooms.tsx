@@ -95,6 +95,18 @@ export function RoomsPage({ hostDid, member }: { hostDid: string; member?: strin
 
 // ── Offers ──────────────────────────────────────────────────────────────────
 
+/** The longest room description the page shows: the schema's own bound (`RoomDescription`). */
+const MAX_OFFER_DESCRIPTION = 1000;
+
+/**
+ * An offer's room description, as text: the wallet's, trimmed and cut to the
+ * schema's bound. React renders it as a text node, never as markup.
+ */
+function offerDescription(o: PageOffer): string {
+  if (typeof o.description !== "string") return "";
+  return [...o.description.trim()].slice(0, MAX_OFFER_DESCRIPTION).join("");
+}
+
 /**
  * This community's offers of its rooms to the member, through their wallet.
  * The page lists what the wallet shows it — never an offer's credentials — and
@@ -165,6 +177,7 @@ function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: 
               <span>
                 {o.label ? <strong className="wrap">{o.label}</strong> : <code className="wrap">{shortDid(o.roomId)}</code>}
               </span>
+              {offerDescription(o) && <span className="muted wrap">{offerDescription(o)}</span>}
               <span className="muted small">
                 {o.visibility} · {o.actions.join(", ")} · until {new Date(o.validUntil).toLocaleDateString()}
                 {o.member === member ? " · as you" : ` · as ${shortDid(o.member)}`}

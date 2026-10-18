@@ -1068,13 +1068,16 @@ handed the member's whole listing would learn every room they are in — on a
 
 **Offers: listed through the wallet, accepted in it.** A community's offer of
 one of its rooms (`vtc/rooms/community/members/add`) is taken up with
-`vtc/rooms/offers/{list,accept}/0.1`, signed as the identity the offer is
-addressed to by the member's VTA (`rooms/keys/act/0.3`) — `pnm rooms offers
-list|accept`, and the wallet, step for step (OpenVTC/vta-browser-plugin, the
-room-offers PR). The portal shows *Offers from this community* through
-`rooms.offers({ hostDid })`, held to the same `SignInPortal` gate and answered
-for the identities the member uses here only (never `hostDid`): label, tier,
-actions and dates, never an offer's credentials. *Accept* calls
+`vtc/rooms/offers/list/0.2` (0.1 from a community or VTA without it) and
+`vtc/rooms/offers/accept/0.1`, signed as the identity the offer is addressed to
+by the member's VTA (`rooms/keys/act/0.4`, 0.3 for the 0.1 listing) — `pnm
+rooms offers list|accept`, and the wallet, step for step
+(OpenVTC/vta-browser-plugin, the room-offers PR). The portal shows *Offers from
+this community* through `rooms.offers({ hostDid })`, held to the same
+`SignInPortal` gate and answered for the identities the member uses here only
+(never `hostDid`): label, the room's description when the wallet carries it
+(rendered as text, never markup; never the room's tags), tier, actions and
+dates, never an offer's credentials. *Accept* calls
 `rooms.acceptOffer({ hostDid, roomId, member })`, and the member decides in the
 wallet's window, which names the community, the room and the identity it joins
 as; the wallet stores the credentials in the VTA, has the VTA mint the

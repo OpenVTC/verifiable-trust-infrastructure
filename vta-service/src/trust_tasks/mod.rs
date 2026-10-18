@@ -2735,6 +2735,10 @@ dispatch_table! {
     // addressed to; an acceptance only with a KeyPackage this VTA minted.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_3 => room_act::handle_act_v0_3
         [ None Metadata true ],
+    // 0.4: 0.3, and `vtc/rooms/offers/list/0.2` — the offer listing with each room's
+    // description — on the same terms as 0.1 (trust-tasks-tf #810).
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_4 => room_act::handle_act_v0_4
+        [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1 => room_group::handle_list
         [ None Metadata false ],
     // 0.2: each entry names its member; `includePersonal` adds the member's own label.

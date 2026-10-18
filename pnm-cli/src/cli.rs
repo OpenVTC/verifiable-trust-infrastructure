@@ -991,7 +991,8 @@ pub(crate) enum RoomOwnerCommands {
 /// `pnm rooms offers …` — rooms a community has offered you.
 #[derive(Subcommand)]
 pub(crate) enum RoomOffersCommands {
-    /// List the rooms the community has offered you (`vtc/rooms/offers/list`).
+    /// List the rooms the community has offered you (`vtc/rooms/offers/list`), each
+    /// with what it is for when the community says (its description, from list 0.2).
     List {
         /// Base URL of the community's Trust Task endpoint (e.g.
         /// `https://vtc.example.com/v1`).

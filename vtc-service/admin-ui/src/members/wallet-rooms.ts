@@ -111,6 +111,13 @@ export interface PageOffer {
   member: string;
   /** The room's label, as the community's administrators wrote it. */
   label: string;
+  /**
+   * What the room is for, as the community's administrators wrote it
+   * (`vtc/rooms/offers/list/0.2`). Plain text, shown as text and never as
+   * markup. Absent when the room has none, or the wallet read the offer from a
+   * community or through an agent that does not carry it yet.
+   */
+  description?: string;
   visibility: "open" | "attributed" | "private" | string;
   actions: string[];
   validUntil: string;
