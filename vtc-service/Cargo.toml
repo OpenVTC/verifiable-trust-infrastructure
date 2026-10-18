@@ -167,11 +167,11 @@ path = "tests/it/main.rs"
 
 [dependencies]
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
-vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.4", optional = true }
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.5", optional = true }
 predicate-credential-system = { version = "0.1", optional = true }
-vti-rooms = { path = "../vti-rooms", version = "0.18" }
-vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.20" }
-vti-common = { path = "../vti-common", version = "0.47", features = [
+vti-rooms = { path = "../vti-rooms", version = "0.19" }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.21" }
+vti-common = { path = "../vti-common", version = "0.48", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
@@ -191,7 +191,7 @@ vti-common = { path = "../vti-common", version = "0.47", features = [
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
-vti-secrets = { path = "../vti-secrets", version = "0.20" }
+vti-secrets = { path = "../vti-secrets", version = "0.21" }
 vta-sdk = { path = "../vta-sdk", version = "0.72", features = [
   "didcomm",
   "session",
@@ -394,7 +394,7 @@ trust-tasks-rs = { workspace = true }
 # through `vta_sdk::jws`.
 k256 = { version = "0.14", features = ["ecdsa"] }# Signed room fixtures. Cargo unifies this feature with the normal dependency
 # above, so the fixtures reach tests without shipping in the service binary.
-vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.20", features = ["test-support"] }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.21", features = ["test-support"] }
 # Self-dep with `test-support` enabled so integration tests under
 # `tests/` can import `vtc_service::test_support` (`TestVtc`, `MockVtc`).
 vtc-service = { path = ".", features = ["test-support", "transport-harness"] }
