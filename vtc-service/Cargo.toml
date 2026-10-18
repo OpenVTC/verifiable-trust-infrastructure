@@ -4,11 +4,32 @@ description = "Service for Verifiable Trust Communities"
 readme = "README.md"
 version = "0.11.58"
 edition.workspace = true
-# Internal to this workspace — consumed through path dependencies only, never
-# from crates.io. It was published by inheritance from `[workspace.package]`
-# rather than by decision; the audit in #938 found no external consumer. See
-# RELEASING.md ("What gets published").
-publish = false
+# Published, so an operator can install the VTC with `cargo install
+# vtc-service` (the `vtc` binary), the way `pnm-cli` and `cnm-cli` are installed.
+# #938 unpublished it because no crate depended on it, which is still true: it
+# has no library consumer, and is published as a binary. Hence no semver check
+# in `release-plz.toml` and `scripts/semver-report.sh`. See RELEASING.md ("What
+# gets published").
+#
+# The package carries the two web bundles pre-built, not the npm project that
+# builds them: `scripts/build-vtc-web-bundles.sh` writes `admin-ui/dist` and
+# `admin-ui/dist-members` (gitignored, so only `include` brings them in) and
+# publish.yml runs it before release-plz. build.rs, finding no
+# `admin-ui/package.json`, bakes those instead of running npm. Keep `include` to
+# what the build reads: every `include_dir!` / `include_str!` outside tests is
+# under `src/`, `policies/`, `website-default/` or the two bundles.
+include = [
+  "/Cargo.toml",
+  "/README.md",
+  # release-plz writes it with the first release.
+  "/CHANGELOG.md",
+  "/build.rs",
+  "/src/**",
+  "/policies/**",
+  "/website-default/**",
+  "/admin-ui/dist/**",
+  "/admin-ui/dist-members/**",
+]
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -146,10 +167,10 @@ path = "tests/it/main.rs"
 
 [dependencies]
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
-vti-vetting-pcs = { path = "../vti-vetting-pcs", optional = true }
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.4", optional = true }
 predicate-credential-system = { version = "0.1", optional = true }
 vti-rooms = { path = "../vti-rooms", version = "0.18" }
-vti-rooms-dtg = { path = "../vti-rooms-dtg" }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.20" }
 vti-common = { path = "../vti-common", version = "0.47", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
@@ -373,7 +394,7 @@ trust-tasks-rs = { workspace = true }
 # through `vta_sdk::jws`.
 k256 = { version = "0.14", features = ["ecdsa"] }# Signed room fixtures. Cargo unifies this feature with the normal dependency
 # above, so the fixtures reach tests without shipping in the service binary.
-vti-rooms-dtg = { path = "../vti-rooms-dtg", features = ["test-support"] }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.20", features = ["test-support"] }
 # Self-dep with `test-support` enabled so integration tests under
 # `tests/` can import `vtc_service::test_support` (`TestVtc`, `MockVtc`).
 vtc-service = { path = ".", features = ["test-support", "transport-harness"] }

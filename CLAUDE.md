@@ -1817,19 +1817,30 @@ feature, so the default-feature reproduction the report printed never touched
 it. A dependency break of this shape is fixed upstream or by a raised floor,
 never by a change here.
 
-**25 of 35 crates publish.** The ten that do not — `vtc-service`,
-`vta-enclave`, `vta-mcp`, `vta-mobile-core`, `didcomm-test`, `vti-fuzz`,
-`vti-e2e-tests`, `room-host`, `vti-rooms-wasm`, `vti-witness` — set
-`publish = false` in their own manifest, each with a comment saying why.
-(The count is the workspace's members plus `vti-fuzz`; the excluded
-`deploy/nitro/enclave-proxy` is a deployment helper, not counted.)
+**26 of 35 crates publish.** The nine that do not — `vta-enclave`,
+`vta-mcp`, `vta-mobile-core`, `didcomm-test`, `vti-fuzz`, `vti-e2e-tests`,
+`room-host`, `vti-rooms-wasm`, `vti-witness` — set `publish = false` in their
+own manifest, each with a comment saying why. (The count is the workspace's
+members plus `vti-fuzz`; the excluded `deploy/nitro/enclave-proxy` is a
+deployment helper, not counted.)
 
-The other 25 are `vta-sdk`, `vti-common`, `vti-secrets`, `vta-cli-common`,
-`vtc-client`, `pnm-cli`, `cnm-cli` — plus `vta-service` and its closure
-(`vta-audit`, `vta-backup`, `vta-config`, `vta-keys`, `vta-keyspaces`,
+The other 26 are `vta-sdk`, `vti-common`, `vti-secrets`, `vta-cli-common`,
+`vtc-client`, `pnm-cli`, `cnm-cli`, `vtc-service` — plus `vta-service` and its
+closure (`vta-audit`, `vta-backup`, `vta-config`, `vta-keys`, `vta-keyspaces`,
 `vta-policy`, `vta-support`, `vta-sweepers`, `vta-tee`, `vta-vault`,
 `vta-webvh`, `vta-persona`, `vti-webauthn`, `vta-external`, `vti-vetting-pcs`,
 `vti-rooms`, `vti-rooms-dtg`).
+
+**`vtc-service` is published as a binary**, so an operator installs the VTC
+with `cargo install vtc-service`; nothing consumes its library, so it carries
+no semver check (`release-plz.toml`, `scripts/semver-report.sh`). Its package
+ships the admin console and member portal **pre-built** (`admin-ui/dist`,
+`admin-ui/dist-members`, listed in its `include` though gitignored), never the
+npm project: `publish.yml` runs `scripts/build-vtc-web-bundles.sh` before
+release-plz, and `build.rs`, finding no `admin-ui/package.json`, bakes those
+bundles instead of running npm. A new `include_dir!` / `include_str!` outside
+tests must stay inside that `include` list, or the published crate stops
+building.
 
 **`vta-service` is published for one reason and it is not its own API:**
 `openvtc-core` dev-depends on it for `test_support::MockVta`, the in-process

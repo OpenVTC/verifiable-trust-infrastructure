@@ -118,8 +118,41 @@ impl LockfileVerdict {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=VTC_SKIP_ADMIN_UI_BUILD");
+
+    // The crate as published to crates.io (`cargo install vtc-service`)
+    // carries the two pre-built bundles, `admin-ui/dist` and
+    // `admin-ui/dist-members`, and not the npm project they are built
+    // from — see `include` in Cargo.toml and the "Build the VTC web
+    // bundles" step in `.github/workflows/publish.yml`. The absence of
+    // `package.json` is how this script knows it is building from the
+    // package: there is nothing to run npm on, and a build script that
+    // ran it would write `node_modules` into the registry source
+    // directory, which `cargo publish`'s verify build refuses.
+    if packaged() {
+        LockfileVerdict::NotRun.record();
+        if std::env::var("CARGO_FEATURE_ADMIN_UI").is_err() {
+            ensure_baked_dir_exists();
+            return;
+        }
+        for bundle in ["dist", "dist-members"] {
+            if !admin_ui_dir().join(bundle).join("index.html").exists() {
+                panic!(
+                    "build.rs: this vtc-service package has no pre-built admin-ui/{bundle}/. \
+                     The published crate must carry both web bundles; it was packaged without \
+                     running `scripts/build-vtc-web-bundles.sh` first. Build without the \
+                     `admin-ui` feature to do without the console."
+                );
+            }
+        }
+        adopt_prebuilt_dist();
+        return;
+    }
+
     // Re-run when admin-ui source changes; leave the rest of the
-    // crate alone.
+    // crate alone. Only in a source checkout: in the package these
+    // paths do not exist, and a missing watched path re-runs the
+    // script on every build.
     println!("cargo:rerun-if-changed=admin-ui/src");
     println!("cargo:rerun-if-changed=admin-ui/index.html");
     println!("cargo:rerun-if-changed=admin-ui/package.json");
@@ -128,7 +161,6 @@ fn main() {
     println!("cargo:rerun-if-changed=admin-ui/vite.members.config.ts");
     println!("cargo:rerun-if-changed=admin-ui/members");
     println!("cargo:rerun-if-changed=admin-ui/tsconfig.json");
-    println!("cargo:rerun-if-env-changed=VTC_SKIP_ADMIN_UI_BUILD");
 
     if std::env::var("VTC_SKIP_ADMIN_UI_BUILD").is_ok() {
         eprintln!(
@@ -152,6 +184,12 @@ fn main() {
     }
 
     build_admin_ui();
+}
+
+/// Building from the crates.io package rather than a source checkout:
+/// the package ships the built bundles without the npm project.
+fn packaged() -> bool {
+    !admin_ui_dir().join("package.json").exists()
 }
 
 fn admin_ui_dir() -> PathBuf {
