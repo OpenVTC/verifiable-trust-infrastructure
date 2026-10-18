@@ -201,6 +201,18 @@ async fn the_member_and_inviter_verbs_answer_those_members() {
             _ => continue,
         };
         let (_, doc) = call(&vtc, by, uri, body).await;
+        if uri == DIRECTORY_QUERY {
+            // Answered, not refused: a member addresses another member by DID
+            // only when that member chose to show it to them (VTI-DIR-044),
+            // and otherwise learns nothing — the same `notFound` a DID that is
+            // no member gets.
+            assert_eq!(
+                error_code(&doc),
+                Some("vtc/directory/query:notFound"),
+                "{uri}: {doc}"
+            );
+            continue;
+        }
         assert_eq!(error_code(&doc), None, "{uri}: {doc}");
     }
 }
