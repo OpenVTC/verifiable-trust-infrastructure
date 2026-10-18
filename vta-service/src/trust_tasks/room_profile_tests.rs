@@ -32,6 +32,13 @@ struct Host {
 }
 
 async fn start_host() -> Host {
+    start_host_with(false).await
+}
+
+/// [`start_host`]; with `contend`, every `rooms/records/put` loses its predicted version to
+/// another write that lands just before it — the version race `rooms/keys/profile/write`
+/// item 6 answers `contended` for when it never stops.
+async fn start_host_with(contend: bool) -> Host {
     let party = Party::new();
     let dir = tempfile::tempdir().unwrap();
     let state = room_host::open_state(dir.path()).expect("a host");
@@ -49,6 +56,35 @@ async fn start_host() -> Host {
             let host_did = host_did.clone();
             let secret = secret.clone();
             async move {
+                if contend {
+                    let doc: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                    if doc["type"] == vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE
+                        && let Some(room) = doc["payload"]["roomId"].as_str()
+                    {
+                        let noise = vti_rooms::Record {
+                            key: format!("noise-{}", uuid::Uuid::new_v4().simple()),
+                            version: 0,
+                            epoch: None,
+                            status: vti_rooms::RecordStatus::Active,
+                            pinned: false,
+                            sealed: None,
+                            nonce: None,
+                            cleartext: Some(json!({ "body": "another member's write" })),
+                            author: None,
+                            updated_at: 0,
+                        };
+                        vti_rooms::storage::put_record(
+                            shared.rooms(),
+                            shared.records(),
+                            room,
+                            noise,
+                            None,
+                            Utc::now().timestamp() as u64,
+                        )
+                        .await
+                        .expect("the competing write lands");
+                    }
+                }
                 let answer = room_host::dispatch(&shared, &body).await;
                 let mut doc = answer.document;
                 if doc["type"]
@@ -644,4 +680,136 @@ async fn an_open_rooms_profile_is_at_room_profile_in_the_clear() {
     assert_eq!(got["payload"]["status"], "found", "{got}");
     assert_eq!(got["payload"]["profile"], board());
     assert!(got["payload"].get("searched").is_none(), "{got}");
+}
+
+// ─── The declared refusals, each driven ─────────────────────────────────
+
+/// A DID document for a host nobody answers at: a loopback port nothing listens on.
+fn unreachable_host() -> (String, Value) {
+    let party = Party::new();
+    let mb = party.did.strip_prefix("did:key:").unwrap().to_string();
+    let vm = format!("{}#{mb}", party.did);
+    let doc = json!({
+        "@context": ["https://www.w3.org/ns/did/v1"],
+        "id": party.did,
+        "verificationMethod": [{
+            "id": vm, "type": "Multikey", "controller": party.did, "publicKeyMultibase": mb,
+        }],
+        "authentication": [vm],
+        "assertionMethod": [vm],
+        "service": [{
+            "id": format!("{}#rest", party.did), "type": "TrustTaskHTTPS",
+            "serviceEndpoint": "http://127.0.0.1:9",
+        }],
+    });
+    (party.did, doc)
+}
+
+/// Teach `v`'s resolver another host's DID document.
+async fn knows(v: &mut Vta, did: &str, doc: Value) {
+    let mut resolver = v.state.did_resolver.clone().unwrap();
+    resolver
+        .add_did_document(did, serde_json::from_value(doc).unwrap())
+        .await;
+    v.state.did_resolver = Some(resolver);
+}
+
+async fn read_at(v: &Vta, room: &str, host: &str) -> Value {
+    body(
+        handle_read(
+            &v.state,
+            &admin(),
+            request(READ, json!({ "roomId": room, "host": host })),
+        )
+        .await,
+    )
+}
+
+async fn write_at(v: &Vta, room: &str, host: &str) -> Value {
+    body(
+        handle_write(
+            &v.state,
+            &admin(),
+            request(
+                WRITE,
+                json!({ "roomId": room, "host": host, "profile": board() }),
+            ),
+        )
+        .await,
+    )
+}
+
+/// A host that does not answer is `hostUnreachable`, for both tasks — retryable, and
+/// nothing is known to have been stored.
+#[tokio::test]
+async fn a_host_nobody_answers_at_is_host_unreachable() {
+    let mut s = sealed_room().await;
+    let (dead, doc) = unreachable_host();
+    knows(&mut s.owner, &dead, doc).await;
+
+    let got = read_at(&s.owner, &s.room.did, &dead).await;
+    assert_eq!(
+        got["payload"]["code"], "rooms/keys/profile/read:hostUnreachable",
+        "{got}"
+    );
+    let got = write_at(&s.owner, &s.room.did, &dead).await;
+    assert_eq!(
+        got["payload"]["code"], "rooms/keys/profile/write:hostUnreachable",
+        "{got}"
+    );
+}
+
+/// A host that answers and declines — here one that does not serve the room — is
+/// `hostRefused`, its own code and message carried in `details`; and a refusal is not an
+/// empty profile location.
+#[tokio::test]
+async fn a_host_that_does_not_serve_the_room_is_host_refused() {
+    let mut s = sealed_room().await;
+    let other = start_host().await;
+    knows(&mut s.owner, &other.did, other.doc.clone()).await;
+
+    let got = read_at(&s.owner, &s.room.did, &other.did).await;
+    assert_eq!(
+        got["payload"]["code"], "rooms/keys/profile/read:hostRefused",
+        "{got}"
+    );
+    assert!(got["payload"]["details"]["code"].is_string(), "{got}");
+    let got = write_at(&s.owner, &s.room.did, &other.did).await;
+    assert_eq!(
+        got["payload"]["code"], "rooms/keys/profile/write:hostRefused",
+        "{got}"
+    );
+    assert!(got["payload"]["details"]["message"].is_string(), "{got}");
+}
+
+/// Item 6: when other writes keep taking the version a profile was sealed for, the write
+/// re-seals for the next one a bounded number of times and then answers `contended` —
+/// never `written` for a record that does not open.
+#[tokio::test]
+async fn a_write_that_keeps_losing_its_version_is_contended() {
+    let host = start_host_with(true).await;
+    let room = Party::new();
+    let owner = vta(
+        &room,
+        &host,
+        OWNER_KEY_PATH,
+        &["read", "write", "curate", "admin"],
+    )
+    .await;
+    seed_room(
+        &host,
+        &room.did,
+        &owner.persona,
+        vti_rooms::Visibility::Open,
+    )
+    .await;
+
+    let got = write_profile(&owner, &room.did, &host, board()).await;
+    assert_eq!(
+        got["payload"]["code"], "rooms/keys/profile/write:contended",
+        "{got}"
+    );
+    // And no reader takes what landed for the profile.
+    let read = read(&owner, &room.did, &host).await;
+    assert_ne!(read["payload"]["status"], "found", "{read}");
 }
