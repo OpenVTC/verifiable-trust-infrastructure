@@ -921,6 +921,15 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // (`lib/community-theme.ts`), update signed from the Theme card.
     "https://trusttasks.org/spec/vtc/community/theme/show/0.1",
     "https://trusttasks.org/spec/vtc/community/theme/update/0.1",
+    // The member directory's Directory page (`admin-ui/src/lib/directory.ts`):
+    // the schema, every entry as an administrator reads it, and asserted values.
+    "https://trusttasks.org/spec/vtc/directory/fields/list/0.1",
+    "https://trusttasks.org/spec/vtc/directory/fields/define/0.1",
+    "https://trusttasks.org/spec/vtc/directory/fields/update/0.1",
+    "https://trusttasks.org/spec/vtc/directory/fields/retire/0.1",
+    "https://trusttasks.org/spec/vtc/directory/card/assert/0.1",
+    "https://trusttasks.org/spec/vtc/directory/entries/list/0.1",
+    "https://trusttasks.org/spec/vtc/directory/entries/show/0.1",
     "https://trusttasks.org/spec/vtc/community/join-discovery/show/0.1",
     "https://trusttasks.org/spec/vtc/community/join-discovery/update/0.1",
     "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.2",

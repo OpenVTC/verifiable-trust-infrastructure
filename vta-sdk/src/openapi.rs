@@ -52,6 +52,7 @@ use trust_tasks_rs::specs::acl::revoke as acl_revoke;
 use trust_tasks_rs::specs::credential_exchange;
 use trust_tasks_rs::specs::did_management::did::register;
 use trust_tasks_rs::specs::git_ns::view as git_ns_view;
+use trust_tasks_rs::specs::vtc::directory;
 use trust_tasks_rs::specs::vtc::endorsement_types;
 use trust_tasks_rs::specs::vtc::invitations::deliver as invitation_deliver;
 use trust_tasks_rs::specs::vtc::join_requests::manifest;
@@ -288,6 +289,34 @@ spec_types! {
     /// `open` and `attributed` rooms the revocation list in force at the room's host and
     /// the withdrawal's time; on a sealed tier the first epoch sealed without them.
     RoomsCommunityMembersRemove02Response(rooms_community::members::remove::v0_2::Response);
+    /// `vtc/directory/fields/list/0.1` payload.
+    DirectoryFieldsList01Payload(directory::fields::list::v0_1::Payload);
+    /// `vtc/directory/fields/list/0.1#response` — the schema and the listing default.
+    DirectoryFieldsList01Response(directory::fields::list::v0_1::Response);
+    /// `vtc/directory/fields/define/0.1` payload — a new community field.
+    DirectoryFieldsDefine01Payload(directory::fields::define::v0_1::Payload);
+    /// `vtc/directory/fields/define/0.1#response`.
+    DirectoryFieldsDefine01Response(directory::fields::define::v0_1::Response);
+    /// `vtc/directory/fields/update/0.1` payload — the members of a field to change.
+    DirectoryFieldsUpdate01Payload(directory::fields::update::v0_1::Payload);
+    /// `vtc/directory/fields/update/0.1#response`.
+    DirectoryFieldsUpdate01Response(directory::fields::update::v0_1::Response);
+    /// `vtc/directory/fields/retire/0.1` payload.
+    DirectoryFieldsRetire01Payload(directory::fields::retire::v0_1::Payload);
+    /// `vtc/directory/fields/retire/0.1#response` — the field, with its purge date.
+    DirectoryFieldsRetire01Response(directory::fields::retire::v0_1::Response);
+    /// `vtc/directory/card/assert/0.1` payload — administrator-asserted values.
+    DirectoryCardAssert01Payload(directory::card::assert::v0_1::Payload);
+    /// `vtc/directory/card/assert/0.1#response` — which fields were written.
+    DirectoryCardAssert01Response(directory::card::assert::v0_1::Response);
+    /// `vtc/directory/entries/list/0.1` payload — browse, search and filter.
+    DirectoryEntriesList01Payload(directory::entries::list::v0_1::Payload);
+    /// `vtc/directory/entries/list/0.1#response` — one page of projected entries and facets.
+    DirectoryEntriesList01Response(directory::entries::list::v0_1::Response);
+    /// `vtc/directory/entries/show/0.1` payload — by entry or, for administrators, by DID.
+    DirectoryEntriesShow01Payload(directory::entries::show::v0_1::Payload);
+    /// `vtc/directory/entries/show/0.1#response` — one projected entry.
+    DirectoryEntriesShow01Response(directory::entries::show::v0_1::Response);
     /// `vtc/rooms/community/members/list/0.1` payload.
     RoomsCommunityMembersList01Payload(rooms_community::members::list::v0_1::Payload);
     /// `vtc/rooms/community/members/list/0.1#response` — one page of a room's
@@ -648,6 +677,20 @@ mod tests {
         check::<RegistrySyncJobsDiscard01Response>();
         check::<RegistryRecordsList01Payload>();
         check::<RegistryRecordsList01Response>();
+        check::<DirectoryFieldsList01Payload>();
+        check::<DirectoryFieldsList01Response>();
+        check::<DirectoryFieldsDefine01Payload>();
+        check::<DirectoryFieldsDefine01Response>();
+        check::<DirectoryFieldsUpdate01Payload>();
+        check::<DirectoryFieldsUpdate01Response>();
+        check::<DirectoryFieldsRetire01Payload>();
+        check::<DirectoryFieldsRetire01Response>();
+        check::<DirectoryCardAssert01Payload>();
+        check::<DirectoryCardAssert01Response>();
+        check::<DirectoryEntriesList01Payload>();
+        check::<DirectoryEntriesList01Response>();
+        check::<DirectoryEntriesShow01Payload>();
+        check::<DirectoryEntriesShow01Response>();
     }
 
     #[test]

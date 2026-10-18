@@ -54,6 +54,7 @@ const GRANTS = `${T}/vtc/vetting/vetters/grants/list/0.1`;
 const REVOCATIONS = `${T}/vtc/vetting/revocations/list/0.1`;
 const VETTERS = `${T}/vtc/vetting/vetters/list/0.1`;
 const ACTIVITY = `${T}/git-ns/activity/list/0.1`;
+const DIRECTORY_ENTRIES = `${T}/vtc/directory/entries/list/0.1`;
 
 interface Site {
   /** The file, under `src/`. */
@@ -71,6 +72,8 @@ interface Site {
 }
 
 const SITES: Site[] = [
+  // The Directory page's entries tab: one page of the largest size.
+  { file: "plugins/directory.tsx", site: "limit: 100", uri: DIRECTORY_ENTRIES, uriFile: "lib/directory.ts", from: ["100"] },
   // The action list: the page, and the badge's one-row read.
   { file: "plugins/actions.tsx", site: "listActions({ view, limit: PAGE_SIZE", uri: ACTIONS, uriFile: "lib/actions-api.ts", from: ["PAGE_SIZE"] },
   // `listActions` passes its caller's limit through; each call is listed.

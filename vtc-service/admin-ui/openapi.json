@@ -1231,28 +1231,6 @@
           }
         }
       },
-      "DirectoryResponse": {
-        "type": "object",
-        "description": "The projected subject record.",
-        "required": [
-          "subject",
-          "fields"
-        ],
-        "properties": {
-          "fields": {
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/Value"
-            },
-            "propertyNames": {
-              "type": "string"
-            }
-          },
-          "subject": {
-            "type": "string"
-          }
-        }
-      },
       "Disagreement": {
         "type": "string",
         "description": "How the two views of one member's record disagree.",
@@ -4459,7 +4437,7 @@
       },
       "PolicyPurpose": {
         "type": "string",
-        "description": "What a policy decides. The keyspace `active_policies:<purpose>`\nhas at most one row per variant; the active pointer is a\nper-purpose singleton.\n\nWire shape is `camelCase` ASCII (`join`, `removal`,\n`crossCommunityRoles`) — operators wire purposes into REST\npayloads + the policies CLI verbs.\n\nThe workspace ships twelve purposes (spec §7.1 names the first ten). They\nsplit into five groups:\n- **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],\n  [`Self::Personhood`].\n- **Discoverability**: [`Self::Registry`], [`Self::Directory`].\n- **Authorization**: [`Self::RoleDefinitions`], [`Self::RoleChange`],\n  [`Self::CrossCommunityRoles`],\n  [`Self::CrossCommunityRelationships`], [`Self::Relationships`].\n- **Hosting**: [`Self::Rooms`].\n- **Vetting**: [`Self::VetterEligibility`].",
+        "description": "What a policy decides. The keyspace `active_policies:<purpose>`\nhas at most one row per variant; the active pointer is a\nper-purpose singleton.\n\nWire shape is `camelCase` ASCII (`join`, `removal`,\n`crossCommunityRoles`) — operators wire purposes into REST\npayloads + the policies CLI verbs.\n\nThe workspace ships twelve purposes (spec §7.1 names the first ten). They\nsplit into five groups:\n- **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],\n  [`Self::Personhood`].\n- **Discoverability**: [`Self::Registry`], [`Self::Directory`],\n  [`Self::DirectoryWrite`].\n- **Authorization**: [`Self::RoleDefinitions`], [`Self::RoleChange`],\n  [`Self::CrossCommunityRoles`],\n  [`Self::CrossCommunityRelationships`], [`Self::Relationships`].\n- **Hosting**: [`Self::Rooms`].\n- **Vetting**: [`Self::VetterEligibility`].",
         "enum": [
           "join",
           "removal",
@@ -4474,7 +4452,8 @@
           "rooms",
           "vetterEligibility",
           "gitNamespace",
-          "admission"
+          "admission",
+          "directoryWrite"
         ]
       },
       "PolicyStatusFilter": {
@@ -5491,6 +5470,2052 @@
             "description": "The statement's `id`."
           }
         }
+      },
+      "VtcDirectoryCardAssertV0_1CardBlobRef": {
+        "type": "object",
+        "description": "A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (metadata stripped, dimensions capped) so its digest does not link the member across communities. `url` and `urlExpiresAt` appear only in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL.",
+        "required": [
+          "sha256",
+          "mediaType"
+        ],
+        "properties": {
+          "mediaType": {
+            "type": "string",
+            "description": "Media type of the stored bytes.",
+            "enum": [
+              "image/png",
+              "image/jpeg",
+              "image/webp",
+              "image/avif"
+            ]
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Lowercase hex SHA-256 of the stored, re-encoded bytes.",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "size": {
+            "type": "integer",
+            "description": "Size in bytes of the stored bytes.",
+            "maximum": 262144,
+            "minimum": 1
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.",
+            "maxLength": 2048
+          },
+          "urlExpiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Projection only: when `url` stops working."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryCardAssertV0_1EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcDirectoryCardAssertV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcDirectoryCardAssertV0_1FieldKey": {
+        "type": "string",
+        "description": "Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined.",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^([a-z][a-z0-9-]*\\.)*[a-z][a-zA-Z0-9]{0,63}$"
+      },
+      "VtcDirectoryCardAssertV0_1FieldValue": {
+        "anyOf": [
+          {
+            "type": "string",
+            "maxLength": 2000
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 500
+            },
+            "maxItems": 32
+          },
+          {
+            "$ref": "#/components/schemas/VtcDirectoryCardAssertV0_1CardBlobRef"
+          },
+          {
+            "$ref": "#/components/schemas/VtcDirectoryCardAssertV0_1VerifiedValue"
+          }
+        ],
+        "description": "The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean."
+      },
+      "VtcDirectoryCardAssertV0_1Payload": {
+        "type": "object",
+        "description": "An administrator writes the values of admin-sourced directory fields on a member's card — the facts the community asserts about a member, which the member reads and cannot change. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "entryId",
+          "values",
+          "reason"
+        ],
+        "properties": {
+          "entryId": {
+            "$ref": "#/components/schemas/VtcDirectoryCardAssertV0_1EntryId"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryCardAssertV0_1Ext"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why, recorded with the change and shown to anyone who must approve it.",
+            "maxLength": 1024,
+            "minLength": 1
+          },
+          "values": {
+            "type": "object",
+            "description": "Values to set, keyed by `admin`-sourced field; `null` clears one.",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/VtcDirectoryCardAssertV0_1FieldValue"
+                },
+                {}
+              ]
+            },
+            "minProperties": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryCardAssertV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/directory/card/assert/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/card/assert/0.1#response.",
+        "required": [
+          "entryId",
+          "written",
+          "revision"
+        ],
+        "properties": {
+          "entryId": {
+            "$ref": "#/components/schemas/VtcDirectoryCardAssertV0_1EntryId"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryCardAssertV0_1Ext"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "written": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcDirectoryCardAssertV0_1FieldKey"
+            },
+            "description": "The fields written or cleared.",
+            "maxItems": 64
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryCardAssertV0_1VerifiedValue": {
+        "type": "object",
+        "description": "The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation.",
+        "required": [
+          "value",
+          "issuer",
+          "verifiedAt"
+        ],
+        "properties": {
+          "credentialType": {
+            "type": "string",
+            "description": "The most specific `type` of the credential the claim came from.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "issuer": {
+            "type": "string",
+            "description": "DID of the credential's issuer, shown as the field's verification badge.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "validUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the credential expires, where it does. The community withdraws the value once it passes."
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "description": "The disclosed claim value."
+          },
+          "verifiedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community verified the presentation."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryEntriesListV0_1CardBlobRef": {
+        "type": "object",
+        "description": "A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (metadata stripped, dimensions capped) so its digest does not link the member across communities. `url` and `urlExpiresAt` appear only in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL.",
+        "required": [
+          "sha256",
+          "mediaType"
+        ],
+        "properties": {
+          "mediaType": {
+            "type": "string",
+            "description": "Media type of the stored bytes.",
+            "enum": [
+              "image/png",
+              "image/jpeg",
+              "image/webp",
+              "image/avif"
+            ]
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Lowercase hex SHA-256 of the stored, re-encoded bytes.",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "size": {
+            "type": "integer",
+            "description": "Size in bytes of the stored bytes.",
+            "maximum": 262144,
+            "minimum": 1
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.",
+            "maxLength": 2048
+          },
+          "urlExpiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Projection only: when `url` stops working."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryEntriesListV0_1DirectoryEntry": {
+        "type": "object",
+        "description": "One entry as a particular viewer sees it.",
+        "required": [
+          "entryId",
+          "fields"
+        ],
+        "properties": {
+          "connected": {
+            "type": "boolean",
+            "description": "Present, and `true`, only when the viewer is one of the two parties to an attributed, in-force verified relationship with this entry's member that the community can see. Absent otherwise — never `false`, which would disclose that the community looked and found none. Relationships known only to the viewer's own agent are badged by that agent, not here."
+          },
+          "entryId": {
+            "$ref": "#/components/schemas/VtcDirectoryEntriesListV0_1EntryId"
+          },
+          "fields": {
+            "$ref": "#/components/schemas/VtcDirectoryEntriesListV0_1EntryFields"
+          },
+          "sharedGroups": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^grp_[A-Za-z0-9_-]{16,64}$"
+            },
+            "description": "The community groups the viewer and this member both belong to, among those whose membership the viewer may see. Absent when there are none.",
+            "maxItems": 64,
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryEntriesListV0_1EntryFields": {
+        "type": "object",
+        "description": "The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null.",
+        "additionalProperties": {
+          "$ref": "#/components/schemas/VtcDirectoryEntriesListV0_1FieldValue"
+        }
+      },
+      "VtcDirectoryEntriesListV0_1EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcDirectoryEntriesListV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcDirectoryEntriesListV0_1FieldKey": {
+        "type": "string",
+        "description": "Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined.",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^([a-z][a-z0-9-]*\\.)*[a-z][a-zA-Z0-9]{0,63}$"
+      },
+      "VtcDirectoryEntriesListV0_1FieldValue": {
+        "anyOf": [
+          {
+            "type": "string",
+            "maxLength": 2000
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 500
+            },
+            "maxItems": 32
+          },
+          {
+            "$ref": "#/components/schemas/VtcDirectoryEntriesListV0_1CardBlobRef"
+          },
+          {
+            "$ref": "#/components/schemas/VtcDirectoryEntriesListV0_1VerifiedValue"
+          }
+        ],
+        "description": "The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean."
+      },
+      "VtcDirectoryEntriesListV0_1GroupId": {
+        "type": "string",
+        "description": "Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID.",
+        "pattern": "^grp_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcDirectoryEntriesListV0_1Payload": {
+        "type": "object",
+        "description": "Browse, search and filter a community's member directory. Each entry is projected for the caller: only fields the member, the community's ceiling and its policy all allow. The outer document members are owned by the framework — SPEC §6.3.",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "description": "Opaque continuation token from a previous page's `nextCursor`, valid only for the same caller and question.",
+            "maxLength": 1024,
+            "minLength": 1
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryEntriesListV0_1Ext"
+          },
+          "filters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "field",
+                "values"
+              ],
+              "properties": {
+                "field": {
+                  "$ref": "#/components/schemas/VtcDirectoryEntriesListV0_1FieldKey"
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "maxItems": 16,
+                  "minItems": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            "description": "Facet filters: an entry matches when, for every filter, its value of the field is one of `values`. Only facets visible to the caller.",
+            "maxItems": 8
+          },
+          "group": {
+            "$ref": "#/components/schemas/VtcDirectoryEntriesListV0_1GroupId"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size; the community clamps to 1..=100 (default 25).",
+            "maximum": 100,
+            "minimum": 1
+          },
+          "query": {
+            "type": "string",
+            "description": "Search text. At least three characters, or a whole nickname for an exact-nickname search.",
+            "maxLength": 128,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryEntriesListV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/directory/entries/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/entries/list/0.1#response.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryEntriesListV0_1Ext"
+          },
+          "facets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "field",
+                "values"
+              ],
+              "properties": {
+                "field": {
+                  "$ref": "#/components/schemas/VtcDirectoryEntriesListV0_1FieldKey"
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "value"
+                    ],
+                    "properties": {
+                      "count": {
+                        "type": "integer",
+                        "description": "Matching entries. Absent when below the community's threshold.",
+                        "minimum": 0
+                      },
+                      "fewerThan": {
+                        "type": "integer",
+                        "description": "Present instead of `count` when the count is below the threshold *k*: there are fewer than this many.",
+                        "minimum": 2
+                      },
+                      "value": {
+                        "type": "string",
+                        "maxLength": 64
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "maxItems": 256
+                }
+              },
+              "additionalProperties": false
+            },
+            "description": "Counts for the facets visible to the caller, over the whole result. Absent when none is.",
+            "maxItems": 16
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcDirectoryEntriesListV0_1DirectoryEntry"
+            },
+            "maxItems": 100
+          },
+          "nextCursor": {
+            "description": "Continuation token, or null when this is the last page.",
+            "maxLength": 1024
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryEntriesListV0_1VerifiedValue": {
+        "type": "object",
+        "description": "The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation.",
+        "required": [
+          "value",
+          "issuer",
+          "verifiedAt"
+        ],
+        "properties": {
+          "credentialType": {
+            "type": "string",
+            "description": "The most specific `type` of the credential the claim came from.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "issuer": {
+            "type": "string",
+            "description": "DID of the credential's issuer, shown as the field's verification badge.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "validUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the credential expires, where it does. The community withdraws the value once it passes."
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "description": "The disclosed claim value."
+          },
+          "verifiedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community verified the presentation."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryEntriesShowV0_1CardBlobRef": {
+        "type": "object",
+        "description": "A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (metadata stripped, dimensions capped) so its digest does not link the member across communities. `url` and `urlExpiresAt` appear only in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL.",
+        "required": [
+          "sha256",
+          "mediaType"
+        ],
+        "properties": {
+          "mediaType": {
+            "type": "string",
+            "description": "Media type of the stored bytes.",
+            "enum": [
+              "image/png",
+              "image/jpeg",
+              "image/webp",
+              "image/avif"
+            ]
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Lowercase hex SHA-256 of the stored, re-encoded bytes.",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "size": {
+            "type": "integer",
+            "description": "Size in bytes of the stored bytes.",
+            "maximum": 262144,
+            "minimum": 1
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.",
+            "maxLength": 2048
+          },
+          "urlExpiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Projection only: when `url` stops working."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryEntriesShowV0_1DirectoryEntry": {
+        "type": "object",
+        "description": "One entry as a particular viewer sees it.",
+        "required": [
+          "entryId",
+          "fields"
+        ],
+        "properties": {
+          "connected": {
+            "type": "boolean",
+            "description": "Present, and `true`, only when the viewer is one of the two parties to an attributed, in-force verified relationship with this entry's member that the community can see. Absent otherwise — never `false`, which would disclose that the community looked and found none. Relationships known only to the viewer's own agent are badged by that agent, not here."
+          },
+          "entryId": {
+            "$ref": "#/components/schemas/VtcDirectoryEntriesShowV0_1EntryId"
+          },
+          "fields": {
+            "$ref": "#/components/schemas/VtcDirectoryEntriesShowV0_1EntryFields"
+          },
+          "sharedGroups": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^grp_[A-Za-z0-9_-]{16,64}$"
+            },
+            "description": "The community groups the viewer and this member both belong to, among those whose membership the viewer may see. Absent when there are none.",
+            "maxItems": 64,
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryEntriesShowV0_1EntryFields": {
+        "type": "object",
+        "description": "The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null.",
+        "additionalProperties": {
+          "$ref": "#/components/schemas/VtcDirectoryEntriesShowV0_1FieldValue"
+        }
+      },
+      "VtcDirectoryEntriesShowV0_1EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcDirectoryEntriesShowV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcDirectoryEntriesShowV0_1FieldKey": {
+        "type": "string",
+        "description": "Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined.",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^([a-z][a-z0-9-]*\\.)*[a-z][a-zA-Z0-9]{0,63}$"
+      },
+      "VtcDirectoryEntriesShowV0_1FieldValue": {
+        "anyOf": [
+          {
+            "type": "string",
+            "maxLength": 2000
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 500
+            },
+            "maxItems": 32
+          },
+          {
+            "$ref": "#/components/schemas/VtcDirectoryEntriesShowV0_1CardBlobRef"
+          },
+          {
+            "$ref": "#/components/schemas/VtcDirectoryEntriesShowV0_1VerifiedValue"
+          }
+        ],
+        "description": "The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean."
+      },
+      "VtcDirectoryEntriesShowV0_1Payload": {
+        "oneOf": [
+          {},
+          {}
+        ],
+        "description": "Read one directory entry, projected for the caller. Members address it by entry identifier; administrators may also address it by DID. The outer document members are owned by the framework — SPEC §6.3."
+      },
+      "VtcDirectoryEntriesShowV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/directory/entries/show/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/entries/show/0.1#response.",
+        "required": [
+          "entry"
+        ],
+        "properties": {
+          "entry": {
+            "$ref": "#/components/schemas/VtcDirectoryEntriesShowV0_1DirectoryEntry"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryEntriesShowV0_1Ext"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryEntriesShowV0_1VerifiedValue": {
+        "type": "object",
+        "description": "The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation.",
+        "required": [
+          "value",
+          "issuer",
+          "verifiedAt"
+        ],
+        "properties": {
+          "credentialType": {
+            "type": "string",
+            "description": "The most specific `type` of the credential the claim came from.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "issuer": {
+            "type": "string",
+            "description": "DID of the credential's issuer, shown as the field's verification badge.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "validUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the credential expires, where it does. The community withdraws the value once it passes."
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "description": "The disclosed claim value."
+          },
+          "verifiedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community verified the presentation."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsDefineV0_1Audience": {
+        "type": "string",
+        "description": "Who may see a directory field, ordered from narrowest to widest. `admins`: holders of `vtc.directory.admin` (and, for derived fields, `vtc.members.manage`). `groups`: members who share at least one community group with the subject (narrowed to the groups the subject names in `groupAudience`, where it names any). `connections`: members holding an attributed, in-force verified relationship with the subject at the community. `members`: every active member. `public`: anyone, and what the member's signed public card carries outside the community.\n\n`groups` and `connections` are not a chain: a viewer sees a field when they satisfy the audience the subject chose for it or any wider audience. Every audience includes the administrators, and the subject always sees their own whole card. There is no `onlyMe`: a value nobody else should see is not directory data.",
+        "enum": [
+          "admins",
+          "groups",
+          "connections",
+          "members",
+          "public"
+        ]
+      },
+      "VtcDirectoryFieldsDefineV0_1ClaimSelector": {
+        "type": "object",
+        "description": "Which claim a `claim` field accepts, from which credentials and issuers.",
+        "required": [
+          "credentialType",
+          "claimPath"
+        ],
+        "properties": {
+          "claimPath": {
+            "type": "string",
+            "description": "JSON Pointer (RFC 6901) to the claim within `credentialSubject`.",
+            "maxLength": 256,
+            "minLength": 1
+          },
+          "credentialType": {
+            "type": "string",
+            "description": "A `type` the presented credential MUST carry.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "issuers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 2048,
+              "pattern": "^did:"
+            },
+            "description": "Issuers the community accepts for this field. Absent: the community's trusted issuers for the credential type, as its own policy decides.",
+            "maxItems": 32,
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsDefineV0_1EnumOption": {
+        "type": "object",
+        "required": [
+          "value",
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "What a reader is shown for it.",
+            "maxLength": 64,
+            "minLength": 1
+          },
+          "value": {
+            "type": "string",
+            "description": "The stored value.",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsDefineV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcDirectoryFieldsDefineV0_1FieldConstraints": {
+        "type": "object",
+        "description": "Per-type constraints. A member that does not apply to the field's type is refused by the community with `valueInvalid` when the definition is written.",
+        "properties": {
+          "claim": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1ClaimSelector"
+          },
+          "maxDate": {
+            "type": "string",
+            "format": "date"
+          },
+          "maxItems": {
+            "type": "integer",
+            "maximum": 32,
+            "minimum": 1
+          },
+          "maxLength": {
+            "type": "integer",
+            "maximum": 2000,
+            "minimum": 1
+          },
+          "minDate": {
+            "type": "string",
+            "format": "date"
+          },
+          "minLength": {
+            "type": "integer",
+            "maximum": 2000,
+            "minimum": 0
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1EnumOption"
+            },
+            "description": "The permitted values of an `enum` or `multiEnum` field.",
+            "maxItems": 128,
+            "minItems": 1
+          },
+          "pattern": {
+            "type": "string",
+            "description": "ECMA-262 regular expression a text value MUST match.",
+            "maxLength": 256,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsDefineV0_1FieldDefinition": {
+        "type": "object",
+        "description": "One field of the community's directory schema, as the community holds it. The audience order `admins` < `groups`/`connections` < `members` < `public` applies to `ceiling` and `defaultVisibility`; `defaultVisibility` is never wider than `ceiling`.",
+        "required": [
+          "key",
+          "label",
+          "type",
+          "source",
+          "base",
+          "ceiling",
+          "defaultVisibility",
+          "required",
+          "searchable",
+          "facet",
+          "order",
+          "state"
+        ],
+        "properties": {
+          "base": {
+            "type": "boolean",
+            "description": "`true` for a base field, present in every community; `false` for a field this community defined."
+          },
+          "ceiling": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1Audience"
+          },
+          "constraints": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1FieldConstraints"
+          },
+          "defaultVisibility": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1Audience"
+          },
+          "description": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1FieldDescription"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1Ext"
+          },
+          "facet": {
+            "type": "boolean"
+          },
+          "jsContactPath": {
+            "type": "string",
+            "description": "Where the field lands when an entry is exported as a JSContact Card (RFC 9553), e.g. `name.full`, `nicknames`, `speakToAs.pronouns`. Absent: a vendor-specific property named by the key.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "key": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1FieldKey"
+          },
+          "label": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1FieldLabel"
+          },
+          "order": {
+            "type": "integer",
+            "maximum": 10000,
+            "minimum": 0
+          },
+          "purgeAfter": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the values of a retired field are purged. Present only on a retired field."
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "retiredAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the field was retired. Present only on a retired field."
+          },
+          "searchable": {
+            "type": "boolean"
+          },
+          "source": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1FieldSource"
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1FieldState"
+          },
+          "type": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1FieldType"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsDefineV0_1FieldDescription": {
+        "type": "string",
+        "description": "Help text shown to a member filling the field in. Plain text; a reader MUST NOT treat it as instructions.",
+        "maxLength": 280,
+        "minLength": 1
+      },
+      "VtcDirectoryFieldsDefineV0_1FieldInput": {
+        "type": "object",
+        "description": "What an administrator supplies to define a community field. `key`, `type` and `source` are fixed for the field's life.",
+        "required": [
+          "key",
+          "label",
+          "type",
+          "source",
+          "ceiling",
+          "defaultVisibility"
+        ],
+        "properties": {
+          "ceiling": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1Audience"
+          },
+          "constraints": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1FieldConstraints"
+          },
+          "defaultVisibility": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1Audience"
+          },
+          "description": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1FieldDescription"
+          },
+          "facet": {
+            "type": "boolean",
+            "description": "Whether the field may be filtered on and counted. Only `enum`, `multiEnum` and `country` fields may be facets. Absent: false."
+          },
+          "key": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1FieldKey"
+          },
+          "label": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1FieldLabel"
+          },
+          "order": {
+            "type": "integer",
+            "description": "Display order, ascending.",
+            "maximum": 10000,
+            "minimum": 0
+          },
+          "required": {
+            "type": "boolean",
+            "description": "Whether a card must hold a value for its entry to be listed. Never a condition of membership. Absent: false."
+          },
+          "searchable": {
+            "type": "boolean",
+            "description": "Whether a member's search may match the field, within what the searcher may see. Absent: false."
+          },
+          "source": {
+            "type": "string",
+            "description": "As `FieldSource`, less `derived`, which only base fields carry.",
+            "enum": [
+              "member",
+              "admin",
+              "credential"
+            ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1FieldType"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsDefineV0_1FieldKey": {
+        "type": "string",
+        "description": "Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined.",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^([a-z][a-z0-9-]*\\.)*[a-z][a-zA-Z0-9]{0,63}$"
+      },
+      "VtcDirectoryFieldsDefineV0_1FieldLabel": {
+        "type": "string",
+        "description": "What readers see as the field's name. Plain text.",
+        "maxLength": 64,
+        "minLength": 1
+      },
+      "VtcDirectoryFieldsDefineV0_1FieldSource": {
+        "type": "string",
+        "description": "Who writes the value. `member`: self-asserted, through vtc/directory/card/update. `admin`: asserted by the community through vtc/directory/card/assert; the member reads it and cannot change it. `credential`: a claim the member discloses from a credential through vtc/directory/card/present, badged with its issuer. `derived`: a base field read from the community's own records (`role`, `joinedAt`, `did`, `personhood`) and never stored on a card. Each source is written only through its own path.",
+        "enum": [
+          "member",
+          "admin",
+          "credential",
+          "derived"
+        ]
+      },
+      "VtcDirectoryFieldsDefineV0_1FieldState": {
+        "type": "string",
+        "description": "`active`: in use. `disabled`: a base field the community has switched off; hidden from every projection and re-enablable. `retired`: a community field withdrawn for good; hidden at once, its values purged after the community's retention period, and its key never reused.",
+        "enum": [
+          "active",
+          "disabled",
+          "retired"
+        ]
+      },
+      "VtcDirectoryFieldsDefineV0_1FieldType": {
+        "type": "string",
+        "description": "The kind of value a field holds, which fixes its `FieldValue` shape. `did` holds a DID the member chooses to show (never their membership DID, which is the derived base field `did`). `claim` holds a `VerifiedValue` and requires `source: credential`.",
+        "enum": [
+          "text",
+          "longText",
+          "url",
+          "email",
+          "phone",
+          "enum",
+          "multiEnum",
+          "date",
+          "country",
+          "image",
+          "did",
+          "claim"
+        ]
+      },
+      "VtcDirectoryFieldsDefineV0_1Payload": {
+        "type": "object",
+        "description": "An administrator adds a field to the community's directory schema: its type, who writes it, its ceiling and its default visibility. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "field"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1Ext"
+          },
+          "field": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1FieldInput"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why, recorded with the change and shown to anyone who must approve it.",
+            "maxLength": 1024,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsDefineV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/directory/fields/define/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/fields/define/0.1#response.",
+        "required": [
+          "field"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1Ext"
+          },
+          "field": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsDefineV0_1FieldDefinition"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsListV0_1Audience": {
+        "type": "string",
+        "description": "Who may see a directory field, ordered from narrowest to widest. `admins`: holders of `vtc.directory.admin` (and, for derived fields, `vtc.members.manage`). `groups`: members who share at least one community group with the subject (narrowed to the groups the subject names in `groupAudience`, where it names any). `connections`: members holding an attributed, in-force verified relationship with the subject at the community. `members`: every active member. `public`: anyone, and what the member's signed public card carries outside the community.\n\n`groups` and `connections` are not a chain: a viewer sees a field when they satisfy the audience the subject chose for it or any wider audience. Every audience includes the administrators, and the subject always sees their own whole card. There is no `onlyMe`: a value nobody else should see is not directory data.",
+        "enum": [
+          "admins",
+          "groups",
+          "connections",
+          "members",
+          "public"
+        ]
+      },
+      "VtcDirectoryFieldsListV0_1ClaimSelector": {
+        "type": "object",
+        "description": "Which claim a `claim` field accepts, from which credentials and issuers.",
+        "required": [
+          "credentialType",
+          "claimPath"
+        ],
+        "properties": {
+          "claimPath": {
+            "type": "string",
+            "description": "JSON Pointer (RFC 6901) to the claim within `credentialSubject`.",
+            "maxLength": 256,
+            "minLength": 1
+          },
+          "credentialType": {
+            "type": "string",
+            "description": "A `type` the presented credential MUST carry.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "issuers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 2048,
+              "pattern": "^did:"
+            },
+            "description": "Issuers the community accepts for this field. Absent: the community's trusted issuers for the credential type, as its own policy decides.",
+            "maxItems": 32,
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsListV0_1EnumOption": {
+        "type": "object",
+        "required": [
+          "value",
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "What a reader is shown for it.",
+            "maxLength": 64,
+            "minLength": 1
+          },
+          "value": {
+            "type": "string",
+            "description": "The stored value.",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsListV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcDirectoryFieldsListV0_1FieldConstraints": {
+        "type": "object",
+        "description": "Per-type constraints. A member that does not apply to the field's type is refused by the community with `valueInvalid` when the definition is written.",
+        "properties": {
+          "claim": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1ClaimSelector"
+          },
+          "maxDate": {
+            "type": "string",
+            "format": "date"
+          },
+          "maxItems": {
+            "type": "integer",
+            "maximum": 32,
+            "minimum": 1
+          },
+          "maxLength": {
+            "type": "integer",
+            "maximum": 2000,
+            "minimum": 1
+          },
+          "minDate": {
+            "type": "string",
+            "format": "date"
+          },
+          "minLength": {
+            "type": "integer",
+            "maximum": 2000,
+            "minimum": 0
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1EnumOption"
+            },
+            "description": "The permitted values of an `enum` or `multiEnum` field.",
+            "maxItems": 128,
+            "minItems": 1
+          },
+          "pattern": {
+            "type": "string",
+            "description": "ECMA-262 regular expression a text value MUST match.",
+            "maxLength": 256,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsListV0_1FieldDefinition": {
+        "type": "object",
+        "description": "One field of the community's directory schema, as the community holds it. The audience order `admins` < `groups`/`connections` < `members` < `public` applies to `ceiling` and `defaultVisibility`; `defaultVisibility` is never wider than `ceiling`.",
+        "required": [
+          "key",
+          "label",
+          "type",
+          "source",
+          "base",
+          "ceiling",
+          "defaultVisibility",
+          "required",
+          "searchable",
+          "facet",
+          "order",
+          "state"
+        ],
+        "properties": {
+          "base": {
+            "type": "boolean",
+            "description": "`true` for a base field, present in every community; `false` for a field this community defined."
+          },
+          "ceiling": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1Audience"
+          },
+          "constraints": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1FieldConstraints"
+          },
+          "defaultVisibility": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1Audience"
+          },
+          "description": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1FieldDescription"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1Ext"
+          },
+          "facet": {
+            "type": "boolean"
+          },
+          "jsContactPath": {
+            "type": "string",
+            "description": "Where the field lands when an entry is exported as a JSContact Card (RFC 9553), e.g. `name.full`, `nicknames`, `speakToAs.pronouns`. Absent: a vendor-specific property named by the key.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "key": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1FieldKey"
+          },
+          "label": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1FieldLabel"
+          },
+          "order": {
+            "type": "integer",
+            "maximum": 10000,
+            "minimum": 0
+          },
+          "purgeAfter": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the values of a retired field are purged. Present only on a retired field."
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "retiredAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the field was retired. Present only on a retired field."
+          },
+          "searchable": {
+            "type": "boolean"
+          },
+          "source": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1FieldSource"
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1FieldState"
+          },
+          "type": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1FieldType"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsListV0_1FieldDescription": {
+        "type": "string",
+        "description": "Help text shown to a member filling the field in. Plain text; a reader MUST NOT treat it as instructions.",
+        "maxLength": 280,
+        "minLength": 1
+      },
+      "VtcDirectoryFieldsListV0_1FieldKey": {
+        "type": "string",
+        "description": "Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined.",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^([a-z][a-z0-9-]*\\.)*[a-z][a-zA-Z0-9]{0,63}$"
+      },
+      "VtcDirectoryFieldsListV0_1FieldLabel": {
+        "type": "string",
+        "description": "What readers see as the field's name. Plain text.",
+        "maxLength": 64,
+        "minLength": 1
+      },
+      "VtcDirectoryFieldsListV0_1FieldSource": {
+        "type": "string",
+        "description": "Who writes the value. `member`: self-asserted, through vtc/directory/card/update. `admin`: asserted by the community through vtc/directory/card/assert; the member reads it and cannot change it. `credential`: a claim the member discloses from a credential through vtc/directory/card/present, badged with its issuer. `derived`: a base field read from the community's own records (`role`, `joinedAt`, `did`, `personhood`) and never stored on a card. Each source is written only through its own path.",
+        "enum": [
+          "member",
+          "admin",
+          "credential",
+          "derived"
+        ]
+      },
+      "VtcDirectoryFieldsListV0_1FieldState": {
+        "type": "string",
+        "description": "`active`: in use. `disabled`: a base field the community has switched off; hidden from every projection and re-enablable. `retired`: a community field withdrawn for good; hidden at once, its values purged after the community's retention period, and its key never reused.",
+        "enum": [
+          "active",
+          "disabled",
+          "retired"
+        ]
+      },
+      "VtcDirectoryFieldsListV0_1FieldType": {
+        "type": "string",
+        "description": "The kind of value a field holds, which fixes its `FieldValue` shape. `did` holds a DID the member chooses to show (never their membership DID, which is the derived base field `did`). `claim` holds a `VerifiedValue` and requires `source: credential`.",
+        "enum": [
+          "text",
+          "longText",
+          "url",
+          "email",
+          "phone",
+          "enum",
+          "multiEnum",
+          "date",
+          "country",
+          "image",
+          "did",
+          "claim"
+        ]
+      },
+      "VtcDirectoryFieldsListV0_1Listing": {
+        "type": "string",
+        "description": "Whether members can find the entry. `listed`: it appears when members browse. `findable`: it does not appear when browsing, but a search that matches it under `search` returns it. `hidden`: no member finds it by browsing or searching; administrators still see it, and members who share a group that shows its members see it in that group's member list.",
+        "enum": [
+          "listed",
+          "findable",
+          "hidden"
+        ]
+      },
+      "VtcDirectoryFieldsListV0_1ListingDefaults": {
+        "type": "object",
+        "description": "The community's listing settings. `defaultListing`: the listing a new card starts with (default `listed`). There is no floor: every member may always choose `hidden`, and a community cannot hold an entry above its member's choice. Raising `defaultListing` affects new cards only.",
+        "required": [
+          "defaultListing"
+        ],
+        "properties": {
+          "defaultListing": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1Listing"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsListV0_1Payload": {
+        "type": "object",
+        "description": "Read a community's directory schema — base and community-defined fields, their types, ceilings and default visibility — as the caller may see it. The outer document members are owned by the framework — SPEC §6.3.",
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1Ext"
+          },
+          "includeRetired": {
+            "type": "boolean",
+            "description": "Administrators only: also return retired fields. Ignored for any other caller."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsListV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/directory/fields/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/fields/list/0.1#response.",
+        "required": [
+          "fields",
+          "listingDefaults"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1Ext"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1FieldDefinition"
+            },
+            "description": "The fields, in `order`.",
+            "maxItems": 256
+          },
+          "listingDefaults": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsListV0_1ListingDefaults"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsRetireV0_1Audience": {
+        "type": "string",
+        "description": "Who may see a directory field, ordered from narrowest to widest. `admins`: holders of `vtc.directory.admin` (and, for derived fields, `vtc.members.manage`). `groups`: members who share at least one community group with the subject (narrowed to the groups the subject names in `groupAudience`, where it names any). `connections`: members holding an attributed, in-force verified relationship with the subject at the community. `members`: every active member. `public`: anyone, and what the member's signed public card carries outside the community.\n\n`groups` and `connections` are not a chain: a viewer sees a field when they satisfy the audience the subject chose for it or any wider audience. Every audience includes the administrators, and the subject always sees their own whole card. There is no `onlyMe`: a value nobody else should see is not directory data.",
+        "enum": [
+          "admins",
+          "groups",
+          "connections",
+          "members",
+          "public"
+        ]
+      },
+      "VtcDirectoryFieldsRetireV0_1ClaimSelector": {
+        "type": "object",
+        "description": "Which claim a `claim` field accepts, from which credentials and issuers.",
+        "required": [
+          "credentialType",
+          "claimPath"
+        ],
+        "properties": {
+          "claimPath": {
+            "type": "string",
+            "description": "JSON Pointer (RFC 6901) to the claim within `credentialSubject`.",
+            "maxLength": 256,
+            "minLength": 1
+          },
+          "credentialType": {
+            "type": "string",
+            "description": "A `type` the presented credential MUST carry.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "issuers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 2048,
+              "pattern": "^did:"
+            },
+            "description": "Issuers the community accepts for this field. Absent: the community's trusted issuers for the credential type, as its own policy decides.",
+            "maxItems": 32,
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsRetireV0_1EnumOption": {
+        "type": "object",
+        "required": [
+          "value",
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "What a reader is shown for it.",
+            "maxLength": 64,
+            "minLength": 1
+          },
+          "value": {
+            "type": "string",
+            "description": "The stored value.",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsRetireV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcDirectoryFieldsRetireV0_1FieldConstraints": {
+        "type": "object",
+        "description": "Per-type constraints. A member that does not apply to the field's type is refused by the community with `valueInvalid` when the definition is written.",
+        "properties": {
+          "claim": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1ClaimSelector"
+          },
+          "maxDate": {
+            "type": "string",
+            "format": "date"
+          },
+          "maxItems": {
+            "type": "integer",
+            "maximum": 32,
+            "minimum": 1
+          },
+          "maxLength": {
+            "type": "integer",
+            "maximum": 2000,
+            "minimum": 1
+          },
+          "minDate": {
+            "type": "string",
+            "format": "date"
+          },
+          "minLength": {
+            "type": "integer",
+            "maximum": 2000,
+            "minimum": 0
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1EnumOption"
+            },
+            "description": "The permitted values of an `enum` or `multiEnum` field.",
+            "maxItems": 128,
+            "minItems": 1
+          },
+          "pattern": {
+            "type": "string",
+            "description": "ECMA-262 regular expression a text value MUST match.",
+            "maxLength": 256,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsRetireV0_1FieldDefinition": {
+        "type": "object",
+        "description": "One field of the community's directory schema, as the community holds it. The audience order `admins` < `groups`/`connections` < `members` < `public` applies to `ceiling` and `defaultVisibility`; `defaultVisibility` is never wider than `ceiling`.",
+        "required": [
+          "key",
+          "label",
+          "type",
+          "source",
+          "base",
+          "ceiling",
+          "defaultVisibility",
+          "required",
+          "searchable",
+          "facet",
+          "order",
+          "state"
+        ],
+        "properties": {
+          "base": {
+            "type": "boolean",
+            "description": "`true` for a base field, present in every community; `false` for a field this community defined."
+          },
+          "ceiling": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1Audience"
+          },
+          "constraints": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1FieldConstraints"
+          },
+          "defaultVisibility": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1Audience"
+          },
+          "description": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1FieldDescription"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1Ext"
+          },
+          "facet": {
+            "type": "boolean"
+          },
+          "jsContactPath": {
+            "type": "string",
+            "description": "Where the field lands when an entry is exported as a JSContact Card (RFC 9553), e.g. `name.full`, `nicknames`, `speakToAs.pronouns`. Absent: a vendor-specific property named by the key.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "key": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1FieldKey"
+          },
+          "label": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1FieldLabel"
+          },
+          "order": {
+            "type": "integer",
+            "maximum": 10000,
+            "minimum": 0
+          },
+          "purgeAfter": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the values of a retired field are purged. Present only on a retired field."
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "retiredAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the field was retired. Present only on a retired field."
+          },
+          "searchable": {
+            "type": "boolean"
+          },
+          "source": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1FieldSource"
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1FieldState"
+          },
+          "type": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1FieldType"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsRetireV0_1FieldDescription": {
+        "type": "string",
+        "description": "Help text shown to a member filling the field in. Plain text; a reader MUST NOT treat it as instructions.",
+        "maxLength": 280,
+        "minLength": 1
+      },
+      "VtcDirectoryFieldsRetireV0_1FieldKey": {
+        "type": "string",
+        "description": "Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined.",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^([a-z][a-z0-9-]*\\.)*[a-z][a-zA-Z0-9]{0,63}$"
+      },
+      "VtcDirectoryFieldsRetireV0_1FieldLabel": {
+        "type": "string",
+        "description": "What readers see as the field's name. Plain text.",
+        "maxLength": 64,
+        "minLength": 1
+      },
+      "VtcDirectoryFieldsRetireV0_1FieldSource": {
+        "type": "string",
+        "description": "Who writes the value. `member`: self-asserted, through vtc/directory/card/update. `admin`: asserted by the community through vtc/directory/card/assert; the member reads it and cannot change it. `credential`: a claim the member discloses from a credential through vtc/directory/card/present, badged with its issuer. `derived`: a base field read from the community's own records (`role`, `joinedAt`, `did`, `personhood`) and never stored on a card. Each source is written only through its own path.",
+        "enum": [
+          "member",
+          "admin",
+          "credential",
+          "derived"
+        ]
+      },
+      "VtcDirectoryFieldsRetireV0_1FieldState": {
+        "type": "string",
+        "description": "`active`: in use. `disabled`: a base field the community has switched off; hidden from every projection and re-enablable. `retired`: a community field withdrawn for good; hidden at once, its values purged after the community's retention period, and its key never reused.",
+        "enum": [
+          "active",
+          "disabled",
+          "retired"
+        ]
+      },
+      "VtcDirectoryFieldsRetireV0_1FieldType": {
+        "type": "string",
+        "description": "The kind of value a field holds, which fixes its `FieldValue` shape. `did` holds a DID the member chooses to show (never their membership DID, which is the derived base field `did`). `claim` holds a `VerifiedValue` and requires `source: credential`.",
+        "enum": [
+          "text",
+          "longText",
+          "url",
+          "email",
+          "phone",
+          "enum",
+          "multiEnum",
+          "date",
+          "country",
+          "image",
+          "did",
+          "claim"
+        ]
+      },
+      "VtcDirectoryFieldsRetireV0_1Payload": {
+        "type": "object",
+        "description": "An administrator retires a community directory field: it is hidden at once, its values are purged after the community's retention period, and its key is never reused. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "key",
+          "reason"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1Ext"
+          },
+          "key": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1FieldKey"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why, recorded with the change and shown to anyone who must approve it.",
+            "maxLength": 1024,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsRetireV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/directory/fields/retire/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/fields/retire/0.1#response.",
+        "required": [
+          "field"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1Ext"
+          },
+          "field": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsRetireV0_1FieldDefinition"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsUpdateV0_1Audience": {
+        "type": "string",
+        "description": "Who may see a directory field, ordered from narrowest to widest. `admins`: holders of `vtc.directory.admin` (and, for derived fields, `vtc.members.manage`). `groups`: members who share at least one community group with the subject (narrowed to the groups the subject names in `groupAudience`, where it names any). `connections`: members holding an attributed, in-force verified relationship with the subject at the community. `members`: every active member. `public`: anyone, and what the member's signed public card carries outside the community.\n\n`groups` and `connections` are not a chain: a viewer sees a field when they satisfy the audience the subject chose for it or any wider audience. Every audience includes the administrators, and the subject always sees their own whole card. There is no `onlyMe`: a value nobody else should see is not directory data.",
+        "enum": [
+          "admins",
+          "groups",
+          "connections",
+          "members",
+          "public"
+        ]
+      },
+      "VtcDirectoryFieldsUpdateV0_1ClaimSelector": {
+        "type": "object",
+        "description": "Which claim a `claim` field accepts, from which credentials and issuers.",
+        "required": [
+          "credentialType",
+          "claimPath"
+        ],
+        "properties": {
+          "claimPath": {
+            "type": "string",
+            "description": "JSON Pointer (RFC 6901) to the claim within `credentialSubject`.",
+            "maxLength": 256,
+            "minLength": 1
+          },
+          "credentialType": {
+            "type": "string",
+            "description": "A `type` the presented credential MUST carry.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "issuers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 2048,
+              "pattern": "^did:"
+            },
+            "description": "Issuers the community accepts for this field. Absent: the community's trusted issuers for the credential type, as its own policy decides.",
+            "maxItems": 32,
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsUpdateV0_1EnumOption": {
+        "type": "object",
+        "required": [
+          "value",
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "What a reader is shown for it.",
+            "maxLength": 64,
+            "minLength": 1
+          },
+          "value": {
+            "type": "string",
+            "description": "The stored value.",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsUpdateV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcDirectoryFieldsUpdateV0_1FieldConstraints": {
+        "type": "object",
+        "description": "Per-type constraints. A member that does not apply to the field's type is refused by the community with `valueInvalid` when the definition is written.",
+        "properties": {
+          "claim": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1ClaimSelector"
+          },
+          "maxDate": {
+            "type": "string",
+            "format": "date"
+          },
+          "maxItems": {
+            "type": "integer",
+            "maximum": 32,
+            "minimum": 1
+          },
+          "maxLength": {
+            "type": "integer",
+            "maximum": 2000,
+            "minimum": 1
+          },
+          "minDate": {
+            "type": "string",
+            "format": "date"
+          },
+          "minLength": {
+            "type": "integer",
+            "maximum": 2000,
+            "minimum": 0
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1EnumOption"
+            },
+            "description": "The permitted values of an `enum` or `multiEnum` field.",
+            "maxItems": 128,
+            "minItems": 1
+          },
+          "pattern": {
+            "type": "string",
+            "description": "ECMA-262 regular expression a text value MUST match.",
+            "maxLength": 256,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsUpdateV0_1FieldDefinition": {
+        "type": "object",
+        "description": "One field of the community's directory schema, as the community holds it. The audience order `admins` < `groups`/`connections` < `members` < `public` applies to `ceiling` and `defaultVisibility`; `defaultVisibility` is never wider than `ceiling`.",
+        "required": [
+          "key",
+          "label",
+          "type",
+          "source",
+          "base",
+          "ceiling",
+          "defaultVisibility",
+          "required",
+          "searchable",
+          "facet",
+          "order",
+          "state"
+        ],
+        "properties": {
+          "base": {
+            "type": "boolean",
+            "description": "`true` for a base field, present in every community; `false` for a field this community defined."
+          },
+          "ceiling": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1Audience"
+          },
+          "constraints": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1FieldConstraints"
+          },
+          "defaultVisibility": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1Audience"
+          },
+          "description": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1FieldDescription"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1Ext"
+          },
+          "facet": {
+            "type": "boolean"
+          },
+          "jsContactPath": {
+            "type": "string",
+            "description": "Where the field lands when an entry is exported as a JSContact Card (RFC 9553), e.g. `name.full`, `nicknames`, `speakToAs.pronouns`. Absent: a vendor-specific property named by the key.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "key": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1FieldKey"
+          },
+          "label": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1FieldLabel"
+          },
+          "order": {
+            "type": "integer",
+            "maximum": 10000,
+            "minimum": 0
+          },
+          "purgeAfter": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the values of a retired field are purged. Present only on a retired field."
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "retiredAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the field was retired. Present only on a retired field."
+          },
+          "searchable": {
+            "type": "boolean"
+          },
+          "source": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1FieldSource"
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1FieldState"
+          },
+          "type": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1FieldType"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsUpdateV0_1FieldDescription": {
+        "type": "string",
+        "description": "Help text shown to a member filling the field in. Plain text; a reader MUST NOT treat it as instructions.",
+        "maxLength": 280,
+        "minLength": 1
+      },
+      "VtcDirectoryFieldsUpdateV0_1FieldKey": {
+        "type": "string",
+        "description": "Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined.",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^([a-z][a-z0-9-]*\\.)*[a-z][a-zA-Z0-9]{0,63}$"
+      },
+      "VtcDirectoryFieldsUpdateV0_1FieldLabel": {
+        "type": "string",
+        "description": "What readers see as the field's name. Plain text.",
+        "maxLength": 64,
+        "minLength": 1
+      },
+      "VtcDirectoryFieldsUpdateV0_1FieldSource": {
+        "type": "string",
+        "description": "Who writes the value. `member`: self-asserted, through vtc/directory/card/update. `admin`: asserted by the community through vtc/directory/card/assert; the member reads it and cannot change it. `credential`: a claim the member discloses from a credential through vtc/directory/card/present, badged with its issuer. `derived`: a base field read from the community's own records (`role`, `joinedAt`, `did`, `personhood`) and never stored on a card. Each source is written only through its own path.",
+        "enum": [
+          "member",
+          "admin",
+          "credential",
+          "derived"
+        ]
+      },
+      "VtcDirectoryFieldsUpdateV0_1FieldState": {
+        "type": "string",
+        "description": "`active`: in use. `disabled`: a base field the community has switched off; hidden from every projection and re-enablable. `retired`: a community field withdrawn for good; hidden at once, its values purged after the community's retention period, and its key never reused.",
+        "enum": [
+          "active",
+          "disabled",
+          "retired"
+        ]
+      },
+      "VtcDirectoryFieldsUpdateV0_1FieldType": {
+        "type": "string",
+        "description": "The kind of value a field holds, which fixes its `FieldValue` shape. `did` holds a DID the member chooses to show (never their membership DID, which is the derived base field `did`). `claim` holds a `VerifiedValue` and requires `source: credential`.",
+        "enum": [
+          "text",
+          "longText",
+          "url",
+          "email",
+          "phone",
+          "enum",
+          "multiEnum",
+          "date",
+          "country",
+          "image",
+          "did",
+          "claim"
+        ]
+      },
+      "VtcDirectoryFieldsUpdateV0_1Payload": {
+        "type": "object",
+        "description": "An administrator changes a directory field's label, help text, constraints, order, ceiling or default visibility, or disables or re-enables a base field. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "key"
+        ],
+        "properties": {
+          "ceiling": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1Audience"
+          },
+          "constraints": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1FieldConstraints"
+          },
+          "defaultVisibility": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1Audience"
+          },
+          "description": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1FieldDescription"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Base fields only: `false` disables the field (hidden from every projection, values kept), `true` re-enables it."
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1Ext"
+          },
+          "facet": {
+            "type": "boolean"
+          },
+          "key": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1FieldKey"
+          },
+          "label": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1FieldLabel"
+          },
+          "order": {
+            "type": "integer",
+            "maximum": 10000,
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why, recorded with the change and shown to anyone who must approve it.",
+            "maxLength": 1024,
+            "minLength": 1
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "searchable": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryFieldsUpdateV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/directory/fields/update/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/fields/update/0.1#response.",
+        "required": [
+          "field"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1Ext"
+          },
+          "field": {
+            "$ref": "#/components/schemas/VtcDirectoryFieldsUpdateV0_1FieldDefinition"
+          }
+        },
+        "additionalProperties": false
       },
       "VtcEndorsementTypesDeleteV0_1Ext": {
         "type": "object",

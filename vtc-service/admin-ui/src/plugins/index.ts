@@ -13,6 +13,7 @@
 
 import {
   BadgeCheck,
+  BookUser,
   ClipboardList,
   DoorOpen,
   FolderGit2,
@@ -42,6 +43,7 @@ import { Ceremonies } from "@/plugins/ceremonies";
 import { ConsoleKeys } from "@/plugins/consoleKeys";
 import { Dashboard } from "@/plugins/dashboard";
 import { DATA_ROOMS_CAPABILITIES, DataRooms } from "@/plugins/dataRooms";
+import { Directory } from "@/plugins/directory";
 import { Invitations } from "@/plugins/invitations";
 import { JoinRequests } from "@/plugins/joinRequests";
 import { Members } from "@/plugins/members";
@@ -112,6 +114,18 @@ export function registerBuiltinPlugins(): void {
     // A deciding page: out of the community theme's reach.
     protected: true,
     capabilities: ["vtc.members.manage"],
+  });
+
+  // The member directory: its fields, and every member's entry as an
+  // administrator reads it. Any administrator reads; holders of
+  // vtc.directory.admin change the schema and assert values.
+  registerPlugin({
+    id: "directory",
+    group: "membership",
+    label: "Directory",
+    path: "/directory",
+    iconComponent: BookUser,
+    reactComponent: Directory,
   });
 
   registerPlugin({

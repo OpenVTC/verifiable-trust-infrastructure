@@ -886,13 +886,6 @@ export interface components {
              */
             vtaDid?: string | null;
         };
-        /** @description The projected subject record. */
-        DirectoryResponse: {
-            fields: {
-                [key: string]: components["schemas"]["Value"];
-            };
-            subject: string;
-        };
         /**
          * @description How the two views of one member's record disagree.
          * @enum {string}
@@ -2544,7 +2537,8 @@ export interface components {
          *     split into five groups:
          *     - **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],
          *       [`Self::Personhood`].
-         *     - **Discoverability**: [`Self::Registry`], [`Self::Directory`].
+         *     - **Discoverability**: [`Self::Registry`], [`Self::Directory`],
+         *       [`Self::DirectoryWrite`].
          *     - **Authorization**: [`Self::RoleDefinitions`], [`Self::RoleChange`],
          *       [`Self::CrossCommunityRoles`],
          *       [`Self::CrossCommunityRelationships`], [`Self::Relationships`].
@@ -2552,7 +2546,7 @@ export interface components {
          *     - **Vetting**: [`Self::VetterEligibility`].
          * @enum {string}
          */
-        PolicyPurpose: "join" | "removal" | "personhood" | "registry" | "directory" | "roleDefinitions" | "crossCommunityRoles" | "crossCommunityRelationships" | "relationships" | "roleChange" | "rooms" | "vetterEligibility" | "gitNamespace" | "admission";
+        PolicyPurpose: "join" | "removal" | "personhood" | "registry" | "directory" | "roleDefinitions" | "crossCommunityRoles" | "crossCommunityRelationships" | "relationships" | "roleChange" | "rooms" | "vetterEligibility" | "gitNamespace" | "admission" | "directoryWrite";
         /** @enum {string} */
         PolicyStatusFilter: "active" | "archived";
         /**
@@ -3165,6 +3159,719 @@ export interface components {
             statementDigestMultibase: string;
             /** @description The statement's `id`. */
             statementId: string;
+        };
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (metadata stripped, dimensions capped) so its digest does not link the member across communities. `url` and `urlExpiresAt` appear only in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. */
+        VtcDirectoryCardAssertV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcDirectoryCardAssertV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcDirectoryCardAssertV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcDirectoryCardAssertV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcDirectoryCardAssertV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcDirectoryCardAssertV0_1CardBlobRef"] | components["schemas"]["VtcDirectoryCardAssertV0_1VerifiedValue"];
+        /** @description An administrator writes the values of admin-sourced directory fields on a member's card — the facts the community asserts about a member, which the member reads and cannot change. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcDirectoryCardAssertV0_1Payload: {
+            entryId: components["schemas"]["VtcDirectoryCardAssertV0_1EntryId"];
+            ext?: components["schemas"]["VtcDirectoryCardAssertV0_1Ext"];
+            /** @description Why, recorded with the change and shown to anyone who must approve it. */
+            reason: string;
+            /** @description Values to set, keyed by `admin`-sourced field; `null` clears one. */
+            values: {
+                [key: string]: components["schemas"]["VtcDirectoryCardAssertV0_1FieldValue"] | unknown;
+            };
+        };
+        /** @description The success response to a vtc/directory/card/assert/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/card/assert/0.1#response. */
+        VtcDirectoryCardAssertV0_1Response: {
+            entryId: components["schemas"]["VtcDirectoryCardAssertV0_1EntryId"];
+            ext?: components["schemas"]["VtcDirectoryCardAssertV0_1Ext"];
+            revision: number;
+            /** @description The fields written or cleared. */
+            written: components["schemas"]["VtcDirectoryCardAssertV0_1FieldKey"][];
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcDirectoryCardAssertV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (metadata stripped, dimensions capped) so its digest does not link the member across communities. `url` and `urlExpiresAt` appear only in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. */
+        VtcDirectoryEntriesListV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description One entry as a particular viewer sees it. */
+        VtcDirectoryEntriesListV0_1DirectoryEntry: {
+            /** @description Present, and `true`, only when the viewer is one of the two parties to an attributed, in-force verified relationship with this entry's member that the community can see. Absent otherwise — never `false`, which would disclose that the community looked and found none. Relationships known only to the viewer's own agent are badged by that agent, not here. */
+            connected?: boolean;
+            entryId: components["schemas"]["VtcDirectoryEntriesListV0_1EntryId"];
+            fields: components["schemas"]["VtcDirectoryEntriesListV0_1EntryFields"];
+            /** @description The community groups the viewer and this member both belong to, among those whose membership the viewer may see. Absent when there are none. */
+            sharedGroups?: string[];
+        };
+        /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
+        VtcDirectoryEntriesListV0_1EntryFields: {
+            [key: string]: components["schemas"]["VtcDirectoryEntriesListV0_1FieldValue"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcDirectoryEntriesListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcDirectoryEntriesListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcDirectoryEntriesListV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcDirectoryEntriesListV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcDirectoryEntriesListV0_1CardBlobRef"] | components["schemas"]["VtcDirectoryEntriesListV0_1VerifiedValue"];
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcDirectoryEntriesListV0_1GroupId: string;
+        /** @description Browse, search and filter a community's member directory. Each entry is projected for the caller: only fields the member, the community's ceiling and its policy all allow. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcDirectoryEntriesListV0_1Payload: {
+            /** @description Opaque continuation token from a previous page's `nextCursor`, valid only for the same caller and question. */
+            cursor?: string;
+            ext?: components["schemas"]["VtcDirectoryEntriesListV0_1Ext"];
+            /** @description Facet filters: an entry matches when, for every filter, its value of the field is one of `values`. Only facets visible to the caller. */
+            filters?: {
+                field: components["schemas"]["VtcDirectoryEntriesListV0_1FieldKey"];
+                values: string[];
+            }[];
+            group?: components["schemas"]["VtcDirectoryEntriesListV0_1GroupId"];
+            /** @description Page size; the community clamps to 1..=100 (default 25). */
+            limit?: number;
+            /** @description Search text. At least three characters, or a whole nickname for an exact-nickname search. */
+            query?: string;
+        };
+        /** @description The success response to a vtc/directory/entries/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/entries/list/0.1#response. */
+        VtcDirectoryEntriesListV0_1Response: {
+            ext?: components["schemas"]["VtcDirectoryEntriesListV0_1Ext"];
+            /** @description Counts for the facets visible to the caller, over the whole result. Absent when none is. */
+            facets?: {
+                field: components["schemas"]["VtcDirectoryEntriesListV0_1FieldKey"];
+                values: {
+                    /** @description Matching entries. Absent when below the community's threshold. */
+                    count?: number;
+                    /** @description Present instead of `count` when the count is below the threshold *k*: there are fewer than this many. */
+                    fewerThan?: number;
+                    value: string;
+                }[];
+            }[];
+            items: components["schemas"]["VtcDirectoryEntriesListV0_1DirectoryEntry"][];
+            /** @description Continuation token, or null when this is the last page. */
+            nextCursor?: unknown;
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcDirectoryEntriesListV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (metadata stripped, dimensions capped) so its digest does not link the member across communities. `url` and `urlExpiresAt` appear only in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. */
+        VtcDirectoryEntriesShowV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description One entry as a particular viewer sees it. */
+        VtcDirectoryEntriesShowV0_1DirectoryEntry: {
+            /** @description Present, and `true`, only when the viewer is one of the two parties to an attributed, in-force verified relationship with this entry's member that the community can see. Absent otherwise — never `false`, which would disclose that the community looked and found none. Relationships known only to the viewer's own agent are badged by that agent, not here. */
+            connected?: boolean;
+            entryId: components["schemas"]["VtcDirectoryEntriesShowV0_1EntryId"];
+            fields: components["schemas"]["VtcDirectoryEntriesShowV0_1EntryFields"];
+            /** @description The community groups the viewer and this member both belong to, among those whose membership the viewer may see. Absent when there are none. */
+            sharedGroups?: string[];
+        };
+        /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
+        VtcDirectoryEntriesShowV0_1EntryFields: {
+            [key: string]: components["schemas"]["VtcDirectoryEntriesShowV0_1FieldValue"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcDirectoryEntriesShowV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcDirectoryEntriesShowV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcDirectoryEntriesShowV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcDirectoryEntriesShowV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcDirectoryEntriesShowV0_1CardBlobRef"] | components["schemas"]["VtcDirectoryEntriesShowV0_1VerifiedValue"];
+        /** @description Read one directory entry, projected for the caller. Members address it by entry identifier; administrators may also address it by DID. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcDirectoryEntriesShowV0_1Payload: unknown | unknown;
+        /** @description The success response to a vtc/directory/entries/show/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/entries/show/0.1#response. */
+        VtcDirectoryEntriesShowV0_1Response: {
+            entry: components["schemas"]["VtcDirectoryEntriesShowV0_1DirectoryEntry"];
+            ext?: components["schemas"]["VtcDirectoryEntriesShowV0_1Ext"];
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcDirectoryEntriesShowV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
+        /**
+         * @description Who may see a directory field, ordered from narrowest to widest. `admins`: holders of `vtc.directory.admin` (and, for derived fields, `vtc.members.manage`). `groups`: members who share at least one community group with the subject (narrowed to the groups the subject names in `groupAudience`, where it names any). `connections`: members holding an attributed, in-force verified relationship with the subject at the community. `members`: every active member. `public`: anyone, and what the member's signed public card carries outside the community.
+         *
+         *     `groups` and `connections` are not a chain: a viewer sees a field when they satisfy the audience the subject chose for it or any wider audience. Every audience includes the administrators, and the subject always sees their own whole card. There is no `onlyMe`: a value nobody else should see is not directory data.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsDefineV0_1Audience: "admins" | "groups" | "connections" | "members" | "public";
+        /** @description Which claim a `claim` field accepts, from which credentials and issuers. */
+        VtcDirectoryFieldsDefineV0_1ClaimSelector: {
+            /** @description JSON Pointer (RFC 6901) to the claim within `credentialSubject`. */
+            claimPath: string;
+            /** @description A `type` the presented credential MUST carry. */
+            credentialType: string;
+            /** @description Issuers the community accepts for this field. Absent: the community's trusted issuers for the credential type, as its own policy decides. */
+            issuers?: string[];
+        };
+        VtcDirectoryFieldsDefineV0_1EnumOption: {
+            /** @description What a reader is shown for it. */
+            label: string;
+            /** @description The stored value. */
+            value: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcDirectoryFieldsDefineV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Per-type constraints. A member that does not apply to the field's type is refused by the community with `valueInvalid` when the definition is written. */
+        VtcDirectoryFieldsDefineV0_1FieldConstraints: {
+            claim?: components["schemas"]["VtcDirectoryFieldsDefineV0_1ClaimSelector"];
+            /** Format: date */
+            maxDate?: string;
+            maxItems?: number;
+            maxLength?: number;
+            /** Format: date */
+            minDate?: string;
+            minLength?: number;
+            /** @description The permitted values of an `enum` or `multiEnum` field. */
+            options?: components["schemas"]["VtcDirectoryFieldsDefineV0_1EnumOption"][];
+            /** @description ECMA-262 regular expression a text value MUST match. */
+            pattern?: string;
+        };
+        /** @description One field of the community's directory schema, as the community holds it. The audience order `admins` < `groups`/`connections` < `members` < `public` applies to `ceiling` and `defaultVisibility`; `defaultVisibility` is never wider than `ceiling`. */
+        VtcDirectoryFieldsDefineV0_1FieldDefinition: {
+            /** @description `true` for a base field, present in every community; `false` for a field this community defined. */
+            base: boolean;
+            ceiling: components["schemas"]["VtcDirectoryFieldsDefineV0_1Audience"];
+            constraints?: components["schemas"]["VtcDirectoryFieldsDefineV0_1FieldConstraints"];
+            defaultVisibility: components["schemas"]["VtcDirectoryFieldsDefineV0_1Audience"];
+            description?: components["schemas"]["VtcDirectoryFieldsDefineV0_1FieldDescription"];
+            ext?: components["schemas"]["VtcDirectoryFieldsDefineV0_1Ext"];
+            facet: boolean;
+            /** @description Where the field lands when an entry is exported as a JSContact Card (RFC 9553), e.g. `name.full`, `nicknames`, `speakToAs.pronouns`. Absent: a vendor-specific property named by the key. */
+            jsContactPath?: string;
+            key: components["schemas"]["VtcDirectoryFieldsDefineV0_1FieldKey"];
+            label: components["schemas"]["VtcDirectoryFieldsDefineV0_1FieldLabel"];
+            order: number;
+            /**
+             * Format: date-time
+             * @description When the values of a retired field are purged. Present only on a retired field.
+             */
+            purgeAfter?: string;
+            required: boolean;
+            /**
+             * Format: date-time
+             * @description When the field was retired. Present only on a retired field.
+             */
+            retiredAt?: string;
+            searchable: boolean;
+            source: components["schemas"]["VtcDirectoryFieldsDefineV0_1FieldSource"];
+            state: components["schemas"]["VtcDirectoryFieldsDefineV0_1FieldState"];
+            type: components["schemas"]["VtcDirectoryFieldsDefineV0_1FieldType"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description Help text shown to a member filling the field in. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcDirectoryFieldsDefineV0_1FieldDescription: string;
+        /** @description What an administrator supplies to define a community field. `key`, `type` and `source` are fixed for the field's life. */
+        VtcDirectoryFieldsDefineV0_1FieldInput: {
+            ceiling: components["schemas"]["VtcDirectoryFieldsDefineV0_1Audience"];
+            constraints?: components["schemas"]["VtcDirectoryFieldsDefineV0_1FieldConstraints"];
+            defaultVisibility: components["schemas"]["VtcDirectoryFieldsDefineV0_1Audience"];
+            description?: components["schemas"]["VtcDirectoryFieldsDefineV0_1FieldDescription"];
+            /** @description Whether the field may be filtered on and counted. Only `enum`, `multiEnum` and `country` fields may be facets. Absent: false. */
+            facet?: boolean;
+            key: components["schemas"]["VtcDirectoryFieldsDefineV0_1FieldKey"];
+            label: components["schemas"]["VtcDirectoryFieldsDefineV0_1FieldLabel"];
+            /** @description Display order, ascending. */
+            order?: number;
+            /** @description Whether a card must hold a value for its entry to be listed. Never a condition of membership. Absent: false. */
+            required?: boolean;
+            /** @description Whether a member's search may match the field, within what the searcher may see. Absent: false. */
+            searchable?: boolean;
+            /**
+             * @description As `FieldSource`, less `derived`, which only base fields carry.
+             * @enum {string}
+             */
+            source: "member" | "admin" | "credential";
+            type: components["schemas"]["VtcDirectoryFieldsDefineV0_1FieldType"];
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcDirectoryFieldsDefineV0_1FieldKey: string;
+        /** @description What readers see as the field's name. Plain text. */
+        VtcDirectoryFieldsDefineV0_1FieldLabel: string;
+        /**
+         * @description Who writes the value. `member`: self-asserted, through vtc/directory/card/update. `admin`: asserted by the community through vtc/directory/card/assert; the member reads it and cannot change it. `credential`: a claim the member discloses from a credential through vtc/directory/card/present, badged with its issuer. `derived`: a base field read from the community's own records (`role`, `joinedAt`, `did`, `personhood`) and never stored on a card. Each source is written only through its own path.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsDefineV0_1FieldSource: "member" | "admin" | "credential" | "derived";
+        /**
+         * @description `active`: in use. `disabled`: a base field the community has switched off; hidden from every projection and re-enablable. `retired`: a community field withdrawn for good; hidden at once, its values purged after the community's retention period, and its key never reused.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsDefineV0_1FieldState: "active" | "disabled" | "retired";
+        /**
+         * @description The kind of value a field holds, which fixes its `FieldValue` shape. `did` holds a DID the member chooses to show (never their membership DID, which is the derived base field `did`). `claim` holds a `VerifiedValue` and requires `source: credential`.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsDefineV0_1FieldType: "text" | "longText" | "url" | "email" | "phone" | "enum" | "multiEnum" | "date" | "country" | "image" | "did" | "claim";
+        /** @description An administrator adds a field to the community's directory schema: its type, who writes it, its ceiling and its default visibility. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcDirectoryFieldsDefineV0_1Payload: {
+            ext?: components["schemas"]["VtcDirectoryFieldsDefineV0_1Ext"];
+            field: components["schemas"]["VtcDirectoryFieldsDefineV0_1FieldInput"];
+            /** @description Why, recorded with the change and shown to anyone who must approve it. */
+            reason?: string;
+        };
+        /** @description The success response to a vtc/directory/fields/define/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/fields/define/0.1#response. */
+        VtcDirectoryFieldsDefineV0_1Response: {
+            ext?: components["schemas"]["VtcDirectoryFieldsDefineV0_1Ext"];
+            field: components["schemas"]["VtcDirectoryFieldsDefineV0_1FieldDefinition"];
+        };
+        /**
+         * @description Who may see a directory field, ordered from narrowest to widest. `admins`: holders of `vtc.directory.admin` (and, for derived fields, `vtc.members.manage`). `groups`: members who share at least one community group with the subject (narrowed to the groups the subject names in `groupAudience`, where it names any). `connections`: members holding an attributed, in-force verified relationship with the subject at the community. `members`: every active member. `public`: anyone, and what the member's signed public card carries outside the community.
+         *
+         *     `groups` and `connections` are not a chain: a viewer sees a field when they satisfy the audience the subject chose for it or any wider audience. Every audience includes the administrators, and the subject always sees their own whole card. There is no `onlyMe`: a value nobody else should see is not directory data.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsListV0_1Audience: "admins" | "groups" | "connections" | "members" | "public";
+        /** @description Which claim a `claim` field accepts, from which credentials and issuers. */
+        VtcDirectoryFieldsListV0_1ClaimSelector: {
+            /** @description JSON Pointer (RFC 6901) to the claim within `credentialSubject`. */
+            claimPath: string;
+            /** @description A `type` the presented credential MUST carry. */
+            credentialType: string;
+            /** @description Issuers the community accepts for this field. Absent: the community's trusted issuers for the credential type, as its own policy decides. */
+            issuers?: string[];
+        };
+        VtcDirectoryFieldsListV0_1EnumOption: {
+            /** @description What a reader is shown for it. */
+            label: string;
+            /** @description The stored value. */
+            value: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcDirectoryFieldsListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Per-type constraints. A member that does not apply to the field's type is refused by the community with `valueInvalid` when the definition is written. */
+        VtcDirectoryFieldsListV0_1FieldConstraints: {
+            claim?: components["schemas"]["VtcDirectoryFieldsListV0_1ClaimSelector"];
+            /** Format: date */
+            maxDate?: string;
+            maxItems?: number;
+            maxLength?: number;
+            /** Format: date */
+            minDate?: string;
+            minLength?: number;
+            /** @description The permitted values of an `enum` or `multiEnum` field. */
+            options?: components["schemas"]["VtcDirectoryFieldsListV0_1EnumOption"][];
+            /** @description ECMA-262 regular expression a text value MUST match. */
+            pattern?: string;
+        };
+        /** @description One field of the community's directory schema, as the community holds it. The audience order `admins` < `groups`/`connections` < `members` < `public` applies to `ceiling` and `defaultVisibility`; `defaultVisibility` is never wider than `ceiling`. */
+        VtcDirectoryFieldsListV0_1FieldDefinition: {
+            /** @description `true` for a base field, present in every community; `false` for a field this community defined. */
+            base: boolean;
+            ceiling: components["schemas"]["VtcDirectoryFieldsListV0_1Audience"];
+            constraints?: components["schemas"]["VtcDirectoryFieldsListV0_1FieldConstraints"];
+            defaultVisibility: components["schemas"]["VtcDirectoryFieldsListV0_1Audience"];
+            description?: components["schemas"]["VtcDirectoryFieldsListV0_1FieldDescription"];
+            ext?: components["schemas"]["VtcDirectoryFieldsListV0_1Ext"];
+            facet: boolean;
+            /** @description Where the field lands when an entry is exported as a JSContact Card (RFC 9553), e.g. `name.full`, `nicknames`, `speakToAs.pronouns`. Absent: a vendor-specific property named by the key. */
+            jsContactPath?: string;
+            key: components["schemas"]["VtcDirectoryFieldsListV0_1FieldKey"];
+            label: components["schemas"]["VtcDirectoryFieldsListV0_1FieldLabel"];
+            order: number;
+            /**
+             * Format: date-time
+             * @description When the values of a retired field are purged. Present only on a retired field.
+             */
+            purgeAfter?: string;
+            required: boolean;
+            /**
+             * Format: date-time
+             * @description When the field was retired. Present only on a retired field.
+             */
+            retiredAt?: string;
+            searchable: boolean;
+            source: components["schemas"]["VtcDirectoryFieldsListV0_1FieldSource"];
+            state: components["schemas"]["VtcDirectoryFieldsListV0_1FieldState"];
+            type: components["schemas"]["VtcDirectoryFieldsListV0_1FieldType"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description Help text shown to a member filling the field in. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcDirectoryFieldsListV0_1FieldDescription: string;
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcDirectoryFieldsListV0_1FieldKey: string;
+        /** @description What readers see as the field's name. Plain text. */
+        VtcDirectoryFieldsListV0_1FieldLabel: string;
+        /**
+         * @description Who writes the value. `member`: self-asserted, through vtc/directory/card/update. `admin`: asserted by the community through vtc/directory/card/assert; the member reads it and cannot change it. `credential`: a claim the member discloses from a credential through vtc/directory/card/present, badged with its issuer. `derived`: a base field read from the community's own records (`role`, `joinedAt`, `did`, `personhood`) and never stored on a card. Each source is written only through its own path.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsListV0_1FieldSource: "member" | "admin" | "credential" | "derived";
+        /**
+         * @description `active`: in use. `disabled`: a base field the community has switched off; hidden from every projection and re-enablable. `retired`: a community field withdrawn for good; hidden at once, its values purged after the community's retention period, and its key never reused.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsListV0_1FieldState: "active" | "disabled" | "retired";
+        /**
+         * @description The kind of value a field holds, which fixes its `FieldValue` shape. `did` holds a DID the member chooses to show (never their membership DID, which is the derived base field `did`). `claim` holds a `VerifiedValue` and requires `source: credential`.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsListV0_1FieldType: "text" | "longText" | "url" | "email" | "phone" | "enum" | "multiEnum" | "date" | "country" | "image" | "did" | "claim";
+        /**
+         * @description Whether members can find the entry. `listed`: it appears when members browse. `findable`: it does not appear when browsing, but a search that matches it under `search` returns it. `hidden`: no member finds it by browsing or searching; administrators still see it, and members who share a group that shows its members see it in that group's member list.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsListV0_1Listing: "listed" | "findable" | "hidden";
+        /** @description The community's listing settings. `defaultListing`: the listing a new card starts with (default `listed`). There is no floor: every member may always choose `hidden`, and a community cannot hold an entry above its member's choice. Raising `defaultListing` affects new cards only. */
+        VtcDirectoryFieldsListV0_1ListingDefaults: {
+            defaultListing: components["schemas"]["VtcDirectoryFieldsListV0_1Listing"];
+        };
+        /** @description Read a community's directory schema — base and community-defined fields, their types, ceilings and default visibility — as the caller may see it. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcDirectoryFieldsListV0_1Payload: {
+            ext?: components["schemas"]["VtcDirectoryFieldsListV0_1Ext"];
+            /** @description Administrators only: also return retired fields. Ignored for any other caller. */
+            includeRetired?: boolean;
+        };
+        /** @description The success response to a vtc/directory/fields/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/fields/list/0.1#response. */
+        VtcDirectoryFieldsListV0_1Response: {
+            ext?: components["schemas"]["VtcDirectoryFieldsListV0_1Ext"];
+            /** @description The fields, in `order`. */
+            fields: components["schemas"]["VtcDirectoryFieldsListV0_1FieldDefinition"][];
+            listingDefaults: components["schemas"]["VtcDirectoryFieldsListV0_1ListingDefaults"];
+        };
+        /**
+         * @description Who may see a directory field, ordered from narrowest to widest. `admins`: holders of `vtc.directory.admin` (and, for derived fields, `vtc.members.manage`). `groups`: members who share at least one community group with the subject (narrowed to the groups the subject names in `groupAudience`, where it names any). `connections`: members holding an attributed, in-force verified relationship with the subject at the community. `members`: every active member. `public`: anyone, and what the member's signed public card carries outside the community.
+         *
+         *     `groups` and `connections` are not a chain: a viewer sees a field when they satisfy the audience the subject chose for it or any wider audience. Every audience includes the administrators, and the subject always sees their own whole card. There is no `onlyMe`: a value nobody else should see is not directory data.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsRetireV0_1Audience: "admins" | "groups" | "connections" | "members" | "public";
+        /** @description Which claim a `claim` field accepts, from which credentials and issuers. */
+        VtcDirectoryFieldsRetireV0_1ClaimSelector: {
+            /** @description JSON Pointer (RFC 6901) to the claim within `credentialSubject`. */
+            claimPath: string;
+            /** @description A `type` the presented credential MUST carry. */
+            credentialType: string;
+            /** @description Issuers the community accepts for this field. Absent: the community's trusted issuers for the credential type, as its own policy decides. */
+            issuers?: string[];
+        };
+        VtcDirectoryFieldsRetireV0_1EnumOption: {
+            /** @description What a reader is shown for it. */
+            label: string;
+            /** @description The stored value. */
+            value: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcDirectoryFieldsRetireV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Per-type constraints. A member that does not apply to the field's type is refused by the community with `valueInvalid` when the definition is written. */
+        VtcDirectoryFieldsRetireV0_1FieldConstraints: {
+            claim?: components["schemas"]["VtcDirectoryFieldsRetireV0_1ClaimSelector"];
+            /** Format: date */
+            maxDate?: string;
+            maxItems?: number;
+            maxLength?: number;
+            /** Format: date */
+            minDate?: string;
+            minLength?: number;
+            /** @description The permitted values of an `enum` or `multiEnum` field. */
+            options?: components["schemas"]["VtcDirectoryFieldsRetireV0_1EnumOption"][];
+            /** @description ECMA-262 regular expression a text value MUST match. */
+            pattern?: string;
+        };
+        /** @description One field of the community's directory schema, as the community holds it. The audience order `admins` < `groups`/`connections` < `members` < `public` applies to `ceiling` and `defaultVisibility`; `defaultVisibility` is never wider than `ceiling`. */
+        VtcDirectoryFieldsRetireV0_1FieldDefinition: {
+            /** @description `true` for a base field, present in every community; `false` for a field this community defined. */
+            base: boolean;
+            ceiling: components["schemas"]["VtcDirectoryFieldsRetireV0_1Audience"];
+            constraints?: components["schemas"]["VtcDirectoryFieldsRetireV0_1FieldConstraints"];
+            defaultVisibility: components["schemas"]["VtcDirectoryFieldsRetireV0_1Audience"];
+            description?: components["schemas"]["VtcDirectoryFieldsRetireV0_1FieldDescription"];
+            ext?: components["schemas"]["VtcDirectoryFieldsRetireV0_1Ext"];
+            facet: boolean;
+            /** @description Where the field lands when an entry is exported as a JSContact Card (RFC 9553), e.g. `name.full`, `nicknames`, `speakToAs.pronouns`. Absent: a vendor-specific property named by the key. */
+            jsContactPath?: string;
+            key: components["schemas"]["VtcDirectoryFieldsRetireV0_1FieldKey"];
+            label: components["schemas"]["VtcDirectoryFieldsRetireV0_1FieldLabel"];
+            order: number;
+            /**
+             * Format: date-time
+             * @description When the values of a retired field are purged. Present only on a retired field.
+             */
+            purgeAfter?: string;
+            required: boolean;
+            /**
+             * Format: date-time
+             * @description When the field was retired. Present only on a retired field.
+             */
+            retiredAt?: string;
+            searchable: boolean;
+            source: components["schemas"]["VtcDirectoryFieldsRetireV0_1FieldSource"];
+            state: components["schemas"]["VtcDirectoryFieldsRetireV0_1FieldState"];
+            type: components["schemas"]["VtcDirectoryFieldsRetireV0_1FieldType"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description Help text shown to a member filling the field in. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcDirectoryFieldsRetireV0_1FieldDescription: string;
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcDirectoryFieldsRetireV0_1FieldKey: string;
+        /** @description What readers see as the field's name. Plain text. */
+        VtcDirectoryFieldsRetireV0_1FieldLabel: string;
+        /**
+         * @description Who writes the value. `member`: self-asserted, through vtc/directory/card/update. `admin`: asserted by the community through vtc/directory/card/assert; the member reads it and cannot change it. `credential`: a claim the member discloses from a credential through vtc/directory/card/present, badged with its issuer. `derived`: a base field read from the community's own records (`role`, `joinedAt`, `did`, `personhood`) and never stored on a card. Each source is written only through its own path.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsRetireV0_1FieldSource: "member" | "admin" | "credential" | "derived";
+        /**
+         * @description `active`: in use. `disabled`: a base field the community has switched off; hidden from every projection and re-enablable. `retired`: a community field withdrawn for good; hidden at once, its values purged after the community's retention period, and its key never reused.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsRetireV0_1FieldState: "active" | "disabled" | "retired";
+        /**
+         * @description The kind of value a field holds, which fixes its `FieldValue` shape. `did` holds a DID the member chooses to show (never their membership DID, which is the derived base field `did`). `claim` holds a `VerifiedValue` and requires `source: credential`.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsRetireV0_1FieldType: "text" | "longText" | "url" | "email" | "phone" | "enum" | "multiEnum" | "date" | "country" | "image" | "did" | "claim";
+        /** @description An administrator retires a community directory field: it is hidden at once, its values are purged after the community's retention period, and its key is never reused. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcDirectoryFieldsRetireV0_1Payload: {
+            ext?: components["schemas"]["VtcDirectoryFieldsRetireV0_1Ext"];
+            key: components["schemas"]["VtcDirectoryFieldsRetireV0_1FieldKey"];
+            /** @description Why, recorded with the change and shown to anyone who must approve it. */
+            reason: string;
+        };
+        /** @description The success response to a vtc/directory/fields/retire/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/fields/retire/0.1#response. */
+        VtcDirectoryFieldsRetireV0_1Response: {
+            ext?: components["schemas"]["VtcDirectoryFieldsRetireV0_1Ext"];
+            field: components["schemas"]["VtcDirectoryFieldsRetireV0_1FieldDefinition"];
+        };
+        /**
+         * @description Who may see a directory field, ordered from narrowest to widest. `admins`: holders of `vtc.directory.admin` (and, for derived fields, `vtc.members.manage`). `groups`: members who share at least one community group with the subject (narrowed to the groups the subject names in `groupAudience`, where it names any). `connections`: members holding an attributed, in-force verified relationship with the subject at the community. `members`: every active member. `public`: anyone, and what the member's signed public card carries outside the community.
+         *
+         *     `groups` and `connections` are not a chain: a viewer sees a field when they satisfy the audience the subject chose for it or any wider audience. Every audience includes the administrators, and the subject always sees their own whole card. There is no `onlyMe`: a value nobody else should see is not directory data.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsUpdateV0_1Audience: "admins" | "groups" | "connections" | "members" | "public";
+        /** @description Which claim a `claim` field accepts, from which credentials and issuers. */
+        VtcDirectoryFieldsUpdateV0_1ClaimSelector: {
+            /** @description JSON Pointer (RFC 6901) to the claim within `credentialSubject`. */
+            claimPath: string;
+            /** @description A `type` the presented credential MUST carry. */
+            credentialType: string;
+            /** @description Issuers the community accepts for this field. Absent: the community's trusted issuers for the credential type, as its own policy decides. */
+            issuers?: string[];
+        };
+        VtcDirectoryFieldsUpdateV0_1EnumOption: {
+            /** @description What a reader is shown for it. */
+            label: string;
+            /** @description The stored value. */
+            value: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcDirectoryFieldsUpdateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Per-type constraints. A member that does not apply to the field's type is refused by the community with `valueInvalid` when the definition is written. */
+        VtcDirectoryFieldsUpdateV0_1FieldConstraints: {
+            claim?: components["schemas"]["VtcDirectoryFieldsUpdateV0_1ClaimSelector"];
+            /** Format: date */
+            maxDate?: string;
+            maxItems?: number;
+            maxLength?: number;
+            /** Format: date */
+            minDate?: string;
+            minLength?: number;
+            /** @description The permitted values of an `enum` or `multiEnum` field. */
+            options?: components["schemas"]["VtcDirectoryFieldsUpdateV0_1EnumOption"][];
+            /** @description ECMA-262 regular expression a text value MUST match. */
+            pattern?: string;
+        };
+        /** @description One field of the community's directory schema, as the community holds it. The audience order `admins` < `groups`/`connections` < `members` < `public` applies to `ceiling` and `defaultVisibility`; `defaultVisibility` is never wider than `ceiling`. */
+        VtcDirectoryFieldsUpdateV0_1FieldDefinition: {
+            /** @description `true` for a base field, present in every community; `false` for a field this community defined. */
+            base: boolean;
+            ceiling: components["schemas"]["VtcDirectoryFieldsUpdateV0_1Audience"];
+            constraints?: components["schemas"]["VtcDirectoryFieldsUpdateV0_1FieldConstraints"];
+            defaultVisibility: components["schemas"]["VtcDirectoryFieldsUpdateV0_1Audience"];
+            description?: components["schemas"]["VtcDirectoryFieldsUpdateV0_1FieldDescription"];
+            ext?: components["schemas"]["VtcDirectoryFieldsUpdateV0_1Ext"];
+            facet: boolean;
+            /** @description Where the field lands when an entry is exported as a JSContact Card (RFC 9553), e.g. `name.full`, `nicknames`, `speakToAs.pronouns`. Absent: a vendor-specific property named by the key. */
+            jsContactPath?: string;
+            key: components["schemas"]["VtcDirectoryFieldsUpdateV0_1FieldKey"];
+            label: components["schemas"]["VtcDirectoryFieldsUpdateV0_1FieldLabel"];
+            order: number;
+            /**
+             * Format: date-time
+             * @description When the values of a retired field are purged. Present only on a retired field.
+             */
+            purgeAfter?: string;
+            required: boolean;
+            /**
+             * Format: date-time
+             * @description When the field was retired. Present only on a retired field.
+             */
+            retiredAt?: string;
+            searchable: boolean;
+            source: components["schemas"]["VtcDirectoryFieldsUpdateV0_1FieldSource"];
+            state: components["schemas"]["VtcDirectoryFieldsUpdateV0_1FieldState"];
+            type: components["schemas"]["VtcDirectoryFieldsUpdateV0_1FieldType"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description Help text shown to a member filling the field in. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcDirectoryFieldsUpdateV0_1FieldDescription: string;
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcDirectoryFieldsUpdateV0_1FieldKey: string;
+        /** @description What readers see as the field's name. Plain text. */
+        VtcDirectoryFieldsUpdateV0_1FieldLabel: string;
+        /**
+         * @description Who writes the value. `member`: self-asserted, through vtc/directory/card/update. `admin`: asserted by the community through vtc/directory/card/assert; the member reads it and cannot change it. `credential`: a claim the member discloses from a credential through vtc/directory/card/present, badged with its issuer. `derived`: a base field read from the community's own records (`role`, `joinedAt`, `did`, `personhood`) and never stored on a card. Each source is written only through its own path.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsUpdateV0_1FieldSource: "member" | "admin" | "credential" | "derived";
+        /**
+         * @description `active`: in use. `disabled`: a base field the community has switched off; hidden from every projection and re-enablable. `retired`: a community field withdrawn for good; hidden at once, its values purged after the community's retention period, and its key never reused.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsUpdateV0_1FieldState: "active" | "disabled" | "retired";
+        /**
+         * @description The kind of value a field holds, which fixes its `FieldValue` shape. `did` holds a DID the member chooses to show (never their membership DID, which is the derived base field `did`). `claim` holds a `VerifiedValue` and requires `source: credential`.
+         * @enum {string}
+         */
+        VtcDirectoryFieldsUpdateV0_1FieldType: "text" | "longText" | "url" | "email" | "phone" | "enum" | "multiEnum" | "date" | "country" | "image" | "did" | "claim";
+        /** @description An administrator changes a directory field's label, help text, constraints, order, ceiling or default visibility, or disables or re-enables a base field. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcDirectoryFieldsUpdateV0_1Payload: {
+            ceiling?: components["schemas"]["VtcDirectoryFieldsUpdateV0_1Audience"];
+            constraints?: components["schemas"]["VtcDirectoryFieldsUpdateV0_1FieldConstraints"];
+            defaultVisibility?: components["schemas"]["VtcDirectoryFieldsUpdateV0_1Audience"];
+            description?: components["schemas"]["VtcDirectoryFieldsUpdateV0_1FieldDescription"];
+            /** @description Base fields only: `false` disables the field (hidden from every projection, values kept), `true` re-enables it. */
+            enabled?: boolean;
+            ext?: components["schemas"]["VtcDirectoryFieldsUpdateV0_1Ext"];
+            facet?: boolean;
+            key: components["schemas"]["VtcDirectoryFieldsUpdateV0_1FieldKey"];
+            label?: components["schemas"]["VtcDirectoryFieldsUpdateV0_1FieldLabel"];
+            order?: number;
+            /** @description Why, recorded with the change and shown to anyone who must approve it. */
+            reason?: string;
+            required?: boolean;
+            searchable?: boolean;
+        };
+        /** @description The success response to a vtc/directory/fields/update/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/fields/update/0.1#response. */
+        VtcDirectoryFieldsUpdateV0_1Response: {
+            ext?: components["schemas"]["VtcDirectoryFieldsUpdateV0_1Ext"];
+            field: components["schemas"]["VtcDirectoryFieldsUpdateV0_1FieldDefinition"];
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcEndorsementTypesDeleteV0_1Ext: {

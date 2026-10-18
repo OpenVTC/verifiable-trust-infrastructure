@@ -296,3 +296,14 @@ export type CommunityRoomMembersAddPayload = Schemas["VtcRoomsCommunityMembersAd
 export type CommunityRoomMembersAddResponse = Schemas["VtcRoomsCommunityMembersAddV0_1Response"];
 export type CommunityRoomMembersRemovePayload = Schemas["VtcRoomsCommunityMembersRemoveV0_2Payload"];
 export type CommunityRoomMembersRemoveResponse = Schemas["VtcRoomsCommunityMembersRemoveV0_2Response"];
+
+// ── Member directory (`vtc/directory/*`) ─────────────────────────────────
+export type DirectoryFieldDefinition = Schemas["VtcDirectoryFieldsListV0_1FieldDefinition"];
+export type DirectoryFieldsListResponse = Schemas["VtcDirectoryFieldsListV0_1Response"];
+export type DirectoryFieldInput = Schemas["VtcDirectoryFieldsDefineV0_1FieldInput"];
+export type DirectoryFieldsUpdatePayload = Schemas["VtcDirectoryFieldsUpdateV0_1Payload"];
+export type DirectoryCardAssertPayload = Schemas["VtcDirectoryCardAssertV0_1Payload"];
+export type DirectoryCardAssertResponse = Schemas["VtcDirectoryCardAssertV0_1Response"];
+export type DirectoryEntriesListPayload = Schemas["VtcDirectoryEntriesListV0_1Payload"];
+export type DirectoryEntriesListResponse = Schemas["VtcDirectoryEntriesListV0_1Response"];
+export type DirectoryEntriesShowResponse = Schemas["VtcDirectoryEntriesShowV0_1Response"];
