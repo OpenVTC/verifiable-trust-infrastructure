@@ -21,14 +21,23 @@
 
 use std::path::{Path, PathBuf};
 
+/// What the checked-in document says in `info.version` (see [`rendered`]).
+const SNAPSHOT_VERSION: &str = "0.0.0-snapshot";
+
 fn snapshot_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("admin-ui/openapi.json")
 }
 
 /// The document as it should be on disk: pretty-printed, newline-terminated,
 /// so a diff of a real change is readable rather than one enormous line.
+///
+/// `info.version` is the crate's own version, which every release moves. The
+/// snapshot pins the API's shape, not the build that served it, so it records
+/// [`SNAPSHOT_VERSION`] there instead; otherwise each Release PR bumping
+/// `vtc-service` would fail this test with no API change at all.
 fn rendered() -> String {
-    let spec = vtc_service::routes::openapi_spec();
+    let mut spec = vtc_service::routes::openapi_spec();
+    spec.info.version = SNAPSHOT_VERSION.to_string();
     let mut out = serde_json::to_string_pretty(&spec).expect("the document serialises");
     out.push('\n');
     out

@@ -11,7 +11,7 @@
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
     },
-    "version": "0.11.58"
+    "version": "0.0.0-snapshot"
   },
   "paths": {
     "/v1/auth/passkey-login/finish": {
