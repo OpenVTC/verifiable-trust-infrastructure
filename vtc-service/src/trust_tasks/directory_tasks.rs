@@ -12,6 +12,15 @@
 //!
 //! None has a REST route. Each arrives the same way over TSP, DIDComm or
 //! HTTPS.
+//!
+//! # The member portal's key
+//!
+//! The member tasks (`fields/list`, `card/*` but `assert`, `entries/*`) also
+//! accept a document signed by a member-portal sign-in key the member
+//! delegated `vtc/directory` to (`auth/oob/grant/0.2`,
+//! [`crate::member_portal::delegation`]), read as the member's. Such a key can
+//! never make a value `public` or publish the card beyond the community
+//! ([`Writer::Delegated`]).
 
 use std::collections::BTreeMap;
 
@@ -167,9 +176,12 @@ async fn reader<P>(
 where
     P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
 {
-    let claims = member_signer(state, ctx, doc).await?;
+    let did = match delegated(state, ctx, doc).await? {
+        Some(member) => member,
+        None => member_signer(state, ctx, doc).await?.did,
+    };
     let payload = parse_spec_payload::<P>(doc)?;
-    let viewer = read::viewer(state, &claims.did)
+    let viewer = read::viewer(state, &did)
         .await
         .map_err(|e| app_error_to_reject(doc, &e))?;
     if !viewer.may_read() {
@@ -181,20 +193,45 @@ where
     Ok((viewer, payload))
 }
 
+/// The member a portal sign-in key signs as, when the signer is one whose
+/// delegation covers this task and whose session is live. `None` for every
+/// other signer, who is then authorized as themselves.
+async fn delegated(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+) -> Result<Option<String>, TrustTaskOutcome> {
+    let Some(signer) = ctx.verified_signer.as_deref() else {
+        return Ok(None);
+    };
+    crate::member_portal::delegation::member_for(
+        &state.member_sessions_ks,
+        signer,
+        &doc.type_uri.to_string(),
+    )
+    .await
+    .map_err(|e| app_error_to_reject(doc, &e))
+}
+
 /// The proven signer, who must be an active member — the card tasks' whole
-/// entitlement. A console key is not the member: it acts for an administrator,
-/// and a card is never written for its member by anyone else.
+/// entitlement — and how they signed: as themselves, or through the portal
+/// key they delegated. A console key is not the member: it acts for an
+/// administrator, and a card is never written for its member by anyone else.
 async fn as_card_member(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
     not_member: &str,
-) -> Result<crate::member_portal::active::ActiveMember, TrustTaskOutcome> {
+) -> Result<(crate::member_portal::active::ActiveMember, Writer), TrustTaskOutcome> {
     let Some(signer) = ctx.verified_signer.clone() else {
         return Err(reject_with(doc, RejectReason::ProofRequired));
     };
-    match crate::member_portal::active::active_member(state, &signer).await {
-        Ok(Some(m)) => Ok(m),
+    let (did, writer) = match delegated(state, ctx, doc).await? {
+        Some(member) => (member, Writer::Delegated),
+        None => (signer, Writer::Member),
+    };
+    match crate::member_portal::active::active_member(state, &did).await {
+        Ok(Some(m)) => Ok((m, writer)),
         Ok(None) => Err(declared(
             doc,
             not_member,
@@ -535,7 +572,7 @@ async fn handle_card_show(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let member = match as_card_member(state, ctx, &doc, CARD_SHOW_ERR_NOT_MEMBER).await {
+    let (member, _) = match as_card_member(state, ctx, &doc, CARD_SHOW_ERR_NOT_MEMBER).await {
         Ok(m) => m,
         Err(reject) => return reject,
     };
@@ -648,7 +685,8 @@ async fn handle_card_update(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let member = match as_card_member(state, ctx, &doc, CARD_UPDATE_ERR_NOT_MEMBER).await {
+    let (member, writer) = match as_card_member(state, ctx, &doc, CARD_UPDATE_ERR_NOT_MEMBER).await
+    {
         Ok(m) => m,
         Err(reject) => return reject,
     };
@@ -693,7 +731,7 @@ async fn handle_card_update(
             &card,
             &schema,
             &update,
-            Writer::Member,
+            writer,
             &doc.id,
             issued_at,
             Utc::now(),

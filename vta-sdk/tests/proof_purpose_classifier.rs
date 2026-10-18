@@ -39,6 +39,7 @@ fn approver_decisions_are_signed_for_assertion_method() {
         // The wallet sign-in grant is the approving DID's attestation
         // (VTI-KEY-106; sign-in trigger-link contract C5).
         "https://trusttasks.org/spec/auth/oob/grant/0.1",
+        "https://trusttasks.org/spec/auth/oob/grant/0.2",
     ] {
         assert_eq!(purpose_of(uri), ProofPurpose::AssertionMethod, "{uri}");
     }

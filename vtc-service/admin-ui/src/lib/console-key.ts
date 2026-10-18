@@ -647,3 +647,52 @@ export async function forgetBrowserSessionKey(): Promise<void> {
     // Nothing to forget.
   }
 }
+
+// ---------------------------------------------------------------------------
+// The member portal's sign-in key
+// ---------------------------------------------------------------------------
+//
+// A member-portal wallet sign-in at `auth/oob/*/0.2` may delegate signing to
+// its `K_b` for the task families the member approved (today
+// `vtc/directory`), for that session only (`auth/oob/grant/0.2`). The portal
+// keeps `K_b` once the sign-in has bound it, so a reload still reads and
+// edits the directory, and forgets it at sign-out. Same custody as the keys
+// above: non-extractable, stored as `CryptoKey` objects. The VTC decides on
+// every document whether the session that armed it is still live.
+
+const MEMBER_SESSION_RECORD_KEY = "member-session-key";
+
+let memberCached: ConsoleSigningKey | null = null;
+
+/** Keep `identity` as the member portal's sign-in key. Never throws. */
+export async function adoptMemberSessionKey(identity: ConsoleSigningKey): Promise<void> {
+  memberCached = identity;
+  try {
+    await persist(identity, MEMBER_SESSION_RECORD_KEY);
+  } catch {
+    // Held for this page only.
+  }
+}
+
+/** The member portal's sign-in key, or `null`. Never throws. */
+export async function loadMemberSessionKey(): Promise<ConsoleSigningKey | null> {
+  if (memberCached) return memberCached;
+  try {
+    const stored = await read(MEMBER_SESSION_RECORD_KEY);
+    if (!stored) return null;
+    memberCached = await identityFor(stored.keypair);
+    return memberCached;
+  } catch {
+    return null;
+  }
+}
+
+/** Forget the member portal's sign-in key — at sign-out. Never throws. */
+export async function forgetMemberSessionKey(): Promise<void> {
+  memberCached = null;
+  try {
+    await remove(MEMBER_SESSION_RECORD_KEY);
+  } catch {
+    // Nothing to forget.
+  }
+}

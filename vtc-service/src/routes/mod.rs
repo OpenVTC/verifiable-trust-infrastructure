@@ -159,6 +159,10 @@ use crate::server::AppState;
         vta_sdk::openapi::DirectoryEntriesList01Response,
         vta_sdk::openapi::DirectoryEntriesShow01Payload,
         vta_sdk::openapi::DirectoryEntriesShow01Response,
+        vta_sdk::openapi::DirectoryCardShow01Payload,
+        vta_sdk::openapi::DirectoryCardShow01Response,
+        vta_sdk::openapi::DirectoryCardUpdate01Payload,
+        vta_sdk::openapi::DirectoryCardUpdate01Response,
         vta_sdk::openapi::RoomsCommunityMembersList01Payload,
         vta_sdk::openapi::RoomsCommunityMembersList01Response,
         // Where rooms' files are kept (`trust_tasks::storage_tasks`), signed

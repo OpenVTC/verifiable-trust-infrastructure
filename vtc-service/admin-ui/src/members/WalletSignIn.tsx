@@ -19,6 +19,7 @@ import {
   fetchSignInConfig,
   forgetSessionKey,
   generateSessionKey,
+  keepSessionKeyForPortal,
   missingDidServices,
   NOT_AN_ADMIN,
   OobError,
@@ -176,6 +177,15 @@ export function WalletSignIn({
     return () => window.clearTimeout(t);
   }, [phase, stopPolling]);
 
+  // A member sign-in keeps its browser key for the directory pages, which
+  // sign with it under the delegation the member approved.
+  // Kept before anything else runs (the key is cached synchronously); its
+  // write to storage finishes in the background and never holds sign-in up.
+  const signedIn = useCallback(async () => {
+    if (audience === "member") void keepSessionKeyForPortal();
+    await onSignedIn();
+  }, [audience, onSignedIn]);
+
   const poll = useCallback(
     async (requestId: string, run: number) => {
       const cfg = cfgRef.current!;
@@ -195,7 +205,7 @@ export function WalletSignIn({
             return;
           }
           if (result.subject && result.subject === knownSubject(audience)) {
-            void onSignedIn();
+            void signedIn();
             return;
           }
           setPhase({ kind: "confirm", result });
@@ -243,7 +253,7 @@ export function WalletSignIn({
         }
       }
     },
-    [audience, onSignedIn],
+    [audience, signedIn],
   );
 
   const showCode = async () => {
@@ -286,7 +296,7 @@ export function WalletSignIn({
 
   const continueAs = (subject: string) => {
     rememberSubject(audience, subject);
-    void onSignedIn();
+    void signedIn();
   };
 
   const notMe = async () => {

@@ -12,6 +12,7 @@
 // to the same wire.
 
 import {
+  adoptMemberSessionKey,
   buildTrustTaskDocument,
   signTrustTaskDocument,
   type ConsoleSigningKey,
@@ -121,6 +122,13 @@ export async function generateSessionKey(): Promise<ConsoleSigningKey> {
  *  bound it to the console session, to sign `auth/whoami/0.1` with. */
 export function heldSessionKey(): ConsoleSigningKey | null {
   return sessionKey;
+}
+
+/** Keep `K_b` for the member portal once a sign-in has bound it to a member
+ *  session, so the directory pages can sign with it after a reload. A 0.1
+ *  sign-in delegated nothing, and the VTC then refuses what it signs. */
+export async function keepSessionKeyForPortal(): Promise<void> {
+  if (sessionKey) await adoptMemberSessionKey(sessionKey);
 }
 
 /** Forget `K_b` — at sign-out, or when a sign-in ends without a session. */

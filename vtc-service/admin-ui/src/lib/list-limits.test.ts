@@ -74,6 +74,8 @@ interface Site {
 const SITES: Site[] = [
   // The Directory page's entries tab: one page of the largest size.
   { file: "plugins/directory.tsx", site: "limit: 100", uri: DIRECTORY_ENTRIES, uriFile: "lib/directory.ts", from: ["100"] },
+  // The member portal's directory: one page of fifty.
+  { file: "members/Directory.tsx", site: "limit: 50", uri: DIRECTORY_ENTRIES, uriFile: "members/directory-api.ts", from: ["50"] },
   // The action list: the page, and the badge's one-row read.
   { file: "plugins/actions.tsx", site: "listActions({ view, limit: PAGE_SIZE", uri: ACTIONS, uriFile: "lib/actions-api.ts", from: ["PAGE_SIZE"] },
   // `listActions` passes its caller's limit through; each call is listed.

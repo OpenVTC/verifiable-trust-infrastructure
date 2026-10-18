@@ -28,6 +28,27 @@ Specification: *Community Directory and Groups* in the VTI specification
 | `vtc/directory/entries/show/0.1` | members, administrators | One entry by entry identifier; by DID only for `vtc.directory.admin` or `vtc.members.manage` |
 | `vtc/directory/query/0.1` | members, administrators | The older lookup by DID, answered through the same projection |
 
+## In the member portal
+
+Members use the directory from the portal: **Directory** (browse, search, one
+entry) and **Your card** (values, who sees each, listing, search and
+introductions). The pages sign with the browser's sign-in key, which the member
+lets act for them in the directory when they sign in with their wallet:
+
+- The VTC serves `auth/oob/{prove,respond}/0.2`. A member sign-in's step 2
+  offers `signingScope: ["vtc/directory"]`, and the member's wallet shows it
+  and copies it into the `auth/oob/grant/0.2` their VTA signs.
+- At `redeem` the VTC records the delegation for the browser key
+  (`member_portal::delegation`). Directory documents that key signs are read
+  as the member's while the session lives; signing out or revoking the session
+  disarms it at once, and a delegated document never keeps the session alive.
+- A delegated key can never make a value `public`, publish the card beyond
+  the community, or sign anything outside the scope — `auth`, `acl`,
+  `consent`, `task-consent` and `confirm` are refused whatever a grant says.
+- The portal keeps the key in the browser's storage for the session and
+  forgets it at sign-out. A passkey sign-in, or a 0.1 grant, delegates
+  nothing: the pages ask the member to sign in with their wallet.
+
 Not yet served: groups (`vtc/groups/*`), introductions, administrators' notes,
 export, credential-sourced fields (`card/present`), images (an avatar has no
 upload task yet, so image values are refused), and external cards

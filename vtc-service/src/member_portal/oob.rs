@@ -62,6 +62,11 @@ pub mod types {
     pub use spec::redeem::v0_1::{Payload as RedeemPayload, Response as RedeemResponse};
     pub use spec::request::v0_1::{Payload as RequestPayload, Response as RequestResponse};
     pub use spec::respond::v0_1::{Payload as RespondPayload, Response as RespondResponse};
+    // 0.2: step 2 may offer a `signingScope`, which the grant copies to
+    // delegate signing for those task families (auth/oob/grant/0.2).
+    pub use spec::grant::v0_2::Payload as GrantPayloadV0_2;
+    pub use spec::prove::v0_2::{Payload as ProvePayloadV0_2, Response as Step2V0_2};
+    pub use spec::respond::v0_2::{Payload as RespondPayloadV0_2, Response as RespondResponseV0_2};
 
     pub const REQUEST_TYPE: &str = <RequestPayload as trust_tasks_rs::Payload>::TYPE_URI;
     pub const CLAIM_TYPE: &str = <ClaimPayload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -71,6 +76,9 @@ pub mod types {
     pub const GRANT_TYPE: &str = <GrantPayload as trust_tasks_rs::Payload>::TYPE_URI;
     pub const REDEEM_TYPE: &str = <RedeemPayload as trust_tasks_rs::Payload>::TYPE_URI;
     pub const CANCEL_TYPE: &str = <CancelPayload as trust_tasks_rs::Payload>::TYPE_URI;
+    pub const PROVE_V0_2_TYPE: &str = <ProvePayloadV0_2 as trust_tasks_rs::Payload>::TYPE_URI;
+    pub const RESPOND_V0_2_TYPE: &str = <RespondPayloadV0_2 as trust_tasks_rs::Payload>::TYPE_URI;
+    pub const GRANT_V0_2_TYPE: &str = <GrantPayloadV0_2 as trust_tasks_rs::Payload>::TYPE_URI;
 }
 
 // ── Which session a request asks for ────────────────────────────────────────
@@ -286,6 +294,11 @@ pub struct OobRequest {
     /// stored before the field existed, which are member sign-ins.
     #[serde(default, skip_serializing_if = "SessionAudience::is_member")]
     pub audience: SessionAudience,
+    /// The task families step 2 offered to let `K_b` sign for, as the member
+    /// (`auth/oob/prove/0.2`). `None`: a 0.1 step 2, or an operator-console
+    /// sign-in, which offers none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_scope: Option<Vec<String>>,
     /// Why a request was declined, when the starter is told (today only
     /// [`NOT_AN_ADMIN`]). `redeem` reports it in `details.reason`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1038,6 +1051,7 @@ mod tests {
             ended_at: None,
             audience: SessionAudience::Member,
             decline_reason: None,
+            signing_scope: None,
         };
         assert_eq!(r.effective_state(119), OobState::Pending);
         assert_eq!(r.effective_state(120), OobState::Expired);

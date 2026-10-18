@@ -125,9 +125,61 @@ pub use trust_tasks_rs::specs::auth::oob::grant::v0_1::PayloadDecision as GrantD
 /// `enteredNumber`) when the payload is parsed.
 pub use trust_tasks_rs::specs::auth::oob::identify::v0_1::Payload as IdentifyPayload;
 
+/// `auth/oob/grant/0.2` payload: 0.1's, plus the task families the browser
+/// key may sign for as the member (`signingScope`).
+pub use trust_tasks_rs::specs::auth::oob::grant::v0_2::Payload as GrantPayloadV0_2;
+
+/// Families a grant may never delegate signing for (auth/oob/grant/0.2, wallet
+/// item 5): signing in, access control and consent. A grant naming one, or a
+/// family under one, is refused whatever the service offered.
+const UNDELEGABLE_FAMILIES: &[&str] = &["auth", "acl", "consent", "task-consent", "confirm"];
+
+/// What the vault checks of a grant, from its 0.1 or 0.2 payload.
+struct GrantFields {
+    request_id: String,
+    session_key: String,
+    approver_key: String,
+    origin: String,
+    context_digest: String,
+    not_after: u64,
+    signing_scope: Vec<String>,
+}
+
+impl GrantFields {
+    fn read(payload: Value, v0_2: bool) -> Result<Self, OobError> {
+        let bad = |e: serde_json::Error| OobError::DocumentInvalid(format!("grant payload: {e}"));
+        Ok(if v0_2 {
+            let p: GrantPayloadV0_2 = serde_json::from_value(payload).map_err(bad)?;
+            Self {
+                request_id: p.request_id.to_string(),
+                session_key: p.session_key.to_string(),
+                approver_key: p.approver_key.to_string(),
+                origin: p.origin.to_string(),
+                context_digest: p.context_digest.to_string(),
+                not_after: p.not_after,
+                signing_scope: p
+                    .signing_scope
+                    .map(|s| s.iter().map(|f| f.to_string()).collect())
+                    .unwrap_or_default(),
+            }
+        } else {
+            let p: GrantPayload = serde_json::from_value(payload).map_err(bad)?;
+            Self {
+                request_id: p.request_id.to_string(),
+                session_key: p.session_key.to_string(),
+                approver_key: p.approver_key.to_string(),
+                origin: p.origin.to_string(),
+                context_digest: p.context_digest.to_string(),
+                not_after: p.not_after,
+                signing_scope: Vec::new(),
+            }
+        })
+    }
+}
+
 /// `notAfter` as an instant: integer epoch seconds (contract C9).
-fn not_after_instant(p: &GrantPayload) -> Option<chrono::DateTime<chrono::Utc>> {
-    i64::try_from(p.not_after)
+fn not_after_instant(not_after: u64) -> Option<chrono::DateTime<chrono::Utc>> {
+    i64::try_from(not_after)
         .ok()
         .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
 }
@@ -183,7 +235,8 @@ pub struct OobAuthorization {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum OobError {
-    /// An `auth/oob/*` document other than `identify/0.1` and `grant/0.1`.
+    /// An `auth/oob/*` document other than `identify/0.1` and `grant/0.1` or
+    /// `0.2`.
     UnsupportedType,
     /// The envelope or payload is not exactly the schema's shape.
     DocumentInvalid(String),
@@ -227,7 +280,7 @@ impl OobError {
         match self {
             OobError::UnsupportedType => (
                 "oobUnsupportedType",
-                "a persona signs only auth/oob/identify/0.1 and auth/oob/grant/0.1".into(),
+                "a persona signs only auth/oob/identify/0.1 and auth/oob/grant/0.1 or 0.2".into(),
             ),
             OobError::DocumentInvalid(why) => ("oobDocumentInvalid", why.clone()),
             OobError::IssuerNotPrincipal => (
@@ -303,7 +356,7 @@ pub struct OobDeps<'a> {
 /// `Ok(None)` for every other document — including a `type` that is not a Type
 /// URI and a private registry's reuse of the slug, both of which the ordinary
 /// signing path handles. An `auth/oob/*` document of the registry that is not
-/// exactly `identify/0.1` or `grant/0.1` (another version, a `#response`, a
+/// exactly `identify/0.1` or `grant/0.1` or `0.2` (another version, a `#response`, a
 /// `#request` spelling, `claim`, `respond`, …) is refused rather than signed
 /// unattended.
 pub fn classify(envelope: &Value) -> Result<Option<OobDocument>, OobError> {
@@ -315,6 +368,7 @@ pub fn classify(envelope: &Value) -> Result<Option<OobDocument>, OobError> {
         return Ok(None);
     };
     let canonical = |slug: &str| TypeUri::canonical(slug, 0, 1).ok();
+    let canonical_v0_2 = |slug: &str| TypeUri::canonical(slug, 0, 2).ok();
     let on_registry = TypeUri::canonical(type_uri.slug(), type_uri.major(), type_uri.minor())
         .is_ok_and(|c| c == type_uri.bare());
     if !on_registry || !type_uri.slug().starts_with(FAMILY_PREFIX) {
@@ -322,7 +376,9 @@ pub fn classify(envelope: &Value) -> Result<Option<OobDocument>, OobError> {
     }
     if canonical(IDENTIFY_SLUG).as_ref() == Some(&type_uri) {
         Ok(Some(OobDocument::Identify))
-    } else if canonical(GRANT_SLUG).as_ref() == Some(&type_uri) {
+    } else if canonical(GRANT_SLUG).as_ref() == Some(&type_uri)
+        || canonical_v0_2(GRANT_SLUG).as_ref() == Some(&type_uri)
+    {
         Ok(Some(OobDocument::Grant))
     } else {
         Err(OobError::UnsupportedType)
@@ -432,8 +488,11 @@ pub async fn authorize(
             (p.request_id.to_string(), None)
         }
         OobDocument::Grant => {
-            let p: GrantPayload = serde_json::from_value(payload)
-                .map_err(|e| OobError::DocumentInvalid(format!("grant payload: {e}")))?;
+            let v0_2 = obj
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|t| t.ends_with("/auth/oob/grant/0.2"));
+            let p = GrantFields::read(payload, v0_2)?;
             check_grant(&p, now)?;
             let uv =
                 verify_uv_decision(deps, device_did, binding, envelope, payload_ext, now).await?;
@@ -523,7 +582,7 @@ fn check_identify(p: &IdentifyPayload) -> Result<(), OobError> {
     Ok(())
 }
 
-fn check_grant(p: &GrantPayload, now: chrono::DateTime<chrono::Utc>) -> Result<(), OobError> {
+fn check_grant(p: &GrantFields, now: chrono::DateTime<chrono::Utc>) -> Result<(), OobError> {
     let invalid = |why: &str| Err(OobError::DocumentInvalid(why.to_string()));
     if !is_request_id(&p.request_id) {
         return invalid("requestId must be 16-128 base64url characters");
@@ -540,7 +599,18 @@ fn check_grant(p: &GrantPayload, now: chrono::DateTime<chrono::Utc>) -> Result<(
     if sha256_from_digest_multibase(&p.context_digest).is_none() {
         return invalid("contextDigest must be a sha2-256 multihash in multibase");
     }
-    match not_after_instant(p) {
+    // Wallet item 5: never delegate signing in, access control or consent.
+    if let Some(family) = p.signing_scope.iter().find(|f| {
+        UNDELEGABLE_FAMILIES
+            .iter()
+            .any(|x| *f == x || f.starts_with(&format!("{x}/")))
+    }) {
+        return Err(OobError::DocumentInvalid(format!(
+            "signingScope may not delegate '{family}': signing in, access control and consent \
+             are signed only by the member's own key"
+        )));
+    }
+    match not_after_instant(p.not_after) {
         Some(t) if t > now => Ok(()),
         Some(_) => invalid("notAfter is in the past"),
         None => invalid("notAfter must be integer epoch seconds"),
@@ -919,10 +989,15 @@ mod tests {
             classify(&with_type(&spec("auth/oob/grant/0.1"))).unwrap(),
             Some(OobDocument::Grant)
         );
+        // 0.2 adds the signing scope; it is the same document, gated the same.
+        assert_eq!(
+            classify(&with_type(&spec("auth/oob/grant/0.2"))).unwrap(),
+            Some(OobDocument::Grant)
+        );
         // Another version, a variant, or another document of the family is
         // refused, never signed unattended.
         for t in [
-            "auth/oob/grant/0.2",
+            "auth/oob/grant/0.3",
             "auth/oob/grant/0.1#response",
             "auth/oob/identify/1.0",
             "auth/oob/claim/0.1",
@@ -1039,5 +1114,32 @@ mod tests {
             "example.com"
         );
         assert_eq!(rp_id_hashed("other", ext), "other");
+    }
+
+    /// Wallet item 5 (auth/oob/grant/0.2): a grant never delegates signing in,
+    /// access control or consent, whatever the service offered.
+    #[test]
+    fn a_grant_never_delegates_sign_in_access_control_or_consent() {
+        let now = chrono::Utc::now();
+        let grant = |scope: &[&str]| GrantFields {
+            request_id: "AAAAAAAAAAAAAAAA".into(),
+            session_key: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".into(),
+            approver_key: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".into(),
+            origin: "https://vtc.example.com".into(),
+            context_digest: sha256_digest_multibase(&[0u8; 32]),
+            not_after: (now.timestamp() + 600) as u64,
+            signing_scope: scope.iter().map(|s| s.to_string()).collect(),
+        };
+        assert!(check_grant(&grant(&["vtc/directory"]), now).is_ok());
+        assert!(check_grant(&grant(&[]), now).is_ok());
+        for refused in ["auth", "acl/grant", "task-consent", "consent", "confirm"] {
+            assert!(
+                matches!(
+                    check_grant(&grant(&["vtc/directory", refused]), now),
+                    Err(OobError::DocumentInvalid(_))
+                ),
+                "{refused}"
+            );
+        }
     }
 }

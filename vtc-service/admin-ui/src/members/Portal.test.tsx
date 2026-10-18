@@ -344,3 +344,18 @@ describe("member api client", () => {
     ]);
   });
 });
+
+describe("portal routes", () => {
+  it("reads the directory pages from the hash", async () => {
+    const { routeOf } = await import("./Portal");
+    expect(routeOf("#/directory")).toEqual({ page: "directory" });
+    expect(routeOf("#/card")).toEqual({ page: "card" });
+    expect(routeOf("#/directory/dir_Q7m2K9xVb4Tz8LpRaB3c")).toEqual({
+      page: "entry",
+      entryId: "dir_Q7m2K9xVb4Tz8LpRaB3c",
+    });
+    // Anything that is not an entry identifier is the home page.
+    expect(routeOf("#/directory/did:example:carol")).toEqual({ page: "home" });
+    expect(routeOf("#/directory/<script>")).toEqual({ page: "home" });
+  });
+});

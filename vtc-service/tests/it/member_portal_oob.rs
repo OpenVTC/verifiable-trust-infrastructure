@@ -45,6 +45,8 @@ async fn fixture() -> Fixture {
     let vtc = TestVtc::builder()
         .vtc_did(VTC_DID)
         .with_public_url(PORTAL)
+        // Directory writes are never unaudited.
+        .with_audit(true)
         .with_credential_signer(std::sync::Arc::new(LocalSigner::from_ed25519_seed(
             VTC_DID.into(),
             &SEED,
@@ -1951,5 +1953,248 @@ async fn a_session_stored_before_not_after_existed_still_refreshes() {
     assert!(
         row.refresh_expires_at.unwrap() >= now + ttl,
         "an unbounded session keeps sliding by the full TTL"
+    );
+}
+
+// ── 0.2: delegated signing (auth/oob/grant/0.2 `signingScope`) ───────────────
+
+fn t2(task: &str) -> String {
+    format!("{BASE}/{task}/0.2")
+}
+
+const DIRECTORY: &str = "https://trusttasks.org/spec/vtc/directory";
+
+/// Sign in at 0.2, approving the scope step 2 offers (or `scope` instead),
+/// and return the browser, the member and the redeem reply.
+async fn sign_in_v0_2(f: &Fixture, scope: Option<Value>) -> (Browser, Party, Reply, Reply) {
+    vtc_service::policy::default::install_defaults(
+        &f.vtc.state.policies_ks,
+        &f.vtc.state.active_policies_ks,
+    )
+    .await
+    .unwrap();
+    let member = Party::new();
+    enrol_member(&f.vtc, &member.did, Some("Alice")).await;
+    let b = Browser {
+        key: Party::new(),
+        ip: "198.51.100.8",
+    };
+    let p = Phone {
+        key: Party::new(),
+        ip: "198.51.100.8",
+    };
+    let id = start(f, &b).await;
+    let (_, number) = claim_and_number(f, &b, &p, &id).await;
+    let identify = identify(&member, &id, &p.key.did, &number).await;
+    let pr = post(
+        &f.vtc,
+        &doc(
+            &p.key,
+            &t2("prove"),
+            json!({ "identify": identify }),
+            None,
+            "authentication",
+        )
+        .await,
+        p.ip,
+        None,
+    )
+    .await;
+    assert_eq!(pr.status, StatusCode::OK, "{}", pr.body);
+    assert_vtc_attested(f, &pr.body);
+    assert_eq!(pr.body["type"], format!("{}#response", t2("prove")));
+    assert_eq!(pr.body["payload"]["signingScope"], json!(["vtc/directory"]));
+    let digest = oob::context_digest(&pr.body).unwrap();
+    let scope = scope.unwrap_or_else(|| pr.body["payload"]["signingScope"].clone());
+    let grant = doc(
+        &member,
+        &t2("grant"),
+        json!({
+            "requestId": id,
+            "decision": "approve",
+            "sessionKey": b.key.did,
+            "approverKey": p.key.did,
+            "origin": PORTAL,
+            "contextDigest": digest,
+            "notAfter": now_epoch() + 3600,
+            "signingScope": scope,
+        }),
+        None,
+        "assertionMethod",
+    )
+    .await;
+    let rs = post(
+        &f.vtc,
+        &doc(
+            &p.key,
+            &t2("respond"),
+            json!({ "grant": grant }),
+            None,
+            "authentication",
+        )
+        .await,
+        p.ip,
+        None,
+    )
+    .await;
+    let done = if rs.status == StatusCode::OK {
+        redeem(f, &b, &id).await
+    } else {
+        Reply {
+            status: rs.status,
+            body: Value::Null,
+            cookies: vec![],
+            cache_control: None,
+        }
+    };
+    (b, member, rs, done)
+}
+
+/// A document `K_b` signs, as the portal sends one.
+async fn as_portal(f: &Fixture, b: &Browser, type_uri: &str, payload: Value) -> Reply {
+    post(
+        &f.vtc,
+        &doc(&b.key, type_uri, payload, None, "authentication").await,
+        b.ip,
+        Some(PORTAL),
+    )
+    .await
+}
+
+/// auth/oob/grant/0.2 consumer item 4: once the member approves a grant
+/// carrying `signingScope`, `K_b` signs directory documents as the member for
+/// that session — and nothing outside the scope, and never a value made
+/// public (item 6, `card/update`'s producer rule).
+#[tokio::test]
+async fn a_scoped_grant_lets_the_portal_key_sign_directory_documents_as_the_member() {
+    let f = fixture().await;
+    let (b, member, rs, done) = sign_in_v0_2(&f, None).await;
+    assert_eq!(rs.body["payload"]["status"], "approved", "{}", rs.body);
+    assert_vtc_attested(&f, &rs.body);
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+
+    let shown = as_portal(&f, &b, &format!("{DIRECTORY}/card/show/0.1"), json!({})).await;
+    assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
+    let entry = shown.body["payload"]["card"]["entryId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let up = as_portal(
+        &f,
+        &b,
+        &format!("{DIRECTORY}/card/update/0.1"),
+        json!({ "values": { "displayName": "Alice" }, "visibility": { "displayName": "members" } }),
+    )
+    .await;
+    assert_eq!(up.status, StatusCode::OK, "{}", up.body);
+    // The card is the member's, keyed to their entry.
+    let card = vtc_service::directory::cards::by_did(f.vtc.state.directory.ks(), &member.did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(card.entry_id, entry);
+    assert_eq!(card.values["displayName"], "Alice");
+
+    // Making a value public needs the membership DID itself.
+    let public = as_portal(
+        &f,
+        &b,
+        &format!("{DIRECTORY}/card/update/0.1"),
+        json!({ "visibility": { "displayName": "public" } }),
+    )
+    .await;
+    assert_eq!(code(&public), "permissionDenied", "{}", public.body);
+
+    // Outside the scope the key is nobody.
+    let profile = as_portal(
+        &f,
+        &b,
+        "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
+        json!({}),
+    )
+    .await;
+    assert_eq!(code(&profile), "permissionDenied", "{}", profile.body);
+}
+
+/// Item 3: the grant's scope must be the one step 2 offered.
+#[tokio::test]
+async fn a_grant_widening_the_offered_scope_is_refused() {
+    let f = fixture().await;
+    let (_, _, rs, _) = sign_in_v0_2(&f, Some(json!(["vtc/directory", "vtc/groups"]))).await;
+    assert_eq!(
+        rs.body["payload"]["code"], "auth/oob/respond:contextMismatch",
+        "{}",
+        rs.body
+    );
+}
+
+/// Item 4.2: the delegation lives exactly as long as the session.
+#[tokio::test]
+async fn ending_the_session_disarms_the_portal_key() {
+    let f = fixture().await;
+    let (b, member, _, done) = sign_in_v0_2(&f, None).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    let sessions = vti_common::auth::session::list_sessions(&f.vtc.state.member_sessions_ks)
+        .await
+        .unwrap();
+    for s in sessions.iter().filter(|s| s.did == member.did) {
+        vti_common::auth::session::delete_session(&f.vtc.state.member_sessions_ks, &s.session_id)
+            .await
+            .unwrap();
+    }
+    let shown = as_portal(&f, &b, &format!("{DIRECTORY}/card/show/0.1"), json!({})).await;
+    assert_eq!(
+        code(&shown),
+        "vtc/directory/card/show:notMember",
+        "{}",
+        shown.body
+    );
+}
+
+/// A 0.1 sign-in delegates nothing: `K_b` is no member.
+#[tokio::test]
+async fn a_0_1_sign_in_delegates_no_signing() {
+    let f = fixture().await;
+    vtc_service::policy::default::install_defaults(
+        &f.vtc.state.policies_ks,
+        &f.vtc.state.active_policies_ks,
+    )
+    .await
+    .unwrap();
+    let member = Party::new();
+    enrol_member(&f.vtc, &member.did, None).await;
+    let b = Browser {
+        key: Party::new(),
+        ip: "198.51.100.9",
+    };
+    let p = Phone {
+        key: Party::new(),
+        ip: "198.51.100.9",
+    };
+    let id = start(&f, &b).await;
+    let (_, number) = claim_and_number(&f, &b, &p, &id).await;
+    let pr = prove(&f, &p, identify(&member, &id, &p.key.did, &number).await).await;
+    assert!(pr.body["payload"].get("signingScope").is_none());
+    let digest = oob::context_digest(&pr.body).unwrap();
+    let g = grant(
+        &member,
+        &id,
+        "approve",
+        &b.key.did,
+        &p.key.did,
+        PORTAL,
+        &digest,
+        "assertionMethod",
+    )
+    .await;
+    assert_eq!(respond(&f, &p, g).await.status, StatusCode::OK);
+    assert_eq!(redeem(&f, &b, &id).await.status, StatusCode::OK);
+    let shown = as_portal(&f, &b, &format!("{DIRECTORY}/card/show/0.1"), json!({})).await;
+    assert_eq!(
+        code(&shown),
+        "vtc/directory/card/show:notMember",
+        "{}",
+        shown.body
     );
 }

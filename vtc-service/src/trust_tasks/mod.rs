@@ -3135,6 +3135,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     crate::member_portal::oob::types::RESPOND_TYPE,
     crate::member_portal::oob::types::REDEEM_TYPE,
     crate::member_portal::oob::types::CANCEL_TYPE,
+    // 0.2: step 2 may offer `signingScope`, which the grant copies to let the
+    // portal key sign directory documents as the member.
+    crate::member_portal::oob::types::PROVE_V0_2_TYPE,
+    crate::member_portal::oob::types::RESPOND_V0_2_TYPE,
     auth_tasks::CHALLENGE_TYPE,
     auth_tasks::AUTHENTICATE_V0_2_TYPE,
     auth_tasks::AUTHENTICATE_V0_3_TYPE,

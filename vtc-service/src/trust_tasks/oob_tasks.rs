@@ -57,9 +57,11 @@ use super::helpers::{
 };
 use crate::member_portal::oob::types::{
     CANCEL_TYPE, CLAIM_TYPE, CancelPayload, CancelResponse, ClaimPayload, GRANT_TYPE,
-    GrantDecision, GrantPayload, IDENTIFY_TYPE, IdentifyPayload, PROVE_TYPE, ProvePayload,
-    REDEEM_TYPE, REQUEST_TYPE, RESPOND_TYPE, RedeemPayload, RedeemResponse, RequestPayload,
-    RequestResponse, RespondPayload, RespondResponse, Step1, Step2,
+    GRANT_V0_2_TYPE, GrantDecision, GrantPayload, GrantPayloadV0_2, IDENTIFY_TYPE, IdentifyPayload,
+    PROVE_TYPE, PROVE_V0_2_TYPE, ProvePayload, ProvePayloadV0_2, REDEEM_TYPE, REQUEST_TYPE,
+    RESPOND_TYPE, RESPOND_V0_2_TYPE, RedeemPayload, RedeemResponse, RequestPayload,
+    RequestResponse, RespondPayload, RespondPayloadV0_2, RespondResponse, RespondResponseV0_2,
+    Step1, Step2, Step2V0_2,
 };
 use crate::member_portal::oob::{
     self, CLAIM_WINDOW_SECS, DECISION_WINDOW_SECS, HttpContext, MAX_PENDING_PER_ADDRESS,
@@ -79,7 +81,16 @@ pub(crate) const URIS: &[&str] = &[
     RESPOND_TYPE,
     REDEEM_TYPE,
     CANCEL_TYPE,
+    PROVE_V0_2_TYPE,
+    RESPOND_V0_2_TYPE,
 ];
+
+/// The task families a member-portal sign-in offers to let `K_b` sign for as
+/// the member (`auth/oob/prove/0.2` `signingScope`): the member directory, so
+/// the portal can read it and edit the member's own card without asking the
+/// wallet for every document. Fixed for the surface, as the specification
+/// requires; the operator console offers none.
+pub(crate) const PORTAL_SIGNING_SCOPE: &[&str] = &["vtc/directory"];
 
 /// A declared error code: `auth/oob/<task>:<local>` for the codes one task
 /// declares, `auth/oob:<local>` for the family's shared ones (the published
@@ -106,8 +117,8 @@ fn task_of(type_uri: &str) -> &'static str {
     match type_uri {
         REQUEST_TYPE => "request",
         CLAIM_TYPE => "claim",
-        PROVE_TYPE => "prove",
-        RESPOND_TYPE => "respond",
+        PROVE_TYPE | PROVE_V0_2_TYPE => "prove",
+        RESPOND_TYPE | RESPOND_V0_2_TYPE => "respond",
         REDEEM_TYPE => "redeem",
         _ => "cancel",
     }
@@ -145,8 +156,10 @@ pub(super) async fn dispatch(
     Some(match type_uri {
         REQUEST_TYPE => handle_request(state, doc, signer).await,
         CLAIM_TYPE => handle_claim(state, doc, signer).await,
-        PROVE_TYPE => handle_prove(state, doc, signer).await,
-        RESPOND_TYPE => handle_respond(state, doc, signer).await,
+        PROVE_TYPE => handle_prove(state, doc, signer, false).await,
+        PROVE_V0_2_TYPE => handle_prove(state, doc, signer, true).await,
+        RESPOND_TYPE => handle_respond(state, doc, signer, false).await,
+        RESPOND_V0_2_TYPE => handle_respond(state, doc, signer, true).await,
         REDEEM_TYPE => handle_redeem(state, doc, signer).await,
         CANCEL_TYPE => handle_cancel(state, doc, signer).await,
         _ => return None,
@@ -576,6 +589,7 @@ async fn handle_request(
         ended_at: None,
         audience,
         decline_reason: None,
+        signing_scope: None,
     };
     if let Err(e) = oob::create(&state.member_sessions_ks, &rec).await {
         return super::helpers::app_error_to_reject(&doc, &e);
@@ -722,12 +736,19 @@ async fn handle_prove(
     state: &AppState,
     doc: TrustTask<Value>,
     approver: String,
+    v0_2: bool,
 ) -> TrustTaskOutcome {
-    let payload: ProvePayload = match parse_payload(&doc) {
-        Ok(p) => p,
-        Err(e) => return e,
+    let identify = if v0_2 {
+        match parse_payload::<ProvePayloadV0_2>(&doc) {
+            Ok(p) => Value::Object(p.identify),
+            Err(e) => return e,
+        }
+    } else {
+        match parse_payload::<ProvePayload>(&doc) {
+            Ok(p) => Value::Object(p.identify),
+            Err(e) => return e,
+        }
     };
-    let identify = Value::Object(payload.identify);
     let Some(request_id) = request_id_hint(&doc, &identify) else {
         return not_found(&doc, "prove");
     };
@@ -894,11 +915,25 @@ async fn handle_prove(
         }),
     );
     step2_json.insert("identifiedAs".into(), Value::String(member.clone()));
-    let step2: Step2 = match wire(&doc, "step 2", Value::Object(step2_json)) {
-        Ok(s) => s,
-        Err(e) => return e,
+    // 0.2: a member sign-in offers the portal's signing scope. The console
+    // offers none, and neither does a 0.1 step 2.
+    let offered: Option<Vec<String>> = (v0_2 && rec.audience == SessionAudience::Member)
+        .then(|| PORTAL_SIGNING_SCOPE.iter().map(|s| s.to_string()).collect());
+    if let Some(scope) = &offered {
+        step2_json.insert("signingScope".into(), serde_json::json!(scope));
+    }
+    let attested_step2 = if v0_2 {
+        match wire::<Step2V0_2>(&doc, "step 2", Value::Object(step2_json)) {
+            Ok(s) => attested(state, &doc, &s).await,
+            Err(e) => return e,
+        }
+    } else {
+        match wire::<Step2>(&doc, "step 2", Value::Object(step2_json)) {
+            Ok(s) => attested(state, &doc, &s).await,
+            Err(e) => return e,
+        }
     };
-    let (signed, outcome) = match attested(state, &doc, &step2).await {
+    let (signed, outcome) = match attested_step2 {
         Ok(s) => s,
         Err(e) => return e,
     };
@@ -915,6 +950,7 @@ async fn handle_prove(
         r.state = OobState::Identified;
         r.identified_did = Some(member.clone());
         r.step2_digest = Some(digest.clone());
+        r.signing_scope = offered.clone();
         Ok(())
     })
     .await;
@@ -943,12 +979,20 @@ async fn handle_respond(
     state: &AppState,
     doc: TrustTask<Value>,
     approver: String,
+    v0_2: bool,
 ) -> TrustTaskOutcome {
-    let payload: RespondPayload = match parse_payload(&doc) {
-        Ok(p) => p,
-        Err(e) => return e,
+    let grant_doc = if v0_2 {
+        match parse_payload::<RespondPayloadV0_2>(&doc) {
+            Ok(p) => Value::Object(p.grant),
+            Err(e) => return e,
+        }
+    } else {
+        match parse_payload::<RespondPayload>(&doc) {
+            Ok(p) => Value::Object(p.grant),
+            Err(e) => return e,
+        }
     };
-    let grant_doc = Value::Object(payload.grant);
+    let grant_type = if v0_2 { GRANT_V0_2_TYPE } else { GRANT_TYPE };
     let Some(request_id) = request_id_hint(&doc, &grant_doc) else {
         return not_found(&doc, "respond");
     };
@@ -1006,7 +1050,7 @@ async fn handle_respond(
     if let Err(reason) = verify_carried(
         state,
         &grant_doc,
-        GRANT_TYPE,
+        grant_type,
         &member,
         vti_common::auth::ProofPurpose::AssertionMethod,
     )
@@ -1016,27 +1060,23 @@ async fn handle_respond(
         fail(reason).await;
         return not_authorized(&doc, "respond");
     }
-    let grant: GrantPayload = match grant_doc
-        .get("payload")
-        .cloned()
-        .map(serde_json::from_value)
-    {
-        Some(Ok(g)) => g,
-        _ => {
-            fail("grant payload is malformed").await;
-            return not_authorized(&doc, "respond");
-        }
+    let Some(grant) = GrantView::read(&grant_doc, v0_2) else {
+        fail("grant payload is malformed").await;
+        return not_authorized(&doc, "respond");
     };
 
     // 3–4. The lock, the browser key, the origin and the context it was shown.
-    let context_ok = grant.request_id.as_str() == rec.request_id
-        && grant.approver_key.as_str() == approver
-        && grant.session_key.as_str() == rec.start_key
-        && grant.origin.as_str() == rec.origin
+    // 0.2 item 3: the grant's `signingScope` is step 2's, both absent or the
+    // same families in the same order. A 0.1 grant carries none and arms none.
+    let context_ok = grant.request_id == rec.request_id
+        && grant.approver_key == approver
+        && grant.session_key == rec.start_key
+        && grant.origin == rec.origin
         && rec
             .step2_digest
             .as_deref()
-            .is_some_and(|d| oob::same_digest(d, &grant.context_digest));
+            .is_some_and(|d| oob::same_digest(d, &grant.context_digest))
+        && (!v0_2 || grant.signing_scope == rec.signing_scope);
     if !context_ok {
         fail("grant context mismatch").await;
         return reject_with_code(
@@ -1046,13 +1086,10 @@ async fn handle_respond(
             None,
         );
     }
-    let decision = match grant.decision {
-        GrantDecision::Approve => OobState::Approved,
-        GrantDecision::Decline => OobState::Declined,
-        _ => {
-            fail("unknown decision").await;
-            return not_authorized(&doc, "respond");
-        }
+    let decision = if grant.approve {
+        OobState::Approved
+    } else {
+        OobState::Declined
     };
     if decision == OobState::Approved {
         let not_after = grant.not_after;
@@ -1126,15 +1163,19 @@ async fn handle_respond(
             .await;
             // Signed like steps 1 and 2: every reply to the wallet is this
             // community's attestation, and the wallet refuses one that is not.
-            let r: RespondResponse = match wire(
-                &doc,
-                "the respond response",
-                serde_json::json!({ "status": stage }),
-            ) {
-                Ok(r) => r,
-                Err(e) => return e,
+            let body = serde_json::json!({ "status": stage });
+            let answered = if v0_2 {
+                match wire::<RespondResponseV0_2>(&doc, "the respond response", body) {
+                    Ok(r) => attested(state, &doc, &r).await,
+                    Err(e) => return e,
+                }
+            } else {
+                match wire::<RespondResponse>(&doc, "the respond response", body) {
+                    Ok(r) => attested(state, &doc, &r).await,
+                    Err(e) => return e,
+                }
             };
-            match attested(state, &doc, &r).await {
+            match answered {
                 Ok((_, outcome)) => outcome,
                 Err(e) => e,
             }
@@ -1146,6 +1187,65 @@ async fn handle_respond(
             "this sign-in request has already been decided",
             None,
         ),
+    }
+}
+
+/// What a grant says, read from its 0.1 or 0.2 generated payload.
+struct GrantView {
+    request_id: String,
+    approver_key: String,
+    session_key: String,
+    origin: String,
+    context_digest: String,
+    approve: bool,
+    not_after: u64,
+    /// 0.2 only: the families `K_b` may sign for as the member.
+    signing_scope: Option<Vec<String>>,
+}
+
+impl GrantView {
+    /// `None` for a payload its version's schema does not admit, or an
+    /// unknown decision.
+    fn read(grant_doc: &Value, v0_2: bool) -> Option<Self> {
+        let payload = grant_doc.get("payload")?.clone();
+        if v0_2 {
+            let g: GrantPayloadV0_2 = serde_json::from_value(payload).ok()?;
+            let approve = match serde_json::to_value(g.decision).ok()?.as_str()? {
+                "approve" => true,
+                "decline" => false,
+                _ => return None,
+            };
+            Some(Self {
+                request_id: g.request_id.to_string(),
+                approver_key: g.approver_key.to_string(),
+                session_key: g.session_key.to_string(),
+                origin: g.origin.to_string(),
+                context_digest: g.context_digest.to_string(),
+                approve,
+                not_after: g.not_after,
+                signing_scope: g
+                    .signing_scope
+                    .map(|s| s.iter().map(|f| f.to_string()).collect()),
+            })
+        } else {
+            let g: GrantPayload = serde_json::from_value(payload).ok()?;
+            let approve = match g.decision {
+                GrantDecision::Approve => true,
+                GrantDecision::Decline => false,
+                #[allow(unreachable_patterns)]
+                _ => return None,
+            };
+            Some(Self {
+                request_id: g.request_id.to_string(),
+                approver_key: g.approver_key.to_string(),
+                session_key: g.session_key.to_string(),
+                origin: g.origin.to_string(),
+                context_digest: g.context_digest.to_string(),
+                approve,
+                not_after: g.not_after,
+                signing_scope: None,
+            })
+        }
     }
 }
 
@@ -1472,7 +1572,26 @@ async fn redeem_member(
         Err(e) => return super::helpers::app_error_to_reject(doc, &e),
     };
     match mint_session(state, &member_did, &consumed.start_key, not_after).await {
-        Ok((_session_id, session_end, set)) => {
+        Ok((session_id, session_end, set)) => {
+            // A 0.2 grant with `signingScope` arms `K_b` to sign those
+            // families as the member, for this session (auth/oob/grant/0.2).
+            if let Some(scope) = armed_scope(consumed) {
+                let delegation = crate::member_portal::delegation::Delegation {
+                    member_did: member_did.clone(),
+                    session_id: session_id.clone(),
+                    scope,
+                    not_after: session_end,
+                };
+                if let Err(e) = crate::member_portal::delegation::record(
+                    &state.member_sessions_ks,
+                    &consumed.start_key,
+                    &delegation,
+                )
+                .await
+                {
+                    return super::helpers::app_error_to_reject(doc, &e);
+                }
+            }
             http.set_cookies(set);
             audit(
                 state,
@@ -1506,6 +1625,23 @@ async fn redeem_member(
         }
         Err(e) => super::helpers::app_error_to_reject(doc, &e),
     }
+}
+
+/// The `signingScope` of the approved grant, when it is a 0.2 grant carrying
+/// one — `respond` already held it equal to what step 2 offered.
+fn armed_scope(consumed: &OobRequest) -> Option<Vec<String>> {
+    let grant = consumed.grant.as_ref()?;
+    if grant.get("type").and_then(Value::as_str) != Some(GRANT_V0_2_TYPE) {
+        return None;
+    }
+    let scope: Vec<String> = grant
+        .get("payload")?
+        .get("signingScope")?
+        .as_array()?
+        .iter()
+        .filter_map(|f| f.as_str().map(str::to_string))
+        .collect();
+    (!scope.is_empty()).then_some(scope)
 }
 
 async fn redeem_admin(

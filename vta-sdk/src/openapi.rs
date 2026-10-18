@@ -317,6 +317,14 @@ spec_types! {
     DirectoryEntriesShow01Payload(directory::entries::show::v0_1::Payload);
     /// `vtc/directory/entries/show/0.1#response` — one projected entry.
     DirectoryEntriesShow01Response(directory::entries::show::v0_1::Response);
+    /// `vtc/directory/card/show/0.1` payload.
+    DirectoryCardShow01Payload(directory::card::show::v0_1::Payload);
+    /// `vtc/directory/card/show/0.1#response` — the member's own card, whole.
+    DirectoryCardShow01Response(directory::card::show::v0_1::Response);
+    /// `vtc/directory/card/update/0.1` payload — the member's values, visibilities and discoverability.
+    DirectoryCardUpdate01Payload(directory::card::update::v0_1::Payload);
+    /// `vtc/directory/card/update/0.1#response` — the card as it now stands.
+    DirectoryCardUpdate01Response(directory::card::update::v0_1::Response);
     /// `vtc/rooms/community/members/list/0.1` payload.
     RoomsCommunityMembersList01Payload(rooms_community::members::list::v0_1::Payload);
     /// `vtc/rooms/community/members/list/0.1#response` — one page of a room's
@@ -691,6 +699,10 @@ mod tests {
         check::<DirectoryEntriesList01Response>();
         check::<DirectoryEntriesShow01Payload>();
         check::<DirectoryEntriesShow01Response>();
+        check::<DirectoryCardShow01Payload>();
+        check::<DirectoryCardShow01Response>();
+        check::<DirectoryCardUpdate01Payload>();
+        check::<DirectoryCardUpdate01Response>();
     }
 
     #[test]

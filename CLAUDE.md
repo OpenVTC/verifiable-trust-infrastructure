@@ -1363,6 +1363,13 @@ new flow, update both this section and the relevant `docs/*.md`.
   `project`, `read`, `write_policy`, `sweep`),
   `vtc-service/src/trust_tasks/directory_tasks.rs`,
   `vtc-service/policies/default/{directory,directory_write}.rego`.
+- **The portal's key**: a member sign-in at `auth/oob/*/0.2` offers
+  `signingScope: ["vtc/directory"]`; `redeem` records a delegation for `K_b`
+  (`member_portal::delegation`), and the member directory tasks read a
+  document `K_b` signs as the member's while that session is live
+  (`Writer::Delegated`: never `public`, never external). Never let a
+  delegation outlive its session, keep it alive, or cover `auth`, `acl`,
+  `consent`, `task-consent` or `confirm`.
 - **Docs**: `docs/03-vtc/member-directory.md`,
   `docs/05-design-notes/vtc-member-directory.md`.
 
