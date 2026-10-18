@@ -2,6 +2,59 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.47.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.46.0...vti-common-v0.47.0) — 2026-10-18
+
+
+### Added
+
+- **vtc**: Runtime community themes — a checked stylesheet editor, built-in themes, a no-write preview, and decisions the theme cannot reach ([#2181](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2181))
+
+* feat(vtc-admin-ui): community themes — built-in themes, a checked stylesheet editor, and a preview of the console and portal that writes nothing
+
+  The browser half of vtc/community/theme/* (trustoverip/dtgwg-trust-tasks-tf#811);
+  storing a theme for the community follows once the tasks reach the daemon.
+
+  Theme card (Community profile page):
+  - Six built-in themes (Default, Forest, Ocean, Slate, Sunset, High contrast),
+    upload a .css, edit in place, download.
+  - Checked against the theme profile (P1-P8) as you type; the first thing
+    outside it is named by line, column and profile item.
+
+  Theme profile checker (lib/theme-profile.ts):
+  - Tokens on :root (light/dark, prefers-color-scheme media only); on elements,
+    colours, gradients, bounded borders/radius, fonts, bounded letter-spacing.
+    No url()/@import/@font-face, no !important, no escapes or `<`, nothing that
+    moves, sizes, hides, overlays or adds content.
+  - theme-profile.vectors.json: the cases the community's own checker must
+    answer identically. Vitest is told to load the theme .css files whole;
+    it empties ?raw stylesheets otherwise, which made every built-in pass
+    vacuously.
+
+  Theme preview (lib/theme-preview.ts), opened in a new tab from the card and
+  following the draft live:
+  - The console sends reads only: at both seams every request leaves through
+    (lib/api.ts request + postDocument), a document goes only when its task is
+    a read and a plain request only when it is a GET. Default-deny; anything
+    else is refused before it is sent and the preview bar says nothing changed.
+    Wallet and portal sign-in paths are guarded the same way.
+  - No third-party plugin loads in a preview: it could write past the guard.
+  - The member portal answers its own routes from a sample member (signed-in
+    home or sign-in page, switched from the bar), so an administrator who is
+    not a member can preview it; public reads are real; rooms never reach the
+    member's wallet.
+  - The preview bar is drawn in its own shadow tree with literal colours, so
+    the theme under preview cannot restyle the notice that nothing is saved
+    (theme/show client items 2 and 4).
+
+- **vtc**: Community-room details administrators can see, edit and track (trust-tasks-tf #805) ([#2170](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2170))
+
+* build: raise the trust-tasks-rs floor to 0.31.14 (trust-tasks-tf #805)
+
+  0.31.14 carries vtc/rooms/community/update/0.1, the 0.2 community-room
+  create/get/list and vtc/rooms/offers/list/0.2.
+
+
+
 ## [0.46.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.45.0...vti-common-v0.46.0) — 2026-10-16
 
 

@@ -2,6 +2,32 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.25.0...vtc-client-v0.26.0) — 2026-10-18
+
+
+### Added
+
+- **vtc**: Community-room details administrators can see, edit and track (trust-tasks-tf #805) ([#2170](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2170))
+
+* build: raise the trust-tasks-rs floor to 0.31.14 (trust-tasks-tf #805)
+
+  0.31.14 carries vtc/rooms/community/update/0.1, the 0.2 community-room
+  create/get/list and vtc/rooms/offers/list/0.2.
+
+
+
+### Fixed
+
+- **vtc-client**: Read a bare-origin VTCRest endpoint as the /v1 mount (KR-15) ([#2172](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2172))
+
+DIDs minted from the vtc-host template before #1615 advertise VTCRest as
+  the bare origin. Since #1637 cnm takes its API base from that endpoint, so
+  such a community failed every request unless --url was passed.
+  api_base_from_did_document now reads a pathless endpoint as <origin>/v1,
+  the only mount the VTC serves; an endpoint that names a path is unchanged.
+
+
+
 ## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.24.0...vtc-client-v0.25.0) — 2026-10-16
 
 

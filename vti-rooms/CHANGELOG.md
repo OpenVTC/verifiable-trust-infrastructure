@@ -2,6 +2,116 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.17.0...vti-rooms-v0.18.0) — 2026-10-18
+
+
+### Added
+
+- **rooms**: Rooms/revocations/{put,get} — a host refuses what the room withdrew, at once ([#2173](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2173))
+
+A room had no way to take back a grant before it expired: a host authorizes from
+  credentials the room issued and keeps no roster, so a removed member's VMC and
+  VAC chain stayed good at the host until `validUntil`. trust-tasks-tf #804 adds
+  the room's revocation list — signed by the room, cumulative, numbered — which an
+  administrator delivers to each host serving the room. This is the host half.
+
+- **rooms**: A room's own profile — rooms/keys/profile/{read,write}, sealed inside the room ([#2171](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2171))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#807 on the key holder's side. A
+  room's name, description, tags and emoji (RoomProfile) now live inside the
+  room: one record per epoch at profile_key(E) — HKDF-SHA256 over the epoch's
+  storage key, info "openvtc/room/profile/v1" || roomId || u64be(E), 16 bytes,
+  base64url — sealed like any record, so the host stores one more opaque record
+  and cannot tell which one names the room. An open room's is the record at
+  `room-profile`, its signed body in cleartext.body.
+
+  VTA (vta-service):
+  - rooms/keys/profile/read/0.1: walks from the current epoch down (bound 32),
+    fetching each location as the member under their own `read` grant,
+    verifying the host's reply as rooms/keys/read does, and takes the newest
+    profile it accepts (`found`, `stale` below the current epoch), stops at a
+    retraction (`cleared`), or answers `absent`, with `searched`.
+  - Readers decide who may name the room
+    (operations::room_profile::check_statement): the SealedRecordBody rules
+    (1)-(4) — no unknown member, the author's assertionMethod proof, signed for
+    the location read, the host-recorded author on attributed — plus
+    RoomProfileStatement items 1-4: a profile and nothing a record carries,
+    sealed under the epoch that located it, issuedAt within
+    [updatedAt − 1h, updatedAt + 5m], and an authority chain conferring
+    `curate` or `admin` on the author at the room's scope, every link valid at
+    issuedAt (vti_rooms_dtg::profile::verify_profile_authority). Anything that
+    fails is ignored and reported in `rejected` with its reason and author; a
+    rename by a member holding only `write` is `noAuthority` and the room keeps
+    the profile before it. This VTA holds no RevocationList, so item 5 never
+    applies (revocation is not retroactive).
+  - rooms/keys/profile/write/0.1: refuses `noAuthority` before contacting the
+    host without `write` and `curate`/`admin` (`curate` to clear); signs the
+    statement as the principal (assertionMethod, through the gated oracle) with
+    the room-issued chain inside, pads the signed body to a 1 KiB multiple,
+    seals it under the current epoch and puts it as the member under a `write`
+    grant; re-seals for the version the host assigned, then `contended`.
+    `clear` retracts the current location with a `curate` grant, storing a
+    profile there first when it holds none. Delegates are refused.
+  - The epoch-advance re-write: rooms/owner/group/{add,remove,renew} read the
+    profile before the advance and write it again under the new epoch as the
+    owner once the host accepts — never failing, delaying or undoing the
+    advance (tried a few times, then logged), never for `absent`/`cleared`,
+    never retracting the earlier one (add 0.1 and 0.2, remove, renew; the
+    speaker is HostCall::profile_speaker, so a later version reuses it).
+  - rooms/keys/read does not open a profile location (answers
+    ext["org.openvtc.rooms"].roomProfile) and rooms/keys/browse leaves profile
+    records out, counting against everything the host listed.
+  - Both tasks dispatched ([None Secret true] / [Mutating Metadata true]),
+    classified RetrySafe in vta_sdk::retry_safety, counted in budget, guarded in
+    vta-mcp, with conformance entries.
+
+
+
+### Fixed
+
+- **rooms**: A curated sealed record opens again — keep the version its body was sealed at ([#2185](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2185))
+
+* fix(rooms): a curated sealed record opens again — keep the version its body was sealed at
+
+  Archiving, restoring or pinning a record on an `attributed` or `private` room
+  left it unreadable to every member ("record did not open: it was sealed under
+  a different key, epoch, or location"). `curate_record` keeps the body unless it
+  retracts but moves the record to a new version, as rooms/records/curate/0.1
+  requires; the body is bound — by the AEAD (`sealed.rs`, `room|key|version|epoch`)
+  and by its author's signed location (`SealedRecordBody`) — to the version it was
+  sealed at, and nothing remembered that version. Every reader opened at the new
+  one. No test curated a sealed record and read it back.
+
+  Rooms `_shared/0.1` `SealedRecord` gains `version` (dtgwg-trust-tasks-tf):
+
+  Host (vti-rooms, both room-host and vtc-service):
+  - `Record::sealed_version` keeps the version a kept body was sealed at, set at
+    the first curation of a sealed body and never moved by a later one; a new
+    body (`put_record`) or a retraction clears it. Stored rows without it load
+    unchanged (`serde(default)`).
+  - Served as `sealed.version` only where it differs from the record's own, so
+    no record changes shape until a curation needs it; part of `sealed`, so the
+    committed leaf covers it. Mirrors copy it (`Record::from_wire`).
+  - `SealedContent::sealed_at` refuses a `sealed.version` above the record's.
+
+  Agent (vta-service):
+  - `room_groups::open_record_at` opens at a given version and, with
+    `Search::Earlier`, searches earlier ones newest first — never later — and
+    names the version that opened. For records curated by a host predating
+    `sealed.version`: the AEAD makes a wrong guess fail rather than mislead.
+  - rooms/keys/read and the profile reader open at `sealed.version` (searching
+    where the host gave none) and check the profile's location there.
+    rooms/keys/open searches from the version the caller passed. Both say where
+    the body opened in `ext["org.openvtc.rooms"].sealedAt` when it is not the
+    version asked, because the caller verifies the author's signature there.
+
+  CLI (vta-cli-common): `open_and_verify` opens at the sealed-at version and
+  verifies where the VTA says it opened (refusing a later one). `pnm rooms file
+  get` parses the host's reply with a generated type that gains `version` with
+  the next trust-tasks-rs; until then the VTA's search covers it.
+
+
+
 ## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.16.0...vti-rooms-v0.17.0) — 2026-10-16
 
 

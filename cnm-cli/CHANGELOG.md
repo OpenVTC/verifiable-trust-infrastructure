@@ -2,6 +2,111 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.37.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.36.0...cnm-cli-v0.37.0) — 2026-10-18
+
+
+### Added
+
+- **vtc**: Vtc/rooms/community/members/remove 0.2 — a removed member is refused at the room's host at once ([#2175](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2175))
+
+* feat(vtc): vtc/rooms/community/members/remove 0.2 — a removed member is refused at the room's host at once
+
+  The community half of trust-tasks-tf #804. A member removed from a room the
+  community owns kept every credential the room gave them, honoured at the host
+  until `validUntil`; on an `open` room removal withdrew nothing at all.
+
+  `vtc/rooms/community/members/remove/0.2` (0.1 still served, unchanged):
+  - item 2, admitted member: `open` — the community's VTA withdraws them
+    (`rooms/owner/revoke`, one `subject` withdrawal, delivered to this community
+    as the room's host); `attributed` — `rooms/owner/group/remove/0.2`,
+    withdrawing first and then advancing (a member with no leaf is withdrawn
+    alone); `private` — `group/remove/0.1`, the group alone;
+  - item 3: an open offer is withdrawn, and on `open` and `attributed` its
+    credentials at the host too;
+  - recorded only once the VTA answered and, on `open`/`attributed`, the host
+    accepted the withdrawal; a refused delivery is `keyHolderRefused`, an
+    unconfirmed one `keyHolderUnavailable`;
+  - item 4: the answer carries `revocation` (the list's head) and `revokedAt`
+    beside `member` and, on a sealed tier, `epoch`; the `ext` notice says what
+    the tier's removal does.
+
+  The removal is one function (`rooms::departures::remove_member`) used by the
+  administrator's request and by the departure worker ([#2156](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2156)), so a member who
+  leaves the community is withdrawn at the host of every room it owns too. Every
+  departure removal now asks the VTA, so a pass stops at the first silent VTA.
+
+- **vtc**: Community rooms carry their own name — create 0.3 and update 0.2 write the label and description into the room ([#2179](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2179))
+
+Implements the community side of trustoverip/dtgwg-trust-tasks-tf#807:
+  vtc/rooms/community/create/0.3 and vtc/rooms/community/update/0.2, on top
+  of the community-room details ([#805](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/805)).
+
+  - create 0.3 (step 5, items 8-9): once the room is stored, the community's
+    own VTA is asked (rooms/keys/profile/write, as the community, with this
+    VTC as host) to write the label as the profile's `name` and the
+    description as its `description` — never the tags. The answer's
+    `roomProfile` is `written` only when the VTA answered written, otherwise
+    `pending`; the room stands either way.
+  - update 0.2 (items 10-12): a change of label or description writes the
+    profile again, first reading the current one and carrying over the tags,
+    emoji and ext a curator set in the room; a room made before create 0.3 (or
+    one still pending) is written even when nothing changed, and that is not
+    audited as a change; a tags-only change answers `unchanged`. The change to
+    the owner's record never depends on the write. Update 0.1 still never
+    reaches the VTA.
+  - rooms::community_profile: the one retry owner for `pending` profiles — a
+    record per room (`room-profile:<room>`, beside the owner's record),
+    written pending before the VTA is asked and written only after it
+    answered, one attempt per due room per pass with a capped backoff and
+    jitter (1 min to 6 h), always writing the room's label and description as
+    they are at the attempt, so a later update supersedes a pending one.
+  - get/list carry ext["org.openvtc"].roomProfile (written / pending with the
+    retry state / none); the console shows it on a room's page and creates at
+    0.3 and updates at 0.2, toasting a `pending`; cnm rooms create/update use
+    0.3/0.2 (falling back to 0.2/0.1 against an older VTC) and get/list show
+    the state.
+  - The community's entry at its VTA needs `room-open` for the profile tasks:
+    added to the capabilities the VTA-access fix commands name, and to the
+    docs. The community's own authority already confers admin, write and
+    curate (create item 6), so item 12's re-issue is never needed here.
+  - Both new versions dispatched, with conformance entries, OpenAPI wrappers
+    (openapi.json and wire.ts regenerated) and the console manifest.
+
+- **vtc**: Community-room details administrators can see, edit and track (trust-tasks-tf #805) ([#2170](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2170))
+
+* build: raise the trust-tasks-rs floor to 0.31.14 (trust-tasks-tf #805)
+
+  0.31.14 carries vtc/rooms/community/update/0.1, the 0.2 community-room
+  create/get/list and vtc/rooms/offers/list/0.2.
+
+- **vtc**: A VTA permission refusal shows the pnm commands that fix it ([#2160](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2160))
+
+When the community's VTA refuses a community-room step for lack of
+  permission, the console and `cnm rooms` show the `pnm acl` commands that
+  fix the VTC's entry at its VTA, filled in with the VTC's DID and contexts.
+
+  The entry must cover the context holding the VTC's own DID, not only the
+  `[rooms.community]` context: the VTA acts as the community only for a DID
+  in a context the entry covers, and a scope covers descendants, never a
+  parent. An entry scoped to `vtc-test/rooms` with the DID in `vtc-test` is
+  refused "... is not a persona you may act as".
+
+  The fixes ride `vtc/rooms/community/list`
+  (`ext["org.openvtc"].communityRooms.vtaAccess`), answered to holders of
+  `vtc.rooms.manage`, not the refusal: a trust-task-error message may not
+  carry consumer-internal state such as VTA contexts, and keyHolderRefused's
+  details admit only the VTA's code and message. Each fix names the refusals
+  it answers, so clients apply one rule set as data. The list also warns
+  when the rooms context is outside the DID's context or `vta_context` is
+  unknown.
+
+  New optional config key `vta_context` (written by `vtc setup`) records the
+  VTA context holding the VTC's DID; absent, the commands use a placeholder.
+  Docs gain a troubleshooting section; quickstart §12 now passes
+  `--contexts vtc`.
+
+
+
 ## [0.36.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.35.0...cnm-cli-v0.36.0) — 2026-10-16
 
 
