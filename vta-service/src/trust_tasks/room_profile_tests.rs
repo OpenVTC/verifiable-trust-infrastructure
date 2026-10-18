@@ -69,6 +69,7 @@ async fn start_host_with(contend: bool) -> Host {
                             pinned: false,
                             sealed: None,
                             nonce: None,
+                            sealed_version: None,
                             cleartext: Some(json!({ "body": "another member's write" })),
                             author: None,
                             updated_at: 0,
