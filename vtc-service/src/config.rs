@@ -124,8 +124,96 @@ pub struct AppConfig {
         skip_serializing_if = "crate::credentials::trusted_witnesses::WitnessesConfig::is_empty"
     )]
     pub witnesses: crate::credentials::trusted_witnesses::WitnessesConfig,
+    /// The member directory (`[directory]`): the listing a new card starts
+    /// with, how long a retired field's values are kept, the facet threshold
+    /// and the per-member read rate. **Absent means the defaults**, which are
+    /// the narrow ones the directory chapter asks for (VTI-DIR-041). See
+    /// [`crate::directory`].
+    #[serde(default, skip_serializing_if = "DirectoryConfig::is_default")]
+    pub directory: DirectoryConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
+}
+
+/// The member directory (`[directory]`).
+///
+/// A host setting, written by the operator. Widening any of it — a wider
+/// `default_listing` above all — widens what a new card exposes, so it is not
+/// runtime-patchable: the community's administrators change the schema, never
+/// these.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct DirectoryConfig {
+    /// `listed` (the default), `findable` or `hidden`: where a new card
+    /// starts. Every member may always choose `hidden`.
+    #[serde(default = "DirectoryConfig::default_listing")]
+    pub default_listing: String,
+    /// Days a retired field's values are kept before they are erased, so a
+    /// mistaken retirement can be undone by the operator. Default 30.
+    #[serde(default = "DirectoryConfig::default_retention_days")]
+    pub retention_days: u32,
+    /// The facet threshold *k* (VTI-DIR-113): a count below it is shown only as
+    /// "fewer than k". Default 5, at least 2.
+    #[serde(default = "DirectoryConfig::default_facet_threshold")]
+    pub facet_threshold: u32,
+    /// `vtc/directory/entries/list` requests one caller may make per minute
+    /// (VTI-DIR-114). Default 60.
+    #[serde(default = "DirectoryConfig::default_list_rate")]
+    pub list_rate_per_minute: u32,
+}
+
+impl DirectoryConfig {
+    fn default_listing() -> String {
+        "listed".into()
+    }
+    fn default_retention_days() -> u32 {
+        30
+    }
+    fn default_facet_threshold() -> u32 {
+        5
+    }
+    fn default_list_rate() -> u32 {
+        60
+    }
+
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
+    /// The settings the directory runs with. A value it cannot use is refused
+    /// at boot rather than read as something wider.
+    pub fn settings(&self) -> Result<crate::directory::model::Settings, String> {
+        let default_listing = crate::directory::model::Listing::parse(&self.default_listing)
+            .ok_or_else(|| {
+                format!(
+                    "[directory] default_listing = {:?}: expected listed, findable or hidden",
+                    self.default_listing
+                )
+            })?;
+        if self.facet_threshold < 2 {
+            return Err("[directory] facet_threshold must be at least 2".into());
+        }
+        if self.list_rate_per_minute == 0 {
+            return Err("[directory] list_rate_per_minute must be at least 1".into());
+        }
+        Ok(crate::directory::model::Settings {
+            default_listing,
+            retention_days: self.retention_days,
+            facet_threshold: self.facet_threshold,
+            list_rate_per_minute: self.list_rate_per_minute,
+        })
+    }
+}
+
+impl Default for DirectoryConfig {
+    fn default() -> Self {
+        Self {
+            default_listing: Self::default_listing(),
+            retention_days: Self::default_retention_days(),
+            facet_threshold: Self::default_facet_threshold(),
+            list_rate_per_minute: Self::default_list_rate(),
+        }
+    }
 }
 
 /// Data rooms hosted by this community (`[rooms]`).

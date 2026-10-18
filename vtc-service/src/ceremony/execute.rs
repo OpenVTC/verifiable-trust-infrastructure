@@ -648,6 +648,21 @@ async fn depart(
         }
     }
 
+    // Their directory card follows the disposition (VTI-DIR-121): erased with
+    // a purge or a tombstone, kept with a historical record — and, kept, never
+    // read again by anyone but an administrator, because the member is no
+    // longer active (VTI-DIR-111). Nothing is published beyond the community
+    // yet, so there is no external card to withdraw first (VTI-DIR-120).
+    crate::directory::cards::on_departure(
+        state.directory.ks(),
+        subject_did,
+        match disposition {
+            Disposition::Historical => crate::directory::cards::Departure::Keep,
+            _ => crate::directory::cards::Departure::Erase,
+        },
+    )
+    .await?;
+
     // Revoke the member's credentials by flipping the revocation bit.
     // Best-effort: the ACL + Member rows are already gone, so a flip
     // failure is logged, not unwound — the caller can re-flip.

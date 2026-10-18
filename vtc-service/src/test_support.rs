@@ -162,6 +162,8 @@ pub struct TestVtcBuilder {
     community_rooms: Option<crate::config::CommunityRoomsConfig>,
     /// The community's VTA, as the key holder of the rooms it owns.
     community_key_holder: Option<Arc<dyn crate::rooms::vta_storage::VtaChannel>>,
+    /// `[directory]`, as the directory runs with it.
+    directory: crate::directory::model::Settings,
 }
 
 impl Default for TestVtcBuilder {
@@ -188,6 +190,7 @@ impl Default for TestVtcBuilder {
             room_rate_limits: None,
             community_rooms: None,
             community_key_holder: None,
+            directory: crate::directory::model::Settings::default(),
         }
     }
 }
@@ -196,6 +199,12 @@ impl TestVtcBuilder {
     /// Override the configured `vtc_did`.
     pub fn vtc_did(mut self, did: impl Into<String>) -> Self {
         self.vtc_did = did.into();
+        self
+    }
+
+    /// Run the member directory with `settings` (`[directory]`).
+    pub fn with_directory(mut self, settings: crate::directory::model::Settings) -> Self {
+        self.directory = settings;
         self
     }
 
@@ -678,6 +687,12 @@ impl TestVtcBuilder {
                     .expect("community_rooms ks"),
                 self.community_key_holder,
             ),
+            directory: Arc::new(crate::directory::Directory::new(
+                store
+                    .keyspace(crate::store::keyspaces::DIRECTORY)
+                    .expect("directory ks"),
+                self.directory,
+            )),
             audit_ks,
             audit_key_ks,
             audit_checkpoint_ks,

@@ -1336,6 +1336,36 @@ new flow, update both this section and the relevant `docs/*.md`.
   `cnm-cli/src/rooms.rs` (`cnm rooms …`).
 - **Docs**: `docs/03-vtc/community-rooms.md`.
 
+### VTC member directory (`vtc/directory/*`)
+- **What**: The community's field schema (`fields/*`), each member's card
+  (`card/{show,update,assert}`), and browse/search/show (`entries/*`, plus the
+  older `query/0.1`), every read a **projection** for its caller. Groups,
+  introductions, notes, export, credential-sourced fields and images are later
+  phases (design §14).
+- **Invariants to preserve**: a value leaves only where the member's own
+  visibility, the field's ceiling **and** the `directory` policy all admit the
+  viewer — intersected, and the policy can only narrow (`directory::project`,
+  VTI-DIR-020/021). Withheld means absent; nothing visible is the same
+  `notFound` as no such entry (VTI-DIR-110). A viewer's stars, lists and notes
+  are never stored here (VTI-DIR-001). Entries are keyed by a random `entryId`,
+  never a DID; a rotation moves only the `entry:<did>` index (VTI-DIR-050/122).
+  A member writes only `member`-sourced values, an administrator only
+  `admin`-sourced ones, and derived ones (`role`, `joinedAt`, `did`,
+  `personhood`) are read from the ACL and member records, never stored
+  (VTI-DIR-011/013). A card update older than the one in force is
+  `superseded` (VTI-DIR-012). A field widening parks as
+  `Act::ChangeDirectoryPrivacy` for the other holders of `vtc.directory.admin`
+  (VTI-DIR-024); `directoryWrite` policy refuses values and is never asked about
+  a change that only narrows. Search never matches a DID for a member, cursors
+  are bound to caller and question, facet counts below *k* are never exact
+  (VTI-DIR-044/112/113). Every write is audited by reference, never a value.
+- **Code**: `vtc-service/src/directory/` (`fields`, `cards`, `values`,
+  `project`, `read`, `write_policy`, `sweep`),
+  `vtc-service/src/trust_tasks/directory_tasks.rs`,
+  `vtc-service/policies/default/{directory,directory_write}.rego`.
+- **Docs**: `docs/03-vtc/member-directory.md`,
+  `docs/05-design-notes/vtc-member-directory.md`.
+
 ### VTC administrator action list (`vtc/admin/actions/*`)
 - **What**: Second-party consent at the VTC. An operation that needs other
   administrators' agreement — an authority-conferring grant or admin invite

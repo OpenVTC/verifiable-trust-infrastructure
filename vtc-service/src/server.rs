@@ -207,6 +207,9 @@ pub struct AppState {
     /// The rooms this community owns (`crate::rooms::community`): the owner's record,
     /// in its own keyspace, and the community's VTA that holds the rooms' keys.
     pub community_rooms: Arc<crate::rooms::community::CommunityRooms>,
+    /// The member directory (`crate::directory`): its schema and every
+    /// member's card, in its own keyspace.
+    pub directory: Arc<crate::directory::Directory>,
     pub audit_ks: KeyspaceHandle,
     pub audit_key_ks: KeyspaceHandle,
     /// Signed audit checkpoints (#708). Read by `GET /v1/audit/verify`,
@@ -623,6 +626,15 @@ pub async fn run(
     {
         warn!("failed to upgrade the superseded rooms default: {e}");
     }
+    // The directory default an earlier binary installed answers members with a
+    // field list, which the card model reads as a narrowing to two fields.
+    // Replaced only while it is still the workspace's own row.
+    if let Err(e) =
+        crate::policy::default::upgrade_stale_directory_default(&policies_ks, &active_policies_ks)
+            .await
+    {
+        warn!("failed to upgrade the superseded directory default: {e}");
+    }
 
     // M2.10 + M2.11: provision the two BitstringStatusLists.
     // Idempotent — only seeds decoys when the row is brand new; an
@@ -884,6 +896,14 @@ pub async fn run(
             .map(|l| l as Arc<dyn crate::rooms::vta_storage::VtaChannel>),
     );
 
+    // The member directory (`crate::directory`). Its settings are the
+    // operator's `[directory]`; one it cannot use stops the boot rather than
+    // run wider than written.
+    let directory = Arc::new(crate::directory::Directory::new(
+        store.keyspace(keyspaces::DIRECTORY)?,
+        config.directory.settings().map_err(AppError::Config)?,
+    ));
+
     // Room files through the community's VTA (`rooms::vta_storage`): the
     // presigned requests come sealed to this community's key-agreement key.
     if let (Some(link), Some(vtc_did), Some(secrets)) =
@@ -1018,6 +1038,7 @@ pub async fn run(
         room_files,
         room_storage,
         community_rooms,
+        directory,
         audit_ks,
         audit_key_ks,
         audit_checkpoint_ks: audit_checkpoint_ks.clone(),
@@ -1538,6 +1559,9 @@ pub async fn run(
     // Members who left the community leave the rooms it owns (`members/add` item 6): the
     // one owner of those removals, resuming at start whatever a restart interrupted.
     crate::rooms::departures::spawn(state.clone(), shutdown_rx.clone());
+    // A retired directory field's values, erased once its retention period
+    // has passed (`crate::directory::sweep`).
+    crate::directory::sweep::spawn(state.clone(), shutdown_rx.clone());
     // A refreshed GeoIP database is picked up without a restart.
     state.geoip.spawn_reloader(shutdown_rx.clone());
     // The community's own authority over each room it owns, renewed at its VTA before it

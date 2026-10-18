@@ -109,7 +109,8 @@ pub const POLICY_SOURCE_MAX_BYTES: usize = 64 * 1024;
 /// split into five groups:
 /// - **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],
 ///   [`Self::Personhood`].
-/// - **Discoverability**: [`Self::Registry`], [`Self::Directory`].
+/// - **Discoverability**: [`Self::Registry`], [`Self::Directory`],
+///   [`Self::DirectoryWrite`].
 /// - **Authorization**: [`Self::RoleDefinitions`], [`Self::RoleChange`],
 ///   [`Self::CrossCommunityRoles`],
 ///   [`Self::CrossCommunityRelationships`], [`Self::Relationships`].
@@ -161,6 +162,13 @@ pub enum PolicyPurpose {
     /// `refer` parks it in the action list for the other holders of
     /// `vtc.members.manage`, `deny` refuses it. Wire form `admission`.
     Admission,
+    /// What a directory card may hold (`vtc.directory_write`): evaluated over a
+    /// member's `vtc/directory/card/update` and an administrator's
+    /// `card/assert`, after the host's own checks. It may refuse a value — a
+    /// nickname already taken, a link to a domain the community does not allow
+    /// — and nothing else: it never widens a visibility, and a change that only
+    /// narrows never reaches it. Wire form `directoryWrite`.
+    DirectoryWrite,
 }
 
 impl PolicyPurpose {
@@ -168,7 +176,7 @@ impl PolicyPurpose {
     /// boot-time default-policy loader (M2.5) so missing rows can
     /// be filled from the bundled defaults without listing each
     /// purpose explicitly at the call site.
-    pub const ALL: [PolicyPurpose; 14] = [
+    pub const ALL: [PolicyPurpose; 15] = [
         PolicyPurpose::Join,
         PolicyPurpose::Removal,
         PolicyPurpose::Personhood,
@@ -183,6 +191,7 @@ impl PolicyPurpose {
         PolicyPurpose::VetterEligibility,
         PolicyPurpose::GitNamespace,
         PolicyPurpose::Admission,
+        PolicyPurpose::DirectoryWrite,
     ];
 
     /// Whether this purpose decides **authority** — who becomes, stays or stops
@@ -247,6 +256,7 @@ impl PolicyPurpose {
             PolicyPurpose::VetterEligibility => "vetterEligibility",
             PolicyPurpose::GitNamespace => "gitNamespace",
             PolicyPurpose::Admission => "admission",
+            PolicyPurpose::DirectoryWrite => "directoryWrite",
         }
     }
 
@@ -284,6 +294,9 @@ impl PolicyPurpose {
             // policy in any other package answers nothing, which refuses every
             // direct admission.
             PolicyPurpose::Admission => Some("vtc.admission"),
+            // Probed by a fixed package: a policy in any other package answers
+            // nothing, which refuses every card write that widens.
+            PolicyPurpose::DirectoryWrite => Some("vtc.directory_write"),
             _ => None,
         }
     }
@@ -346,6 +359,7 @@ mod tests {
             (PolicyPurpose::VetterEligibility, json!("vetterEligibility")),
             (PolicyPurpose::GitNamespace, json!("gitNamespace")),
             (PolicyPurpose::Admission, json!("admission")),
+            (PolicyPurpose::DirectoryWrite, json!("directoryWrite")),
         ];
         for (purpose, wire) in cases {
             assert_eq!(serde_json::to_value(purpose).unwrap(), wire);
@@ -386,7 +400,7 @@ mod tests {
         // the bundled default would silently never load. Drive the
         // count + exhaustiveness assertion off the same constant
         // so a missed entry surfaces at test time.
-        assert_eq!(PolicyPurpose::ALL.len(), 14);
+        assert_eq!(PolicyPurpose::ALL.len(), 15);
         for purpose in PolicyPurpose::ALL {
             // Compiles iff the match is total — `as_str` exhaustively
             // matches every variant; this exists so the assertion

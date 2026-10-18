@@ -592,6 +592,19 @@ pub enum AuditEvent {
     /// never its text (update item 6).
     CommunityThemeUpdated(CommunityThemeUpdatedData),
 
+    /// An administrator defined, changed or retired a member-directory field,
+    /// or the retention period of a retired one ran out and its values were
+    /// erased (`vtc/directory/fields/*`). Each ceiling in force is a promise
+    /// to members about who may see their values, so the community keeps when
+    /// each changed and who changed it.
+    DirectoryFieldChanged(DirectoryFieldChangedData),
+
+    /// A directory card changed: its member updated it
+    /// (`vtc/directory/card/update`) or an administrator asserted values on it
+    /// (`vtc/directory/card/assert`). By reference only — the entry and the
+    /// fields named, never a value (VTI-AUD-005).
+    DirectoryCardChanged(DirectoryCardChangedData),
+
     /// An admin changed whether the join manifest answers a caller the
     /// community cannot identify (`PUT /v1/community/join-discovery`).
     ///
@@ -1103,6 +1116,8 @@ impl AuditEvent {
             Self::VetterAutoGrantSwept(..) => "VetterAutoGrantSwept",
             Self::CommunityBrandingUpdated(..) => "CommunityBrandingUpdated",
             Self::CommunityThemeUpdated(..) => "CommunityThemeUpdated",
+            Self::DirectoryFieldChanged(..) => "DirectoryFieldChanged",
+            Self::DirectoryCardChanged(..) => "DirectoryCardChanged",
             Self::CommunityJoinDiscoveryUpdated(..) => "CommunityJoinDiscoveryUpdated",
             Self::CommunityRequestedAttributesUpdated(..) => "CommunityRequestedAttributesUpdated",
             Self::EndorsementTypeRegistered(..) => "EndorsementTypeRegistered",
@@ -2615,6 +2630,36 @@ pub struct CommunityThemeUpdatedData {
     pub bytes: u32,
 }
 
+/// Payload for [`AuditEvent::DirectoryFieldChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryFieldChangedData {
+    /// The field's key.
+    pub key: String,
+    /// `define`, `update`, `retire` or `purge`.
+    pub change: String,
+    /// Whether the change lets some viewer see or find more than before.
+    pub widens: bool,
+    /// The administrator's stated reason. Configuration only: a producer
+    /// places no personal data in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Payload for [`AuditEvent::DirectoryCardChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryCardChangedData {
+    /// The card's entry identifier, never the member's DID.
+    pub entry_id: String,
+    /// `member` (`card/update`) or `admin` (`card/assert`).
+    pub by: String,
+    /// The fields whose value or visibility the write named.
+    pub fields: Vec<String>,
+    /// The card's revision after the write.
+    pub revision: u64,
+}
+
 /// Payload for [`AuditEvent::CommunityRequestedAttributesUpdated`].
 ///
 /// Claim types only — what the community now asks for, never anything an
@@ -4083,6 +4128,24 @@ mod tests {
                     bytes: 0,
                 }),
                 "CommunityThemeUpdated",
+            ),
+            (
+                AuditEvent::DirectoryFieldChanged(DirectoryFieldChangedData {
+                    key: "bio".into(),
+                    change: "update".into(),
+                    widens: false,
+                    reason: None,
+                }),
+                "DirectoryFieldChanged",
+            ),
+            (
+                AuditEvent::DirectoryCardChanged(DirectoryCardChangedData {
+                    entry_id: "dir_aaaaaaaaaaaaaaaa".into(),
+                    by: "member".into(),
+                    fields: vec!["displayName".into()],
+                    revision: 1,
+                }),
+                "DirectoryCardChanged",
             ),
             (
                 AuditEvent::CommunityRequestedAttributesUpdated(

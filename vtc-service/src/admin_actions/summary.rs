@@ -58,6 +58,8 @@ pub const KIND_POLICY_RECOGNITION: &str = "policy.recognition.change";
 /// Publishing, changing or withdrawing hidden vetting on a join criterion
 /// (VTI-APV-023).
 pub const KIND_HIDDEN_VETTING_CHANGE: &str = "join.criteria.hiddenVetting";
+/// Widening a member-directory field (VTI-DIR-024).
+pub const KIND_DIRECTORY_FIELD_WIDEN: &str = "directory.field.widen";
 pub const KIND_INVITE_CREATE: &str = "admin.invite.create";
 /// An operator's offline write, raised for acknowledgement (VTI-VTC-023).
 pub const KIND_OPERATOR_WRITE: &str = "operator.offlineWrite";
@@ -143,6 +145,7 @@ pub(crate) const HIDDEN_PUBLISH: &str =
 /// `vtc/vetting/hidden/withdraw/0.1`.
 pub(crate) const HIDDEN_WITHDRAW: &str =
     <trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+const DIRECTORY_FIELDS_UPDATE: &str = crate::trust_tasks::directory_tasks::FIELDS_UPDATE_TYPE;
 const ROLES_DEFINE: &str = "https://trusttasks.org/spec/vtc/roles/define/0.1";
 const ROLES_DELETE: &str = "https://trusttasks.org/spec/vtc/roles/delete/0.1";
 const BACKUP_FINALIZE_IMPORT: &str = "https://trusttasks.org/spec/backup/finalize-import/0.1";
@@ -189,6 +192,10 @@ const WITNESSES_EFFECT: &str = "The witnesses whose Verifiable Witness Credentia
                                 evidence in this community become exactly {witnesses}. A VWC from \
                                 any witness not listed counts for nothing here, including ones \
                                 members already hold.";
+const DIRECTORY_WIDEN_EFFECT: &str = "Members' directory values in the field {key} may reach \
+                                      further: a wider ceiling or default, a field searched or \
+                                      counted, or one shown again. No member's own choice changes, \
+                                      but every card that made none takes the new default.";
 const POLICY_EFFECT: &str = "The rules that decide who holds authority in this community change.";
 const RECOGNITION_POLICY_EFFECT: &str = "The rules that decide who this community recognises as a \
                                          person change — for joining, and for members whose \
@@ -453,6 +460,18 @@ pub const TEMPLATES: &[Template] = &[
             "/document/configOverrides/witnesses.trusted",
             "text",
         )],
+    },
+    Template {
+        kind: KIND_DIRECTORY_FIELD_WIDEN,
+        type_uri: DIRECTORY_FIELDS_UPDATE,
+        title: "Widen the directory field {key}",
+        effect: DIRECTORY_WIDEN_EFFECT,
+        fields: &[
+            f("key", "/key", "text"),
+            f("ceiling", "/ceiling", "text"),
+            f("defaultVisibility", "/defaultVisibility", "text"),
+            f("reason", "/reason", "text"),
+        ],
     },
     Template {
         kind: KIND_POLICY_AUTHORITY,
@@ -807,6 +826,11 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_WITNESSES_CHANGE,
         CONFIG_IMPORT,
         "zQmathdofD8yrXDQ2AuSfsWwjjKdx9RdPkAnC2r7qdU79hc",
+    ),
+    (
+        KIND_DIRECTORY_FIELD_WIDEN,
+        DIRECTORY_FIELDS_UPDATE,
+        "zQmafxMMkTfH4kb9QgoUQEJtUs4tuZFvqM8nxhjEawj6vYZ",
     ),
     (
         KIND_POLICY_RECOGNITION,

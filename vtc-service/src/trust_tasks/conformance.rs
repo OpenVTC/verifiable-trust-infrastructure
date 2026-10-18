@@ -345,6 +345,36 @@ const OTHER_DID: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2do
 const COMMUNITY_DID: &str = "did:web:community.example";
 const REQUEST_ID: &str = "5b8f1d4e-9c2a-4f6b-8e31-7a0c5d9e2f14";
 const TS: &str = "2026-08-23T00:00:00Z";
+
+/// A directory entry identifier, as `directory::cards::new_entry_id` mints one.
+const DIRECTORY_ENTRY: &str = "dir_Q7m2K9xVb4Tz8LpRaB3c";
+
+/// A base field as `vtc/directory/fields/*` answer it.
+fn directory_field() -> Value {
+    serde_json::to_value(
+        crate::directory::fields::base_fields()
+            .into_iter()
+            .find(|f| f.key == "displayName")
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+/// A card as its member reads it.
+fn directory_card() -> Value {
+    let mut c = crate::directory::cards::fresh(
+        DID,
+        &crate::directory::model::Settings::default(),
+        Some("Carol"),
+        chrono::Utc::now(),
+    );
+    c.entry_id = DIRECTORY_ENTRY.into();
+    c.visibility.insert(
+        "pronouns".into(),
+        crate::directory::model::Audience::Members,
+    );
+    c.wire()
+}
 const ACTION_ID: &str = "act-5b8f1d4e9c2a4f6b8e317a0c5d9e2f14";
 
 /// An action as `crate::admin_actions` renders one: open with the caller's
@@ -1603,14 +1633,112 @@ fn table() -> Vec<Conformance> {
             s::directory::query::v0_1::Response,
             // `subject` is the path segment and `fields` the query string
             // (routes/directory.rs:65,93); both are consumable in the body.
-            json!({ "subject": DID, "fields": "did,role,joined_at,status" }),
-            // `DirectoryResponse` — routes/directory.rs:74. The projection's
-            // keys are policy output, and the spec types `fields` as a free
-            // object, so their snake_case is in scope here.
+            json!({ "subject": DID, "fields": "did,role,joinedAt" }),
+            // Answered through the directory projection
+            // (`directory::read::query_by_did`), keyed by field.
             json!({
                 "subject": DID,
-                "fields": { "did": DID, "role": "member", "joined_at": TS, "status": "active" },
+                "fields": { "did": DID, "role": "member", "joinedAt": "2026-08-23" },
             })
+        ),
+        checked!(
+            s::directory::fields::list::v0_1::Payload,
+            s::directory::fields::list::v0_1::Response,
+            json!({ "includeRetired": true }),
+            json!({
+                "fields": [directory_field()],
+                "listingDefaults": { "defaultListing": "listed" },
+            })
+        ),
+        checked!(
+            s::directory::fields::define::v0_1::Payload,
+            s::directory::fields::define::v0_1::Response,
+            json!({
+                "field": {
+                    "key": "org.example.chapter", "label": "Chapter", "type": "enum",
+                    "source": "admin", "ceiling": "members", "defaultVisibility": "members",
+                    "facet": true, "order": 40,
+                    "constraints": { "options": [{ "value": "sydney", "label": "Sydney" }] },
+                },
+                "reason": "Members asked to find their chapter.",
+            }),
+            json!({ "field": directory_field() })
+        ),
+        checked!(
+            s::directory::fields::update::v0_1::Payload,
+            s::directory::fields::update::v0_1::Response,
+            json!({ "key": "bio", "ceiling": "members", "enabled": true, "reason": "narrow" }),
+            json!({ "field": directory_field() })
+        ),
+        checked!(
+            s::directory::fields::retire::v0_1::Payload,
+            s::directory::fields::retire::v0_1::Response,
+            json!({ "key": "org.example.chapter", "reason": "No longer collected." }),
+            json!({ "field": {
+                "key": "org.example.chapter", "label": "Chapter", "type": "text",
+                "source": "member", "base": false, "required": false, "ceiling": "members",
+                "defaultVisibility": "members", "searchable": false, "facet": false,
+                "order": 40, "state": "retired", "retiredAt": TS, "purgeAfter": TS,
+            }})
+        ),
+        checked!(
+            s::directory::card::show::v0_1::Payload,
+            s::directory::card::show::v0_1::Response,
+            json!({}),
+            json!({ "card": directory_card(), "missingRequired": ["displayName"] })
+        ),
+        checked!(
+            s::directory::card::update::v0_1::Payload,
+            s::directory::card::update::v0_1::Response,
+            json!({
+                "values": { "displayName": "Carol", "bio": null },
+                "visibility": { "displayName": "members", "pronouns": null },
+                "discoverability": { "listing": "findable", "search": "exactNickname", "external": false },
+                "introductions": "groups",
+                "groupAudience": null,
+                "expectedRevision": 3,
+            }),
+            json!({ "card": directory_card(), "missingRequired": [] })
+        ),
+        checked!(
+            s::directory::card::assert::v0_1::Payload,
+            s::directory::card::assert::v0_1::Response,
+            json!({
+                "entryId": DIRECTORY_ENTRY,
+                "values": { "org.example.chapter": "sydney" },
+                "reason": "Moved to the Sydney chapter.",
+            }),
+            json!({ "entryId": DIRECTORY_ENTRY, "written": ["org.example.chapter"], "revision": 5 })
+        ),
+        checked!(
+            s::directory::entries::list::v0_1::Payload,
+            s::directory::entries::list::v0_1::Response,
+            json!({
+                "query": "caro",
+                "filters": [{ "field": "org.example.chapter", "values": ["sydney"] }],
+                "limit": 25,
+            }),
+            json!({
+                "items": [{
+                    "entryId": DIRECTORY_ENTRY,
+                    "fields": { "displayName": "Carol", "role": "member" },
+                    "connected": true,
+                }],
+                "facets": [{ "field": "org.example.chapter", "values": [
+                    { "value": "sydney", "count": 12 },
+                    { "value": "berlin", "fewerThan": 5 },
+                ]}],
+                "nextCursor": null,
+            })
+        ),
+        checked!(
+            s::directory::entries::show::v0_1::Payload,
+            s::directory::entries::show::v0_1::Response,
+            json!({ "entryId": DIRECTORY_ENTRY }),
+            json!({ "entry": {
+                "entryId": DIRECTORY_ENTRY,
+                "fields": { "displayName": "Carol", "role": "member", "did": DID },
+            }})
         ),
         // ─── endorsement-types ───────────────────────────────────────
         checked!(

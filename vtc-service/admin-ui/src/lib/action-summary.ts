@@ -122,6 +122,9 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmYGMiMk9SpEJwJ7g4EpxKCourBJVRP6PnmHMzYccbQugH",
   [pinKey("config.witnesses.change", `${SPEC}/vtc/config/import/0.1`)]:
     "zQmathdofD8yrXDQ2AuSfsWwjjKdx9RdPkAnC2r7qdU79hc",
+  // Widening a member-directory field (VTI-DIR-024).
+  [pinKey("directory.field.widen", `${SPEC}/vtc/directory/fields/update/0.1`)]:
+    "zQmafxMMkTfH4kb9QgoUQEJtUs4tuZFvqM8nxhjEawj6vYZ",
   // Replacing or activating the personhood policy (VTI-APV-023).
   [pinKey("policy.recognition.change", `${SPEC}/policy/upsert/0.2`)]:
     "zQmT4hA8bE6Z1G2PDPPTvzH9ZTGrKdnyS3UBhhEXZkeDLhm",

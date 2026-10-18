@@ -370,6 +370,12 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
                 .unwrap(),
             None,
         ),
+        directory: std::sync::Arc::new(vtc_service::directory::Directory::new(
+            store
+                .keyspace(vtc_service::store::keyspaces::DIRECTORY)
+                .unwrap(),
+            vtc_service::directory::model::Settings::default(),
+        )),
         invitations_ks,
         consumed_invitations_ks,
         console_keys_ks,

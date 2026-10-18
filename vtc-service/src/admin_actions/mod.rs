@@ -4128,6 +4128,12 @@ pub(crate) async fn sign_requests(
             "Who may become a member of this community changes: whether, and how, an applicant \
              can meet this criterion with a hidden vetting proof.",
         ),
+        Act::ChangeDirectoryPrivacy => (
+            "directoryFieldChange",
+            json!({ "field": rec.subject }),
+            "What members' directory values in this field may reach widens, for every card \
+             that has made no choice of its own.",
+        ),
         Act::ChangeJoinCriteria => (
             "joinCriteriaChange",
             json!({ "criterion": rec.subject }),

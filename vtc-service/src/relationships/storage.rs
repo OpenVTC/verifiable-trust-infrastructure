@@ -403,6 +403,49 @@ pub async fn issuer_counterparties_besides(
     Ok(others)
 }
 
+/// The DIDs `did` holds an edge with, in either direction, that is in force at
+/// `now` — the directory's `connections` audience (VTI-DIR-023).
+///
+/// Only an edge keyed on `did` itself is read, so a pairwise edge between two
+/// relationship DIDs never counts for a membership DID: the community does not
+/// try to learn whom an R-DID belongs to. Same `did:webvh` prefix caveat as
+/// [`list_for_did`], answered the same way.
+pub async fn counterparties_in_force(
+    primary: &KeyspaceHandle,
+    index: &KeyspaceHandle,
+    did: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<std::collections::BTreeSet<String>, AppError> {
+    let mut index_prefix = RELATIONSHIPS_BY_DID_PREFIX.to_vec();
+    index_prefix.extend_from_slice(did.as_bytes());
+    index_prefix.push(b':');
+
+    let mut out = std::collections::BTreeSet::new();
+    for (idx_key, _) in index.prefix_iter_raw(index_prefix).await? {
+        let Ok(key_str) = std::str::from_utf8(&idx_key) else {
+            continue;
+        };
+        let Some(Ok(id)) = key_str.rsplit(':').next().map(Uuid::parse_str) else {
+            continue;
+        };
+        let Some(raw) = primary.get_raw(primary_key(id)).await? else {
+            continue;
+        };
+        let Ok(rel) = decode(&raw) else {
+            continue;
+        };
+        if !matches!(rel.in_force_at(now), super::InForce::Yes) {
+            continue;
+        }
+        if rel.issuer_did == did {
+            out.insert(rel.subject_did);
+        } else if rel.subject_did == did {
+            out.insert(rel.issuer_did);
+        }
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

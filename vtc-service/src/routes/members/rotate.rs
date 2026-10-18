@@ -464,6 +464,10 @@ pub(crate) async fn rotate_inner(
         }
     }
 
+    // 8a. The directory card follows, keeping its entry identifier: everything
+    // that refers to the entry is unaffected (VTI-DIR-122).
+    crate::directory::cards::rotate(state.directory.ks(), &body.old_did, &body.new_did).await?;
+
     // 8b. A rotated administrator is the same granter under a new name, not a
     // departed one: the entries it delegated follow it (VTI-ACL-071).
     crate::acl::delegation::repoint(state, &body.old_did, &body.new_did).await?;

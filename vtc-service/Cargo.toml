@@ -188,6 +188,10 @@ vti-common = { path = "../vti-common", version = "0.47", features = [
   # (`rooms::vta_storage`): no storage credential is held here.
   "blob-presigned",
 ] }
+# ECMA-262 regular expressions: a directory field's `pattern` constraint is one
+# (`vtc/directory/_shared/0.1/field-definition`). Already in the graph through
+# trust-tasks-rs's schema validation, which reads `pattern` the same way.
+regress = "0.11"
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.

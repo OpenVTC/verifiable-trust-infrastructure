@@ -156,6 +156,10 @@ pub(crate) mod step_up_approver_tasks;
 // (`vtc-admin-roles.md` §6.2). The records are `crate::acl::roles`'s; this is
 // their only door.
 pub(crate) mod community_room_tasks;
+// The member directory: `vtc/directory/{fields,card,entries}/*` (the
+// `query/0.1` lookup stays in `community_tasks`, answered through the same
+// projection). Its records are `crate::directory`'s.
+pub(crate) mod directory_tasks;
 pub(crate) mod role_tasks;
 pub(crate) mod room_admin_tasks;
 // The administrators' view of the OpenID4VP verifier identities (#1988).
@@ -1343,6 +1347,13 @@ fn dispatch_typed<'a>(
                 None => unreachable!("oid4vp_tasks::URIS names {uri}, which it does not route"),
             }
         }),
+        uri if directory_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match Box::pin(directory_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("directory_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
         uri if community_room_tasks::URIS.contains(&uri) => Box::pin(async move {
             match Box::pin(community_room_tasks::dispatch(state, ctx, doc, uri)).await {
                 Some(outcome) => outcome,
@@ -2179,6 +2190,22 @@ mod spine_proof_tests {
         (
             community_tasks::DIRECTORY_QUERY_TYPE,
             "a community read; the handler refuses an unsigned caller where that read is gated at all",
+        ),
+        (
+            directory_tasks::FIELDS_LIST_TYPE,
+            "reads the directory schema; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            directory_tasks::CARD_SHOW_TYPE,
+            "reads the signer's own card; the handler matches the signer to their membership, so an unsigned caller is refused regardless",
+        ),
+        (
+            directory_tasks::ENTRIES_LIST_TYPE,
+            "reads the directory projected for the signer; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            directory_tasks::ENTRIES_SHOW_TYPE,
+            "reads one entry projected for the signer; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
         ),
         (
             community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
@@ -3130,6 +3157,16 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     community_tasks::PROFILE_SHOW_TYPE,
     community_tasks::CEREMONIES_LIST_TYPE,
     community_tasks::DIRECTORY_QUERY_TYPE,
+    // The member directory (`crate::directory`).
+    directory_tasks::FIELDS_LIST_TYPE,
+    directory_tasks::FIELDS_DEFINE_TYPE,
+    directory_tasks::FIELDS_UPDATE_TYPE,
+    directory_tasks::FIELDS_RETIRE_TYPE,
+    directory_tasks::CARD_SHOW_TYPE,
+    directory_tasks::CARD_UPDATE_TYPE,
+    directory_tasks::CARD_ASSERT_TYPE,
+    directory_tasks::ENTRIES_LIST_TYPE,
+    directory_tasks::ENTRIES_SHOW_TYPE,
     community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
     community_tasks::RECOGNITION_CHECK_TYPE,
     community_tasks::MEMBERS_LIST_TYPE,

@@ -198,22 +198,54 @@ async fn handle_directory_query(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (viewer, payload) = match member_with::<directory_query::Payload>(state, ctx, &doc).await {
+    let (signer, payload) = match member_with::<directory_query::Payload>(state, ctx, &doc).await {
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match crate::routes::directory::query(
-        state,
-        &viewer,
-        payload.subject.to_string(),
-        payload.fields.map(|f| f.to_string()),
-    )
-    .await
-    {
-        Ok(response) => success_response(&doc, response),
-        Err(e) => task_error_to_reject(&doc, &e),
+    let subject = payload.subject.to_string();
+    let viewer = match crate::directory::read::viewer(state, &signer.did).await {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    match crate::directory::read::query_by_did(state, &viewer, &subject).await {
+        Ok(Some(mut fields)) => {
+            // `fields` is a narrowing hint, never an authorisation: a field
+            // asked for and withheld is absent, never an error.
+            if let Some(hint) = payload.fields.as_ref().map(|f| f.to_string()) {
+                let wanted: std::collections::BTreeSet<&str> = hint
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                fields.retain(|k, _| wanted.contains(k.as_str()));
+            }
+            if fields.is_empty() {
+                return not_visible(&doc);
+            }
+            success_response(
+                &doc,
+                serde_json::json!({ "subject": subject, "fields": fields }),
+            )
+        }
+        Ok(None) => not_visible(&doc),
+        Err(e) => app_error_to_reject(&doc, &e),
     }
 }
+
+/// The one answer for every "nothing to show" outcome: "no such member" and
+/// "nothing visible to you" share a code and a message, or the task is a
+/// membership oracle.
+fn not_visible(doc: &TrustTask<Value>) -> TrustTaskOutcome {
+    super::helpers::reject_with_code(
+        doc,
+        super::helpers::extended_code(DIRECTORY_QUERY_ERR_NOT_FOUND),
+        "no directory entry for that DID is visible to this caller",
+        None,
+    )
+}
+
+/// `vtc/directory/query:notFound`.
+pub(crate) const DIRECTORY_QUERY_ERR_NOT_FOUND: &str = directory_query::error_codes::NOT_FOUND.code;
 
 async fn handle_endorsement_types_list(
     state: &AppState,

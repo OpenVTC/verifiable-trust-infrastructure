@@ -115,6 +115,11 @@
 //!   hidden vetting on a join criterion (`vtc/vetting/hidden/{publish,withdraw}`),
 //!   approved by the other holders of `vtc.vetting.manage` — the capability
 //!   those tasks take. A further way to meet a criterion is a change to it.
+//! - [`Act::ChangeDirectoryPrivacy`] — **VTI-DIR-024**: widening a member
+//!   directory field (`vtc/directory/fields/update`) — a wider ceiling or
+//!   default visibility, a field made searchable or a facet, re-enabled or no
+//!   longer required — approved by the other holders of `vtc.directory.admin`.
+//!   It changes what membership exposes, for every member at once.
 //! - [`Act::ChangeRecognitionPolicy`] — **VTI-APV-023**: replacing or
 //!   activating the personhood policy, approved by the other holders of
 //!   `vtc.policy.admin @ policy:personhood`. Not authority — the capability is
@@ -259,6 +264,12 @@ pub enum Act {
     /// the capability that makes the change. The subject is the criterion's
     /// id; the consent is pinned to the criterion as stored.
     ChangeHiddenVetting,
+    /// **VTI-DIR-024** — widening a member-directory field
+    /// (`vtc/directory/fields/update`): after it, some viewer could see or find
+    /// what they could not before. Never changes a choice a member made, but it
+    /// changes the community's privacy semantics (VTI-VTC-032, VTI-CMP-090). The
+    /// subject is the field's key; the consent is pinned to its definition.
+    ChangeDirectoryPrivacy,
     /// **VTI-APV-023** — replacing or activating a policy that decides who this
     /// community recognises as a person
     /// ([`crate::policy::PolicyPurpose::decides_recognition`]). Kept apart from
@@ -290,6 +301,7 @@ impl Act {
             Self::DirectAdmission => "the admission policy",
             Self::ChangeStorage => "the storage tasks' consent",
             Self::ChangeTrustedWitnesses => "VTI-CMP-090",
+            Self::ChangeDirectoryPrivacy => "VTI-DIR-024",
             Self::ChangeJoinCriteria
             | Self::ChangeHiddenVetting
             | Self::ChangeRecognitionPolicy(_) => "VTI-APV-023",
@@ -365,6 +377,7 @@ impl Act {
             Self::ChangeTrustedWitnesses => vec![CapRef::all(Capability::ConfigAdmin)],
             Self::ChangeJoinCriteria => vec![CapRef::all(Capability::SurfaceAdmin)],
             Self::ChangeHiddenVetting => vec![CapRef::all(Capability::VettingManage)],
+            Self::ChangeDirectoryPrivacy => vec![CapRef::all(Capability::DirectoryAdmin)],
             Self::ChangeRecognitionPolicy(purpose) => vec![CapRef::new(
                 Capability::PolicyAdmin,
                 Some(ResourceQualifier::Policy(purpose)),
@@ -420,6 +433,7 @@ impl Act {
             Self::ChangeTrustedWitnesses => s::KIND_WITNESSES_CHANGE,
             Self::ChangeJoinCriteria => s::KIND_CRITERIA_CHANGE,
             Self::ChangeHiddenVetting => s::KIND_HIDDEN_VETTING_CHANGE,
+            Self::ChangeDirectoryPrivacy => s::KIND_DIRECTORY_FIELD_WIDEN,
             Self::ChangeRecognitionPolicy(_) => s::KIND_POLICY_RECOGNITION,
         }
     }
@@ -1568,6 +1582,7 @@ pub(crate) fn requester_still_authorized(
         Act::ChangeTrustedWitnesses => entry.admin.can(Capability::ConfigAdmin, None),
         Act::ChangeJoinCriteria => entry.admin.can(Capability::SurfaceAdmin, None),
         Act::ChangeHiddenVetting => entry.admin.can(Capability::VettingManage, None),
+        Act::ChangeDirectoryPrivacy => entry.admin.can(Capability::DirectoryAdmin, None),
         Act::ChangeRecognitionPolicy(p) => entry
             .admin
             .can(Capability::PolicyAdmin, Some(&ResourceQualifier::Policy(p))),
@@ -1635,6 +1650,16 @@ pub(crate) async fn pin_for(
         // deletion, hidden vetting turned on or off — voids the action.
         Act::ChangeJoinCriteria | Act::ChangeHiddenVetting => {
             json!(crate::schemas::get_accepts(&state.schemas_ks, subject).await?)
+        }
+        // The approvers were shown a change from *this* definition. Any write to
+        // the field in the meantime — a narrowing, another widening — voids the
+        // action. `updatedAt` is when, not what, and is left out.
+        Act::ChangeDirectoryPrivacy => {
+            let mut f = crate::directory::fields::get(state.directory.ks(), subject).await?;
+            if let Some(f) = f.as_mut() {
+                f.updated_at = None;
+            }
+            json!(f)
         }
     };
     Ok(StatePin {
@@ -1799,6 +1824,7 @@ mod tests {
             Act::ChangeTrustedWitnesses,
             Act::ChangeJoinCriteria,
             Act::ChangeHiddenVetting,
+            Act::ChangeDirectoryPrivacy,
             Act::ChangeRecognitionPolicy(PolicyPurpose::Personhood),
         ] {
             assert!(may_approve(&approver, &act.default_stake(), now), "{act:?}");
@@ -1867,6 +1893,10 @@ mod tests {
             (
                 Act::ChangeHiddenVetting,
                 crate::admin_actions::summary::HIDDEN_PUBLISH,
+            ),
+            (
+                Act::ChangeDirectoryPrivacy,
+                crate::trust_tasks::directory_tasks::FIELDS_UPDATE_TYPE,
             ),
             (
                 Act::ChangeHiddenVetting,

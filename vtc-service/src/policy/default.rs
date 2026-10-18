@@ -108,13 +108,17 @@ const DEFAULT_SOURCES: &[(PolicyPurpose, &str)] = &[
         PolicyPurpose::Admission,
         include_str!("../../policies/default/admission.rego"),
     ),
+    (
+        PolicyPurpose::DirectoryWrite,
+        include_str!("../../policies/default/directory_write.rego"),
+    ),
 ];
 
 /// Number of purposes the workspace ships defaults for. Asserted
 /// against [`PolicyPurpose::ALL`] at test time so a missed entry in
 /// `DEFAULT_SOURCES` surfaces as a build-time-ish failure rather
 /// than a silent runtime gap.
-pub const DEFAULT_COUNT: usize = 14;
+pub const DEFAULT_COUNT: usize = 15;
 
 /// Return the embedded default source for `purpose`. Useful to the
 /// admin UX layer that wants to show "reset to default" diffs
@@ -505,14 +509,76 @@ pub async fn upgrade_stale_rooms_default(
     policies_ks: &KeyspaceHandle,
     active_policies_ks: &KeyspaceHandle,
 ) -> Result<bool, AppError> {
-    let purpose = PolicyPurpose::Rooms;
+    upgrade_stale_default(
+        policies_ks,
+        active_policies_ks,
+        PolicyPurpose::Rooms,
+        is_stale_rooms_default,
+        "upgraded the shipped rooms default: it predates community-owned rooms and refused \
+         every room the community would own",
+    )
+    .await
+}
+
+/// Whether `policy` behaves like the `directory` default shipped before the
+/// member directory's card model: it answers a member with a field list
+/// (`did`, `role`), which the projection now reads as a narrowing — so every
+/// name, nickname and other field members chose to show would be withheld.
+fn is_stale_directory_default(policy: &Policy) -> bool {
+    let Ok(compiled) = compile(&policy.rego_source, policy.id) else {
+        return false;
+    };
+    let probe = serde_json::json!({
+        "purpose": "directory",
+        "actor": { "did": "did:example:probe-member", "role": "member", "authenticated": true },
+        "subject": { "did": "did:example:probe-subject" },
+    });
+    evaluate(&compiled, "data.vtc.directory.decision", probe)
+        .ok()
+        .and_then(|r| {
+            r.pointer("/result/0/expressions/0/value/with/fields")
+                .cloned()
+        })
+        .is_some_and(|f| f == serde_json::json!(["did", "role"]))
+}
+
+/// Replace a **workspace-shipped** `directory` default that predates the
+/// member directory's card model ([`is_stale_directory_default`]). An
+/// operator's own `directory` policy is never touched; one that narrows by
+/// field keeps doing so, under the field names the card model uses.
+pub async fn upgrade_stale_directory_default(
+    policies_ks: &KeyspaceHandle,
+    active_policies_ks: &KeyspaceHandle,
+) -> Result<bool, AppError> {
+    upgrade_stale_default(
+        policies_ks,
+        active_policies_ks,
+        PolicyPurpose::Directory,
+        is_stale_directory_default,
+        "upgraded the shipped directory default: it predates directory cards and would have \
+         withheld every field members choose to show",
+    )
+    .await
+}
+
+/// Replace the active policy for `purpose` with this build's default when, and
+/// only when, the active row is the workspace's own and `is_stale` says it
+/// behaves like a superseded default. Fail-forward: a new revision, the active
+/// pointer moved to it. Returns whether an upgrade happened.
+async fn upgrade_stale_default(
+    policies_ks: &KeyspaceHandle,
+    active_policies_ks: &KeyspaceHandle,
+    purpose: PolicyPurpose,
+    is_stale: fn(&Policy) -> bool,
+    why: &'static str,
+) -> Result<bool, AppError> {
     let Some(active_id) = get_active_policy_id(active_policies_ks, purpose).await? else {
         return Ok(false); // install_defaults handles the missing case
     };
     let Some(active) = get_policy(policies_ks, active_id).await? else {
         return Ok(false);
     };
-    if active.author_did != DEFAULTS_AUTHOR || !is_stale_rooms_default(&active) {
+    if active.author_did != DEFAULTS_AUTHOR || !is_stale(&active) {
         return Ok(false);
     }
     let source = default_source(purpose);
@@ -540,8 +606,7 @@ pub async fn upgrade_stale_rooms_default(
         purpose = purpose.as_str(),
         replaced = %active_id,
         policy_id = %id,
-        "upgraded the shipped rooms default: it predates community-owned rooms and refused \
-         every room the community would own"
+        "{why}"
     );
     Ok(true)
 }
@@ -1727,40 +1792,23 @@ allow if {
     }
 
     #[test]
-    fn directory_default_projects_fields_by_viewer_role() {
-        // The directory default is now the ceremony decision spine: it
-        // returns a {effect, with} object whose `with.fields` is the
-        // projection, branching on the verified-facts `input.actor`.
+    fn directory_default_narrows_nothing_for_an_identified_reader() {
+        // The community projects each entry itself (VTI-DIR-020); the shipped
+        // default only says who may read, and narrows nothing for them.
         let c = compile_default(PolicyPurpose::Directory);
-
-        // Admin viewer → fuller record.
-        let admin = evaluate(
-            &c,
-            "data.vtc.directory.decision",
-            json!({ "actor": { "role": "admin", "authenticated": true } }),
-        )
-        .unwrap();
-        assert_eq!(
-            admin.pointer("/result/0/expressions/0/value"),
-            Some(&json!({
-                "effect": "allow",
-                "with": { "fields": ["did", "role", "joined_at", "status"] }
-            })),
-        );
-
-        // Authenticated non-admin member → did + role only.
-        let member = evaluate(
-            &c,
-            "data.vtc.directory.decision",
-            json!({ "actor": { "role": "member", "authenticated": true } }),
-        )
-        .unwrap();
-        assert_eq!(
-            member.pointer("/result/0/expressions/0/value"),
-            Some(&json!({ "effect": "allow", "with": { "fields": ["did", "role"] } })),
-        );
-
-        // Unauthenticated / non-member → structural-totality deny.
+        for role in ["admin", "member"] {
+            let got = evaluate(
+                &c,
+                "data.vtc.directory.decision",
+                json!({ "actor": { "role": role, "authenticated": true } }),
+            )
+            .unwrap();
+            assert_eq!(
+                got.pointer("/result/0/expressions/0/value"),
+                Some(&json!({ "effect": "allow", "with": {} })),
+                "{role}"
+            );
+        }
         let denied = evaluate(
             &c,
             "data.vtc.directory.decision",
@@ -1771,6 +1819,64 @@ allow if {
             denied.pointer("/result/0/expressions/0/value"),
             Some(&json!({ "effect": "deny", "with": { "code": "not-a-member" } })),
         );
+    }
+
+    /// The default an earlier binary shipped answered a member with
+    /// `fields: ["did", "role"]`, which the card model reads as a narrowing:
+    /// it is replaced at boot while it is the workspace's own row, and an
+    /// operator's policy that narrows the same way is left alone.
+    #[tokio::test]
+    async fn the_pre_card_directory_default_is_replaced_and_an_operators_kept() {
+        const OLD: &str = r#"package vtc.directory
+import rego.v1
+default decision := {"effect": "deny", "with": {"code": "not-a-member"}}
+decision := {"effect": "allow", "with": {"fields": ["did", "role", "joined_at", "status"]}} if {
+	input.actor.role == "admin"
+}
+else := {"effect": "allow", "with": {"fields": ["did", "role"]}} if {
+	input.actor.authenticated == true
+}
+"#;
+        for (author, replaced) in [(DEFAULTS_AUTHOR, true), ("did:example:operator", false)] {
+            let (policies_ks, active_ks, _dir) = temp_keyspaces().await;
+            let id = Uuid::new_v4();
+            let sha = *compile(OLD, id).unwrap().source_sha256();
+            let mut policy = new_policy(
+                PolicyPurpose::Directory,
+                OLD.to_string(),
+                sha,
+                author.to_string(),
+                1,
+            );
+            policy.id = id;
+            store_policy(&policies_ks, &policy).await.unwrap();
+            set_active_policy_id(&active_ks, PolicyPurpose::Directory, id)
+                .await
+                .unwrap();
+            assert_eq!(
+                upgrade_stale_directory_default(&policies_ks, &active_ks)
+                    .await
+                    .unwrap(),
+                replaced,
+                "{author}"
+            );
+            let now = get_active_policy_id(&active_ks, PolicyPurpose::Directory)
+                .await
+                .unwrap()
+                .unwrap();
+            let active = get_policy(&policies_ks, now).await.unwrap().unwrap();
+            assert_eq!(
+                active.rego_source == default_source(PolicyPurpose::Directory),
+                replaced,
+                "{author}"
+            );
+            // Idempotent: the new default is not stale.
+            assert!(
+                !upgrade_stale_directory_default(&policies_ks, &active_ks)
+                    .await
+                    .unwrap()
+            );
+        }
     }
 
     #[test]
