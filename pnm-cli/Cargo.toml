@@ -43,8 +43,10 @@ chrono = { workspace = true }
 clap = { workspace = true, features = ["env"] }
 dialoguer = { workspace = true }
 # `pnm messaging console`: the mediator console and its engine.
-affinidi-messaging-mediator-admin = "0.42"
-affinidi-messaging-mediator-tui = "0.42"
+# 0.43 is the release on `affinidi-messaging-sdk` 0.37 / `trust-tasks-rs` 0.32
+# (affinidi-messaging-mediator #18), moving in lockstep with this workspace.
+affinidi-messaging-mediator-admin = "0.43"
+affinidi-messaging-mediator-tui = "0.43"
 affinidi-secrets-resolver = { workspace = true }
 async-trait = "0.1"
 ratatui = { workspace = true }
