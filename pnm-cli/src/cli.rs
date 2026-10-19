@@ -1624,21 +1624,26 @@ pub(crate) enum SetupCommands {
 
 #[derive(Subcommand)]
 pub(crate) enum ClaimDidCommands {
-    /// Mint the claim DID and print it. Refuses if one already exists.
+    /// Mint a claim DID and print it. Each run mints a new one.
     Create {
-        /// Slug the VTA will be registered under; pass the same one to connect.
-        #[arg(long)]
-        slug: String,
+        /// Deprecated: store the key under this slug, as older pnm did.
+        #[arg(long, hide = true)]
+        slug: Option<String>,
     },
-    /// Print the claim DID for a slug.
+    /// Deprecated: print the claim DID of a key stored under a slug.
+    #[command(hide = true)]
     Show {
         #[arg(long)]
         slug: String,
     },
     /// Remove the claim key, e.g. when its VTA was never created or is gone.
     Discard {
-        #[arg(long)]
-        slug: String,
+        /// The claim DID printed by `claim-did create`.
+        #[arg(long, required_unless_present = "slug", conflicts_with = "slug")]
+        claim_did: Option<String>,
+        /// Deprecated: the slug a key from older pnm is stored under.
+        #[arg(long, hide = true)]
+        slug: Option<String>,
     },
 }
 
@@ -1701,7 +1706,7 @@ pub(crate) enum BootstrapCommands {
     /// claim.
     ///
     /// Create it before the VTA, supply the printed DID at VTA creation, then
-    /// run `connect` with the same `--slug`. The private key stays in the OS
+    /// run `connect` with `--claim-did`. The private key stays in the OS
     /// keyring and is removed once the claim succeeds.
     ClaimDid {
         #[command(subcommand)]
@@ -1710,8 +1715,8 @@ pub(crate) enum BootstrapCommands {
 
     /// One-command TEE first-boot bootstrap against a running VTA.
     ///
-    /// Signs a claim on the VTA's DID with the claim DID created by
-    /// `claim-did create` for `--slug`, POSTs it to `/bootstrap/request`, and
+    /// Signs a claim on the VTA's DID with the claim DID given by
+    /// `--claim-did`, POSTs it to `/bootstrap/request`, and
     /// verifies the attested acknowledgement: the VTA enrolled the claim DID
     /// itself as its bootstrap admin (it mints no key for you). Then
     /// authenticates as the claim DID, hands that entry over to a long-term
@@ -1746,8 +1751,13 @@ pub(crate) enum BootstrapCommands {
         /// `--expect-pcr0`, but for the signing cert.
         #[arg(long)]
         expect_pcr8: Option<String>,
-        /// Slug to register this VTA under in pnm config; also selects the
-        /// claim DID (default: tail of the VTA DID). Required with --vta-url.
+        /// Public claim DID printed by `claim-did create` and supplied at VTA
+        /// creation. Selects the claim key in the OS keyring. Never the private key.
+        /// Without it, the key stored under the slug by older pnm is used.
+        #[arg(long)]
+        claim_did: Option<String>,
+        /// Slug to register this VTA under in pnm config (default: tail of
+        /// the VTA DID). Required with --vta-url.
         #[arg(long)]
         slug: Option<String>,
     },
@@ -4433,6 +4443,8 @@ mod config_update_flag_tests {
 mod bootstrap_connect_flag_tests {
     use super::*;
 
+    const CLAIM_DID: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+
     #[test]
     fn bootstrap_connect_accepts_either_target() {
         for (flag, value) in [
@@ -4446,12 +4458,38 @@ mod bootstrap_connect_flag_tests {
                     "connect",
                     flag,
                     value,
+                    "--claim-did",
+                    CLAIM_DID,
                     "--expect-pcr0",
                     "abcd",
                 ])
                 .is_ok()
             );
         }
+    }
+
+    #[test]
+    fn older_claim_did_command_lines_still_parse() {
+        for args in [
+            &[
+                "connect",
+                "--slug",
+                "acme",
+                "--vta-did",
+                "did:webvh:scid:vta.example.com",
+                "--expect-pcr0",
+                "abcd",
+            ][..],
+            &["claim-did", "create", "--slug", "acme"],
+            &["claim-did", "show", "--slug", "acme"],
+            &["claim-did", "discard", "--slug", "acme"],
+            &["claim-did", "discard", "--claim-did", CLAIM_DID],
+        ] {
+            let argv = ["pnm", "bootstrap"].iter().chain(args).copied();
+            assert!(Cli::try_parse_from(argv).is_ok(), "{args:?}");
+        }
+        let neither = Cli::try_parse_from(["pnm", "bootstrap", "claim-did", "discard"]);
+        assert!(neither.is_err());
     }
 
     #[test]

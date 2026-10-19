@@ -127,9 +127,9 @@ mode = "required"
 
 # The only DID that may claim the first admin via Mode B (POST /bootstrap/request),
 # when `admin_did` above is unset. Mint it on your machine BEFORE building:
-#   pnm bootstrap claim-did create --slug <slug>
+#   pnm bootstrap claim-did create
 # and paste the printed did:key here. Its private key stays in your OS keyring;
-# claim with `pnm bootstrap connect --slug <slug> ...`. Unset = no claim accepted.
+# claim with `pnm bootstrap connect --claim-did <did> ...`. Unset = no claim accepted.
 # bootstrap_claim_did = "did:key:z6Mk..."
 
 # ── Server (rarely need to change) ──────────────────────────────────────────

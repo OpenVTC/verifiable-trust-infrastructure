@@ -184,9 +184,12 @@ When adding a flow, add it here and a line to the root index.
 - **What**: One-command admin onboarding against a fresh Nitro-Enclave VTA. The
   enclave **enrols the operator's claim DID**; it mints no key and returns none
   (#2066, VTI-CLT-001/002 — a node never holds a client's private key).
-- **Entry point**: `pnm bootstrap claim-did create --slug <slug>` **before the
-  VTA exists**, then `pnm bootstrap connect --slug <slug> --vta-did <did>
-  --expect-pcr0 <hex>`. `--vta-did` and `--vta-url` are mutually exclusive and exactly one is
+- **Entry point**: `pnm bootstrap claim-did create` **before the VTA exists**
+  (the key is kept in the OS keyring under its DID), then `pnm bootstrap connect
+  --vta-did <did> --claim-did <claim-did> --expect-pcr0 <hex>`; `--slug` only
+  names the VTA locally (default: the VTA DID's tail). Without `--claim-did`,
+  connect uses the key older pnm stored under the slug (`create --slug`).
+  `--vta-did` and `--vta-url` are mutually exclusive and exactly one is
   required. The DID is resolved **locally** (SCID + signed log verified on the
   operator's machine, deliberately ignoring `PNM_RESOLVER_URL`), and bootstrap
   uses the `VTARest` endpoint that document advertises — never a URL guessed

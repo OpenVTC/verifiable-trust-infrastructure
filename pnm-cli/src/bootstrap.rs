@@ -500,6 +500,12 @@ fn validate_connect_anchor(
     }
 }
 
+/// For a VTA whose enclave predates claim wire version 2 (vta-service 0.63).
+const OLDER_VTA_HINT: &str = "This VTA's enclave predates vta-service 0.63 and its first-boot \
+     claim format, which this pnm no longer speaks. If its claim key was created with --slug, \
+     claim it with pnm-cli 0.42; otherwise recreate the VTA on a newer enclave. The carve-out \
+     is not spent.";
+
 /// Largest bootstrap response read into memory: an acknowledgement plus an
 /// attestation document, a few KiB in practice.
 const MAX_BOOTSTRAP_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -524,9 +530,15 @@ async fn fetch_claim_vta_did(
         .await
         .map_err(|e| format!("bootstrap claim info ({status}): {e}"))?;
     if !status.is_success() {
+        // A VTA before wire version 2 serves only the POST.
+        let hint = match status {
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED => {
+                format!("\n{OLDER_VTA_HINT}")
+            }
+            _ => String::new(),
+        };
         return Err(format!(
-            "could not learn the VTA's DID from {url} ({status}): {}. A VTA predating \
-             wire version 2 does not serve it — upgrade the VTA, or use --vta-did.",
+            "could not learn the VTA's DID from {url} ({status}): {}{hint}",
             String::from_utf8_lossy(&bytes)
         )
         .into());
@@ -544,12 +556,12 @@ async fn fetch_claim_vta_did(
 }
 
 /// `pnm bootstrap connect (--vta-did <DID> | --vta-url <URL> --slug <SLUG>)
-///   (--expect-pcr0 <HEX> | --no-verify-pcr0) [--expect-pcr8 <HEX>]`
+///   --claim-did <DID> (--expect-pcr0 <HEX> | --no-verify-pcr0) [--expect-pcr8 <HEX>]`
 ///
 /// Online TEE first-boot bootstrap (#2066):
 ///
-/// 1. Load the claim DID created by `pnm bootstrap claim-did create` for the
-///    slug from the OS keyring.
+/// 1. Load the key of `--claim-did`, created by `pnm bootstrap claim-did
+///    create`, from the OS keyring.
 /// 2. Sign a claim on the VTA's DID with it and POST it to
 ///    `/bootstrap/request`. The VTA enrols the claim DID itself as an
 ///    expiring, hand-off-marked bootstrap admin — it mints no key for us
@@ -573,6 +585,7 @@ pub async fn run_connect(
     no_verify_pcr0: bool,
     expect_pcr0: Option<String>,
     expect_pcr8: Option<String>,
+    claim_did: Option<String>,
     vta_slug: Option<String>,
     pnm_config: &mut crate::config::PnmConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -582,9 +595,9 @@ pub async fn run_connect(
         expect_pcr8.as_deref(),
     )?;
 
-    // Resolved before any network I/O: the slug selects the claim key.
+    // Resolved before any network I/O: the slug only names the VTA locally.
     let slug = connect_slug(vta_slug, vta_did.as_deref())?;
-    let claim = crate::bootstrap_claim::load_for_connect(&slug)?;
+    let claim = crate::bootstrap_claim::load_for_connect(claim_did.as_deref(), &slug)?;
 
     // The SDK client: finite timeouts, and no redirect off the VTA's origin.
     let client = vta_sdk::http::rest_client();
@@ -654,7 +667,8 @@ pub async fn run_connect(
             }
             eprintln!(
                 "This VTA's first-boot claim is already used. If its claim DID is no longer \
-                 needed, remove it with: pnm bootstrap claim-did discard --slug {slug}"
+                 needed, remove it with: pnm bootstrap claim-did discard {}",
+                claim.discard_arg()
             );
         }
         // VTI-CLT-016: an enrolled bootstrap identity that is refused is the
@@ -662,13 +676,17 @@ pub async fn run_connect(
         if status == reqwest::StatusCode::FORBIDDEN {
             eprintln!(
                 "The VTA refused this claim before enrolling anything. Check that the DID it was \
-                 created with is this slug's claim DID:\n  {}\n\
+                 created with is this claim DID:\n  {}\n\
                  and that {target_vta_did} is the VTA you meant to claim.\n\
                  If both are right and the VTA still refuses, the VTA is not configured with \
                  your claim DID — someone else may hold its first admin. Do not trust this VTA; \
                  recreate it.",
                 claim.did
             );
+        }
+        // A VTA before wire version 2 cannot parse a v2 claim at all.
+        if status == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
+            eprintln!("{OLDER_VTA_HINT}");
         }
         if status == reqwest::StatusCode::BAD_REQUEST && body.contains("version") {
             eprintln!(
@@ -724,7 +742,7 @@ pub async fn run_connect(
 
     // Recorded before the hand-over, so an interrupted run can resume it: the
     // VTA is registered only once a genuine, pinned enclave has acknowledged
-    // this slug's claim on this DID.
+    // this claim on this DID.
     pnm_config.vtas.insert(
         slug.clone(),
         crate::config::VtaConfig {
@@ -859,7 +877,7 @@ async fn hand_over_claim(
     }
 
     // 4. The claim DID has no standing left; its key goes (VTI-CLT-034).
-    crate::bootstrap_claim::discard_after_claim(slug);
+    crate::bootstrap_claim::discard_after_claim(claim);
     Ok(admin_did)
 }
 
@@ -1069,11 +1087,9 @@ fn connect_slug(
     match (explicit, vta_did) {
         (Some(slug), _) => Ok(slug),
         (None, Some(did)) => Ok(default_slug(did)),
-        (None, None) => Err(
-            "--slug is required with --vta-url: it selects the claim DID \
-             created by `pnm bootstrap claim-did create`"
-                .into(),
-        ),
+        (None, None) => {
+            Err("--slug is required with --vta-url: it names the VTA in pnm config".into())
+        }
     }
 }
 
@@ -1086,6 +1102,7 @@ mod tests {
     use super::parse_var;
     use serde_json::Value;
 
+    const CLAIM_DID: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
     const VTA_DID: &str =
         "did:webvh:Qmd1FCL9Vj2vJ433UDfC9MBstK6W6QWSQvYyeNn8va2fai:identity.example.com";
 
@@ -1307,6 +1324,7 @@ mod tests {
                             opt_out,
                             pcr0.clone(),
                             pcr8.clone(),
+                            Some(CLAIM_DID.into()),
                             None,
                             &mut config,
                         )
@@ -1325,6 +1343,36 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// A claim DID that is not an Ed25519 `did:key` (a pasted private key, a
+    /// typo) is refused with nothing resolved, sent or registered.
+    #[tokio::test]
+    async fn connect_rejects_malformed_claim_did_before_resolving_or_posting() {
+        let pcr0 = "ab12".repeat(24);
+        for bad in [
+            "",
+            "did:web:example.com",
+            "z3u2en7t5LR2WtQH5PfsRMFLNBXLXmkDTqQr4nvXcrJ8e",
+        ] {
+            let mut config = crate::config::PnmConfig::default();
+            let error = super::run_connect(
+                Some("did:unsupported:bootstrap-target".into()),
+                None,
+                false,
+                Some(pcr0.clone()),
+                None,
+                Some(bad.into()),
+                None,
+                &mut config,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("Ed25519 did:key"), "{bad}: {error}");
+            assert!(config.vtas.is_empty());
+            assert!(config.default_vta.is_none());
         }
     }
 

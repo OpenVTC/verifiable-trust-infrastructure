@@ -131,7 +131,7 @@ pub async fn maybe_bootstrap_admin(
     } else {
         // No admin_did configured — leave the first-boot carve-out OPEN.
         // The holder of `tee.bootstrap_claim_did` completes the swap with
-        // `pnm bootstrap connect --slug <slug>`, which triggers the Mode B
+        // `pnm bootstrap connect --claim-did <did>`, which triggers the Mode B
         // attestation branch and closes the carve-out.
         info!(
             context_id,

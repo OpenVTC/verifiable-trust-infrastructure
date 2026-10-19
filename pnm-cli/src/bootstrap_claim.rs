@@ -15,9 +15,22 @@ use vta_sdk::secure_store::{self, SecureStore};
 use vta_sdk::session::SessionStore;
 use zeroize::Zeroizing;
 
+/// Keyed by the claim DID, or by slug for keys from older pnm (`create --slug`).
 /// Separate from `vta:<slug>` so `pnm setup` can neither rotate nor overwrite it.
-pub(crate) fn claim_keyring_key(slug: &str) -> String {
-    format!("bootstrap-claim:{slug}")
+fn claim_keyring_key(id: &str) -> String {
+    format!("bootstrap-claim:{id}")
+}
+
+/// Only an Ed25519 `did:key` can be a claim DID. The input is not echoed: it
+/// may be a pasted private key.
+fn check_claim_did(did: &str) -> Result<(), Box<dyn std::error::Error>> {
+    affinidi_crypto::did_key::did_key_to_ed25519_pub(did)
+        .map(|_| ())
+        .map_err(|_| {
+            "--claim-did must be the public Ed25519 did:key printed by \
+             `pnm bootstrap claim-did create` (did:key:z6Mk...)"
+                .into()
+        })
 }
 
 /// A loaded claim key: the public `did:key`, its Ed25519 seed, and the same
@@ -26,6 +39,19 @@ pub(crate) struct ClaimKey {
     pub did: String,
     pub seed: Zeroizing<[u8; 32]>,
     pub private_key_multibase: Zeroizing<String>,
+    /// What the key is stored under: the DID, or a slug for older keys.
+    id: String,
+}
+
+impl ClaimKey {
+    /// The `claim-did discard` argument that removes this key.
+    pub(crate) fn discard_arg(&self) -> String {
+        if self.id == self.did {
+            format!("--claim-did {}", self.did)
+        } else {
+            format!("--slug {}", self.id)
+        }
+    }
 }
 
 /// Fail closed unless the session store is the OS keyring.
@@ -50,68 +76,114 @@ fn require_os_keyring() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// `pnm bootstrap claim-did create --slug <SLUG>`
-pub async fn run_create(slug: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// `pnm bootstrap claim-did create [--slug <SLUG>]`
+pub async fn run_create(slug: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     require_os_keyring()?;
     let did = create(&crate::auth::store(), slug)?;
 
-    eprintln!("Bootstrap claim DID created for '{slug}'. Its private key is in the OS keyring.");
+    eprintln!("Bootstrap claim DID created. Its private key is in the OS keyring.");
     eprintln!();
     eprintln!("Supply this DID when you create the VTA. Only its holder can claim admin:");
     println!("{did}");
     eprintln!();
     eprintln!("Once the VTA is up, from this machine:");
-    eprintln!("  pnm bootstrap connect --slug {slug} --vta-did <did> --expect-pcr0 <hex>");
+    match slug {
+        Some(slug) => {
+            eprintln!("  pnm bootstrap connect --slug {slug} --vta-did <did> --expect-pcr0 <hex>")
+        }
+        None => eprintln!(
+            "  pnm bootstrap connect --vta-did <did> --claim-did {did} --expect-pcr0 <hex>"
+        ),
+    }
     Ok(())
 }
 
-/// `pnm bootstrap claim-did show --slug <SLUG>`
+/// `pnm bootstrap claim-did show --slug <SLUG>`, for keys stored by slug.
 pub async fn run_show(slug: &str) -> Result<(), Box<dyn std::error::Error>> {
     require_os_keyring()?;
-    let key = load(&crate::auth::store(), slug)?;
-    println!("{}", key.did);
+    println!("{}", load(&crate::auth::store(), slug)?.did);
     Ok(())
 }
 
-/// `pnm bootstrap claim-did discard --slug <SLUG>`
-pub async fn run_discard(slug: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// `pnm bootstrap claim-did discard (--claim-did <DID> | --slug <SLUG>)`
+pub async fn run_discard(
+    claim_did: Option<&str>,
+    slug: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(did) = claim_did {
+        check_claim_did(did)?;
+    }
+    let id = claim_did
+        .or(slug)
+        .expect("clap requires --claim-did or --slug");
     require_os_keyring()?;
     let store = crate::auth::store();
-    let key = load(&store, slug)?;
-    discard(&store, slug);
+    if !store.has_session(&claim_keyring_key(id)) {
+        return Err(not_found(id));
+    }
+    discard(&store, id);
     eprintln!(
-        "Discarded bootstrap claim DID {} for '{slug}'. A VTA registered with it can no longer \
-         be claimed from this machine.",
-        key.did
+        "Discarded bootstrap claim key {id}. A VTA registered with it can no longer be \
+         claimed from this machine."
     );
     Ok(())
 }
 
-/// Load the claim key for `slug` at connect time.
-pub(crate) fn load_for_connect(slug: &str) -> Result<ClaimKey, Box<dyn std::error::Error>> {
+/// Load the claim key at connect time: by `claim_did`, else by `slug`.
+pub(crate) fn load_for_connect(
+    claim_did: Option<&str>,
+    slug: &str,
+) -> Result<ClaimKey, Box<dyn std::error::Error>> {
+    if let Some(did) = claim_did {
+        check_claim_did(did)?;
+    }
     require_os_keyring()?;
-    load(&crate::auth::store(), slug)
+    select(&crate::auth::store(), claim_did, slug)
 }
 
 /// Drop the claim key once its bootstrap entry has been handed over.
-pub(crate) fn discard_after_claim(slug: &str) {
-    discard(&crate::auth::store(), slug);
+pub(crate) fn discard_after_claim(claim: &ClaimKey) {
+    discard(&crate::auth::store(), &claim.id);
 }
 
-fn create(store: &SessionStore, slug: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let keyring_key = claim_keyring_key(slug);
+/// The key stored under `claim_did`, or under `slug` as older pnm stored it.
+/// A slug-keyed key is used for `claim_did` only if it holds that DID.
+fn select(
+    store: &SessionStore,
+    claim_did: Option<&str>,
+    slug: &str,
+) -> Result<ClaimKey, Box<dyn std::error::Error>> {
+    let Some(did) = claim_did else {
+        if !store.has_session(&claim_keyring_key(slug)) {
+            return Err(format!(
+                "no bootstrap claim key stored for '{slug}' in this machine's OS keyring; \
+                 pass --claim-did with the DID the VTA was created with"
+            )
+            .into());
+        }
+        return load(store, slug);
+    };
+    [did, slug]
+        .into_iter()
+        .find_map(|id| load(store, id).ok().filter(|key| key.did == did))
+        .ok_or_else(|| not_found(did))
+}
+
+/// Mint a claim key, stored under its DID, or under `slug` as older pnm did.
+fn create(store: &SessionStore, slug: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+    let (did, private_key_multibase) =
+        vta_cli_common::local_keygen::generate_unbound_admin_did_key();
+    let id = slug.unwrap_or(&did);
+    let keyring_key = claim_keyring_key(id);
     // Re-minting would orphan a DID already registered for a VTA.
     if store.has_session(&keyring_key) {
         return Err(format!(
-            "a bootstrap claim DID already exists for '{slug}'. Print it with \
-             `pnm bootstrap claim-did show --slug {slug}`, or remove it with \
-             `pnm bootstrap claim-did discard --slug {slug}` if its VTA is gone."
+            "a bootstrap claim key already exists for '{id}'. Print it with \
+             `pnm bootstrap claim-did show --slug {id}`, or remove it with \
+             `pnm bootstrap claim-did discard --slug {id}` if its VTA is gone."
         )
         .into());
     }
-
-    let (did, private_key_multibase) =
-        vta_cli_common::local_keygen::generate_unbound_admin_did_key();
     store.store_pending_vta_binding(&keyring_key, &did, &private_key_multibase)?;
 
     // A save that reports success but cannot be read back would strand the DID.
@@ -125,18 +197,19 @@ fn create(store: &SessionStore, slug: &str) -> Result<String, Box<dyn std::error
     }
 }
 
-fn load(store: &SessionStore, slug: &str) -> Result<ClaimKey, Box<dyn std::error::Error>> {
-    let info = store.loaded_session(&claim_keyring_key(slug)).ok_or_else(
-        || -> Box<dyn std::error::Error> {
-            format!(
-                "no bootstrap claim DID for '{slug}' in the OS keyring. A TEE VTA can only be \
-                 claimed with the DID registered when it was created — run \
-                 `pnm bootstrap claim-did create --slug {slug}` before creating the VTA, and \
-                 pass the same --slug to connect."
-            )
-            .into()
-        },
-    )?;
+fn not_found(id: &str) -> Box<dyn std::error::Error> {
+    format!(
+        "no bootstrap claim key for {id} in this machine's OS keyring; use the machine \
+         that created it"
+    )
+    .into()
+}
+
+/// The key stored under `id` (a claim DID, or a slug for older keys).
+fn load(store: &SessionStore, id: &str) -> Result<ClaimKey, Box<dyn std::error::Error>> {
+    let info = store
+        .loaded_session(&claim_keyring_key(id))
+        .ok_or_else(|| not_found(id))?;
     let seed = Zeroizing::new(crate::auth::session_seed(&info)?);
     // Guards against a keyring entry whose DID and key have drifted apart.
     let public = ed25519_dalek::SigningKey::from_bytes(&seed)
@@ -144,7 +217,7 @@ fn load(store: &SessionStore, slug: &str) -> Result<ClaimKey, Box<dyn std::error
         .to_bytes();
     if affinidi_crypto::did_key::ed25519_pub_to_did_key(&public) != info.client_did {
         return Err(format!(
-            "the bootstrap claim key for '{slug}' does not match its stored DID; refusing to use it"
+            "the bootstrap claim key for {id} does not match its stored DID; refusing to use it"
         )
         .into());
     }
@@ -152,11 +225,12 @@ fn load(store: &SessionStore, slug: &str) -> Result<ClaimKey, Box<dyn std::error
         did: info.client_did,
         seed,
         private_key_multibase: Zeroizing::new(info.private_key_multibase),
+        id: id.to_string(),
     })
 }
 
-fn discard(store: &SessionStore, slug: &str) {
-    store.logout(&claim_keyring_key(slug));
+fn discard(store: &SessionStore, id: &str) {
+    store.logout(&claim_keyring_key(id));
 }
 
 #[cfg(test)]
@@ -189,10 +263,10 @@ mod tests {
     #[test]
     fn create_then_load_returns_matching_key() {
         let store = store();
-        let did = super::create(&store, "acme").unwrap();
+        let did = super::create(&store, None).unwrap();
         assert!(did.starts_with("did:key:z6Mk"));
 
-        let key = super::load(&store, "acme").unwrap();
+        let key = super::load(&store, &did).unwrap();
         assert_eq!(key.did, did);
         let signed = vta_sdk::tee_bootstrap::FirstBootClaim::new_signed(
             &key.seed,
@@ -205,27 +279,80 @@ mod tests {
     }
 
     #[test]
-    fn create_refuses_to_replace_an_existing_claim() {
+    fn each_create_mints_its_own_claim() {
         let store = store();
-        let first = super::create(&store, "acme").unwrap();
-        let err = super::create(&store, "acme").unwrap_err().to_string();
-        assert!(err.contains("claim-did show"), "{err}");
-        assert_eq!(super::load(&store, "acme").unwrap().did, first);
-    }
-
-    #[test]
-    fn claim_is_kept_apart_from_the_vta_session() {
-        let store = store();
-        super::create(&store, "acme").unwrap();
-        assert!(!store.has_session(&crate::config::vta_keyring_key("acme")));
+        let first = super::create(&store, None).unwrap();
+        let second = super::create(&store, None).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(super::load(&store, &first).unwrap().did, first);
+        assert_eq!(super::load(&store, &second).unwrap().did, second);
     }
 
     #[test]
     fn discard_removes_the_key() {
         let store = store();
-        super::create(&store, "acme").unwrap();
-        super::discard(&store, "acme");
-        let err = super::load(&store, "acme").err().unwrap().to_string();
-        assert!(err.contains("claim-did create"), "{err}");
+        let did = super::create(&store, None).unwrap();
+        super::discard(&store, &did);
+        let err = super::load(&store, &did).err().unwrap().to_string();
+        assert!(err.contains(&did), "{err}");
+        assert!(!err.contains("claim-did create"), "{err}");
+    }
+
+    #[test]
+    fn claim_did_selects_its_own_key() {
+        let store = store();
+        let did = super::create(&store, None).unwrap();
+        let key = super::select(&store, Some(&did), "any-slug").unwrap();
+        assert_eq!(key.did, did);
+        assert_eq!(key.discard_arg(), format!("--claim-did {did}"));
+    }
+
+    #[test]
+    fn slug_keyed_key_from_older_pnm_still_works() {
+        let store = store();
+        let did = super::create(&store, Some("acme")).unwrap();
+        assert!(
+            super::create(&store, Some("acme")).is_err(),
+            "re-mint must be refused"
+        );
+
+        // Old command line: no --claim-did.
+        assert_eq!(super::select(&store, None, "acme").unwrap().did, did);
+        let err = super::select(&store, None, "other")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("--claim-did"), "{err}");
+        // New command line: found by DID through the slug, only if the DID matches.
+        let key = super::select(&store, Some(&did), "acme").unwrap();
+        assert_eq!(key.discard_arg(), "--slug acme");
+        let other = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let err = super::select(&store, Some(other), "acme")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains(other), "{err}");
+    }
+
+    #[test]
+    fn unknown_claim_did_names_the_did() {
+        let store = store();
+        let did = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let err = super::load(&store, did).err().unwrap().to_string();
+        assert!(err.contains(did), "{err}");
+    }
+
+    #[test]
+    fn claim_did_must_be_an_ed25519_did_key() {
+        for bad in [
+            "",
+            "did:web:example.com",
+            "z3u2en7t5LR2WtQH5PfsRMFLNBXLXmkDTqQr4nvXcrJ8e",
+            "did:key:zDnaerDaTF5BXEavCrfRZEk316dpbLsfPDZ3WJ5hRTPFU2169",
+        ] {
+            let err = super::check_claim_did(bad).unwrap_err().to_string();
+            assert!(err.contains("Ed25519 did:key"), "{bad}: {err}");
+            assert!(bad.is_empty() || !err.contains(bad), "input echoed: {err}");
+        }
     }
 }

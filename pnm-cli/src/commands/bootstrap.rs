@@ -42,9 +42,11 @@ pub(crate) async fn run_offline(
             .await,
         ),
         BootstrapCommands::ClaimDid { command } => Some(match command {
-            ClaimDidCommands::Create { slug } => bootstrap_claim::run_create(slug).await,
+            ClaimDidCommands::Create { slug } => bootstrap_claim::run_create(slug.as_deref()).await,
             ClaimDidCommands::Show { slug } => bootstrap_claim::run_show(slug).await,
-            ClaimDidCommands::Discard { slug } => bootstrap_claim::run_discard(slug).await,
+            ClaimDidCommands::Discard { claim_did, slug } => {
+                bootstrap_claim::run_discard(claim_did.as_deref(), slug.as_deref()).await
+            }
         }),
         BootstrapCommands::Connect {
             vta_did,
@@ -52,6 +54,7 @@ pub(crate) async fn run_offline(
             expect_pcr0,
             no_verify_pcr0,
             expect_pcr8,
+            claim_did,
             slug,
         } => Some(
             bootstrap::run_connect(
@@ -60,6 +63,7 @@ pub(crate) async fn run_offline(
                 *no_verify_pcr0,
                 expect_pcr0.clone(),
                 expect_pcr8.clone(),
+                claim_did.clone(),
                 slug.clone(),
                 pnm_config,
             )
