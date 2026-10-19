@@ -2244,6 +2244,14 @@ mod spine_proof_tests {
             "reads one group the signer may see; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
         ),
         (
+            group_tasks::MEMBERS_LIST_TYPE,
+            "reads a group's members as the signer may see them; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            group_tasks::REQUESTS_LIST_TYPE,
+            "reads the join requests to groups the signer manages; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
             community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
             "a community read; the handler refuses an unsigned caller where that read is gated at all",
         ),
@@ -3227,6 +3235,13 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     group_tasks::DELETE_TYPE,
     group_tasks::LIST_TYPE,
     group_tasks::SHOW_TYPE,
+    group_tasks::MEMBERS_ADD_TYPE,
+    group_tasks::MEMBERS_REMOVE_TYPE,
+    group_tasks::MEMBERS_LIST_TYPE,
+    group_tasks::JOIN_TYPE,
+    group_tasks::LEAVE_TYPE,
+    group_tasks::REQUESTS_LIST_TYPE,
+    group_tasks::REQUESTS_DECIDE_TYPE,
     // Credential-sourced fields, filled from a presentation.
     directory_tasks::CARD_PRESENT_TYPE,
     community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,

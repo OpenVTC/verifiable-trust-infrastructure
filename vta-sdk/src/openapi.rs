@@ -370,6 +370,34 @@ spec_types! {
     GroupsShow01Payload(groups::show::v0_1::Payload);
     /// `vtc/groups/show/0.1#response` — the group as the caller may see it.
     GroupsShow01Response(groups::show::v0_1::Response);
+    /// `vtc/groups/members/add/0.1` payload — adding a member.
+    GroupsMembersAdd01Payload(groups::members::add::v0_1::Payload);
+    /// `vtc/groups/members/add/0.1#response` — the membership, and the credential offered.
+    GroupsMembersAdd01Response(groups::members::add::v0_1::Response);
+    /// `vtc/groups/members/remove/0.1` payload — removing a member.
+    GroupsMembersRemove01Payload(groups::members::remove::v0_1::Payload);
+    /// `vtc/groups/members/remove/0.1#response` — the membership ended.
+    GroupsMembersRemove01Response(groups::members::remove::v0_1::Response);
+    /// `vtc/groups/members/list/0.1` payload — one group's members.
+    GroupsMembersList01Payload(groups::members::list::v0_1::Payload);
+    /// `vtc/groups/members/list/0.1#response` — the members the caller may see.
+    GroupsMembersList01Response(groups::members::list::v0_1::Response);
+    /// `vtc/groups/join/0.1` payload — joining or asking to.
+    GroupsJoin01Payload(groups::join::v0_1::Payload);
+    /// `vtc/groups/join/0.1#response` — what came of it.
+    GroupsJoin01Response(groups::join::v0_1::Response);
+    /// `vtc/groups/leave/0.1` payload — leaving, or withdrawing a request.
+    GroupsLeave01Payload(groups::leave::v0_1::Payload);
+    /// `vtc/groups/leave/0.1#response` — what came of it.
+    GroupsLeave01Response(groups::leave::v0_1::Response);
+    /// `vtc/groups/requests/list/0.1` payload — requests to the caller's groups.
+    GroupsRequestsList01Payload(groups::requests::list::v0_1::Payload);
+    /// `vtc/groups/requests/list/0.1#response` — the requests.
+    GroupsRequestsList01Response(groups::requests::list::v0_1::Response);
+    /// `vtc/groups/requests/decide/0.1` payload — a decision on a request.
+    GroupsRequestsDecide01Payload(groups::requests::decide::v0_1::Payload);
+    /// `vtc/groups/requests/decide/0.1#response` — the request, and the membership it made.
+    GroupsRequestsDecide01Response(groups::requests::decide::v0_1::Response);
     /// `vtc/directory/card/present/0.1` payload — the fields a presentation fills.
     DirectoryCardPresent01Payload(directory::card::present::v0_1::Payload);
     /// `vtc/directory/card/present/0.1#response` — each field's verified value.
@@ -789,6 +817,20 @@ mod tests {
         check::<GroupsList01Response>();
         check::<GroupsShow01Payload>();
         check::<GroupsShow01Response>();
+        check::<GroupsMembersAdd01Payload>();
+        check::<GroupsMembersAdd01Response>();
+        check::<GroupsMembersRemove01Payload>();
+        check::<GroupsMembersRemove01Response>();
+        check::<GroupsMembersList01Payload>();
+        check::<GroupsMembersList01Response>();
+        check::<GroupsJoin01Payload>();
+        check::<GroupsJoin01Response>();
+        check::<GroupsLeave01Payload>();
+        check::<GroupsLeave01Response>();
+        check::<GroupsRequestsList01Payload>();
+        check::<GroupsRequestsList01Response>();
+        check::<GroupsRequestsDecide01Payload>();
+        check::<GroupsRequestsDecide01Response>();
         check::<DirectoryCardPresent01Payload>();
         check::<DirectoryCardPresent01Response>();
         check::<DirectoryNotesAppend01Payload>();

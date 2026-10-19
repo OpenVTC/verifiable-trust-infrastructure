@@ -43,6 +43,40 @@ const UPDATE_ERR_SETTINGS_INVALID: &str = g::update::v0_1::error_codes::SETTINGS
 const DELETE_ERR_NOT_FOUND: &str = g::delete::v0_1::error_codes::NOT_FOUND.code;
 const LIST_ERR_CURSOR_INVALID: &str = g::list::v0_1::error_codes::CURSOR_INVALID.code;
 const SHOW_ERR_NOT_FOUND: &str = g::show::v0_1::error_codes::NOT_FOUND.code;
+const ADD_ERR_NOT_FOUND: &str = g::members::add::v0_1::error_codes::NOT_FOUND.code;
+const ADD_ERR_ENTRY_NOT_FOUND: &str = g::members::add::v0_1::error_codes::ENTRY_NOT_FOUND.code;
+const ADD_ERR_ALREADY_MEMBER: &str = g::members::add::v0_1::error_codes::ALREADY_MEMBER.code;
+const ADD_ERR_KEY_HOLDER_UNAVAILABLE: &str =
+    g::members::add::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE.code;
+const ADD_ERR_KEY_HOLDER_REFUSED: &str =
+    g::members::add::v0_1::error_codes::KEY_HOLDER_REFUSED.code;
+const REMOVE_ERR_NOT_FOUND: &str = g::members::remove::v0_1::error_codes::NOT_FOUND.code;
+const REMOVE_ERR_NOT_IN_GROUP: &str = g::members::remove::v0_1::error_codes::NOT_IN_GROUP.code;
+const MEMBERS_LIST_ERR_NOT_FOUND: &str = g::members::list::v0_1::error_codes::NOT_FOUND.code;
+const MEMBERS_LIST_ERR_CURSOR_INVALID: &str =
+    g::members::list::v0_1::error_codes::CURSOR_INVALID.code;
+const JOIN_ERR_NOT_FOUND: &str = g::join::v0_1::error_codes::NOT_FOUND.code;
+const JOIN_ERR_NOT_JOINABLE: &str = g::join::v0_1::error_codes::NOT_JOINABLE.code;
+const JOIN_ERR_ALREADY_MEMBER: &str = g::join::v0_1::error_codes::ALREADY_MEMBER.code;
+const JOIN_ERR_REQUEST_PENDING: &str = g::join::v0_1::error_codes::REQUEST_PENDING.code;
+const JOIN_ERR_POLICY_REFUSED: &str = g::join::v0_1::error_codes::POLICY_REFUSED.code;
+const JOIN_ERR_KEY_HOLDER_UNAVAILABLE: &str =
+    g::join::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE.code;
+const JOIN_ERR_KEY_HOLDER_REFUSED: &str = g::join::v0_1::error_codes::KEY_HOLDER_REFUSED.code;
+const LEAVE_ERR_NOT_FOUND: &str = g::leave::v0_1::error_codes::NOT_FOUND.code;
+const LEAVE_ERR_NOT_IN_GROUP: &str = g::leave::v0_1::error_codes::NOT_IN_GROUP.code;
+const REQUESTS_LIST_ERR_NOT_FOUND: &str = g::requests::list::v0_1::error_codes::NOT_FOUND.code;
+const REQUESTS_LIST_ERR_CURSOR_INVALID: &str =
+    g::requests::list::v0_1::error_codes::CURSOR_INVALID.code;
+const DECIDE_ERR_NOT_FOUND: &str = g::requests::decide::v0_1::error_codes::NOT_FOUND.code;
+const DECIDE_ERR_ALREADY_DECIDED: &str =
+    g::requests::decide::v0_1::error_codes::ALREADY_DECIDED.code;
+const DECIDE_ERR_SELF_DECISION: &str = g::requests::decide::v0_1::error_codes::SELF_DECISION.code;
+const DECIDE_ERR_KEY_HOLDER_UNAVAILABLE: &str =
+    g::requests::decide::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE.code;
+const DECIDE_ERR_KEY_HOLDER_REFUSED: &str =
+    g::requests::decide::v0_1::error_codes::KEY_HOLDER_REFUSED.code;
+const UNKNOWN_ENTRY: &str = "dir_UnknownUnknownUnknown";
 
 const SPEC: &str = "https://trusttasks.org/spec/vtc/groups";
 const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.1";
@@ -262,6 +296,43 @@ async fn activate_policy(fix: &Fixture, source: &str) {
         .unwrap();
 }
 
+/// `who`'s directory entry, made by reading their own card.
+async fn entry_of(vtc: &TestVtc, who: &Party) -> String {
+    let (status, doc) = call(
+        vtc,
+        who,
+        "https://trusttasks.org/spec/vtc/directory/card/show/0.1",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    doc["payload"]["card"]["entryId"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Appoint `who` a manager of `group_id` as `vtc/groups/managers/add` would: a
+/// resource grant on their entry, delegated by `granter`.
+async fn appoint(vtc: &TestVtc, who: &Party, group_id: &str, granter: &str) {
+    let mut entry = vtc_service::acl::get_acl_entry(&vtc.state.acl_ks, &who.did)
+        .await
+        .unwrap()
+        .unwrap();
+    entry.resource_grants.push(
+        serde_json::from_value(json!({
+            "capability": "vtc.groups.manage",
+            "resource": format!("group:{group_id}"),
+            "delegatedBy": granter,
+            "grantedAt": Utc::now(),
+        }))
+        .unwrap(),
+    );
+    vtc_service::acl::store_acl_entry(&vtc.state.acl_ks, &entry)
+        .await
+        .unwrap();
+}
+
 fn static_group(name: &str, visibility: &str, show_members: &str) -> Value {
     json!({
         "name": name,
@@ -280,6 +351,28 @@ impl Fixture {
 
     async fn as_member(&self, name: &str, payload: Value) -> (StatusCode, Value) {
         call(&self.vtc, &self.member, &task(name), payload).await
+    }
+
+    /// A new active member, with a directory entry.
+    async fn another_member(&self) -> (Party, String) {
+        let p = Party::new();
+        seed_role(&self.vtc, &p.did, VtcRole::Member, &[]).await;
+        store_member(&self.vtc.state.members_ks, &Member::fresh(&p.did))
+            .await
+            .unwrap();
+        let entry = entry_of(&self.vtc, &p).await;
+        (p, entry)
+    }
+
+    async fn group(&self, join_policy: &str, visibility: &str, show_members: &str) -> String {
+        let mut body = static_group("Identity WG", visibility, show_members);
+        body["joinPolicy"] = json!(join_policy);
+        let (status, doc) = self.as_admin("create", body).await;
+        assert_eq!(status, StatusCode::OK, "{doc}");
+        doc["payload"]["group"]["groupId"]
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
     async fn create(&self, visibility: &str, show_members: &str) -> Value {
@@ -572,4 +665,494 @@ async fn list_pages_with_a_cursor_bound_to_its_caller() {
         )
         .await;
     assert_eq!(tt_error_code(&b), LIST_ERR_CURSOR_INVALID, "{b}");
+}
+
+// ─── membership ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_member_joins_an_open_group_and_its_did_issues_their_credential() {
+    let fix = fixture().await;
+    let group_id = fix.group("open", "members", "members").await;
+    let (status, doc) = fix.as_member("join", json!({ "groupId": group_id })).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["payload"]["outcome"], "joined");
+    assert!(doc["payload"]["credentialId"].is_string(), "{doc}");
+    assert!(
+        doc["payload"]["member"]["credentialValidUntil"].is_string(),
+        "{doc}"
+    );
+
+    // Signed by the VTA as the group — its own key, never the community's.
+    let (_, show) = fix.as_admin("show", json!({ "groupId": group_id })).await;
+    let group_did = show["payload"]["group"]["groupDid"].clone();
+    let signed = fix.vta.calls_of(SIGN_DOCUMENT);
+    let vmc = &signed.last().unwrap()["document"];
+    assert_eq!(vmc["issuer"], group_did);
+    assert_eq!(vmc["credentialSubject"]["id"], fix.member.did.as_str());
+    assert!(
+        vmc.get("credentialStatus").is_none(),
+        "no status list per group: {vmc}"
+    );
+    assert!(
+        signed.last().unwrap()["keyId"]
+            .as_str()
+            .unwrap()
+            .starts_with(group_did.as_str().unwrap())
+    );
+
+    let (_, mine) = fix.as_member("list", json!({ "mine": true })).await;
+    assert_eq!(
+        mine["payload"]["items"][0]["myMembership"], "member",
+        "{mine}"
+    );
+    assert_eq!(mine["payload"]["items"][0]["group"]["memberCount"], 1);
+}
+
+#[tokio::test]
+async fn members_add_refuses_what_its_specification_declares() {
+    let fix = fixture().await;
+    let group_id = fix.group("closed", "members", "members").await;
+    let (_, entry) = fix.another_member().await;
+
+    let (_, b) = fix
+        .as_admin(
+            "members/add",
+            json!({ "groupId": UNKNOWN_GROUP, "entryId": entry }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), ADD_ERR_NOT_FOUND, "{b}");
+    let (_, b) = fix
+        .as_admin(
+            "members/add",
+            json!({ "groupId": group_id, "entryId": UNKNOWN_ENTRY }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), ADD_ERR_ENTRY_NOT_FOUND, "{b}");
+
+    fix.vta.script(SIGN_DOCUMENT, Script::Silent);
+    let (_, b) = fix
+        .as_admin(
+            "members/add",
+            json!({ "groupId": group_id, "entryId": entry }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), ADD_ERR_KEY_HOLDER_UNAVAILABLE, "{b}");
+    fix.vta
+        .script(SIGN_DOCUMENT, Script::Refuse("permissionDenied"));
+    let (_, b) = fix
+        .as_admin(
+            "members/add",
+            json!({ "groupId": group_id, "entryId": entry }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), ADD_ERR_KEY_HOLDER_REFUSED, "{b}");
+    // Nothing was recorded either time.
+    let (_, members) = fix
+        .as_admin("members/list", json!({ "groupId": group_id }))
+        .await;
+    assert_eq!(members["payload"]["items"], json!([]), "{members}");
+
+    let (status, doc) = fix
+        .as_admin(
+            "members/add",
+            json!({ "groupId": group_id, "entryId": entry }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["payload"]["member"]["source"], "added");
+    let (_, b) = fix
+        .as_admin(
+            "members/add",
+            json!({ "groupId": group_id, "entryId": entry }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), ADD_ERR_ALREADY_MEMBER, "{b}");
+
+    // A member who does not manage the group.
+    let (_, b) = fix
+        .as_member(
+            "members/add",
+            json!({ "groupId": group_id, "entryId": entry }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), "permissionDenied", "{b}");
+}
+
+#[tokio::test]
+async fn members_remove_refuses_what_its_specification_declares() {
+    let fix = fixture().await;
+    let group_id = fix.group("closed", "members", "members").await;
+    let (_, entry) = fix.another_member().await;
+    let (_, b) = fix
+        .as_admin(
+            "members/remove",
+            json!({ "groupId": UNKNOWN_GROUP, "entryId": entry }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), REMOVE_ERR_NOT_FOUND, "{b}");
+    let (_, b) = fix
+        .as_admin(
+            "members/remove",
+            json!({ "groupId": group_id, "entryId": entry }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), REMOVE_ERR_NOT_IN_GROUP, "{b}");
+
+    fix.as_admin(
+        "members/add",
+        json!({ "groupId": group_id, "entryId": entry }),
+    )
+    .await;
+    let (status, doc) = fix
+        .as_admin(
+            "members/remove",
+            json!({ "groupId": group_id, "entryId": entry }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["payload"]["state"], "removed");
+    assert!(doc["payload"]["credentialValidUntil"].is_string(), "{doc}");
+}
+
+#[tokio::test]
+async fn members_list_refuses_what_its_specification_declares() {
+    let fix = fixture().await;
+    let hidden = fix.group("closed", "admins", "admins").await;
+    let staff_list = fix.group("closed", "members", "admins").await;
+    let open = fix.group("open", "members", "members").await;
+
+    let (_, b) = fix
+        .as_member("members/list", json!({ "groupId": hidden }))
+        .await;
+    assert_eq!(tt_error_code(&b), MEMBERS_LIST_ERR_NOT_FOUND, "{b}");
+    let (_, b) = fix
+        .as_member("members/list", json!({ "groupId": staff_list }))
+        .await;
+    assert_eq!(tt_error_code(&b), "permissionDenied", "{b}");
+
+    for _ in 0..3 {
+        let (_, entry) = fix.another_member().await;
+        fix.as_admin("members/add", json!({ "groupId": open, "entryId": entry }))
+            .await;
+    }
+    let (_, first) = fix
+        .as_member("members/list", json!({ "groupId": open, "limit": 2 }))
+        .await;
+    let items = first["payload"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{first}");
+    // Another member's credential is theirs and the managers' to see.
+    assert!(items[0].get("credentialValidUntil").is_none(), "{first}");
+    let cursor = first["payload"]["nextCursor"].as_str().unwrap().to_string();
+    let (_, b) = fix
+        .as_admin("members/list", json!({ "groupId": open, "cursor": cursor }))
+        .await;
+    assert_eq!(tt_error_code(&b), MEMBERS_LIST_ERR_CURSOR_INVALID, "{b}");
+    let (_, second) = fix
+        .as_member("members/list", json!({ "groupId": open, "cursor": cursor }))
+        .await;
+    assert_eq!(
+        second["payload"]["items"].as_array().unwrap().len(),
+        1,
+        "{second}"
+    );
+}
+
+#[tokio::test]
+async fn join_refuses_what_its_specification_declares() {
+    let fix = fixture().await;
+    let closed = fix.group("closed", "members", "members").await;
+    let open = fix.group("open", "members", "members").await;
+    let by_request = fix.group("request", "members", "members").await;
+    let hidden = fix.group("open", "admins", "admins").await;
+
+    let (_, b) = fix.as_member("join", json!({ "groupId": hidden })).await;
+    assert_eq!(tt_error_code(&b), JOIN_ERR_NOT_FOUND, "{b}");
+    let (_, b) = fix.as_member("join", json!({ "groupId": closed })).await;
+    assert_eq!(tt_error_code(&b), JOIN_ERR_NOT_JOINABLE, "{b}");
+
+    fix.vta.script(SIGN_DOCUMENT, Script::Silent);
+    let (_, b) = fix.as_member("join", json!({ "groupId": open })).await;
+    assert_eq!(tt_error_code(&b), JOIN_ERR_KEY_HOLDER_UNAVAILABLE, "{b}");
+    fix.vta
+        .script(SIGN_DOCUMENT, Script::Refuse("permissionDenied"));
+    let (_, b) = fix.as_member("join", json!({ "groupId": open })).await;
+    assert_eq!(tt_error_code(&b), JOIN_ERR_KEY_HOLDER_REFUSED, "{b}");
+
+    let (status, _) = fix.as_member("join", json!({ "groupId": open })).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, b) = fix.as_member("join", json!({ "groupId": open })).await;
+    assert_eq!(tt_error_code(&b), JOIN_ERR_ALREADY_MEMBER, "{b}");
+
+    let (status, doc) = fix
+        .as_member(
+            "join",
+            json!({ "groupId": by_request, "message": "I work on identity." }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["payload"]["outcome"], "requested");
+    // The note is for the managers.
+    assert!(doc["payload"]["request"].get("message").is_none(), "{doc}");
+    let (_, b) = fix
+        .as_member("join", json!({ "groupId": by_request }))
+        .await;
+    assert_eq!(tt_error_code(&b), JOIN_ERR_REQUEST_PENDING, "{b}");
+
+    activate_policy(
+        &fix,
+        r#"package vtc.groups
+import rego.v1
+decision := {"effect": "deny", "with": {"code": "full", "reason": "this group is full"}}
+"#,
+    )
+    .await;
+    let (other, _) = fix.another_member().await;
+    let (_, b) = call(&fix.vtc, &other, &task("join"), json!({ "groupId": open })).await;
+    assert_eq!(tt_error_code(&b), JOIN_ERR_POLICY_REFUSED, "{b}");
+}
+
+#[tokio::test]
+async fn leave_refuses_what_its_specification_declares() {
+    let fix = fixture().await;
+    let open = fix.group("open", "members", "members").await;
+    let by_request = fix.group("request", "members", "members").await;
+    let hidden = fix.group("open", "admins", "admins").await;
+
+    let (_, b) = fix.as_member("leave", json!({ "groupId": hidden })).await;
+    assert_eq!(tt_error_code(&b), LEAVE_ERR_NOT_FOUND, "{b}");
+    let (_, b) = fix.as_member("leave", json!({ "groupId": open })).await;
+    assert_eq!(tt_error_code(&b), LEAVE_ERR_NOT_IN_GROUP, "{b}");
+
+    fix.as_member("join", json!({ "groupId": by_request }))
+        .await;
+    let (_, doc) = fix
+        .as_member("leave", json!({ "groupId": by_request }))
+        .await;
+    assert_eq!(doc["payload"]["state"], "requestWithdrawn", "{doc}");
+
+    fix.as_member("join", json!({ "groupId": open })).await;
+    let (_, doc) = fix.as_member("leave", json!({ "groupId": open })).await;
+    assert_eq!(doc["payload"]["state"], "left", "{doc}");
+}
+
+#[tokio::test]
+async fn requests_list_refuses_what_its_specification_declares() {
+    let fix = fixture().await;
+    let by_request = fix.group("request", "members", "members").await;
+    let (_, b) = fix
+        .as_member("requests/list", json!({ "groupId": by_request }))
+        .await;
+    assert_eq!(tt_error_code(&b), REQUESTS_LIST_ERR_NOT_FOUND, "{b}");
+
+    for _ in 0..3 {
+        let (p, _) = fix.another_member().await;
+        call(
+            &fix.vtc,
+            &p,
+            &task("join"),
+            json!({ "groupId": by_request, "message": "hi" }),
+        )
+        .await;
+    }
+    let (_, first) = fix
+        .as_admin(
+            "requests/list",
+            json!({ "groupId": by_request, "limit": 2 }),
+        )
+        .await;
+    let items = first["payload"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{first}");
+    assert_eq!(
+        items[0]["request"]["message"], "hi",
+        "the managers read the note"
+    );
+    let cursor = first["payload"]["nextCursor"].as_str().unwrap().to_string();
+    let (_, b) = fix
+        .as_admin("requests/list", json!({ "cursor": cursor, "limit": 2 }))
+        .await;
+    assert_eq!(tt_error_code(&b), REQUESTS_LIST_ERR_CURSOR_INVALID, "{b}");
+    let (_, second) = fix
+        .as_admin(
+            "requests/list",
+            json!({ "groupId": by_request, "cursor": cursor, "limit": 2 }),
+        )
+        .await;
+    assert_eq!(
+        second["payload"]["items"].as_array().unwrap().len(),
+        1,
+        "{second}"
+    );
+}
+
+#[tokio::test]
+async fn requests_decide_refuses_what_its_specification_declares() {
+    let fix = fixture().await;
+    let by_request = fix.group("request", "members", "members").await;
+    let (_, b) = fix
+        .as_admin(
+            "requests/decide",
+            json!({ "requestId": "greq_UnknownUnknownUnknown", "decision": "approve" }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), DECIDE_ERR_NOT_FOUND, "{b}");
+
+    let (_, asked) = fix
+        .as_member("join", json!({ "groupId": by_request }))
+        .await;
+    let request_id = asked["payload"]["request"]["requestId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    fix.vta.script(SIGN_DOCUMENT, Script::Silent);
+    let (_, b) = fix
+        .as_admin(
+            "requests/decide",
+            json!({ "requestId": request_id, "decision": "approve" }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), DECIDE_ERR_KEY_HOLDER_UNAVAILABLE, "{b}");
+    fix.vta
+        .script(SIGN_DOCUMENT, Script::Refuse("permissionDenied"));
+    let (_, b) = fix
+        .as_admin(
+            "requests/decide",
+            json!({ "requestId": request_id, "decision": "approve" }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), DECIDE_ERR_KEY_HOLDER_REFUSED, "{b}");
+
+    let (status, doc) = fix
+        .as_admin(
+            "requests/decide",
+            json!({ "requestId": request_id, "decision": "approve" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["payload"]["request"]["state"], "approved");
+    assert_eq!(doc["payload"]["member"]["source"], "requestApproved");
+    let (_, b) = fix
+        .as_admin(
+            "requests/decide",
+            json!({ "requestId": request_id, "decision": "decline" }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), DECIDE_ERR_ALREADY_DECIDED, "{b}");
+
+    // A manager of the group who asked to join it may not decide it.
+    let (manager, _) = fix.another_member().await;
+    appoint(&fix.vtc, &manager, &by_request, &fix.admin.did).await;
+    let (_, own) = call(
+        &fix.vtc,
+        &manager,
+        &task("join"),
+        json!({ "groupId": by_request }),
+    )
+    .await;
+    let own_id = own["payload"]["request"]["requestId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, b) = call(
+        &fix.vtc,
+        &manager,
+        &task("requests/decide"),
+        json!({ "requestId": own_id, "decision": "approve" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&b), DECIDE_ERR_SELF_DECISION, "{b}");
+}
+
+/// A card field shown only to the member's groups reaches someone in a group
+/// with them — and only through a group whose member list they may see.
+#[tokio::test]
+async fn the_directory_groups_audience_counts_only_groups_whose_members_one_may_see() {
+    let fix = fixture().await;
+    let shared = fix.group("closed", "members", "groupMembers").await;
+    let quiet = fix.group("closed", "members", "admins").await;
+    let (alice, alice_entry) = fix.another_member().await;
+    let (bob, bob_entry) = fix.another_member().await;
+    let (carol, carol_entry) = fix.another_member().await;
+    for (g, e) in [
+        (&shared, &alice_entry),
+        (&shared, &bob_entry),
+        (&quiet, &alice_entry),
+        (&quiet, &carol_entry),
+    ] {
+        let (status, doc) = fix
+            .as_admin("members/add", json!({ "groupId": g, "entryId": e }))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{doc}");
+    }
+    let (status, doc) = call(
+        &fix.vtc,
+        &alice,
+        "https://trusttasks.org/spec/vtc/directory/card/update/0.1",
+        json!({
+            "values": { "pronouns": "she/her" },
+            "visibility": { "pronouns": "groups" },
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let show = |who: &Party| {
+        let who = Party {
+            did: who.did.clone(),
+            secret_multibase: who.secret_multibase.clone(),
+            secret: who.secret.clone(),
+        };
+        let vtc = &fix.vtc;
+        let entry = alice_entry.clone();
+        async move {
+            let (_, doc) = call(
+                vtc,
+                &who,
+                "https://trusttasks.org/spec/vtc/directory/entries/show/0.1",
+                json!({ "entryId": entry }),
+            )
+            .await;
+            doc["payload"]["entry"]["fields"]["pronouns"].clone()
+        }
+    };
+    assert_eq!(
+        show(&bob).await,
+        "she/her",
+        "bob shares a group whose members he sees"
+    );
+    assert_eq!(
+        show(&carol).await,
+        Value::Null,
+        "carol shares only a group that hides its members from her"
+    );
+}
+
+#[tokio::test]
+async fn a_departure_ends_every_membership_and_request() {
+    let fix = fixture().await;
+    let open = fix.group("open", "members", "members").await;
+    let by_request = fix.group("request", "members", "members").await;
+    let entry = entry_of(&fix.vtc, &fix.member).await;
+    fix.as_member("join", json!({ "groupId": open })).await;
+    fix.as_member("join", json!({ "groupId": by_request }))
+        .await;
+    let ended = vtc_service::groups::on_departure(fix.vtc.state.directory.ks(), &entry)
+        .await
+        .unwrap();
+    assert_eq!(ended, 1);
+    assert!(
+        vtc_service::groups::groups_of(fix.vtc.state.directory.ks(), &entry)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let (_, requests) = fix
+        .as_admin(
+            "requests/list",
+            json!({ "groupId": by_request, "state": "withdrawn" }),
+        )
+        .await;
+    assert_eq!(
+        requests["payload"]["items"].as_array().unwrap().len(),
+        1,
+        "{requests}"
+    );
 }

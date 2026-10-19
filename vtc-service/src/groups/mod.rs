@@ -24,11 +24,13 @@
 //! - `group:<groupId>` — the record;
 //! - `gm:<groupId>:<entryId>` and `mg:<entryId>:<groupId>` — a membership, from
 //!   either side;
+//! - `greq:<requestId>` — a request to join a `request` group;
 //! - `group-did:<path>` — the log of a group identity this community serves.
 //!
 //! Only static groups are served: a dynamic group's create is refused
 //! (`kindNotServed` once the specification declares it), never stored.
 
+pub mod credential;
 pub mod identity;
 pub mod policy;
 
@@ -168,6 +170,136 @@ pub struct Membership {
     pub credential_valid_until: Option<DateTime<Utc>>,
 }
 
+/// A member's request to join a `request` group (`GroupJoinRequest`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinRequest {
+    pub request_id: String,
+    pub group_id: String,
+    pub entry_id: String,
+    /// The requester's own note, shown to the group's managers only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub created_at: DateTime<Utc>,
+    /// `pending` | `approved` | `declined` | `withdrawn`.
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<DateTime<Utc>>,
+    /// The manager who decided, by DID: shown to managers only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+    /// Why it was declined: the managers', never shown to the requester.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl JoinRequest {
+    /// The request as `GroupJoinRequest`: `message` and `decidedBy` only to the
+    /// group's managers.
+    pub fn wire(&self, to_manager: bool) -> Value {
+        let mut out = json!({
+            "requestId": self.request_id,
+            "groupId": self.group_id,
+            "entryId": self.entry_id,
+            "createdAt": self.created_at,
+            "state": self.state,
+        });
+        if let Some(at) = self.decided_at {
+            out["decidedAt"] = json!(at);
+        }
+        if to_manager {
+            if let Some(m) = &self.message {
+                out["message"] = json!(m);
+            }
+            if let Some(by) = &self.decided_by {
+                out["decidedBy"] = json!(by);
+            }
+        }
+        out
+    }
+}
+
+fn request_key(request_id: &str) -> Vec<u8> {
+    format!("greq:{request_id}").into_bytes()
+}
+
+/// A fresh request identifier: `greq_` and 22 characters of randomness.
+pub fn new_request_id() -> String {
+    let mut bytes = [0u8; 16];
+    rand::fill(&mut bytes);
+    use base64::Engine as _;
+    format!(
+        "greq_{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    )
+}
+
+pub async fn get_request(
+    ks: &KeyspaceHandle,
+    request_id: &str,
+) -> Result<Option<JoinRequest>, AppError> {
+    ks.get(request_key(request_id)).await
+}
+
+pub async fn put_request(ks: &KeyspaceHandle, r: &JoinRequest) -> Result<(), AppError> {
+    ks.insert(request_key(&r.request_id), r).await
+}
+
+/// Every request, oldest first.
+pub async fn all_requests(ks: &KeyspaceHandle) -> Result<Vec<JoinRequest>, AppError> {
+    let mut out = Vec::new();
+    for (_, raw) in ks.prefix_iter_raw(b"greq:".to_vec()).await? {
+        if let Ok(r) = serde_json::from_slice::<JoinRequest>(&raw) {
+            out.push(r);
+        }
+    }
+    out.sort_by(|a, b| (a.created_at, &a.request_id).cmp(&(b.created_at, &b.request_id)));
+    Ok(out)
+}
+
+/// `entry_id`'s pending request to `group_id`, if any.
+pub async fn pending_request(
+    ks: &KeyspaceHandle,
+    group_id: &str,
+    entry_id: &str,
+) -> Result<Option<JoinRequest>, AppError> {
+    Ok(all_requests(ks)
+        .await?
+        .into_iter()
+        .find(|r| r.group_id == group_id && r.entry_id == entry_id && r.state == "pending"))
+}
+
+/// A member's departure from the community (`members/remove` items 3 – 5, at
+/// departure): every membership ends — so its credentials stop renewing — and
+/// every pending request is withdrawn.
+pub async fn on_departure(ks: &KeyspaceHandle, entry_id: &str) -> Result<usize, AppError> {
+    let _guard = crate::directory::WRITE_LOCK.lock().await;
+    let memberships = groups_of(ks, entry_id).await?;
+    for m in &memberships {
+        remove_membership(ks, &m.group_id, entry_id).await?;
+    }
+    for mut r in all_requests(ks).await? {
+        if r.entry_id == entry_id && r.state == "pending" {
+            r.state = "withdrawn".into();
+            r.decided_at = Some(Utc::now());
+            put_request(ks, &r).await?;
+        }
+    }
+    Ok(memberships.len())
+}
+
+/// The groups `viewer` shares with members as the directory's `groups`
+/// audience sees them: the groups they belong to whose member list they may
+/// see. A group that hides its members never reveals, through somebody's card,
+/// who is in it.
+pub fn audience_groups(state_groups: &[Group], standing: &Standing) -> BTreeSet<String> {
+    state_groups
+        .iter()
+        .filter(|g| standing.member_of.contains(&g.group_id) && standing.sees_members(g))
+        .map(|g| g.group_id.clone())
+        .collect()
+}
+
 /// A fresh group identifier: `grp_` and 22 characters of randomness.
 pub fn new_group_id() -> String {
     let mut bytes = [0u8; 16];
@@ -219,8 +351,16 @@ pub async fn put(ks: &KeyspaceHandle, group: &Group) -> Result<(), AppError> {
     ks.insert(group_key(&group.group_id), group).await
 }
 
-/// Remove a group and every membership of it.
+/// Remove a group and every membership of it; its pending requests are
+/// withdrawn.
 pub async fn remove(ks: &KeyspaceHandle, group_id: &str) -> Result<usize, AppError> {
+    for mut r in all_requests(ks).await? {
+        if r.group_id == group_id && r.state == "pending" {
+            r.state = "withdrawn".into();
+            r.decided_at = Some(Utc::now());
+            put_request(ks, &r).await?;
+        }
+    }
     let members = members_of(ks, group_id).await?;
     for m in &members {
         ks.remove(member_key(group_id, &m.entry_id)).await?;
@@ -424,6 +564,31 @@ pub async fn managers(state: &AppState, group_id: &str) -> Result<Vec<String>, A
         }
     }
     Ok(out.into_iter().collect())
+}
+
+/// `m` as `GroupMember` for `standing`: `credentialId` and
+/// `credentialValidUntil` only to the member themselves and to the group's
+/// managers. `fields` is the caller's.
+pub fn member_wire(m: &Membership, standing: &Standing, fields: Option<Value>) -> Value {
+    let mut out = json!({
+        "entryId": m.entry_id,
+        "source": m.source,
+        "since": m.since,
+        "state": m.state,
+    });
+    if let Some(f) = fields {
+        out["fields"] = f;
+    }
+    let own = standing.entry_id.as_deref() == Some(m.entry_id.as_str());
+    if own || standing.manages(&m.group_id) {
+        if let Some(c) = &m.credential_id {
+            out["credentialId"] = json!(c);
+        }
+        if let Some(u) = m.credential_valid_until {
+            out["credentialValidUntil"] = json!(u);
+        }
+    }
+    out
 }
 
 /// `group` as `standing` may see it (`Group`): `memberCount` only where the

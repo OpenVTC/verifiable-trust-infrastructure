@@ -38,7 +38,9 @@ pub struct Viewer {
     pub members_manage: bool,
     /// The members this viewer holds an in-force edge with, by membership DID.
     pub connected: BTreeSet<String>,
-    /// The community groups the viewer is in. None exist before groups ship.
+    /// The community groups that count as the viewer's for the `groups`
+    /// audience: those they belong to whose member list they may see
+    /// (`crate::groups::audience_groups`).
     pub groups: BTreeSet<String>,
     /// The public: anyone, unidentified. Never a directory reader — only the
     /// viewer an external card is computed for ([`public_fields`]).

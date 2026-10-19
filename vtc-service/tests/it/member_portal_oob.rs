@@ -2003,7 +2003,10 @@ async fn sign_in_v0_2(f: &Fixture, scope: Option<Value>) -> (Browser, Party, Rep
     assert_eq!(pr.status, StatusCode::OK, "{}", pr.body);
     assert_vtc_attested(f, &pr.body);
     assert_eq!(pr.body["type"], format!("{}#response", t2("prove")));
-    assert_eq!(pr.body["payload"]["signingScope"], json!(["vtc/directory"]));
+    assert_eq!(
+        pr.body["payload"]["signingScope"],
+        json!(["vtc/directory", "vtc/groups"])
+    );
     let digest = oob::context_digest(&pr.body).unwrap();
     let scope = scope.unwrap_or_else(|| pr.body["payload"]["signingScope"].clone());
     let grant = doc(
@@ -2186,7 +2189,11 @@ async fn the_portal_key_uploads_a_picture_larger_than_the_default_document_limit
 #[tokio::test]
 async fn a_grant_widening_the_offered_scope_is_refused() {
     let f = fixture().await;
-    let (_, _, rs, _) = sign_in_v0_2(&f, Some(json!(["vtc/directory", "vtc/groups"]))).await;
+    let (_, _, rs, _) = sign_in_v0_2(
+        &f,
+        Some(json!(["vtc/directory", "vtc/groups", "vtc/rooms"])),
+    )
+    .await;
     assert_eq!(
         rs.body["payload"]["code"], "auth/oob/respond:contextMismatch",
         "{}",

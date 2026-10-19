@@ -632,6 +632,11 @@ pub enum AuditEvent {
     /// or description.
     GroupChanged(GroupChangedData),
 
+    /// A member joined or left a community group, or a request to join one was
+    /// made or decided (`vtc/groups/*`). By reference: the group and the
+    /// member's entry, never their DID or a request's message.
+    GroupMembershipChanged(GroupMembershipChangedData),
+
     /// An admin changed whether the join manifest answers a caller the
     /// community cannot identify (`PUT /v1/community/join-discovery`).
     ///
@@ -1150,6 +1155,7 @@ impl AuditEvent {
             Self::DirectoryNoteAccessed(..) => "DirectoryNoteAccessed",
             Self::DirectoryExported(..) => "DirectoryExported",
             Self::GroupChanged(..) => "GroupChanged",
+            Self::GroupMembershipChanged(..) => "GroupMembershipChanged",
             Self::CommunityJoinDiscoveryUpdated(..) => "CommunityJoinDiscoveryUpdated",
             Self::CommunityRequestedAttributesUpdated(..) => "CommunityRequestedAttributesUpdated",
             Self::EndorsementTypeRegistered(..) => "EndorsementTypeRegistered",
@@ -2755,6 +2761,20 @@ pub struct GroupChangedData {
     pub reason: Option<String>,
 }
 
+/// Payload for [`AuditEvent::GroupMembershipChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMembershipChangedData {
+    pub group_id: String,
+    /// The member's entry identifier, never their DID.
+    pub entry_id: String,
+    /// `added`, `joined`, `requested`, `approved`, `declined`, `withdrawn`,
+    /// `removed` or `left`.
+    pub change: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Payload for [`AuditEvent::DirectoryExported`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -4295,6 +4315,15 @@ mod tests {
                     reason: Some("the working group starts".into()),
                 }),
                 "GroupChanged",
+            ),
+            (
+                AuditEvent::GroupMembershipChanged(GroupMembershipChangedData {
+                    group_id: "grp_AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    entry_id: "dir_aaaaaaaaaaaaaaaa".into(),
+                    change: "joined".into(),
+                    reason: None,
+                }),
+                "GroupMembershipChanged",
             ),
             (
                 AuditEvent::DirectoryImageStored(DirectoryImageStoredData {

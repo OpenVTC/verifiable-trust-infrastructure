@@ -672,6 +672,9 @@ async fn depart(
     if let Some(entry_id) =
         crate::directory::cards::entry_of(state.directory.ks(), subject_did).await?
     {
+        // Every group membership ends, so its credentials stop renewing, and
+        // every pending request to join is withdrawn.
+        crate::groups::on_departure(state.directory.ks(), &entry_id).await?;
         crate::directory::notes::on_departure(
             state.directory.ks(),
             &entry_id,

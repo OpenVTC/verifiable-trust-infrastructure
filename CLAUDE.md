@@ -1415,9 +1415,9 @@ new flow, update both this section and the relevant `docs/*.md`.
   group DTG `AuthorityCredential` (`issue-membership`) the VTA signs **as the
   community** through `keys/sign-document`, with a slot in the community's
   revocation list and an expiry. Served: `create`, `update`, `delete`, `list`,
-  `show` for **static** groups (a dynamic one is checked, then refused
-  `kindNotServed`). Membership, managers (`managers/*`), members' group
-  credentials and bindings are later phases.
+  `show`, `members/{add,remove,list}`, `join`, `leave`, `requests/{list,decide}`
+  for **static** groups (a dynamic one is checked, then refused `kindNotServed`).
+  Managers (`managers/*`), credential renewal and bindings are later phases.
 - **Invariants to preserve**: the VTC holds no group key and never falls back to
   one (`noKeyHolder`). Remote first: a group is stored only after its DID and its
   authority exist; a served log is published before anything verifies against
@@ -1429,7 +1429,14 @@ new flow, update both this section and the relevant `docs/*.md`.
   `managers`/`credentialAuthorityValidUntil` only to managers. A dynamic rule
   reads only verified facts (role, `admin`/`credential` fields, personhood, join
   date), never a `member`-sourced field. The group's DID document carries no name
-  or description. The `groups` policy only refuses. Audit by reference.
+  or description. The `groups` policy only refuses. Audit by reference. A
+  member's group credential is a DTG `MembershipCredential` the VTA signs **as
+  the group** (`keys/sign-document`, the group's own key), issued and offered
+  **before** the membership is recorded, with no status list (expiry is the
+  revocation). The directory's `groups` audience counts only groups both belong
+  to whose member list the viewer may see (`groups::audience_groups`). Departure
+  ends every membership and withdraws pending requests (`groups::on_departure`,
+  before the card's own departure). Nobody decides their own request.
 - **Code**: `vtc-service/src/groups/` (`mod`, `identity`, `policy`),
   `vtc-service/src/trust_tasks/group_tasks.rs`,
   `vtc-service/policies/default/groups.rego`, `vta-sdk/templates/vtc-group.json`.

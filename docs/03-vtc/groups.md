@@ -17,10 +17,16 @@ This page says what this build serves.
 | `vtc/groups/delete/0.1` | a manager of the group | Delete it: its authority revoked, its memberships ended |
 | `vtc/groups/list/0.1` | an active member or an administrator | The groups the caller may see, each as they may see it |
 | `vtc/groups/show/0.1` | an active member or an administrator | One group the caller may see |
+| `vtc/groups/members/{add,remove}/0.1` | a manager of the group | Add an active member, or remove one |
+| `vtc/groups/members/list/0.1` | anyone the group shows its members to | The members, each with their directory fields as `entries/show` projects them for the caller |
+| `vtc/groups/join/0.1` | an active member, for themselves | Join an `open` group, or ask to join a `request` one |
+| `vtc/groups/leave/0.1` | an active member, for themselves | Leave a group, or withdraw a request |
+| `vtc/groups/requests/list/0.1` | a manager | The requests to the groups the caller manages |
+| `vtc/groups/requests/decide/0.1` | a manager, never the requester | Approve or decline a request |
 
-Membership (`members/*`, `join`, `leave`, `requests/*`), appointing managers
-(`managers/*`), the members' own group credentials, and bindings to rooms or grants
-come next. Until then a group has no members.
+Appointing managers (`managers/*`), renewing members' group credentials, and bindings
+to rooms or grants come next. The member portal signs these tasks with its sign-in key
+for the member (`signingScope` `vtc/groups`), as it does the directory's.
 
 Only **static** groups are served. A dynamic group's rule is checked — it may read only
 verified facts — and the create is then refused `kindNotServed`. Nothing is stored for
@@ -97,6 +103,34 @@ ceiling.
 A manager's authority is over the group's membership and settings, and confers nothing
 else: authority reaches a group only through a binding, and adding a member to a group
 that carries authority will still take the consent such a grant requires.
+
+## Joining, and the member's group credential
+
+A static group's `joinPolicy` decides how a member gets in: `closed` (a manager adds
+them), `request` (they ask; a manager decides, never their own request) or `open` (they
+join, where the `groups` policy allows). A request's note goes to the group's managers
+only, and a declined requester never sees the managers' reason.
+
+Where the group issues credentials, admitting a member — added, joined or approved —
+first has the community's VTA sign, **as the group's DID**, a DTG
+`MembershipCredential` to the member's membership DID, and offers it to them with the
+group's authority credential on the credential-exchange path every credential this
+community issues travels. Only then is the membership recorded: a VTA that does not
+answer or refuses records nothing (`keyHolderUnavailable` / `keyHolderRefused`). The
+credential lasts `[groups] credential_valid_days` (default 30) and carries no status
+list — a small group's list would single its members out — so leaving, removal or
+departure stops renewal and the credential lapses at its expiry. `credentialValidUntil`
+is shown only to the member and the group's managers.
+
+## Groups in the directory
+
+A member's card can show a field only to people in their groups (the `groups`
+audience). The groups that count are those both belong to **whose member list the
+viewer may see**: a group that shows its members only to its managers never reveals,
+through somebody's card, who is in it.
+
+A member who leaves the community leaves every group with them, and their pending
+requests are withdrawn.
 
 ## Policy
 

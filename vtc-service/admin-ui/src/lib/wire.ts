@@ -4761,6 +4761,152 @@ export interface components {
              */
             state: "deleted" | "deleting";
         };
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcGroupsJoinV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
+        VtcGroupsJoinV0_1EntryFields: {
+            [key: string]: components["schemas"]["VtcGroupsJoinV0_1FieldValue"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcGroupsJoinV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcGroupsJoinV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcGroupsJoinV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcGroupsJoinV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcGroupsJoinV0_1CardBlobRef"] | components["schemas"]["VtcGroupsJoinV0_1VerifiedValue"];
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcGroupsJoinV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcGroupsJoinV0_1GroupId: string;
+        VtcGroupsJoinV0_1GroupJoinRequest: {
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            decidedAt?: string;
+            /** @description The manager who decided. Shown to managers only. */
+            decidedBy?: string;
+            entryId: components["schemas"]["VtcGroupsJoinV0_1EntryId"];
+            groupId: components["schemas"]["VtcGroupsJoinV0_1GroupId"];
+            message?: components["schemas"]["VtcGroupsJoinV0_1JoinRequestMessage"];
+            requestId: components["schemas"]["VtcGroupsJoinV0_1JoinRequestId"];
+            /** @enum {string} */
+            state: "pending" | "approved" | "declined" | "withdrawn";
+        };
+        VtcGroupsJoinV0_1GroupMember: {
+            /** @description The member's current group membership credential, or null when the group issues none. */
+            credentialId?: components["schemas"]["VtcGroupsJoinV0_1GroupCredentialId"] | unknown;
+            /**
+             * Format: date-time
+             * @description When the member's current group credential expires. Shown to the member themselves and to managers only.
+             */
+            credentialValidUntil?: string;
+            entryId: components["schemas"]["VtcGroupsJoinV0_1EntryId"];
+            fields?: components["schemas"]["VtcGroupsJoinV0_1EntryFields"];
+            /** Format: date-time */
+            since: string;
+            source: components["schemas"]["VtcGroupsJoinV0_1MembershipSource"];
+            /**
+             * @description `active`: a member. `pending`: an addition to a group carrying authority that is waiting for the consent the community requires for a grant.
+             * @enum {string}
+             */
+            state: "active" | "pending";
+        };
+        VtcGroupsJoinV0_1JoinRequestId: string;
+        /** @description An optional note from the member to the group's managers. Plain text. */
+        VtcGroupsJoinV0_1JoinRequestMessage: string;
+        /**
+         * @description How the member came to be in the group. `added`: by a manager. `joined`: they joined an open group. `requestApproved`: a manager approved their request. `rule`: a dynamic group's rule admits them.
+         * @enum {string}
+         */
+        VtcGroupsJoinV0_1MembershipSource: "added" | "joined" | "requestApproved" | "rule";
+        /** @description A member joins an open group at once, or asks to join a group that takes requests; where the group issues credentials, they are offered a membership credential issued by the group's DID. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcGroupsJoinV0_1Payload: {
+            ext?: components["schemas"]["VtcGroupsJoinV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsJoinV0_1GroupId"];
+            message?: components["schemas"]["VtcGroupsJoinV0_1JoinRequestMessage"];
+        };
+        /** @description The success response to a vtc/groups/join/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/join/0.1#response. */
+        VtcGroupsJoinV0_1Response: {
+            /** @description The membership credential offered, or null when the group issues none or the outcome is `requested`. */
+            credentialId: components["schemas"]["VtcGroupsJoinV0_1GroupCredentialId"] | unknown;
+            ext?: components["schemas"]["VtcGroupsJoinV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsJoinV0_1GroupId"];
+            member?: components["schemas"]["VtcGroupsJoinV0_1GroupMember"];
+            /**
+             * @description `joined`: a member now. `requested`: a request awaits a manager. `optOutWithdrawn`: the caller's opt-out of a dynamic group is undone, but its rule does not admit them now; they become a member when it does.
+             * @enum {string}
+             */
+            outcome: "joined" | "requested" | "optOutWithdrawn";
+            request?: components["schemas"]["VtcGroupsJoinV0_1GroupJoinRequest"];
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcGroupsJoinV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcGroupsLeaveV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcGroupsLeaveV0_1GroupId: string;
+        /** @description A member leaves a static group, opts out of a dynamic one, or withdraws a pending request to join: renewal of their group credential stops, and what only the group provided is withdrawn. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcGroupsLeaveV0_1Payload: {
+            ext?: components["schemas"]["VtcGroupsLeaveV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsLeaveV0_1GroupId"];
+        };
+        /** @description The success response to a vtc/groups/leave/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/leave/0.1#response. */
+        VtcGroupsLeaveV0_1Response: {
+            /**
+             * Format: date-time
+             * @description When the member's last group credential lapses; renewal has stopped. Null when they held none.
+             */
+            credentialValidUntil?: unknown;
+            ext?: components["schemas"]["VtcGroupsLeaveV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsLeaveV0_1GroupId"];
+            /**
+             * @description `left`: out of a static group. `optedOut`: out of a dynamic group, and kept out whatever its rule says until the member joins again. `requestWithdrawn`: a pending request is withdrawn. `pending`: leaving a group carrying authority, which the community executes as a reduction of the member's own authority on its terms.
+             * @enum {string}
+             */
+            state: "left" | "optedOut" | "requestWithdrawn" | "pending";
+        };
         /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
         VtcGroupsListV0_1DynamicRule: {
             all: components["schemas"]["VtcGroupsListV0_1RuleCondition"][];
@@ -4862,6 +5008,445 @@ export interface components {
             op: "equals" | "oneOf" | "exists" | "before" | "after";
             value?: string | boolean;
             values?: string[];
+        };
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcGroupsMembersAddV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
+        VtcGroupsMembersAddV0_1EntryFields: {
+            [key: string]: components["schemas"]["VtcGroupsMembersAddV0_1FieldValue"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcGroupsMembersAddV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcGroupsMembersAddV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcGroupsMembersAddV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcGroupsMembersAddV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcGroupsMembersAddV0_1CardBlobRef"] | components["schemas"]["VtcGroupsMembersAddV0_1VerifiedValue"];
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcGroupsMembersAddV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcGroupsMembersAddV0_1GroupId: string;
+        VtcGroupsMembersAddV0_1GroupMember: {
+            /** @description The member's current group membership credential, or null when the group issues none. */
+            credentialId?: components["schemas"]["VtcGroupsMembersAddV0_1GroupCredentialId"] | unknown;
+            /**
+             * Format: date-time
+             * @description When the member's current group credential expires. Shown to the member themselves and to managers only.
+             */
+            credentialValidUntil?: string;
+            entryId: components["schemas"]["VtcGroupsMembersAddV0_1EntryId"];
+            fields?: components["schemas"]["VtcGroupsMembersAddV0_1EntryFields"];
+            /** Format: date-time */
+            since: string;
+            source: components["schemas"]["VtcGroupsMembersAddV0_1MembershipSource"];
+            /**
+             * @description `active`: a member. `pending`: an addition to a group carrying authority that is waiting for the consent the community requires for a grant.
+             * @enum {string}
+             */
+            state: "active" | "pending";
+        };
+        /**
+         * @description How the member came to be in the group. `added`: by a manager. `joined`: they joined an open group. `requestApproved`: a manager approved their request. `rule`: a dynamic group's rule admits them.
+         * @enum {string}
+         */
+        VtcGroupsMembersAddV0_1MembershipSource: "added" | "joined" | "requestApproved" | "rule";
+        /** @description A group manager adds a community member to a static group; where the group issues credentials, the group's DID issues the member a membership credential first. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcGroupsMembersAddV0_1Payload: {
+            entryId: components["schemas"]["VtcGroupsMembersAddV0_1EntryId"];
+            ext?: components["schemas"]["VtcGroupsMembersAddV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsMembersAddV0_1GroupId"];
+            /** @description Why, recorded with the change and shown to anyone who must approve it. */
+            reason?: string;
+        };
+        /** @description The success response to a vtc/groups/members/add/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/members/add/0.1#response. */
+        VtcGroupsMembersAddV0_1Response: {
+            /** @description The membership credential offered to the member, or null when the group issues none or the addition is pending. */
+            credentialId: components["schemas"]["VtcGroupsMembersAddV0_1GroupCredentialId"] | unknown;
+            ext?: components["schemas"]["VtcGroupsMembersAddV0_1Ext"];
+            member: components["schemas"]["VtcGroupsMembersAddV0_1GroupMember"];
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcGroupsMembersAddV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcGroupsMembersListV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
+        VtcGroupsMembersListV0_1EntryFields: {
+            [key: string]: components["schemas"]["VtcGroupsMembersListV0_1FieldValue"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcGroupsMembersListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcGroupsMembersListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcGroupsMembersListV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcGroupsMembersListV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcGroupsMembersListV0_1CardBlobRef"] | components["schemas"]["VtcGroupsMembersListV0_1VerifiedValue"];
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcGroupsMembersListV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcGroupsMembersListV0_1GroupId: string;
+        VtcGroupsMembersListV0_1GroupMember: {
+            /** @description The member's current group membership credential, or null when the group issues none. */
+            credentialId?: components["schemas"]["VtcGroupsMembersListV0_1GroupCredentialId"] | unknown;
+            /**
+             * Format: date-time
+             * @description When the member's current group credential expires. Shown to the member themselves and to managers only.
+             */
+            credentialValidUntil?: string;
+            entryId: components["schemas"]["VtcGroupsMembersListV0_1EntryId"];
+            fields?: components["schemas"]["VtcGroupsMembersListV0_1EntryFields"];
+            /** Format: date-time */
+            since: string;
+            source: components["schemas"]["VtcGroupsMembersListV0_1MembershipSource"];
+            /**
+             * @description `active`: a member. `pending`: an addition to a group carrying authority that is waiting for the consent the community requires for a grant.
+             * @enum {string}
+             */
+            state: "active" | "pending";
+        };
+        /**
+         * @description How the member came to be in the group. `added`: by a manager. `joined`: they joined an open group. `requestApproved`: a manager approved their request. `rule`: a dynamic group's rule admits them.
+         * @enum {string}
+         */
+        VtcGroupsMembersListV0_1MembershipSource: "added" | "joined" | "requestApproved" | "rule";
+        /** @description List a group's members, a page at a time, each projected for the caller as the directory projects them — only where the group shows its members to the caller. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcGroupsMembersListV0_1Payload: {
+            cursor?: string;
+            ext?: components["schemas"]["VtcGroupsMembersListV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsMembersListV0_1GroupId"];
+            /** @description Page size; clamped to 1..=200 (default 50). */
+            limit?: number;
+        };
+        /** @description The success response to a vtc/groups/members/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/members/list/0.1#response. */
+        VtcGroupsMembersListV0_1Response: {
+            ext?: components["schemas"]["VtcGroupsMembersListV0_1Ext"];
+            items: components["schemas"]["VtcGroupsMembersListV0_1GroupMember"][];
+            nextCursor?: unknown;
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcGroupsMembersListV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcGroupsMembersRemoveV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcGroupsMembersRemoveV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcGroupsMembersRemoveV0_1GroupId: string;
+        /** @description A group manager removes a member from a static group: renewal of their group credential stops, and room admissions and grants that only this group provided are withdrawn. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcGroupsMembersRemoveV0_1Payload: {
+            entryId: components["schemas"]["VtcGroupsMembersRemoveV0_1EntryId"];
+            ext?: components["schemas"]["VtcGroupsMembersRemoveV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsMembersRemoveV0_1GroupId"];
+            /** @description Why, recorded with the change and shown to anyone who must approve it. */
+            reason?: string;
+        };
+        /** @description The success response to a vtc/groups/members/remove/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/members/remove/0.1#response. */
+        VtcGroupsMembersRemoveV0_1Response: {
+            /**
+             * Format: date-time
+             * @description When the member's last group credential lapses; renewal has stopped. Null when they held none.
+             */
+            credentialValidUntil?: unknown;
+            entryId: components["schemas"]["VtcGroupsMembersRemoveV0_1EntryId"];
+            ext?: components["schemas"]["VtcGroupsMembersRemoveV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsMembersRemoveV0_1GroupId"];
+            /**
+             * @description `removed`: done. `pending`: a reduction of authority the community is holding for its cooling-off or consent.
+             * @enum {string}
+             */
+            state: "removed" | "pending";
+        };
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcGroupsRequestsDecideV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
+        VtcGroupsRequestsDecideV0_1EntryFields: {
+            [key: string]: components["schemas"]["VtcGroupsRequestsDecideV0_1FieldValue"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcGroupsRequestsDecideV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcGroupsRequestsDecideV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcGroupsRequestsDecideV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcGroupsRequestsDecideV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcGroupsRequestsDecideV0_1CardBlobRef"] | components["schemas"]["VtcGroupsRequestsDecideV0_1VerifiedValue"];
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcGroupsRequestsDecideV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcGroupsRequestsDecideV0_1GroupId: string;
+        VtcGroupsRequestsDecideV0_1GroupJoinRequest: {
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            decidedAt?: string;
+            /** @description The manager who decided. Shown to managers only. */
+            decidedBy?: string;
+            entryId: components["schemas"]["VtcGroupsRequestsDecideV0_1EntryId"];
+            groupId: components["schemas"]["VtcGroupsRequestsDecideV0_1GroupId"];
+            message?: components["schemas"]["VtcGroupsRequestsDecideV0_1JoinRequestMessage"];
+            requestId: components["schemas"]["VtcGroupsRequestsDecideV0_1JoinRequestId"];
+            /** @enum {string} */
+            state: "pending" | "approved" | "declined" | "withdrawn";
+        };
+        VtcGroupsRequestsDecideV0_1GroupMember: {
+            /** @description The member's current group membership credential, or null when the group issues none. */
+            credentialId?: components["schemas"]["VtcGroupsRequestsDecideV0_1GroupCredentialId"] | unknown;
+            /**
+             * Format: date-time
+             * @description When the member's current group credential expires. Shown to the member themselves and to managers only.
+             */
+            credentialValidUntil?: string;
+            entryId: components["schemas"]["VtcGroupsRequestsDecideV0_1EntryId"];
+            fields?: components["schemas"]["VtcGroupsRequestsDecideV0_1EntryFields"];
+            /** Format: date-time */
+            since: string;
+            source: components["schemas"]["VtcGroupsRequestsDecideV0_1MembershipSource"];
+            /**
+             * @description `active`: a member. `pending`: an addition to a group carrying authority that is waiting for the consent the community requires for a grant.
+             * @enum {string}
+             */
+            state: "active" | "pending";
+        };
+        VtcGroupsRequestsDecideV0_1JoinRequestId: string;
+        /** @description An optional note from the member to the group's managers. Plain text. */
+        VtcGroupsRequestsDecideV0_1JoinRequestMessage: string;
+        /**
+         * @description How the member came to be in the group. `added`: by a manager. `joined`: they joined an open group. `requestApproved`: a manager approved their request. `rule`: a dynamic group's rule admits them.
+         * @enum {string}
+         */
+        VtcGroupsRequestsDecideV0_1MembershipSource: "added" | "joined" | "requestApproved" | "rule";
+        /** @description A group manager approves or declines a request to join; an approval admits the member, with a membership credential issued by the group's DID where the group issues credentials. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcGroupsRequestsDecideV0_1Payload: {
+            /** @enum {string} */
+            decision: "approve" | "decline";
+            ext?: components["schemas"]["VtcGroupsRequestsDecideV0_1Ext"];
+            /** @description Optional; recorded with the decision and shown to managers. Not sent to the requester. */
+            reason?: string;
+            requestId: components["schemas"]["VtcGroupsRequestsDecideV0_1JoinRequestId"];
+        };
+        /** @description The success response to a vtc/groups/requests/decide/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/requests/decide/0.1#response. */
+        VtcGroupsRequestsDecideV0_1Response: {
+            /** @description The membership credential offered, or null on a decline or where the group issues none. */
+            credentialId: components["schemas"]["VtcGroupsRequestsDecideV0_1GroupCredentialId"] | unknown;
+            ext?: components["schemas"]["VtcGroupsRequestsDecideV0_1Ext"];
+            member?: components["schemas"]["VtcGroupsRequestsDecideV0_1GroupMember"];
+            request: components["schemas"]["VtcGroupsRequestsDecideV0_1GroupJoinRequest"];
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcGroupsRequestsDecideV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcGroupsRequestsListV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
+        VtcGroupsRequestsListV0_1EntryFields: {
+            [key: string]: components["schemas"]["VtcGroupsRequestsListV0_1FieldValue"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcGroupsRequestsListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcGroupsRequestsListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcGroupsRequestsListV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcGroupsRequestsListV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcGroupsRequestsListV0_1CardBlobRef"] | components["schemas"]["VtcGroupsRequestsListV0_1VerifiedValue"];
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcGroupsRequestsListV0_1GroupId: string;
+        VtcGroupsRequestsListV0_1GroupJoinRequest: {
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            decidedAt?: string;
+            /** @description The manager who decided. Shown to managers only. */
+            decidedBy?: string;
+            entryId: components["schemas"]["VtcGroupsRequestsListV0_1EntryId"];
+            groupId: components["schemas"]["VtcGroupsRequestsListV0_1GroupId"];
+            message?: components["schemas"]["VtcGroupsRequestsListV0_1JoinRequestMessage"];
+            requestId: components["schemas"]["VtcGroupsRequestsListV0_1JoinRequestId"];
+            /** @enum {string} */
+            state: "pending" | "approved" | "declined" | "withdrawn";
+        };
+        VtcGroupsRequestsListV0_1JoinRequestId: string;
+        /** @description An optional note from the member to the group's managers. Plain text. */
+        VtcGroupsRequestsListV0_1JoinRequestMessage: string;
+        /** @description A group manager lists requests to join the groups they manage, pending by default. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcGroupsRequestsListV0_1Payload: {
+            cursor?: string;
+            ext?: components["schemas"]["VtcGroupsRequestsListV0_1Ext"];
+            groupId?: components["schemas"]["VtcGroupsRequestsListV0_1GroupId"];
+            limit?: number;
+            /**
+             * @description Absent: `pending`.
+             * @enum {string}
+             */
+            state?: "pending" | "approved" | "declined" | "withdrawn";
+        };
+        /** @description The success response to a vtc/groups/requests/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/requests/list/0.1#response. */
+        VtcGroupsRequestsListV0_1Response: {
+            ext?: components["schemas"]["VtcGroupsRequestsListV0_1Ext"];
+            items: {
+                fields?: components["schemas"]["VtcGroupsRequestsListV0_1EntryFields"];
+                request: components["schemas"]["VtcGroupsRequestsListV0_1GroupJoinRequest"];
+            }[];
+            nextCursor?: unknown;
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcGroupsRequestsListV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
         };
         /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
         VtcGroupsShowV0_1DynamicRule: {

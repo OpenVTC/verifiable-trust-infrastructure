@@ -6,6 +6,10 @@
 //! | `create/0.1` | `vtc.groups.manage` unqualified, then the `groups` policy |
 //! | `update/0.1`, `delete/0.1` | `vtc.groups.manage` for the group, unqualified or `group:<groupId>` |
 //! | `list/0.1`, `show/0.1` | an active member or an administrator, each group as their standing lets them see it |
+//! | `members/{add,remove}/0.1` | a manager of the group |
+//! | `members/list/0.1` | anyone the group shows its members to |
+//! | `join/0.1`, `leave/0.1` | an active member, for themselves |
+//! | `requests/list/0.1`, `requests/decide/0.1` | a manager of the request's group; nobody decides their own |
 //!
 //! None has a REST route. A group the caller may not see answers `notFound`
 //! exactly as one that does not exist, on every task.
@@ -16,11 +20,20 @@
 use chrono::Utc;
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::vtc::groups::{
-    create::v0_1 as group_create, delete::v0_1 as group_delete, list::v0_1 as group_list,
-    show::v0_1 as group_show, update::v0_1 as group_update,
+    create::v0_1 as group_create,
+    delete::v0_1 as group_delete,
+    join::v0_1 as group_join,
+    leave::v0_1 as group_leave,
+    list::v0_1 as group_list,
+    members::{
+        add::v0_1 as members_add, list::v0_1 as members_list, remove::v0_1 as members_remove,
+    },
+    requests::{decide::v0_1 as requests_decide, list::v0_1 as requests_list},
+    show::v0_1 as group_show,
+    update::v0_1 as group_update,
 };
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{AuditEvent, GroupChangedData};
+use vti_common::audit::{AuditEvent, GroupChangedData, GroupMembershipChangedData};
 use vti_common::error::AppError;
 use vti_common::pagination::Cursor;
 
@@ -32,7 +45,7 @@ use super::helpers::{
 use super::{JoinAuthCtx, parse_spec_payload};
 use crate::groups::identity::{self, Failure};
 use crate::groups::policy::{self as group_policy, Facts, GroupFacts};
-use crate::groups::{self, Audience, Group, JoinPolicy, Standing};
+use crate::groups::{self, Audience, Group, JoinPolicy, JoinRequest, Membership, Standing};
 use crate::rooms::community::HolderError;
 use crate::server::AppState;
 
@@ -41,9 +54,29 @@ pub(crate) const UPDATE_TYPE: &str = <group_update::Payload as Payload>::TYPE_UR
 pub(crate) const DELETE_TYPE: &str = <group_delete::Payload as Payload>::TYPE_URI;
 pub(crate) const LIST_TYPE: &str = <group_list::Payload as Payload>::TYPE_URI;
 pub(crate) const SHOW_TYPE: &str = <group_show::Payload as Payload>::TYPE_URI;
+pub(crate) const MEMBERS_ADD_TYPE: &str = <members_add::Payload as Payload>::TYPE_URI;
+pub(crate) const MEMBERS_REMOVE_TYPE: &str = <members_remove::Payload as Payload>::TYPE_URI;
+pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::TYPE_URI;
+pub(crate) const JOIN_TYPE: &str = <group_join::Payload as Payload>::TYPE_URI;
+pub(crate) const LEAVE_TYPE: &str = <group_leave::Payload as Payload>::TYPE_URI;
+pub(crate) const REQUESTS_LIST_TYPE: &str = <requests_list::Payload as Payload>::TYPE_URI;
+pub(crate) const REQUESTS_DECIDE_TYPE: &str = <requests_decide::Payload as Payload>::TYPE_URI;
 
 /// Every type this module serves.
-pub(crate) const URIS: &[&str] = &[CREATE_TYPE, UPDATE_TYPE, DELETE_TYPE, LIST_TYPE, SHOW_TYPE];
+pub(crate) const URIS: &[&str] = &[
+    CREATE_TYPE,
+    UPDATE_TYPE,
+    DELETE_TYPE,
+    LIST_TYPE,
+    SHOW_TYPE,
+    MEMBERS_ADD_TYPE,
+    MEMBERS_REMOVE_TYPE,
+    MEMBERS_LIST_TYPE,
+    JOIN_TYPE,
+    LEAVE_TYPE,
+    REQUESTS_LIST_TYPE,
+    REQUESTS_DECIDE_TYPE,
+];
 
 macro_rules! codes {
     ($($name:ident = $module:ident :: $code:ident;)*) => {
@@ -65,6 +98,31 @@ codes! {
     DELETE_ERR_NOT_FOUND = group_delete::NOT_FOUND;
     LIST_ERR_CURSOR_INVALID = group_list::CURSOR_INVALID;
     SHOW_ERR_NOT_FOUND = group_show::NOT_FOUND;
+    ADD_ERR_NOT_FOUND = members_add::NOT_FOUND;
+    ADD_ERR_ENTRY_NOT_FOUND = members_add::ENTRY_NOT_FOUND;
+    ADD_ERR_ALREADY_MEMBER = members_add::ALREADY_MEMBER;
+    ADD_ERR_KEY_HOLDER_UNAVAILABLE = members_add::KEY_HOLDER_UNAVAILABLE;
+    ADD_ERR_KEY_HOLDER_REFUSED = members_add::KEY_HOLDER_REFUSED;
+    REMOVE_ERR_NOT_FOUND = members_remove::NOT_FOUND;
+    REMOVE_ERR_NOT_IN_GROUP = members_remove::NOT_IN_GROUP;
+    MEMBERS_LIST_ERR_NOT_FOUND = members_list::NOT_FOUND;
+    MEMBERS_LIST_ERR_CURSOR_INVALID = members_list::CURSOR_INVALID;
+    JOIN_ERR_NOT_FOUND = group_join::NOT_FOUND;
+    JOIN_ERR_NOT_JOINABLE = group_join::NOT_JOINABLE;
+    JOIN_ERR_ALREADY_MEMBER = group_join::ALREADY_MEMBER;
+    JOIN_ERR_REQUEST_PENDING = group_join::REQUEST_PENDING;
+    JOIN_ERR_POLICY_REFUSED = group_join::POLICY_REFUSED;
+    JOIN_ERR_KEY_HOLDER_UNAVAILABLE = group_join::KEY_HOLDER_UNAVAILABLE;
+    JOIN_ERR_KEY_HOLDER_REFUSED = group_join::KEY_HOLDER_REFUSED;
+    LEAVE_ERR_NOT_FOUND = group_leave::NOT_FOUND;
+    LEAVE_ERR_NOT_IN_GROUP = group_leave::NOT_IN_GROUP;
+    REQUESTS_LIST_ERR_NOT_FOUND = requests_list::NOT_FOUND;
+    REQUESTS_LIST_ERR_CURSOR_INVALID = requests_list::CURSOR_INVALID;
+    DECIDE_ERR_NOT_FOUND = requests_decide::NOT_FOUND;
+    DECIDE_ERR_ALREADY_DECIDED = requests_decide::ALREADY_DECIDED;
+    DECIDE_ERR_SELF_DECISION = requests_decide::SELF_DECISION;
+    DECIDE_ERR_KEY_HOLDER_UNAVAILABLE = requests_decide::KEY_HOLDER_UNAVAILABLE;
+    DECIDE_ERR_KEY_HOLDER_REFUSED = requests_decide::KEY_HOLDER_REFUSED;
 }
 
 pub(super) async fn dispatch(
@@ -79,6 +137,13 @@ pub(super) async fn dispatch(
         DELETE_TYPE => handle_delete(state, ctx, doc).await,
         LIST_TYPE => handle_list(state, ctx, doc).await,
         SHOW_TYPE => handle_show(state, ctx, doc).await,
+        MEMBERS_ADD_TYPE => handle_members_add(state, ctx, doc).await,
+        MEMBERS_REMOVE_TYPE => handle_members_remove(state, ctx, doc).await,
+        MEMBERS_LIST_TYPE => handle_members_list(state, ctx, doc).await,
+        JOIN_TYPE => handle_join(state, ctx, doc).await,
+        LEAVE_TYPE => handle_leave(state, ctx, doc).await,
+        REQUESTS_LIST_TYPE => handle_requests_list(state, ctx, doc).await,
+        REQUESTS_DECIDE_TYPE => handle_requests_decide(state, ctx, doc).await,
         _ => return None,
     })
 }
@@ -107,14 +172,28 @@ fn denied(doc: &TrustTask<Value>, why: &str) -> TrustTaskOutcome {
     )
 }
 
-/// The signer's standing: a console key as the administrator it acts for,
-/// anyone else as themselves.
+/// The signer's standing: a portal sign-in key the member delegated
+/// `vtc/groups` to as that member, a console key as the administrator it acts
+/// for, anyone else as themselves.
 async fn standing(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
 ) -> Result<Standing, TrustTaskOutcome> {
-    let did = member_signer(state, ctx, doc).await?.did;
+    let delegated = match ctx.verified_signer.as_deref() {
+        Some(signer) => crate::member_portal::delegation::member_for(
+            &state.member_sessions_ks,
+            signer,
+            &doc.type_uri.to_string(),
+        )
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?,
+        None => None,
+    };
+    let did = match delegated {
+        Some(member) => member,
+        None => member_signer(state, ctx, doc).await?.did,
+    };
     Standing::read(state, &did)
         .await
         .map_err(|e| app_error_to_reject(doc, &e))
@@ -738,4 +817,862 @@ async fn handle_show(
         ),
         Err(e) => app_error_to_reject(&doc, &e),
     }
+}
+
+// ─── membership ───────────────────────────────────────────────────────────
+
+/// The caller's own directory entry: every member has a card (`card/show`
+/// item 3), so one is made now for a member who has never opened theirs.
+async fn own_entry(state: &AppState, who: &Standing) -> Result<String, AppError> {
+    if let Some(e) = &who.entry_id {
+        return Ok(e.clone());
+    }
+    let dir = &state.directory;
+    let own = crate::acl::get_acl_entry(&state.acl_ks, &who.did)
+        .await?
+        .filter(|e| e.label_set_by_subject)
+        .and_then(|e| e.label);
+    Ok(
+        crate::directory::cards::ensure(dir.ks(), &who.did, &dir.settings(), own.as_deref())
+            .await?
+            .entry_id,
+    )
+}
+
+/// An active member's DID, by directory entry — `None` for an entry with no
+/// active member behind it.
+async fn active_entry(state: &AppState, entry_id: &str) -> Result<Option<String>, AppError> {
+    let Some(card) = crate::directory::cards::get(state.directory.ks(), entry_id).await? else {
+        return Ok(None);
+    };
+    Ok(
+        crate::member_portal::active::active_member(state, &card.did)
+            .await?
+            .map(|_| card.did),
+    )
+}
+
+async fn audit_membership(
+    state: &AppState,
+    actor: &str,
+    group_id: &str,
+    entry_id: &str,
+    change: &str,
+    reason: Option<String>,
+) -> Result<(), AppError> {
+    audit(
+        state,
+        actor,
+        AuditEvent::GroupMembershipChanged(GroupMembershipChangedData {
+            group_id: group_id.to_string(),
+            entry_id: entry_id.to_string(),
+            change: change.to_string(),
+            reason,
+        }),
+    )
+    .await
+}
+
+/// Admit `did` (at `entry_id`) to `group` (`members/add` items 3 – 4): where
+/// the group issues credentials, its credential is issued and offered
+/// **before** the membership is recorded. A membership that appeared while the
+/// VTA was asked — a racing admission — is answered as it stands.
+async fn admit(
+    state: &AppState,
+    group: &Group,
+    did: &str,
+    entry_id: &str,
+    source: &str,
+) -> Result<Membership, Failure> {
+    let issued = if group.issues_credentials {
+        Some(groups::credential::issue(state, group, did).await?)
+    } else {
+        None
+    };
+    if let Some(i) = &issued {
+        groups::credential::offer(state, group, did, i).await;
+    }
+    let ks = state.directory.ks();
+    let _guard = crate::directory::WRITE_LOCK.lock().await;
+    if let Some(existing) = groups::membership(ks, &group.group_id, entry_id)
+        .await
+        .map_err(Failure::Local)?
+    {
+        return Ok(existing);
+    }
+    let m = Membership {
+        group_id: group.group_id.clone(),
+        entry_id: entry_id.to_string(),
+        source: source.to_string(),
+        since: Utc::now(),
+        state: "active".into(),
+        credential_id: issued.as_ref().map(|i| i.credential_id.clone()),
+        credential_valid_until: issued.as_ref().map(|i| i.valid_until),
+    };
+    groups::put_membership(ks, &m)
+        .await
+        .map_err(Failure::Local)?;
+    Ok(m)
+}
+
+/// `doc`'s answer to a key holder that did not issue a member's credential.
+fn admit_refusal(
+    doc: &TrustTask<Value>,
+    failure: Failure,
+    unavailable: &str,
+    refused: &str,
+) -> TrustTaskOutcome {
+    match failure {
+        Failure::Local(e) => app_error_to_reject(doc, &e),
+        Failure::Holder(e, _) => holder_refusal(doc, unavailable, Some(refused), e, None),
+    }
+}
+
+/// `members/add/0.1` (items 1 – 5).
+async fn handle_members_add(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match standing(state, ctx, &doc).await {
+        Ok(s) => s,
+        Err(reject) => return reject,
+    };
+    if let Err(reject) = parse_spec_payload::<members_add::Payload>(&doc) {
+        return reject;
+    }
+    let p = &doc.payload;
+    let group_id = p.get("groupId").and_then(Value::as_str).unwrap_or_default();
+    let entry_id = p.get("entryId").and_then(Value::as_str).unwrap_or_default();
+    let group = match managed_group(state, &doc, &who, group_id, ADD_ERR_NOT_FOUND).await {
+        Ok(g) => g,
+        Err(reject) => return reject,
+    };
+    // Item 2.
+    let did = match active_entry(state, entry_id).await {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            return declared(
+                &doc,
+                ADD_ERR_ENTRY_NOT_FOUND,
+                "No active member has this entry.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let ks = state.directory.ks();
+    match groups::membership(ks, &group.group_id, entry_id).await {
+        Ok(Some(_)) => {
+            return declared(
+                &doc,
+                ADD_ERR_ALREADY_MEMBER,
+                "The member already belongs to the group.",
+            );
+        }
+        Ok(None) => {}
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    let m = match admit(state, &group, &did, entry_id, "added").await {
+        Ok(m) => m,
+        Err(f) => {
+            return admit_refusal(
+                &doc,
+                f,
+                ADD_ERR_KEY_HOLDER_UNAVAILABLE,
+                ADD_ERR_KEY_HOLDER_REFUSED,
+            );
+        }
+    };
+    // A request the manager has now answered by adding them is settled.
+    if let Ok(Some(mut r)) = groups::pending_request(ks, &group.group_id, entry_id).await {
+        r.state = "approved".into();
+        r.decided_at = Some(Utc::now());
+        r.decided_by = Some(who.did.clone());
+        let _ = groups::put_request(ks, &r).await;
+    }
+    if let Err(e) = audit_membership(
+        state,
+        &who.did,
+        &group.group_id,
+        entry_id,
+        "added",
+        reason_of(&doc),
+    )
+    .await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
+    success_response(
+        &doc,
+        json!({
+            "member": groups::member_wire(&m, &who, None),
+            "credentialId": m.credential_id,
+        }),
+    )
+}
+
+/// `members/remove/0.1` (items 1 – 5). Nothing beside the membership to
+/// withdraw yet: no binding is served.
+async fn handle_members_remove(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match standing(state, ctx, &doc).await {
+        Ok(s) => s,
+        Err(reject) => return reject,
+    };
+    if let Err(reject) = parse_spec_payload::<members_remove::Payload>(&doc) {
+        return reject;
+    }
+    let p = &doc.payload;
+    let group_id = p.get("groupId").and_then(Value::as_str).unwrap_or_default();
+    let entry_id = p.get("entryId").and_then(Value::as_str).unwrap_or_default();
+    let group = match managed_group(state, &doc, &who, group_id, REMOVE_ERR_NOT_FOUND).await {
+        Ok(g) => g,
+        Err(reject) => return reject,
+    };
+    end_membership(
+        state,
+        &doc,
+        &who,
+        &group,
+        entry_id,
+        "removed",
+        REMOVE_ERR_NOT_IN_GROUP,
+    )
+    .await
+}
+
+/// End `entry_id`'s membership of `group` (`members/remove` items 3 – 5):
+/// renewal of its credential stops with the record.
+async fn end_membership(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    who: &Standing,
+    group: &Group,
+    entry_id: &str,
+    change: &str,
+    not_in_group: &str,
+) -> TrustTaskOutcome {
+    let ks = state.directory.ks();
+    let m = {
+        let _guard = crate::directory::WRITE_LOCK.lock().await;
+        match groups::membership(ks, &group.group_id, entry_id).await {
+            Ok(Some(m)) => {
+                if let Err(e) = groups::remove_membership(ks, &group.group_id, entry_id).await {
+                    return app_error_to_reject(doc, &e);
+                }
+                m
+            }
+            Ok(None) => {
+                return declared(doc, not_in_group, "The entry does not belong to the group.");
+            }
+            Err(e) => return app_error_to_reject(doc, &e),
+        }
+    };
+    if let Err(e) = audit_membership(
+        state,
+        &who.did,
+        &group.group_id,
+        entry_id,
+        change,
+        reason_of(doc),
+    )
+    .await
+    {
+        return app_error_to_reject(doc, &e);
+    }
+    let state_word = if change == "left" { "left" } else { "removed" };
+    let mut body = json!({
+        "groupId": group.group_id,
+        "entryId": entry_id,
+        "state": state_word,
+    });
+    if change == "left" {
+        body = json!({ "groupId": group.group_id, "state": state_word });
+    }
+    if let Some(u) = m.credential_valid_until {
+        body["credentialValidUntil"] = json!(u);
+    }
+    success_response(doc, body)
+}
+
+/// Bind and read a list cursor: `Ok(start)`, or `Err(())` for one this caller
+/// and these filters were not given.
+async fn cursor_start<T>(
+    state: &AppState,
+    wire: Option<String>,
+    binding: &str,
+    items: &[T],
+    key_of: impl Fn(&T) -> &[u8],
+) -> Result<(usize, Option<[u8; 32]>), Result<(), AppError>> {
+    let key = cursor_key(state).await.map_err(Err)?;
+    let start = match (wire, &key) {
+        (Some(w), Some(k)) => match Cursor::decode_bound(&w, k, binding.as_bytes()) {
+            Ok(c) => items
+                .iter()
+                .position(|i| key_of(i) > c.last_key.as_slice())
+                .unwrap_or(items.len()),
+            Err(_) => return Err(Ok(())),
+        },
+        (Some(_), None) => return Err(Ok(())),
+        (None, _) => 0,
+    };
+    Ok((start, key))
+}
+
+/// `members/list/0.1` (items 1 – 4).
+async fn handle_members_list(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match standing(state, ctx, &doc).await {
+        Ok(s) => s,
+        Err(reject) => return reject,
+    };
+    if !who.may_read() {
+        return denied(
+            &doc,
+            "groups are read by this community's active members and administrators",
+        );
+    }
+    let payload = match parse_spec_payload::<members_list::Payload>(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let group_id = payload.group_id.to_string();
+    let ks = state.directory.ks();
+    // Item 1.
+    let group = match groups::get(ks, &group_id).await {
+        Ok(Some(g)) if who.sees(&g) => g,
+        Ok(_) => {
+            return declared(
+                &doc,
+                MEMBERS_LIST_ERR_NOT_FOUND,
+                "No group you may see has this identifier.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if !who.sees_members(&group) {
+        return denied(&doc, "this group does not show its members to you");
+    }
+    let manager = who.manages(&group.group_id);
+    let members: Vec<Membership> = match groups::members_of(ks, &group.group_id).await {
+        // Item 3: pending members to managers only.
+        Ok(m) => m
+            .into_iter()
+            .filter(|m| manager || m.state == "active")
+            .collect(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let binding = format!("groups/members/list|{}|{}", who.did, group.group_id);
+    let (start, key) = match cursor_start(
+        state,
+        payload.cursor.as_ref().map(|c| c.to_string()),
+        &binding,
+        &members,
+        |m| m.entry_id.as_bytes(),
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(Ok(())) => {
+            return declared(
+                &doc,
+                MEMBERS_LIST_ERR_CURSOR_INVALID,
+                "This cursor is not this caller's for this group.",
+            );
+        }
+        Err(Err(e)) => return app_error_to_reject(&doc, &e),
+    };
+    let limit = payload.limit.map_or(50, |l| l.get() as usize).clamp(1, 200);
+    let page: Vec<&Membership> = members[start..].iter().take(limit).collect();
+    // Item 2: each member's fields exactly as entries/show projects them.
+    let viewer = match crate::directory::read::viewer(state, &who.did).await {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let mut items = Vec::with_capacity(page.len());
+    for m in &page {
+        items.push(groups::member_wire(
+            m,
+            &who,
+            projected_fields(state, &viewer, &m.entry_id).await,
+        ));
+    }
+    let mut body = json!({ "items": items });
+    if let (Some(k), true, Some(last)) = (&key, start + page.len() < members.len(), page.last()) {
+        body["nextCursor"] = json!(
+            Cursor::new(last.entry_id.as_bytes().to_vec(), members.len() as u64)
+                .encode_bound(k, binding.as_bytes())
+        );
+    }
+    success_response(&doc, body)
+}
+
+/// An entry's fields as `vtc/directory/entries/show` projects them for
+/// `viewer`; `None` where it shows them none.
+async fn projected_fields(
+    state: &AppState,
+    viewer: &crate::directory::project::Viewer,
+    entry_id: &str,
+) -> Option<Value> {
+    use crate::directory::read::{ShowBy, show};
+    match show(state, viewer, &ShowBy::Entry(entry_id.to_string())).await {
+        Ok(entry) => entry
+            .get("fields")
+            .filter(|f| f.as_object().is_some_and(|o| !o.is_empty()))
+            .cloned(),
+        Err(_) => None,
+    }
+}
+
+/// `join/0.1` (items 1 – 5) for a static group.
+async fn handle_join(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let mut who = match standing(state, ctx, &doc).await {
+        Ok(s) => s,
+        Err(reject) => return reject,
+    };
+    if !who.active_member {
+        return denied(&doc, "groups are joined by this community's active members");
+    }
+    if let Err(reject) = parse_spec_payload::<group_join::Payload>(&doc) {
+        return reject;
+    }
+    let group_id = doc
+        .payload
+        .get("groupId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let ks = state.directory.ks();
+    let group = match groups::get(ks, group_id).await {
+        Ok(Some(g)) if who.sees(&g) => g,
+        Ok(_) => {
+            return declared(
+                &doc,
+                JOIN_ERR_NOT_FOUND,
+                "No group you may see has this identifier.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let entry_id = match own_entry(state, &who).await {
+        Ok(e) => e,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    who.entry_id = Some(entry_id.clone());
+    // Item 2.
+    if group.join_policy == JoinPolicy::Closed {
+        return declared(
+            &doc,
+            JOIN_ERR_NOT_JOINABLE,
+            "This group is closed: its managers add its members.",
+        );
+    }
+    if who.member_of.contains(&group.group_id) || who.pending_in.contains(&group.group_id) {
+        return declared(
+            &doc,
+            JOIN_ERR_ALREADY_MEMBER,
+            "You already belong to this group.",
+        );
+    }
+    match groups::pending_request(ks, &group.group_id, &entry_id).await {
+        Ok(Some(_)) => {
+            return declared(
+                &doc,
+                JOIN_ERR_REQUEST_PENDING,
+                "You already asked to join this group.",
+            );
+        }
+        Ok(None) => {}
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    let operation = if group.join_policy == JoinPolicy::Open {
+        "join"
+    } else {
+        "request"
+    };
+    let member_count = groups::members_of(ks, &group.group_id)
+        .await
+        .map(|m| m.iter().filter(|m| m.state == "active").count())
+        .unwrap_or(0);
+    let facts = Facts {
+        operation,
+        now: Utc::now(),
+        actor_did: &who.did,
+        actor_role: Some("member"),
+        actor_member: true,
+        actor_manager: who.manages(&group.group_id),
+        group: GroupFacts {
+            group_id: &group.group_id,
+            join_policy: group.join_policy.as_str(),
+            visibility: group.visibility.as_str(),
+            show_members: group.show_members.as_str(),
+            issues_credentials: group.issues_credentials,
+            member_count,
+        },
+    };
+    match group_policy::decide(state, &facts).await {
+        Ok(None) => {}
+        Ok(Some(why)) => return declared(&doc, JOIN_ERR_POLICY_REFUSED, why),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    if group.join_policy == JoinPolicy::Request {
+        // Item 5.
+        let r = JoinRequest {
+            request_id: groups::new_request_id(),
+            group_id: group.group_id.clone(),
+            entry_id: entry_id.clone(),
+            message: doc
+                .payload
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            created_at: Utc::now(),
+            state: "pending".into(),
+            decided_at: None,
+            decided_by: None,
+            reason: None,
+        };
+        if let Err(e) = audit_membership(
+            state,
+            &who.did,
+            &group.group_id,
+            &entry_id,
+            "requested",
+            None,
+        )
+        .await
+        {
+            return app_error_to_reject(&doc, &e);
+        }
+        if let Err(e) = groups::put_request(ks, &r).await {
+            return app_error_to_reject(&doc, &e);
+        }
+        return success_response(
+            &doc,
+            json!({
+                "groupId": group.group_id,
+                "outcome": "requested",
+                "request": r.wire(false),
+                "credentialId": null,
+            }),
+        );
+    }
+    // Item 4.
+    let m = match admit(state, &group, &who.did, &entry_id, "joined").await {
+        Ok(m) => m,
+        Err(f) => {
+            return admit_refusal(
+                &doc,
+                f,
+                JOIN_ERR_KEY_HOLDER_UNAVAILABLE,
+                JOIN_ERR_KEY_HOLDER_REFUSED,
+            );
+        }
+    };
+    if let Err(e) =
+        audit_membership(state, &who.did, &group.group_id, &entry_id, "joined", None).await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
+    success_response(
+        &doc,
+        json!({
+            "groupId": group.group_id,
+            "outcome": "joined",
+            "member": groups::member_wire(&m, &who, None),
+            "credentialId": m.credential_id,
+        }),
+    )
+}
+
+/// `leave/0.1` (items 1 – 4) for a static group: withdraw a pending request,
+/// else end the membership.
+async fn handle_leave(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let mut who = match standing(state, ctx, &doc).await {
+        Ok(s) => s,
+        Err(reject) => return reject,
+    };
+    if !who.active_member {
+        return denied(&doc, "groups are left by this community's active members");
+    }
+    if let Err(reject) = parse_spec_payload::<group_leave::Payload>(&doc) {
+        return reject;
+    }
+    let group_id = doc
+        .payload
+        .get("groupId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let ks = state.directory.ks();
+    let group = match groups::get(ks, group_id).await {
+        Ok(Some(g)) if who.sees(&g) => g,
+        Ok(_) => {
+            return declared(
+                &doc,
+                LEAVE_ERR_NOT_FOUND,
+                "No group you may see has this identifier.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let entry_id = match own_entry(state, &who).await {
+        Ok(e) => e,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    who.entry_id = Some(entry_id.clone());
+    if let Ok(Some(mut r)) = groups::pending_request(ks, &group.group_id, &entry_id).await {
+        r.state = "withdrawn".into();
+        r.decided_at = Some(Utc::now());
+        if let Err(e) = audit_membership(
+            state,
+            &who.did,
+            &group.group_id,
+            &entry_id,
+            "withdrawn",
+            None,
+        )
+        .await
+        {
+            return app_error_to_reject(&doc, &e);
+        }
+        if let Err(e) = groups::put_request(ks, &r).await {
+            return app_error_to_reject(&doc, &e);
+        }
+        return success_response(
+            &doc,
+            json!({ "groupId": group.group_id, "state": "requestWithdrawn" }),
+        );
+    }
+    end_membership(
+        state,
+        &doc,
+        &who,
+        &group,
+        &entry_id,
+        "left",
+        LEAVE_ERR_NOT_IN_GROUP,
+    )
+    .await
+}
+
+/// `requests/list/0.1` (items 1 – 3).
+async fn handle_requests_list(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match standing(state, ctx, &doc).await {
+        Ok(s) => s,
+        Err(reject) => return reject,
+    };
+    let payload = match parse_spec_payload::<requests_list::Payload>(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let only = payload.group_id.as_ref().map(|g| g.to_string());
+    let wanted = payload
+        .state
+        .as_ref()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "pending".into());
+    let ks = state.directory.ks();
+    // Item 1.
+    if let Some(g) = &only {
+        match groups::get(ks, g).await {
+            Ok(Some(group)) if who.manages(&group.group_id) => {}
+            Ok(_) => {
+                return declared(
+                    &doc,
+                    REQUESTS_LIST_ERR_NOT_FOUND,
+                    "No group you manage has this identifier.",
+                );
+            }
+            Err(e) => return app_error_to_reject(&doc, &e),
+        }
+    }
+    let mut all: Vec<JoinRequest> = match groups::all_requests(ks).await {
+        Ok(r) => r
+            .into_iter()
+            .filter(|r| r.state == wanted)
+            .filter(|r| only.as_ref().is_none_or(|g| &r.group_id == g))
+            .filter(|r| who.manages(&r.group_id))
+            .collect(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    // The cursor compares request identifiers, so pages are in their order.
+    all.sort_by(|a, b| a.request_id.cmp(&b.request_id));
+    // Item 3.
+    let binding = format!(
+        "groups/requests/list|{}|{}|{wanted}",
+        who.did,
+        only.as_deref().unwrap_or("")
+    );
+    let (start, key) = match cursor_start(
+        state,
+        payload.cursor.as_ref().map(|c| c.to_string()),
+        &binding,
+        &all,
+        |r| r.request_id.as_bytes(),
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(Ok(())) => {
+            return declared(
+                &doc,
+                REQUESTS_LIST_ERR_CURSOR_INVALID,
+                "This cursor is not this caller's for these filters.",
+            );
+        }
+        Err(Err(e)) => return app_error_to_reject(&doc, &e),
+    };
+    let limit = payload.limit.map_or(50, |l| l.get() as usize).clamp(1, 200);
+    let page: Vec<&JoinRequest> = all[start..].iter().take(limit).collect();
+    let viewer = match crate::directory::read::viewer(state, &who.did).await {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let mut items = Vec::with_capacity(page.len());
+    for r in &page {
+        let mut item = json!({ "request": r.wire(true) });
+        if let Some(f) = projected_fields(state, &viewer, &r.entry_id).await {
+            item["fields"] = f;
+        }
+        items.push(item);
+    }
+    let mut body = json!({ "items": items });
+    if let (Some(k), true, Some(last)) = (&key, start + page.len() < all.len(), page.last()) {
+        body["nextCursor"] = json!(
+            Cursor::new(last.request_id.as_bytes().to_vec(), all.len() as u64)
+                .encode_bound(k, binding.as_bytes())
+        );
+    }
+    success_response(&doc, body)
+}
+
+/// `requests/decide/0.1` (items 1 – 3).
+async fn handle_requests_decide(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match standing(state, ctx, &doc).await {
+        Ok(s) => s,
+        Err(reject) => return reject,
+    };
+    if let Err(reject) = parse_spec_payload::<requests_decide::Payload>(&doc) {
+        return reject;
+    }
+    let p = &doc.payload;
+    let request_id = p
+        .get("requestId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let approve = p.get("decision").and_then(Value::as_str) == Some("approve");
+    let ks = state.directory.ks();
+    // Item 1.
+    let mut r = match groups::get_request(ks, request_id).await {
+        Ok(Some(r)) if who.manages(&r.group_id) => r,
+        Ok(_) => {
+            return declared(
+                &doc,
+                DECIDE_ERR_NOT_FOUND,
+                "No request to a group you manage has this identifier.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if r.state != "pending" {
+        return declared(
+            &doc,
+            DECIDE_ERR_ALREADY_DECIDED,
+            "This request is no longer pending.",
+        );
+    }
+    if who.entry_id.as_deref() == Some(r.entry_id.as_str()) {
+        return declared(
+            &doc,
+            DECIDE_ERR_SELF_DECISION,
+            "Nobody decides their own request.",
+        );
+    }
+    let group = match groups::get(ks, &r.group_id).await {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            return declared(
+                &doc,
+                DECIDE_ERR_NOT_FOUND,
+                "No request to a group you manage has this identifier.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let mut member = None;
+    if approve {
+        // Item 2: re-checked now. A requester who has left, or a group that no
+        // longer takes requests, ends the request declined.
+        let did = match active_entry(state, &r.entry_id).await {
+            Ok(d) => d,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
+        match did {
+            Some(did) if group.join_policy == JoinPolicy::Request => {
+                match admit(state, &group, &did, &r.entry_id, "requestApproved").await {
+                    Ok(m) => member = Some(m),
+                    Err(f) => {
+                        return admit_refusal(
+                            &doc,
+                            f,
+                            DECIDE_ERR_KEY_HOLDER_UNAVAILABLE,
+                            DECIDE_ERR_KEY_HOLDER_REFUSED,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    r.state = if member.is_some() {
+        "approved"
+    } else {
+        "declined"
+    }
+    .into();
+    r.decided_at = Some(Utc::now());
+    r.decided_by = Some(who.did.clone());
+    r.reason = reason_of(&doc);
+    if let Err(e) = audit_membership(
+        state,
+        &who.did,
+        &r.group_id,
+        &r.entry_id,
+        &r.state.clone(),
+        None,
+    )
+    .await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
+    if let Err(e) = groups::put_request(ks, &r).await {
+        return app_error_to_reject(&doc, &e);
+    }
+    let mut body = json!({ "request": r.wire(true) });
+    if let Some(m) = &member {
+        body["member"] = groups::member_wire(m, &who, None);
+        body["credentialId"] = json!(m.credential_id);
+    }
+    success_response(&doc, body)
 }

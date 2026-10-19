@@ -1324,6 +1324,156 @@ fn witnesses() -> Vec<Witness> {
             "a_group_the_caller_may_not_see_is_absent"
         ),
         witness!(
+            s::groups::members::add::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::group_tasks::ADD_ERR_NOT_FOUND,
+            "groups.rs",
+            "members_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::members::add::v0_1::error_codes::ENTRY_NOT_FOUND,
+            crate::trust_tasks::group_tasks::ADD_ERR_ENTRY_NOT_FOUND,
+            "groups.rs",
+            "members_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::members::add::v0_1::error_codes::ALREADY_MEMBER,
+            crate::trust_tasks::group_tasks::ADD_ERR_ALREADY_MEMBER,
+            "groups.rs",
+            "members_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::members::add::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            crate::trust_tasks::group_tasks::ADD_ERR_KEY_HOLDER_UNAVAILABLE,
+            "groups.rs",
+            "members_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::members::add::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            crate::trust_tasks::group_tasks::ADD_ERR_KEY_HOLDER_REFUSED,
+            "groups.rs",
+            "members_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::members::remove::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::group_tasks::REMOVE_ERR_NOT_FOUND,
+            "groups.rs",
+            "members_remove_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::members::remove::v0_1::error_codes::NOT_IN_GROUP,
+            crate::trust_tasks::group_tasks::REMOVE_ERR_NOT_IN_GROUP,
+            "groups.rs",
+            "members_remove_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::members::list::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::group_tasks::MEMBERS_LIST_ERR_NOT_FOUND,
+            "groups.rs",
+            "members_list_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::members::list::v0_1::error_codes::CURSOR_INVALID,
+            crate::trust_tasks::group_tasks::MEMBERS_LIST_ERR_CURSOR_INVALID,
+            "groups.rs",
+            "members_list_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::join::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::group_tasks::JOIN_ERR_NOT_FOUND,
+            "groups.rs",
+            "join_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::join::v0_1::error_codes::NOT_JOINABLE,
+            crate::trust_tasks::group_tasks::JOIN_ERR_NOT_JOINABLE,
+            "groups.rs",
+            "join_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::join::v0_1::error_codes::ALREADY_MEMBER,
+            crate::trust_tasks::group_tasks::JOIN_ERR_ALREADY_MEMBER,
+            "groups.rs",
+            "join_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::join::v0_1::error_codes::REQUEST_PENDING,
+            crate::trust_tasks::group_tasks::JOIN_ERR_REQUEST_PENDING,
+            "groups.rs",
+            "join_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::join::v0_1::error_codes::POLICY_REFUSED,
+            crate::trust_tasks::group_tasks::JOIN_ERR_POLICY_REFUSED,
+            "groups.rs",
+            "join_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::join::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            crate::trust_tasks::group_tasks::JOIN_ERR_KEY_HOLDER_UNAVAILABLE,
+            "groups.rs",
+            "join_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::join::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            crate::trust_tasks::group_tasks::JOIN_ERR_KEY_HOLDER_REFUSED,
+            "groups.rs",
+            "join_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::leave::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::group_tasks::LEAVE_ERR_NOT_FOUND,
+            "groups.rs",
+            "leave_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::leave::v0_1::error_codes::NOT_IN_GROUP,
+            crate::trust_tasks::group_tasks::LEAVE_ERR_NOT_IN_GROUP,
+            "groups.rs",
+            "leave_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::requests::list::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::group_tasks::REQUESTS_LIST_ERR_NOT_FOUND,
+            "groups.rs",
+            "requests_list_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::requests::list::v0_1::error_codes::CURSOR_INVALID,
+            crate::trust_tasks::group_tasks::REQUESTS_LIST_ERR_CURSOR_INVALID,
+            "groups.rs",
+            "requests_list_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::requests::decide::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::group_tasks::DECIDE_ERR_NOT_FOUND,
+            "groups.rs",
+            "requests_decide_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::requests::decide::v0_1::error_codes::ALREADY_DECIDED,
+            crate::trust_tasks::group_tasks::DECIDE_ERR_ALREADY_DECIDED,
+            "groups.rs",
+            "requests_decide_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::requests::decide::v0_1::error_codes::SELF_DECISION,
+            crate::trust_tasks::group_tasks::DECIDE_ERR_SELF_DECISION,
+            "groups.rs",
+            "requests_decide_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::requests::decide::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            crate::trust_tasks::group_tasks::DECIDE_ERR_KEY_HOLDER_UNAVAILABLE,
+            "groups.rs",
+            "requests_decide_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::requests::decide::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            crate::trust_tasks::group_tasks::DECIDE_ERR_KEY_HOLDER_REFUSED,
+            "groups.rs",
+            "requests_decide_refuses_what_its_specification_declares"
+        ),
+        witness!(
             s::directory::notes::append::v0_1::error_codes::NOT_FOUND,
             crate::trust_tasks::directory_tasks::NOTES_APPEND_ERR_NOT_FOUND,
             "directory_notes.rs",
@@ -2272,6 +2422,13 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // Deleting a group asks the community's VTA nothing until bindings are
         // served: its authority is revoked in the community's own list.
         s::groups::delete::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+        // Only static groups are served, and no binding confers a grant, so a
+        // membership change never meets a dynamic group, an opt-out or a role
+        // ceiling.
+        s::groups::members::add::v0_1::error_codes::DYNAMIC_GROUP,
+        s::groups::members::add::v0_1::error_codes::EXCEEDS_ROLE_CEILING,
+        s::groups::members::remove::v0_1::error_codes::DYNAMIC_GROUP,
+        s::groups::leave::v0_1::error_codes::ALREADY_OPTED_OUT,
         // BASELINE-END
     ]
 }
@@ -2284,7 +2441,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// the baseline past the ceiling — a newly bound task declaring codes
 /// nothing tests — requires raising this constant, which is the point:
 /// that always wants a human decision, never a silent pass.
-const UNWITNESSED_CEILING: usize = 11;
+const UNWITNESSED_CEILING: usize = 15;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.
