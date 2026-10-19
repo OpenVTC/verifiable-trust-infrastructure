@@ -200,6 +200,19 @@ fn hardware_key(seed: u8) -> (String, Secret) {
     (did, secret)
 }
 
+/// An Ed25519 UV key the browser plugin holds sealed under its PRF passkey.
+fn prf_sealed_key(seed: u8) -> (String, Secret) {
+    let probe = Secret::generate_ed25519(None, Some(&[seed; 32]));
+    let mb = probe.get_public_keymultibase().expect("multibase");
+    let did = format!("did:key:{mb}");
+    let secret = Secret::generate_ed25519(Some(&format!("{did}#{mb}")), Some(&[seed; 32]));
+    (did, secret)
+}
+
+fn prf_sealed_enrolment(did: &str) -> Value {
+    json!({ "kind": "prfSealedKey", "did": did, "hardwareBacked": false, "biometricGated": false })
+}
+
 fn hardware_enrolment(did: &str) -> Value {
     json!({ "kind": "hardwareKey", "did": did, "hardwareBacked": true, "biometricGated": true })
 }
@@ -483,6 +496,57 @@ async fn a_decision_for_another_grant_or_by_another_key_is_refused() {
     assert_refused(s, &b, "oobUvInvalid");
 
     // A refusal does not burn the grant id: the real approval still works.
+    let d = hardware_decision(&app, &uv, &g).await;
+    let (s, b) = sign(&app, &g, Some(d)).await;
+    assert_signed(s, &b, "assertionMethod");
+}
+
+#[tokio::test]
+async fn a_grant_approved_by_the_prf_sealed_uv_key_is_signed_once() {
+    let uv = prf_sealed_key(0x5a);
+    let app = app(Some(prf_sealed_enrolment(&uv.0))).await;
+    let g = grant(&app);
+    let d = hardware_decision(&app, &uv, &g).await;
+    let (s, b) = sign(&app, &g, Some(d)).await;
+    assert_signed(s, &b, "assertionMethod");
+
+    let d2 = hardware_decision(&app, &uv, &g).await;
+    let (s, b) = sign(&app, &g, Some(d2)).await;
+    assert_refused(s, &b, "oobGrantReplayed");
+}
+
+#[tokio::test]
+async fn a_prf_sealed_decision_must_be_by_that_key_and_carry_no_evidence() {
+    let uv = prf_sealed_key(0x5b);
+    let app = app(Some(prf_sealed_enrolment(&uv.0))).await;
+    let g = grant(&app);
+    let digest = grant_digest(&g).unwrap();
+
+    // Signed by the device's transport key, as a passkey decision is.
+    let (device, _) = did_for_seed(DEVICE_SEED);
+    let d = decision(&app, &device, &transport_secret(DEVICE_SEED), &digest, None).await;
+    let (s, b) = sign(&app, &g, Some(d)).await;
+    assert_refused(s, &b, "oobUvInvalid");
+
+    // Signed by another key.
+    let impostor = prf_sealed_key(0x5c);
+    let d = hardware_decision(&app, &impostor, &g).await;
+    let (s, b) = sign(&app, &g, Some(d)).await;
+    assert_refused(s, &b, "oobUvInvalid");
+
+    // Carrying evidence it does not take.
+    let d = decision(
+        &app,
+        &uv.0,
+        &uv.1,
+        &digest,
+        Some(json!({ "kind": "webauthn", "assertion": {} })),
+    )
+    .await;
+    let (s, b) = sign(&app, &g, Some(d)).await;
+    assert_refused(s, &b, "oobUvInvalid");
+
+    // None of those burnt the grant id.
     let d = hardware_decision(&app, &uv, &g).await;
     let (s, b) = sign(&app, &g, Some(d)).await;
     assert_signed(s, &b, "assertionMethod");

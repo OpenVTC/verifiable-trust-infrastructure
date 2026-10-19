@@ -27,7 +27,10 @@
 //!
 //! - **hardware key** (phone): the decision's proof is by the UV key's
 //!   `did:key`, which the OS uses only after a biometric;
-//! - **passkey** (browser plugin): the decision's proof is by the device's
+//! - **PRF-sealed key** (browser plugin): the decision's proof is by the UV
+//!   key's `did:key`, which the wallet unseals only with the PRF output of
+//!   its passkey, made with user verification for this approval;
+//! - **passkey** (a WebAuthn client): the decision's proof is by the device's
 //!   transport key, and its `evidence` is a WebAuthn assertion by the enrolled
 //!   credential over the UTF-8 bytes of `challenge`, with the UV flag set,
 //!   verified with `vti-webauthn`.
@@ -733,6 +736,18 @@ async fn verify_uv_decision(
                 return Err(bad("a hardware-key UV decision carries no evidence"));
             }
             "hardwareKey"
+        }
+        UvKeyMaterial::PrfSealedKey { did } => {
+            // The wallet unseals this key only with a PRF output its
+            // authenticator yields after user verification, for this one
+            // signature. Verified exactly as a hardware key; recorded apart.
+            if &signer != did {
+                return Err(bad("the UV decision is not signed by the device's UV key"));
+            }
+            if payload.evidence.is_some() {
+                return Err(bad("a PRF-sealed UV decision carries no evidence"));
+            }
+            "prfSealedKey"
         }
         UvKeyMaterial::Webauthn {
             credential_id,

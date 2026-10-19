@@ -682,7 +682,7 @@ fn uv_key_audit_detail(key: &UvKey) -> String {
     json!({
         "uvKey": uv_key_summary(key),
         "publicKey": match &key.enrolment.key {
-            UvKeyMaterial::HardwareKey { did } => did.clone(),
+            UvKeyMaterial::HardwareKey { did } | UvKeyMaterial::PrfSealedKey { did } => did.clone(),
             UvKeyMaterial::Webauthn { credential_id, .. } => credential_id.clone(),
             _ => String::new(),
         },
@@ -695,6 +695,7 @@ fn uv_key_audit_detail(key: &UvKey) -> String {
 fn uv_key_summary(key: &UvKey) -> Value {
     let kind = match &key.enrolment.key {
         UvKeyMaterial::HardwareKey { .. } => "hardwareKey",
+        UvKeyMaterial::PrfSealedKey { .. } => "prfSealedKey",
         UvKeyMaterial::Webauthn { .. } => "webauthn",
         _ => "unknown",
     };

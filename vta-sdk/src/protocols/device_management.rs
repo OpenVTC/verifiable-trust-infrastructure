@@ -146,7 +146,7 @@ pub struct UvKeyEnrolment {
     pub attestation: Option<Value>,
 }
 
-/// The two kinds of UV key.
+/// The kinds of UV key.
 // TODO: replace with generated trust-tasks types once device/* carries a UV key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -176,6 +176,18 @@ pub enum UvKeyMaterial {
         /// The origin `clientDataJSON.origin` must carry
         /// (`chrome-extension://<id>`, `https://…`).
         origin: String,
+    },
+    /// A key the wallet holds sealed under its own WebAuthn PRF passkey (the
+    /// browser plugin), named as a `did:key` (Ed25519 or P-256). The seed is
+    /// unsealed only by a PRF output, which the authenticator yields only
+    /// after user verification, for one signature; the key then signs the
+    /// `task-consent/decision` document itself, as a [`Self::HardwareKey`]
+    /// does. Unlike one, no secure element holds it, so it is recorded as its
+    /// own kind: policy and the audit trail can tell the two apart.
+    #[serde(rename_all = "camelCase")]
+    PrfSealedKey {
+        /// The UV key as a `did:key`.
+        did: String,
     },
 }
 
@@ -257,6 +269,22 @@ impl UvKeyEnrolment {
                     return Err(UvKeyError(
                         "a hardware UV key must be biometric-gated; a key usable without user \
                          verification cannot approve a grant",
+                    ));
+                }
+            }
+            UvKeyMaterial::PrfSealedKey { did } => {
+                let id = did
+                    .strip_prefix("did:key:")
+                    .ok_or(UvKeyError("a PRF-sealed UV key must be a did:key"))?;
+                if !(is_p256_multikey(id) || is_ed25519_multikey(id)) {
+                    return Err(UvKeyError(
+                        "a PRF-sealed UV key must be a P-256 or Ed25519 did:key",
+                    ));
+                }
+                // Nothing a browser can show makes it hardware-backed.
+                if self.hardware_backed {
+                    return Err(UvKeyError(
+                        "a PRF-sealed UV key is not hardware-backed; no secure element holds it",
                     ));
                 }
             }
@@ -428,6 +456,39 @@ mod tests {
         ] {
             assert!(
                 UvKeyEnrolment::from_ext_value(&hardware(bad, true)).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    fn prf_sealed(did: &str, hardware_backed: bool) -> Value {
+        serde_json::json!({ "kind": "prfSealedKey", "did": did,
+                            "hardwareBacked": hardware_backed, "biometricGated": false })
+    }
+
+    #[test]
+    fn a_prf_sealed_key_enrols_as_its_own_kind() {
+        let ed = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let e = UvKeyEnrolment::from_ext_value(&prf_sealed(ed, false)).expect("valid");
+        assert!(matches!(e.key, UvKeyMaterial::PrfSealedKey { .. }));
+        assert_eq!(serde_json::to_value(&e).unwrap(), prf_sealed(ed, false));
+        UvKeyEnrolment::from_ext_value(&prf_sealed(P256_DID_KEY, false))
+            .expect("a P-256 did:key is accepted too");
+    }
+
+    #[test]
+    fn a_prf_sealed_key_cannot_claim_hardware_backing() {
+        assert!(UvKeyEnrolment::from_ext_value(&prf_sealed(P256_DID_KEY, true)).is_err());
+    }
+
+    #[test]
+    fn a_prf_sealed_key_must_be_a_signing_did_key() {
+        for bad in [
+            "did:web:example.com",
+            "did:key:z6LSbysY2xFMRpGMhb7tFTLMpeuPRaqaWM1yECx2AtzE3KCc", // X25519
+        ] {
+            assert!(
+                UvKeyEnrolment::from_ext_value(&prf_sealed(bad, false)).is_err(),
                 "{bad}"
             );
         }
