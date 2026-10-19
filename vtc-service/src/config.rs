@@ -131,8 +131,60 @@ pub struct AppConfig {
     /// [`crate::directory`].
     #[serde(default, skip_serializing_if = "DirectoryConfig::is_default")]
     pub directory: DirectoryConfig,
+    /// The community's groups (`[groups]`, the `vtc/groups/*` tasks): where its VTA
+    /// mints each group's identity, and how long the credentials it issues last.
+    ///
+    /// **Absent means off**, as every configuration written before groups existed is:
+    /// such a VTC starts exactly as before, and a create is refused `noKeyHolder`
+    /// naming this section. Writing it is what turns them on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups: Option<GroupsConfig>,
     #[serde(skip)]
     pub config_path: PathBuf,
+}
+
+/// Where the community's groups get their identities (`[groups]`).
+///
+/// The community's VTA (`vta_did`) holds every group's keys: it mints each group's
+/// `did:webvh` from the `vtc-group` template and signs, as the group, the membership
+/// credentials the group issues, and as the community, the authority credential the
+/// community issues the group. This community holds no group key. It reaches the VTA
+/// over the messaging link it already keeps, so `vta_did` and `[messaging]` are needed
+/// too, and this community's DID needs an entry at the VTA in `context` with
+/// `key-mint` and `sign-document`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct GroupsConfig {
+    /// The context at the community's VTA the groups' keys are minted in. Absent:
+    /// `[rooms.community] context`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// A `did:webvh` hosting server registered at the VTA, by its id there, that
+    /// publishes each group's log. **Absent**: the groups' identities are minted
+    /// serverless and this community serves each log itself, at
+    /// `<public_url>/group-dids/<id>/did.jsonl`, so `public_url` must be set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webvh_server: Option<String>,
+    /// How long the community's authority credential to a group lasts, in days.
+    /// Default 365, renewed well before it lapses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_valid_days: Option<u32>,
+    /// How long a member's group membership credential lasts, in days. Default 30,
+    /// renewed while the member stays; its expiry is its revocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_valid_days: Option<u32>,
+}
+
+impl GroupsConfig {
+    /// [`Self::authority_valid_days`], defaulted and at least one day.
+    pub fn authority_valid_days(&self) -> u32 {
+        self.authority_valid_days.unwrap_or(365).max(1)
+    }
+
+    /// [`Self::credential_valid_days`], defaulted and at least one day.
+    pub fn credential_valid_days(&self) -> u32 {
+        self.credential_valid_days.unwrap_or(30).max(1)
+    }
 }
 
 /// The member directory (`[directory]`).

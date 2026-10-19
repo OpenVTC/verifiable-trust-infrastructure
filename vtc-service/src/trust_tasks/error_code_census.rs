@@ -1246,6 +1246,84 @@ fn witnesses() -> Vec<Witness> {
             "present_refuses_what_its_specification_declares"
         ),
         witness!(
+            s::groups::create::v0_1::error_codes::RULE_INVALID,
+            crate::trust_tasks::group_tasks::CREATE_ERR_RULE_INVALID,
+            "groups.rs",
+            "create_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::create::v0_1::error_codes::KIND_NOT_SERVED,
+            crate::trust_tasks::group_tasks::CREATE_ERR_KIND_NOT_SERVED,
+            "groups.rs",
+            "create_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::create::v0_1::error_codes::SETTINGS_INVALID,
+            crate::trust_tasks::group_tasks::CREATE_ERR_SETTINGS_INVALID,
+            "groups.rs",
+            "create_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::create::v0_1::error_codes::POLICY_REFUSED,
+            crate::trust_tasks::group_tasks::CREATE_ERR_POLICY_REFUSED,
+            "groups.rs",
+            "create_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::create::v0_1::error_codes::NO_KEY_HOLDER,
+            crate::trust_tasks::group_tasks::CREATE_ERR_NO_KEY_HOLDER,
+            "groups.rs",
+            "create_without_a_key_holder_is_refused"
+        ),
+        witness!(
+            s::groups::create::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            crate::trust_tasks::group_tasks::CREATE_ERR_KEY_HOLDER_UNAVAILABLE,
+            "groups.rs",
+            "create_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::create::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            crate::trust_tasks::group_tasks::CREATE_ERR_KEY_HOLDER_REFUSED,
+            "groups.rs",
+            "create_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::update::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::group_tasks::UPDATE_ERR_NOT_FOUND,
+            "groups.rs",
+            "update_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::update::v0_1::error_codes::RULE_INVALID,
+            crate::trust_tasks::group_tasks::UPDATE_ERR_RULE_INVALID,
+            "groups.rs",
+            "update_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::update::v0_1::error_codes::SETTINGS_INVALID,
+            crate::trust_tasks::group_tasks::UPDATE_ERR_SETTINGS_INVALID,
+            "groups.rs",
+            "update_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::delete::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::group_tasks::DELETE_ERR_NOT_FOUND,
+            "groups.rs",
+            "delete_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::list::v0_1::error_codes::CURSOR_INVALID,
+            crate::trust_tasks::group_tasks::LIST_ERR_CURSOR_INVALID,
+            "groups.rs",
+            "list_pages_with_a_cursor_bound_to_its_caller"
+        ),
+        witness!(
+            s::groups::show::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::group_tasks::SHOW_ERR_NOT_FOUND,
+            "groups.rs",
+            "a_group_the_caller_may_not_see_is_absent"
+        ),
+        witness!(
             s::directory::notes::append::v0_1::error_codes::NOT_FOUND,
             crate::trust_tasks::directory_tasks::NOTES_APPEND_ERR_NOT_FOUND,
             "directory_notes.rs",
@@ -2188,6 +2266,12 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // before anything else, so different bytes are `chunkMismatch` first;
         // the same bytes are the idempotent `stored: false`.
         s::website::upload::chunk::v0_1::error_codes::ALREADY_STORED,
+        // A group carries authority only through a `grants` or `role` binding,
+        // and no binding is served yet, so no group is locked `closed`.
+        s::groups::update::v0_1::error_codes::AUTHORITY_GROUP_LOCKED,
+        // Deleting a group asks the community's VTA nothing until bindings are
+        // served: its authority is revoked in the community's own list.
+        s::groups::delete::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
         // BASELINE-END
     ]
 }
@@ -2200,7 +2284,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// the baseline past the ceiling — a newly bound task declaring codes
 /// nothing tests — requires raising this constant, which is the point:
 /// that always wants a human decision, never a silent pass.
-const UNWITNESSED_CEILING: usize = 9;
+const UNWITNESSED_CEILING: usize = 11;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.

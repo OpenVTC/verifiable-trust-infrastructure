@@ -160,6 +160,7 @@ pub(crate) mod community_room_tasks;
 // `query/0.1` lookup stays in `community_tasks`, answered through the same
 // projection). Its records are `crate::directory`'s.
 pub(crate) mod directory_tasks;
+pub(crate) mod group_tasks;
 pub(crate) mod role_tasks;
 pub(crate) mod room_admin_tasks;
 // The administrators' view of the OpenID4VP verifier identities (#1988).
@@ -1358,6 +1359,13 @@ fn dispatch_typed<'a>(
                 None => unreachable!("directory_tasks::URIS names {uri}, which it does not route"),
             }
         }),
+        uri if group_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match Box::pin(group_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("group_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
         uri if community_room_tasks::URIS.contains(&uri) => Box::pin(async move {
             match Box::pin(community_room_tasks::dispatch(state, ctx, doc, uri)).await {
                 Some(outcome) => outcome,
@@ -2226,6 +2234,14 @@ mod spine_proof_tests {
         (
             directory_tasks::ENTRIES_SHOW_TYPE,
             "reads one entry projected for the signer; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            group_tasks::LIST_TYPE,
+            "reads the groups the signer may see; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            group_tasks::SHOW_TYPE,
+            "reads one group the signer may see; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
         ),
         (
             community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
@@ -3205,6 +3221,12 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     directory_tasks::NOTES_LIST_TYPE,
     directory_tasks::NOTES_EXPORT_TYPE,
     directory_tasks::EXPORT_TYPE,
+    // The community's groups.
+    group_tasks::CREATE_TYPE,
+    group_tasks::UPDATE_TYPE,
+    group_tasks::DELETE_TYPE,
+    group_tasks::LIST_TYPE,
+    group_tasks::SHOW_TYPE,
     // Credential-sourced fields, filled from a presentation.
     directory_tasks::CARD_PRESENT_TYPE,
     community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,

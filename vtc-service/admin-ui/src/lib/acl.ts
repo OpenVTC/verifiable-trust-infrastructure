@@ -130,7 +130,7 @@ export interface AclUpdateRequest {
 // ── the registry (`vtc-admin-roles.md` §4, §6.1) ─────────────────────────
 
 /** What kind of resource a capability may be narrowed to, if any. */
-export type QualifierKind = "git-ns" | "git-repo" | "policy" | "criterion";
+export type QualifierKind = "git-ns" | "git-repo" | "policy" | "criterion" | "group";
 
 export interface CapabilityInfo {
   id: string;
@@ -142,7 +142,7 @@ export interface CapabilityInfo {
 }
 
 export const CAPABILITIES: CapabilityInfo[] = [
-  { id: "vtc.roles.assign", gates: "granting and removing roles and capabilities", conferring: true, qualifiers: ["git-ns", "git-repo", "policy", "criterion"] },
+  { id: "vtc.roles.assign", gates: "granting and removing roles and capabilities", conferring: true, qualifiers: ["git-ns", "git-repo", "policy", "criterion", "group"] },
   { id: "vtc.approvals.admin", gates: "the approvals rule list", conferring: true, qualifiers: [] },
   { id: "vtc.policy.admin", gates: "uploading and activating policy", conferring: true, qualifiers: ["policy"] },
   { id: "vtc.config.admin", gates: "configuration (patch, import, reload, restart)", conferring: true, qualifiers: [] },
@@ -163,6 +163,7 @@ export const CAPABILITIES: CapabilityInfo[] = [
   { id: "vtc.rooms.manage", gates: "running the rooms the community owns: create them, admit and remove their members", conferring: false, qualifiers: [] },
   { id: "vtc.directory.admin", gates: "the member directory: its fields and their ceilings, administrator-asserted values, and reading every entry whole", conferring: false, qualifiers: [] },
   { id: "vtc.directory.notes", gates: "administrators' notes about members: writing them, reading them, and exporting a member's notes for their data request", conferring: false, qualifiers: [] },
+  { id: "vtc.groups.manage", gates: "the community's groups: creating them, and their members, requests and settings; qualified by a group, that one group", conferring: false, qualifiers: ["group"] },
   { id: "git.ns.admin", gates: "administering a git namespace", conferring: true, qualifiers: ["git-ns"] },
   { id: "git.repo.manage", gates: "creating, adopting, archiving and transferring repositories", conferring: false, qualifiers: ["git-ns", "git-repo"] },
 ];

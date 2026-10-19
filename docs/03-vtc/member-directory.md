@@ -113,7 +113,7 @@ wallet shows every value before anything is signed. The portal also shows where
 a published card stands, and offers **Stop publishing**, which a delegated key
 may do because it narrows.
 
-Not yet served: groups (`vtc/groups/*`) and introductions. A member cannot yet
+Not yet served: introductions. Groups are their own family ([community groups](groups.md)). A member cannot yet
 present a credential from the portal: that waits on the wallet offering it.
 
 ## Verified values (`card/present`)

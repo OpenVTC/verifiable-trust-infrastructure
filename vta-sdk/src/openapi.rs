@@ -54,6 +54,7 @@ use trust_tasks_rs::specs::did_management::did::register;
 use trust_tasks_rs::specs::git_ns::view as git_ns_view;
 use trust_tasks_rs::specs::vtc::directory;
 use trust_tasks_rs::specs::vtc::endorsement_types;
+use trust_tasks_rs::specs::vtc::groups;
 use trust_tasks_rs::specs::vtc::invitations::deliver as invitation_deliver;
 use trust_tasks_rs::specs::vtc::join_requests::manifest;
 use trust_tasks_rs::specs::vtc::members::credentials as member_credentials;
@@ -349,6 +350,26 @@ spec_types! {
     DirectoryCardPublic01Payload(directory::card::public::v0_1::Payload);
     /// `vtc/directory/card/public/0.1#response` — the card exactly as its member signed it.
     DirectoryCardPublic01Response(directory::card::public::v0_1::Response);
+    /// `vtc/groups/create/0.1` payload — a new static group.
+    GroupsCreate01Payload(groups::create::v0_1::Payload);
+    /// `vtc/groups/create/0.1#response` — the group as stored.
+    GroupsCreate01Response(groups::create::v0_1::Response);
+    /// `vtc/groups/update/0.1` payload — a group's settings.
+    GroupsUpdate01Payload(groups::update::v0_1::Payload);
+    /// `vtc/groups/update/0.1#response` — the group as it now stands.
+    GroupsUpdate01Response(groups::update::v0_1::Response);
+    /// `vtc/groups/delete/0.1` payload — the group to delete, and why.
+    GroupsDelete01Payload(groups::delete::v0_1::Payload);
+    /// `vtc/groups/delete/0.1#response` — whether the group is gone.
+    GroupsDelete01Response(groups::delete::v0_1::Response);
+    /// `vtc/groups/list/0.1` payload — which groups to list.
+    GroupsList01Payload(groups::list::v0_1::Payload);
+    /// `vtc/groups/list/0.1#response` — the groups the caller may see.
+    GroupsList01Response(groups::list::v0_1::Response);
+    /// `vtc/groups/show/0.1` payload — one group.
+    GroupsShow01Payload(groups::show::v0_1::Payload);
+    /// `vtc/groups/show/0.1#response` — the group as the caller may see it.
+    GroupsShow01Response(groups::show::v0_1::Response);
     /// `vtc/directory/card/present/0.1` payload — the fields a presentation fills.
     DirectoryCardPresent01Payload(directory::card::present::v0_1::Payload);
     /// `vtc/directory/card/present/0.1#response` — each field's verified value.
@@ -758,6 +779,16 @@ mod tests {
         check::<DirectoryCardPublish01Response>();
         check::<DirectoryCardPublic01Payload>();
         check::<DirectoryCardPublic01Response>();
+        check::<GroupsCreate01Payload>();
+        check::<GroupsCreate01Response>();
+        check::<GroupsUpdate01Payload>();
+        check::<GroupsUpdate01Response>();
+        check::<GroupsDelete01Payload>();
+        check::<GroupsDelete01Response>();
+        check::<GroupsList01Payload>();
+        check::<GroupsList01Response>();
+        check::<GroupsShow01Payload>();
+        check::<GroupsShow01Response>();
         check::<DirectoryCardPresent01Payload>();
         check::<DirectoryCardPresent01Response>();
         check::<DirectoryNotesAppend01Payload>();

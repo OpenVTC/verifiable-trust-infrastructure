@@ -1356,7 +1356,8 @@ new flow, update both this section and the relevant `docs/*.md`.
   older `query/0.1`), every read a **projection** for its caller; pictures
   (`images/{upload,get}`), external cards (`card/{publish,public}`),
   administrators' notes (`notes/*`), the export, and credential-sourced fields
-  (`card/present`). Groups and introductions are later phases (design §14).
+  (`card/present`). Groups are their own family (*VTC community groups*);
+  introductions are a later phase (design §14).
 - **Invariants to preserve**: a value leaves only where the member's own
   visibility, the field's ceiling **and** the `directory` policy all admit the
   viewer — intersected, and the policy can only narrow (`directory::project`,
@@ -1407,6 +1408,32 @@ new flow, update both this section and the relevant `docs/*.md`.
   `consent`, `task-consent` or `confirm`.
 - **Docs**: `docs/03-vtc/member-directory.md`,
   `docs/05-design-notes/vtc-member-directory.md`.
+
+### VTC community groups (`vtc/groups/*`)
+- **What**: The community's groups, each with its own `did:webvh` that the
+  community's VTA mints from the `vtc-group` template and holds, and a community →
+  group DTG `AuthorityCredential` (`issue-membership`) the VTA signs **as the
+  community** through `keys/sign-document`, with a slot in the community's
+  revocation list and an expiry. Served: `create`, `update`, `delete`, `list`,
+  `show` for **static** groups (a dynamic one is checked, then refused
+  `kindNotServed`). Membership, managers (`managers/*`), members' group
+  credentials and bindings are later phases.
+- **Invariants to preserve**: the VTC holds no group key and never falls back to
+  one (`noKeyHolder`). Remote first: a group is stored only after its DID and its
+  authority exist; a served log is published before anything verifies against
+  the DID and withdrawn when a later step fails. Who manages a group is
+  `vtc.groups.manage` on the live ACL entry — unqualified for every group and
+  creating, or a resource grant `group:<groupId>` — never the group's record. A
+  group the caller may not see is `notFound` on every task, like one that does
+  not exist; `memberCount` only where `showMembers` admits the caller,
+  `managers`/`credentialAuthorityValidUntil` only to managers. A dynamic rule
+  reads only verified facts (role, `admin`/`credential` fields, personhood, join
+  date), never a `member`-sourced field. The group's DID document carries no name
+  or description. The `groups` policy only refuses. Audit by reference.
+- **Code**: `vtc-service/src/groups/` (`mod`, `identity`, `policy`),
+  `vtc-service/src/trust_tasks/group_tasks.rs`,
+  `vtc-service/policies/default/groups.rego`, `vta-sdk/templates/vtc-group.json`.
+- **Docs**: `docs/03-vtc/groups.md`.
 
 ### VTC administrator action list (`vtc/admin/actions/*`)
 - **What**: Second-party consent at the VTC. An operation that needs other

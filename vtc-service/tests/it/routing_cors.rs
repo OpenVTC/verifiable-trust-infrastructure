@@ -58,6 +58,7 @@ fn cfg_with(routing: RoutingConfig, cors: CorsConfig) -> AppConfig {
         oid4vp: Default::default(),
         witnesses: Default::default(),
         directory: Default::default(),
+        groups: None,
         config_path: std::path::PathBuf::new(),
     }
 }

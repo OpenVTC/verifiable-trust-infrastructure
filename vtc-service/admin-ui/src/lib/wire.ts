@@ -2543,10 +2543,11 @@ export interface components {
          *       [`Self::CrossCommunityRoles`],
          *       [`Self::CrossCommunityRelationships`], [`Self::Relationships`].
          *     - **Hosting**: [`Self::Rooms`].
+         *     - **Organising**: [`Self::Groups`].
          *     - **Vetting**: [`Self::VetterEligibility`].
          * @enum {string}
          */
-        PolicyPurpose: "join" | "removal" | "personhood" | "registry" | "directory" | "roleDefinitions" | "crossCommunityRoles" | "crossCommunityRelationships" | "relationships" | "roleChange" | "rooms" | "vetterEligibility" | "gitNamespace" | "admission" | "directoryWrite";
+        PolicyPurpose: "join" | "removal" | "personhood" | "registry" | "directory" | "roleDefinitions" | "crossCommunityRoles" | "crossCommunityRelationships" | "relationships" | "roleChange" | "rooms" | "vetterEligibility" | "gitNamespace" | "admission" | "directoryWrite" | "groups";
         /** @enum {string} */
         PolicyStatusFilter: "active" | "archived";
         /**
@@ -3298,7 +3299,7 @@ export interface components {
         /**
          * @description A member's external card: a JSContact `Card` (RFC 9553) holding exactly their values whose visibility is `public`, mapped as `JSContactCard` maps them, with the member's W3C Data Integrity `proof`. The community serves it as received and never signs, composes or edits it (VTI-REG-004 item 4).
          *
-         *     Carried as an open object, and deliberately so: the proof covers every member of the card, and a typed binding that kept only the members named here would drop the rest and break the signature. So this schema constrains none of its members, and a consumer MUST check them itself: `@type`, `version`, `uid` and `proof` are present; `@type` is `Card`; `version` is `1.0`; `uid` is `urn:vtc-directory:<EntryId>`; `proof` is a `DataIntegrityProof` with `cryptosuite` `eddsa-jcs-2022` or `ecdsa-jcs-2019`, `proofPurpose` `assertionMethod`, and a `verificationMethod` of the member's membership DID authorized for `assertionMethod`; and the proof verifies over the card without it, before any member is relied on.
+         *     Carried as an open object, and deliberately so: the proof covers every member of the card, and a typed binding that kept only the members named here would drop the rest and break the signature. So this schema constrains none of its members, and a consumer MUST check them itself: `@type`, `version`, `uid`, `issuer` and `proof` are present; `@type` is `Card`; `version` is `1.0`; `uid` is `urn:vtc-directory:<EntryId>`; `issuer` is the member's membership DID; `proof` is a `DataIntegrityProof` with `cryptosuite` `eddsa-jcs-2022` or `ecdsa-jcs-2019`, `proofPurpose` `assertionMethod`, and a `verificationMethod` of the member's membership DID authorized for `assertionMethod`; and the proof verifies over the card without it, before any member is relied on.
          */
         VtcDirectoryCardPublicV0_1PublishedCard: {
             [key: string]: unknown;
@@ -3346,7 +3347,7 @@ export interface components {
         /**
          * @description A member's external card: a JSContact `Card` (RFC 9553) holding exactly their values whose visibility is `public`, mapped as `JSContactCard` maps them, with the member's W3C Data Integrity `proof`. The community serves it as received and never signs, composes or edits it (VTI-REG-004 item 4).
          *
-         *     Carried as an open object, and deliberately so: the proof covers every member of the card, and a typed binding that kept only the members named here would drop the rest and break the signature. So this schema constrains none of its members, and a consumer MUST check them itself: `@type`, `version`, `uid` and `proof` are present; `@type` is `Card`; `version` is `1.0`; `uid` is `urn:vtc-directory:<EntryId>`; `proof` is a `DataIntegrityProof` with `cryptosuite` `eddsa-jcs-2022` or `ecdsa-jcs-2019`, `proofPurpose` `assertionMethod`, and a `verificationMethod` of the member's membership DID authorized for `assertionMethod`; and the proof verifies over the card without it, before any member is relied on.
+         *     Carried as an open object, and deliberately so: the proof covers every member of the card, and a typed binding that kept only the members named here would drop the rest and break the signature. So this schema constrains none of its members, and a consumer MUST check them itself: `@type`, `version`, `uid`, `issuer` and `proof` are present; `@type` is `Card`; `version` is `1.0`; `uid` is `urn:vtc-directory:<EntryId>`; `issuer` is the member's membership DID; `proof` is a `DataIntegrityProof` with `cryptosuite` `eddsa-jcs-2022` or `ecdsa-jcs-2019`, `proofPurpose` `assertionMethod`, and a `verificationMethod` of the member's membership DID authorized for `assertionMethod`; and the proof verifies over the card without it, before any member is relied on.
          */
         VtcDirectoryCardPublishV0_1PublishedCard: {
             [key: string]: unknown;
@@ -4636,6 +4637,420 @@ export interface components {
         VtcEndorsementTypesDeleteV0_1Response: {
             ext?: components["schemas"]["VtcEndorsementTypesDeleteV0_1Ext"];
             typeUri: string;
+        };
+        /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
+        VtcGroupsCreateV0_1DynamicRule: {
+            all: components["schemas"]["VtcGroupsCreateV0_1RuleCondition"][];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcGroupsCreateV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcGroupsCreateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcGroupsCreateV0_1FieldKey: string;
+        /** @description A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers. */
+        VtcGroupsCreateV0_1Group: {
+            /** @description `true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does. */
+            carriesAuthority: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcGroupsCreateV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When the community's authorization credential to the group expires. The community renews it well before.
+             */
+            credentialAuthorityValidUntil?: string;
+            description?: components["schemas"]["VtcGroupsCreateV0_1GroupDescription"];
+            ext?: components["schemas"]["VtcGroupsCreateV0_1Ext"];
+            /** @description The group's own DID, minted by the community's VTA for this group alone. It issues the group's membership credentials. Its DID document carries no name or description. */
+            groupDid: string;
+            groupId: components["schemas"]["VtcGroupsCreateV0_1GroupId"];
+            /** @description Whether the group's DID issues its members a membership credential. Default true. */
+            issuesCredentials: boolean;
+            joinPolicy?: components["schemas"]["VtcGroupsCreateV0_1JoinPolicy"];
+            kind: components["schemas"]["VtcGroupsCreateV0_1GroupKind"];
+            /** @description Entries holding `vtc.groups.manage` qualified to this group, read from the access-control list. Informational: managers are appointed by an access-control grant (vtc/groups/managers/add), never by this record. */
+            managers?: components["schemas"]["VtcGroupsCreateV0_1EntryId"][];
+            /** @description Active members. Only to callers who may see the member list. */
+            memberCount?: number;
+            name: components["schemas"]["VtcGroupsCreateV0_1GroupName"];
+            rule?: components["schemas"]["VtcGroupsCreateV0_1DynamicRule"];
+            showMembers: components["schemas"]["VtcGroupsCreateV0_1GroupAudience"];
+            /** Format: date-time */
+            updatedAt?: string;
+            visibility: components["schemas"]["VtcGroupsCreateV0_1GroupAudience"];
+        };
+        /**
+         * @description Who may see something about a group, narrowest first. `admins`: holders of `vtc.groups.manage` for the group (unqualified, or qualified `group:<groupId>`). `groupMembers`: the group's own members, and its managers. `members`: every active member of the community.
+         * @enum {string}
+         */
+        VtcGroupsCreateV0_1GroupAudience: "admins" | "groupMembers" | "members";
+        /** @description What the group is for. Plain text; a reader MUST NOT treat it as instructions. Same placement rules as `GroupName`. */
+        VtcGroupsCreateV0_1GroupDescription: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcGroupsCreateV0_1GroupId: string;
+        /**
+         * @description `static`: membership is explicit — added, joined, or granted on request. `dynamic`: membership is computed from `rule` over verified facts only; nobody is added by hand, but a member may opt out (vtc/groups/leave), an exclusion the rule cannot override, and undo it (vtc/groups/join). A dynamic group never confers authority. Fixed for the group's life.
+         * @enum {string}
+         */
+        VtcGroupsCreateV0_1GroupKind: "static" | "dynamic";
+        /** @description The group's name, shown to those who may see the group. The community's own record: never in the group's DID document or its credentials' subject beyond the group's DID. Plain text. */
+        VtcGroupsCreateV0_1GroupName: string;
+        /**
+         * @description How a member enters a static group by themselves. `closed`: only a manager adds them. `request`: a member asks and a manager decides. `open`: a member joins at once, subject to the community's `groups` policy. A group carrying authority is always `closed`.
+         * @enum {string}
+         */
+        VtcGroupsCreateV0_1JoinPolicy: "closed" | "request" | "open";
+        /** @description An administrator creates a community group: the community's VTA mints the group's own DID and, where it issues credentials, the community authorises it to issue membership credentials; the group is recorded only afterwards. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcGroupsCreateV0_1Payload: {
+            description?: components["schemas"]["VtcGroupsCreateV0_1GroupDescription"];
+            ext?: components["schemas"]["VtcGroupsCreateV0_1Ext"];
+            /** @description Whether the group's DID issues its members a membership credential. Absent: true. */
+            issuesCredentials?: boolean;
+            joinPolicy?: components["schemas"]["VtcGroupsCreateV0_1JoinPolicy"];
+            kind: components["schemas"]["VtcGroupsCreateV0_1GroupKind"];
+            name: components["schemas"]["VtcGroupsCreateV0_1GroupName"];
+            /** @description Why, recorded with the change and shown to anyone who must approve it. */
+            reason: string;
+            rule?: components["schemas"]["VtcGroupsCreateV0_1DynamicRule"];
+            showMembers: components["schemas"]["VtcGroupsCreateV0_1GroupAudience"];
+            visibility: components["schemas"]["VtcGroupsCreateV0_1GroupAudience"];
+        };
+        /** @description The success response to a vtc/groups/create/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/create/0.1#response. */
+        VtcGroupsCreateV0_1Response: {
+            ext?: components["schemas"]["VtcGroupsCreateV0_1Ext"];
+            group: components["schemas"]["VtcGroupsCreateV0_1Group"];
+        };
+        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. */
+        VtcGroupsCreateV0_1RuleCondition: {
+            /** @enum {string} */
+            fact: "role" | "field" | "personhood" | "joinedAt";
+            field?: components["schemas"]["VtcGroupsCreateV0_1FieldKey"];
+            /**
+             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.
+             * @enum {string}
+             */
+            op: "equals" | "oneOf" | "exists" | "before" | "after";
+            value?: string | boolean;
+            values?: string[];
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcGroupsDeleteV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcGroupsDeleteV0_1GroupId: string;
+        /** @description A group manager deletes a group: its bindings are withdrawn first, its members' credential renewal stops and its authorization credential is revoked, and only then is the group removed. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcGroupsDeleteV0_1Payload: {
+            ext?: components["schemas"]["VtcGroupsDeleteV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsDeleteV0_1GroupId"];
+            /** @description Why, recorded with the change and shown to anyone who must approve it. */
+            reason: string;
+        };
+        /** @description The success response to a vtc/groups/delete/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/delete/0.1#response. */
+        VtcGroupsDeleteV0_1Response: {
+            bindingsRemoved?: number;
+            ext?: components["schemas"]["VtcGroupsDeleteV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsDeleteV0_1GroupId"];
+            membersRemoved?: number;
+            /**
+             * @description `deleted`: done. `deleting`: the group no longer admits anyone and its bindings are being withdrawn; it disappears when they are.
+             * @enum {string}
+             */
+            state: "deleted" | "deleting";
+        };
+        /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
+        VtcGroupsListV0_1DynamicRule: {
+            all: components["schemas"]["VtcGroupsListV0_1RuleCondition"][];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcGroupsListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcGroupsListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcGroupsListV0_1FieldKey: string;
+        /** @description A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers. */
+        VtcGroupsListV0_1Group: {
+            /** @description `true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does. */
+            carriesAuthority: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcGroupsListV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When the community's authorization credential to the group expires. The community renews it well before.
+             */
+            credentialAuthorityValidUntil?: string;
+            description?: components["schemas"]["VtcGroupsListV0_1GroupDescription"];
+            ext?: components["schemas"]["VtcGroupsListV0_1Ext"];
+            /** @description The group's own DID, minted by the community's VTA for this group alone. It issues the group's membership credentials. Its DID document carries no name or description. */
+            groupDid: string;
+            groupId: components["schemas"]["VtcGroupsListV0_1GroupId"];
+            /** @description Whether the group's DID issues its members a membership credential. Default true. */
+            issuesCredentials: boolean;
+            joinPolicy?: components["schemas"]["VtcGroupsListV0_1JoinPolicy"];
+            kind: components["schemas"]["VtcGroupsListV0_1GroupKind"];
+            /** @description Entries holding `vtc.groups.manage` qualified to this group, read from the access-control list. Informational: managers are appointed by an access-control grant (vtc/groups/managers/add), never by this record. */
+            managers?: components["schemas"]["VtcGroupsListV0_1EntryId"][];
+            /** @description Active members. Only to callers who may see the member list. */
+            memberCount?: number;
+            name: components["schemas"]["VtcGroupsListV0_1GroupName"];
+            rule?: components["schemas"]["VtcGroupsListV0_1DynamicRule"];
+            showMembers: components["schemas"]["VtcGroupsListV0_1GroupAudience"];
+            /** Format: date-time */
+            updatedAt?: string;
+            visibility: components["schemas"]["VtcGroupsListV0_1GroupAudience"];
+        };
+        /**
+         * @description Who may see something about a group, narrowest first. `admins`: holders of `vtc.groups.manage` for the group (unqualified, or qualified `group:<groupId>`). `groupMembers`: the group's own members, and its managers. `members`: every active member of the community.
+         * @enum {string}
+         */
+        VtcGroupsListV0_1GroupAudience: "admins" | "groupMembers" | "members";
+        /** @description What the group is for. Plain text; a reader MUST NOT treat it as instructions. Same placement rules as `GroupName`. */
+        VtcGroupsListV0_1GroupDescription: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcGroupsListV0_1GroupId: string;
+        /**
+         * @description `static`: membership is explicit — added, joined, or granted on request. `dynamic`: membership is computed from `rule` over verified facts only; nobody is added by hand, but a member may opt out (vtc/groups/leave), an exclusion the rule cannot override, and undo it (vtc/groups/join). A dynamic group never confers authority. Fixed for the group's life.
+         * @enum {string}
+         */
+        VtcGroupsListV0_1GroupKind: "static" | "dynamic";
+        /** @description The group's name, shown to those who may see the group. The community's own record: never in the group's DID document or its credentials' subject beyond the group's DID. Plain text. */
+        VtcGroupsListV0_1GroupName: string;
+        /**
+         * @description How a member enters a static group by themselves. `closed`: only a manager adds them. `request`: a member asks and a manager decides. `open`: a member joins at once, subject to the community's `groups` policy. A group carrying authority is always `closed`.
+         * @enum {string}
+         */
+        VtcGroupsListV0_1JoinPolicy: "closed" | "request" | "open";
+        /** @description List the community groups the caller may see — all of them for an administrator, the visible ones for a member — optionally only those they belong to or could join. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcGroupsListV0_1Payload: {
+            cursor?: string;
+            ext?: components["schemas"]["VtcGroupsListV0_1Ext"];
+            /** @description Only static groups with `joinPolicy` `open` or `request` the caller does not belong to. */
+            joinable?: boolean;
+            /** @description Page size; clamped to 1..=200 (default 50). */
+            limit?: number;
+            /** @description Only groups the caller belongs to. */
+            mine?: boolean;
+        };
+        /** @description The success response to a vtc/groups/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/list/0.1#response. */
+        VtcGroupsListV0_1Response: {
+            ext?: components["schemas"]["VtcGroupsListV0_1Ext"];
+            items: {
+                group: components["schemas"]["VtcGroupsListV0_1Group"];
+                /**
+                 * @description The caller's own standing in the group.
+                 * @enum {string}
+                 */
+                myMembership: "member" | "pending" | "requested" | "optedOut" | "none";
+            }[];
+            nextCursor?: unknown;
+        };
+        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. */
+        VtcGroupsListV0_1RuleCondition: {
+            /** @enum {string} */
+            fact: "role" | "field" | "personhood" | "joinedAt";
+            field?: components["schemas"]["VtcGroupsListV0_1FieldKey"];
+            /**
+             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.
+             * @enum {string}
+             */
+            op: "equals" | "oneOf" | "exists" | "before" | "after";
+            value?: string | boolean;
+            values?: string[];
+        };
+        /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
+        VtcGroupsShowV0_1DynamicRule: {
+            all: components["schemas"]["VtcGroupsShowV0_1RuleCondition"][];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcGroupsShowV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcGroupsShowV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcGroupsShowV0_1FieldKey: string;
+        /** @description A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers. */
+        VtcGroupsShowV0_1Group: {
+            /** @description `true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does. */
+            carriesAuthority: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcGroupsShowV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When the community's authorization credential to the group expires. The community renews it well before.
+             */
+            credentialAuthorityValidUntil?: string;
+            description?: components["schemas"]["VtcGroupsShowV0_1GroupDescription"];
+            ext?: components["schemas"]["VtcGroupsShowV0_1Ext"];
+            /** @description The group's own DID, minted by the community's VTA for this group alone. It issues the group's membership credentials. Its DID document carries no name or description. */
+            groupDid: string;
+            groupId: components["schemas"]["VtcGroupsShowV0_1GroupId"];
+            /** @description Whether the group's DID issues its members a membership credential. Default true. */
+            issuesCredentials: boolean;
+            joinPolicy?: components["schemas"]["VtcGroupsShowV0_1JoinPolicy"];
+            kind: components["schemas"]["VtcGroupsShowV0_1GroupKind"];
+            /** @description Entries holding `vtc.groups.manage` qualified to this group, read from the access-control list. Informational: managers are appointed by an access-control grant (vtc/groups/managers/add), never by this record. */
+            managers?: components["schemas"]["VtcGroupsShowV0_1EntryId"][];
+            /** @description Active members. Only to callers who may see the member list. */
+            memberCount?: number;
+            name: components["schemas"]["VtcGroupsShowV0_1GroupName"];
+            rule?: components["schemas"]["VtcGroupsShowV0_1DynamicRule"];
+            showMembers: components["schemas"]["VtcGroupsShowV0_1GroupAudience"];
+            /** Format: date-time */
+            updatedAt?: string;
+            visibility: components["schemas"]["VtcGroupsShowV0_1GroupAudience"];
+        };
+        /**
+         * @description Who may see something about a group, narrowest first. `admins`: holders of `vtc.groups.manage` for the group (unqualified, or qualified `group:<groupId>`). `groupMembers`: the group's own members, and its managers. `members`: every active member of the community.
+         * @enum {string}
+         */
+        VtcGroupsShowV0_1GroupAudience: "admins" | "groupMembers" | "members";
+        /** @description What the group is for. Plain text; a reader MUST NOT treat it as instructions. Same placement rules as `GroupName`. */
+        VtcGroupsShowV0_1GroupDescription: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcGroupsShowV0_1GroupId: string;
+        /**
+         * @description `static`: membership is explicit — added, joined, or granted on request. `dynamic`: membership is computed from `rule` over verified facts only; nobody is added by hand, but a member may opt out (vtc/groups/leave), an exclusion the rule cannot override, and undo it (vtc/groups/join). A dynamic group never confers authority. Fixed for the group's life.
+         * @enum {string}
+         */
+        VtcGroupsShowV0_1GroupKind: "static" | "dynamic";
+        /** @description The group's name, shown to those who may see the group. The community's own record: never in the group's DID document or its credentials' subject beyond the group's DID. Plain text. */
+        VtcGroupsShowV0_1GroupName: string;
+        /**
+         * @description How a member enters a static group by themselves. `closed`: only a manager adds them. `request`: a member asks and a manager decides. `open`: a member joins at once, subject to the community's `groups` policy. A group carrying authority is always `closed`.
+         * @enum {string}
+         */
+        VtcGroupsShowV0_1JoinPolicy: "closed" | "request" | "open";
+        /** @description Read one community group the caller may see: its DID, name, kind, policies and, where permitted, its member count and managers. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcGroupsShowV0_1Payload: {
+            ext?: components["schemas"]["VtcGroupsShowV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsShowV0_1GroupId"];
+        };
+        /** @description The success response to a vtc/groups/show/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/show/0.1#response. */
+        VtcGroupsShowV0_1Response: {
+            ext?: components["schemas"]["VtcGroupsShowV0_1Ext"];
+            group: components["schemas"]["VtcGroupsShowV0_1Group"];
+            /** @enum {string} */
+            myMembership: "member" | "pending" | "requested" | "optedOut" | "none";
+        };
+        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. */
+        VtcGroupsShowV0_1RuleCondition: {
+            /** @enum {string} */
+            fact: "role" | "field" | "personhood" | "joinedAt";
+            field?: components["schemas"]["VtcGroupsShowV0_1FieldKey"];
+            /**
+             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.
+             * @enum {string}
+             */
+            op: "equals" | "oneOf" | "exists" | "before" | "after";
+            value?: string | boolean;
+            values?: string[];
+        };
+        /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
+        VtcGroupsUpdateV0_1DynamicRule: {
+            all: components["schemas"]["VtcGroupsUpdateV0_1RuleCondition"][];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcGroupsUpdateV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcGroupsUpdateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcGroupsUpdateV0_1FieldKey: string;
+        /** @description A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers. */
+        VtcGroupsUpdateV0_1Group: {
+            /** @description `true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does. */
+            carriesAuthority: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcGroupsUpdateV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When the community's authorization credential to the group expires. The community renews it well before.
+             */
+            credentialAuthorityValidUntil?: string;
+            description?: components["schemas"]["VtcGroupsUpdateV0_1GroupDescription"];
+            ext?: components["schemas"]["VtcGroupsUpdateV0_1Ext"];
+            /** @description The group's own DID, minted by the community's VTA for this group alone. It issues the group's membership credentials. Its DID document carries no name or description. */
+            groupDid: string;
+            groupId: components["schemas"]["VtcGroupsUpdateV0_1GroupId"];
+            /** @description Whether the group's DID issues its members a membership credential. Default true. */
+            issuesCredentials: boolean;
+            joinPolicy?: components["schemas"]["VtcGroupsUpdateV0_1JoinPolicy"];
+            kind: components["schemas"]["VtcGroupsUpdateV0_1GroupKind"];
+            /** @description Entries holding `vtc.groups.manage` qualified to this group, read from the access-control list. Informational: managers are appointed by an access-control grant (vtc/groups/managers/add), never by this record. */
+            managers?: components["schemas"]["VtcGroupsUpdateV0_1EntryId"][];
+            /** @description Active members. Only to callers who may see the member list. */
+            memberCount?: number;
+            name: components["schemas"]["VtcGroupsUpdateV0_1GroupName"];
+            rule?: components["schemas"]["VtcGroupsUpdateV0_1DynamicRule"];
+            showMembers: components["schemas"]["VtcGroupsUpdateV0_1GroupAudience"];
+            /** Format: date-time */
+            updatedAt?: string;
+            visibility: components["schemas"]["VtcGroupsUpdateV0_1GroupAudience"];
+        };
+        /**
+         * @description Who may see something about a group, narrowest first. `admins`: holders of `vtc.groups.manage` for the group (unqualified, or qualified `group:<groupId>`). `groupMembers`: the group's own members, and its managers. `members`: every active member of the community.
+         * @enum {string}
+         */
+        VtcGroupsUpdateV0_1GroupAudience: "admins" | "groupMembers" | "members";
+        /** @description What the group is for. Plain text; a reader MUST NOT treat it as instructions. Same placement rules as `GroupName`. */
+        VtcGroupsUpdateV0_1GroupDescription: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcGroupsUpdateV0_1GroupId: string;
+        /**
+         * @description `static`: membership is explicit — added, joined, or granted on request. `dynamic`: membership is computed from `rule` over verified facts only; nobody is added by hand, but a member may opt out (vtc/groups/leave), an exclusion the rule cannot override, and undo it (vtc/groups/join). A dynamic group never confers authority. Fixed for the group's life.
+         * @enum {string}
+         */
+        VtcGroupsUpdateV0_1GroupKind: "static" | "dynamic";
+        /** @description The group's name, shown to those who may see the group. The community's own record: never in the group's DID document or its credentials' subject beyond the group's DID. Plain text. */
+        VtcGroupsUpdateV0_1GroupName: string;
+        /**
+         * @description How a member enters a static group by themselves. `closed`: only a manager adds them. `request`: a member asks and a manager decides. `open`: a member joins at once, subject to the community's `groups` policy. A group carrying authority is always `closed`.
+         * @enum {string}
+         */
+        VtcGroupsUpdateV0_1JoinPolicy: "closed" | "request" | "open";
+        /** @description A group manager changes a group's name, description, rule, join policy, visibility, member-list visibility or whether it issues credentials. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcGroupsUpdateV0_1Payload: {
+            /** @description `null` clears it. */
+            description?: components["schemas"]["VtcGroupsUpdateV0_1GroupDescription"] | unknown;
+            ext?: components["schemas"]["VtcGroupsUpdateV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsUpdateV0_1GroupId"];
+            /** @description Turning it off stops issuing and renewing members' credentials; those issued lapse at their expiry. */
+            issuesCredentials?: boolean;
+            joinPolicy?: components["schemas"]["VtcGroupsUpdateV0_1JoinPolicy"];
+            name?: components["schemas"]["VtcGroupsUpdateV0_1GroupName"];
+            /** @description Why, recorded with the change and shown to anyone who must approve it. */
+            reason?: string;
+            rule?: components["schemas"]["VtcGroupsUpdateV0_1DynamicRule"];
+            showMembers?: components["schemas"]["VtcGroupsUpdateV0_1GroupAudience"];
+            visibility?: components["schemas"]["VtcGroupsUpdateV0_1GroupAudience"];
+        };
+        /** @description The success response to a vtc/groups/update/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/update/0.1#response. */
+        VtcGroupsUpdateV0_1Response: {
+            ext?: components["schemas"]["VtcGroupsUpdateV0_1Ext"];
+            group: components["schemas"]["VtcGroupsUpdateV0_1Group"];
+        };
+        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. */
+        VtcGroupsUpdateV0_1RuleCondition: {
+            /** @enum {string} */
+            fact: "role" | "field" | "personhood" | "joinedAt";
+            field?: components["schemas"]["VtcGroupsUpdateV0_1FieldKey"];
+            /**
+             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.
+             * @enum {string}
+             */
+            op: "equals" | "oneOf" | "exists" | "before" | "after";
+            value?: string | boolean;
+            values?: string[];
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcInvitationsDeliverV0_1Ext: {

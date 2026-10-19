@@ -112,13 +112,17 @@ const DEFAULT_SOURCES: &[(PolicyPurpose, &str)] = &[
         PolicyPurpose::DirectoryWrite,
         include_str!("../../policies/default/directory_write.rego"),
     ),
+    (
+        PolicyPurpose::Groups,
+        include_str!("../../policies/default/groups.rego"),
+    ),
 ];
 
 /// Number of purposes the workspace ships defaults for. Asserted
 /// against [`PolicyPurpose::ALL`] at test time so a missed entry in
 /// `DEFAULT_SOURCES` surfaces as a build-time-ish failure rather
 /// than a silent runtime gap.
-pub const DEFAULT_COUNT: usize = 15;
+pub const DEFAULT_COUNT: usize = 16;
 
 /// Return the embedded default source for `purpose`. Useful to the
 /// admin UX layer that wants to show "reset to default" diffs

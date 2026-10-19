@@ -627,6 +627,11 @@ pub enum AuditEvent {
     /// [`AuditSeverity::Critical`], with the reason given and how much left.
     DirectoryExported(DirectoryExportedData),
 
+    /// A community group was created, changed or deleted (`vtc/groups/*`). By
+    /// reference: the group, what changed and the reason given — never a name
+    /// or description.
+    GroupChanged(GroupChangedData),
+
     /// An admin changed whether the join manifest answers a caller the
     /// community cannot identify (`PUT /v1/community/join-discovery`).
     ///
@@ -1144,6 +1149,7 @@ impl AuditEvent {
             Self::DirectoryImageStored(..) => "DirectoryImageStored",
             Self::DirectoryNoteAccessed(..) => "DirectoryNoteAccessed",
             Self::DirectoryExported(..) => "DirectoryExported",
+            Self::GroupChanged(..) => "GroupChanged",
             Self::CommunityJoinDiscoveryUpdated(..) => "CommunityJoinDiscoveryUpdated",
             Self::CommunityRequestedAttributesUpdated(..) => "CommunityRequestedAttributesUpdated",
             Self::EndorsementTypeRegistered(..) => "EndorsementTypeRegistered",
@@ -2735,6 +2741,20 @@ pub struct DirectoryNoteAccessData {
     pub count: Option<usize>,
 }
 
+/// Payload for [`AuditEvent::GroupChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupChangedData {
+    pub group_id: String,
+    /// `created`, `updated` or `deleted`.
+    pub change: String,
+    /// The settings an update named, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Payload for [`AuditEvent::DirectoryExported`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -4266,6 +4286,15 @@ mod tests {
                     count: 3,
                 }),
                 "DirectoryExported",
+            ),
+            (
+                AuditEvent::GroupChanged(GroupChangedData {
+                    group_id: "grp_AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    change: "created".into(),
+                    fields: Vec::new(),
+                    reason: Some("the working group starts".into()),
+                }),
+                "GroupChanged",
             ),
             (
                 AuditEvent::DirectoryImageStored(DirectoryImageStoredData {

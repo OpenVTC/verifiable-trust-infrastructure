@@ -173,6 +173,16 @@ use crate::server::AppState;
         vta_sdk::openapi::DirectoryCardPublish01Response,
         vta_sdk::openapi::DirectoryCardPublic01Payload,
         vta_sdk::openapi::DirectoryCardPublic01Response,
+        vta_sdk::openapi::GroupsCreate01Payload,
+        vta_sdk::openapi::GroupsCreate01Response,
+        vta_sdk::openapi::GroupsUpdate01Payload,
+        vta_sdk::openapi::GroupsUpdate01Response,
+        vta_sdk::openapi::GroupsDelete01Payload,
+        vta_sdk::openapi::GroupsDelete01Response,
+        vta_sdk::openapi::GroupsList01Payload,
+        vta_sdk::openapi::GroupsList01Response,
+        vta_sdk::openapi::GroupsShow01Payload,
+        vta_sdk::openapi::GroupsShow01Response,
         vta_sdk::openapi::DirectoryCardPresent01Payload,
         vta_sdk::openapi::DirectoryCardPresent01Response,
         vta_sdk::openapi::DirectoryNotesAppend01Payload,
@@ -1136,6 +1146,10 @@ fn assemble(routing: &RoutingConfig, api: Router<AppState>) -> Router<AppState> 
             "/room-dids/{id}/did.jsonl",
             get(crate::rooms::community::serve_room_did_log),
         )
+        .route(
+            "/group-dids/{id}/did.jsonl",
+            get(crate::groups::identity::serve_group_did_log),
+        )
         // API surface — existing TrustTaskRouter result nested at
         // the configured mount.
         .nest(&routing.api.mount, api);
@@ -1247,6 +1261,10 @@ pub fn assemble_with_website(
         .route(
             "/room-dids/{id}/did.jsonl",
             get(crate::rooms::community::serve_room_did_log),
+        )
+        .route(
+            "/group-dids/{id}/did.jsonl",
+            get(crate::groups::identity::serve_group_did_log),
         )
         .nest(&routing.api.mount, api);
     app = app.nest(&routing.admin_ui.mount, admin);

@@ -4437,7 +4437,7 @@
       },
       "PolicyPurpose": {
         "type": "string",
-        "description": "What a policy decides. The keyspace `active_policies:<purpose>`\nhas at most one row per variant; the active pointer is a\nper-purpose singleton.\n\nWire shape is `camelCase` ASCII (`join`, `removal`,\n`crossCommunityRoles`) — operators wire purposes into REST\npayloads + the policies CLI verbs.\n\nThe workspace ships twelve purposes (spec §7.1 names the first ten). They\nsplit into five groups:\n- **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],\n  [`Self::Personhood`].\n- **Discoverability**: [`Self::Registry`], [`Self::Directory`],\n  [`Self::DirectoryWrite`].\n- **Authorization**: [`Self::RoleDefinitions`], [`Self::RoleChange`],\n  [`Self::CrossCommunityRoles`],\n  [`Self::CrossCommunityRelationships`], [`Self::Relationships`].\n- **Hosting**: [`Self::Rooms`].\n- **Vetting**: [`Self::VetterEligibility`].",
+        "description": "What a policy decides. The keyspace `active_policies:<purpose>`\nhas at most one row per variant; the active pointer is a\nper-purpose singleton.\n\nWire shape is `camelCase` ASCII (`join`, `removal`,\n`crossCommunityRoles`) — operators wire purposes into REST\npayloads + the policies CLI verbs.\n\nThe workspace ships twelve purposes (spec §7.1 names the first ten). They\nsplit into five groups:\n- **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],\n  [`Self::Personhood`].\n- **Discoverability**: [`Self::Registry`], [`Self::Directory`],\n  [`Self::DirectoryWrite`].\n- **Authorization**: [`Self::RoleDefinitions`], [`Self::RoleChange`],\n  [`Self::CrossCommunityRoles`],\n  [`Self::CrossCommunityRelationships`], [`Self::Relationships`].\n- **Hosting**: [`Self::Rooms`].\n- **Organising**: [`Self::Groups`].\n- **Vetting**: [`Self::VetterEligibility`].",
         "enum": [
           "join",
           "removal",
@@ -4453,7 +4453,8 @@
           "vetterEligibility",
           "gitNamespace",
           "admission",
-          "directoryWrite"
+          "directoryWrite",
+          "groups"
         ]
       },
       "PolicyStatusFilter": {
@@ -5716,7 +5717,7 @@
             "anyOf": [
               {
                 "type": "object",
-                "description": "A W3C Verifiable Presentation with a Data Integrity proof whose `challenge` is this document's `id` and whose `domain` is the community's DID."
+                "description": "A W3C Verifiable Presentation whose `nonce` is this document's `id` and whose `domain` is the community's DID, both signed by its holder's Data Integrity proof."
               },
               {
                 "type": "string",
@@ -5841,7 +5842,7 @@
       },
       "VtcDirectoryCardPublicV0_1PublishedCard": {
         "type": "object",
-        "description": "A member's external card: a JSContact `Card` (RFC 9553) holding exactly their values whose visibility is `public`, mapped as `JSContactCard` maps them, with the member's W3C Data Integrity `proof`. The community serves it as received and never signs, composes or edits it (VTI-REG-004 item 4).\n\nCarried as an open object, and deliberately so: the proof covers every member of the card, and a typed binding that kept only the members named here would drop the rest and break the signature. So this schema constrains none of its members, and a consumer MUST check them itself: `@type`, `version`, `uid` and `proof` are present; `@type` is `Card`; `version` is `1.0`; `uid` is `urn:vtc-directory:<EntryId>`; `proof` is a `DataIntegrityProof` with `cryptosuite` `eddsa-jcs-2022` or `ecdsa-jcs-2019`, `proofPurpose` `assertionMethod`, and a `verificationMethod` of the member's membership DID authorized for `assertionMethod`; and the proof verifies over the card without it, before any member is relied on.",
+        "description": "A member's external card: a JSContact `Card` (RFC 9553) holding exactly their values whose visibility is `public`, mapped as `JSContactCard` maps them, with the member's W3C Data Integrity `proof`. The community serves it as received and never signs, composes or edits it (VTI-REG-004 item 4).\n\nCarried as an open object, and deliberately so: the proof covers every member of the card, and a typed binding that kept only the members named here would drop the rest and break the signature. So this schema constrains none of its members, and a consumer MUST check them itself: `@type`, `version`, `uid`, `issuer` and `proof` are present; `@type` is `Card`; `version` is `1.0`; `uid` is `urn:vtc-directory:<EntryId>`; `issuer` is the member's membership DID; `proof` is a `DataIntegrityProof` with `cryptosuite` `eddsa-jcs-2022` or `ecdsa-jcs-2019`, `proofPurpose` `assertionMethod`, and a `verificationMethod` of the member's membership DID authorized for `assertionMethod`; and the proof verifies over the card without it, before any member is relied on.",
         "additionalProperties": true
       },
       "VtcDirectoryCardPublicV0_1Response": {
@@ -5929,7 +5930,7 @@
       },
       "VtcDirectoryCardPublishV0_1PublishedCard": {
         "type": "object",
-        "description": "A member's external card: a JSContact `Card` (RFC 9553) holding exactly their values whose visibility is `public`, mapped as `JSContactCard` maps them, with the member's W3C Data Integrity `proof`. The community serves it as received and never signs, composes or edits it (VTI-REG-004 item 4).\n\nCarried as an open object, and deliberately so: the proof covers every member of the card, and a typed binding that kept only the members named here would drop the rest and break the signature. So this schema constrains none of its members, and a consumer MUST check them itself: `@type`, `version`, `uid` and `proof` are present; `@type` is `Card`; `version` is `1.0`; `uid` is `urn:vtc-directory:<EntryId>`; `proof` is a `DataIntegrityProof` with `cryptosuite` `eddsa-jcs-2022` or `ecdsa-jcs-2019`, `proofPurpose` `assertionMethod`, and a `verificationMethod` of the member's membership DID authorized for `assertionMethod`; and the proof verifies over the card without it, before any member is relied on.",
+        "description": "A member's external card: a JSContact `Card` (RFC 9553) holding exactly their values whose visibility is `public`, mapped as `JSContactCard` maps them, with the member's W3C Data Integrity `proof`. The community serves it as received and never signs, composes or edits it (VTI-REG-004 item 4).\n\nCarried as an open object, and deliberately so: the proof covers every member of the card, and a typed binding that kept only the members named here would drop the rest and break the signature. So this schema constrains none of its members, and a consumer MUST check them itself: `@type`, `version`, `uid`, `issuer` and `proof` are present; `@type` is `Card`; `version` is `1.0`; `uid` is `urn:vtc-directory:<EntryId>`; `issuer` is the member's membership DID; `proof` is a `DataIntegrityProof` with `cryptosuite` `eddsa-jcs-2022` or `ecdsa-jcs-2019`, `proofPurpose` `assertionMethod`, and a `verificationMethod` of the member's membership DID authorized for `assertionMethod`; and the proof verifies over the card without it, before any member is relied on.",
         "additionalProperties": true
       },
       "VtcDirectoryCardPublishV0_1Response": {
@@ -9377,6 +9378,1207 @@
           "typeUri": {
             "type": "string",
             "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsCreateV0_1DynamicRule": {
+        "type": "object",
+        "description": "A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries.",
+        "required": [
+          "all"
+        ],
+        "properties": {
+          "all": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcGroupsCreateV0_1RuleCondition"
+            },
+            "maxItems": 16,
+            "minItems": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsCreateV0_1EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcGroupsCreateV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcGroupsCreateV0_1FieldKey": {
+        "type": "string",
+        "description": "Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined.",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^([a-z][a-z0-9-]*\\.)*[a-z][a-zA-Z0-9]{0,63}$"
+      },
+      "VtcGroupsCreateV0_1Group": {
+        "type": "object",
+        "description": "A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers.",
+        "required": [
+          "groupId",
+          "groupDid",
+          "name",
+          "kind",
+          "visibility",
+          "showMembers",
+          "issuesCredentials",
+          "carriesAuthority",
+          "createdAt"
+        ],
+        "properties": {
+          "carriesAuthority": {
+            "type": "boolean",
+            "description": "`true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1EntryId"
+          },
+          "credentialAuthorityValidUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community's authorization credential to the group expires. The community renews it well before."
+          },
+          "description": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1GroupDescription"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1Ext"
+          },
+          "groupDid": {
+            "type": "string",
+            "description": "The group's own DID, minted by the community's VTA for this group alone. It issues the group's membership credentials. Its DID document carries no name or description.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "groupId": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1GroupId"
+          },
+          "issuesCredentials": {
+            "type": "boolean",
+            "description": "Whether the group's DID issues its members a membership credential. Default true."
+          },
+          "joinPolicy": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1JoinPolicy"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1GroupKind"
+          },
+          "managers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcGroupsCreateV0_1EntryId"
+            },
+            "description": "Entries holding `vtc.groups.manage` qualified to this group, read from the access-control list. Informational: managers are appointed by an access-control grant (vtc/groups/managers/add), never by this record.",
+            "maxItems": 256,
+            "uniqueItems": true
+          },
+          "memberCount": {
+            "type": "integer",
+            "description": "Active members. Only to callers who may see the member list.",
+            "minimum": 0
+          },
+          "name": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1GroupName"
+          },
+          "rule": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1DynamicRule"
+          },
+          "showMembers": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1GroupAudience"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1GroupAudience"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsCreateV0_1GroupAudience": {
+        "type": "string",
+        "description": "Who may see something about a group, narrowest first. `admins`: holders of `vtc.groups.manage` for the group (unqualified, or qualified `group:<groupId>`). `groupMembers`: the group's own members, and its managers. `members`: every active member of the community.",
+        "enum": [
+          "admins",
+          "groupMembers",
+          "members"
+        ]
+      },
+      "VtcGroupsCreateV0_1GroupDescription": {
+        "type": "string",
+        "description": "What the group is for. Plain text; a reader MUST NOT treat it as instructions. Same placement rules as `GroupName`.",
+        "maxLength": 1000,
+        "minLength": 1
+      },
+      "VtcGroupsCreateV0_1GroupId": {
+        "type": "string",
+        "description": "Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID.",
+        "pattern": "^grp_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcGroupsCreateV0_1GroupKind": {
+        "type": "string",
+        "description": "`static`: membership is explicit — added, joined, or granted on request. `dynamic`: membership is computed from `rule` over verified facts only; nobody is added by hand, but a member may opt out (vtc/groups/leave), an exclusion the rule cannot override, and undo it (vtc/groups/join). A dynamic group never confers authority. Fixed for the group's life.",
+        "enum": [
+          "static",
+          "dynamic"
+        ]
+      },
+      "VtcGroupsCreateV0_1GroupName": {
+        "type": "string",
+        "description": "The group's name, shown to those who may see the group. The community's own record: never in the group's DID document or its credentials' subject beyond the group's DID. Plain text.",
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "VtcGroupsCreateV0_1JoinPolicy": {
+        "type": "string",
+        "description": "How a member enters a static group by themselves. `closed`: only a manager adds them. `request`: a member asks and a manager decides. `open`: a member joins at once, subject to the community's `groups` policy. A group carrying authority is always `closed`.",
+        "enum": [
+          "closed",
+          "request",
+          "open"
+        ]
+      },
+      "VtcGroupsCreateV0_1Payload": {
+        "type": "object",
+        "description": "An administrator creates a community group: the community's VTA mints the group's own DID and, where it issues credentials, the community authorises it to issue membership credentials; the group is recorded only afterwards. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "name",
+          "kind",
+          "visibility",
+          "showMembers",
+          "reason"
+        ],
+        "properties": {
+          "description": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1GroupDescription"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1Ext"
+          },
+          "issuesCredentials": {
+            "type": "boolean",
+            "description": "Whether the group's DID issues its members a membership credential. Absent: true."
+          },
+          "joinPolicy": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1JoinPolicy"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1GroupKind"
+          },
+          "name": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1GroupName"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why, recorded with the change and shown to anyone who must approve it.",
+            "maxLength": 1024,
+            "minLength": 1
+          },
+          "rule": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1DynamicRule"
+          },
+          "showMembers": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1GroupAudience"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1GroupAudience"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsCreateV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/groups/create/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/create/0.1#response.",
+        "required": [
+          "group"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1Ext"
+          },
+          "group": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1Group"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsCreateV0_1RuleCondition": {
+        "type": "object",
+        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card.",
+        "required": [
+          "fact",
+          "op"
+        ],
+        "properties": {
+          "fact": {
+            "type": "string",
+            "enum": [
+              "role",
+              "field",
+              "personhood",
+              "joinedAt"
+            ]
+          },
+          "field": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1FieldKey"
+          },
+          "op": {
+            "type": "string",
+            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.",
+            "enum": [
+              "equals",
+              "oneOf",
+              "exists",
+              "before",
+              "after"
+            ]
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "maxItems": 64,
+            "minItems": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsDeleteV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcGroupsDeleteV0_1GroupId": {
+        "type": "string",
+        "description": "Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID.",
+        "pattern": "^grp_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcGroupsDeleteV0_1Payload": {
+        "type": "object",
+        "description": "A group manager deletes a group: its bindings are withdrawn first, its members' credential renewal stops and its authorization credential is revoked, and only then is the group removed. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "groupId",
+          "reason"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsDeleteV0_1Ext"
+          },
+          "groupId": {
+            "$ref": "#/components/schemas/VtcGroupsDeleteV0_1GroupId"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why, recorded with the change and shown to anyone who must approve it.",
+            "maxLength": 1024,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsDeleteV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/groups/delete/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/delete/0.1#response.",
+        "required": [
+          "groupId",
+          "state"
+        ],
+        "properties": {
+          "bindingsRemoved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsDeleteV0_1Ext"
+          },
+          "groupId": {
+            "$ref": "#/components/schemas/VtcGroupsDeleteV0_1GroupId"
+          },
+          "membersRemoved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "`deleted`: done. `deleting`: the group no longer admits anyone and its bindings are being withdrawn; it disappears when they are.",
+            "enum": [
+              "deleted",
+              "deleting"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsListV0_1DynamicRule": {
+        "type": "object",
+        "description": "A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries.",
+        "required": [
+          "all"
+        ],
+        "properties": {
+          "all": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcGroupsListV0_1RuleCondition"
+            },
+            "maxItems": 16,
+            "minItems": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsListV0_1EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcGroupsListV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcGroupsListV0_1FieldKey": {
+        "type": "string",
+        "description": "Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined.",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^([a-z][a-z0-9-]*\\.)*[a-z][a-zA-Z0-9]{0,63}$"
+      },
+      "VtcGroupsListV0_1Group": {
+        "type": "object",
+        "description": "A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers.",
+        "required": [
+          "groupId",
+          "groupDid",
+          "name",
+          "kind",
+          "visibility",
+          "showMembers",
+          "issuesCredentials",
+          "carriesAuthority",
+          "createdAt"
+        ],
+        "properties": {
+          "carriesAuthority": {
+            "type": "boolean",
+            "description": "`true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "$ref": "#/components/schemas/VtcGroupsListV0_1EntryId"
+          },
+          "credentialAuthorityValidUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community's authorization credential to the group expires. The community renews it well before."
+          },
+          "description": {
+            "$ref": "#/components/schemas/VtcGroupsListV0_1GroupDescription"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsListV0_1Ext"
+          },
+          "groupDid": {
+            "type": "string",
+            "description": "The group's own DID, minted by the community's VTA for this group alone. It issues the group's membership credentials. Its DID document carries no name or description.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "groupId": {
+            "$ref": "#/components/schemas/VtcGroupsListV0_1GroupId"
+          },
+          "issuesCredentials": {
+            "type": "boolean",
+            "description": "Whether the group's DID issues its members a membership credential. Default true."
+          },
+          "joinPolicy": {
+            "$ref": "#/components/schemas/VtcGroupsListV0_1JoinPolicy"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/VtcGroupsListV0_1GroupKind"
+          },
+          "managers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcGroupsListV0_1EntryId"
+            },
+            "description": "Entries holding `vtc.groups.manage` qualified to this group, read from the access-control list. Informational: managers are appointed by an access-control grant (vtc/groups/managers/add), never by this record.",
+            "maxItems": 256,
+            "uniqueItems": true
+          },
+          "memberCount": {
+            "type": "integer",
+            "description": "Active members. Only to callers who may see the member list.",
+            "minimum": 0
+          },
+          "name": {
+            "$ref": "#/components/schemas/VtcGroupsListV0_1GroupName"
+          },
+          "rule": {
+            "$ref": "#/components/schemas/VtcGroupsListV0_1DynamicRule"
+          },
+          "showMembers": {
+            "$ref": "#/components/schemas/VtcGroupsListV0_1GroupAudience"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/VtcGroupsListV0_1GroupAudience"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsListV0_1GroupAudience": {
+        "type": "string",
+        "description": "Who may see something about a group, narrowest first. `admins`: holders of `vtc.groups.manage` for the group (unqualified, or qualified `group:<groupId>`). `groupMembers`: the group's own members, and its managers. `members`: every active member of the community.",
+        "enum": [
+          "admins",
+          "groupMembers",
+          "members"
+        ]
+      },
+      "VtcGroupsListV0_1GroupDescription": {
+        "type": "string",
+        "description": "What the group is for. Plain text; a reader MUST NOT treat it as instructions. Same placement rules as `GroupName`.",
+        "maxLength": 1000,
+        "minLength": 1
+      },
+      "VtcGroupsListV0_1GroupId": {
+        "type": "string",
+        "description": "Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID.",
+        "pattern": "^grp_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcGroupsListV0_1GroupKind": {
+        "type": "string",
+        "description": "`static`: membership is explicit — added, joined, or granted on request. `dynamic`: membership is computed from `rule` over verified facts only; nobody is added by hand, but a member may opt out (vtc/groups/leave), an exclusion the rule cannot override, and undo it (vtc/groups/join). A dynamic group never confers authority. Fixed for the group's life.",
+        "enum": [
+          "static",
+          "dynamic"
+        ]
+      },
+      "VtcGroupsListV0_1GroupName": {
+        "type": "string",
+        "description": "The group's name, shown to those who may see the group. The community's own record: never in the group's DID document or its credentials' subject beyond the group's DID. Plain text.",
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "VtcGroupsListV0_1JoinPolicy": {
+        "type": "string",
+        "description": "How a member enters a static group by themselves. `closed`: only a manager adds them. `request`: a member asks and a manager decides. `open`: a member joins at once, subject to the community's `groups` policy. A group carrying authority is always `closed`.",
+        "enum": [
+          "closed",
+          "request",
+          "open"
+        ]
+      },
+      "VtcGroupsListV0_1Payload": {
+        "type": "object",
+        "description": "List the community groups the caller may see — all of them for an administrator, the visible ones for a member — optionally only those they belong to or could join. The outer document members are owned by the framework — SPEC §6.3.",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsListV0_1Ext"
+          },
+          "joinable": {
+            "type": "boolean",
+            "description": "Only static groups with `joinPolicy` `open` or `request` the caller does not belong to."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size; clamped to 1..=200 (default 50).",
+            "maximum": 200,
+            "minimum": 1
+          },
+          "mine": {
+            "type": "boolean",
+            "description": "Only groups the caller belongs to."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsListV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/groups/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/list/0.1#response.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsListV0_1Ext"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "group",
+                "myMembership"
+              ],
+              "properties": {
+                "group": {
+                  "$ref": "#/components/schemas/VtcGroupsListV0_1Group"
+                },
+                "myMembership": {
+                  "type": "string",
+                  "description": "The caller's own standing in the group.",
+                  "enum": [
+                    "member",
+                    "pending",
+                    "requested",
+                    "optedOut",
+                    "none"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "maxItems": 200
+          },
+          "nextCursor": {
+            "maxLength": 1024
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsListV0_1RuleCondition": {
+        "type": "object",
+        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card.",
+        "required": [
+          "fact",
+          "op"
+        ],
+        "properties": {
+          "fact": {
+            "type": "string",
+            "enum": [
+              "role",
+              "field",
+              "personhood",
+              "joinedAt"
+            ]
+          },
+          "field": {
+            "$ref": "#/components/schemas/VtcGroupsListV0_1FieldKey"
+          },
+          "op": {
+            "type": "string",
+            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.",
+            "enum": [
+              "equals",
+              "oneOf",
+              "exists",
+              "before",
+              "after"
+            ]
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "maxItems": 64,
+            "minItems": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsShowV0_1DynamicRule": {
+        "type": "object",
+        "description": "A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries.",
+        "required": [
+          "all"
+        ],
+        "properties": {
+          "all": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcGroupsShowV0_1RuleCondition"
+            },
+            "maxItems": 16,
+            "minItems": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsShowV0_1EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcGroupsShowV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcGroupsShowV0_1FieldKey": {
+        "type": "string",
+        "description": "Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined.",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^([a-z][a-z0-9-]*\\.)*[a-z][a-zA-Z0-9]{0,63}$"
+      },
+      "VtcGroupsShowV0_1Group": {
+        "type": "object",
+        "description": "A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers.",
+        "required": [
+          "groupId",
+          "groupDid",
+          "name",
+          "kind",
+          "visibility",
+          "showMembers",
+          "issuesCredentials",
+          "carriesAuthority",
+          "createdAt"
+        ],
+        "properties": {
+          "carriesAuthority": {
+            "type": "boolean",
+            "description": "`true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1EntryId"
+          },
+          "credentialAuthorityValidUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community's authorization credential to the group expires. The community renews it well before."
+          },
+          "description": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1GroupDescription"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1Ext"
+          },
+          "groupDid": {
+            "type": "string",
+            "description": "The group's own DID, minted by the community's VTA for this group alone. It issues the group's membership credentials. Its DID document carries no name or description.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "groupId": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1GroupId"
+          },
+          "issuesCredentials": {
+            "type": "boolean",
+            "description": "Whether the group's DID issues its members a membership credential. Default true."
+          },
+          "joinPolicy": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1JoinPolicy"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1GroupKind"
+          },
+          "managers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcGroupsShowV0_1EntryId"
+            },
+            "description": "Entries holding `vtc.groups.manage` qualified to this group, read from the access-control list. Informational: managers are appointed by an access-control grant (vtc/groups/managers/add), never by this record.",
+            "maxItems": 256,
+            "uniqueItems": true
+          },
+          "memberCount": {
+            "type": "integer",
+            "description": "Active members. Only to callers who may see the member list.",
+            "minimum": 0
+          },
+          "name": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1GroupName"
+          },
+          "rule": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1DynamicRule"
+          },
+          "showMembers": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1GroupAudience"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1GroupAudience"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsShowV0_1GroupAudience": {
+        "type": "string",
+        "description": "Who may see something about a group, narrowest first. `admins`: holders of `vtc.groups.manage` for the group (unqualified, or qualified `group:<groupId>`). `groupMembers`: the group's own members, and its managers. `members`: every active member of the community.",
+        "enum": [
+          "admins",
+          "groupMembers",
+          "members"
+        ]
+      },
+      "VtcGroupsShowV0_1GroupDescription": {
+        "type": "string",
+        "description": "What the group is for. Plain text; a reader MUST NOT treat it as instructions. Same placement rules as `GroupName`.",
+        "maxLength": 1000,
+        "minLength": 1
+      },
+      "VtcGroupsShowV0_1GroupId": {
+        "type": "string",
+        "description": "Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID.",
+        "pattern": "^grp_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcGroupsShowV0_1GroupKind": {
+        "type": "string",
+        "description": "`static`: membership is explicit — added, joined, or granted on request. `dynamic`: membership is computed from `rule` over verified facts only; nobody is added by hand, but a member may opt out (vtc/groups/leave), an exclusion the rule cannot override, and undo it (vtc/groups/join). A dynamic group never confers authority. Fixed for the group's life.",
+        "enum": [
+          "static",
+          "dynamic"
+        ]
+      },
+      "VtcGroupsShowV0_1GroupName": {
+        "type": "string",
+        "description": "The group's name, shown to those who may see the group. The community's own record: never in the group's DID document or its credentials' subject beyond the group's DID. Plain text.",
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "VtcGroupsShowV0_1JoinPolicy": {
+        "type": "string",
+        "description": "How a member enters a static group by themselves. `closed`: only a manager adds them. `request`: a member asks and a manager decides. `open`: a member joins at once, subject to the community's `groups` policy. A group carrying authority is always `closed`.",
+        "enum": [
+          "closed",
+          "request",
+          "open"
+        ]
+      },
+      "VtcGroupsShowV0_1Payload": {
+        "type": "object",
+        "description": "Read one community group the caller may see: its DID, name, kind, policies and, where permitted, its member count and managers. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "groupId"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1Ext"
+          },
+          "groupId": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1GroupId"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsShowV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/groups/show/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/show/0.1#response.",
+        "required": [
+          "group",
+          "myMembership"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1Ext"
+          },
+          "group": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1Group"
+          },
+          "myMembership": {
+            "type": "string",
+            "enum": [
+              "member",
+              "pending",
+              "requested",
+              "optedOut",
+              "none"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsShowV0_1RuleCondition": {
+        "type": "object",
+        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card.",
+        "required": [
+          "fact",
+          "op"
+        ],
+        "properties": {
+          "fact": {
+            "type": "string",
+            "enum": [
+              "role",
+              "field",
+              "personhood",
+              "joinedAt"
+            ]
+          },
+          "field": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1FieldKey"
+          },
+          "op": {
+            "type": "string",
+            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.",
+            "enum": [
+              "equals",
+              "oneOf",
+              "exists",
+              "before",
+              "after"
+            ]
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "maxItems": 64,
+            "minItems": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsUpdateV0_1DynamicRule": {
+        "type": "object",
+        "description": "A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries.",
+        "required": [
+          "all"
+        ],
+        "properties": {
+          "all": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcGroupsUpdateV0_1RuleCondition"
+            },
+            "maxItems": 16,
+            "minItems": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsUpdateV0_1EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcGroupsUpdateV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcGroupsUpdateV0_1FieldKey": {
+        "type": "string",
+        "description": "Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined.",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^([a-z][a-z0-9-]*\\.)*[a-z][a-zA-Z0-9]{0,63}$"
+      },
+      "VtcGroupsUpdateV0_1Group": {
+        "type": "object",
+        "description": "A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers.",
+        "required": [
+          "groupId",
+          "groupDid",
+          "name",
+          "kind",
+          "visibility",
+          "showMembers",
+          "issuesCredentials",
+          "carriesAuthority",
+          "createdAt"
+        ],
+        "properties": {
+          "carriesAuthority": {
+            "type": "boolean",
+            "description": "`true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1EntryId"
+          },
+          "credentialAuthorityValidUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community's authorization credential to the group expires. The community renews it well before."
+          },
+          "description": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1GroupDescription"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1Ext"
+          },
+          "groupDid": {
+            "type": "string",
+            "description": "The group's own DID, minted by the community's VTA for this group alone. It issues the group's membership credentials. Its DID document carries no name or description.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "groupId": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1GroupId"
+          },
+          "issuesCredentials": {
+            "type": "boolean",
+            "description": "Whether the group's DID issues its members a membership credential. Default true."
+          },
+          "joinPolicy": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1JoinPolicy"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1GroupKind"
+          },
+          "managers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcGroupsUpdateV0_1EntryId"
+            },
+            "description": "Entries holding `vtc.groups.manage` qualified to this group, read from the access-control list. Informational: managers are appointed by an access-control grant (vtc/groups/managers/add), never by this record.",
+            "maxItems": 256,
+            "uniqueItems": true
+          },
+          "memberCount": {
+            "type": "integer",
+            "description": "Active members. Only to callers who may see the member list.",
+            "minimum": 0
+          },
+          "name": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1GroupName"
+          },
+          "rule": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1DynamicRule"
+          },
+          "showMembers": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1GroupAudience"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1GroupAudience"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsUpdateV0_1GroupAudience": {
+        "type": "string",
+        "description": "Who may see something about a group, narrowest first. `admins`: holders of `vtc.groups.manage` for the group (unqualified, or qualified `group:<groupId>`). `groupMembers`: the group's own members, and its managers. `members`: every active member of the community.",
+        "enum": [
+          "admins",
+          "groupMembers",
+          "members"
+        ]
+      },
+      "VtcGroupsUpdateV0_1GroupDescription": {
+        "type": "string",
+        "description": "What the group is for. Plain text; a reader MUST NOT treat it as instructions. Same placement rules as `GroupName`.",
+        "maxLength": 1000,
+        "minLength": 1
+      },
+      "VtcGroupsUpdateV0_1GroupId": {
+        "type": "string",
+        "description": "Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID.",
+        "pattern": "^grp_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcGroupsUpdateV0_1GroupKind": {
+        "type": "string",
+        "description": "`static`: membership is explicit — added, joined, or granted on request. `dynamic`: membership is computed from `rule` over verified facts only; nobody is added by hand, but a member may opt out (vtc/groups/leave), an exclusion the rule cannot override, and undo it (vtc/groups/join). A dynamic group never confers authority. Fixed for the group's life.",
+        "enum": [
+          "static",
+          "dynamic"
+        ]
+      },
+      "VtcGroupsUpdateV0_1GroupName": {
+        "type": "string",
+        "description": "The group's name, shown to those who may see the group. The community's own record: never in the group's DID document or its credentials' subject beyond the group's DID. Plain text.",
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "VtcGroupsUpdateV0_1JoinPolicy": {
+        "type": "string",
+        "description": "How a member enters a static group by themselves. `closed`: only a manager adds them. `request`: a member asks and a manager decides. `open`: a member joins at once, subject to the community's `groups` policy. A group carrying authority is always `closed`.",
+        "enum": [
+          "closed",
+          "request",
+          "open"
+        ]
+      },
+      "VtcGroupsUpdateV0_1Payload": {
+        "type": "object",
+        "description": "A group manager changes a group's name, description, rule, join policy, visibility, member-list visibility or whether it issues credentials. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "groupId"
+        ],
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VtcGroupsUpdateV0_1GroupDescription"
+              },
+              {}
+            ],
+            "description": "`null` clears it."
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1Ext"
+          },
+          "groupId": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1GroupId"
+          },
+          "issuesCredentials": {
+            "type": "boolean",
+            "description": "Turning it off stops issuing and renewing members' credentials; those issued lapse at their expiry."
+          },
+          "joinPolicy": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1JoinPolicy"
+          },
+          "name": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1GroupName"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why, recorded with the change and shown to anyone who must approve it.",
+            "maxLength": 1024,
+            "minLength": 1
+          },
+          "rule": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1DynamicRule"
+          },
+          "showMembers": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1GroupAudience"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1GroupAudience"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsUpdateV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/groups/update/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/update/0.1#response.",
+        "required": [
+          "group"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1Ext"
+          },
+          "group": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1Group"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsUpdateV0_1RuleCondition": {
+        "type": "object",
+        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card.",
+        "required": [
+          "fact",
+          "op"
+        ],
+        "properties": {
+          "fact": {
+            "type": "string",
+            "enum": [
+              "role",
+              "field",
+              "personhood",
+              "joinedAt"
+            ]
+          },
+          "field": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1FieldKey"
+          },
+          "op": {
+            "type": "string",
+            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.",
+            "enum": [
+              "equals",
+              "oneOf",
+              "exists",
+              "before",
+              "after"
+            ]
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "maxItems": 64,
+            "minItems": 1
           }
         },
         "additionalProperties": false

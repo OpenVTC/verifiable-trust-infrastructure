@@ -68,6 +68,7 @@ mod directory_present;
 mod emergency_bootstrap;
 mod endorsements;
 mod git_ns_vtc_client;
+mod groups;
 mod hidden_vetting_tasks;
 mod inbox_collection;
 mod install_claim;

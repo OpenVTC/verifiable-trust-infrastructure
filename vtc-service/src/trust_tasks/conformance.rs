@@ -373,6 +373,28 @@ fn admin_note() -> crate::directory::notes::Note {
     }
 }
 
+/// A group as `groups::wire` answers it to one of its managers.
+fn group_wire() -> Value {
+    json!({
+        "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA",
+        "groupDid": "did:webvh:QmScid:groups.example:grp",
+        "name": "Identity WG",
+        "description": "Where the community works on identity.",
+        "kind": "static",
+        "joinPolicy": "request",
+        "visibility": "members",
+        "showMembers": "groupMembers",
+        "issuesCredentials": true,
+        "carriesAuthority": false,
+        "createdAt": "2026-10-19T09:00:00Z",
+        "updatedAt": "2026-10-19T09:00:00Z",
+        "createdBy": DIRECTORY_ENTRY,
+        "memberCount": 0,
+        "managers": [],
+        "credentialAuthorityValidUntil": "2027-10-19T09:00:00Z",
+    })
+}
+
 /// A stored picture's reference, as `directory::images` answers it.
 fn stored_picture() -> Value {
     json!({ "sha256": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b", "mediaType": "image/jpeg", "size": 18342 })
@@ -2814,6 +2836,48 @@ fn table() -> Vec<Conformance> {
                 },
                 "revision": 6,
             })
+        ),
+        checked!(
+            s::groups::create::v0_1::Payload,
+            s::groups::create::v0_1::Response,
+            json!({
+                "name": "Identity WG",
+                "kind": "static",
+                "joinPolicy": "request",
+                "visibility": "members",
+                "showMembers": "groupMembers",
+                "reason": "the working group starts",
+            }),
+            json!({ "group": group_wire() })
+        ),
+        checked!(
+            s::groups::update::v0_1::Payload,
+            s::groups::update::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "showMembers": "admins" }),
+            json!({ "group": group_wire() })
+        ),
+        checked!(
+            s::groups::delete::v0_1::Payload,
+            s::groups::delete::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "reason": "wound up" }),
+            json!({
+                "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA",
+                "state": "deleted",
+                "membersRemoved": 0,
+                "bindingsRemoved": 0,
+            })
+        ),
+        checked!(
+            s::groups::list::v0_1::Payload,
+            s::groups::list::v0_1::Response,
+            json!({ "joinable": true, "limit": 50 }),
+            json!({ "items": [{ "group": group_wire(), "myMembership": "none" }] })
+        ),
+        checked!(
+            s::groups::show::v0_1::Payload,
+            s::groups::show::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA" }),
+            json!({ "group": group_wire(), "myMembership": "member" })
         ),
         checked!(
             s::directory::notes::append::v0_1::Payload,

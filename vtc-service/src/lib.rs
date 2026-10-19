@@ -38,6 +38,7 @@ pub mod endorsements;
 pub mod error;
 pub mod geoip;
 pub mod git_ns;
+pub mod groups;
 pub mod holder_signature;
 pub mod hooks;
 pub mod install;
