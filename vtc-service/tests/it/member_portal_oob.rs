@@ -2117,6 +2117,71 @@ async fn a_scoped_grant_lets_the_portal_key_sign_directory_documents_as_the_memb
     assert_eq!(code(&profile), "permissionDenied", "{}", profile.body);
 }
 
+/// A delegated portal key stands in for its member at the size gate: a
+/// picture the portal uploads (`vtc/directory/images/upload`, declared up to
+/// 360 KiB) is measured against that task's limit, not the 64 KiB a stranger
+/// gets. Before this the portal could upload no photograph at all.
+#[tokio::test]
+async fn the_portal_key_uploads_a_picture_larger_than_the_default_document_limit() {
+    use base64::Engine as _;
+    let f = fixture().await;
+    let (b, _member, _, done) = sign_in_v0_2(&f, None).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+
+    // Noise does not compress: about 190 KB of PNG, under the 256 KiB a
+    // picture may be.
+    let mut seed = 0x1234_5678u32;
+    let img = image::RgbaImage::from_fn(220, 220, |_, _| {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        image::Rgba(seed.to_le_bytes())
+    });
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    assert!(
+        png.len() > 128 * 1024 && png.len() <= 262_144,
+        "{}",
+        png.len()
+    );
+    let payload = json!({
+        "mediaType": "image/png",
+        "data": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&png),
+    });
+
+    let up = as_portal(
+        &f,
+        &b,
+        &format!("{DIRECTORY}/images/upload/0.1"),
+        payload.clone(),
+    )
+    .await;
+    assert_eq!(up.status, StatusCode::OK, "{}", up.body);
+    assert!(
+        up.body["payload"]["image"]["sha256"].is_string(),
+        "{}",
+        up.body
+    );
+
+    // The same document from a key nobody delegated anything to meets the
+    // default limit.
+    let stranger = Browser {
+        key: Party::new(),
+        ip: "198.51.100.9",
+    };
+    let refused = as_portal(
+        &f,
+        &stranger,
+        &format!("{DIRECTORY}/images/upload/0.1"),
+        payload,
+    )
+    .await;
+    assert_eq!(code(&refused), "malformedRequest", "{}", refused.body);
+    assert_eq!(refused.body["payload"]["details"]["maxBytes"], 65536);
+}
+
 /// Item 3: the grant's scope must be the one step 2 offered.
 #[tokio::test]
 async fn a_grant_widening_the_offered_scope_is_refused() {

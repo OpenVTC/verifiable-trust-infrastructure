@@ -367,6 +367,15 @@ body {
   flex-direction: column;
   gap: 1rem;
 }
+/* "Show every field to": a baseline set apart from the fields it sets. */
+.baseline-field {
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+.baseline-field .btn {
+  align-self: flex-start;
+}
+
 .card-field {
   display: flex;
   flex-direction: column;

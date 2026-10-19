@@ -20,6 +20,12 @@ vi.mock("./directory-api", async (orig) => ({
   ...api,
 }));
 
+vi.mock("./api", async (orig) => ({
+  ...(await orig<typeof import("./api")>()),
+  vtcDid: vi.fn(async () => "did:webvh:QmHost:acme.example"),
+  memberFetch: vi.fn(async () => ({ did: "did:key:z6MkMember" })),
+}));
+
 import { MyCardPage } from "./Directory";
 
 const FIELDS = {
@@ -98,5 +104,87 @@ describe("the portal's card editor", () => {
     expect(screen.getByLabelText("Choose Picture")).toBeTruthy();
     const who = screen.getByLabelText("Who sees Picture") as HTMLSelectElement;
     expect(Array.from(who.options).map((o) => o.value)).not.toContain("public");
+  });
+});
+
+describe("show every field to", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("sets each field to the baseline, never wider than the field allows", async () => {
+    const { baselineFor } = await import("./Directory");
+    expect(baselineFor("members", "public")).toBe("members");
+    expect(baselineFor("members", "admins")).toBe("admins");
+    expect(baselineFor("groups", "members")).toBe("groups");
+    expect(baselineFor("groups", "connections")).toBe("admins");
+    expect(baselineFor("admins", "public")).toBe("admins");
+  });
+
+  it("applies the baseline as a starting point the member then saves", async () => {
+    const fields = {
+      fields: [
+        ...FIELDS.fields,
+        {
+          key: "org.example.grade", label: "Grade", type: "text", source: "member", base: false,
+          required: false, ceiling: "admins", defaultVisibility: "admins", searchable: false,
+          facet: false, order: 60, state: "active",
+        },
+      ],
+    };
+    api.listFields.mockResolvedValue(fields);
+    api.showCard.mockResolvedValue(card(null));
+    api.updateCard.mockResolvedValue(card(null));
+    renderCard();
+    await screen.findByText(/seen only inside this community/i);
+    expect(screen.getByRole("link", { name: /Directory/ }).getAttribute("href")).toBe("#/directory");
+
+    fireEvent.change(screen.getByLabelText("Show every field to"), { target: { value: "members" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply to every field" }));
+    expect(screen.getByRole("status").textContent).toMatch(/except Grade/);
+    // One field overridden after the baseline.
+    fireEvent.change(screen.getByLabelText("Who sees Picture"), { target: { value: "admins" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.updateCard).toHaveBeenCalled());
+    const sent = api.updateCard.mock.calls[0]![0].visibility;
+    // The name was shown to anyone: the baseline narrows it. The picture was
+    // set back to administrators by hand, its own default, so nothing changes
+    // for it; the grade cannot go wider than administrators.
+    expect(sent).toEqual({ displayName: "members" });
+  });
+});
+
+describe("publishing from the portal", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.listFields.mockResolvedValue(FIELDS);
+    delete (window as { vtaWallet?: unknown }).vtaWallet;
+  });
+
+  it("offers no publish button when the wallet has no directory channel", async () => {
+    api.showCard.mockResolvedValue(card(null));
+    renderCard();
+    await screen.findByText(/seen only inside this community/i);
+    expect(screen.queryByRole("button", { name: "Publish from your wallet" })).toBeNull();
+  });
+
+  it("asks the wallet to publish, naming the community and the signed-in member", async () => {
+    const publishCard = vi.fn(async () => ({ state: "published" }));
+    (window as { vtaWallet?: unknown }).vtaWallet = { directory: { publishCard } };
+    api.showCard.mockResolvedValue(card(null));
+    renderCard();
+    fireEvent.click(await screen.findByRole("button", { name: "Publish from your wallet" }));
+    await waitFor(() => expect(publishCard).toHaveBeenCalled());
+    expect(publishCard).toHaveBeenCalledWith({
+      hostDid: "did:webvh:QmHost:acme.example",
+      member: "did:key:z6MkMember",
+    });
+  });
+
+  it("offers to sign again when the published card was withdrawn", async () => {
+    (window as { vtaWallet?: unknown }).vtaWallet = { directory: { publishCard: vi.fn() } };
+    api.showCard.mockResolvedValue(card({ state: "awaitingSignature" }));
+    renderCard();
+    expect(await screen.findByRole("button", { name: "Sign again from your wallet" })).toBeTruthy();
   });
 });

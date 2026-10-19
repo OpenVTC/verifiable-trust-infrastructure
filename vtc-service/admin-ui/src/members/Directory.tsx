@@ -37,6 +37,19 @@ import {
   uploadImage,
 } from "./directory-api";
 import { PictureError, pictureUrl, prepare, toBase64Url } from "./picture";
+import { memberFetch, vtcDid, type MemberMe } from "./api";
+
+/** The wallet's directory channel (`window.vtaWallet.directory`), where the
+ *  member's wallet offers one: it publishes the card after showing the member
+ *  every value, signed by them. Absent: the portal says to use the wallet. */
+interface WalletDirectory {
+  publishCard(p: { hostDid: string; member?: string }): Promise<{ state: string }>;
+}
+
+function walletDirectory(): WalletDirectory | null {
+  const w = (window as { vtaWallet?: { directory?: WalletDirectory } }).vtaWallet;
+  return w?.directory && typeof w.directory.publishCard === "function" ? w.directory : null;
+}
 
 type Audience = DirectoryFieldDefinition["ceiling"];
 
@@ -49,11 +62,23 @@ const AUDIENCES: readonly { id: Audience; label: string }[] = [
 ];
 
 /** The daemon's audience order: `groups` and `connections` cover neither. */
-function within(inner: Audience, outer: Audience): boolean {
+export function within(inner: Audience, outer: Audience): boolean {
   if (inner === outer || inner === "admins") return true;
   if ((inner === "groups" || inner === "connections") && (outer === "members" || outer === "public"))
     return true;
   return inner === "members" && outer === "public";
+}
+
+/**
+ * What "show every field to `wanted`" sets one field to: `wanted` where the
+ * field's ceiling allows it, otherwise the widest the field allows within it —
+ * its ceiling, or only administrators where the two do not nest (`groups`
+ * against `connections`). Never wider than the member asked for.
+ */
+export function baselineFor(wanted: Audience, ceiling: Audience): Audience {
+  if (within(wanted, ceiling)) return wanted;
+  if (within(ceiling, wanted)) return ceiling;
+  return "admins";
 }
 
 function text(v: unknown): string {
@@ -368,18 +393,37 @@ function ExternalCardStatus({
   card,
   onStop,
   stopping,
+  publish,
 }: {
   card: DirectoryCard;
   onStop: () => void;
   stopping: boolean;
+  /** Present when the wallet offers to publish from here. */
+  publish: { run: () => void; busy: boolean; error: string | null } | null;
 }) {
   const external = card.externalCard;
+  const publishButton = (words: string) =>
+    publish ? (
+      <button type="button" className="btn" onClick={publish.run} disabled={publish.busy}>
+        {publish.busy ? "Waiting for your wallet…" : words}
+      </button>
+    ) : null;
+  const publishError = publish?.error ? (
+    <p className="alert" role="alert">
+      {publish.error}
+    </p>
+  ) : null;
   if (!card.discoverability.external || !external) {
     return (
-      <p className="muted">
-        Your card is seen only inside this community. To publish it so that anyone can find it,
-        use your wallet: it shows you exactly what would be published before you sign.
-      </p>
+      <div>
+        <p className="muted">
+          Your card is seen only inside this community. To publish what you show to
+          &ldquo;Anyone&rdquo; so that anyone can find it, use your wallet: it shows you exactly
+          what would be published before you sign.
+        </p>
+        {publishButton("Publish from your wallet")}
+        {publishError}
+      </div>
     );
   }
   return (
@@ -400,9 +444,11 @@ function ExternalCardStatus({
           </p>
         </>
       )}
+      {external.state === "awaitingSignature" && publishButton("Sign again from your wallet")}
       <button type="button" className="btn" onClick={onStop} disabled={stopping}>
         {stopping ? "Stopping…" : "Stop publishing"}
       </button>
+      {publishError}
     </div>
   );
 }
@@ -418,6 +464,24 @@ export function MyCardPage() {
   const [search, setSearch] = useState<SearchMode>("byName");
   const [intros, setIntros] = useState<Introductions>("anyone");
   const [saved, setSaved] = useState<string | null>(null);
+  const [baseline, setBaseline] = useState<Audience>("members");
+  const [baselineNote, setBaselineNote] = useState<string | null>(null);
+  const wallet = walletDirectory();
+  const publish = useMutation({
+    mutationFn: async () => {
+      if (!wallet) throw new Error("Your wallet does not offer to publish a card here.");
+      const [hostDid, me] = await Promise.all([
+        vtcDid(),
+        memberFetch<MemberMe>("/v1/member/me").catch(() => null),
+      ]);
+      // The signed-in DID is a hint: the wallet chooses among its own identities.
+      return wallet.publishCard({ hostDid, ...(me?.did ? { member: me.did } : {}) });
+    },
+    onSuccess: (r) => {
+      void qc.invalidateQueries({ queryKey: ["directory", "card"] });
+      setSaved(r.state === "published" ? "Your card is published." : null);
+    },
+  });
 
   useEffect(() => {
     if (!card.data || !fields.data) return;
@@ -533,8 +597,29 @@ export function MyCardPage() {
   const missing = card.data.missingRequired;
   const error = save.error instanceof DirectoryError ? save.error : null;
 
+  const applyBaseline = () => {
+    const next = { ...visibility };
+    const capped: string[] = [];
+    for (const f of defs) {
+      next[f.key] = baselineFor(baseline, f.ceiling);
+      if (next[f.key] !== baseline) capped.push(f.label);
+    }
+    setVisibility(next);
+    setSaved(null);
+    const who = AUDIENCES.find((a) => a.id === baseline)?.label.toLowerCase() ?? baseline;
+    setBaselineNote(
+      capped.length === 0
+        ? `Every field is now shown to ${who}. Change any field below, then save.`
+        : `Every field is now shown to ${who}, except ${capped.join(", ")}, which this community ` +
+            `shows no wider than its limit. Change any field below, then save.`,
+    );
+  };
+
   return (
     <main className="home" id="main">
+      <p>
+        <a href="#/directory">&larr; Directory</a>
+      </p>
       <section className="welcome">
         <p className="eyebrow">Directory</p>
         <h1>Your card</h1>
@@ -560,6 +645,34 @@ export function MyCardPage() {
         <div className="card-head">
           <BookUser size={18} aria-hidden="true" />
           <h2>What your card shows</h2>
+        </div>
+        <div className="card-field baseline-field">
+          <label>
+            <span>Show every field to</span>
+            <select
+              aria-label="Show every field to"
+              value={baseline}
+              onChange={(e) => setBaseline(e.target.value as Audience)}
+            >
+              {AUDIENCES.filter((a) => a.id !== "public").map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="button" className="btn" onClick={applyBaseline}>
+            Apply to every field
+          </button>
+          <p className="muted">
+            A starting point: each field below can still be changed on its own. Nothing changes until
+            you save.
+          </p>
+          {baselineNote && (
+            <p className="muted" role="status">
+              {baselineNote}
+            </p>
+          )}
         </div>
         {defs.map((f) => (
           <fieldset key={f.key} className="card-field">
@@ -631,7 +744,20 @@ export function MyCardPage() {
           <span>
             <Globe size={16} aria-hidden="true" /> Beyond the community
           </span>
-          <ExternalCardStatus card={card.data.card} onStop={() => stop.mutate()} stopping={stop.isPending} />
+          <ExternalCardStatus
+            card={card.data.card}
+            onStop={() => stop.mutate()}
+            stopping={stop.isPending}
+            publish={
+              wallet
+                ? {
+                    run: () => publish.mutate(),
+                    busy: publish.isPending,
+                    error: publish.error instanceof Error ? publish.error.message : null,
+                  }
+                : null
+            }
+          />
         </div>
         <label className="card-field">
           <span>In the directory</span>

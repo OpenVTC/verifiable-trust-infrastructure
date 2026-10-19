@@ -91,10 +91,14 @@ lets act for them in the directory when they sign in with their wallet:
 
 A member sets their picture on **Your card**: the portal scales it down in the
 browser before sending, and shows other members' pictures only once their bytes
-match the digest the card names. Publishing the card beyond the community is the
-member's own signature, made in their wallet; the portal shows where a published
-card stands and offers only **Stop publishing**, which a delegated key may do
-because it narrows.
+match the digest the card names. **Show every field to** sets every field at once —
+a starting point, capped at each field's own limit — and each field can still be
+changed on its own before saving. Publishing the card beyond the community is the
+member's own signature, made in their wallet: where the wallet offers
+`window.vtaWallet.directory`, **Publish from your wallet** hands it over, and the
+wallet shows every value before anything is signed. The portal also shows where
+a published card stands, and offers **Stop publishing**, which a delegated key
+may do because it narrows.
 
 Not yet served: groups (`vtc/groups/*`), introductions, administrators' notes,
 export and credential-sourced fields (`card/present`).
