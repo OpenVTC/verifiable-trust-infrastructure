@@ -14,6 +14,7 @@
 //! | `images/get/0.1` | anyone, through the projection: a member or administrator as `entries/show` projects for them, anyone else only a picture on a published external card |
 //! | `card/publish/0.1` | being the member, signing with their membership DID — never a delegated key, never an administrator |
 //! | `card/public/0.1` | anyone, with or without a proof: a card its member published |
+//! | `card/present/0.1` | being the member; the presentation's holder must be the member too (item 3) |
 //! | `notes/{append,list}/0.1` | `vtc.directory.notes` |
 //! | `notes/export/0.1` | `vtc.directory.notes`, and the exporter's gesture bound to the document (VTI-DIR-033) |
 //! | `export/0.1` | `vtc.directory.admin`, and the exporter's gesture bound to its first page |
@@ -38,8 +39,8 @@ use chrono::Utc;
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::vtc::directory::{
     card::{
-        assert::v0_1 as card_assert, public::v0_1 as card_public, publish::v0_1 as card_publish,
-        show::v0_1 as card_show, update::v0_1 as card_update,
+        assert::v0_1 as card_assert, present::v0_1 as card_present, public::v0_1 as card_public,
+        publish::v0_1 as card_publish, show::v0_1 as card_show, update::v0_1 as card_update,
     },
     disclosure::v0_1 as disclosure,
     entries::{list::v0_1 as entries_list, show::v0_1 as entries_show},
@@ -84,6 +85,7 @@ pub(crate) const FIELDS_RETIRE_TYPE: &str = <fields_retire::Payload as Payload>:
 pub(crate) const CARD_SHOW_TYPE: &str = <card_show::Payload as Payload>::TYPE_URI;
 pub(crate) const CARD_UPDATE_TYPE: &str = <card_update::Payload as Payload>::TYPE_URI;
 pub(crate) const CARD_ASSERT_TYPE: &str = <card_assert::Payload as Payload>::TYPE_URI;
+pub(crate) const CARD_PRESENT_TYPE: &str = <card_present::Payload as Payload>::TYPE_URI;
 pub(crate) const ENTRIES_LIST_TYPE: &str = <entries_list::Payload as Payload>::TYPE_URI;
 pub(crate) const ENTRIES_SHOW_TYPE: &str = <entries_show::Payload as Payload>::TYPE_URI;
 pub(crate) const DISCLOSURE_TYPE: &str = <disclosure::Payload as Payload>::TYPE_URI;
@@ -112,6 +114,7 @@ pub(crate) const URIS: &[&str] = &[
     IMAGES_GET_TYPE,
     CARD_PUBLISH_TYPE,
     CARD_PUBLIC_TYPE,
+    CARD_PRESENT_TYPE,
     NOTES_APPEND_TYPE,
     NOTES_LIST_TYPE,
     NOTES_EXPORT_TYPE,
@@ -172,6 +175,12 @@ codes! {
     PUBLISH_ERR_CARD_MISMATCH = card_publish::CARD_MISMATCH;
     PUBLISH_ERR_SIGNATURE_INVALID = card_publish::SIGNATURE_INVALID;
     PUBLIC_ERR_NOT_FOUND = card_public::NOT_FOUND;
+    PRESENT_ERR_NOT_MEMBER = card_present::NOT_MEMBER;
+    PRESENT_ERR_FIELD_UNKNOWN = card_present::FIELD_UNKNOWN;
+    PRESENT_ERR_FIELD_NOT_WRITABLE = card_present::FIELD_NOT_WRITABLE;
+    PRESENT_ERR_PRESENTATION_INVALID = card_present::PRESENTATION_INVALID;
+    PRESENT_ERR_ISSUER_NOT_ACCEPTED = card_present::ISSUER_NOT_ACCEPTED;
+    PRESENT_ERR_CLAIM_MISSING = card_present::CLAIM_MISSING;
     NOTES_APPEND_ERR_NOT_FOUND = notes_append::NOT_FOUND;
     NOTES_APPEND_ERR_NOTE_NOT_FOUND = notes_append::NOTE_NOT_FOUND;
     NOTES_APPEND_ERR_ALREADY_REDACTED = notes_append::ALREADY_REDACTED;
@@ -200,6 +209,7 @@ pub(super) async fn dispatch(
         DISCLOSURE_TYPE => handle_disclosure(state, ctx, doc).await,
         IMAGES_UPLOAD_TYPE => handle_images_upload(state, ctx, doc).await,
         IMAGES_GET_TYPE => handle_images_get(state, ctx, doc).await,
+        CARD_PRESENT_TYPE => handle_card_present(state, ctx, doc).await,
         CARD_PUBLISH_TYPE => handle_card_publish(state, ctx, doc).await,
         CARD_PUBLIC_TYPE => handle_card_public(state, ctx, doc).await,
         NOTES_APPEND_TYPE => handle_notes_append(state, ctx, doc).await,
@@ -1003,6 +1013,175 @@ async fn handle_card_update(
             "the card kept changing while this update was applied; send it again".into(),
         ),
     )
+}
+
+/// `card/present/0.1` (items 1 – 7): fill `credential`-sourced fields from a
+/// presentation, keeping only the claims they read.
+async fn handle_card_present(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::directory::present;
+    let (member, _writer) = match as_card_member(state, ctx, &doc, PRESENT_ERR_NOT_MEMBER).await {
+        Ok(m) => m,
+        Err(reject) => return reject,
+    };
+    if let Err(reject) = parse_spec_payload::<card_present::Payload>(&doc) {
+        return reject;
+    }
+    let named: Vec<String> = doc
+        .payload
+        .get("fields")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let clear = doc
+        .payload
+        .get("clear")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let Some(presentation) = doc.payload.get("presentation") else {
+        return app_error_to_reject(&doc, &AppError::Validation("no presentation".into()));
+    };
+    let dir = &state.directory;
+    let schema = match fields::schema(dir.ks()).await {
+        Ok(s) => s,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    // Item 2 before item 3: a request naming a field it cannot write is
+    // refused before anything it carries is verified.
+    let selectors = match present::selectors(&schema, &named) {
+        Ok(s) => s,
+        Err(e) => return present_error(&doc, e),
+    };
+    let community = state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .filter(|d| !d.is_empty());
+    let Some(community) = community else {
+        return app_error_to_reject(&doc, &AppError::Internal("VTC DID not configured".into()));
+    };
+    let did = member.member.did.clone();
+    let now = Utc::now();
+    let presented = match present::verify(state, presentation, &doc.id, &community, &did, now).await
+    {
+        Ok(p) => p,
+        Err(e) => return present_error(&doc, e),
+    };
+    let values = match present::answer(state, &selectors, &presented, clear, now).await {
+        Ok(v) => v,
+        Err(e) => return present_error(&doc, e),
+    };
+    // Item 6: nothing of the presentation outlives the claims the fields read.
+    drop(presented);
+
+    let actor = AuthClaims {
+        did: did.clone(),
+        ..Default::default()
+    };
+    let own = member
+        .entry
+        .label_set_by_subject
+        .then(|| member.entry.label.clone())
+        .flatten();
+    for _ in 0..3 {
+        let card = match cards::ensure(dir.ks(), &did, &dir.settings(), own.as_deref()).await {
+            Ok(c) => c,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
+        let applied = match cards::apply_presented(&card, &values, Utc::now()) {
+            Ok(a) => a,
+            Err(e) => {
+                return app_error_to_reject(
+                    &doc,
+                    &AppError::Validation(format!("the card cannot hold these values: {e:?}")),
+                );
+            }
+        };
+        if let Err(e) = audit_card(
+            state,
+            &actor,
+            &applied.card.entry_id,
+            "credential",
+            &applied.changed,
+            applied.card.revision,
+        )
+        .await
+        {
+            return app_error_to_reject(&doc, &e);
+        }
+        match cards::commit(dir.ks(), &card, &applied).await {
+            Ok(true) => {
+                settle_after_card_write(state, &card, &applied.card).await;
+                let verified: serde_json::Map<String, Value> = values
+                    .iter()
+                    .filter_map(|(k, v)| v.clone().map(|v| (k.clone(), v)))
+                    .collect();
+                return success_response(
+                    &doc,
+                    json!({ "verified": verified, "revision": applied.card.revision }),
+                );
+            }
+            Ok(false) => continue,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        }
+    }
+    app_error_to_reject(
+        &doc,
+        &AppError::Conflict(
+            "the card kept changing while this presentation was applied; send it again".into(),
+        ),
+    )
+}
+
+fn present_error(
+    doc: &TrustTask<Value>,
+    e: crate::directory::present::PresentError,
+) -> TrustTaskOutcome {
+    use crate::directory::present::PresentError;
+    match e {
+        PresentError::FieldUnknown(field) => declared(
+            doc,
+            PRESENT_ERR_FIELD_UNKNOWN,
+            format!("the directory has no field {field}"),
+        ),
+        PresentError::FieldNotWritable(field) => declared(
+            doc,
+            PRESENT_ERR_FIELD_NOT_WRITABLE,
+            format!("{field} is not filled from a credential"),
+        ),
+        PresentError::PresentationInvalid(why) => {
+            // Logged, never answered: the reason says which check it got past.
+            tracing::info!(reason = %why, "card/present: presentation refused");
+            declared(
+                doc,
+                PRESENT_ERR_PRESENTATION_INVALID,
+                "the presentation does not verify, is not bound to this request and community, \
+                 or is not yours",
+            )
+        }
+        PresentError::IssuerNotAccepted(field) => declared_with(
+            doc,
+            PRESENT_ERR_ISSUER_NOT_ACCEPTED,
+            format!("{field} does not accept this credential's issuer"),
+            json!({ "field": field }),
+        ),
+        PresentError::ClaimMissing(field) => declared_with(
+            doc,
+            PRESENT_ERR_CLAIM_MISSING,
+            format!("the presentation does not disclose the claim {field} reads"),
+            json!({ "field": field }),
+        ),
+    }
 }
 
 async fn judge(

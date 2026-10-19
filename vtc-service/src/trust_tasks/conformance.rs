@@ -2796,6 +2796,26 @@ fn table() -> Vec<Conformance> {
             json!({ "communityDid": COMMUNITY_DID, "disclosure": base_disclosure() })
         ),
         checked!(
+            s::directory::card::present::v0_1::Payload,
+            s::directory::card::present::v0_1::Response,
+            json!({
+                "fields": ["org.example.registration"],
+                "presentation": "eyJhbGciOiJFZERTQSJ9.e30.c2ln~WyJzYWx0IiwicmVnIiwiUkVHLTEiXQ~eyJhbGciOiJFZERTQSIsInR5cCI6ImtiK2p3dCJ9.e30.c2ln",
+            }),
+            json!({
+                "verified": {
+                    "org.example.registration": {
+                        "value": "REG-48213",
+                        "issuer": "did:example:registry",
+                        "credentialType": "ProfessionalRegistration",
+                        "verifiedAt": "2026-10-19T09:00:01Z",
+                        "validUntil": "2027-06-30T00:00:00Z",
+                    }
+                },
+                "revision": 6,
+            })
+        ),
+        checked!(
             s::directory::notes::append::v0_1::Payload,
             s::directory::notes::append::v0_1::Response,
             json!({ "entryId": DIRECTORY_ENTRY, "text": "Spoke at the June meetup.", "followUp": "2026-11-01" }),

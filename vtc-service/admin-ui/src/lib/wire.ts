@@ -3230,6 +3230,49 @@ export interface components {
              */
             verifiedAt: string;
         };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcDirectoryCardPresentV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcDirectoryCardPresentV0_1FieldKey: string;
+        /** @description A member presents a credential so the community can fill credential-sourced directory fields with the disclosed claims, badged with their issuer; the community keeps the claims, never the presentation. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcDirectoryCardPresentV0_1Payload: {
+            /** @description Optional: also clear any named field the presentation does not answer. Absent: false. */
+            clear?: boolean;
+            ext?: components["schemas"]["VtcDirectoryCardPresentV0_1Ext"];
+            /** @description The `credential`-sourced fields this presentation answers. */
+            fields: components["schemas"]["VtcDirectoryCardPresentV0_1FieldKey"][];
+            presentation: Record<string, never> | string;
+        };
+        /** @description The success response to a vtc/directory/card/present/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/card/present/0.1#response. */
+        VtcDirectoryCardPresentV0_1Response: {
+            ext?: components["schemas"]["VtcDirectoryCardPresentV0_1Ext"];
+            revision: number;
+            /** @description The values now on the card, keyed by field. */
+            verified: {
+                [key: string]: components["schemas"]["VtcDirectoryCardPresentV0_1VerifiedValue"];
+            };
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcDirectoryCardPresentV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
         /**
          * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
          *

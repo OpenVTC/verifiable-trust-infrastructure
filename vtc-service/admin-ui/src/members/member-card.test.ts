@@ -65,3 +65,14 @@ describe("saving a contact", () => {
     expect(card.endsWith("UID:urn:vtc-directory:dir_x\r\nEND:VCARD\r\n")).toBe(true);
   });
 });
+
+describe("verified values", () => {
+  it("reads a verified value and nothing shaped otherwise", async () => {
+    const { verifiedOf } = await import("./member-card");
+    expect(
+      verifiedOf({ value: "REG-1", issuer: "did:example:r", verifiedAt: "2026-10-19T00:00:00Z" }),
+    ).not.toBeNull();
+    expect(verifiedOf({ sha256: "a".repeat(64), mediaType: "image/png" })).toBeNull();
+    expect(verifiedOf("REG-1")).toBeNull();
+  });
+});

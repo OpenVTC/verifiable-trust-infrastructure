@@ -1001,7 +1001,7 @@ Decided 2026-10-18 (second round): `keys/sign-document` for issuance, a minimal 
 | **P1** | Field schema, cards, listing/search, `entries/*`, `query/0.1` re-pointed, portal Directory + My card, console settings | P0 tf + trust-tasks-rs bump |
 | **P2** | Static community groups with their own DID + group VMCs (§9.5), managers, `groups/*`, room bindings + reconciler | P1; `vtc-group` DID template |
 | **P3** | Personal layer in the VTA (`persona/contact` minor), wallet channel, stars/lists/petnames/notes in the portal, VRC badges, introductions | P1; wallet release |
-| **P4** | Admin notes and export — **built**; `credential`-sourced fields (`card/present`) | P1 |
+| **P4** | Admin notes and export, `credential`-sourced fields (`card/present`) — **built** | P1 |
 | **P5** | Grant bindings (§9.4) with action-list consent | P2 |
 | **P6** | Dynamic groups | P2 |
 | **P7** | Pictures, and external cards via the registry — **built** | REG change landed (vti-spec #68); tf #826, #827 |

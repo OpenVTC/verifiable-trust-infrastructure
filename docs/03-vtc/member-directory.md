@@ -32,6 +32,7 @@ Specification: *Community Directory and Groups* in the VTI specification
 | `vtc/directory/images/get/0.1` | anyone, through the projection | A picture's bytes, where the caller's projection of that entry shows it |
 | `vtc/directory/card/publish/0.1` | the member, as their membership DID | Publish their external card: their public values, signed by them (below) |
 | `vtc/directory/card/public/0.1` | anyone, signed or not | A published external card, exactly as its member signed it |
+| `vtc/directory/card/present/0.1` | the member, holding the credential | Fill `credential`-sourced fields from a presentation; the community keeps only the claims (below) |
 | `vtc/directory/notes/{append,list}/0.1` | `vtc.directory.notes` | Administrators' notes about a member (below) |
 | `vtc/directory/notes/export/0.1` | `vtc.directory.notes`, with a bound passkey | Every note about a member, to answer their request for the data held about them |
 | `vtc/directory/export/0.1` | `vtc.directory.admin`, with a bound passkey | Every active member's card as JSContact |
@@ -112,8 +113,45 @@ wallet shows every value before anything is signed. The portal also shows where
 a published card stands, and offers **Stop publishing**, which a delegated key
 may do because it narrows.
 
-Not yet served: groups (`vtc/groups/*`), introductions and credential-sourced
-fields (`card/present`).
+Not yet served: groups (`vtc/groups/*`) and introductions. A member cannot yet
+present a credential from the portal: that waits on the wallet offering it.
+
+## Verified values (`card/present`)
+
+A field of type `claim` is `credential`-sourced: nobody types its value. Its
+definition names the claim it reads — `constraints.claim`, a `credentialType`
+the credential must carry, a `claimPath` (a JSON Pointer into
+`credentialSubject`, or into an SD-JWT's disclosed claims) and optionally the
+`issuers` it accepts. A member fills it by presenting a credential:
+
+- **The binding.** A Data Integrity presentation carries `nonce` equal to the
+  request's `id` and `domain` equal to the community's DID, signed by its
+  holder's proof; a proof that also states `challenge` or `domain` must state
+  the same. An SD-JWT's key-binding JWT carries them as `nonce` and `aud`
+  (trust-tasks-tf #831).
+- **The holder is the member.** A Data Integrity presentation's holder proof
+  must be the member's own DID, and a credential naming a subject must name
+  them. An SD-JWT's holder key is the member's DID itself (a `did:key`), or a
+  key the member's DID document lists for `authentication` that the
+  key-binding JWT names in its `kid`. A presentation another member obtained is
+  `presentationInvalid`, whatever else about it verifies.
+- **The credential.** Its issuer's proof, its validity window (either
+  spelling) and its status (`credentialStatus` or a token status list) must
+  all hold; a status that cannot be read is not in force.
+- **The issuer.** One the field lists; with no list, one the community trusts
+  — its own DID, an issuer its trust registry recognises, or one its swiyu
+  trust vouches for. Anything else is `issuerNotAccepted`.
+- **What is kept.** Each field stores `{ value, issuer, credentialType,
+  verifiedAt, validUntil }`. The presentation, the credential and every other
+  claim are dropped before the card is written, and refusals log their reason
+  rather than answer it. The member's visibility choices are left alone.
+- **Expiry.** A value whose `validUntil` has passed is shown to nobody at once,
+  and the directory's hourly pass withdraws it from the card (audited, by
+  `expiry`).
+
+`clear: true` withdraws a named field the presentation does not answer, instead
+of refusing with `claimMissing`. The portal and the console show a verified
+value with its credential type as the badge, and its issuer.
 
 ## Administrators' notes
 

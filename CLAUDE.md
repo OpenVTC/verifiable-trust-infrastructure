@@ -1355,8 +1355,8 @@ new flow, update both this section and the relevant `docs/*.md`.
   (`card/{show,update,assert}`), and browse/search/show (`entries/*`, plus the
   older `query/0.1`), every read a **projection** for its caller; pictures
   (`images/{upload,get}`), external cards (`card/{publish,public}`),
-  administrators' notes (`notes/*`) and the export. Groups, introductions and
-  credential-sourced fields are later phases (design §14).
+  administrators' notes (`notes/*`), the export, and credential-sourced fields
+  (`card/present`). Groups and introductions are later phases (design §14).
 - **Invariants to preserve**: a value leaves only where the member's own
   visibility, the field's ceiling **and** the `directory` policy all admit the
   viewer — intersected, and the policy can only narrow (`directory::project`,
@@ -1366,7 +1366,13 @@ new flow, update both this section and the relevant `docs/*.md`.
   (`directory::notes`, `vtc.directory.notes`) are the opposite case: kept here,
   never in a card or any projection, append-only (a redaction is a later note),
   and released to their member only by `notes/export` behind a bound step-up at
-  Critical (VTI-DIR-030 – 033). A picture is stored only as the
+  Critical (VTI-DIR-030 – 033). A verified value (`directory::present`,
+  `card/present`) is written only from a presentation whose holder is the member
+  (their DID, or an SD-JWT key their DID lists and the key-binding `kid` names),
+  bound by the presentation's signed `nonce` = the request `id` and `domain` =
+  the community DID; only the named claims are kept, never the presentation, a
+  lapsed one is hidden by `Subject::from_records` and withdrawn by the sweeper,
+  and a refusal's reason is logged, never answered. A picture is stored only as the
   community's own re-encoding (`directory::images::reencode` — never a byte as
   sent, never metadata), goes only on its uploader's card, and is read only
   through the projection (`images/get`), never by digest alone. An external card

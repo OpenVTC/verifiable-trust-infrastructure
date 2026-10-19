@@ -1210,6 +1210,42 @@ fn witnesses() -> Vec<Witness> {
             "a_published_card_is_served_as_signed_until_the_public_values_change"
         ),
         witness!(
+            s::directory::card::present::v0_1::error_codes::NOT_MEMBER,
+            crate::trust_tasks::directory_tasks::PRESENT_ERR_NOT_MEMBER,
+            "directory_present.rs",
+            "present_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::directory::card::present::v0_1::error_codes::FIELD_UNKNOWN,
+            crate::trust_tasks::directory_tasks::PRESENT_ERR_FIELD_UNKNOWN,
+            "directory_present.rs",
+            "present_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::directory::card::present::v0_1::error_codes::FIELD_NOT_WRITABLE,
+            crate::trust_tasks::directory_tasks::PRESENT_ERR_FIELD_NOT_WRITABLE,
+            "directory_present.rs",
+            "present_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::directory::card::present::v0_1::error_codes::PRESENTATION_INVALID,
+            crate::trust_tasks::directory_tasks::PRESENT_ERR_PRESENTATION_INVALID,
+            "directory_present.rs",
+            "present_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::directory::card::present::v0_1::error_codes::ISSUER_NOT_ACCEPTED,
+            crate::trust_tasks::directory_tasks::PRESENT_ERR_ISSUER_NOT_ACCEPTED,
+            "directory_present.rs",
+            "present_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::directory::card::present::v0_1::error_codes::CLAIM_MISSING,
+            crate::trust_tasks::directory_tasks::PRESENT_ERR_CLAIM_MISSING,
+            "directory_present.rs",
+            "present_refuses_what_its_specification_declares"
+        ),
+        witness!(
             s::directory::notes::append::v0_1::error_codes::NOT_FOUND,
             crate::trust_tasks::directory_tasks::NOTES_APPEND_ERR_NOT_FOUND,
             "directory_notes.rs",

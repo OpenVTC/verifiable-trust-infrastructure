@@ -39,6 +39,8 @@ import { PictureError, prepare, toBase64Url } from "./picture";
 import {
   Crumbs,
   FieldPicture,
+  Verified,
+  verifiedOf,
   MemberAvatar,
   blobRef,
   hueOf,
@@ -372,6 +374,8 @@ export function EntryPage({ entryId }: { entryId: string }) {
                     <dd className="wrap">
                       {pictures.has(k) ? (
                         <FieldPicture entryId={entryId} field={k} value={v} />
+                      ) : verifiedOf(v) ? (
+                        <Verified value={verifiedOf(v)!} />
                       ) : typeof v === "boolean" ? (
                         v ? "Yes" : "No"
                       ) : (
@@ -813,7 +817,17 @@ export function MyCardPage() {
             ) : f.source === "derived" ? (
               <p className="muted">Your membership DID. Choose who may see it.</p>
             ) : (
-              <p>{text(card.data.card.values?.[f.key]) || <span className="muted">(not set)</span>}</p>
+              <p>
+                {verifiedOf(card.data.card.values?.[f.key]) ? (
+                  <Verified value={verifiedOf(card.data.card.values?.[f.key])!} />
+                ) : text(card.data.card.values?.[f.key]) ? (
+                  text(card.data.card.values?.[f.key])
+                ) : f.source === "credential" ? (
+                  <span className="muted">(not set — filled when you present a credential from your wallet)</span>
+                ) : (
+                  <span className="muted">(not set)</span>
+                )}
+              </p>
             )}
             <label>
               <span className="muted">Shown to </span>

@@ -89,7 +89,15 @@ pub struct Subject {
 }
 
 impl Subject {
-    pub fn from_records(card: Card, entry: Option<&VtcAclEntry>, member: Option<&Member>) -> Self {
+    pub fn from_records(
+        mut card: Card,
+        entry: Option<&VtcAclEntry>,
+        member: Option<&Member>,
+    ) -> Self {
+        // A verified value whose credential lapsed is shown to nobody, even
+        // before the sweeper withdraws it (`card/present` item 7).
+        let at = Utc::now();
+        card.values.retain(|_, v| !super::present::lapsed(v, at));
         let now = vti_common::auth::session::now_epoch();
         let active = matches!(
             (entry, member),

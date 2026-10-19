@@ -173,6 +173,8 @@ use crate::server::AppState;
         vta_sdk::openapi::DirectoryCardPublish01Response,
         vta_sdk::openapi::DirectoryCardPublic01Payload,
         vta_sdk::openapi::DirectoryCardPublic01Response,
+        vta_sdk::openapi::DirectoryCardPresent01Payload,
+        vta_sdk::openapi::DirectoryCardPresent01Response,
         vta_sdk::openapi::DirectoryNotesAppend01Payload,
         vta_sdk::openapi::DirectoryNotesAppend01Response,
         vta_sdk::openapi::DirectoryNotesList01Payload,

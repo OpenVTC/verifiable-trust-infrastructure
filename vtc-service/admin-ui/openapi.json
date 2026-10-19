@@ -5674,6 +5674,135 @@
         },
         "additionalProperties": false
       },
+      "VtcDirectoryCardPresentV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcDirectoryCardPresentV0_1FieldKey": {
+        "type": "string",
+        "description": "Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined.",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^([a-z][a-z0-9-]*\\.)*[a-z][a-zA-Z0-9]{0,63}$"
+      },
+      "VtcDirectoryCardPresentV0_1Payload": {
+        "type": "object",
+        "description": "A member presents a credential so the community can fill credential-sourced directory fields with the disclosed claims, badged with their issuer; the community keeps the claims, never the presentation. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "fields",
+          "presentation"
+        ],
+        "properties": {
+          "clear": {
+            "type": "boolean",
+            "description": "Optional: also clear any named field the presentation does not answer. Absent: false."
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryCardPresentV0_1Ext"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcDirectoryCardPresentV0_1FieldKey"
+            },
+            "description": "The `credential`-sourced fields this presentation answers.",
+            "maxItems": 16,
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "presentation": {
+            "anyOf": [
+              {
+                "type": "object",
+                "description": "A W3C Verifiable Presentation with a Data Integrity proof whose `challenge` is this document's `id` and whose `domain` is the community's DID."
+              },
+              {
+                "type": "string",
+                "description": "A compact presentation (an SD-JWT with a key-binding JWT whose `nonce` is this document's `id` and `aud` the community's DID).",
+                "maxLength": 65536,
+                "minLength": 1
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryCardPresentV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/directory/card/present/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/card/present/0.1#response.",
+        "required": [
+          "verified",
+          "revision"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryCardPresentV0_1Ext"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "verified": {
+            "type": "object",
+            "description": "The values now on the card, keyed by field.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/VtcDirectoryCardPresentV0_1VerifiedValue"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryCardPresentV0_1VerifiedValue": {
+        "type": "object",
+        "description": "The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation.",
+        "required": [
+          "value",
+          "issuer",
+          "verifiedAt"
+        ],
+        "properties": {
+          "credentialType": {
+            "type": "string",
+            "description": "The most specific `type` of the credential the claim came from.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "issuer": {
+            "type": "string",
+            "description": "DID of the credential's issuer, shown as the field's verification badge.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "validUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the credential expires, where it does. The community withdraws the value once it passes."
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "description": "The disclosed claim value."
+          },
+          "verifiedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community verified the presentation."
+          }
+        },
+        "additionalProperties": false
+      },
       "VtcDirectoryCardPublicV0_1DigestMultibase": {
         "type": "string",
         "description": "A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.\n\nMultihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.\n\nThis definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.\n\nRestricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that \"interoperability is not guaranteed between implementations using such values\", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.",

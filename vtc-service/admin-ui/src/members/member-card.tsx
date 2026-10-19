@@ -7,6 +7,7 @@
 // only when it is http or https.
 
 import { useQuery } from "@tanstack/react-query";
+import { BadgeCheck } from "lucide-react";
 
 import type { DirectoryCardBlobRef } from "@/lib/wire-types";
 
@@ -28,6 +29,41 @@ export function blobRef(v: unknown): DirectoryCardBlobRef | null {
   return typeof r.sha256 === "string" && typeof r.mediaType === "string"
     ? (r as DirectoryCardBlobRef)
     : null;
+}
+
+/** A value filled from a credential the member presented: the claim, and the
+ *  issuer that attests it (`vtc/directory/card/present`). */
+export interface VerifiedValue {
+  value: string | number | boolean;
+  issuer: string;
+  credentialType?: string;
+  verifiedAt: string;
+  validUntil?: string;
+}
+
+/** `v` as a verified value, if it is one. */
+export function verifiedOf(v: unknown): VerifiedValue | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const r = v as Partial<VerifiedValue>;
+  return typeof r.issuer === "string" && "value" in r && typeof r.verifiedAt === "string"
+    ? (r as VerifiedValue)
+    : null;
+}
+
+/** A verified value, badged with its issuer. Only a value written by
+ *  presenting a credential is ever shaped this way, so the badge is never on a
+ *  value the member typed. */
+export function Verified({ value }: { value: VerifiedValue }) {
+  const shown = typeof value.value === "boolean" ? (value.value ? "Yes" : "No") : String(value.value);
+  const until = value.validUntil ? `, until ${new Date(value.validUntil).toLocaleDateString()}` : "";
+  return (
+    <span className="verified-value">
+      {shown}{" "}
+      <span className="pill pill-ok" title={`Verified by ${value.issuer}${until}`}>
+        <BadgeCheck size={12} aria-hidden="true" /> {value.credentialType ?? "Verified"}
+      </span>
+    </span>
+  );
 }
 
 /** The name a member goes by on this projection, or `null` when they show none. */

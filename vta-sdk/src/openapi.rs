@@ -349,6 +349,10 @@ spec_types! {
     DirectoryCardPublic01Payload(directory::card::public::v0_1::Payload);
     /// `vtc/directory/card/public/0.1#response` — the card exactly as its member signed it.
     DirectoryCardPublic01Response(directory::card::public::v0_1::Response);
+    /// `vtc/directory/card/present/0.1` payload — the fields a presentation fills.
+    DirectoryCardPresent01Payload(directory::card::present::v0_1::Payload);
+    /// `vtc/directory/card/present/0.1#response` — each field's verified value.
+    DirectoryCardPresent01Response(directory::card::present::v0_1::Response);
     /// `vtc/directory/notes/append/0.1` payload — a note about a member, or a redaction.
     DirectoryNotesAppend01Payload(directory::notes::append::v0_1::Payload);
     /// `vtc/directory/notes/append/0.1#response` — the note as stored.
@@ -754,6 +758,8 @@ mod tests {
         check::<DirectoryCardPublish01Response>();
         check::<DirectoryCardPublic01Payload>();
         check::<DirectoryCardPublic01Response>();
+        check::<DirectoryCardPresent01Payload>();
+        check::<DirectoryCardPresent01Response>();
         check::<DirectoryNotesAppend01Payload>();
         check::<DirectoryNotesAppend01Response>();
         check::<DirectoryNotesList01Payload>();
