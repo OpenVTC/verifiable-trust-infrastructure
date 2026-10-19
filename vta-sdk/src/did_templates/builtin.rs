@@ -23,6 +23,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "room-host",
     "swiyu-verifier",
     "vta-admin",
+    "vtc-group",
     "vtc-host",
 ];
 
@@ -34,6 +35,7 @@ const ROOM: &str = include_str!("../../templates/room.json");
 const ROOM_HOST: &str = include_str!("../../templates/room-host.json");
 const SWIYU_VERIFIER: &str = include_str!("../../templates/swiyu-verifier.json");
 const VTA_ADMIN: &str = include_str!("../../templates/vta-admin.json");
+const VTC_GROUP: &str = include_str!("../../templates/vtc-group.json");
 const VTC_HOST: &str = include_str!("../../templates/vtc-host.json");
 const DID_HOST_HTTP_DIDCOMM: &str = include_str!("../../templates/did-host-http-didcomm.json");
 const DID_HOST_HTTP: &str = include_str!("../../templates/did-host-http.json");
@@ -56,6 +58,7 @@ pub fn load_embedded(name: &str) -> Result<DidTemplate, TemplateError> {
         "room-host" => ROOM_HOST,
         "swiyu-verifier" => SWIYU_VERIFIER,
         "vta-admin" => VTA_ADMIN,
+        "vtc-group" => VTC_GROUP,
         "vtc-host" => VTC_HOST,
         "did-host-http-didcomm" => DID_HOST_HTTP_DIDCOMM,
         "did-host-http" => DID_HOST_HTTP,
@@ -98,6 +101,7 @@ mod tests {
             ROOM_HOST,
             SWIYU_VERIFIER,
             VTA_ADMIN,
+            VTC_GROUP,
             VTC_HOST,
             DID_HOST_HTTP_DIDCOMM,
             DID_HOST_HTTP,

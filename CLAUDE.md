@@ -1231,7 +1231,7 @@ new flow, update both this section and the relevant `docs/*.md`.
   the SDK, always available): `ai-agent`, `ai-agent-peer`,
   `did-host-didcomm`, `did-host-http`, `did-host-http-didcomm`,
   `did-host-http-tsp`, `did-host-tsp`, `didcomm-mediator`,
-  `dtg-witness`, `push-gateway`, `swiyu-verifier`, `vta-admin`, `vtc-host`. The `did-host-*` names encode
+  `dtg-witness`, `push-gateway`, `swiyu-verifier`, `vta-admin`, `vtc-group`, `vtc-host`. The `did-host-*` names encode
   the DID-document **shape** (`http` = WebVHHosting, `didcomm` =
   DIDCommMessaging, `tsp` = TSPTransport), so a deployment role maps onto
   a shape: control = `did-host-http-didcomm`, hosting daemon =
