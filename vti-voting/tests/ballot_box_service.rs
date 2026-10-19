@@ -12,6 +12,59 @@ use vti_voting::{
     voter::{Ticket, Voter},
 };
 
+#[test]
+fn a_restored_ballot_box_answers_as_the_original() {
+    use std::sync::Arc;
+    use vti_voting::service::{MemoryJournal, NoJournal};
+
+    let s = setup("public", "replace", false);
+    let journal = Arc::new(MemoryJournal::default());
+    let mut bb = BallotBox::with_journal(BOX, journal.clone());
+    let reg_payload = json!({
+        "community": COMMUNITY,
+        "manifest": s.manifest,
+        "manifestDigest": digest_multibase(&s.digest),
+        "parameters": { "suite": "ps-ddh-bls12381", "votingKey": s.reg.public_text().unwrap() },
+    });
+    bb.register(COMMUNITY, &reg_payload, t("2026-10-30T00:00:00Z"))
+        .unwrap();
+    let now = t("2026-11-04T00:00:00Z");
+    let (v, ticket) = s.voter(10);
+    let first = s.cast_payload(&v, &ticket, &s.ballot("yes", None), 11);
+    let receipt = bb.cast(&first, now).unwrap();
+    let second = s.cast_payload(&v, &ticket, &s.ballot("no", None), 12);
+    bb.cast(&second, now).unwrap();
+    let (w, wticket) = s.voter(20);
+    bb.cast(
+        &s.cast_payload(&w, &wticket, &s.ballot("yes", None), 21),
+        now,
+    )
+    .unwrap();
+    let head = bb.board_head(Caller::Anonymous, &s.sel(), now).unwrap();
+
+    // One box per journal: the restored box writes to its own.
+    let mut restored = BallotBox::restore(BOX, Arc::new(NoJournal), journal.contents()).unwrap();
+    assert_eq!(
+        restored
+            .board_head(Caller::Anonymous, &s.sel(), now)
+            .unwrap(),
+        head
+    );
+    // A resend after the restart is the first receipt, token included.
+    let again = restored.cast(&first, now).unwrap();
+    assert_eq!(again["outcome"], "alreadyCounted");
+    assert_eq!(again["receiptToken"], receipt["receiptToken"]);
+    // And the count after close is the same as the original's.
+    let after = t("2026-11-08T00:00:00Z");
+    let a = bb.result(Caller::Anonymous, &s.sel(), after).unwrap();
+    let b = restored.result(Caller::Anonymous, &s.sel(), after).unwrap();
+    assert_eq!(a["result"]["questions"], b["result"]["questions"]);
+    assert_eq!(
+        b["result"]["questions"][0]["choice"],
+        json!({ "yes": 1, "no": 1 })
+    );
+}
+
 const COMMUNITY: &str = "did:webvh:QmCommunity:vtc.example.org";
 const BOX: &str = "did:webvh:QmVote:vote.example.net";
 const AUDITOR: &str = "did:webvh:QmAudit:audit.example.com";

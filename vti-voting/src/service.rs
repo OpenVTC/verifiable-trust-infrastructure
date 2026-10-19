@@ -12,8 +12,20 @@
 //!
 //! What the ballot box never holds is the point: no roster, no member DID, no issuance record
 //! (VTI-VOT-002, VTI-VOT-044). It admits a cast on the registration and its own tag record.
+//!
+//! # Durability
+//!
+//! A [`Journal`] receives, before any answer is sent, the three things that cannot be
+//! recomputed: each registration (manifest and parameters as received), each board entry, and
+//! each receipt token. Everything else — the state, the tag record, the counted ballots, the
+//! result, the roots — is rebuilt by replaying the board ([`BallotBox::restore`]), so there is
+//! one record of what happened and no second copy to disagree with it. A receipt token is
+//! journalled before its cast's entry; a token without an entry is never answered.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use chrono::{DateTime, Utc};
 use rand::RngCore;
@@ -130,6 +142,122 @@ impl State {
     }
 }
 
+/// A registration as received: everything a restored election is rebuilt from, beside its
+/// board.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StoredElection {
+    pub manifest: Value,
+    pub parameters: Value,
+}
+
+/// One election as a journal returns it for [`BallotBox::restore`].
+#[derive(Debug, Clone, Default)]
+pub struct Restored {
+    pub election: Option<StoredElection>,
+    /// Board entries in order, as their JCS bytes.
+    pub entries: Vec<Vec<u8>>,
+    /// Receipt tokens by leaf index.
+    pub receipts: HashMap<u64, String>,
+}
+
+/// Where the ballot box makes what it accepted durable. Each call completes before the answer
+/// that depends on it is sent; an error refuses the request.
+pub trait Journal: Send + Sync {
+    /// A new registration.
+    ///
+    /// # Errors
+    /// The store's reason.
+    fn election(
+        &self,
+        community: &str,
+        election_id: &str,
+        e: &StoredElection,
+    ) -> Result<(), String>;
+    /// Board entry `index` of an election.
+    ///
+    /// # Errors
+    /// The store's reason.
+    fn entry(
+        &self,
+        community: &str,
+        election_id: &str,
+        index: u64,
+        bytes: &[u8],
+    ) -> Result<(), String>;
+    /// The receipt token of the cast at `leaf`.
+    ///
+    /// # Errors
+    /// The store's reason.
+    fn receipt(
+        &self,
+        community: &str,
+        election_id: &str,
+        leaf: u64,
+        token: &str,
+    ) -> Result<(), String>;
+}
+
+/// Keeps nothing: a ballot box that forgets on restart.
+#[derive(Debug, Default)]
+pub struct NoJournal;
+
+impl Journal for NoJournal {
+    fn election(&self, _: &str, _: &str, _: &StoredElection) -> Result<(), String> {
+        Ok(())
+    }
+    fn entry(&self, _: &str, _: &str, _: u64, _: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
+    fn receipt(&self, _: &str, _: &str, _: u64, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// An in-memory journal, for tests and for checking that a restore reproduces the original.
+#[derive(Debug, Default)]
+pub struct MemoryJournal(Mutex<HashMap<(String, String), Restored>>);
+
+impl MemoryJournal {
+    /// What a restart would read back.
+    pub fn contents(&self) -> Vec<Restored> {
+        self.0
+            .lock()
+            .expect("journal lock")
+            .values()
+            .cloned()
+            .collect()
+    }
+}
+
+impl Journal for MemoryJournal {
+    fn election(&self, c: &str, id: &str, e: &StoredElection) -> Result<(), String> {
+        let mut m = self.0.lock().map_err(|e| e.to_string())?;
+        m.entry((c.into(), id.into())).or_default().election = Some(e.clone());
+        Ok(())
+    }
+    fn entry(&self, c: &str, id: &str, index: u64, bytes: &[u8]) -> Result<(), String> {
+        let mut m = self.0.lock().map_err(|e| e.to_string())?;
+        let r = m.entry((c.into(), id.into())).or_default();
+        if r.entries.len() as u64 != index {
+            return Err(format!("entry {index} out of order"));
+        }
+        r.entries.push(bytes.to_vec());
+        Ok(())
+    }
+    fn receipt(&self, c: &str, id: &str, leaf: u64, token: &str) -> Result<(), String> {
+        let mut m = self.0.lock().map_err(|e| e.to_string())?;
+        m.entry((c.into(), id.into()))
+            .or_default()
+            .receipts
+            .insert(leaf, token.to_string());
+        Ok(())
+    }
+}
+
+fn journal_failure(reason: String) -> Failure {
+    Failure::standard("internalError", format!("journal: {reason}"))
+}
+
 /// One cast as admitted: what its receipt names and what makes a resend recognisable.
 #[derive(Debug, Clone)]
 struct Admitted {
@@ -139,6 +267,8 @@ struct Admitted {
 }
 
 struct ElectionRecord {
+    community: String,
+    journal: Arc<dyn Journal>,
     manifest: register::Manifest,
     manifest_value: Value,
     digest: [u8; 32],
@@ -154,9 +284,10 @@ struct ElectionRecord {
     result: Option<Value>,
 }
 
-/// The ballot box: its own DID and the elections it holds.
+/// The ballot box: its own DID, its journal and the elections it holds.
 pub struct BallotBox {
     did: String,
+    journal: Arc<dyn Journal>,
     elections: HashMap<(String, String), ElectionRecord>,
 }
 
@@ -218,9 +349,58 @@ impl ElectionRecord {
 
     fn append(&mut self, entry: &Value) -> Result<u64, Failure> {
         let bytes = jcs(entry)?;
-        let i = self.board.append(&bytes);
+        let index = self.board.len() as u64;
+        self.journal
+            .entry(
+                &self.community,
+                self.manifest.election_id.as_str(),
+                index,
+                &bytes,
+            )
+            .map_err(journal_failure)?;
+        self.board.append(&bytes);
         self.entries.push(bytes);
-        Ok(i as u64)
+        Ok(index)
+    }
+
+    /// Rebuild state from entries already journalled, journalling nothing.
+    fn replay(
+        &mut self,
+        entries: Vec<Vec<u8>>,
+        receipts: &HashMap<u64, String>,
+    ) -> Result<(), Failure> {
+        for bytes in entries {
+            let leaf = self.board.append(&bytes) as u64;
+            let entry: Value = serde_json::from_slice(&bytes)
+                .map_err(|e| journal_failure(format!("entry {leaf}: {e}")))?;
+            match entry["kind"].as_str() {
+                Some("opened") => self.state = State::Voting,
+                Some("cast") => {
+                    let cast_value = &entry["cast"];
+                    let cast_digest: [u8; 32] = Sha256::digest(jcs(cast_value)?).into();
+                    let ballot_digest: [u8; 32] =
+                        Sha256::digest(jcs(&cast_value["ballot"])?).into();
+                    let typed: cast::Cast = parse(cast_value)?;
+                    let admitted = Admitted {
+                        leaf,
+                        ballot_digest,
+                        receipt_token: receipts.get(&leaf).cloned().unwrap_or_default(),
+                    };
+                    self.exact.insert(cast_digest, admitted.clone());
+                    self.counted
+                        .insert(typed.tag.as_str().to_string(), (admitted, typed.ballot));
+                }
+                Some("closed" | "closedEarly") => self.state = State::Closed,
+                Some("result") => {
+                    self.result = Some(entry["result"].clone());
+                    self.state = State::Tallied;
+                }
+                Some("cancelled") => self.state = State::Cancelled,
+                _ => {}
+            }
+            self.entries.push(bytes);
+        }
+        Ok(())
     }
 
     fn summary(&self, now: DateTime<Utc>) -> Value {
@@ -286,11 +466,85 @@ impl ElectionRecord {
 }
 
 impl BallotBox {
+    /// A ballot box that keeps nothing across a restart.
     pub fn new(did: &str) -> Self {
+        Self::with_journal(did, Arc::new(NoJournal))
+    }
+
+    /// A ballot box that makes what it accepts durable in `journal`.
+    pub fn with_journal(did: &str, journal: Arc<dyn Journal>) -> Self {
         Self {
             did: did.to_string(),
+            journal,
             elections: HashMap::new(),
         }
+    }
+
+    /// Rebuild a ballot box from what its journal holds. Each election is re-registered from its
+    /// manifest and parameters as received and its board replayed; nothing is journalled again.
+    ///
+    /// # Errors
+    /// A failure naming the election that cannot be rebuilt: a journal that no longer parses is
+    /// an operator's problem, never a silently shorter board.
+    pub fn restore(
+        did: &str,
+        journal: Arc<dyn Journal>,
+        restored: Vec<Restored>,
+    ) -> Result<Self, Failure> {
+        let mut bb = Self::with_journal(did, journal);
+        for r in restored {
+            let Some(stored) = r.election else {
+                continue;
+            };
+            let mut record = bb.build_record(stored.manifest, stored.parameters)?;
+            record.replay(r.entries, &r.receipts)?;
+            let key = (record.community.clone(), record.id().to_string());
+            bb.elections.insert(key, record);
+        }
+        Ok(bb)
+    }
+
+    fn build_record(
+        &self,
+        manifest_value: Value,
+        parameters: Value,
+    ) -> Result<ElectionRecord, Failure> {
+        let manifest: register::Manifest = parse(&manifest_value)?;
+        let voting: register::VotingParameters = parse(&parameters)?;
+        let community = manifest.community.as_str().to_string();
+        let digest = rules::manifest_digest(&manifest_value)?;
+        let hvk: Hvk = vti_vetting_pcs::scheme::dec(voting.voting_key.as_str())
+            .map_err(|e| Failure::malformed(format!("votingKey: {e}")))?;
+        let params =
+            VotingParams::new(&community, hvk).map_err(|e| Failure::malformed(e.to_string()))?;
+        let election = Election::new(
+            &community,
+            ElectionId::new(manifest.election_id.as_str())
+                .map_err(|e| Failure::malformed(e.to_string()))?,
+            digest,
+        )
+        .map_err(|e| Failure::malformed(e.to_string()))?;
+        let revote = match manifest.revote {
+            register::Revote::Replace => BoxRevote::Replace,
+            _ => BoxRevote::Refuse,
+        };
+        let verifier = Verifier::new(&params, election, revote, MemoryNullifiers::default())
+            .map_err(|e| Failure::malformed(e.to_string()))?;
+        Ok(ElectionRecord {
+            community,
+            journal: Arc::clone(&self.journal),
+            manifest,
+            manifest_value,
+            digest,
+            parameters,
+            verifier,
+            state: State::Registered,
+            board: Board::new(),
+            entries: Vec::new(),
+            exact: HashMap::new(),
+            counted: HashMap::new(),
+            result: None,
+        })
     }
 
     pub fn did(&self) -> &str {
@@ -349,36 +603,17 @@ impl BallotBox {
                 "this election is registered with another manifest or key",
             ));
         }
-        let hvk: Hvk = vti_vetting_pcs::scheme::dec(p.parameters.voting_key.as_str())
-            .map_err(|e| Failure::malformed(format!("votingKey: {e}")))?;
-        let params =
-            VotingParams::new(&community, hvk).map_err(|e| Failure::malformed(e.to_string()))?;
-        let election = Election::new(
-            &community,
-            ElectionId::new(p.manifest.election_id.as_str())
-                .map_err(|e| Failure::malformed(e.to_string()))?,
-            digest,
-        )
-        .map_err(|e| Failure::malformed(e.to_string()))?;
-        let revote = match p.manifest.revote {
-            register::Revote::Replace => BoxRevote::Replace,
-            _ => BoxRevote::Refuse,
-        };
-        let verifier = Verifier::new(&params, election, revote, MemoryNullifiers::default())
-            .map_err(|e| Failure::malformed(e.to_string()))?;
-        let mut record = ElectionRecord {
-            manifest: p.manifest,
-            manifest_value,
-            digest,
-            parameters,
-            verifier,
-            state: State::Registered,
-            board: Board::new(),
-            entries: Vec::new(),
-            exact: HashMap::new(),
-            counted: HashMap::new(),
-            result: None,
-        };
+        let mut record = self.build_record(manifest_value.clone(), parameters.clone())?;
+        self.journal
+            .election(
+                &community,
+                &key.1,
+                &StoredElection {
+                    manifest: manifest_value,
+                    parameters,
+                },
+            )
+            .map_err(journal_failure)?;
         record.advance(now)?;
         let answer = respond::<register::Response>(json!({ "election": record.summary(now) }));
         self.elections.insert(key, record);
@@ -520,13 +755,22 @@ impl BallotBox {
         if let Some(a) = held.as_ref().filter(|a| a.ballot_digest == ballot_digest) {
             return receipt(e, a, "alreadyCounted", now);
         }
-        let leaf = e.append(&json!({ "kind": "cast", "cast": cast_value }))?;
         let mut token = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut token);
+        let receipt_token = multibase::encode(multibase::Base::Base58Btc, token);
+        e.journal
+            .receipt(
+                &e.community,
+                e.manifest.election_id.as_str(),
+                e.board.len() as u64,
+                &receipt_token,
+            )
+            .map_err(journal_failure)?;
+        let leaf = e.append(&json!({ "kind": "cast", "cast": cast_value }))?;
         let admitted = Admitted {
             leaf,
             ballot_digest,
-            receipt_token: multibase::encode(multibase::Base::Base58Btc, token),
+            receipt_token,
         };
         let outcome = match held {
             Some(prev) => {
