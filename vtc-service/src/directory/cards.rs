@@ -22,18 +22,13 @@ use super::model::{
 /// A card's values, serialized, may not exceed this (VTI-DIR-016).
 pub const MAX_CARD_VALUE_BYTES: usize = 16 * 1024;
 
-/// Whether a member can publish their card beyond the community (VTI-DIR-046).
-/// This build cannot, so `card/update` refuses `external` and the disclosure
-/// statement says no card leaves the community.
-pub const EXTERNAL_PUBLICATION: bool = false;
-
 /// What a member's search may match on a new card.
 pub const NEW_CARD_SEARCH: SearchMode = SearchMode::ByName;
 
 /// From whom a new card accepts introductions.
 pub const NEW_CARD_INTRODUCTIONS: Introductions = Introductions::Anyone;
 
-fn card_key(entry_id: &str) -> Vec<u8> {
+pub(crate) fn card_key(entry_id: &str) -> Vec<u8> {
     format!("card:{entry_id}").into_bytes()
 }
 
@@ -114,6 +109,7 @@ pub fn fresh(did: &str, settings: &Settings, own_label: Option<&str>, now: DateT
         revision: 0,
         updated_at: now,
         last_update: None,
+        external_card: None,
     }
 }
 
@@ -365,12 +361,18 @@ pub fn apply_member_update(
     }
 
     if let Some(d) = update.discoverability {
-        if d.external && !EXTERNAL_PUBLICATION {
-            // VTI-DIR-046 / VTI-REG-004: this build publishes no external
-            // card. Refused whole, so nothing else in the document lands.
+        let was = card.discoverability;
+        if d.external && !was.external {
+            // Item 7: external publication is turned on only by
+            // `card/publish`, with a card the member signed; `true` here would
+            // publish nothing. Refused whole, so nothing else in the document
+            // lands.
             return Err(CardError::NotAvailable);
         }
-        let was = card.discoverability;
+        if !d.external && was.external {
+            // A narrowing: the card is withdrawn when this commits.
+            next.external_card = None;
+        }
         if d.listing.rank() > was.listing.rank() || d.search.rank() > was.search.rank() {
             widens = true;
         }
@@ -479,7 +481,13 @@ pub async fn commit(
     applied: &Applied,
 ) -> Result<bool, AppError> {
     let _guard = super::WRITE_LOCK.lock().await;
-    store_if_revision(ks, &applied.card, before.revision).await
+    let stored = store_if_revision(ks, &applied.card, before.revision).await?;
+    if stored && applied.card.published_digest().is_none() {
+        // Turned off: never served again. The caller records the withdrawal.
+        ks.remove(super::external::published_key(&applied.card.entry_id))
+            .await?;
+    }
+    Ok(stored)
 }
 
 /// VTI-DIR-122: a rotation carries the card to the new DID without changing
@@ -520,16 +528,31 @@ pub enum Departure {
     Keep,
 }
 
+/// A departure leaves no external card behind whatever the disposition
+/// (VTI-DIR-120): the caller withdraws it first, with
+/// [`super::external::withdraw`], and this erases what is left of it.
 pub async fn on_departure(ks: &KeyspaceHandle, did: &str, how: Departure) -> Result<(), AppError> {
-    if how == Departure::Keep {
-        return Ok(());
-    }
     let _guard = super::WRITE_LOCK.lock().await;
-    if let Some(entry_id) = entry_of(ks, did).await? {
-        let mut batch = Batch::new();
-        batch.remove(card_key(&entry_id)).remove(index_key(did));
-        ks.apply_batch(batch).await?;
+    let Some(entry_id) = entry_of(ks, did).await? else {
+        return Ok(());
+    };
+    let mut batch = Batch::new();
+    batch.remove(super::external::published_key(&entry_id));
+    match how {
+        Departure::Erase => {
+            batch.remove(card_key(&entry_id)).remove(index_key(did));
+        }
+        Departure::Keep => {
+            if let Some(mut card) = get(ks, &entry_id).await?
+                && (card.discoverability.external || card.external_card.is_some())
+            {
+                card.discoverability.external = false;
+                card.external_card = None;
+                batch.insert(card_key(&entry_id), &card)?;
+            }
+        }
     }
+    ks.apply_batch(batch).await?;
     Ok(())
 }
 
@@ -683,17 +706,35 @@ mod tests {
     }
 
     #[test]
-    fn external_publication_is_not_available() {
+    fn external_publication_is_turned_on_only_by_publishing() {
         let c = card();
-        let r = apply(
-            &c,
-            json!({
-                "values": { "displayName": "Carol" },
-                "discoverability": { "listing": "listed", "search": "byName", "external": true }
-            }),
-            Utc::now(),
+        let on = json!({
+            "values": { "displayName": "Carol" },
+            "discoverability": { "listing": "listed", "search": "byName", "external": true }
+        });
+        assert_eq!(
+            apply(&c, on.clone(), Utc::now()).unwrap_err(),
+            CardError::NotAvailable
         );
-        assert_eq!(r.unwrap_err(), CardError::NotAvailable);
+        // Already on: `true` is no change, and `false` withdraws.
+        let mut published = c.clone();
+        published.discoverability.external = true;
+        published.external_card = Some(crate::directory::model::ExternalCard {
+            state: crate::directory::model::ExternalState::Published,
+            card_digest: Some("zQmExample".into()),
+            published_at: Some(Utc::now()),
+        });
+        let kept = apply(&published, on, Utc::now()).unwrap();
+        assert_eq!(kept.card.published_digest(), Some("zQmExample"));
+        let off = apply(
+            &published,
+            json!({ "discoverability": { "listing": "listed", "search": "byName", "external": false } }),
+            Utc::now(),
+        )
+        .unwrap();
+        assert!(!off.card.discoverability.external);
+        assert!(off.card.external_card.is_none());
+        assert!(!off.widens);
     }
 
     #[test]

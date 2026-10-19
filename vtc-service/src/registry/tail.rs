@@ -293,6 +293,14 @@ fn audit_to_sync_job(
             let target = envelope.target_did_plain.as_deref()?;
             Some((SyncJob::fresh(SyncJobKind::UpdateMember, target), None))
         }
+        // An external card published or withdrawn: re-publish the member's
+        // record with or without its pointer (`card/publish` item 7). The
+        // syncer reads the card as it is then, so a stale event points to
+        // nothing stale.
+        AuditEvent::DirectoryCardPublication(_) => {
+            let target = envelope.target_did_plain.as_deref()?;
+            Some((SyncJob::fresh(SyncJobKind::UpdateMember, target), None))
+        }
         _ => None,
     }
 }
@@ -496,6 +504,39 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].kind, SyncJobKind::UpdateMember);
         assert_eq!(jobs[0].member_did, "did:key:zConsent");
+    }
+
+    /// Publishing or withdrawing an external card re-publishes the member's
+    /// recognition record, with or without its pointer (`card/publish` item 7).
+    #[tokio::test]
+    async fn an_external_card_change_republishes_the_recognition_record() {
+        let t = temp_keyspaces().await;
+        for change in ["published", "withdrawn"] {
+            t.writer
+                .write(
+                    "did:key:zCarol",
+                    Some("did:key:zCarol"),
+                    AuditEvent::DirectoryCardPublication(
+                        vti_common::audit::DirectoryCardPublicationData {
+                            entry_id: "dir_Q2xhcmFRMmxoY21GUk1t".into(),
+                            change: change.into(),
+                            reason: None,
+                            card_digest: Some("zQmExample".into()),
+                            document_id: None,
+                        },
+                    ),
+                )
+                .await
+                .unwrap();
+        }
+        let outcome = walk(&t.audit, &t.queue, &t.policies, &t.active_policies, 0, None)
+            .await
+            .unwrap();
+        assert_eq!(outcome.jobs_enqueued, 2);
+        for job in list_sync_jobs(&t.queue).await.unwrap() {
+            assert_eq!(job.kind, SyncJobKind::UpdateMember);
+            assert_eq!(job.member_did, "did:key:zCarol");
+        }
     }
 
     #[tokio::test]

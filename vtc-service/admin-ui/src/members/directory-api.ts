@@ -12,7 +12,8 @@
 //
 // A delegated key can never make a value `public` or publish the card beyond
 // the community: those go through the member's wallet, and the editor does
-// not offer them here.
+// not offer them here. It may upload a picture for the member's card, read
+// pictures as the member, and stop a published card being published.
 
 import {
   buildTrustTaskDocument,
@@ -28,6 +29,9 @@ import type {
   DirectoryEntriesListResponse,
   DirectoryEntriesShowResponse,
   DirectoryFieldsListResponse,
+  DirectoryImagesGetResponse,
+  DirectoryImagesUploadPayload,
+  DirectoryImagesUploadResponse,
 } from "@/lib/wire-types";
 
 import { vtcDid } from "./api";
@@ -37,6 +41,8 @@ export const CARD_SHOW_TASK = "https://trusttasks.org/spec/vtc/directory/card/sh
 export const CARD_UPDATE_TASK = "https://trusttasks.org/spec/vtc/directory/card/update/0.1";
 export const ENTRIES_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/entries/list/0.1";
 export const ENTRIES_SHOW_TASK = "https://trusttasks.org/spec/vtc/directory/entries/show/0.1";
+export const IMAGES_UPLOAD_TASK = "https://trusttasks.org/spec/vtc/directory/images/upload/0.1";
+export const IMAGES_GET_TASK = "https://trusttasks.org/spec/vtc/directory/images/get/0.1";
 
 /** A refusal: the local part of its code, its message and its details. */
 export class DirectoryError extends Error {
@@ -106,3 +112,7 @@ export const listEntries = (p: DirectoryEntriesListPayload) =>
   send<DirectoryEntriesListResponse>(ENTRIES_LIST_TASK, p);
 export const showEntry = (entryId: string) =>
   send<DirectoryEntriesShowResponse>(ENTRIES_SHOW_TASK, { entryId });
+export const uploadImage = (p: DirectoryImagesUploadPayload) =>
+  send<DirectoryImagesUploadResponse>(IMAGES_UPLOAD_TASK, p);
+export const getImage = (entryId: string, field: string, sha256: string) =>
+  send<DirectoryImagesGetResponse>(IMAGES_GET_TASK, { entryId, field, sha256 });

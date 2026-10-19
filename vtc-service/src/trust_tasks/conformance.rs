@@ -352,9 +352,45 @@ fn base_disclosure() -> Value {
     crate::directory::disclosure::build(
         &crate::directory::fields::base_fields(),
         crate::directory::model::Settings::default().default_listing,
-        crate::directory::disclosure::Served::this_build(),
+        crate::directory::disclosure::Served::this_build(
+            &crate::directory::model::Settings::default(),
+        ),
     )
     .expect("the base schema gives a statement")
+}
+
+/// A stored picture's reference, as `directory::images` answers it.
+fn stored_picture() -> Value {
+    json!({ "sha256": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b", "mediaType": "image/jpeg", "size": 18342 })
+}
+
+/// An external card as a member signs it: their public values mapped as
+/// `directory::external::expected_members` maps them, with their proof.
+fn published_card() -> Value {
+    let mut public = serde_json::Map::new();
+    public.insert("displayName".into(), json!("Carol Example"));
+    let mut card = json!({
+        "@type": "Card",
+        "version": "1.0",
+        "uid": format!("{}{DIRECTORY_ENTRY}", crate::directory::external::UID_PREFIX),
+        "issuer": "did:example:carol",
+    });
+    for (k, v) in crate::directory::external::expected_members(
+        DIRECTORY_ENTRY,
+        &crate::directory::fields::base_fields(),
+        &public,
+    ) {
+        card[k] = v;
+    }
+    card["proof"] = json!({
+        "type": "DataIntegrityProof",
+        "cryptosuite": "eddsa-jcs-2022",
+        "verificationMethod": "did:example:carol#key-1",
+        "created": "2026-10-19T09:10:00Z",
+        "proofPurpose": "assertionMethod",
+        "proofValue": "z58DAdFfa9SkqZMVPxAQpic7ndSayn1PzZs6ZjWp1CktyGesjuTSwRdoWhAfGFCF5bppETSTojQCrfFPP2oumHKtz",
+    });
+    card
 }
 
 /// A directory entry identifier, as `directory::cards::new_entry_id` mints one.
@@ -2744,6 +2780,45 @@ fn table() -> Vec<Conformance> {
             s::directory::disclosure::v0_1::Response,
             json!({}),
             json!({ "communityDid": COMMUNITY_DID, "disclosure": base_disclosure() })
+        ),
+        checked!(
+            s::directory::images::upload::v0_1::Payload,
+            s::directory::images::upload::v0_1::Response,
+            json!({ "mediaType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB" }),
+            json!({ "image": stored_picture(), "expiresAt": "2026-10-20T09:00:01Z" })
+        ),
+        checked!(
+            s::directory::images::get::v0_1::Payload,
+            s::directory::images::get::v0_1::Response,
+            json!({
+                "entryId": DIRECTORY_ENTRY,
+                "field": "avatar",
+                "sha256": stored_picture()["sha256"],
+            }),
+            json!({ "image": stored_picture(), "data": "_9j_4AAQSkZJRgABAQAAAQABAAD" })
+        ),
+        checked!(
+            s::directory::card::publish::v0_1::Payload,
+            s::directory::card::publish::v0_1::Response,
+            json!({ "card": published_card(), "expectedRevision": 7 }),
+            json!({ "externalCard": {
+                "state": "published",
+                "cardDigest": crate::directory::external::card_digest(&published_card()).unwrap(),
+                "publishedAt": "2026-10-19T09:10:02Z",
+            }})
+        ),
+        checked!(
+            s::directory::card::public::v0_1::Payload,
+            s::directory::card::public::v0_1::Response,
+            json!({
+                "entryId": DIRECTORY_ENTRY,
+                "cardDigest": crate::directory::external::card_digest(&published_card()).unwrap(),
+            }),
+            json!({
+                "card": published_card(),
+                "cardDigest": crate::directory::external::card_digest(&published_card()).unwrap(),
+                "publishedAt": "2026-10-19T09:10:02Z",
+            })
         ),
         checked!(
             s::vetting::revoke_statement::v0_1::Payload,

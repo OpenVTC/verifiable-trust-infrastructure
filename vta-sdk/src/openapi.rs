@@ -333,6 +333,22 @@ spec_types! {
     /// `vtc/directory/disclosure/0.1#response` — what the directory would
     /// disclose about a member, and to whom.
     DirectoryDisclosure01Response(directory::disclosure::v0_1::Response);
+    /// `vtc/directory/images/upload/0.1` payload — one picture, base64url.
+    DirectoryImagesUpload01Payload(directory::images::upload::v0_1::Payload);
+    /// `vtc/directory/images/upload/0.1#response` — the stored picture's reference.
+    DirectoryImagesUpload01Response(directory::images::upload::v0_1::Response);
+    /// `vtc/directory/images/get/0.1` payload — an entry and its picture field.
+    DirectoryImagesGet01Payload(directory::images::get::v0_1::Payload);
+    /// `vtc/directory/images/get/0.1#response` — the picture, where the projection shows it.
+    DirectoryImagesGet01Response(directory::images::get::v0_1::Response);
+    /// `vtc/directory/card/publish/0.1` payload — the member's signed external card.
+    DirectoryCardPublish01Payload(directory::card::publish::v0_1::Payload);
+    /// `vtc/directory/card/publish/0.1#response` — where the external card stands.
+    DirectoryCardPublish01Response(directory::card::publish::v0_1::Response);
+    /// `vtc/directory/card/public/0.1` payload — an entry, and the card expected.
+    DirectoryCardPublic01Payload(directory::card::public::v0_1::Payload);
+    /// `vtc/directory/card/public/0.1#response` — the card exactly as its member signed it.
+    DirectoryCardPublic01Response(directory::card::public::v0_1::Response);
     /// `vtc/rooms/community/members/list/0.1` payload.
     RoomsCommunityMembersList01Payload(rooms_community::members::list::v0_1::Payload);
     /// `vtc/rooms/community/members/list/0.1#response` — one page of a room's
@@ -714,6 +730,14 @@ mod tests {
         check::<DirectoryCardUpdate01Response>();
         check::<DirectoryDisclosure01Payload>();
         check::<DirectoryDisclosure01Response>();
+        check::<DirectoryImagesUpload01Payload>();
+        check::<DirectoryImagesUpload01Response>();
+        check::<DirectoryImagesGet01Payload>();
+        check::<DirectoryImagesGet01Response>();
+        check::<DirectoryCardPublish01Payload>();
+        check::<DirectoryCardPublish01Response>();
+        check::<DirectoryCardPublic01Payload>();
+        check::<DirectoryCardPublic01Response>();
     }
 
     #[test]

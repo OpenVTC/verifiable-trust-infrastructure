@@ -3231,6 +3231,89 @@ export interface components {
             verifiedAt: string;
         };
         /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcDirectoryCardPublicV0_1DigestMultibase: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcDirectoryCardPublicV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcDirectoryCardPublicV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Read a member's external card, as they signed it. Anyone may ask; the request carries nothing about the reader. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcDirectoryCardPublicV0_1Payload: {
+            cardDigest?: components["schemas"]["VtcDirectoryCardPublicV0_1DigestMultibase"];
+            entryId: components["schemas"]["VtcDirectoryCardPublicV0_1EntryId"];
+            ext?: components["schemas"]["VtcDirectoryCardPublicV0_1Ext"];
+        };
+        /**
+         * @description A member's external card: a JSContact `Card` (RFC 9553) holding exactly their values whose visibility is `public`, mapped as `JSContactCard` maps them, with the member's W3C Data Integrity `proof`. The community serves it as received and never signs, composes or edits it (VTI-REG-004 item 4).
+         *
+         *     Carried as an open object, and deliberately so: the proof covers every member of the card, and a typed binding that kept only the members named here would drop the rest and break the signature. So this schema constrains none of its members, and a consumer MUST check them itself: `@type`, `version`, `uid` and `proof` are present; `@type` is `Card`; `version` is `1.0`; `uid` is `urn:vtc-directory:<EntryId>`; `proof` is a `DataIntegrityProof` with `cryptosuite` `eddsa-jcs-2022` or `ecdsa-jcs-2019`, `proofPurpose` `assertionMethod`, and a `verificationMethod` of the member's membership DID authorized for `assertionMethod`; and the proof verifies over the card without it, before any member is relied on.
+         */
+        VtcDirectoryCardPublicV0_1PublishedCard: {
+            [key: string]: unknown;
+        };
+        /** @description The success response to a vtc/directory/card/public/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/card/public/0.1#response. */
+        VtcDirectoryCardPublicV0_1Response: {
+            card: components["schemas"]["VtcDirectoryCardPublicV0_1PublishedCard"];
+            cardDigest: components["schemas"]["VtcDirectoryCardPublicV0_1DigestMultibase"];
+            ext?: components["schemas"]["VtcDirectoryCardPublicV0_1Ext"];
+            /** Format: date-time */
+            publishedAt: string;
+        };
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcDirectoryCardPublishV0_1DigestMultibase: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcDirectoryCardPublishV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Where the member's external card stands. Present on a card exactly when `discoverability.external` is true. `published`: the community is serving the card the member signed, and its trust registry points to it. `awaitingSignature`: the member's `public` values have changed since they signed, so the community has withdrawn the card it was serving and serves none until the member signs the current values (vtc/directory/card/publish). The community never serves a card the member did not sign, and never one that differs from their current `public` values. */
+        VtcDirectoryCardPublishV0_1ExternalCard: {
+            cardDigest?: components["schemas"]["VtcDirectoryCardPublishV0_1DigestMultibase"];
+            /**
+             * Format: date-time
+             * @description Present while `published`: when the card now served was published.
+             */
+            publishedAt?: string;
+            /** @enum {string} */
+            state: "published" | "awaitingSignature";
+        };
+        /** @description A member publishes their external card: their `public` values as a JSContact card they signed. The community serves it as signed and points its trust registry to it; it never signs or composes the card itself. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcDirectoryCardPublishV0_1Payload: {
+            card: components["schemas"]["VtcDirectoryCardPublishV0_1PublishedCard"];
+            /** @description The card revision the member signed against. Where the card has changed since, the answer is `superseded` and nothing is published. */
+            expectedRevision?: number;
+            ext?: components["schemas"]["VtcDirectoryCardPublishV0_1Ext"];
+        };
+        /**
+         * @description A member's external card: a JSContact `Card` (RFC 9553) holding exactly their values whose visibility is `public`, mapped as `JSContactCard` maps them, with the member's W3C Data Integrity `proof`. The community serves it as received and never signs, composes or edits it (VTI-REG-004 item 4).
+         *
+         *     Carried as an open object, and deliberately so: the proof covers every member of the card, and a typed binding that kept only the members named here would drop the rest and break the signature. So this schema constrains none of its members, and a consumer MUST check them itself: `@type`, `version`, `uid` and `proof` are present; `@type` is `Card`; `version` is `1.0`; `uid` is `urn:vtc-directory:<EntryId>`; `proof` is a `DataIntegrityProof` with `cryptosuite` `eddsa-jcs-2022` or `ecdsa-jcs-2019`, `proofPurpose` `assertionMethod`, and a `verificationMethod` of the member's membership DID authorized for `assertionMethod`; and the proof verifies over the card without it, before any member is relied on.
+         */
+        VtcDirectoryCardPublishV0_1PublishedCard: {
+            [key: string]: unknown;
+        };
+        /** @description The success response to a vtc/directory/card/publish/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/card/publish/0.1#response. */
+        VtcDirectoryCardPublishV0_1Response: {
+            ext?: components["schemas"]["VtcDirectoryCardPublishV0_1Ext"];
+            externalCard: components["schemas"]["VtcDirectoryCardPublishV0_1ExternalCard"];
+        };
+        /**
          * @description Who may see a directory field, ordered from narrowest to widest. `admins`: holders of `vtc.directory.admin` (and, for derived fields, `vtc.members.manage`). `groups`: members who share at least one community group with the subject (narrowed to the groups the subject names in `groupAudience`, where it names any). `connections`: members holding an attributed, in-force verified relationship with the subject at the community. `members`: every active member. `public`: anyone, and what the member's signed public card carries outside the community.
          *
          *     `groups` and `connections` are not a chain: a viewer sees a field when they satisfy the audience the subject chose for it or any wider audience. Every audience includes the administrators, and the subject always sees their own whole card. There is no `onlyMe`: a value nobody else should see is not directory data.
@@ -4263,6 +4346,99 @@ export interface components {
         VtcDirectoryFieldsUpdateV0_1Response: {
             ext?: components["schemas"]["VtcDirectoryFieldsUpdateV0_1Ext"];
             field: components["schemas"]["VtcDirectoryFieldsUpdateV0_1FieldDefinition"];
+        };
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcDirectoryImagesGetV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcDirectoryImagesGetV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcDirectoryImagesGetV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcDirectoryImagesGetV0_1FieldKey: string;
+        /** @description Read the bytes of an image on a directory entry, where the caller's projection of that entry shows it. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcDirectoryImagesGetV0_1Payload: {
+            entryId: components["schemas"]["VtcDirectoryImagesGetV0_1EntryId"];
+            ext?: components["schemas"]["VtcDirectoryImagesGetV0_1Ext"];
+            field: components["schemas"]["VtcDirectoryImagesGetV0_1FieldKey"];
+            /** @description The image the caller expects, from the `CardBlobRef` it was shown. Where the field now holds another, the answer is `notFound`, so a reader never shows a picture under a card it did not come from. */
+            sha256?: string;
+        };
+        /** @description The success response to a vtc/directory/images/get/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/images/get/0.1#response. */
+        VtcDirectoryImagesGetV0_1Response: {
+            /** @description The stored bytes, base64url without padding. Their SHA-256 is `image.sha256`. */
+            data: string;
+            ext?: components["schemas"]["VtcDirectoryImagesGetV0_1Ext"];
+            image: components["schemas"]["VtcDirectoryImagesGetV0_1CardBlobRef"];
+        };
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcDirectoryImagesUploadV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcDirectoryImagesUploadV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /**
+         * @description The media types a directory image may have — those a `CardBlobRef` admits.
+         * @enum {string}
+         */
+        VtcDirectoryImagesUploadV0_1ImageMediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+        /** @description A member, or a directory administrator, hands the community an image for a directory card — an avatar or an `image` field. The community re-encodes it and answers the reference a card holds. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcDirectoryImagesUploadV0_1Payload: {
+            /** @description The image, base64url without padding (RFC 4648 §5). At most 262144 bytes decoded. */
+            data: string;
+            ext?: components["schemas"]["VtcDirectoryImagesUploadV0_1Ext"];
+            mediaType: components["schemas"]["VtcDirectoryImagesUploadV0_1ImageMediaType"];
+        };
+        /** @description The success response to a vtc/directory/images/upload/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/images/upload/0.1#response. */
+        VtcDirectoryImagesUploadV0_1Response: {
+            /**
+             * Format: date-time
+             * @description When the community erases the image if no card holds it by then.
+             */
+            expiresAt: string;
+            ext?: components["schemas"]["VtcDirectoryImagesUploadV0_1Ext"];
+            image: components["schemas"]["VtcDirectoryImagesUploadV0_1CardBlobRef"];
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcEndorsementTypesDeleteV0_1Ext: {

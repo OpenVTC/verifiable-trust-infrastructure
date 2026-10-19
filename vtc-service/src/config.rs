@@ -160,6 +160,18 @@ pub struct DirectoryConfig {
     /// (VTI-DIR-114). Default 60.
     #[serde(default = "DirectoryConfig::default_list_rate")]
     pub list_rate_per_minute: u32,
+    /// Whether a member may publish their card beyond the community with
+    /// `vtc/directory/card/publish` (VTI-DIR-046). Default `true`: publication
+    /// is still the member's own decision, signed with their membership DID,
+    /// and needs their registry-publication consent. `false` refuses it
+    /// (`notAvailable`), and the disclosure statement says no card leaves the
+    /// community.
+    #[serde(default = "DirectoryConfig::default_external_cards")]
+    pub external_cards: bool,
+    /// Pictures one member or administrator may upload per hour
+    /// (`vtc/directory/images/upload`). Default 30.
+    #[serde(default = "DirectoryConfig::default_image_uploads")]
+    pub image_uploads_per_hour: u32,
 }
 
 impl DirectoryConfig {
@@ -174,6 +186,12 @@ impl DirectoryConfig {
     }
     fn default_list_rate() -> u32 {
         60
+    }
+    fn default_external_cards() -> bool {
+        true
+    }
+    fn default_image_uploads() -> u32 {
+        30
     }
 
     pub fn is_default(&self) -> bool {
@@ -196,11 +214,16 @@ impl DirectoryConfig {
         if self.list_rate_per_minute == 0 {
             return Err("[directory] list_rate_per_minute must be at least 1".into());
         }
+        if self.image_uploads_per_hour == 0 {
+            return Err("[directory] image_uploads_per_hour must be at least 1".into());
+        }
         Ok(crate::directory::model::Settings {
             default_listing,
             retention_days: self.retention_days,
             facet_threshold: self.facet_threshold,
             list_rate_per_minute: self.list_rate_per_minute,
+            external_cards: self.external_cards,
+            image_uploads_per_hour: self.image_uploads_per_hour,
         })
     }
 }
@@ -212,6 +235,8 @@ impl Default for DirectoryConfig {
             retention_days: Self::default_retention_days(),
             facet_threshold: Self::default_facet_threshold(),
             list_rate_per_minute: Self::default_list_rate(),
+            external_cards: Self::default_external_cards(),
+            image_uploads_per_hour: Self::default_image_uploads(),
         }
     }
 }

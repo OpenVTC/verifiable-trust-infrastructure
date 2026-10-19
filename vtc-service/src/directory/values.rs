@@ -157,15 +157,48 @@ fn check_list(field: &FieldDef, items: &[Value]) -> Result<(), Unfit> {
     Ok(())
 }
 
-/// Whether `value` fits `field`. Image and claim values are not accepted by
-/// this build from any writer: no task stores an image yet, and a claim is
-/// written only by the subject's presentation, which this build does not
-/// serve.
+/// Whether `value` is a `CardBlobRef` a card may hold: `sha256`, `mediaType`
+/// and `size`, never the projection-only `url` / `urlExpiresAt`. Whose image it
+/// is — one the writer uploaded (`images/upload` item 5) — is the task's to
+/// check, against the image store.
+fn check_image(value: &Value) -> Result<(), Unfit> {
+    let Some(obj) = value.as_object() else {
+        return Err("not a picture reference".into());
+    };
+    if let Some(k) = obj
+        .keys()
+        .find(|k| !matches!(k.as_str(), "sha256" | "mediaType" | "size"))
+    {
+        return Err(format!("a picture reference holds no `{k}`"));
+    }
+    let sha_ok = obj.get("sha256").and_then(Value::as_str).is_some_and(|s| {
+        s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    });
+    if !sha_ok {
+        return Err("`sha256` is not a lowercase hex SHA-256".into());
+    }
+    if !obj
+        .get("mediaType")
+        .and_then(Value::as_str)
+        .is_some_and(|m| super::images::MEDIA_TYPES.contains(&m))
+    {
+        return Err("`mediaType` is not an image type a card holds".into());
+    }
+    if let Some(size) = obj.get("size")
+        && !size
+            .as_u64()
+            .is_some_and(|n| (1..=super::images::MAX_IMAGE_BYTES as u64).contains(&n))
+    {
+        return Err("`size` is out of range".into());
+    }
+    Ok(())
+}
+
+/// Whether `value` fits `field`. A claim is written only by the subject's
+/// presentation, which this build does not serve, so no writer may set one.
 pub fn check(field: &FieldDef, value: &Value) -> Result<(), Unfit> {
     match (field.kind, value) {
-        (FieldType::Image, _) => {
-            Err("this community cannot store images for directory cards yet".into())
-        }
+        (FieldType::Image, v) => check_image(v),
         (FieldType::Claim, _) => {
             Err("a verified value is written only by presenting a credential".into())
         }
@@ -258,13 +291,35 @@ mod tests {
     }
 
     #[test]
-    fn images_and_claims_are_not_accepted_here() {
+    fn a_picture_is_a_reference_and_nothing_more() {
+        let avatar = base("avatar");
+        let ok = json!({ "sha256": "0".repeat(64), "mediaType": "image/png", "size": 10 });
+        assert!(check(&avatar, &ok).is_ok());
         assert!(
             check(
-                &base("avatar"),
+                &avatar,
                 &json!({ "sha256": "0".repeat(64), "mediaType": "image/png" })
+            )
+            .is_ok()
+        );
+        // A projection's URL is never stored.
+        let mut with_url = ok.clone();
+        with_url["url"] = json!("https://example.org/a.png");
+        assert!(check(&avatar, &with_url).is_err());
+        assert!(
+            check(
+                &avatar,
+                &json!({ "sha256": "0".repeat(64), "mediaType": "image/gif" })
             )
             .is_err()
         );
+        assert!(
+            check(
+                &avatar,
+                &json!({ "sha256": "A".repeat(64), "mediaType": "image/png" })
+            )
+            .is_err()
+        );
+        assert!(check(&avatar, &json!("https://example.org/a.png")).is_err());
     }
 }

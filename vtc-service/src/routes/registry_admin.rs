@@ -713,6 +713,7 @@ mod tests {
                 active_from: Utc::now(),
                 active_to: None,
                 last_synced_at: Utc::now(),
+                directory_card: None,
             },
         )
         .await

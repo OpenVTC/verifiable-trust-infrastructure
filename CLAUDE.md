@@ -1339,15 +1339,26 @@ new flow, update both this section and the relevant `docs/*.md`.
 ### VTC member directory (`vtc/directory/*`)
 - **What**: The community's field schema (`fields/*`), each member's card
   (`card/{show,update,assert}`), and browse/search/show (`entries/*`, plus the
-  older `query/0.1`), every read a **projection** for its caller. Groups,
-  introductions, notes, export, credential-sourced fields and images are later
-  phases (design §14).
+  older `query/0.1`), every read a **projection** for its caller; pictures
+  (`images/{upload,get}`) and external cards (`card/{publish,public}`). Groups,
+  introductions, notes, export and credential-sourced fields are later phases
+  (design §14).
 - **Invariants to preserve**: a value leaves only where the member's own
   visibility, the field's ceiling **and** the `directory` policy all admit the
   viewer — intersected, and the policy can only narrow (`directory::project`,
   VTI-DIR-020/021). Withheld means absent; nothing visible is the same
   `notFound` as no such entry (VTI-DIR-110). A viewer's stars, lists and notes
-  are never stored here (VTI-DIR-001). Entries are keyed by a random `entryId`,
+  are never stored here (VTI-DIR-001). A picture is stored only as the
+  community's own re-encoding (`directory::images::reencode` — never a byte as
+  sent, never metadata), goes only on its uploader's card, and is read only
+  through the projection (`images/get`), never by digest alone. An external card
+  is the member's signed JSContact card, stored and served exactly as received
+  (`directory::external`); the community never composes or signs one, publishes
+  only one that is exactly the member's public values in the fixed mapping,
+  and **never serves a stale one**: every serving path calls
+  `external::served`, which reconciles first, and a withdrawal stops serving
+  before the registry pointer goes. Departure withdraws it before anything
+  else (VTI-DIR-120). Entries are keyed by a random `entryId`,
   never a DID; a rotation moves only the `entry:<did>` index (VTI-DIR-050/122).
   A member writes only `member`-sourced values, an administrator only
   `admin`-sourced ones, and derived ones (`role`, `joinedAt`, `did`,
@@ -1360,7 +1371,7 @@ new flow, update both this section and the relevant `docs/*.md`.
   are bound to caller and question, facet counts below *k* are never exact
   (VTI-DIR-044/112/113). Every write is audited by reference, never a value.
 - **Code**: `vtc-service/src/directory/` (`fields`, `cards`, `values`,
-  `project`, `read`, `write_policy`, `sweep`),
+  `project`, `read`, `write_policy`, `images`, `external`, `sweep`),
   `vtc-service/src/trust_tasks/directory_tasks.rs`,
   `vtc-service/policies/default/{directory,directory_write}.rego`.
 - **The portal's key**: a member sign-in at `auth/oob/*/0.2` offers

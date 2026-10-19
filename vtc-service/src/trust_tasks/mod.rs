@@ -2048,6 +2048,14 @@ mod spine_proof_tests {
             "a public read of what the directory discloses, answered to whoever the join manifest is",
         ),
         (
+            directory_tasks::CARD_PUBLIC_TYPE,
+            "a public read of a card its member published so that anyone may read it",
+        ),
+        (
+            directory_tasks::IMAGES_GET_TYPE,
+            "a picture read through the projection; an unsigned caller is the public, answered only a picture on a published external card",
+        ),
+        (
             vetting_wire::VETTING_VETTER_LIST_TYPE,
             "a public read of the vetter registry",
         ),
@@ -3187,6 +3195,11 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     directory_tasks::ENTRIES_SHOW_TYPE,
     // What the directory discloses, read before applying (VTI-DIR-130).
     directory_tasks::DISCLOSURE_TYPE,
+    // Pictures, and the external card a member publishes beyond the community.
+    directory_tasks::IMAGES_UPLOAD_TYPE,
+    directory_tasks::IMAGES_GET_TYPE,
+    directory_tasks::CARD_PUBLISH_TYPE,
+    directory_tasks::CARD_PUBLIC_TYPE,
     community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
     community_tasks::RECOGNITION_CHECK_TYPE,
     community_tasks::MEMBERS_LIST_TYPE,

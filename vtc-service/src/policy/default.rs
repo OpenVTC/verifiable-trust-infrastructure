@@ -520,10 +520,12 @@ pub async fn upgrade_stale_rooms_default(
     .await
 }
 
-/// Whether `policy` behaves like the `directory` default shipped before the
-/// member directory's card model: it answers a member with a field list
-/// (`did`, `role`), which the projection now reads as a narrowing — so every
-/// name, nickname and other field members chose to show would be withheld.
+/// Whether `policy` behaves like a `directory` default this build supersedes:
+/// the one shipped before the card model, which answers a member with a field
+/// list (`did`, `role`) the projection now reads as a narrowing, so every name
+/// and nickname members chose to show would be withheld; or the one shipped
+/// before external cards, which denies the public and so would keep every
+/// external card empty. Called only on the workspace's own row.
 fn is_stale_directory_default(policy: &Policy) -> bool {
     let Ok(compiled) = compile(&policy.rego_source, policy.id) else {
         return false;
@@ -540,6 +542,23 @@ fn is_stale_directory_default(policy: &Policy) -> bool {
                 .cloned()
         })
         .is_some_and(|f| f == serde_json::json!(["did", "role"]))
+        || !answers_the_public(&compiled)
+}
+
+/// Whether a `directory` policy lets the public see what members made public
+/// — the question `vtc/directory/card/publish` asks. A shipped default from
+/// before external cards denies it, and would keep every external card empty.
+fn answers_the_public(compiled: &crate::policy::engine::CompiledPolicy) -> bool {
+    let probe = serde_json::json!({
+        "purpose": "directory",
+        "actor": { "did": "", "authenticated": false },
+        "subject": { "did": "did:example:probe-subject" },
+        "evidence": { "request": { "viewer": { "public": true } } },
+    });
+    evaluate(compiled, "data.vtc.directory.decision", probe)
+        .ok()
+        .and_then(|r| r.pointer("/result/0/expressions/0/value/effect").cloned())
+        .is_some_and(|e| e == "allow")
 }
 
 /// Replace a **workspace-shipped** `directory` default that predates the
@@ -555,8 +574,8 @@ pub async fn upgrade_stale_directory_default(
         active_policies_ks,
         PolicyPurpose::Directory,
         is_stale_directory_default,
-        "upgraded the shipped directory default: it predates directory cards and would have \
-         withheld every field members choose to show",
+        "upgraded the shipped directory default: it predates directory cards or external cards, \
+         and would have withheld fields members choose to show",
     )
     .await
 }
@@ -1819,12 +1838,69 @@ allow if {
             denied.pointer("/result/0/expressions/0/value"),
             Some(&json!({ "effect": "deny", "with": { "code": "not-a-member" } })),
         );
+        // The public is answered only as the public — the external-card
+        // question — never as an unidentified directory reader.
+        let public = evaluate(
+            &c,
+            "data.vtc.directory.decision",
+            json!({
+                "actor": { "authenticated": false },
+                "evidence": { "request": { "viewer": { "public": true } } },
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            public.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "allow", "with": {} })),
+        );
     }
 
     /// The default an earlier binary shipped answered a member with
     /// `fields: ["did", "role"]`, which the card model reads as a narrowing:
     /// it is replaced at boot while it is the workspace's own row, and an
     /// operator's policy that narrows the same way is left alone.
+    /// The card-model default shipped before external cards denied the
+    /// public: replaced at boot while it is the workspace's own row.
+    #[tokio::test]
+    async fn the_pre_external_card_directory_default_is_replaced() {
+        const OLD: &str = r#"package vtc.directory
+import rego.v1
+default decision := {"effect": "deny", "with": {"code": "not-a-member"}}
+decision := {"effect": "allow", "with": {}} if {
+	input.actor.authenticated == true
+}
+"#;
+        for (author, replaced) in [(DEFAULTS_AUTHOR, true), ("did:example:operator", false)] {
+            let (policies_ks, active_ks, _dir) = temp_keyspaces().await;
+            let id = Uuid::new_v4();
+            let sha = *compile(OLD, id).unwrap().source_sha256();
+            let mut policy = new_policy(
+                PolicyPurpose::Directory,
+                OLD.to_string(),
+                sha,
+                author.to_string(),
+                1,
+            );
+            policy.id = id;
+            store_policy(&policies_ks, &policy).await.unwrap();
+            set_active_policy_id(&active_ks, PolicyPurpose::Directory, id)
+                .await
+                .unwrap();
+            assert_eq!(
+                upgrade_stale_directory_default(&policies_ks, &active_ks)
+                    .await
+                    .unwrap(),
+                replaced,
+                "{author}"
+            );
+            assert!(
+                !upgrade_stale_directory_default(&policies_ks, &active_ks)
+                    .await
+                    .unwrap()
+            );
+        }
+    }
+
     #[tokio::test]
     async fn the_pre_card_directory_default_is_replaced_and_an_operators_kept() {
         const OLD: &str = r#"package vtc.directory

@@ -1009,8 +1009,9 @@ async fn anyone_reads_what_the_directory_discloses_before_applying() {
     let statement = &body["disclosure"];
 
     // The base schema as this build ships it: a name members see, a DID that
-    // stays with administrators until its member chooses, and the features
-    // this build does not have stated as absent.
+    // stays with administrators until its member chooses, the features this
+    // build does not have stated as absent, and external cards — served, and
+    // on unless the operator turns them off — stated as present.
     let name = statement["fields"]
         .as_array()
         .unwrap()
@@ -1020,7 +1021,7 @@ async fn anyone_reads_what_the_directory_discloses_before_applying() {
     assert_eq!(name["defaultVisibility"], "members");
     assert_eq!(statement["newCard"]["listing"], "listed");
     assert_eq!(statement["adminNotes"], false);
-    assert_eq!(statement["externalCards"], false);
+    assert_eq!(statement["externalCards"], true);
     assert!(statement.get("groups").is_none());
     assert_eq!(
         statement["statementDigest"].as_str().unwrap(),

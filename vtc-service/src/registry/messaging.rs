@@ -641,6 +641,11 @@ fn trust_record(authority_did: &str, record: &RegistryRecord) -> Value {
     if let Some(active_to) = record.active_to {
         context["activeTo"] = json!(active_to.to_rfc3339());
     }
+    // Only on a record that says the member belongs: a departure withdraws the
+    // card before anything else (VTI-DIR-120).
+    if let (true, Some(card)) = (recognised, &record.directory_card) {
+        context["directoryCard"] = card.wire();
+    }
     json!({
         "entity_id": record.member_did,
         "authority_id": authority_did,
@@ -681,6 +686,12 @@ fn registry_record_from(value: &Value) -> Option<RegistryRecord> {
         active_from: parse_time("activeFrom").unwrap_or(now),
         active_to: parse_time("activeTo"),
         last_synced_at: now,
+        directory_card: context.and_then(|c| c.get("directoryCard")).and_then(|d| {
+            Some(super::model::DirectoryCardPointer {
+                entry_id: d.get("entryId")?.as_str()?.to_string(),
+                card_digest: d.get("cardDigest")?.as_str()?.to_string(),
+            })
+        }),
     })
 }
 
@@ -1288,6 +1299,38 @@ mod tests {
         assert_eq!(value["recognized"], true);
         assert_eq!(value["context"]["status"], "active");
         assert_eq!(value["context"]["activeFrom"], "2026-08-01T00:00:00+00:00");
+    }
+
+    #[test]
+    fn a_published_card_rides_the_recognition_as_a_pointer_and_nothing_more() {
+        let mut record = RegistryRecord::fresh_active("did:key:zMember");
+        record.directory_card = Some(super::super::model::DirectoryCardPointer {
+            entry_id: "dir_Q2xhcmFRMmxoY21GUk1t".into(),
+            card_digest: "zQmRtaiZdzghK4hrtHNZFU11qm134M72fmH7JzwwjnP7Rou".into(),
+        });
+        let value = trust_record("did:webvh:vtc", &record);
+        assert_eq!(
+            value["context"]["directoryCard"],
+            json!({
+                "purpose": "A member's own directory card, published at their request so that anyone may find it.",
+                "entryId": "dir_Q2xhcmFRMmxoY21GUk1t",
+                "cardDigest": "zQmRtaiZdzghK4hrtHNZFU11qm134M72fmH7JzwwjnP7Rou",
+                "readWith": "https://trusttasks.org/spec/vtc/directory/card/public/0.1",
+            })
+        );
+        // Read back, the mirror sees the same pointer.
+        assert_eq!(
+            registry_record_from(&value).unwrap().directory_card,
+            record.directory_card
+        );
+        // A departed record never points to a card.
+        let mut gone = RegistryRecord::departed("did:key:zMember", Utc::now(), None);
+        gone.directory_card = record.directory_card.clone();
+        assert!(
+            trust_record("did:webvh:vtc", &gone)["context"]
+                .get("directoryCard")
+                .is_none()
+        );
     }
 
     #[test]

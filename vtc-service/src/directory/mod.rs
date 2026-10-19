@@ -11,12 +11,15 @@
 //! ceiling and the community's `directory` policy, intersected. Nothing in
 //! this module reads a card for another member any other way.
 //!
-//! One keyspace, `directory`, backed up: `field:<key>`, `card:<entryId>` and
-//! the index `entry:<did>`.
+//! One keyspace, `directory`, backed up: `field:<key>`, `card:<entryId>`, the
+//! index `entry:<did>`, pictures ([`images`]: `img:`, `imgmeta:`, `upload:`)
+//! and published external cards ([`external`]: `published:<entryId>`).
 
 pub mod cards;
 pub mod disclosure;
+pub mod external;
 pub mod fields;
+pub mod images;
 pub mod model;
 pub mod project;
 pub mod read;
@@ -44,6 +47,34 @@ pub struct Directory {
     /// `entries/list` requests per caller in the last minute (VTI-DIR-114).
     /// In memory: a restart forgives, which a rate limit may.
     recent: Mutex<HashMap<String, VecDeque<Instant>>>,
+    /// `images/upload` requests per writer in the last hour.
+    uploads: Mutex<HashMap<String, VecDeque<Instant>>>,
+    /// `images/get` requests per identified caller in the last minute.
+    image_reads: Mutex<HashMap<String, VecDeque<Instant>>>,
+}
+
+/// Count one request by `key` in `window`; `false` once `limit` are in it.
+fn admit(
+    map: &Mutex<HashMap<String, VecDeque<Instant>>>,
+    key: &str,
+    window: Duration,
+    limit: usize,
+) -> bool {
+    let now = Instant::now();
+    let mut recent = map.lock().unwrap_or_else(|p| p.into_inner());
+    // Keep the map bounded by forgetting callers idle for a window.
+    if recent.len() > 10_000 {
+        recent.retain(|_, q| q.back().is_some_and(|t| now.duration_since(*t) < window));
+    }
+    let q = recent.entry(key.to_string()).or_default();
+    while q.front().is_some_and(|t| now.duration_since(*t) >= window) {
+        q.pop_front();
+    }
+    if q.len() >= limit {
+        return false;
+    }
+    q.push_back(now);
+    true
 }
 
 impl Directory {
@@ -52,6 +83,8 @@ impl Directory {
             ks,
             settings,
             recent: Mutex::new(HashMap::new()),
+            uploads: Mutex::new(HashMap::new()),
+            image_reads: Mutex::new(HashMap::new()),
         }
     }
 
@@ -67,22 +100,34 @@ impl Directory {
     /// the community's limit in the last minute. Counted whatever the
     /// request finds, so the limit says nothing about the directory.
     pub fn admit_list_request(&self, did: &str) -> bool {
-        let now = Instant::now();
-        let window = Duration::from_secs(60);
-        let mut recent = self.recent.lock().unwrap_or_else(|p| p.into_inner());
-        // Keep the map bounded by forgetting callers idle for a window.
-        if recent.len() > 10_000 {
-            recent.retain(|_, q| q.back().is_some_and(|t| now.duration_since(*t) < window));
-        }
-        let q = recent.entry(did.to_string()).or_default();
-        while q.front().is_some_and(|t| now.duration_since(*t) >= window) {
-            q.pop_front();
-        }
-        if q.len() >= self.settings.list_rate_per_minute as usize {
-            return false;
-        }
-        q.push_back(now);
-        true
+        admit(
+            &self.recent,
+            did,
+            Duration::from_secs(60),
+            self.settings.list_rate_per_minute as usize,
+        )
+    }
+
+    /// Count one `images/upload` by `did`; `false` once they have uploaded the
+    /// community's limit in the last hour (`images/upload` item 7).
+    pub fn admit_upload(&self, did: &str) -> bool {
+        admit(
+            &self.uploads,
+            did,
+            Duration::from_secs(3600),
+            self.settings.image_uploads_per_hour as usize,
+        )
+    }
+
+    /// Count one `images/get` by an identified caller: ten pictures for every
+    /// listing a caller may browse, per minute (`images/get` item 6).
+    pub fn admit_image_read(&self, did: &str) -> bool {
+        admit(
+            &self.image_reads,
+            did,
+            Duration::from_secs(60),
+            (self.settings.list_rate_per_minute as usize).saturating_mul(10),
+        )
     }
 }
 

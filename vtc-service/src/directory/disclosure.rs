@@ -34,10 +34,11 @@ pub const STATEMENT_DIGEST_MEMBER: &str = "statementDigest";
 /// The base field holding a member's membership DID.
 const MEMBERSHIP_DID_FIELD: &str = "did";
 
-/// Which parts of the directory this build serves. Each is a fact about the
-/// running service, not a setting, and the statement must follow it: a
-/// community that starts keeping notes, grouping members or publishing cards
-/// says so in the next statement without anyone editing it.
+/// Which parts of the directory this community serves. Each is a fact about
+/// the running service — what it dispatches, and what its operator turned on —
+/// and the statement must follow it: a community that starts keeping notes,
+/// grouping members or publishing cards says so in the next statement without
+/// anyone editing it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Served {
     /// `vtc/directory/notes/append` is served: administrators can keep notes.
@@ -52,9 +53,10 @@ pub struct Served {
 }
 
 impl Served {
-    /// What this build serves, read from the dispatch table and the card
-    /// rules themselves, so the two cannot disagree.
-    pub fn this_build() -> Self {
+    /// What this community serves, read from the dispatch table and its
+    /// `[directory]` settings, so the statement and the service cannot
+    /// disagree.
+    pub fn this_build(settings: &super::model::Settings) -> Self {
         let serves = |slug: &str| {
             crate::trust_tasks::directory_tasks::URIS
                 .iter()
@@ -65,7 +67,7 @@ impl Served {
             introductions: serves("vtc/directory/introduce"),
             // No `vtc/groups/*` task is served yet.
             group_credential_validity: None,
-            external_cards: cards::EXTERNAL_PUBLICATION,
+            external_cards: serves("vtc/directory/card/publish") && settings.external_cards,
         }
     }
 }
@@ -80,10 +82,11 @@ impl Served {
 /// statement that left it out would understate what the directory discloses.
 pub async fn statement(directory: &Directory) -> Result<Value, AppError> {
     let schema = fields::schema(directory.ks()).await?;
+    let settings = directory.settings();
     build(
         &schema,
-        directory.settings().default_listing,
-        Served::this_build(),
+        settings.default_listing,
+        Served::this_build(&settings),
     )
 }
 
@@ -350,7 +353,8 @@ mod tests {
     /// rules, so turning a feature on cannot leave the statement behind.
     #[test]
     fn this_build_states_what_it_serves() {
-        let served = Served::this_build();
+        let settings = super::super::model::Settings::default();
+        let served = Served::this_build(&settings);
         let uris = crate::trust_tasks::directory_tasks::URIS;
         assert_eq!(
             served.admin_notes,
@@ -361,7 +365,18 @@ mod tests {
             served.introductions,
             uris.iter().any(|u| u.contains("/vtc/directory/introduce/"))
         );
-        assert_eq!(served.external_cards, cards::EXTERNAL_PUBLICATION);
+        assert!(
+            served.external_cards,
+            "card/publish is served and on by default"
+        );
+        let off = super::super::model::Settings {
+            external_cards: false,
+            ..settings
+        };
+        assert!(
+            !Served::this_build(&off).external_cards,
+            "an operator who turns it off is not described as publishing"
+        );
     }
 
     #[test]

@@ -342,6 +342,22 @@ body {
 .directory-entry:focus-visible {
   border-color: var(--brand);
 }
+/* A member's picture: always a circle, never stretched. */
+.avatar {
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+}
+.picture-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.picture-field > p {
+  flex-basis: 100%;
+  margin: 0;
+}
 .directory-name {
   font-weight: 600;
   overflow-wrap: anywhere;

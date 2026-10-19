@@ -12,26 +12,31 @@
 // exactly what the community will apply to your values; it never widens
 // anything on its own.
 //
-// Values other members typed are rendered as text, never as markup.
+// Values other members typed are rendered as text, never as markup, and a
+// picture is shown only once its bytes match the digest its card names.
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookUser, Search, UserRound } from "lucide-react";
+import { BookUser, Globe, ImagePlus, Search, Trash2, UserRound } from "lucide-react";
 
 import type {
   DirectoryCard,
+  DirectoryCardBlobRef,
   DirectoryCardUpdatePayload,
   DirectoryFieldDefinition,
 } from "@/lib/wire-types";
 
 import {
   DirectoryError,
+  getImage,
   listEntries,
   listFields,
   showCard,
   showEntry,
   updateCard,
+  uploadImage,
 } from "./directory-api";
+import { PictureError, pictureUrl, prepare, toBase64Url } from "./picture";
 
 type Audience = DirectoryFieldDefinition["ceiling"];
 
@@ -56,6 +61,63 @@ function text(v: unknown): string {
   if (Array.isArray(v)) return v.join(", ");
   if (typeof v === "object") return "";
   return String(v);
+}
+
+/** `v` as a picture reference, if it is one. */
+function blobRef(v: unknown): DirectoryCardBlobRef | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const r = v as Partial<DirectoryCardBlobRef>;
+  return typeof r.sha256 === "string" && typeof r.mediaType === "string"
+    ? (r as DirectoryCardBlobRef)
+    : null;
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** One picture on an entry, read through the projection — or the plain icon
+ *  when there is none, or it is not this reader's to see. */
+function Picture({
+  entryId,
+  field,
+  value,
+  size = 28,
+}: {
+  entryId: string;
+  field: string;
+  value: unknown;
+  size?: number;
+}) {
+  const ref = blobRef(value);
+  const picture = useQuery({
+    queryKey: ["directory", "image", entryId, field, ref?.sha256 ?? ""],
+    enabled: ref !== null,
+    retry: false,
+    staleTime: Infinity,
+    queryFn: async () => {
+      const got = await getImage(entryId, field, ref!.sha256);
+      const b64 = got.data.replace(/-/g, "+").replace(/_/g, "/");
+      const bytes = Uint8Array.from(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)), (c) =>
+        c.charCodeAt(0),
+      );
+      // Shown only when the bytes are the ones the card names.
+      if ((await sha256Hex(bytes)) !== ref!.sha256) throw new Error("picture digest mismatch");
+      return pictureUrl(got.image.mediaType, got.data);
+    },
+  });
+  if (!picture.data) return <UserRound size={size} aria-hidden="true" />;
+  return (
+    <img
+      className="avatar"
+      src={picture.data}
+      alt=""
+      width={size}
+      height={size}
+      style={{ width: size, height: size }}
+    />
+  );
 }
 
 /** Shown in place of a page when this browser may not act in the directory. */
@@ -135,7 +197,7 @@ export function DirectoryPage() {
           {list.data.items.map((e) => (
             <li key={e.entryId}>
               <a className="card directory-entry" href={`#/directory/${encodeURIComponent(e.entryId)}`}>
-                <UserRound size={28} aria-hidden="true" />
+                <Picture entryId={e.entryId} field="avatar" value={e.fields.avatar} size={40} />
                 <span className="directory-name">
                   {text(e.fields.displayName) || text(e.fields.nickname) || "A member"}
                 </span>
@@ -167,6 +229,10 @@ export function EntryPage({ entryId }: { entryId: string }) {
     () => new Map((fields.data?.fields ?? []).map((f) => [f.key, f.label])),
     [fields.data],
   );
+  const pictures = useMemo(
+    () => new Set((fields.data?.fields ?? []).filter((f) => f.type === "image").map((f) => f.key)),
+    [fields.data],
+  );
   return (
     <main className="home" id="main">
       <p>
@@ -183,16 +249,22 @@ export function EntryPage({ entryId }: { entryId: string }) {
       ) : (
         <section className="card">
           <div className="card-head">
-            <UserRound size={18} aria-hidden="true" />
+            <Picture entryId={entryId} field="avatar" value={entry.data.entry.fields.avatar} size={64} />
             <h1>{text(entry.data.entry.fields.displayName) || "A member"}</h1>
           </div>
           <dl className="facts">
             {Object.entries(entry.data.entry.fields)
-              .filter(([k]) => k !== "displayName")
+              .filter(([k]) => k !== "displayName" && k !== "avatar")
               .map(([k, v]) => (
                 <div key={k}>
                   <dt>{labels.get(k) ?? k}</dt>
-                  <dd className="wrap">{text(v)}</dd>
+                  <dd className="wrap">
+                    {pictures.has(k) ? (
+                      <Picture entryId={entryId} field={k} value={v} size={96} />
+                    ) : (
+                      text(v)
+                    )}
+                  </dd>
                 </div>
               ))}
           </dl>
@@ -218,7 +290,121 @@ type Introductions = DirectoryCard["introductions"];
 function editable(f: DirectoryFieldDefinition): boolean {
   if (f.state !== "active") return false;
   if (f.source === "derived") return f.key === "did";
-  return f.type !== "image" && f.type !== "claim";
+  return f.type !== "claim";
+}
+
+/** Choose, send and remove one picture field. */
+function PictureField({
+  entryId,
+  field,
+  current,
+  onChange,
+}: {
+  entryId: string;
+  field: DirectoryFieldDefinition;
+  current: DirectoryCardBlobRef | null;
+  onChange: (next: DirectoryCardBlobRef | null) => void;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const send = useMutation({
+    mutationFn: async (file: File) => {
+      const { mediaType, bytes } = await prepare(file);
+      return (await uploadImage({ mediaType, data: toBase64Url(bytes) })).image;
+    },
+    onSuccess: (image) => {
+      setError(null);
+      onChange(image as DirectoryCardBlobRef);
+    },
+    onError: (e) =>
+      setError(
+        e instanceof PictureError || e instanceof DirectoryError
+          ? e.message
+          : "The picture couldn't be sent.",
+      ),
+  });
+  return (
+    <div className="picture-field">
+      {current ? (
+        <Picture entryId={entryId} field={field.key} value={current} size={72} />
+      ) : (
+        <span className="muted">(no picture)</span>
+      )}
+      <label className="btn">
+        <ImagePlus size={16} aria-hidden="true" /> {send.isPending ? "Sending…" : "Choose a picture"}
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          aria-label={`Choose ${field.label}`}
+          hidden
+          disabled={send.isPending}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (file) send.mutate(file);
+          }}
+        />
+      </label>
+      {current && (
+        <button type="button" className="btn" onClick={() => onChange(null)}>
+          <Trash2 size={16} aria-hidden="true" /> Remove
+        </button>
+      )}
+      <p className="muted">
+        The community keeps a smaller copy, with nothing about where or how it was taken.
+      </p>
+      {error && (
+        <p className="alert" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Where the member's card stands beyond the community, and the one thing
+ *  this browser may do about it: stop publishing. Publishing is the member's
+ *  own signature, from their wallet. */
+function ExternalCardStatus({
+  card,
+  onStop,
+  stopping,
+}: {
+  card: DirectoryCard;
+  onStop: () => void;
+  stopping: boolean;
+}) {
+  const external = card.externalCard;
+  if (!card.discoverability.external || !external) {
+    return (
+      <p className="muted">
+        Your card is seen only inside this community. To publish it so that anyone can find it,
+        use your wallet: it shows you exactly what would be published before you sign.
+      </p>
+    );
+  }
+  return (
+    <div className="alert" role="status">
+      {external.state === "published" ? (
+        <>
+          <p className="alert-title">Your card is published beyond the community.</p>
+          <p>
+            Anyone can read what you show to &ldquo;Anyone&rdquo;, exactly as you signed it.
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="alert-title">Your published card was withdrawn.</p>
+          <p>
+            What you show to &ldquo;Anyone&rdquo; changed after you signed, so the community stopped
+            publishing it. Publish it again from your wallet, or stop publishing.
+          </p>
+        </>
+      )}
+      <button type="button" className="btn" onClick={onStop} disabled={stopping}>
+        {stopping ? "Stopping…" : "Stop publishing"}
+      </button>
+    </div>
+  );
 }
 
 export function MyCardPage() {
@@ -226,6 +412,7 @@ export function MyCardPage() {
   const card = useQuery({ queryKey: ["directory", "card"], queryFn: showCard, retry: false });
   const fields = useQuery({ queryKey: ["directory", "fields"], queryFn: listFields, retry: false });
   const [values, setValues] = useState<Record<string, string>>({});
+  const [pictures, setPictures] = useState<Record<string, DirectoryCardBlobRef | null>>({});
   const [visibility, setVisibility] = useState<Record<string, Audience>>({});
   const [listing, setListing] = useState<Listing>("listed");
   const [search, setSearch] = useState<SearchMode>("byName");
@@ -237,7 +424,16 @@ export function MyCardPage() {
     const c = card.data.card;
     setValues(
       Object.fromEntries(
-        fields.data.fields.filter(editable).map((f) => [f.key, text(c.values?.[f.key])]),
+        fields.data.fields
+          .filter((f) => editable(f) && f.type !== "image")
+          .map((f) => [f.key, text(c.values?.[f.key])]),
+      ),
+    );
+    setPictures(
+      Object.fromEntries(
+        fields.data.fields
+          .filter((f) => editable(f) && f.type === "image")
+          .map((f) => [f.key, blobRef(c.values?.[f.key])]),
       ),
     );
     setVisibility(
@@ -258,9 +454,16 @@ export function MyCardPage() {
       const before = card.data!.card;
       // Only what the member changed: a field left alone keeps following the
       // community's default, rather than being pinned to today's.
+      const changedPictures = defs
+        .filter((f) => f.source === "member" && f.type === "image")
+        .flatMap((f): [string, DirectoryCardBlobRef | null][] => {
+          const now = pictures[f.key] ?? null;
+          const was = blobRef(before.values?.[f.key]);
+          return now?.sha256 === was?.sha256 ? [] : [[f.key, now]];
+        });
       const changedValues = Object.fromEntries(
         defs
-          .filter((f) => f.source === "member")
+          .filter((f) => f.source === "member" && f.type !== "image")
           .flatMap((f): [string, string | string[] | null][] => {
             const v = (values[f.key] ?? "").trim();
             if (v === text(before.values?.[f.key])) return [];
@@ -279,9 +482,12 @@ export function MyCardPage() {
         }),
       );
       const payload: DirectoryCardUpdatePayload = {
-        values: changedValues,
+        values: { ...changedValues, ...Object.fromEntries(changedPictures) },
         visibility: changedVisibility,
-        discoverability: { listing, search, external: false },
+        // Publication is never changed by saving: a published card stays
+        // published (and is withdrawn by the community if what it shows
+        // anyone changed), and only "Stop publishing" turns it off.
+        discoverability: { listing, search, external: before.discoverability.external },
         introductions: intros,
         expectedRevision: before.revision,
       };
@@ -293,6 +499,20 @@ export function MyCardPage() {
       setSaved("Saved.");
     },
     onError: () => setSaved(null),
+  });
+
+  const stop = useMutation({
+    mutationFn: () => {
+      const before = card.data!.card;
+      return updateCard({
+        discoverability: { ...before.discoverability, external: false },
+        expectedRevision: before.revision,
+      });
+    },
+    onSuccess: (r) => {
+      qc.setQueryData(["directory", "card"], r);
+      setSaved("Your card is no longer published.");
+    },
   });
 
   if (card.isError || fields.isError) {
@@ -346,7 +566,14 @@ export function MyCardPage() {
             <legend>{f.label}</legend>
             {f.description && <p className="muted">{f.description}</p>}
             {f.source === "member" ? (
-              f.type === "enum" ? (
+              f.type === "image" ? (
+                <PictureField
+                  entryId={card.data.card.entryId}
+                  field={f}
+                  current={pictures[f.key] ?? null}
+                  onChange={(next) => setPictures({ ...pictures, [f.key]: next })}
+                />
+              ) : f.type === "enum" ? (
                 <select
                   aria-label={f.label}
                   value={values[f.key] ?? ""}
@@ -399,6 +626,12 @@ export function MyCardPage() {
 
         <div className="card-head">
           <h2>Finding you</h2>
+        </div>
+        <div className="card-field">
+          <span>
+            <Globe size={16} aria-hidden="true" /> Beyond the community
+          </span>
+          <ExternalCardStatus card={card.data.card} onStop={() => stop.mutate()} stopping={stop.isPending} />
         </div>
         <label className="card-field">
           <span>In the directory</span>

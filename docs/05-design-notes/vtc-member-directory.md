@@ -261,12 +261,15 @@ and never in a projection.
 
 ### 4.6 Avatars and other blobs
 
-An avatar is a content-addressed blob in the VTC's existing website/blob
-store: `sha256` plus media type, ≤ 256 KiB, images only, re-encoded on
-upload (strip EXIF, cap dimensions). The card holds a reference to it.
-Readers fetch the blob from a URL that is only good for a short time,
-checked against the same projection, so a member-only avatar is not a
-public URL.
+An avatar is a content-addressed blob in the `directory` keyspace:
+`sha256` plus media type, ≤ 256 KiB, images only, re-encoded on upload
+(`vtc/directory/images/upload`: orientation applied, metadata stripped, at most
+512 px, JPEG or PNG). The card holds a reference to it, and only to a picture
+its own writer uploaded. Readers fetch the bytes with
+`vtc/directory/images/get`, which projects the entry for them first, so a
+member-only avatar is never a public URL; the optional short-lived `url` of a
+`CardBlobRef` is not offered. An upload no card holds is erased after 24 hours,
+and a picture no card holds any longer at the next directory pass.
 
 ## 5. Discoverability
 
@@ -322,13 +325,22 @@ card. The VTC serves the card for as long as the entry is external and
 the member is active. Departure withdraws the pointer before anything
 else (VTI-MEM-033).
 
-**This collides with VTI-REG-001** ("no personal data published beyond
-what recognition requires"). F.5 of the specification already proposes
-the way through: scope REG-001 to recognition, and add a
-publication-for-another-purpose requirement (purpose stated, subject told
-first, nothing beyond the purpose). External listing is blocked on that
-spec change (§12.1). Until it lands, `external` is refused
-`notAvailable`.
+**This collided with VTI-REG-001** ("no personal data published beyond
+what recognition requires"). The specification resolved it (dtgwg-vti-spec
+#68): REG-001 is scoped to recognition, and VTI-REG-004 bounds publication for
+any other purpose — purpose stated, subject told first, nothing beyond the
+purpose. `vtc/directory/card/publish` meets each: the pointer carries its
+purpose, the wallet shows the member every value before they sign, and the card
+carries exactly their public values.
+
+As built (trust-tasks-tf #826, #827): the card's shape is fixed member for
+member, so the community compares it with the member's public values and two
+wallets sign the same bytes for the same values. It is served by
+`vtc/directory/card/public` and pointed to from `context.directoryCard` on the
+recognition record. The moment the public values change for any reason it is
+withdrawn to `awaitingSignature`; every serving path checks first, and the
+hourly directory pass catches what no write path saw (a policy change, a
+suspension).
 
 The DTG r-card (a "self-updating vCard") is the natural long-term format,
 but its specification is unwritten. Until it exists, the public card is a
@@ -842,7 +854,8 @@ Error codes:
 - `fieldUnknown`, `fieldRetired`, `valueInvalid` (with `detailsSchema`
   naming the field).
 - `aboveCeiling`.
-- `notAvailable`: external publication before REG lands.
+- `notAvailable`: `external: true` sent to `card/update` when the card is not
+  already published (publication is `card/publish`, with a signed card).
 - `rateLimited`.
 
 ### 11.2 `vtc/groups/*` (new)
@@ -991,7 +1004,7 @@ Decided 2026-10-18 (second round): `keys/sign-document` for issuance, a minimal 
 | **P4** | Admin notes, export, `credential`-sourced fields (`card/present`) | P1 |
 | **P5** | Grant bindings (§9.4) with action-list consent | P2 |
 | **P6** | Dynamic groups | P2 |
-| **P7** | External cards via the registry | REG change landed (§12.1-2) |
+| **P7** | Pictures, and external cards via the registry — **built** | REG change landed (vti-spec #68); tf #826, #827 |
 
 ## 15. Sources
 

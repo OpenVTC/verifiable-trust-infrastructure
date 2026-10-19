@@ -40,6 +40,19 @@ pub struct Viewer {
     pub connected: BTreeSet<String>,
     /// The community groups the viewer is in. None exist before groups ship.
     pub groups: BTreeSet<String>,
+    /// The public: anyone, unidentified. Never a directory reader — only the
+    /// viewer an external card is computed for ([`public_fields`]).
+    pub public: bool,
+}
+
+impl Viewer {
+    /// Anyone at all, with no standing in the community.
+    pub fn public() -> Self {
+        Viewer {
+            public: true,
+            ..Viewer::default()
+        }
+    }
 }
 
 impl Viewer {
@@ -234,6 +247,31 @@ pub fn project(
     })
 }
 
+/// The subject's public values: what the public would be shown of their card —
+/// visibility `public`, ceiling `public`, and the `directory` policy permitting
+/// it to a viewer with no standing (`card/publish` item 4). Empty for a member
+/// who is not active. The listing plays no part: it decides who may find an
+/// entry inside the community, not what a card published beyond it carries.
+pub fn public_fields(
+    ctx: &ProjectionContext<'_>,
+    subject: &Subject,
+) -> Result<Map<String, Value>, AppError> {
+    if !subject.active {
+        return Ok(Map::new());
+    }
+    let viewer = Viewer::public();
+    let mut fields = host_fields(&viewer, subject, ctx.schema);
+    if fields.is_empty() {
+        return Ok(fields);
+    }
+    match narrow_by_policy(ctx, &viewer, subject, &fields)? {
+        Narrowing::Deny => return Ok(Map::new()),
+        Narrowing::Keep => {}
+        Narrowing::To(allowed) => fields.retain(|k, _| allowed.contains(k.as_str())),
+    }
+    Ok(fields)
+}
+
 /// How a read reached an entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reached {
@@ -269,7 +307,7 @@ fn narrow_by_policy(
         actor: Actor {
             did: viewer.did.clone(),
             role: viewer.role.clone(),
-            authenticated: true,
+            authenticated: !viewer.public,
         },
         subject: FactSubject {
             did: subject.card.did.clone(),
@@ -294,6 +332,7 @@ fn narrow_by_policy(
                     "directoryAdmin": viewer.directory_admin,
                     "membersManage": viewer.members_manage,
                     "connected": viewer.connected.contains(&subject.card.did),
+                    "public": viewer.public,
                 },
             })),
             criterion: None,

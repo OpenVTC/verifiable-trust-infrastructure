@@ -192,6 +192,10 @@ vti-common = { path = "../vti-common", version = "0.48", features = [
 # (`vtc/directory/_shared/0.1/field-definition`). Already in the graph through
 # trust-tasks-rs's schema validation, which reads `pattern` the same way.
 regress = "0.11"
+# Directory pictures (`vtc/directory/images/upload`): every image is decoded and
+# re-encoded, so no metadata and no byte the member sent is stored. Pure-Rust
+# decoders only, and only the formats a `CardBlobRef` admits that it can decode.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.

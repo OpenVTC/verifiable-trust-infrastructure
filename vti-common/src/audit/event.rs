@@ -605,6 +605,17 @@ pub enum AuditEvent {
     /// fields named, never a value (VTI-AUD-005).
     DirectoryCardChanged(DirectoryCardChangedData),
 
+    /// A member's external card was published (`vtc/directory/card/publish`)
+    /// or withdrawn — by the member, by consent withdrawn, by their public
+    /// values changing, or at departure. By reference only: the entry, the
+    /// card's digest and the signed document, never a value.
+    DirectoryCardPublication(DirectoryCardPublicationData),
+
+    /// A picture was stored for a directory card
+    /// (`vtc/directory/images/upload`). The digest of the community's own
+    /// encoding, never the image.
+    DirectoryImageStored(DirectoryImageStoredData),
+
     /// An admin changed whether the join manifest answers a caller the
     /// community cannot identify (`PUT /v1/community/join-discovery`).
     ///
@@ -1118,6 +1129,8 @@ impl AuditEvent {
             Self::CommunityThemeUpdated(..) => "CommunityThemeUpdated",
             Self::DirectoryFieldChanged(..) => "DirectoryFieldChanged",
             Self::DirectoryCardChanged(..) => "DirectoryCardChanged",
+            Self::DirectoryCardPublication(..) => "DirectoryCardPublication",
+            Self::DirectoryImageStored(..) => "DirectoryImageStored",
             Self::CommunityJoinDiscoveryUpdated(..) => "CommunityJoinDiscoveryUpdated",
             Self::CommunityRequestedAttributesUpdated(..) => "CommunityRequestedAttributesUpdated",
             Self::EndorsementTypeRegistered(..) => "EndorsementTypeRegistered",
@@ -2660,6 +2673,35 @@ pub struct DirectoryCardChangedData {
     pub revision: u64,
 }
 
+/// Payload for [`AuditEvent::DirectoryCardPublication`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryCardPublicationData {
+    /// The card's entry identifier, never the member's DID.
+    pub entry_id: String,
+    /// `published`, or `withdrawn`.
+    pub change: String,
+    /// Why a card was withdrawn: `member`, `consent`, `stale` or `departure`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The digest of the card published or withdrawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card_digest: Option<String>,
+    /// The `id` of the member's signed `card/publish` document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_id: Option<String>,
+}
+
+/// Payload for [`AuditEvent::DirectoryImageStored`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryImageStoredData {
+    /// Lowercase hex SHA-256 of the stored, re-encoded bytes.
+    pub sha256: String,
+    /// `member` or `admin`: whose card may take it up.
+    pub owner: String,
+}
+
 /// Payload for [`AuditEvent::CommunityRequestedAttributesUpdated`].
 ///
 /// Claim types only — what the community now asks for, never anything an
@@ -4147,6 +4189,23 @@ mod tests {
                     revision: 1,
                 }),
                 "DirectoryCardChanged",
+            ),
+            (
+                AuditEvent::DirectoryCardPublication(DirectoryCardPublicationData {
+                    entry_id: "dir_aaaaaaaaaaaaaaaa".into(),
+                    change: "withdrawn".into(),
+                    reason: Some("stale".into()),
+                    card_digest: Some("zQmExample".into()),
+                    document_id: None,
+                }),
+                "DirectoryCardPublication",
+            ),
+            (
+                AuditEvent::DirectoryImageStored(DirectoryImageStoredData {
+                    sha256: "0".repeat(64),
+                    owner: "member".into(),
+                }),
+                "DirectoryImageStored",
             ),
             (
                 AuditEvent::CommunityRequestedAttributesUpdated(

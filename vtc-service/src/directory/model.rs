@@ -280,6 +280,42 @@ pub struct AppliedUpdate {
     pub issued_at: DateTime<Utc>,
 }
 
+/// Where a member's external card stands (`directory-card` `ExternalCard`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExternalState {
+    /// The community serves the card the member signed, and its registry
+    /// points to it.
+    Published,
+    /// The member's public values changed after they signed: nothing is served
+    /// until they sign the current ones (`card/publish` item 8).
+    AwaitingSignature,
+}
+
+/// The card's `externalCard`: present exactly while `discoverability.external`
+/// is on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalCard {
+    pub state: ExternalState,
+    /// While `published`: the digest of the card served.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card_digest: Option<String>,
+    /// While `published`: when the card served was published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<DateTime<Utc>>,
+}
+
+impl ExternalCard {
+    pub fn awaiting_signature() -> Self {
+        Self {
+            state: ExternalState::AwaitingSignature,
+            card_digest: None,
+            published_at: None,
+        }
+    }
+}
+
 /// A member's card, as stored. [`Card::wire`] is the `DirectoryCard` its
 /// subject reads.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -303,6 +339,10 @@ pub struct Card {
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_update: Option<AppliedUpdate>,
+    /// Set by `card/publish` and by a withdrawal; `None` while
+    /// `discoverability.external` is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_card: Option<ExternalCard>,
 }
 
 impl Card {
@@ -322,7 +362,22 @@ impl Card {
         if let Some(groups) = &self.group_audience {
             out["groupAudience"] = serde_json::json!(groups);
         }
+        if self.discoverability.external {
+            let external = self
+                .external_card
+                .clone()
+                .unwrap_or_else(ExternalCard::awaiting_signature);
+            out["externalCard"] = serde_json::json!(external);
+        }
         out
+    }
+
+    /// The digest of the card served, while it is published.
+    pub fn published_digest(&self) -> Option<&str> {
+        self.external_card
+            .as_ref()
+            .filter(|e| e.state == ExternalState::Published)
+            .and_then(|e| e.card_digest.as_deref())
     }
 
     /// The audience a field reaches on this card before any ceiling: the
@@ -347,6 +402,11 @@ pub struct Settings {
     pub facet_threshold: u32,
     /// `entries/list` requests one caller may make per minute.
     pub list_rate_per_minute: u32,
+    /// Whether members may publish their card beyond the community
+    /// (`card/publish`, VTI-DIR-046).
+    pub external_cards: bool,
+    /// Images one writer may upload per hour (`images/upload` item 7).
+    pub image_uploads_per_hour: u32,
 }
 
 impl Default for Settings {
@@ -356,6 +416,8 @@ impl Default for Settings {
             retention_days: 30,
             facet_threshold: 5,
             list_rate_per_minute: 60,
+            external_cards: true,
+            image_uploads_per_hour: 30,
         }
     }
 }

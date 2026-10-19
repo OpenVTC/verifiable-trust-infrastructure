@@ -59,6 +59,7 @@ pub async fn viewer(state: &AppState, did: &str) -> Result<Viewer, AppError> {
             .is_some_and(|e| e.can(Capability::MembersManage, None)),
         connected,
         groups: BTreeSet::new(),
+        public: false,
     })
 }
 
@@ -118,7 +119,12 @@ pub async fn subject_by_did(state: &AppState, did: &str) -> Result<Option<Subjec
     )))
 }
 
-async fn subject_by_entry(state: &AppState, entry_id: &str) -> Result<Option<Subject>, AppError> {
+/// One subject by entry identifier. `None` when the card or its member record
+/// is gone.
+pub(crate) async fn subject_by_entry(
+    state: &AppState,
+    entry_id: &str,
+) -> Result<Option<Subject>, AppError> {
     let Some(card) = cards::get(state.directory.ks(), entry_id).await? else {
         return Ok(None);
     };
@@ -161,12 +167,17 @@ pub async fn read_context(state: &AppState) -> Result<ReadContext, AppError> {
 
 impl ReadContext {
     fn projection(&self) -> ProjectionContext<'_> {
+        self.projection_at(Utc::now())
+    }
+
+    /// The projection context this read gives, at `now`.
+    pub fn projection_at(&self, now: chrono::DateTime<Utc>) -> ProjectionContext<'_> {
         ProjectionContext {
             schema: &self.schema,
             policy: &self.policy,
             community_did: &self.community_did,
             member_count: self.member_count,
-            now: Utc::now(),
+            now,
         }
     }
 }

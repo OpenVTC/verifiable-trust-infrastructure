@@ -1347,6 +1347,7 @@ pub async fn run(
         let policies_ks = state.policies_ks.clone();
         let active_policies_ks = state.active_policies_ks.clone();
         let members_ks = state.members_ks.clone();
+        let directory_ks = state.directory.ks().clone();
         let registry_health = state.registry_health.clone();
         let audit_writer = state.audit_writer.clone();
         let mut supervisor_shutdown = shutdown_rx.clone();
@@ -1368,7 +1369,8 @@ pub async fn run(
                     audit_writer.clone(),
                     actor_did.clone(),
                 )
-                .with_rtbf_batch_window_hours(rtbf_batch_window_hours);
+                .with_rtbf_batch_window_hours(rtbf_batch_window_hours)
+                .with_directory(directory_ks.clone());
                 let run_shutdown = supervisor_shutdown.clone();
                 health.mark_running();
                 let child = tokio::spawn(async move { syncer.run(run_shutdown).await });

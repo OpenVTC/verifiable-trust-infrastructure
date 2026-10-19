@@ -88,6 +88,10 @@ pub struct MembershipSyncer {
     /// consent to publication. Required: a syncer that cannot see
     /// consent cannot honour it.
     members_ks: KeyspaceHandle,
+    /// The member directory — read at dispatch time for the member's published
+    /// external card, whose pointer rides their recognition record. `None`:
+    /// no pointer is ever written.
+    directory_ks: Option<KeyspaceHandle>,
     client: Arc<dyn TrustRegistryClient>,
     health: RegistryHealth,
     audit_writer: Option<AuditWriter>,
@@ -159,6 +163,7 @@ impl MembershipSyncer {
             policies_ks,
             active_policies_ks,
             members_ks,
+            directory_ks: None,
             client,
             health,
             audit_writer,
@@ -166,6 +171,33 @@ impl MembershipSyncer {
             tick_interval: Duration::from_secs(DEFAULT_TICK_INTERVAL_SECONDS),
             rtbf_batch_window_hours: 24,
         }
+    }
+
+    /// Read members' published external cards from this directory keyspace, so
+    /// their recognition records point to them (`vtc/directory/card/publish`
+    /// item 7).
+    pub fn with_directory(mut self, directory_ks: KeyspaceHandle) -> Self {
+        self.directory_ks = Some(directory_ks);
+        self
+    }
+
+    /// The pointer to `did`'s external card, while one is published.
+    async fn card_pointer(
+        &self,
+        did: &str,
+    ) -> Result<Option<super::model::DirectoryCardPointer>, AppError> {
+        let Some(ks) = self.directory_ks.as_ref() else {
+            return Ok(None);
+        };
+        Ok(crate::directory::cards::by_did(ks, did)
+            .await?
+            .and_then(|card| {
+                card.published_digest()
+                    .map(|digest| super::model::DirectoryCardPointer {
+                        entry_id: card.entry_id.clone(),
+                        card_digest: digest.to_string(),
+                    })
+            }))
     }
 
     /// Override the tick interval (default 5s). Lower in tests
@@ -543,7 +575,9 @@ impl MembershipSyncer {
                 {
                     return Ok(SyncAction::Skip("registry.rego publish_on_join is false"));
                 }
-                Ok(SyncAction::Publish(RegistryRecord::fresh_active(did)))
+                let mut record = RegistryRecord::fresh_active(did);
+                record.directory_card = self.card_pointer(did).await?;
+                Ok(SyncAction::Publish(record))
             }
         }
     }
@@ -1169,6 +1203,50 @@ default publish_on_join := false
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// A member whose external card is published is recognised with a pointer
+    /// to it; withdrawn, the record is re-published without one.
+    #[tokio::test]
+    async fn a_published_card_rides_the_recognition_record() {
+        let (syncer, mock, _dir) = fixture().await;
+        let directory = crate::directory::tests::scratch().await;
+        let syncer = syncer.with_directory(directory.clone());
+        seed_member(&syncer, "did:key:zA", true).await;
+        let mut card =
+            crate::directory::cards::ensure(&directory, "did:key:zA", &Default::default(), None)
+                .await
+                .unwrap();
+        card.discoverability.external = true;
+        card.external_card = Some(crate::directory::model::ExternalCard {
+            state: crate::directory::model::ExternalState::Published,
+            card_digest: Some("zQmExample".into()),
+            published_at: Some(chrono::Utc::now()),
+        });
+        directory
+            .insert(crate::directory::cards::card_key(&card.entry_id), &card)
+            .await
+            .unwrap();
+        write_member_added(&syncer.audit_ks, "did:key:zA").await;
+        syncer.tick().await.unwrap();
+        let pointer = mock.snapshot().await["did:key:zA"].directory_card.clone();
+        assert_eq!(
+            pointer,
+            Some(super::super::model::DirectoryCardPointer {
+                entry_id: card.entry_id.clone(),
+                card_digest: "zQmExample".into(),
+            })
+        );
+
+        // Withdrawn to awaiting the member's signature: no pointer.
+        card.external_card = Some(crate::directory::model::ExternalCard::awaiting_signature());
+        directory
+            .insert(crate::directory::cards::card_key(&card.entry_id), &card)
+            .await
+            .unwrap();
+        update_consent(&syncer, "did:key:zA", true).await;
+        syncer.tick().await.unwrap();
+        assert_eq!(mock.snapshot().await["did:key:zA"].directory_card, None);
     }
 
     /// The syncer's half of a late grant. An administrator cannot make one

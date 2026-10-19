@@ -561,6 +561,20 @@ async fn depart(
     // (purge deletes the row) or clears it.
     let slot = member.as_ref().and_then(|m| m.status_list_index);
 
+    // Before anything else, their external card stops being served and its
+    // registry pointer goes (VTI-DIR-120): what a third party copies while it
+    // is public cannot be recalled.
+    if let Some(entry_id) =
+        crate::directory::cards::entry_of(state.directory.ks(), subject_did).await?
+    {
+        crate::directory::external::withdraw(
+            state,
+            &entry_id,
+            crate::directory::external::Withdrawal::Departure,
+        )
+        .await?;
+    }
+
     delete_acl_entry(&state.acl_ks, subject_did).await?;
     // They leave the rooms the community owns too (`vtc/rooms/community/members/add` item
     // 6). Recorded now, durably, and driven by `rooms::departures` — never waiting on the
@@ -651,8 +665,8 @@ async fn depart(
     // Their directory card follows the disposition (VTI-DIR-121): erased with
     // a purge or a tombstone, kept with a historical record — and, kept, never
     // read again by anyone but an administrator, because the member is no
-    // longer active (VTI-DIR-111). Nothing is published beyond the community
-    // yet, so there is no external card to withdraw first (VTI-DIR-120).
+    // longer active (VTI-DIR-111). Its external card was withdrawn first, above
+    // (VTI-DIR-120).
     crate::directory::cards::on_departure(
         state.directory.ks(),
         subject_did,

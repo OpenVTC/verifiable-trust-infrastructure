@@ -19,7 +19,14 @@
 #   input.evidence.request.entryId           the entry
 #   input.evidence.request.fields_requested  what the community already allows
 #   input.evidence.request.listing           listed | findable | hidden
-#   input.evidence.request.viewer            { directoryAdmin, membersManage, connected }
+#   input.evidence.request.viewer            { directoryAdmin, membersManage, connected, public }
+#
+# `viewer.public` is true, and `input.actor.authenticated` false, for one
+# question only: what a member's external card may carry
+# (`vtc/directory/card/publish`). The community has already kept just the
+# values the member made `public` under a `public` ceiling; denying here, or
+# naming fewer fields, keeps those values off every external card. No
+# directory read is ever answered to the public.
 
 package vtc.directory
 
@@ -29,12 +36,17 @@ import rego.v1
 # reads the header to render it in plain English, show a decision
 # trace, and open it in the route-card editor. Keep it in step with the
 # body if you hand-edit the Rego.
-# @vtc-rule-ir: eyJwdXJwb3NlIjoiZGlyZWN0b3J5Iiwicm91dGVzIjpbeyJuYW1lIjoiTWVtYmVyIG9yIGFkbWluaXN0cmF0b3IiLCJ3aGVuIjp7ImFsbCI6WyJ2aWV3ZXJfaXNfbWVtYmVyIl19LCJ0aGVuIjp7ImVmZmVjdCI6ImFsbG93Iiwid2l0aCI6e319fSx7Im5hbWUiOiJOb3QgYSBtZW1iZXIiLCJ3aGVuIjp7ImFsbCI6WyJhbHdheXMiXX0sInRoZW4iOnsiZWZmZWN0IjoiZGVueSIsIndpdGgiOnsiY29kZSI6Im5vdC1hLW1lbWJlciJ9fX1dfQ==
+# @vtc-rule-ir: eyJwdXJwb3NlIjoiZGlyZWN0b3J5Iiwicm91dGVzIjpbeyJuYW1lIjoiTWVtYmVyIG9yIGFkbWluaXN0cmF0b3IiLCJ3aGVuIjp7ImFsbCI6WyJ2aWV3ZXJfaXNfbWVtYmVyIl19LCJ0aGVuIjp7ImVmZmVjdCI6ImFsbG93Iiwid2l0aCI6e319fSx7Im5hbWUiOiJUaGUgcHVibGljLCBmb3IgYW4gZXh0ZXJuYWwgY2FyZCIsIndoZW4iOnsiYWxsIjpbInZpZXdlcl9pc19wdWJsaWMiXX0sInRoZW4iOnsiZWZmZWN0IjoiYWxsb3ciLCJ3aXRoIjp7fX19LHsibmFtZSI6Ik5vdCBhIG1lbWJlciIsIndoZW4iOnsiYWxsIjpbImFsd2F5cyJdfSwidGhlbiI6eyJlZmZlY3QiOiJkZW55Iiwid2l0aCI6eyJjb2RlIjoibm90LWEtbWVtYmVyIn19fV19
 
-# structural totality — an unidentified reader sees nothing
+# structural totality — anyone else sees nothing
 default decision := {"effect": "deny", "with": {"code": "not-a-member"}}
 
 # Member or administrator — the community's own projection, unnarrowed
 decision := {"effect": "allow", "with": {}} if {
 	input.actor.authenticated == true
+}
+
+# The public, for an external card — what members chose to make public, unnarrowed
+decision := {"effect": "allow", "with": {}} if {
+	input.evidence.request.viewer.public == true
 }

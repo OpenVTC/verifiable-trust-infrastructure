@@ -274,6 +274,21 @@ pub(crate) async fn update_member_inner(
     }
     drop(edit_guard);
 
+    // An external card hangs off registry-publication consent (VTI-DIR-047):
+    // withdrawn with it.
+    if fields_changed.iter().any(|f| f == "publishConsent")
+        && !member.publish_consent
+        && let Some(entry_id) =
+            crate::directory::cards::entry_of(state.directory.ks(), &member.did).await?
+    {
+        crate::directory::external::withdraw(
+            state,
+            &entry_id,
+            crate::directory::external::Withdrawal::Consent,
+        )
+        .await?;
+    }
+
     // The label lives on the ACL row, not the member row. Written before any
     // role change so the ceremony (which re-reads the ACL entry) picks it up
     // rather than overwriting it from a stale copy.
