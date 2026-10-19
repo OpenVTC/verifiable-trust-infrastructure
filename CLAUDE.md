@@ -49,6 +49,7 @@ Layer 1 (VTA foundations):
   vta-keyspaces   → vti-common
   vta-config      → vti-common, vti-secrets
   vti-vetting-pcs → vta-sdk   (hidden vetting: community + member engines)
+  vti-voting      → vti-vetting-pcs   (community voting: tickets, casts, ballot box)
   vta-audit       → vta-sdk, vti-common
 
 Layer 2 (VTA subsystems):
@@ -89,6 +90,7 @@ Layer 4 (the spine + consumers):
 | `vta-keys` | **Key management**: master-seed storage, BIP-32 hierarchical derivation, key wrapping (AES-GCM), imported-key handling, `create_seed_store` backend selection, `derive_pre_rotation_keys` |
 | `vta-vault` | **Holder credential vault**: storage, query, receive/verify, present, status refresh, and the archival lifecycle (`VaultStatus {Active,Archived,Deleted}`) |
 | `vti-vetting-pcs` | **Hidden vetting** on the Predicate Credential System: the community's `issuer` and `verifier` (`vtc-service`, feature `vetting-pcs`) and the member-side `vetter` / `applicant` engines the VTA runs as its principal's PCS engine (`vta/pcs/*`). Feature `harness`: an in-process community (`vtc::Vtc`) for end-to-end tests. Docs: `docs/02-vta/pcs-engine.md` |
+| `vti-voting` | **Community voting** on PCS, the cryptographic core only (`publish = false`, branch `feat/community-voting`): the community's `registrar` (voting helper key, its own deployment label, tickets under `voter/<election>`), the member's `voter` (fresh key per election, blind ticket request, cast = `attest_in_context` for the election point with the ballot bound in) and the voting service's `ballot_box` (verifies on the published `hvk` alone; the tag is the per-election nullifier, recorded once under the revote rule). No wire types until the `voting/*` family is specified. Benchmark: `examples/scale.rs` |
 | `vta-external` | **External accounts** (`external/*`): identities the VTA holds at clouds and third-party services — account store (`external_accounts`; secrets in `external_secrets`, excluded from backup), the `ExternalAuthDriver` trait and drivers (`s3-static-presign` first), scope and binding checks, the per-binding rate. Design: `docs/05-design-notes/vta-external-accounts.md` |
 | `vta-webvh` | WebVH hosting infrastructure for the `did:webvh` lifecycle and its other consumers |
 | `vta-policy` | Policy subsystem: the regorus (Rego) engine + default bundle, the DTTE consent model, decision evaluators, policy storage |
@@ -1879,9 +1881,9 @@ feature, so the default-feature reproduction the report printed never touched
 it. A dependency break of this shape is fixed upstream or by a raised floor,
 never by a change here.
 
-**26 of 35 crates publish.** The nine that do not — `vta-enclave`,
+**26 of 36 crates publish.** The ten that do not — `vta-enclave`,
 `vta-mcp`, `vta-mobile-core`, `didcomm-test`, `vti-fuzz`, `vti-e2e-tests`,
-`room-host`, `vti-rooms-wasm`, `vti-witness` — set `publish = false` in their
+`room-host`, `vti-rooms-wasm`, `vti-witness`, `vti-voting` — set `publish = false` in their
 own manifest, each with a comment saying why. (The count is the workspace's
 members plus `vti-fuzz`; the excluded `deploy/nitro/enclave-proxy` is a
 deployment helper, not counted.)

@@ -1,0 +1,34 @@
+[package]
+name = "vti-voting"
+description = "Community voting on the Predicate Credential System: unlinkable voting tickets, casts bound to their ballot, and the ballot box's one-ballot-per-ticket check"
+version = "0.1.0"
+edition.workspace = true
+# Not published: nothing published depends on it yet. The voting service, the
+# VTC's registrar half and the VTA's voter role will, once their Trust Task
+# families are specified (design: community voting, draft VTI-VOT-*). Publish it
+# then, with that first consumer.
+publish = false
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The scheme instance (BLS12-381, Σ-PS, Tag_DDH) is the one hidden vetting
+# runs; its aliases come from there so the two can never drift apart. Voting
+# uses its own deployment label and keys (`scheme::deployment_label`).
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.5" }
+predicate-credential-system = { version = "0.1", features = ["serde"] }
+ark-serialize = { version = "0.6.0", default-features = false, features = ["std"] }
+# MUST stay 0.8: the PCS algorithms take `ark_std::rand`'s (0.8) traits.
+rand = { version = "0.8", features = ["std", "std_rng", "getrandom"] }
+# Pairs with rand 0.8: the registrar's keys derive from a secret over a
+# specified stream (`registrar::Registrar::derive`).
+rand_chacha = "0.3"
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rand = { version = "0.8", features = ["std", "std_rng"] }
+serde_json.workspace = true

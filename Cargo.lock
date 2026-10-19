@@ -12420,6 +12420,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vti-voting"
+version = "0.1.0"
+dependencies = [
+ "ark-serialize",
+ "predicate-credential-system",
+ "rand 0.8.8",
+ "rand_chacha 0.3.1",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "vti-vetting-pcs",
+]
+
+[[package]]
 name = "vti-webauthn"
 version = "0.2.2"
 dependencies = [

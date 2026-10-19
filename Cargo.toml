@@ -40,6 +40,9 @@ members = [
   # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: `publish = false`,
   # reached only from `vtc-service`'s off-by-default `vetting-pcs` feature.
   "vti-vetting-pcs",
+  # Community voting on PCS (design: community voting, draft VTI-VOT-*):
+  # `publish = false` until its first published consumer, not a default member.
+  "vti-voting",
 ]
 # `vta-mobile-core` is a UniFFI client crate that cross-compiles to Android/iOS.
 # Keep it out of `default-members` so a bare `cargo build`/`test` for the server
