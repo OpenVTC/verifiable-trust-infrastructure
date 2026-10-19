@@ -115,6 +115,7 @@ import {
 } from "@/lib/table-sort";
 import { rightLabel, rightRank } from "@/plugins/repos/model";
 import { ApproverDevicesCard } from "@/plugins/members/StepUpApprovers";
+import { MemberNotesCard } from "@/plugins/members/MemberNotes";
 import { AddMemberForm, EntriesWithoutMembership } from "@/plugins/members/Admission";
 import { StepUpPasskeysCard } from "@/plugins/members/StepUpPasskeys";
 import { readErrorMessage } from "@/plugins/repos/ui";
@@ -1131,6 +1132,7 @@ function MemberDetail() {
           </section>
 
           <MemberGitCard did={decoded} />
+          <MemberNotesCard did={decoded} />
 
           <StepUpPasskeysCard did={decoded} />
 

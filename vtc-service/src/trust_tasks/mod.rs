@@ -3200,6 +3200,11 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     directory_tasks::IMAGES_GET_TYPE,
     directory_tasks::CARD_PUBLISH_TYPE,
     directory_tasks::CARD_PUBLIC_TYPE,
+    // Administrators' notes about members, and the directory's export.
+    directory_tasks::NOTES_APPEND_TYPE,
+    directory_tasks::NOTES_LIST_TYPE,
+    directory_tasks::NOTES_EXPORT_TYPE,
+    directory_tasks::EXPORT_TYPE,
     community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
     community_tasks::RECOGNITION_CHECK_TYPE,
     community_tasks::MEMBERS_LIST_TYPE,

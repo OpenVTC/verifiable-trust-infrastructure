@@ -32,6 +32,9 @@ Specification: *Community Directory and Groups* in the VTI specification
 | `vtc/directory/images/get/0.1` | anyone, through the projection | A picture's bytes, where the caller's projection of that entry shows it |
 | `vtc/directory/card/publish/0.1` | the member, as their membership DID | Publish their external card: their public values, signed by them (below) |
 | `vtc/directory/card/public/0.1` | anyone, signed or not | A published external card, exactly as its member signed it |
+| `vtc/directory/notes/{append,list}/0.1` | `vtc.directory.notes` | Administrators' notes about a member (below) |
+| `vtc/directory/notes/export/0.1` | `vtc.directory.notes`, with a bound passkey | Every note about a member, to answer their request for the data held about them |
+| `vtc/directory/export/0.1` | `vtc.directory.admin`, with a bound passkey | Every active member's card as JSContact |
 | `vtc/join-requests/manifest/0.4` | anyone, unless join discovery is closed | The join criteria **and** the disclosure statement, as `directoryDisclosure`; 0.3 is still served without it |
 
 ## What applicants are told
@@ -100,8 +103,45 @@ wallet shows every value before anything is signed. The portal also shows where
 a published card stands, and offers **Stop publishing**, which a delegated key
 may do because it narrows.
 
-Not yet served: groups (`vtc/groups/*`), introductions, administrators' notes,
-export and credential-sourced fields (`card/present`).
+Not yet served: groups (`vtc/groups/*`), introductions and credential-sourced
+fields (`card/present`).
+
+## Administrators' notes
+
+Administrators who hold `vtc.directory.notes` keep notes about members
+(VTI-DIR-030 – 033). The capability is apart from `vtc.directory.admin`, so a
+community can let someone keep notes without changing what the directory
+discloses; `community-admin` holds both.
+
+- **Never on the card.** Notes are stored apart from cards and appear in no
+  directory read, whatever the `directory` policy says. A member never sees them.
+- **Never edited.** A correction or withdrawal is a later note that redacts the
+  earlier one. A redacted note's text is withheld from every read except the
+  export below.
+- **Released to the member only deliberately.** `notes/export` returns every
+  note about the member, redacted ones as written, to answer their request for
+  the data held about them. It takes the exporter's passkey bound to that one
+  export, and is audited at Critical.
+- **Audited by reference.** Every write and read is audited with the entry and
+  the note, never its text (`DirectoryNoteAccessed`, `DirectoryExported`).
+- **At departure** a purge erases them; a tombstone or historical record keeps
+  them for `[directory] retention_days`, after which the hourly directory pass
+  erases them.
+- The disclosure statement says the community keeps notes, by itself, now that
+  `notes/append` is served.
+
+In the console, a member's page shows an **Administrators' notes** card to
+holders of the capability: add a note (with an optional follow-up date),
+withdraw one, or export them for a data request.
+
+## Export
+
+`vtc/directory/export` returns every active member's card as JSContact, every
+field included (derived ones as vendor properties), a page at a time with
+cursors bound to the exporter. The first page takes the exporter's passkey bound
+to it and is audited at Critical with the number of cards; no note is ever in
+it. The console's **Directory → Entries** tab has **Export the directory**,
+which downloads the whole export as JSON.
 
 ## Pictures
 

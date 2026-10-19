@@ -349,6 +349,22 @@ spec_types! {
     DirectoryCardPublic01Payload(directory::card::public::v0_1::Payload);
     /// `vtc/directory/card/public/0.1#response` — the card exactly as its member signed it.
     DirectoryCardPublic01Response(directory::card::public::v0_1::Response);
+    /// `vtc/directory/notes/append/0.1` payload — a note about a member, or a redaction.
+    DirectoryNotesAppend01Payload(directory::notes::append::v0_1::Payload);
+    /// `vtc/directory/notes/append/0.1#response` — the note as stored.
+    DirectoryNotesAppend01Response(directory::notes::append::v0_1::Response);
+    /// `vtc/directory/notes/list/0.1` payload — one member's notes, a page at a time.
+    DirectoryNotesList01Payload(directory::notes::list::v0_1::Payload);
+    /// `vtc/directory/notes/list/0.1#response` — notes newest first, redacted text withheld.
+    DirectoryNotesList01Response(directory::notes::list::v0_1::Response);
+    /// `vtc/directory/notes/export/0.1` payload — one member's notes, and why.
+    DirectoryNotesExport01Payload(directory::notes::export::v0_1::Payload);
+    /// `vtc/directory/notes/export/0.1#response` — every note as written.
+    DirectoryNotesExport01Response(directory::notes::export::v0_1::Response);
+    /// `vtc/directory/export/0.1` payload — the whole directory, and why.
+    DirectoryExport01Payload(directory::export::v0_1::Payload);
+    /// `vtc/directory/export/0.1#response` — one page of JSContact cards.
+    DirectoryExport01Response(directory::export::v0_1::Response);
     /// `vtc/rooms/community/members/list/0.1` payload.
     RoomsCommunityMembersList01Payload(rooms_community::members::list::v0_1::Payload);
     /// `vtc/rooms/community/members/list/0.1#response` — one page of a room's
@@ -738,6 +754,14 @@ mod tests {
         check::<DirectoryCardPublish01Response>();
         check::<DirectoryCardPublic01Payload>();
         check::<DirectoryCardPublic01Response>();
+        check::<DirectoryNotesAppend01Payload>();
+        check::<DirectoryNotesAppend01Response>();
+        check::<DirectoryNotesList01Payload>();
+        check::<DirectoryNotesList01Response>();
+        check::<DirectoryNotesExport01Payload>();
+        check::<DirectoryNotesExport01Response>();
+        check::<DirectoryExport01Payload>();
+        check::<DirectoryExport01Response>();
     }
 
     #[test]

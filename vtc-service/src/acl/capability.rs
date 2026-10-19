@@ -93,6 +93,13 @@ pub enum Capability {
     /// Not conferring: it decides what the directory may disclose, never who
     /// holds authority.
     DirectoryAdmin,
+    /// Administrators' notes about members (`vtc/directory/notes/*`,
+    /// VTI-DIR-030 – 033): writing them, reading them, and exporting a
+    /// member's notes to answer their request for the data held about them.
+    /// Apart from [`Capability::DirectoryAdmin`] so a community can let a
+    /// moderator keep notes without changing what the directory discloses, and
+    /// the reverse. Not conferring.
+    DirectoryNotes,
     /// A git namespace (qualified by namespace).
     GitNsAdmin,
     /// Repository create, adopt, archive, transfer.
@@ -103,7 +110,7 @@ pub enum Capability {
 
 impl Capability {
     /// Every capability, in registry order.
-    pub const ALL: [Capability; 23] = [
+    pub const ALL: [Capability; 24] = [
         Capability::RolesAssign,
         Capability::ApprovalsAdmin,
         Capability::PolicyAdmin,
@@ -124,6 +131,7 @@ impl Capability {
         Capability::RoomsAdmin,
         Capability::RoomsManage,
         Capability::DirectoryAdmin,
+        Capability::DirectoryNotes,
         Capability::GitNsAdmin,
         Capability::GitRepoManage,
         Capability::GitCommitSign,
@@ -152,6 +160,7 @@ impl Capability {
             Capability::RoomsAdmin => "vtc.rooms.admin",
             Capability::RoomsManage => "vtc.rooms.manage",
             Capability::DirectoryAdmin => "vtc.directory.admin",
+            Capability::DirectoryNotes => "vtc.directory.notes",
             Capability::GitNsAdmin => "git.ns.admin",
             Capability::GitRepoManage => "git.repo.manage",
             Capability::GitCommitSign => "git.commit.sign",

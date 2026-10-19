@@ -247,6 +247,24 @@ pub fn project(
     })
 }
 
+/// Every active field of `subject` that holds a value, stored or derived —
+/// what an administrator reads of an entry whole, and what
+/// `vtc/directory/export` carries. Never a note: notes are not fields.
+pub fn every_field(schema: &[FieldDef], subject: &Subject) -> Map<String, Value> {
+    let mut out = Map::new();
+    for f in schema.iter().filter(|f| f.state == FieldState::Active) {
+        let value = if f.source == FieldSource::Derived {
+            subject.derived(&f.key)
+        } else {
+            subject.card.values.get(&f.key).cloned()
+        };
+        if let Some(v) = value {
+            out.insert(f.key.clone(), v);
+        }
+    }
+    out
+}
+
 /// The subject's public values: what the public would be shown of their card —
 /// visibility `public`, ceiling `public`, and the `directory` policy permitting
 /// it to a viewer with no standing (`card/publish` item 4). Empty for a member

@@ -359,6 +359,20 @@ fn base_disclosure() -> Value {
     .expect("the base schema gives a statement")
 }
 
+/// A note as `directory::notes` stores it.
+fn admin_note() -> crate::directory::notes::Note {
+    crate::directory::notes::Note {
+        note_id: "note_Q2xhcmFRMmxoY21GUk1t".into(),
+        entry_id: DIRECTORY_ENTRY.into(),
+        author: "did:example:administrator".into(),
+        created_at: "2026-10-19T09:00:00Z".parse().unwrap(),
+        text: Some("Spoke at the June meetup.".into()),
+        follow_up: Some(chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap()),
+        redacts: None,
+        redacted_by: None,
+    }
+}
+
 /// A stored picture's reference, as `directory::images` answers it.
 fn stored_picture() -> Value {
     json!({ "sha256": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b", "mediaType": "image/jpeg", "size": 18342 })
@@ -2780,6 +2794,44 @@ fn table() -> Vec<Conformance> {
             s::directory::disclosure::v0_1::Response,
             json!({}),
             json!({ "communityDid": COMMUNITY_DID, "disclosure": base_disclosure() })
+        ),
+        checked!(
+            s::directory::notes::append::v0_1::Payload,
+            s::directory::notes::append::v0_1::Response,
+            json!({ "entryId": DIRECTORY_ENTRY, "text": "Spoke at the June meetup.", "followUp": "2026-11-01" }),
+            json!({ "note": admin_note().wire() })
+        ),
+        checked!(
+            s::directory::notes::list::v0_1::Payload,
+            s::directory::notes::list::v0_1::Response,
+            json!({ "entryId": DIRECTORY_ENTRY, "limit": 20 }),
+            json!({ "items": [admin_note().wire()], "nextCursor": null })
+        ),
+        checked!(
+            s::directory::notes::export::v0_1::Payload,
+            s::directory::notes::export::v0_1::Response,
+            json!({ "entryId": DIRECTORY_ENTRY, "reason": "The member asked for the data held about them." }),
+            json!({
+                "entryId": DIRECTORY_ENTRY,
+                "notes": [admin_note().wire_whole()],
+                "exportedAt": "2026-10-19T09:00:00Z",
+            })
+        ),
+        checked!(
+            s::directory::export::v0_1::Payload,
+            s::directory::export::v0_1::Response,
+            json!({ "format": "jscontact", "reason": "Annual archive.", "limit": 200 }),
+            json!({
+                "items": [{
+                    "@type": "Card",
+                    "version": "1.0",
+                    "uid": format!("{}{DIRECTORY_ENTRY}", crate::directory::external::UID_PREFIX),
+                    "name": { "full": "Carol Example" },
+                    "role": "member",
+                }],
+                "nextCursor": null,
+                "exportedAt": "2026-10-19T09:00:00Z",
+            })
         ),
         checked!(
             s::directory::images::upload::v0_1::Payload,

@@ -36,10 +36,12 @@ import {
   audiencePhrase,
   defineField,
   describeDisclosure,
+  exportDirectory,
   listEntries,
   listFields,
   readDisclosure,
   retireField,
+  saveJson,
   showEntry,
   updateField,
   widens,
@@ -616,7 +618,54 @@ function display(v: unknown): string {
   return String(v);
 }
 
+/** Download every active member's card as JSContact (`vtc/directory/export`).
+ *  Takes the operator's passkey and is audited at the highest severity; no
+ *  administrator's note is ever in it. */
+function ExportCard() {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [reason, setReason] = useState("");
+  const run = useMutation({
+    mutationFn: () => exportDirectory(reason.trim(), gestureFromConfirm(confirm)),
+    onSuccess: (cards) => {
+      saveJson(cards, `directory-${new Date().toISOString().slice(0, 10)}.json`);
+      setReason("");
+      toast.push("success", `Exported ${cards.length} cards; recorded in the audit log.`);
+    },
+    onError: (err) => toast.pushFromError(err, "Export failed"),
+  });
+  return (
+    <details className="card">
+      <summary>Export the directory</summary>
+      <p className="muted">
+        Every active member&rsquo;s card as JSContact, every field included, for an archive or a
+        move. It takes your passkey and is recorded at the audit log&rsquo;s highest severity.
+        Administrators&rsquo; notes are never included.
+      </p>
+      <form
+        className="inline-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (reason.trim()) run.mutate();
+        }}
+      >
+        <input
+          aria-label="Why export the directory"
+          placeholder="Why, e.g. the annual archive"
+          value={reason}
+          maxLength={1024}
+          onChange={(e) => setReason(e.target.value)}
+        />
+        <button type="submit" className="btn" disabled={!reason.trim() || run.isPending}>
+          {run.isPending ? "Exporting…" : "Export"}
+        </button>
+      </form>
+    </details>
+  );
+}
+
 function EntriesTab() {
+  const caps = useCapabilities();
   const [text, setText] = useState("");
   const [query, setQuery] = useState<string | undefined>(undefined);
   const [open, setOpen] = useState<string | null>(null);
@@ -632,6 +681,7 @@ function EntriesTab() {
 
   return (
     <>
+      {holds(caps, DIRECTORY_ADMIN) && <ExportCard />}
       <form
         className="inline-form"
         onSubmit={(e) => {

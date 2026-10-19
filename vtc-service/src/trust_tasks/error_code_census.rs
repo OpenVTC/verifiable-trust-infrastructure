@@ -1210,6 +1210,48 @@ fn witnesses() -> Vec<Witness> {
             "a_published_card_is_served_as_signed_until_the_public_values_change"
         ),
         witness!(
+            s::directory::notes::append::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::directory_tasks::NOTES_APPEND_ERR_NOT_FOUND,
+            "directory_notes.rs",
+            "notes_append_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::directory::notes::append::v0_1::error_codes::NOTE_NOT_FOUND,
+            crate::trust_tasks::directory_tasks::NOTES_APPEND_ERR_NOTE_NOT_FOUND,
+            "directory_notes.rs",
+            "notes_append_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::directory::notes::append::v0_1::error_codes::ALREADY_REDACTED,
+            crate::trust_tasks::directory_tasks::NOTES_APPEND_ERR_ALREADY_REDACTED,
+            "directory_notes.rs",
+            "notes_append_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::directory::notes::list::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::directory_tasks::NOTES_LIST_ERR_NOT_FOUND,
+            "directory_notes.rs",
+            "notes_list_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::directory::notes::list::v0_1::error_codes::CURSOR_INVALID,
+            crate::trust_tasks::directory_tasks::NOTES_LIST_ERR_CURSOR_INVALID,
+            "directory_notes.rs",
+            "notes_list_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::directory::notes::export::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::directory_tasks::NOTES_EXPORT_ERR_NOT_FOUND,
+            "directory_notes.rs",
+            "notes_export_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::directory::export::v0_1::error_codes::CURSOR_INVALID,
+            crate::trust_tasks::directory_tasks::EXPORT_ERR_CURSOR_INVALID,
+            "directory_notes.rs",
+            "export_refuses_what_its_specification_declares"
+        ),
+        witness!(
             s::endorsement_types::delete::v0_1::error_codes::IN_USE,
             crate::routes::endorsement_types::DELETE_ERR_IN_USE,
             "endorsements.rs",

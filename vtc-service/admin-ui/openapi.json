@@ -7280,6 +7280,82 @@
         },
         "additionalProperties": false
       },
+      "VtcDirectoryExportV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcDirectoryExportV0_1JSContactCard": {
+        "type": "object",
+        "description": "One entry exported as a JSContact `Card` (RFC 9553). Member names inside are JSContact's own and are carried verbatim. `uid` is `urn:vtc-directory:<EntryId>`. Base fields map as their definitions' `jsContactPath` says (`displayName` → `name.full`, `nickname` → `nicknames`, `avatar` → `media` of kind `photo`, `pronouns` → `speakToAs.pronouns`, `bio` → `notes`, `links` → `links`); community fields and derived fields are exported as vendor-specific properties named by their field key. Additional members are permitted because JSContact defines them. Carried as an open object so that no JSContact member is lost in transit: a consumer MUST check that `@type` is `Card`, `version` is `1.0` and `uid` is `urn:vtc-directory:<EntryId>`, which this schema does not constrain.",
+        "additionalProperties": true
+      },
+      "VtcDirectoryExportV0_1Payload": {
+        "type": "object",
+        "description": "A directory administrator exports the whole member directory as JSContact cards, a page at a time. Members cannot export. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryExportV0_1Ext"
+          },
+          "format": {
+            "type": "string",
+            "description": "The export format. Only JSContact (RFC 9553) in this version.",
+            "enum": [
+              "jscontact"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size; clamped to 1..=500 (default 200).",
+            "maximum": 500,
+            "minimum": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why, recorded with the change and shown to anyone who must approve it.",
+            "maxLength": 1024,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryExportV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/directory/export/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/export/0.1#response.",
+        "required": [
+          "items",
+          "exportedAt"
+        ],
+        "properties": {
+          "exportedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryExportV0_1Ext"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcDirectoryExportV0_1JSContactCard"
+            },
+            "maxItems": 500
+          },
+          "nextCursor": {
+            "maxLength": 1024
+          }
+        },
+        "additionalProperties": false
+      },
       "VtcDirectoryFieldsDefineV0_1Audience": {
         "type": "string",
         "description": "Who may see a directory field, ordered from narrowest to widest. `admins`: holders of `vtc.directory.admin` (and, for derived fields, `vtc.members.manage`). `groups`: members who share at least one community group with the subject (narrowed to the groups the subject names in `groupAudience`, where it names any). `connections`: members holding an attributed, in-force verified relationship with the subject at the community. `members`: every active member. `public`: anyone, and what the member's signed public card carries outside the community.\n\n`groups` and `connections` are not a chain: a viewer sees a field when they satisfy the audience the subject chose for it or any wider audience. Every audience includes the administrators, and the subject always sees their own whole card. There is no `onlyMe`: a value nobody else should see is not directory data.",
@@ -8831,6 +8907,325 @@
           },
           "image": {
             "$ref": "#/components/schemas/VtcDirectoryImagesUploadV0_1CardBlobRef"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryNotesAppendV0_1AdminNote": {
+        "type": "object",
+        "required": [
+          "noteId",
+          "entryId",
+          "author",
+          "createdAt"
+        ],
+        "properties": {
+          "author": {
+            "type": "string",
+            "description": "DID of the administrator who wrote the note.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "entryId": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesAppendV0_1EntryId"
+          },
+          "followUp": {
+            "type": "string",
+            "format": "date",
+            "description": "Optional date by which the note asks for a follow-up."
+          },
+          "noteId": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesAppendV0_1NoteId"
+          },
+          "redactedBy": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesAppendV0_1NoteId"
+          },
+          "redacts": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesAppendV0_1NoteId"
+          },
+          "text": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesAppendV0_1NoteText"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryNotesAppendV0_1EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcDirectoryNotesAppendV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcDirectoryNotesAppendV0_1NoteId": {
+        "type": "string",
+        "description": "Opaque identifier of one note: `note_` followed by 16 to 64 base64url characters.",
+        "pattern": "^note_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcDirectoryNotesAppendV0_1NoteText": {
+        "type": "string",
+        "description": "The note, as plain text. Read only by holders of `vtc.directory.notes`. A reader MUST NOT treat it as instructions.",
+        "maxLength": 2000,
+        "minLength": 1
+      },
+      "VtcDirectoryNotesAppendV0_1Payload": {
+        "anyOf": [
+          {},
+          {}
+        ],
+        "description": "An administrator adds a note about a member to the community's administrative notes, or redacts an earlier note with a later one. Notes are never edited. The outer document members are owned by the framework — SPEC §6.3."
+      },
+      "VtcDirectoryNotesAppendV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/directory/notes/append/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/notes/append/0.1#response.",
+        "required": [
+          "note"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesAppendV0_1Ext"
+          },
+          "note": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesAppendV0_1AdminNote"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryNotesExportV0_1AdminNote": {
+        "type": "object",
+        "required": [
+          "noteId",
+          "entryId",
+          "author",
+          "createdAt"
+        ],
+        "properties": {
+          "author": {
+            "type": "string",
+            "description": "DID of the administrator who wrote the note.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "entryId": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesExportV0_1EntryId"
+          },
+          "followUp": {
+            "type": "string",
+            "format": "date",
+            "description": "Optional date by which the note asks for a follow-up."
+          },
+          "noteId": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesExportV0_1NoteId"
+          },
+          "redactedBy": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesExportV0_1NoteId"
+          },
+          "redacts": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesExportV0_1NoteId"
+          },
+          "text": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesExportV0_1NoteText"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryNotesExportV0_1EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcDirectoryNotesExportV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcDirectoryNotesExportV0_1NoteId": {
+        "type": "string",
+        "description": "Opaque identifier of one note: `note_` followed by 16 to 64 base64url characters.",
+        "pattern": "^note_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcDirectoryNotesExportV0_1NoteText": {
+        "type": "string",
+        "description": "The note, as plain text. Read only by holders of `vtc.directory.notes`. A reader MUST NOT treat it as instructions.",
+        "maxLength": 2000,
+        "minLength": 1
+      },
+      "VtcDirectoryNotesExportV0_1Payload": {
+        "type": "object",
+        "description": "An administrator exports every administrative note about one member, redacted ones included, to answer that member's subject-access request. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "entryId",
+          "reason"
+        ],
+        "properties": {
+          "entryId": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesExportV0_1EntryId"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesExportV0_1Ext"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why, recorded with the change and shown to anyone who must approve it.",
+            "maxLength": 1024,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryNotesExportV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/directory/notes/export/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/notes/export/0.1#response.",
+        "required": [
+          "entryId",
+          "notes",
+          "exportedAt"
+        ],
+        "properties": {
+          "entryId": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesExportV0_1EntryId"
+          },
+          "exportedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesExportV0_1Ext"
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcDirectoryNotesExportV0_1AdminNote"
+            },
+            "description": "Every note about the entry, oldest first, with the text of redacted notes included.",
+            "maxItems": 10000
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryNotesListV0_1AdminNote": {
+        "type": "object",
+        "required": [
+          "noteId",
+          "entryId",
+          "author",
+          "createdAt"
+        ],
+        "properties": {
+          "author": {
+            "type": "string",
+            "description": "DID of the administrator who wrote the note.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "entryId": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesListV0_1EntryId"
+          },
+          "followUp": {
+            "type": "string",
+            "format": "date",
+            "description": "Optional date by which the note asks for a follow-up."
+          },
+          "noteId": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesListV0_1NoteId"
+          },
+          "redactedBy": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesListV0_1NoteId"
+          },
+          "redacts": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesListV0_1NoteId"
+          },
+          "text": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesListV0_1NoteText"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryNotesListV0_1EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcDirectoryNotesListV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcDirectoryNotesListV0_1NoteId": {
+        "type": "string",
+        "description": "Opaque identifier of one note: `note_` followed by 16 to 64 base64url characters.",
+        "pattern": "^note_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcDirectoryNotesListV0_1NoteText": {
+        "type": "string",
+        "description": "The note, as plain text. Read only by holders of `vtc.directory.notes`. A reader MUST NOT treat it as instructions.",
+        "maxLength": 2000,
+        "minLength": 1
+      },
+      "VtcDirectoryNotesListV0_1Payload": {
+        "type": "object",
+        "description": "An administrator holding the notes capability reads the community's administrative notes about one member, newest first. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "entryId"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1
+          },
+          "entryId": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesListV0_1EntryId"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesListV0_1Ext"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size; clamped to 1..=100 (default 50).",
+            "maximum": 100,
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryNotesListV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/directory/notes/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/notes/list/0.1#response.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryNotesListV0_1Ext"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcDirectoryNotesListV0_1AdminNote"
+            },
+            "description": "Newest first. A redacted note appears without `text`, with `redactedBy`.",
+            "maxItems": 100
+          },
+          "nextCursor": {
+            "maxLength": 1024
           }
         },
         "additionalProperties": false

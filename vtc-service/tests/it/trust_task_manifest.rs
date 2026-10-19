@@ -940,6 +940,11 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // projection.
     "https://trusttasks.org/spec/vtc/directory/images/upload/0.1",
     "https://trusttasks.org/spec/vtc/directory/images/get/0.1",
+    // The console's member page (administrators' notes) and the directory export.
+    "https://trusttasks.org/spec/vtc/directory/notes/append/0.1",
+    "https://trusttasks.org/spec/vtc/directory/notes/list/0.1",
+    "https://trusttasks.org/spec/vtc/directory/notes/export/0.1",
+    "https://trusttasks.org/spec/vtc/directory/export/0.1",
     "https://trusttasks.org/spec/vtc/community/join-discovery/show/0.1",
     "https://trusttasks.org/spec/vtc/community/join-discovery/update/0.1",
     "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.2",

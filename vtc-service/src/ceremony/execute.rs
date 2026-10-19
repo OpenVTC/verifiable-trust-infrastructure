@@ -667,6 +667,20 @@ async fn depart(
     // read again by anyone but an administrator, because the member is no
     // longer active (VTI-DIR-111). Its external card was withdrawn first, above
     // (VTI-DIR-120).
+    // Administrators' notes follow it too: a purge erases them, and anything
+    // else keeps them for the directory's retention period (VTI-DIR-121).
+    if let Some(entry_id) =
+        crate::directory::cards::entry_of(state.directory.ks(), subject_did).await?
+    {
+        crate::directory::notes::on_departure(
+            state.directory.ks(),
+            &entry_id,
+            disposition == Disposition::Purge,
+            state.directory.settings().retention_days,
+            chrono::Utc::now(),
+        )
+        .await?;
+    }
     crate::directory::cards::on_departure(
         state.directory.ks(),
         subject_did,

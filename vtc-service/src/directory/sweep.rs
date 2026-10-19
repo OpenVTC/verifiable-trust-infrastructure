@@ -7,7 +7,8 @@
 //!   `purgeAfter`, and records that it did. A field once purged is marked, so
 //!   a pass reads every card only for a field that is due;
 //! - erasing pictures no card and no live upload holds (`images/upload`
-//!   item 6);
+//!   item 6), and the kept notes of members who left, once the retention
+//!   period has passed;
 //! - withdrawing external cards whose public values moved on in a way no
 //!   write path saw — a `directory` policy change, a suspension — and
 //!   repairing any recognition record whose card pointer is not the card now
@@ -68,7 +69,8 @@ pub async fn purge_due(state: &AppState) -> Result<Vec<String>, AppError> {
 /// One pass over pictures and external cards. Returns the pictures erased,
 /// the cards withdrawn and the registry records queued for repair.
 pub async fn settle(state: &AppState) -> Result<(usize, usize, usize), AppError> {
-    let erased = super::images::collect(state.directory.ks(), Utc::now()).await?;
+    let erased = super::images::collect(state.directory.ks(), Utc::now()).await?
+        + super::notes::sweep_departed(state.directory.ks(), Utc::now()).await?;
     let withdrawn = super::external::reconcile_all(state).await?;
     let repaired = repair_pointers(state).await?;
     Ok((erased, withdrawn, repaired))

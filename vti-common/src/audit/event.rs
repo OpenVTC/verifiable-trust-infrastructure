@@ -616,6 +616,17 @@ pub enum AuditEvent {
     /// encoding, never the image.
     DirectoryImageStored(DirectoryImageStoredData),
 
+    /// An administrator's note about a member was written or read
+    /// (`vtc/directory/notes/{append,list}`, VTI-DIR-032). By reference only:
+    /// the entry and the note, never its text.
+    DirectoryNoteAccessed(DirectoryNoteAccessData),
+
+    /// Data held about members was exported: one member's notes, to answer
+    /// their request for it (`vtc/directory/notes/export`, VTI-DIR-033), or the
+    /// whole directory (`vtc/directory/export`). Recorded at
+    /// [`AuditSeverity::Critical`], with the reason given and how much left.
+    DirectoryExported(DirectoryExportedData),
+
     /// An admin changed whether the join manifest answers a caller the
     /// community cannot identify (`PUT /v1/community/join-discovery`).
     ///
@@ -1131,6 +1142,8 @@ impl AuditEvent {
             Self::DirectoryCardChanged(..) => "DirectoryCardChanged",
             Self::DirectoryCardPublication(..) => "DirectoryCardPublication",
             Self::DirectoryImageStored(..) => "DirectoryImageStored",
+            Self::DirectoryNoteAccessed(..) => "DirectoryNoteAccessed",
+            Self::DirectoryExported(..) => "DirectoryExported",
             Self::CommunityJoinDiscoveryUpdated(..) => "CommunityJoinDiscoveryUpdated",
             Self::CommunityRequestedAttributesUpdated(..) => "CommunityRequestedAttributesUpdated",
             Self::EndorsementTypeRegistered(..) => "EndorsementTypeRegistered",
@@ -1193,7 +1206,8 @@ impl AuditEvent {
             | Self::AuthorityReducedUnopposed(..)
             | Self::AclMigrated(..)
             | Self::AdminActionBurst(..)
-            | Self::SingleAdminMode(..) => AuditSeverity::Critical,
+            | Self::SingleAdminMode(..)
+            | Self::DirectoryExported(..) => AuditSeverity::Critical,
             _ => AuditSeverity::Info,
         }
     }
@@ -2702,6 +2716,40 @@ pub struct DirectoryImageStoredData {
     pub owner: String,
 }
 
+/// Payload for [`AuditEvent::DirectoryNoteAccessed`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryNoteAccessData {
+    /// The member's entry identifier, never their DID.
+    pub entry_id: String,
+    /// `append` or `list`.
+    pub access: String,
+    /// The note written, for an append.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_id: Option<String>,
+    /// The note an append redacted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redacts: Option<String>,
+    /// How many notes a read returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+}
+
+/// Payload for [`AuditEvent::DirectoryExported`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryExportedData {
+    /// `notes` (one member's notes) or `directory` (every member's card).
+    pub what: String,
+    /// The member whose notes were exported, by entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<String>,
+    /// Why, as the exporter stated it.
+    pub reason: String,
+    /// How many notes or cards left.
+    pub count: usize,
+}
+
 /// Payload for [`AuditEvent::CommunityRequestedAttributesUpdated`].
 ///
 /// Claim types only — what the community now asks for, never anything an
@@ -4199,6 +4247,25 @@ mod tests {
                     document_id: None,
                 }),
                 "DirectoryCardPublication",
+            ),
+            (
+                AuditEvent::DirectoryNoteAccessed(DirectoryNoteAccessData {
+                    entry_id: "dir_aaaaaaaaaaaaaaaa".into(),
+                    access: "append".into(),
+                    note_id: Some("note_aaaaaaaaaaaaaaaa".into()),
+                    redacts: None,
+                    count: None,
+                }),
+                "DirectoryNoteAccessed",
+            ),
+            (
+                AuditEvent::DirectoryExported(DirectoryExportedData {
+                    what: "notes".into(),
+                    entry_id: Some("dir_aaaaaaaaaaaaaaaa".into()),
+                    reason: "subject-access request".into(),
+                    count: 3,
+                }),
+                "DirectoryExported",
             ),
             (
                 AuditEvent::DirectoryImageStored(DirectoryImageStoredData {

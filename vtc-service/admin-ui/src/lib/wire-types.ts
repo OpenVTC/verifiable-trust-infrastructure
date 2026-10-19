@@ -319,3 +319,7 @@ export type DirectoryImagesUploadPayload = Schemas["VtcDirectoryImagesUploadV0_1
 export type DirectoryImagesUploadResponse = Schemas["VtcDirectoryImagesUploadV0_1Response"];
 export type DirectoryImagesGetPayload = Schemas["VtcDirectoryImagesGetV0_1Payload"];
 export type DirectoryImagesGetResponse = Schemas["VtcDirectoryImagesGetV0_1Response"];
+export type DirectoryAdminNote = Schemas["VtcDirectoryNotesAppendV0_1AdminNote"];
+export type DirectoryNotesListResponse = Schemas["VtcDirectoryNotesListV0_1Response"];
+export type DirectoryNotesExportResponse = Schemas["VtcDirectoryNotesExportV0_1Response"];
+export type DirectoryExportResponse = Schemas["VtcDirectoryExportV0_1Response"];

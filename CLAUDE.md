@@ -1354,15 +1354,19 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **What**: The community's field schema (`fields/*`), each member's card
   (`card/{show,update,assert}`), and browse/search/show (`entries/*`, plus the
   older `query/0.1`), every read a **projection** for its caller; pictures
-  (`images/{upload,get}`) and external cards (`card/{publish,public}`). Groups,
-  introductions, notes, export and credential-sourced fields are later phases
-  (design §14).
+  (`images/{upload,get}`), external cards (`card/{publish,public}`),
+  administrators' notes (`notes/*`) and the export. Groups, introductions and
+  credential-sourced fields are later phases (design §14).
 - **Invariants to preserve**: a value leaves only where the member's own
   visibility, the field's ceiling **and** the `directory` policy all admit the
   viewer — intersected, and the policy can only narrow (`directory::project`,
   VTI-DIR-020/021). Withheld means absent; nothing visible is the same
   `notFound` as no such entry (VTI-DIR-110). A viewer's stars, lists and notes
-  are never stored here (VTI-DIR-001). A picture is stored only as the
+  are never stored here (VTI-DIR-001). Administrators' notes
+  (`directory::notes`, `vtc.directory.notes`) are the opposite case: kept here,
+  never in a card or any projection, append-only (a redaction is a later note),
+  and released to their member only by `notes/export` behind a bound step-up at
+  Critical (VTI-DIR-030 – 033). A picture is stored only as the
   community's own re-encoding (`directory::images::reencode` — never a byte as
   sent, never metadata), goes only on its uploader's card, and is read only
   through the projection (`images/get`), never by digest alone. An external card

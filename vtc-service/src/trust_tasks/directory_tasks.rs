@@ -14,6 +14,9 @@
 //! | `images/get/0.1` | anyone, through the projection: a member or administrator as `entries/show` projects for them, anyone else only a picture on a published external card |
 //! | `card/publish/0.1` | being the member, signing with their membership DID — never a delegated key, never an administrator |
 //! | `card/public/0.1` | anyone, with or without a proof: a card its member published |
+//! | `notes/{append,list}/0.1` | `vtc.directory.notes` |
+//! | `notes/export/0.1` | `vtc.directory.notes`, and the exporter's gesture bound to the document (VTI-DIR-033) |
+//! | `export/0.1` | `vtc.directory.admin`, and the exporter's gesture bound to its first page |
 //!
 //! None has a REST route. Each arrives the same way over TSP, DIDComm or
 //! HTTPS.
@@ -40,16 +43,18 @@ use trust_tasks_rs::specs::vtc::directory::{
     },
     disclosure::v0_1 as disclosure,
     entries::{list::v0_1 as entries_list, show::v0_1 as entries_show},
+    export::v0_1 as directory_export,
     fields::{
         define::v0_1 as fields_define, list::v0_1 as fields_list, retire::v0_1 as fields_retire,
         update::v0_1 as fields_update,
     },
     images::{get::v0_1 as images_get, upload::v0_1 as images_upload},
+    notes::{append::v0_1 as notes_append, export::v0_1 as notes_export, list::v0_1 as notes_list},
 };
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::audit::{
-    AuditEvent, DirectoryCardChangedData, DirectoryCardPublicationData, DirectoryFieldChangedData,
-    DirectoryImageStoredData,
+    AuditEvent, DirectoryCardChangedData, DirectoryCardPublicationData, DirectoryExportedData,
+    DirectoryFieldChangedData, DirectoryImageStoredData, DirectoryNoteAccessData,
 };
 use vti_common::auth::extractor::AuthClaims;
 use vti_common::error::AppError;
@@ -86,6 +91,10 @@ pub(crate) const IMAGES_UPLOAD_TYPE: &str = <images_upload::Payload as Payload>:
 pub(crate) const IMAGES_GET_TYPE: &str = <images_get::Payload as Payload>::TYPE_URI;
 pub(crate) const CARD_PUBLISH_TYPE: &str = <card_publish::Payload as Payload>::TYPE_URI;
 pub(crate) const CARD_PUBLIC_TYPE: &str = <card_public::Payload as Payload>::TYPE_URI;
+pub(crate) const NOTES_APPEND_TYPE: &str = <notes_append::Payload as Payload>::TYPE_URI;
+pub(crate) const NOTES_LIST_TYPE: &str = <notes_list::Payload as Payload>::TYPE_URI;
+pub(crate) const NOTES_EXPORT_TYPE: &str = <notes_export::Payload as Payload>::TYPE_URI;
+pub(crate) const EXPORT_TYPE: &str = <directory_export::Payload as Payload>::TYPE_URI;
 
 /// Exactly what [`dispatch`] routes.
 pub(crate) const URIS: &[&str] = &[
@@ -103,6 +112,10 @@ pub(crate) const URIS: &[&str] = &[
     IMAGES_GET_TYPE,
     CARD_PUBLISH_TYPE,
     CARD_PUBLIC_TYPE,
+    NOTES_APPEND_TYPE,
+    NOTES_LIST_TYPE,
+    NOTES_EXPORT_TYPE,
+    EXPORT_TYPE,
 ];
 
 // ─── the codes these tasks declare, as the error-code census witnesses them ─
@@ -159,6 +172,13 @@ codes! {
     PUBLISH_ERR_CARD_MISMATCH = card_publish::CARD_MISMATCH;
     PUBLISH_ERR_SIGNATURE_INVALID = card_publish::SIGNATURE_INVALID;
     PUBLIC_ERR_NOT_FOUND = card_public::NOT_FOUND;
+    NOTES_APPEND_ERR_NOT_FOUND = notes_append::NOT_FOUND;
+    NOTES_APPEND_ERR_NOTE_NOT_FOUND = notes_append::NOTE_NOT_FOUND;
+    NOTES_APPEND_ERR_ALREADY_REDACTED = notes_append::ALREADY_REDACTED;
+    NOTES_LIST_ERR_NOT_FOUND = notes_list::NOT_FOUND;
+    NOTES_LIST_ERR_CURSOR_INVALID = notes_list::CURSOR_INVALID;
+    NOTES_EXPORT_ERR_NOT_FOUND = notes_export::NOT_FOUND;
+    EXPORT_ERR_CURSOR_INVALID = directory_export::CURSOR_INVALID;
 }
 
 pub(super) async fn dispatch(
@@ -182,6 +202,10 @@ pub(super) async fn dispatch(
         IMAGES_GET_TYPE => handle_images_get(state, ctx, doc).await,
         CARD_PUBLISH_TYPE => handle_card_publish(state, ctx, doc).await,
         CARD_PUBLIC_TYPE => handle_card_public(state, ctx, doc).await,
+        NOTES_APPEND_TYPE => handle_notes_append(state, ctx, doc).await,
+        NOTES_LIST_TYPE => handle_notes_list(state, ctx, doc).await,
+        NOTES_EXPORT_TYPE => handle_notes_export(state, ctx, doc).await,
+        EXPORT_TYPE => handle_export(state, ctx, doc).await,
         _ => return None,
     })
 }
@@ -1686,4 +1710,418 @@ async fn handle_card_public(
         Ok(_) => not_found(&doc),
         Err(e) => app_error_to_reject(&doc, &e),
     }
+}
+
+// ─── administrators' notes and the export ─────────────────────────────────
+
+use crate::directory::notes::{self, AppendError, NewNote};
+
+/// Whether the directory knows `entry_id`: a card, or the notes kept about a
+/// member who left.
+async fn entry_known(state: &AppState, entry_id: &str) -> Result<bool, AppError> {
+    let ks = state.directory.ks();
+    Ok(
+        cards::get(ks, entry_id).await?.is_some()
+            || !notes::all_for(ks, entry_id).await?.is_empty(),
+    )
+}
+
+/// The cursor key and the binding of a page to its caller and its question.
+async fn cursor_key(state: &AppState) -> Result<Option<[u8; 32]>, AppError> {
+    Ok(match state.audit_writer.as_ref() {
+        Some(w) => Some(w.active_key().await?.key),
+        None => None,
+    })
+}
+
+/// The exporter's gesture, bound to this one document.
+async fn bound_gesture(
+    state: &AppState,
+    actor: &str,
+    doc: &TrustTask<Value>,
+    reason: &str,
+) -> Result<(), TrustTaskOutcome> {
+    use crate::acl::bound_step_up::{self, Gate};
+    match bound_step_up::redeem_or_request(
+        state,
+        actor,
+        &doc.type_uri.to_string(),
+        &doc.payload,
+        reason,
+    )
+    .await
+    {
+        Ok(Gate::Satisfied) => Ok(()),
+        Ok(Gate::Required(request)) => Err(super::helpers::task_error_to_reject(
+            doc,
+            &crate::error::TaskError::step_up(request),
+        )),
+        Err(e) => Err(app_error_to_reject(doc, &e)),
+    }
+}
+
+async fn audit_directory(state: &AppState, actor: &str, event: AuditEvent) -> Result<(), AppError> {
+    writer(state)?.write(actor, None, event).await.map(drop)
+}
+
+/// `notes/append/0.1` (items 1 – 5).
+async fn handle_notes_append(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match capable_signer(state, ctx, &doc, Capability::DirectoryNotes, None).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    if let Err(reject) = parse_spec_payload::<notes_append::Payload>(&doc) {
+        return reject;
+    }
+    // Two shapes (text, or a redaction); the members are read from the checked JSON.
+    let entry_id = doc
+        .payload
+        .get("entryId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    match entry_known(state, &entry_id).await {
+        Ok(true) => {}
+        Ok(false) => return declared(&doc, NOTES_APPEND_ERR_NOT_FOUND, "No such entry."),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    let new = NewNote {
+        text: doc
+            .payload
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        follow_up: doc
+            .payload
+            .get("followUp")
+            .and_then(Value::as_str)
+            .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()),
+        redacts: doc
+            .payload
+            .get("redacts")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    };
+    let refused = |doc: &TrustTask<Value>, e: AppendError| match e {
+        AppendError::NoteNotFound => declared(
+            doc,
+            NOTES_APPEND_ERR_NOTE_NOT_FOUND,
+            "No note about this entry has that identifier.",
+        ),
+        AppendError::AlreadyRedacted => declared(
+            doc,
+            NOTES_APPEND_ERR_ALREADY_REDACTED,
+            "That note is already redacted.",
+        ),
+        AppendError::Empty => reject_with(
+            doc,
+            RejectReason::MalformedRequest {
+                reason: "a note carries text, or redacts an earlier note".into(),
+            },
+        ),
+    };
+    let ks = state.directory.ks();
+    match notes::check(ks, &entry_id, &new).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return refused(&doc, e),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    // Item 5, before the note lands: by reference, never the text.
+    let note_id = notes::new_note_id();
+    if let Err(e) = audit_directory(
+        state,
+        &actor.did,
+        AuditEvent::DirectoryNoteAccessed(DirectoryNoteAccessData {
+            entry_id: entry_id.clone(),
+            access: "append".into(),
+            note_id: Some(note_id.clone()),
+            redacts: new.redacts.clone(),
+            count: None,
+        }),
+    )
+    .await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
+    match notes::append(ks, &entry_id, &actor.did, new, note_id, Utc::now()).await {
+        Ok(Ok(note)) => success_response(&doc, json!({ "note": note.wire() })),
+        Ok(Err(e)) => refused(&doc, e),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `notes/list/0.1` (items 1 – 5): newest first, a redacted note's text
+/// withheld.
+async fn handle_notes_list(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use vti_common::pagination::Cursor;
+    let actor = match capable_signer(state, ctx, &doc, Capability::DirectoryNotes, None).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let payload = match parse_spec_payload::<notes_list::Payload>(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let entry_id = payload.entry_id.to_string();
+    match entry_known(state, &entry_id).await {
+        Ok(true) => {}
+        Ok(false) => return declared(&doc, NOTES_LIST_ERR_NOT_FOUND, "No such entry."),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    let mut all = match notes::all_for(state.directory.ks(), &entry_id).await {
+        Ok(n) => n,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    all.reverse();
+    let key = match cursor_key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let binding = format!("notes/list|{}|{entry_id}", actor.did);
+    let start = match (doc.payload.get("cursor").and_then(Value::as_str), &key) {
+        (Some(wire), Some(k)) => match Cursor::decode_bound(wire, k, binding.as_bytes()) {
+            Ok(c) => all
+                .iter()
+                .position(|(rk, _)| rk.as_slice() < c.last_key.as_slice())
+                .unwrap_or(all.len()),
+            Err(_) => {
+                return declared(
+                    &doc,
+                    NOTES_LIST_ERR_CURSOR_INVALID,
+                    "This cursor is not this caller's for this entry.",
+                );
+            }
+        },
+        (Some(_), None) => {
+            return declared(
+                &doc,
+                NOTES_LIST_ERR_CURSOR_INVALID,
+                "This cursor is not this caller's for this entry.",
+            );
+        }
+        (None, _) => 0,
+    };
+    let limit = payload.limit.map_or(50, |l| l.get() as usize).clamp(1, 100);
+    let page: Vec<_> = all[start..].iter().take(limit).collect();
+    let next = match (&key, start + page.len() < all.len(), page.last()) {
+        (Some(k), true, Some((rk, _))) => {
+            Some(Cursor::new(rk.clone(), all.len() as u64).encode_bound(k, binding.as_bytes()))
+        }
+        _ => None,
+    };
+    // Item 4.
+    if let Err(e) = audit_directory(
+        state,
+        &actor.did,
+        AuditEvent::DirectoryNoteAccessed(DirectoryNoteAccessData {
+            entry_id,
+            access: "list".into(),
+            note_id: None,
+            redacts: None,
+            count: Some(page.len()),
+        }),
+    )
+    .await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
+    let items: Vec<Value> = page.iter().map(|(_, n)| n.wire()).collect();
+    success_response(&doc, json!({ "items": items, "nextCursor": next }))
+}
+
+/// `notes/export/0.1` (items 1 – 3): every note about a member, redacted ones
+/// included, to answer their request for the data held about them — behind the
+/// exporter's gesture bound to this document (VTI-DIR-033).
+async fn handle_notes_export(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match capable_signer(state, ctx, &doc, Capability::DirectoryNotes, None).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let payload = match parse_spec_payload::<notes_export::Payload>(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let entry_id = payload.entry_id.to_string();
+    let reason = payload.reason.to_string();
+    match entry_known(state, &entry_id).await {
+        Ok(true) => {}
+        Ok(false) => return declared(&doc, NOTES_EXPORT_ERR_NOT_FOUND, "No such entry."),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    if let Err(reject) = bound_gesture(
+        state,
+        &actor.did,
+        &doc,
+        &format!("Export every note about a member, redacted ones included: {reason}"),
+    )
+    .await
+    {
+        return reject;
+    }
+    let all = match notes::all_for(state.directory.ks(), &entry_id).await {
+        Ok(n) => n,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if let Err(e) = audit_directory(
+        state,
+        &actor.did,
+        AuditEvent::DirectoryExported(DirectoryExportedData {
+            what: "notes".into(),
+            entry_id: Some(entry_id.clone()),
+            reason,
+            count: all.len(),
+        }),
+    )
+    .await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
+    let items: Vec<Value> = all.iter().map(|(_, n)| n.wire_whole()).collect();
+    success_response(
+        &doc,
+        json!({ "entryId": entry_id, "notes": items, "exportedAt": Utc::now() }),
+    )
+}
+
+/// `export/0.1` (items 1 – 4): every active member's card as JSContact, a page
+/// at a time. The first page takes the exporter's gesture bound to it and is
+/// audited with the count; later pages are bound to it by their cursor.
+async fn handle_export(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use vti_common::pagination::Cursor;
+    let actor = match capable_signer(state, ctx, &doc, Capability::DirectoryAdmin, None).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let payload = match parse_spec_payload::<directory_export::Payload>(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let reason = payload.reason.to_string();
+    let key = match cursor_key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let binding = format!("export|{}", actor.did);
+    let cursor = doc.payload.get("cursor").and_then(Value::as_str);
+    let after: Option<Vec<u8>> = match (cursor, &key) {
+        (Some(wire), Some(k)) => match Cursor::decode_bound(wire, k, binding.as_bytes()) {
+            Ok(c) => Some(c.last_key),
+            Err(_) => {
+                return declared(
+                    &doc,
+                    EXPORT_ERR_CURSOR_INVALID,
+                    "This cursor is not this caller's export.",
+                );
+            }
+        },
+        (Some(_), None) => {
+            return declared(
+                &doc,
+                EXPORT_ERR_CURSOR_INVALID,
+                "This cursor is not this caller's export.",
+            );
+        }
+        (None, _) => None,
+    };
+    if after.is_none()
+        && let Err(reject) = bound_gesture(
+            state,
+            &actor.did,
+            &doc,
+            &format!("Export every member's directory card: {reason}"),
+        )
+        .await
+    {
+        return reject;
+    }
+    let ctx_read = match read::read_context(state).await {
+        Ok(c) => c,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let mut subjects: Vec<project::Subject> = match read::subjects(state).await {
+        Ok(s) => s.into_iter().filter(|s| s.active).collect(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    subjects.sort_by(|a, b| a.card.entry_id.cmp(&b.card.entry_id));
+    let start = after
+        .as_ref()
+        .map(|k| {
+            subjects
+                .iter()
+                .position(|s| s.card.entry_id.as_bytes() > k.as_slice())
+                .unwrap_or(subjects.len())
+        })
+        .unwrap_or(0);
+    let limit = payload
+        .limit
+        .map_or(200, |l| l.get() as usize)
+        .clamp(1, 500);
+    // Without a cursor key the whole directory is one page, never an unbound cursor.
+    let take = if key.is_some() { limit } else { 500 };
+    let page: Vec<&project::Subject> = subjects[start..].iter().take(take).collect();
+    let next = match (&key, start + page.len() < subjects.len(), page.last()) {
+        (Some(k), true, Some(last)) => Some(
+            Cursor::new(
+                last.card.entry_id.as_bytes().to_vec(),
+                subjects.len() as u64,
+            )
+            .encode_bound(k, binding.as_bytes()),
+        ),
+        _ => None,
+    };
+    if after.is_none()
+        && let Err(e) = audit_directory(
+            state,
+            &actor.did,
+            AuditEvent::DirectoryExported(DirectoryExportedData {
+                what: "directory".into(),
+                entry_id: None,
+                reason,
+                count: subjects.len(),
+            }),
+        )
+        .await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
+    // Item 2: base fields where their jsContactPath says, the rest by key. No note.
+    let items: Vec<Value> = page
+        .iter()
+        .map(|s| {
+            let mut card = serde_json::Map::new();
+            card.insert("@type".into(), "Card".into());
+            card.insert("version".into(), "1.0".into());
+            card.insert(
+                "uid".into(),
+                format!("{}{}", external::UID_PREFIX, s.card.entry_id).into(),
+            );
+            let all = project::every_field(&ctx_read.schema, s);
+            card.extend(external::expected_members(
+                &s.card.entry_id,
+                &ctx_read.schema,
+                &all,
+            ));
+            Value::Object(card)
+        })
+        .collect();
+    success_response(
+        &doc,
+        json!({ "items": items, "nextCursor": next, "exportedAt": Utc::now() }),
+    )
 }

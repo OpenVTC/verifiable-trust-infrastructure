@@ -21,6 +21,7 @@ pub mod external;
 pub mod fields;
 pub mod images;
 pub mod model;
+pub mod notes;
 pub mod project;
 pub mod read;
 pub mod sweep;

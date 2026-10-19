@@ -32,6 +32,10 @@ import type {
   DirectoryFieldInput,
   DirectoryFieldsListResponse,
   DirectoryFieldsUpdatePayload,
+  DirectoryAdminNote,
+  DirectoryExportResponse,
+  DirectoryNotesExportResponse,
+  DirectoryNotesListResponse,
 } from "./wire-types";
 
 export const FIELDS_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/fields/list/0.1";
@@ -42,6 +46,12 @@ export const CARD_ASSERT_TASK = "https://trusttasks.org/spec/vtc/directory/card/
 export const ENTRIES_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/entries/list/0.1";
 export const ENTRIES_SHOW_TASK = "https://trusttasks.org/spec/vtc/directory/entries/show/0.1";
 export const DISCLOSURE_TASK = "https://trusttasks.org/spec/vtc/directory/disclosure/0.1";
+export const NOTES_APPEND_TASK = "https://trusttasks.org/spec/vtc/directory/notes/append/0.1";
+export const NOTES_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/notes/list/0.1";
+export const NOTES_EXPORT_TASK = "https://trusttasks.org/spec/vtc/directory/notes/export/0.1";
+export const EXPORT_TASK = "https://trusttasks.org/spec/vtc/directory/export/0.1";
+/** Administrators' notes about members: apart from `vtc.directory.admin`. */
+export const DIRECTORY_NOTES = "vtc.directory.notes";
 
 /** Who may administer the directory's schema and its asserted values. */
 export const DIRECTORY_ADMIN = "vtc.directory.admin";
@@ -152,6 +162,88 @@ export async function assertValues(
   payload: DirectoryCardAssertPayload,
 ): Promise<DirectoryCardAssertResponse> {
   return postSignedTrustTask<DirectoryCardAssertResponse>(CARD_ASSERT_TASK, payload);
+}
+
+// ─── administrators' notes (VTI-DIR-030 – 033) ──────────────────────────────
+//
+// Kept apart from cards and never in a directory read: only holders of
+// `vtc.directory.notes` read or write them. A note is never edited — a
+// correction is a later note that redacts it — and releasing a member's notes
+// to them takes the operator's gesture bound to that one export.
+
+/** One page of a member's notes, newest first; a redacted note has no text. */
+export async function listNotes(entryId: string, cursor?: string): Promise<DirectoryNotesListResponse> {
+  return postSignedRead<DirectoryNotesListResponse>(NOTES_LIST_TASK, {
+    entryId,
+    ...(cursor ? { cursor } : {}),
+  });
+}
+
+export async function appendNote(
+  entryId: string,
+  text: string,
+  followUp?: string,
+): Promise<DirectoryAdminNote> {
+  const body = await postSignedTrustTask<{ note: DirectoryAdminNote }>(NOTES_APPEND_TASK, {
+    entryId,
+    text,
+    ...(followUp ? { followUp } : {}),
+  });
+  return body.note;
+}
+
+/** Withdraw an earlier note. Its text stays in the export, and nowhere else. */
+export async function redactNote(entryId: string, noteId: string): Promise<DirectoryAdminNote> {
+  const body = await postSignedTrustTask<{ note: DirectoryAdminNote }>(NOTES_APPEND_TASK, {
+    entryId,
+    redacts: noteId,
+  });
+  return body.note;
+}
+
+/** Every note about a member, as written, to answer their request for the data
+ *  held about them. Takes the operator's gesture bound to it. */
+export async function exportNotes(
+  entryId: string,
+  reason: string,
+  confirmGesture: ConfirmGesture,
+): Promise<DirectoryNotesExportResponse> {
+  return postSignedWithStepUp<DirectoryNotesExportResponse>(
+    NOTES_EXPORT_TASK,
+    { entryId, reason },
+    confirmGesture,
+  );
+}
+
+/** Every active member's card as JSContact, read to the end. The first page
+ *  takes the operator's gesture; the cursor carries the rest. */
+export async function exportDirectory(
+  reason: string,
+  confirmGesture: ConfirmGesture,
+): Promise<Record<string, unknown>[]> {
+  const base = { format: "jscontact", reason, limit: 500 };
+  const first = await postSignedWithStepUp<DirectoryExportResponse>(EXPORT_TASK, base, confirmGesture);
+  const cards = [...(first.items as Record<string, unknown>[])];
+  let cursor = first.nextCursor;
+  while (typeof cursor === "string") {
+    const page = await postSignedTrustTask<DirectoryExportResponse>(EXPORT_TASK, { ...base, cursor });
+    cards.push(...(page.items as Record<string, unknown>[]));
+    cursor = page.nextCursor;
+  }
+  return cards;
+}
+
+/** Offer `value` as a JSON file the browser saves. */
+export function saveJson(value: unknown, filename: string): void {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 /** The statement every applicant is shown, as the daemon generates it now. */

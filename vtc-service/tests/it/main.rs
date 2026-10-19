@@ -63,6 +63,7 @@ mod didcomm_envelope_binding;
 mod direct_admission;
 mod directory;
 mod directory_external;
+mod directory_notes;
 mod emergency_bootstrap;
 mod endorsements;
 mod git_ns_vtc_client;
