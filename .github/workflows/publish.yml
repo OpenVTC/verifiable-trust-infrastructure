@@ -150,7 +150,7 @@ jobs:
       # it the verify build of vtc-service fails, naming this script. Before
       # the Trusted Publishing exchange, so the npm build does not spend the
       # token's 30 minutes. Node from the console's `.nvmrc`, as in ci.yml.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: vtc-service/admin-ui/.nvmrc
           cache: npm
@@ -214,7 +214,7 @@ jobs:
         # moving major tag, so `@v0` resolves to nothing and the job fails at
         # "Set up job" before running a step. (actions/checkout@v6 works
         # because that repo does publish v6 — the convention is not universal.)
-        uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
+        uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
         with:
           command: release
         env:
@@ -234,7 +234,7 @@ jobs:
         id: release2
         if: inputs.package == '' && steps.release1.outcome == 'failure'
         continue-on-error: true
-        uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
+        uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
         with:
           command: release
         env:
@@ -253,7 +253,7 @@ jobs:
       - name: Run release-plz (attempt 3)
         id: release3
         if: inputs.package == '' && steps.release2.outcome == 'failure'
-        uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
+        uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
         with:
           command: release
         env:
@@ -438,7 +438,7 @@ jobs:
       # guessing from commit messages — which is the failure this exists to
       # prevent, and it is only a warning, so nothing goes red.
       - name: Install cargo-semver-checks
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-semver-checks
 
@@ -546,7 +546,7 @@ jobs:
         # moving major tag, so `@v0` resolves to nothing and the job fails at
         # "Set up job" before running a step. (actions/checkout@v6 works
         # because that repo does publish v6 — the convention is not universal.)
-        uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
+        uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
         with:
           command: release-pr
         env:
