@@ -74,6 +74,7 @@ pub fn read_reply(doc: &Value, expected: &str, host: &str) -> Result<Value, AppE
 /// whose local state must follow the host's (an epoch advance) keeps its
 /// pending change on the second and discards it only on the first.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RoomTaskError {
     /// The host answered with a `trust-task-error`.
     Refused {

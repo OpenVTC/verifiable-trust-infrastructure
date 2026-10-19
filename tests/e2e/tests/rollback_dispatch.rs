@@ -159,6 +159,7 @@ fn rollback_kind_wire_strings_are_stable_for_didcomm() {
             DidcommRollbackKind::Enabled => "enabled",
             DidcommRollbackKind::Updated => "updated",
             DidcommRollbackKind::NoOp => "no_op",
+            other => panic!("no wire string pinned for {other:?}"),
         }
     }
     assert_eq!(s(DidcommRollbackKind::Disabled), "disabled");
@@ -173,6 +174,7 @@ fn assert_kind_pair(k: RestRollbackKind, expected: &str) {
         RestRollbackKind::Enabled => "enabled",
         RestRollbackKind::Updated => "updated",
         RestRollbackKind::NoOp => "no_op",
+        other => panic!("no wire string pinned for {other:?}"),
     };
     assert_eq!(got, expected);
 }

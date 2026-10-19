@@ -31,6 +31,7 @@ pub enum ChildIndex {
 
 /// Failure building a [`ChildIndex`] from a raw number.
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum ChildIndexError {
     /// The index set bit 31, which is reserved to encode hardening.
     #[error("number too large: {0}")]
@@ -39,6 +40,7 @@ pub enum ChildIndexError {
 
 /// Failure parsing a [`ChildIndex`] from a string.
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum ChildIndexParseError {
     /// The digits were not a valid `u32`.
     #[error("could not parse child index: {0}")]
@@ -136,6 +138,7 @@ impl FromStr for ChildIndex {
 
 /// Failure parsing a [`DerivationPath`] from a string.
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum DerivationPathParseError {
     /// The input was empty.
     #[error("empty")]

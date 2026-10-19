@@ -4,6 +4,7 @@ use axum::response::{IntoResponse, Response};
 use tracing::{debug, warn};
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AppError {
     #[error("configuration error: {0}")]
     Config(String),

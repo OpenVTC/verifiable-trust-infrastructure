@@ -97,6 +97,7 @@ pub const MEMBER_REMOVAL_NOTICE_TYPE: &str =
 /// removal policy, a super-administrator's purge deliberately skipped it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum RemovalCode {
     /// Policy-governed removal by an administrator.
     AdminRemoved,

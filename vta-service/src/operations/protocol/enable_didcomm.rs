@@ -69,6 +69,7 @@ pub struct EnableDidcommResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum EnableDidcommError {
     #[error(
         "`setup_acl` cannot be combined with `force` because ACL provisioning requires a live mediator connection"

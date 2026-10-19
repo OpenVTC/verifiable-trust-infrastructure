@@ -362,6 +362,9 @@ impl vta_persona::CredentialSource for VaultCredentials {
             VaultStatus::Deleted => return Ok(Derived::Stale(StaleReason::Deleted)),
             VaultStatus::Archived => return Ok(Derived::Stale(StaleReason::Archived)),
             VaultStatus::Active => {}
+            // `VaultStatus` is `#[non_exhaustive]`: anything but Active is not a
+            // source to derive from.
+            _ => return Ok(Derived::Stale(StaleReason::Archived)),
         }
         match cred.status {
             crate::vault::CredentialStatus::Revoked => {
@@ -374,6 +377,9 @@ impl vta_persona::CredentialSource for VaultCredentials {
             // status list is read; treating it as withdrawn would make every
             // credential-backed attribute stale on arrival.
             crate::vault::CredentialStatus::Valid | crate::vault::CredentialStatus::Unknown => {}
+            // `CredentialStatus` is `#[non_exhaustive]`: a status not known to
+            // leave the credential usable is read as withdrawn.
+            _ => return Ok(Derived::Stale(StaleReason::Revoked)),
         }
         let now = chrono::Utc::now();
         let parse = |t: &Option<String>| {

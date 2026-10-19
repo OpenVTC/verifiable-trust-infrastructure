@@ -2858,6 +2858,7 @@ pub struct DidRotatedData {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum DidRotationReason {
     /// Routine hygiene — scheduled or self-directed key refresh, no
     /// suspected compromise.

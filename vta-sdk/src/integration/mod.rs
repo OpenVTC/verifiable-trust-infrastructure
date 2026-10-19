@@ -195,6 +195,7 @@ impl VtaServiceConfig {
 /// [`decide_transport`](auth::decide_transport) for the matrix.
 #[cfg(feature = "session")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TransportPreference {
     /// Try DIDComm first when a `mediator_did` is configured; fall back to
     /// REST on DIDComm failure. When `mediator_did` is unset, go straight
@@ -232,6 +233,7 @@ pub enum SecretSource {
 /// whereas [`Unreachable`](Self::Unreachable)/[`Timeout`](Self::Timeout)
 /// are transient connectivity that a later refresh clears on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FallbackReason {
     /// The VTA answered but **rejected** the request — HTTP 401/403 or the
     /// DIDComm `unauthorized`/`forbidden` problem-report. The credential or
@@ -280,6 +282,7 @@ pub struct StartupResult {
 
 /// Errors from the VTA integration startup flow.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum VtaIntegrationError {
     /// VTA is unreachable and no locally cached secrets exist.
     /// This typically means the service has never successfully contacted the VTA.

@@ -21,6 +21,7 @@ use crate::messaging::drain_store;
 use crate::store::KeyspaceHandle;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ListDrainError {
     #[error("auth: {0}")]
     Auth(String),

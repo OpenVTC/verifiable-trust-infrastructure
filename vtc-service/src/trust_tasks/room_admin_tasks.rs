@@ -282,6 +282,13 @@ async fn handle_limits_set(
             return refuse(&doc, c::MEMBER_LIMITS_UNAVAILABLE.code, e.to_string(), None);
         }
         Err(OverrideError::App(e)) => return app_error_to_reject(&doc, &e),
+        // `OverrideError` is `#[non_exhaustive]`.
+        Err(e) => {
+            return app_error_to_reject(
+                &doc,
+                &vti_common::error::AppError::Internal(e.to_string()),
+            );
+        }
     };
 
     // Item 7, written before the answer: the change has been made.

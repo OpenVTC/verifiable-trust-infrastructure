@@ -493,6 +493,11 @@ fn chunked_reject(doc: &TrustTask<Value>, err: chunked::ChunkedError) -> TrustTa
         E::BundleDigestMismatch => ("bundleDigestMismatch", None),
         E::BundleTooLarge { .. } => ("bundleTooLarge", None),
         E::InvalidManifest(_) => ("invalidManifest", None),
+        // `ChunkedError` is `#[non_exhaustive]`: one this family declares no
+        // code for is an internal error.
+        _ => {
+            return reject_with(doc, RejectReason::InternalError { reason: message });
+        }
     };
     let code = trust_tasks_rs::TrustTaskCode::new_extended(&slug, local)
         .expect("backup extended code is grammar-valid");

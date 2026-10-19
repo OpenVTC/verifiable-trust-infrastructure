@@ -80,6 +80,7 @@ pub const CHUNK_REQUEST_BURST: f64 = 100.0;
 /// arms are a specification error code the handler must put on the wire as
 /// `<task-slug>:<code>`, and several carry the `details` that code declares.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ChunkedError {
     /// A general failure (authorization, I/O, storage) with no task-specific
     /// code of its own.

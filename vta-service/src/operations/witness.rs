@@ -90,6 +90,7 @@ fn submit_response_type() -> &'static str {
 /// Why a witnessed-party step was refused. Each maps to the code the task declares, or to the
 /// framework's standard code where conventions §7 says so.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum WitnessError {
     /// No key of a DID the session needs in the caller's contexts, or no standing:
     /// `permissionDenied`.
@@ -1342,6 +1343,7 @@ pub struct Listed {
 /// Why `vta/witness/list` refused: only a cursor it cannot honour. Every other condition —
 /// a DID it does not hold, one held where the caller cannot act — is an empty page.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ListError {
     CursorInvalid,
     App(AppError),

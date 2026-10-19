@@ -164,6 +164,7 @@ impl ValueType {
 /// Why a credential-backed value could not be re-derived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum StaleReason {
     Revoked,
     Expired,
@@ -449,6 +450,7 @@ pub struct Profile {
 /// every disclosure it made is kept.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum ProfileStatus {
     #[default]
     Active,

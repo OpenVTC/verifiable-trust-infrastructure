@@ -45,6 +45,7 @@ pub struct EnableRestResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum EnableRestError {
     #[error("REST is already enabled. Use `services rest update --url <url>` to change the URL.")]
     ServiceAlreadyEnabled,

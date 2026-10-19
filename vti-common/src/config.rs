@@ -11,6 +11,7 @@ pub struct ServerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct LogConfig {
     #[serde(default = "default_log_level")]
     pub level: String,
@@ -59,6 +60,7 @@ pub struct StoreConfig {
 /// that fails to parse is refused with a message naming the setting,
 /// never silently ignored or clamped.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct FjallTuning {
     /// fjall's shared block cache size, in bytes
     /// (`fjall::Database::builder(..).cache_size(..)`). fjall's own
@@ -334,6 +336,7 @@ pub fn apply_fjall_env_overrides(config: &mut FjallTuning) -> Result<(), String>
 }
 
 #[derive(Clone, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct AuthConfig {
     #[serde(default = "default_access_token_expiry")]
     pub access_token_expiry: u64,
@@ -497,6 +500,7 @@ pub const DID_CACHE_CAPACITY_DEFAULT: u32 = 1000;
 /// Unknown keys are not refused here: each service's loader already warns on
 /// every key it ignores, and a mistyped key leaves the bounded default in force.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct DidCacheConfig {
     /// Seconds a mutable DID's document (`did:webvh`, `did:web`, …) is served
     /// from the cache before it is resolved again. Immutable methods
@@ -606,6 +610,7 @@ mod did_cache_config_tests {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct AuditConfig {
     /// Number of days to retain audit logs (default 28).
     #[serde(default = "default_audit_retention_days")]
@@ -627,6 +632,7 @@ impl Default for AuditConfig {
 /// Vault lifecycle tuning. Shared shape so both the VTA password vault and
 /// the VTA credential store read the same grace window.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct VaultConfig {
     /// Days a soft-deleted (tombstoned) vault entry or credential remains
     /// recoverable before the sweeper hard-purges it. Applied at delete time
@@ -660,6 +666,7 @@ fn default_vault_grace_days() -> u32 {
 
 /// Application-state store tuning (`vta/app-state/*`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct AppStateConfig {
     /// Days a deleted record's **tombstone** is retained before the sweeper
     /// reaps it. Default 30, matching the vault's grace window.

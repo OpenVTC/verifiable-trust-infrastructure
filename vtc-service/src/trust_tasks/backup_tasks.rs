@@ -798,6 +798,11 @@ fn chunked_reject(doc: &TrustTask<Value>, err: ChunkedError) -> TrustTaskOutcome
         E::BundleDigestMismatch => ("bundleDigestMismatch", None),
         E::BundleTooLarge { .. } => ("bundleTooLarge", None),
         E::InvalidManifest(_) => ("invalidManifest", None),
+        // `ChunkedError` is `#[non_exhaustive]`: one this family declares no
+        // code for is an internal error.
+        _ => {
+            return reject_with(doc, RejectReason::InternalError { reason: message });
+        }
     };
     refuse(doc, local, message, details)
 }

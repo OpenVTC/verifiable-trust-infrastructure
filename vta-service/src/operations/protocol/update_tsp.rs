@@ -42,6 +42,7 @@ pub struct UpdateTspResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum UpdateTspError {
     #[error(
         "TSP is not currently enabled. Use `services tsp enable --mediator-did <did>` to bring it online first."

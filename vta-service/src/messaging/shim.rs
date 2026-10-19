@@ -45,6 +45,7 @@ pub struct Extension<T>(pub T);
 /// the only variant carried forward. Rendered as an `internal-error`
 /// problem-report by the dispatch when a handler returns `Err`.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DIDCommServiceError {
     #[error("Handler error: {0}")]
     Handler(String),

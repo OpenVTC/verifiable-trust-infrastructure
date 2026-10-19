@@ -52,6 +52,7 @@ pub struct DisableWebauthnResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum DisableWebauthnError {
     #[error("WebAuthn is not currently enabled. Use `services webauthn enable --url <url>` first.")]
     ServiceNotPresent,

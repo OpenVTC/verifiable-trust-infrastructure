@@ -84,6 +84,14 @@ fn refused(doc: &TrustTask<Value>, refusal: Refusal) -> Answer {
         ),
         Refusal::App(e) => from_app_error(doc, &e),
         Refusal::Internal(reason) => reject(doc, RejectReason::InternalError { reason }),
+        // `Refusal` is `#[non_exhaustive]`: one this host does not know yet is
+        // an internal error.
+        other => reject(
+            doc,
+            RejectReason::InternalError {
+                reason: format!("{other:?}"),
+            },
+        ),
     }
 }
 

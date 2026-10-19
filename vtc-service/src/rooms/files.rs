@@ -208,6 +208,14 @@ pub(super) fn refused<P>(doc: &TrustTask<P>, refusal: Refusal) -> TrustTaskOutco
         ),
         Refusal::App(e) => app_error_to_reject(doc, &e),
         Refusal::Internal(reason) => reject_with(doc, RejectReason::InternalError { reason }),
+        // `Refusal` is `#[non_exhaustive]`: one this service does not know yet
+        // is an internal error.
+        other => reject_with(
+            doc,
+            RejectReason::InternalError {
+                reason: format!("{other:?}"),
+            },
+        ),
     }
 }
 

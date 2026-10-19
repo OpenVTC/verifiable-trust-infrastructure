@@ -231,6 +231,7 @@ impl Entry {
 /// Why a host refused a list — the codes `rooms/revocations/put` declares. Every one leaves
 /// the held list as it was.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ListRefusal {
     /// Not one the room signed for this room (item 2).
     #[error("the list is not one this room signed for itself: {0}")]

@@ -36,6 +36,7 @@ use thiserror::Error;
 /// Errors from provision-integration operations (VP/VC sign, verify,
 /// parse, envelope decode).
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ProvisionIntegrationError {
     /// JSON parse / structure error.
     #[error("parse error: {0}")]

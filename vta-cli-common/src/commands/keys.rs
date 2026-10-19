@@ -266,6 +266,9 @@ fn import_carrier(surface: vta_sdk::client::SurfaceTransport) -> ImportCarrier {
     match surface {
         SurfaceTransport::Didcomm | SurfaceTransport::Tsp => ImportCarrier::Multibase,
         SurfaceTransport::Rest => ImportCarrier::Sealed,
+        // Sealed transfer is the carrier that needs nothing from the surface
+        // (`SurfaceTransport` is `#[non_exhaustive]`).
+        _ => ImportCarrier::Sealed,
     }
 }
 
@@ -490,6 +493,7 @@ pub async fn cmd_key_list(
                 vta_sdk::keys::KeyStatus::Revoked => {
                     Span::styled(key.status.to_string(), Style::default().fg(Color::Red))
                 }
+                _ => Span::styled(key.status.to_string(), Style::default().fg(Color::Yellow)),
             };
 
             let id_line = Line::from(vec![

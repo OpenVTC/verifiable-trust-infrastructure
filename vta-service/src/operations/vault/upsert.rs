@@ -14,6 +14,7 @@ use vti_common::vault::VaultSecret;
 /// Why unsealing a `didcomm-authcrypt` sealed secret failed. The route maps
 /// each onto the canonical `vault/upsert:sealedSecretInvalid` reject (sender
 /// mismatch is `permission_denied`).
+#[non_exhaustive]
 pub enum UnsealError {
     /// The ATM failed to unpack the JWE.
     UnpackFailed(String),

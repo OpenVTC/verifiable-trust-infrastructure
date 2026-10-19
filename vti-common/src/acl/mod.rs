@@ -73,6 +73,7 @@ impl Role {
 /// existing operator-deployed mediator or daemon.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum ConsumerKind {
     #[serde(rename_all = "kebab-case")]
     Companion { form_factor: CompanionFormFactor },
@@ -101,6 +102,7 @@ pub enum CompanionFormFactor {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum ServiceKind {
     Mediator,
     AiAgent,

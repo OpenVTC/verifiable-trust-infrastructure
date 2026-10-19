@@ -1174,6 +1174,7 @@ async fn store(
 
 /// Why a group could not be founded.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum CreateGroupError {
     /// This VTA already holds group state for the room, at this room epoch.
     AlreadyExists {
@@ -1220,6 +1221,7 @@ pub async fn create_group(
 /// Which epoch advance a pending advance makes — a membership change, or none.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum AdvanceKind {
     /// `rooms/owner/group/add`. The default because every row written before
     /// the field existed was one.
@@ -1323,6 +1325,7 @@ pub struct PendingRevocation {
 
 /// Why an admission could not be built.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum PrepareAddError {
     NoGroup,
     AlreadyMember,
@@ -1438,6 +1441,7 @@ pub async fn prepare_add(
 
 /// Why a removal could not be built — `rooms/owner/group/remove/0.1` item 1.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum PrepareRemoveError {
     /// This agent holds no group for the room.
     NoGroup,

@@ -136,6 +136,7 @@ impl NitroVerifier {
 /// [`NitroParseError`](super::parse::NitroParseError), which means the bytes
 /// were not a well-formed document at all.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum NitroVerifyError {
     /// Structural decode failure (delegated to [`parse_nitro_quote`]).
     #[error(transparent)]

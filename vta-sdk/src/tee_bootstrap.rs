@@ -307,6 +307,7 @@ impl FirstBootAck {
 /// Why a [`FirstBootAck`] does not acknowledge the claim it answers.
 #[cfg(feature = "attest-verify")]
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FirstBootAckError {
     #[error("{0}")]
     Mismatch(String),

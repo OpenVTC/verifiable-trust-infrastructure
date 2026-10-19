@@ -345,6 +345,7 @@ pub const DEFAULT_MAX_FOREIGN_BODY: usize = 2 * 1024 * 1024;
 /// Errors from the foreign-fetch helpers. Callers map these into their own
 /// error types (e.g. `AppError`, `RecognitionError`).
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ForeignFetchError {
     /// The URL failed [`guard_public_url`] or [`guard_vta_endpoint`] (bad
     /// scheme, userinfo, non-public host).

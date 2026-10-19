@@ -23,6 +23,7 @@ use super::resolve::ResolvedVta;
 /// diagnostics list and/or transitions its UI state.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum VtaEvent {
     /// One of the diagnostic checks has started running. The consumer
     /// flips its row to `Running` (or whatever icon the UI uses).
@@ -79,6 +80,7 @@ pub enum VtaEvent {
 /// failure reason for the failure variants — already wrapped with
 /// retry-friendly prose by the runner.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum AttemptResultKind {
     Connected,
     PreAuthFailure(String),

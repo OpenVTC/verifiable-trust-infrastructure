@@ -388,6 +388,7 @@ pub enum AnchorCadence {
 /// Curation state of a record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum RecordStatus {
     /// Normal.
     Active,
@@ -623,6 +624,7 @@ impl Record {
 
 /// A wire record that could not be read back into a storage record.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FromWireError {
     /// `updatedAt` was not an RFC 3339 timestamp, or named an instant before
     /// the epoch. Either way the record cannot be stored: a mirror that guessed

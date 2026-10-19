@@ -52,6 +52,7 @@ pub struct VerifiedSiopIdToken {
 /// are intentionally specific for operator logs but carry no secret
 /// material.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SiopError {
     #[error("id_token is not a compact JWS (header.payload.signature)")]
     MalformedJws,

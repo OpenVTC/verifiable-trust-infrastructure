@@ -731,12 +731,13 @@ mod cors_tests {
     /// per request and clamps the same way; `rate_limit::tests` covers it.)
     #[test]
     fn zero_rate_limit_config_is_clamped_not_panicked() {
-        let server = crate::config::ServerConfig {
-            rate_limit_interval_secs: 0,
-            rate_limit_burst: 0,
-            did_log_rate_limit_interval_secs: 0,
-            did_log_rate_limit_burst: 0,
-            ..Default::default()
+        let server = {
+            let mut c = crate::config::ServerConfig::default();
+            c.rate_limit_interval_secs = 0;
+            c.rate_limit_burst = 0;
+            c.did_log_rate_limit_interval_secs = 0;
+            c.did_log_rate_limit_burst = 0;
+            c
         };
         let limits = QuotaSource::Fixed(RateLimits::from_server_config(&server));
         let _ = build_api_router(&[], limits.clone());

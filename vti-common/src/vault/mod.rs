@@ -35,6 +35,7 @@ use crate::store::KeyspaceHandle;
 ///   skip this state and erase immediately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum VaultStatus {
     #[default]
     Active,
@@ -246,6 +247,7 @@ impl VaultEntry {
 /// credential) was refused. Handlers map each variant to a Trust-Task reject
 /// reason; `code()` gives the stable token used in those messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LifecycleError {
     /// `archive` on an entry that isn't `Active`.
     NotActive,
@@ -306,6 +308,7 @@ pub enum SiteTarget {
 /// what we accept, conservative in what we emit). See issue #517.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum SecretKind {
     Password,
     Passkey,
@@ -810,6 +813,7 @@ impl std::fmt::Debug for CustomField {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum CustomFieldKind {
     Text,
     Url,

@@ -84,6 +84,7 @@ pub struct RollbackDidcommParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RollbackKind {
     /// Snapshot was `Disabled`; rollback re-disabled DIDComm.
     Disabled,
@@ -117,6 +118,7 @@ pub struct RollbackDidcommResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum RollbackDidcommError {
     #[error(
         "no prior mutation for `services didcomm` to roll back from. \

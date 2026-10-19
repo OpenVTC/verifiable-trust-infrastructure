@@ -164,6 +164,7 @@ pub fn legacy_aes_gcm_open(key: &[u8; 32], blob: &[u8]) -> Option<Vec<u8>> {
 
 /// Error variants for [`load_or_generate_jwt_key`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum JwtKeyError {
     /// The stored key is not exactly 32 bytes — the row is corrupt.
     BadKeyLength,

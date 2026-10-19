@@ -176,6 +176,7 @@ pub type ApproverSets = BTreeMap<String, Vec<String>>;
 /// the first caller it blocks — which is how a `delegated` step-up floor with
 /// no approver used to fail.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ApprovalsError {
     #[error(
         "rule for `{task_type}` is not a Trust Task Type URI: expected \

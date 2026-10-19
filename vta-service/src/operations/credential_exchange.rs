@@ -511,8 +511,9 @@ fn candidate_from_stored(
             // stored one is always presentable in that respect.
             (Value::Object(claims), None, true)
         }
-        // Unreachable: `dcql_format` returned `Some` only for the arms above.
-        CredentialFormat::Zkp | CredentialFormat::Other(_) => {
+        // Unreachable: `dcql_format` returned `Some` only for the arms above
+        // (`CredentialFormat` is `#[non_exhaustive]`).
+        _ => {
             return Ok(None);
         }
     };
@@ -1111,6 +1112,7 @@ pub mod pending {
     /// Where a deferred presentation stands.
     #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
     #[serde(rename_all = "snake_case")]
+    #[non_exhaustive]
     pub enum PendingStatus {
         /// Awaiting the holder's out-of-band approval.
         Pending,
@@ -1367,7 +1369,9 @@ fn dcql_format(format: &CredentialFormat) -> Option<&'static str> {
         CredentialFormat::SdJwtVc => Some("dc+sd-jwt"),
         CredentialFormat::EddsaJcs2022 => Some("ldp_vc"),
         CredentialFormat::MsoMdoc => Some("mso_mdoc"),
-        CredentialFormat::Bbs2023 | CredentialFormat::Zkp | CredentialFormat::Other(_) => None,
+        // `CredentialFormat` is `#[non_exhaustive]`: a format not mapped here
+        // does not match, as above.
+        _ => None,
     }
 }
 

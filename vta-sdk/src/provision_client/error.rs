@@ -10,6 +10,7 @@ use crate::sealed_transfer::SealedTransferError;
 /// module return `Result<T, ProvisionError>` rather than `anyhow::Result`;
 /// the only place `anyhow` is permitted is inside [`super::driver`].
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ProvisionError {
     /// did:key generation or private-key extraction failed.
     #[error("did:key generation failed: {0}")]

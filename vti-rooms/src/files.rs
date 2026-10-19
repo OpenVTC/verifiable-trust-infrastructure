@@ -71,6 +71,7 @@ pub const MAX_CHUNKS: u64 = 4096;
 
 /// What can go wrong building, sealing or opening a file.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FileError {
     /// A segment size outside `MIN_SEGMENT_SIZE..=MAX_SEGMENT_SIZE`.
     #[error("segment size {0} is outside {MIN_SEGMENT_SIZE}..={MAX_SEGMENT_SIZE}")]

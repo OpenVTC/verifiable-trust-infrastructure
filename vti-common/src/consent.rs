@@ -15,6 +15,7 @@ use crate::store::KeyspaceHandle;
 /// Interaction kind — a 1:1 DM, a multi-party group, or a broadcast channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum ConsentKind {
     Dm,
     Group,

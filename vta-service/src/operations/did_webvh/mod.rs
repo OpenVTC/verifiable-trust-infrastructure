@@ -500,6 +500,13 @@ fn plan_key_slots(
                      here decides that. Declare it as `{SLOT_KA}` if it is the DID's only one."
                 )));
             }
+            // `KeyPurpose` is `#[non_exhaustive]`: a purpose this VTA cannot
+            // mint is refused, never guessed at.
+            (_, purpose) => {
+                return Err(AppError::Validation(format!(
+                    "key slot '{slot}' declares purpose {purpose:?}, which this VTA cannot mint"
+                )));
+            }
         }
     }
 

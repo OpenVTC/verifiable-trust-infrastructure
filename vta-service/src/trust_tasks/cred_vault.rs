@@ -533,6 +533,8 @@ fn cred_lifecycle_reject(
         LifecycleError::GraceExpired => {
             "the grace window has elapsed — the credential has been (or is about to be) purged"
         }
+        // `LifecycleError` is `#[non_exhaustive]`.
+        _ => "the credential's lifecycle state does not allow this",
     };
     reject_with(
         doc,

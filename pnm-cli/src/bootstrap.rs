@@ -324,6 +324,11 @@ pub async fn run_open(
             println!("Payload: ExternalCredential");
             println!("  Expires at: {}", c.expires_at());
         }
+        // `SealedPayloadV1` is `#[non_exhaustive]`: a payload kind newer than
+        // this `pnm` is opened but not described.
+        _ => {
+            println!("Payload: a kind this version of pnm does not describe");
+        }
     }
 
     if let Some(path) = out {

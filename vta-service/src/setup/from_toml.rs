@@ -1237,9 +1237,10 @@ pub async fn apply_inputs(
         services: inputs.services.clone(),
         messaging: messaging.clone(),
         mediator_readiness: Default::default(),
-        auth: AuthConfig {
-            jwt_signing_key,
-            ..AuthConfig::default()
+        auth: {
+            let mut c = AuthConfig::default();
+            c.jwt_signing_key = jwt_signing_key;
+            c
         },
         audit: inputs.audit.clone(),
         vault: Default::default(),

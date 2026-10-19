@@ -1152,6 +1152,7 @@ pub async fn get_key_secret(
 /// caller** — the two refusals `keys/export-secret/0.1` gives codes of their
 /// own, because retrying with more authority changes neither.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KeyExportRefusal {
     /// An internal key: generated inside this VTA, reproducible nowhere, never
     /// released to anybody — `keys/export-secret:neverExportable`.
@@ -1175,6 +1176,7 @@ impl KeyExportRefusal {
 /// The error [`export_key_secret`] returns: a refusal about the key, typed so a
 /// transport that can name it (the Trust-Task spine) does, or any other error.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum KeyExportError {
     Refused(KeyExportRefusal, String),
     Other(AppError),
@@ -2011,6 +2013,7 @@ async fn sign_payload_recorded(
 /// Why [`sign_sshsig`] refused, where `keys/sign-sshsig/0.1` declares a code for
 /// it. Every other refusal is an [`AppError`], rendered as usual.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum SshsigRefusal {
     /// `keys/sign-sshsig:failedPrecondition` — the key exists, is the caller's
     /// to use, and is not `active`.
@@ -2139,6 +2142,7 @@ pub async fn sign_sshsig(
 /// Why [`sign_jws`] or [`sign_csr`] refused, where its specification declares a
 /// code for it. Every other refusal is an [`AppError`], rendered as usual.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ProtocolSignRefusal {
     /// `…:failedPrecondition` — the key is the caller's to use and not
     /// `active`.

@@ -838,9 +838,10 @@ mod tests {
 
     #[test]
     fn policy_with_reconnect_disabled_never_retries() {
-        let policy = ReconnectPolicy::from_config(&MediatorReadinessConfig {
-            reconnect: false,
-            ..Default::default()
+        let policy = ReconnectPolicy::from_config(&{
+            let mut c = MediatorReadinessConfig::default();
+            c.reconnect = false;
+            c
         });
         assert!(
             policy.next_backoff(0, Duration::ZERO).is_none(),
@@ -850,9 +851,10 @@ mod tests {
 
     #[test]
     fn policy_gives_up_once_the_horizon_is_exhausted() {
-        let policy = ReconnectPolicy::from_config(&MediatorReadinessConfig {
-            reconnect_max_elapsed_secs: 120,
-            ..Default::default()
+        let policy = ReconnectPolicy::from_config(&{
+            let mut c = MediatorReadinessConfig::default();
+            c.reconnect_max_elapsed_secs = 120;
+            c
         });
         assert!(policy.next_backoff(3, Duration::from_secs(119)).is_some());
         assert!(
@@ -864,10 +866,11 @@ mod tests {
 
     #[test]
     fn policy_backoff_is_bounded_by_the_reconnect_cap() {
-        let policy = ReconnectPolicy::from_config(&MediatorReadinessConfig {
-            retry_secs: 5,
-            reconnect_backoff_cap_secs: 60,
-            ..Default::default()
+        let policy = ReconnectPolicy::from_config(&{
+            let mut c = MediatorReadinessConfig::default();
+            c.retry_secs = 5;
+            c.reconnect_backoff_cap_secs = 60;
+            c
         });
         assert_eq!(policy.ceiling_for(0), Duration::from_secs(5));
         assert_eq!(policy.ceiling_for(4), Duration::from_secs(60)); // 80 -> cap
@@ -886,10 +889,11 @@ mod tests {
     fn policy_cap_below_base_still_grows() {
         // A misconfigured cap under the base would otherwise pin the backoff at
         // the (smaller) cap and defeat the escalation entirely.
-        let policy = ReconnectPolicy::from_config(&MediatorReadinessConfig {
-            retry_secs: 30,
-            reconnect_backoff_cap_secs: 5,
-            ..Default::default()
+        let policy = ReconnectPolicy::from_config(&{
+            let mut c = MediatorReadinessConfig::default();
+            c.retry_secs = 30;
+            c.reconnect_backoff_cap_secs = 5;
+            c
         });
         assert_eq!(policy.ceiling_for(0), Duration::from_secs(30));
     }
@@ -907,9 +911,10 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_gate_proceeds_without_probing() {
-        let cfg = MediatorReadinessConfig {
-            enabled: false,
-            ..Default::default()
+        let cfg = {
+            let mut c = MediatorReadinessConfig::default();
+            c.enabled = false;
+            c
         };
         assert_eq!(
             run_gate(

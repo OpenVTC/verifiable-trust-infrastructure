@@ -37,6 +37,7 @@ pub struct EnableWebauthnResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum EnableWebauthnError {
     #[error(
         "WebAuthn is already enabled. Use `services webauthn update --url <url>` to change the URL."

@@ -1369,6 +1369,9 @@ pub(super) async fn handle_issue(
             return reject_declared(&doc, t::error_codes::PROVIDER_UNAVAILABLE, m);
         }
         Err(DriverError::Internal(m)) => return app_error_to_reject(&doc, AppError::Internal(m)),
+        // `DriverError` is `#[non_exhaustive]`: a class this task does not map
+        // is a fault of the custodian's own.
+        Err(other) => return app_error_to_reject(&doc, AppError::Internal(other.to_string())),
     };
 
     let scope_json = serde_json::to_value(&requested).unwrap_or(Value::Null);
@@ -1803,6 +1806,11 @@ async fn issue_scope_or_presign(
             Err(BatchRefusal::TtlTooLong { requested, max }) => {
                 return ttl_too_long(requested, max);
             }
+            // `BatchRefusal` is `#[non_exhaustive]`: a refusal not mapped here
+            // is still a refusal of the batch.
+            Err(other) => {
+                return reject_declared(&doc, t::error_codes::INVALID_BATCH, other.to_string());
+            }
         }
     }
 
@@ -1878,6 +1886,9 @@ async fn issue_scope_or_presign(
             return reject_declared(&doc, t::error_codes::PROVIDER_UNAVAILABLE, m);
         }
         Err(DriverError::Internal(m)) => return app_error_to_reject(&doc, AppError::Internal(m)),
+        // `DriverError` is `#[non_exhaustive]`: a class this task does not map
+        // is a fault of the custodian's own.
+        Err(other) => return app_error_to_reject(&doc, AppError::Internal(other.to_string())),
     };
 
     let expires_at = rfc3339(issued.expires_at);

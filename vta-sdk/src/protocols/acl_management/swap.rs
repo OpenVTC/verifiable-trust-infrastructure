@@ -202,6 +202,7 @@ mod verify_impl {
     const SKEW_SECS: u64 = 300;
 
     #[derive(Debug, thiserror::Error)]
+    #[non_exhaustive]
     pub enum AclSwapError {
         #[error("malformed VP-JWT: {0}")]
         Parse(String),

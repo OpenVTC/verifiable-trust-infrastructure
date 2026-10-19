@@ -102,6 +102,7 @@ pub const RESERVED_VARS: &[&str] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[non_exhaustive]
 pub enum KeyPurpose {
     /// Signs. Authentication, assertion, capability invocation/delegation.
     Signing,
@@ -414,6 +415,7 @@ pub struct DidTemplateRecord {
 
 /// Errors from template parsing, validation, and rendering.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum TemplateError {
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),

@@ -155,6 +155,7 @@ pub fn secrets_from_bundle(
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum DidKeyError {
     Multibase(String),
     InvalidSeedLength,

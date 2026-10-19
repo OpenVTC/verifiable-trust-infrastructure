@@ -274,6 +274,9 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
             match record.status {
                 KeyStatus::Active => active += 1,
                 KeyStatus::Revoked => revoked += 1,
+                // `KeyStatus` is `#[non_exhaustive]`: a newer status is in
+                // `total_keys` but neither column.
+                _ => {}
             }
             match record.key_type {
                 KeyType::Ed25519 => ed25519_count += 1,

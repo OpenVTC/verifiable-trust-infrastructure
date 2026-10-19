@@ -1177,7 +1177,8 @@ async fn gather_inputs(
         )?
         .parse()
         .expect("validated above");
-    let audit = AuditConfig { retention_days };
+    let mut audit = AuditConfig::default();
+    audit.retention_days = retention_days;
 
     // 8. Data directory + existing-store policy. Trimmed because operators
     //    paste paths, and a stray trailing space silently becomes part of
@@ -1319,21 +1320,21 @@ async fn gather_inputs(
             webauthn,
             tsp: enable_tsp,
         },
-        server: ServerConfig {
-            host,
-            port,
-            cors_origins,
-            trust_xff_cidrs,
-            rate_limit_interval_secs: ServerConfig::default().rate_limit_interval_secs,
-            rate_limit_burst: ServerConfig::default().rate_limit_burst,
-            did_log_rate_limit_interval_secs: ServerConfig::default()
-                .did_log_rate_limit_interval_secs,
-            did_log_rate_limit_burst: ServerConfig::default().did_log_rate_limit_burst,
-            trust_xff: (),
+        server: {
+            // `ServerConfig` is `#[non_exhaustive]`: start from its defaults
+            // (the rate limits among them) and set what the wizard asked.
+            let mut server = ServerConfig::default();
+            server.host = host;
+            server.port = port;
+            server.cors_origins = cors_origins;
+            server.trust_xff_cidrs = trust_xff_cidrs;
+            server
         },
-        log: LogConfig {
-            level: log_level,
-            format: log_format,
+        log: {
+            let mut log = LogConfig::default();
+            log.level = log_level;
+            log.format = log_format;
+            log
         },
         secrets,
         messaging,

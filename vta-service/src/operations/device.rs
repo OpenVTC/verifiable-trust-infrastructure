@@ -762,8 +762,13 @@ fn kind_to_wire(kind: &ConsumerKind) -> Value {
                 ServiceKind::Mediator => "mediator",
                 ServiceKind::AiAgent => "ai-agent",
                 ServiceKind::Daemon => "daemon",
+                // `ServiceKind` is `#[non_exhaustive]`: its kebab-case serde
+                // name is the wire value.
+                other => return json!({ "kind": "service", "serviceKind": other }),
             },
         }),
+        // `ConsumerKind` is `#[non_exhaustive]`: its serde form is the wire form.
+        _ => serde_json::to_value(kind).unwrap_or(Value::Null),
     }
 }
 

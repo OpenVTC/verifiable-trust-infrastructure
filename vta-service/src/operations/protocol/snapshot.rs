@@ -49,6 +49,7 @@ pub const KEYSPACE_NAME: &str = crate::keyspaces::SNAPSHOT;
 /// because the kebab-case strings match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum ServiceKind {
     Rest,
     Didcomm,

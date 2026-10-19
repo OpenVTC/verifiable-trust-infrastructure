@@ -4,6 +4,7 @@ pub use crate::rate_limit::RateLimitSource;
 
 /// Errors returned by VTA SDK client operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum VtaError {
     /// Network-level error (connection refused, timeout, DNS failure).
     #[cfg(feature = "client")]
@@ -345,6 +346,7 @@ pub enum VtaError {
 /// channel carries every typed-error wire form.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "code", rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum TypedErrorPayload {
     LastServiceRefused,
     ServiceNotPresent,

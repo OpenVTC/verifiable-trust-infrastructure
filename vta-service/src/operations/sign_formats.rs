@@ -23,6 +23,7 @@ use yasna::models::ObjectIdentifier;
 /// Why a request could not be built into bytes to sign — each a code the
 /// specification declares.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FormatRefusal {
     /// `keys/sign-jws:headerMemberForbidden`, naming the member.
     HeaderMemberForbidden(String),

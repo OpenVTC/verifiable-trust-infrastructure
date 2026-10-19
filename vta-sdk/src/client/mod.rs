@@ -218,6 +218,7 @@ pub(super) enum TspLegKind {
 /// attached a TSP leg reports TSP: its DIDComm session stays open only as the
 /// mediator's one socket per DID, on which TSP receive arrives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SurfaceTransport {
     /// REST/HTTPS with a bearer token.
     Rest,

@@ -49,6 +49,7 @@ pub struct EnableTspResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum EnableTspError {
     #[error(
         "TSP is already enabled. Use `services tsp update --mediator-did <did>` to change the mediator."

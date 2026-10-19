@@ -160,6 +160,7 @@ fn key_is_valid(key: &str) -> bool {
 /// `detailsSchema` enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum ConflictReason {
     /// A positive `expectedVersion` did not match the live record's version.
     VersionMismatch,
@@ -186,6 +187,7 @@ pub enum FilterConflict {
 /// Failures the application-state operations raise, mapped by the trust-task
 /// handler onto the published error taxonomy.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum AppStateError {
     /// No record at the address (`get`), or a `mergePatch` with nothing to
     /// apply to (`put`).

@@ -529,6 +529,8 @@ fn lifecycle_reject(
         LifecycleError::GraceExpired => {
             "the grace window has elapsed — the entry has been (or is about to be) purged"
         }
+        // `LifecycleError` is `#[non_exhaustive]`.
+        _ => "the entry's lifecycle state does not allow this",
     };
     reject_with(
         doc,
@@ -778,6 +780,8 @@ pub(super) async fn handle_upsert(
                 "restore it first (vault/restore), or vault/purge and recreate",
             ),
             VaultStatus::Active => unreachable!("guarded by the != Active check above"),
+            // `VaultStatus` is `#[non_exhaustive]`: refused like any non-Active state.
+            _ => ("inactive", "it is not active and cannot be edited"),
         };
         return reject_with(
             &doc,

@@ -59,6 +59,7 @@ use crate::store::KeyspaceHandle;
 pub struct RollbackRestParams;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RollbackKind {
     /// Snapshot was `Disabled`; rollback re-disabled REST.
     Disabled,
@@ -87,6 +88,7 @@ pub struct RollbackRestResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum RollbackRestError {
     #[error(
         "no prior mutation for `services rest` to roll back from. \

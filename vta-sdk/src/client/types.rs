@@ -58,6 +58,7 @@ pub struct HealthResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[non_exhaustive]
 pub struct ConfigResponse {
     /// The registry, as canonical `config/show/0.1` returns it. Read a single
     /// key with [`GetConfigResultBody::get`], or the common one with
@@ -218,6 +219,7 @@ impl std::fmt::Debug for ImportKeyRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[non_exhaustive]
 pub struct ImportKeyResponse {
     pub key_id: String,
     pub key_type: KeyType,
@@ -377,6 +379,7 @@ pub use crate::protocols::key_management::secret::GetKeySecretResultBody as GetK
 pub use crate::protocols::key_management::sign::SignResultBody as SignResponse;
 
 #[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct ListKeysResponse {
     pub keys: Vec<KeyRecord>,
     pub total: u64,
@@ -922,6 +925,7 @@ pub struct ChangeAclRoleRequest {
 // ── WebVH DID log types ──────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
+#[non_exhaustive]
 pub struct GetDidLogResponse {
     pub did: String,
     pub log: Option<String>,

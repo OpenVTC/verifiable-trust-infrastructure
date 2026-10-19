@@ -477,6 +477,7 @@ struct Page<T> {
 /// A join request in the admin work queue (subset of the VTC's `JoinRequest`).
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct JoinRequestSummary {
     /// The request id (used to approve / reject).
     pub id: String,
@@ -490,6 +491,7 @@ pub struct JoinRequestSummary {
 /// Outcome of approving or rejecting a join request.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct DecideResult {
     pub request_id: String,
     pub status: String,
@@ -506,6 +508,7 @@ pub struct DecideResult {
 /// status-list revocation bit as part of removal.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct RemoveResult {
     pub did: String,
     /// Wire disposition: `"tombstone"`, `"purge"`, `"historical"`.
@@ -590,6 +593,7 @@ pub struct RotationChallenge {
 /// envelope; NOT covered by either rotation signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum RotationReason {
     /// Routine hygiene — no suspected compromise.
     Routine,

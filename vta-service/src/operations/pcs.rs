@@ -61,6 +61,7 @@ const APPLICANT_STATE_TYPE: &str = "pcs-applicant-state";
 
 /// Why the engine refused. Each maps to a code the task's specification declares.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum PcsError {
     NotFound,
     UnsupportedSuite(String),

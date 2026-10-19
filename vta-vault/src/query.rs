@@ -319,6 +319,9 @@ pub async fn search(
             VaultStatus::Active => true,
             VaultStatus::Archived => query.include_archived,
             VaultStatus::Deleted => query.include_deleted,
+            // `VaultStatus` is `#[non_exhaustive]`: a lifecycle state this
+            // filter does not know is hidden — the most restrictive reading.
+            _ => false,
         };
         if !lifecycle_admitted {
             continue;

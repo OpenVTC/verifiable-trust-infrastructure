@@ -368,6 +368,7 @@ impl NotEmpty {
 /// rather than a Trust-Task code — so a caller that does not care is
 /// unchanged.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ContextError {
     /// No context with this id is reachable by this caller — **whether or not
     /// it exists**. The family's `<task>:notFound`.

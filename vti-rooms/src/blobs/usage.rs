@@ -269,6 +269,7 @@ pub struct OverrideChange {
 
 /// Why an override was refused.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum OverrideError {
     /// A `maxFileBytes` above the host-wide ceiling, which is never clamped
     /// silently.

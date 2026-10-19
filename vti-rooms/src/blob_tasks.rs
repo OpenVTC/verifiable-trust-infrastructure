@@ -65,6 +65,7 @@ const USAGE_CURSOR_PREFIX: &str = "rooms-usage:";
 
 /// Why a room-file task was refused, for the host to render as its reply.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Refusal {
     /// A code the task's specification declares.
     Declared {

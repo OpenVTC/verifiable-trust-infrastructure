@@ -220,6 +220,7 @@ impl LimitExceeded {
 /// Why a blob operation refused. Most arms are a task's declared error code,
 /// which the host puts on the wire under that task's slug.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum BlobError {
     FilesDisabled,
     InvalidManifest(String),
@@ -2988,6 +2989,9 @@ fn chunked_error(e: ChunkedError) -> BlobError {
             BlobError::InvalidManifest(format!("{size_bytes} bytes exceed the transfer ceiling"))
         }
         ChunkedError::App(e) => BlobError::App(e),
+        // `ChunkedError` is `#[non_exhaustive]`: a refusal this mapping does not
+        // know yet is an internal error, never silently a success.
+        other => BlobError::App(AppError::Internal(other.to_string())),
     }
 }
 

@@ -81,6 +81,7 @@ pub const MIN_SEED_LEN: usize = 16;
 
 /// Failure during SLIP-0010 derivation.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Slip10Error {
     /// A non-hardened index was used. Ed25519 supports hardened derivation
     /// only; this is refused rather than silently hardened.

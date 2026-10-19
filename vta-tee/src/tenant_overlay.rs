@@ -62,6 +62,7 @@ const NOT_CONNECTED_RETRY_DELAY: Duration = Duration::from_millis(10);
 /// fail-closed: on real Nitro the caller aborts the boot rather than continue
 /// with an un-overlaid (placeholder) config.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum OverlayFetchError {
     /// Could not connect to the parent config server after bounded retries.
     Connect(String),

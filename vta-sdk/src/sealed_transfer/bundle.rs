@@ -41,6 +41,7 @@ impl std::fmt::Debug for LabeledKey {
 /// variant is in play. `RawPrivateKey` (smallest) stays inline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SealedPayloadV1 {
     AdminCredential(Box<CredentialBundle>),
     ContextProvision(Box<ContextProvisionBundle>),

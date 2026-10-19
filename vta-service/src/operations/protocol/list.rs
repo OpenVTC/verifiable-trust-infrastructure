@@ -34,6 +34,7 @@ use crate::store::KeyspaceHandle;
 use crate::webvh_store;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ListServicesError {
     #[error("VTA DID is not configured — run `vta setup` first")]
     VtaDidNotConfigured,

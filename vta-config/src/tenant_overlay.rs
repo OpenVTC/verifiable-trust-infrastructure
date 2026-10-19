@@ -34,6 +34,7 @@ use serde::Deserialize;
 /// boots restore it from the encrypted store.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct TenantConfigOverlay {
     #[serde(default)]
     pub vta_name: Option<String>,
@@ -59,6 +60,7 @@ pub struct TenantConfigOverlay {
 /// un-attested super-admin through the config channel.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct TenantKmsOverlay {
     /// Full KMS key ARN. The region is *derived* from the ARN
     /// ([`region_from_arn`]) rather than accepted as a separate field, so there
@@ -91,6 +93,7 @@ pub struct TenantKmsOverlay {
 /// the VTA itself. Allowlist rationale: `tenant-config-allowlist.md` §3.3.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct TenantMessagingOverlay {
     #[serde(default)]
     pub mediator_did: Option<String>,
@@ -105,6 +108,7 @@ pub struct TenantMessagingOverlay {
 /// Every variant is fail-closed: an overlay that trips any of these must abort
 /// the boot rather than fall through to a weaker config.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TenantOverlayError {
     /// The overlay's `key_arn` is not a well-formed
     /// `arn:aws:kms:<region>:<account>:key/<id>`.

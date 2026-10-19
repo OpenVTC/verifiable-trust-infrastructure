@@ -89,6 +89,7 @@ impl fmt::Display for HandshakeStage {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum HandshakeError {
     #[error("mediator handshake failed at stage `{stage}`: {cause}")]
     Failed {

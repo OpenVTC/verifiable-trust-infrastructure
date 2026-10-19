@@ -64,6 +64,7 @@ pub struct RegisterDidWithServerResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum RegisterDidWithServerError {
     #[error("auth: {0}")]
     Auth(String),

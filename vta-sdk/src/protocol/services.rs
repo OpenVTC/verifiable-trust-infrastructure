@@ -449,6 +449,7 @@ pub enum ServiceState {
 /// convention from `DisableDidcommResponse::drains_until`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[non_exhaustive]
 pub struct ServiceMutationResponse {
     /// Version-id of the new WebVH LogEntry produced by the
     /// mutation. Joins telemetry events to chain history.

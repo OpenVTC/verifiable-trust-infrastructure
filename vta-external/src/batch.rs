@@ -66,6 +66,7 @@ pub fn needs_upload_id(op: &PresignRequest) -> bool {
 
 /// Why a batch was refused, in the order the specification checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BatchRefusal {
     /// `external/credentials/issue:invalidBatch` (item 4), or a value that is
     /// not what the schema allows.

@@ -67,6 +67,7 @@ impl SettingsError {
 
 /// Why a driver could not issue. Each maps onto a family error code.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DriverError {
     /// `external:providerSetupRequired` — the account cannot be used until its
     /// provider-side setup (or its secret) is done.

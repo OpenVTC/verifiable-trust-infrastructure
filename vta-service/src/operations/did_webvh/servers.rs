@@ -477,6 +477,7 @@ mod reconcile_tests {
 /// alternative to a false refusal is a retry, and the alternative to a false
 /// removal is nothing.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RetireOrphanRefusal {
     /// The VTA holds a record for this slot, so it is not an orphan.
     NotOrphaned {

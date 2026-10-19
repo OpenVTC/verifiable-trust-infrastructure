@@ -256,6 +256,7 @@ pub async fn cmd_rooms_owner_invite(
 
 /// Which credential an issuance verb mints, for its output.
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub enum IssuedKind {
     Membership,
     Authority,

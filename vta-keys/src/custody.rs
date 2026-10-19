@@ -100,6 +100,7 @@ pub const DELEGATED_IDENTITY_ROOT: &str = "m/26'/9'";
 /// also report it (audit plus a `security_alert` log). `vta-service`'s
 /// `operations::key_custody` does both.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CustodyViolation {
     /// The path does not parse as a BIP-32 path.
     UnparseablePath { path: String, reason: String },

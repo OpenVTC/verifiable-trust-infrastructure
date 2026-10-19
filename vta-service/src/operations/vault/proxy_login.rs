@@ -40,6 +40,7 @@ pub struct ProxyLoginOutput {
 
 /// Driver-level failure modes. The route maps each onto the canonical
 /// `vault/proxy-login/0.1` reject reason (preserving the spec error codes).
+#[non_exhaustive]
 pub enum ProxyLoginError {
     /// Entry has no DID or web-origin target to use as a SIOP audience.
     NoAudience { entry_targets: Vec<SiteTarget> },

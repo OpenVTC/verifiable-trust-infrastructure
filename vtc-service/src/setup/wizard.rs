@@ -1824,9 +1824,10 @@ fn build_app_config(
     config.public_url = Some(public_url);
     config.secrets = secrets;
     config.messaging = messaging;
-    config.auth = AuthConfig {
-        jwt_signing_key: Some(generate_jwt_signing_key()),
-        ..AuthConfig::default()
+    config.auth = {
+        let mut c = AuthConfig::default();
+        c.jwt_signing_key = Some(generate_jwt_signing_key());
+        c
     };
     config.log = LogConfig::default();
     config.config_path = config_path;

@@ -26,6 +26,7 @@ const MULTICODEC_P256_PUB: u64 = 0x1200;
 const MULTICODEC_ED25519_PUB: u64 = 0xed;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum MultikeyError {
     #[error("invalid CBOR in COSE_Key: {0}")]
     Cbor(String),

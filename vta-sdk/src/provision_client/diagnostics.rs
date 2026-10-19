@@ -96,6 +96,7 @@ impl DiagCheck {
 }
 
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum DiagStatus {
     Pending,
     Running,

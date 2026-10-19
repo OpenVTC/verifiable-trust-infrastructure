@@ -53,6 +53,7 @@ use crate::store::KeyspaceHandle;
 pub struct RollbackTspParams;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RollbackKind {
     /// Snapshot was `Disabled`; rollback re-disabled TSP.
     Disabled,
@@ -81,6 +82,7 @@ pub struct RollbackTspResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum RollbackTspError {
     #[error(
         "no prior mutation for `services tsp` to roll back from. \

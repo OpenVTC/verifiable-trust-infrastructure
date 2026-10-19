@@ -67,6 +67,7 @@ impl EnableDidcommRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct EnableDidcommResponse {
     pub new_version_id: String,
     pub mediator_did: String,
@@ -91,6 +92,7 @@ pub struct EnableDidcommResponse {
 /// Response body for `GET /services/didcomm`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[non_exhaustive]
 pub struct DidcommStatusResponse {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -123,6 +125,7 @@ impl DisableDidcommRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct DisableDidcommResponse {
     pub new_version_id: String,
     pub prior_mediator_did: String,
@@ -916,6 +919,7 @@ impl UpdateDidcommRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct UpdateDidcommResponse {
     pub new_version_id: String,
     pub prior_mediator_did: String,
@@ -938,6 +942,7 @@ pub struct DrainCancelRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct DrainCancelResponse {
     pub mediator_did: String,
 }

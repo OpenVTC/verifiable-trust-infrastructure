@@ -95,6 +95,7 @@ pub struct SessionHub {
 
 /// Why attaching an identity to a [`SessionHub`] could not proceed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum HubError {
     /// This DID already has a session on this hub. The mediator permits one
     /// websocket per DID, so a second session for the same DID is a duelling

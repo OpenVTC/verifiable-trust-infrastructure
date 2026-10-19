@@ -41,6 +41,7 @@ pub struct UpdateRestResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum UpdateRestError {
     #[error(
         "REST is not currently enabled. Use `services rest enable --url <url>` to bring it online first."

@@ -820,12 +820,13 @@ mod tests {
         let q = Quota::new(0, 0);
         assert_eq!((q.interval_secs(), q.burst()), (1, 1));
 
-        let server = ServerConfig {
-            rate_limit_interval_secs: 0,
-            rate_limit_burst: 0,
-            did_log_rate_limit_interval_secs: 0,
-            did_log_rate_limit_burst: 0,
-            ..Default::default()
+        let server = {
+            let mut c = ServerConfig::default();
+            c.rate_limit_interval_secs = 0;
+            c.rate_limit_burst = 0;
+            c.did_log_rate_limit_interval_secs = 0;
+            c.did_log_rate_limit_burst = 0;
+            c
         };
         let limits = RateLimits::from_server_config(&server);
         assert_eq!(limits.quota(Limiter::DidLog), Quota::new(1, 1));

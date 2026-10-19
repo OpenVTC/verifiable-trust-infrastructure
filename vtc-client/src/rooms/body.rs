@@ -42,6 +42,7 @@ const MAX_TAG: usize = 64;
 
 /// Why a body could not be signed, or was refused on reading.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum BodyError {
     /// The body breaks the schema: an unknown member, a bound exceeded, a missing one.
     #[error("the record body is malformed: {0}")]

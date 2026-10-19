@@ -23,6 +23,7 @@ pub use tenant_overlay::{
 /// Being the principal's **witnessed party** (`vta/witness/{open,present,accept}`):
 /// the VTA's side of a `witness/session` whose documents the client carries.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct WitnessPartyConfig {
     /// Seconds a session record lives after `vta/witness/open` (default 600, 60–3600).
     ///
@@ -62,6 +63,7 @@ impl WitnessPartyConfig {
 
 /// Policy Decision Point configuration.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[non_exhaustive]
 pub struct PolicyConfig {
     /// When true, every dispatched Trust Task is evaluated by the PDP before its
     /// handler runs, and a non-`allow` decision rejects the task. **Default
@@ -314,6 +316,7 @@ pub enum ReadinessTimeoutPolicy {
 /// (`did:webvh`, `did:web`) are gated; a `did:key` VTA resolves from its own
 /// identifier with no network fetch and skips the wait.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct MediatorReadinessConfig {
     /// Enable the gate. Default `true`.
     #[serde(default = "default_true")]
@@ -450,6 +453,7 @@ impl Default for ServicesConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct ServerConfig {
     #[serde(default = "default_host")]
     pub host: String,
@@ -658,6 +662,7 @@ pub struct TeeConfig {
 /// KMS configuration for TEE secret bootstrap.
 #[cfg(feature = "tee")]
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct TeeKmsConfig {
     /// AWS region for KMS calls.
     pub region: String,
@@ -782,6 +787,7 @@ pub struct TeeKmsConfig {
 /// External anti-rollback anchor configuration (P0.2b counter + P0.2c writer).
 #[cfg(feature = "tee")]
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct TeeAnchorConfig {
     /// DynamoDB table holding the single-item monotonic version counter (one
     /// item per VTA DID). The region is reused from [`TeeKmsConfig::region`].

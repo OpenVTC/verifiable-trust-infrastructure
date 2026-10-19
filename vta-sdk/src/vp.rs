@@ -45,6 +45,7 @@ const VC_V2_CONTEXT_URL: &str = "https://www.w3.org/ns/credentials/v2";
 
 /// Errors from DCQL selection / `vp_token` assembly.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum VpError {
     /// The `presentation_definition` was not a valid DCQL query, or no held
     /// credential satisfied a required credential-set.

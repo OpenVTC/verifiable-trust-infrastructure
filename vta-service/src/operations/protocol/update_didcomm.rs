@@ -52,6 +52,7 @@ use crate::store::KeyspaceHandle;
 /// CLI wrapper for `pnm services didcomm rollback` passes `Rollback`
 /// so reports can tell forward and reverse moves apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MigrateAuditKind {
     Forward,
     Rollback,
@@ -96,6 +97,7 @@ pub struct UpdateDidcommResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum UpdateDidcommError {
     #[error(
         "`setup_acl` cannot be combined with `force` because ACL provisioning requires a live mediator connection"

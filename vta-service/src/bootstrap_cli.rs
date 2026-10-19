@@ -412,6 +412,9 @@ fn print_opened(
             println!("Payload: ExternalCredential");
             println!("  Expires at: {}", c.expires_at());
         }
+        // `SealedPayloadV1` is `#[non_exhaustive]`: a payload kind newer than
+        // this binary is opened but not described.
+        _ => println!("Payload: a kind this version of vta does not describe"),
     }
     Ok(())
 }
