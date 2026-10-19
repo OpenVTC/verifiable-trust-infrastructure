@@ -8,6 +8,8 @@ import { BadgeCheck, BookUser, Boxes, LogOut, Sparkles } from "lucide-react";
 
 import { MemberApiError, memberFetch, postMember, vtcDid, type MemberMe } from "./api";
 import { DirectoryPage, EntryPage, MyCardPage } from "./Directory";
+import { listFields, showCard } from "./directory-api";
+import { MemberAvatar, nameOf, text } from "./member-card";
 import { RoomPage, RoomsPage } from "./Rooms";
 import { Passkeys } from "./Passkeys";
 import { forgetMemberSessionKey } from "@/lib/console-key";
@@ -159,20 +161,101 @@ function SignedIn({ me }: { me: MemberMe }) {
   );
 }
 
+/** The member's own card, on the home page: who they are here, and what the
+ *  other members see. Read through the browser key a wallet sign-in delegated;
+ *  any other sign-in reads nothing and the panel says how to get it. */
+function useOwnCard() {
+  const card = useQuery({ queryKey: ["directory", "card"], queryFn: showCard, retry: false });
+  const fields = useQuery({ queryKey: ["directory", "fields"], queryFn: listFields, retry: false });
+  return { card, fields };
+}
+
+function OwnCardPanel({ own }: { own: ReturnType<typeof useOwnCard> }) {
+  const c = own.card.data?.card;
+  const values = (c?.values ?? {}) as Record<string, unknown>;
+  const name = nameOf(values);
+  const sub = [text(values.nickname), text(values.pronouns)].filter(Boolean).join(" · ");
+  const shownToMembers = (own.fields.data?.fields ?? [])
+    .filter((f) => f.state === "active" && f.source !== "derived" && values[f.key] !== undefined)
+    .filter((f) => {
+      const a = (c?.visibility?.[f.key] as string | undefined) ?? f.defaultVisibility;
+      return a === "members" || a === "public";
+    })
+    .map((f) => f.label);
+  const published = c?.discoverability.external && c.externalCard?.state === "published";
+  return (
+    <section className="card" aria-labelledby="own-card-heading">
+      <div className="card-head">
+        <BookUser size={18} aria-hidden="true" />
+        <h2 id="own-card-heading">Your card</h2>
+      </div>
+      {!c ? (
+        <p className="muted">
+          {own.card.isPending
+            ? "Loading…"
+            : "Sign in with your wallet to see and edit your card here."}
+        </p>
+      ) : (
+        <>
+          <div className="me-card">
+            <MemberAvatar entryId={c.entryId} value={values.avatar} name={name} size={64} />
+            <div className="me-card-names">
+              <strong>{name ?? "No name yet"}</strong>
+              {sub && <span className="muted">{sub}</span>}
+              {published && <span className="pill pill-ok">Published beyond the community</span>}
+            </div>
+          </div>
+          <p className="muted">
+            {name === null
+              ? "Add your name so other members can find you."
+              : shownToMembers.length > 0
+                ? `Every member sees your ${shownToMembers.join(", ")}.`
+                : "Only some members see anything on your card."}
+          </p>
+        </>
+      )}
+      <p>
+        <a className="btn btn-primary" href="#/card">
+          Edit your card
+        </a>{" "}
+        <a className="btn btn-ghost" href="#/directory">
+          Browse members
+        </a>
+      </p>
+    </section>
+  );
+}
+
 function Home({ me }: { me: MemberMe }) {
   const joined = new Date(me.joinedAt);
+  const own = useOwnCard();
+  const values = (own.card.data?.card.values ?? {}) as Record<string, unknown>;
+  const name = nameOf(values);
+  const first = name?.split(/\s+/)[0];
   return (
     <main className="home" id="main">
-      <section className="welcome">
-        <p className="eyebrow">Member portal</p>
-        <h1>Welcome back</h1>
-        <p className="lead">
-          You're signed in as a member of{" "}
-          {me.community.name || "this community"}.
-        </p>
+      <section className="welcome welcome-personal">
+        {own.card.data && (
+          <MemberAvatar
+            entryId={own.card.data.card.entryId}
+            value={values.avatar}
+            name={name}
+            size={72}
+          />
+        )}
+        <div>
+          <p className="eyebrow">Member portal</p>
+          <h1>{first ? `Welcome back, ${first}` : "Welcome back"}</h1>
+          <p className="lead">
+            You're signed in as a member of{" "}
+            {me.community.name || "this community"}.
+          </p>
+        </div>
       </section>
 
       <div className="grid">
+        <OwnCardPanel own={own} />
+
         <section className="card" aria-labelledby="membership-heading">
           <div className="card-head">
             <BadgeCheck size={18} aria-hidden="true" />
@@ -220,25 +303,6 @@ function Home({ me }: { me: MemberMe }) {
           <p>
             <a className="btn btn-primary" href="#/rooms">
               Open your rooms
-            </a>
-          </p>
-        </section>
-
-        <section className="card" aria-labelledby="directory-card-heading">
-          <div className="card-head">
-            <BookUser size={18} aria-hidden="true" />
-            <h2 id="directory-card-heading">Directory</h2>
-          </div>
-          <p className="muted">
-            Find other members, and choose what your own card shows and to whom. It works for
-            this session once you sign in with your wallet.
-          </p>
-          <p>
-            <a className="btn btn-primary" href="#/directory">
-              Browse members
-            </a>{" "}
-            <a className="btn btn-ghost" href="#/card">
-              Your card
             </a>
           </p>
         </section>

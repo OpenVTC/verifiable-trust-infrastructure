@@ -70,6 +70,15 @@ field.
 
 ## In the member portal
 
+The portal's home page greets the member by name and shows **Your card**: their
+picture, what every member sees, and whether the card is published. **Directory**
+lists members by name with their picture (or their initials on a colour of their
+own), pronouns and a line of their About text; members who show no name are
+folded into one line rather than listed as blank cards. A member's page shows
+their About text, links (http and https only) and any other field the viewer may
+see, and **Save contact** downloads a vCard of exactly that, made in the browser.
+Every page has a breadcrumb back to the portal.
+
 Members use the directory from the portal: **Directory** (browse, search, one
 entry) and **Your card** (values, who sees each, listing, search and
 introductions). The pages sign with the browser's sign-in key, which the member

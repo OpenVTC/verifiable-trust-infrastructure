@@ -17,7 +17,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookUser, Globe, ImagePlus, Search, Trash2, UserRound } from "lucide-react";
+import { BookUser, Contact, Copy, ExternalLink, Globe, ImagePlus, Search, Trash2 } from "lucide-react";
 
 import type {
   DirectoryCard,
@@ -28,7 +28,6 @@ import type {
 
 import {
   DirectoryError,
-  getImage,
   listEntries,
   listFields,
   showCard,
@@ -36,7 +35,19 @@ import {
   updateCard,
   uploadImage,
 } from "./directory-api";
-import { PictureError, pictureUrl, prepare, toBase64Url } from "./picture";
+import { PictureError, prepare, toBase64Url } from "./picture";
+import {
+  Crumbs,
+  FieldPicture,
+  MemberAvatar,
+  blobRef,
+  hueOf,
+  nameOf,
+  safeUrl,
+  saveVcard,
+  text,
+  vcardOf,
+} from "./member-card";
 import { memberFetch, vtcDid, type MemberMe } from "./api";
 
 /** The wallet's directory channel (`window.vtaWallet.directory`), where the
@@ -81,70 +92,6 @@ export function baselineFor(wanted: Audience, ceiling: Audience): Audience {
   return "admins";
 }
 
-function text(v: unknown): string {
-  if (v === null || v === undefined) return "";
-  if (Array.isArray(v)) return v.join(", ");
-  if (typeof v === "object") return "";
-  return String(v);
-}
-
-/** `v` as a picture reference, if it is one. */
-function blobRef(v: unknown): DirectoryCardBlobRef | null {
-  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
-  const r = v as Partial<DirectoryCardBlobRef>;
-  return typeof r.sha256 === "string" && typeof r.mediaType === "string"
-    ? (r as DirectoryCardBlobRef)
-    : null;
-}
-
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-/** One picture on an entry, read through the projection — or the plain icon
- *  when there is none, or it is not this reader's to see. */
-function Picture({
-  entryId,
-  field,
-  value,
-  size = 28,
-}: {
-  entryId: string;
-  field: string;
-  value: unknown;
-  size?: number;
-}) {
-  const ref = blobRef(value);
-  const picture = useQuery({
-    queryKey: ["directory", "image", entryId, field, ref?.sha256 ?? ""],
-    enabled: ref !== null,
-    retry: false,
-    staleTime: Infinity,
-    queryFn: async () => {
-      const got = await getImage(entryId, field, ref!.sha256);
-      const b64 = got.data.replace(/-/g, "+").replace(/_/g, "/");
-      const bytes = Uint8Array.from(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)), (c) =>
-        c.charCodeAt(0),
-      );
-      // Shown only when the bytes are the ones the card names.
-      if ((await sha256Hex(bytes)) !== ref!.sha256) throw new Error("picture digest mismatch");
-      return pictureUrl(got.image.mediaType, got.data);
-    },
-  });
-  if (!picture.data) return <UserRound size={size} aria-hidden="true" />;
-  return (
-    <img
-      className="avatar"
-      src={picture.data}
-      alt=""
-      width={size}
-      height={size}
-      style={{ width: size, height: size }}
-    />
-  );
-}
-
 /** Shown in place of a page when this browser may not act in the directory. */
 function NeedsWallet({ error }: { error: unknown }) {
   const e = error instanceof DirectoryError ? error : null;
@@ -168,19 +115,64 @@ function NeedsWallet({ error }: { error: unknown }) {
   );
 }
 
+/** A member's role and the badges this viewer may see, as pills. */
+function Pills({ fields, connected }: { fields: Record<string, unknown>; connected?: boolean }) {
+  return (
+    <span className="pills">
+      {text(fields.role) && <span className="pill cap">{text(fields.role)}</span>}
+      {fields.personhood === true && <span className="pill pill-ok">Verified person</span>}
+      {connected === true && <span className="pill pill-ok">Connected</span>}
+    </span>
+  );
+}
+
 // ─── browse and search ────────────────────────────────────────────────────
+
+type ListedEntry = { entryId: string; fields: Record<string, unknown>; connected?: boolean };
+
+/** One member, as the grid shows them. */
+function MemberTile({ entry }: { entry: ListedEntry }) {
+  const name = nameOf(entry.fields);
+  const nickname = text(entry.fields.nickname);
+  const subtitle = [
+    nickname && nickname !== name ? `“${nickname}”` : "",
+    text(entry.fields.pronouns),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <a className="card directory-entry" href={`#/directory/${encodeURIComponent(entry.entryId)}`}>
+      <span className="directory-entry-head">
+        <MemberAvatar entryId={entry.entryId} value={entry.fields.avatar} name={name} size={52} />
+        <span className="directory-entry-names">
+          <span className="directory-name">{name ?? "A member"}</span>
+          {subtitle && <span className="muted directory-sub">{subtitle}</span>}
+        </span>
+      </span>
+      {text(entry.fields.bio) && <span className="directory-bio">{text(entry.fields.bio)}</span>}
+      <Pills fields={entry.fields} connected={entry.connected} />
+    </a>
+  );
+}
 
 export function DirectoryPage() {
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState<string | undefined>(undefined);
+  const [showNameless, setShowNameless] = useState(false);
   const list = useQuery({
     queryKey: ["directory", "entries", query ?? ""],
     queryFn: () => listEntries({ ...(query ? { query } : {}), limit: 50 }),
     retry: false,
   });
+  const items = (list.data?.items ?? []) as ListedEntry[];
+  // Members who show no name are folded away while browsing: a wall of "A
+  // member" tells nobody anything. A search shows whatever matched.
+  const named = query ? items : items.filter((e) => nameOf(e.fields) !== null);
+  const nameless = query ? [] : items.filter((e) => nameOf(e.fields) === null);
 
   return (
     <main className="home" id="main">
+      <Crumbs trail={[{ label: "Directory" }]} />
       <section className="welcome">
         <p className="eyebrow">Directory</p>
         <h1>Members</h1>
@@ -215,24 +207,46 @@ export function DirectoryPage() {
         )
       ) : list.isPending ? (
         <p className="muted">Loading…</p>
-      ) : list.data.items.length === 0 ? (
+      ) : items.length === 0 ? (
         <p className="muted">{query ? "No one matches." : "No one is listed yet."}</p>
       ) : (
-        <ul className="directory-grid">
-          {list.data.items.map((e) => (
-            <li key={e.entryId}>
-              <a className="card directory-entry" href={`#/directory/${encodeURIComponent(e.entryId)}`}>
-                <Picture entryId={e.entryId} field="avatar" value={e.fields.avatar} size={40} />
-                <span className="directory-name">
-                  {text(e.fields.displayName) || text(e.fields.nickname) || "A member"}
-                </span>
-                {text(e.fields.pronouns) && <span className="muted">{text(e.fields.pronouns)}</span>}
-                {text(e.fields.role) && <span className="pill cap">{text(e.fields.role)}</span>}
-                {e.connected === true && <span className="pill pill-ok">Connected</span>}
-              </a>
-            </li>
-          ))}
-        </ul>
+        <>
+          {named.length > 0 ? (
+            <ul className="directory-grid">
+              {named.map((e) => (
+                <li key={e.entryId}>
+                  <MemberTile entry={e} />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">No one has added a name to their card yet.</p>
+          )}
+          {nameless.length > 0 && (
+            <div className="nameless">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                aria-expanded={showNameless}
+                onClick={() => setShowNameless(!showNameless)}
+              >
+                {nameless.length === 1
+                  ? "1 member hasn't added a name yet"
+                  : `${nameless.length} members haven't added a name yet`}
+                {showNameless ? " — hide" : " — show"}
+              </button>
+              {showNameless && (
+                <ul className="directory-grid">
+                  {nameless.map((e) => (
+                    <li key={e.entryId}>
+                      <MemberTile entry={e} />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </>
       )}
       {typeof list.data?.nextCursor === "string" && (
         <p className="muted">Showing the first 50. Search to narrow it down.</p>
@@ -243,7 +257,32 @@ export function DirectoryPage() {
 
 // ─── one entry ────────────────────────────────────────────────────────────
 
+/** The fields the profile header and its sections draw themselves. */
+const DRAWN = new Set([
+  "displayName", "nickname", "pronouns", "avatar", "bio", "links", "role", "joinedAt",
+  "personhood", "did",
+]);
+
+function CopyDid({ did }: { did: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <span className="did-row">
+      <code className="wrap">{did}</code>
+      <button
+        type="button"
+        className="btn btn-ghost btn-sm"
+        onClick={() => {
+          void navigator.clipboard?.writeText(did).then(() => setCopied(true));
+        }}
+      >
+        <Copy size={14} aria-hidden="true" /> {copied ? "Copied" : "Copy"}
+      </button>
+    </span>
+  );
+}
+
 export function EntryPage({ entryId }: { entryId: string }) {
+  const qc = useQueryClient();
   const entry = useQuery({
     queryKey: ["directory", "entry", entryId],
     queryFn: () => showEntry(entryId),
@@ -258,11 +297,20 @@ export function EntryPage({ entryId }: { entryId: string }) {
     () => new Set((fields.data?.fields ?? []).filter((f) => f.type === "image").map((f) => f.key)),
     [fields.data],
   );
+  const f = (entry.data?.entry.fields ?? {}) as Record<string, unknown>;
+  const name = nameOf(f);
+  const nickname = text(f.nickname);
+  const subtitle = [nickname && nickname !== name ? `“${nickname}”` : "", text(f.pronouns)]
+    .filter(Boolean)
+    .join(" · ");
+  const links = (Array.isArray(f.links) ? f.links.map(String) : []).filter((l) => safeUrl(l));
+  const rest = Object.entries(f).filter(([k]) => !DRAWN.has(k));
+  const community =
+    qc.getQueryData<MemberMe>(["member-me"])?.community.name ?? "This community";
+
   return (
     <main className="home" id="main">
-      <p>
-        <a href="#/directory">&larr; Directory</a>
-      </p>
+      <Crumbs trail={[{ label: "Directory", href: "#/directory" }, { label: name ?? "A member" }]} />
       {entry.isError ? (
         entry.error instanceof DirectoryError && entry.error.code === "notFound" ? (
           <p className="muted">This member isn&rsquo;t in the directory, or shows you nothing.</p>
@@ -272,33 +320,78 @@ export function EntryPage({ entryId }: { entryId: string }) {
       ) : entry.isPending ? (
         <p className="muted">Loading…</p>
       ) : (
-        <section className="card">
-          <div className="card-head">
-            <Picture entryId={entryId} field="avatar" value={entry.data.entry.fields.avatar} size={64} />
-            <h1>{text(entry.data.entry.fields.displayName) || "A member"}</h1>
-          </div>
-          <dl className="facts">
-            {Object.entries(entry.data.entry.fields)
-              .filter(([k]) => k !== "displayName" && k !== "avatar")
-              .map(([k, v]) => (
-                <div key={k}>
-                  <dt>{labels.get(k) ?? k}</dt>
-                  <dd className="wrap">
-                    {pictures.has(k) ? (
-                      <Picture entryId={entryId} field={k} value={v} size={96} />
-                    ) : (
-                      text(v)
-                    )}
-                  </dd>
-                </div>
-              ))}
-          </dl>
-          {entry.data.entry.connected === true && (
-            <p>
-              <span className="pill pill-ok">You have a verified relationship</span>
-            </p>
+        <article className="card profile">
+          <header className="profile-head" style={{ ["--avatar-hue" as string]: hueOf(entryId) }}>
+            <MemberAvatar entryId={entryId} value={f.avatar} name={name} size={104} />
+            <div className="profile-names">
+              <h1>{name ?? "A member"}</h1>
+              {subtitle && <p className="muted profile-sub">{subtitle}</p>}
+              <Pills fields={f} connected={entry.data.entry.connected} />
+              {text(f.joinedAt) && (
+                <p className="muted profile-since">
+                  Member since {new Date(text(f.joinedAt)).toLocaleDateString()}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm profile-save"
+              onClick={() => saveVcard(vcardOf(entryId, f, labels, community), name ?? "member")}
+            >
+              <Contact size={14} aria-hidden="true" /> Save contact
+            </button>
+          </header>
+          {text(f.bio) && (
+            <section className="profile-section">
+              <h2>{labels.get("bio") ?? "About"}</h2>
+              <p className="profile-bio">{text(f.bio)}</p>
+            </section>
           )}
-        </section>
+          {links.length > 0 && (
+            <section className="profile-section">
+              <h2>{labels.get("links") ?? "Links"}</h2>
+              <ul className="profile-links">
+                {links.map((l) => (
+                  <li key={l}>
+                    <a href={safeUrl(l)!} target="_blank" rel="noopener noreferrer nofollow">
+                      <ExternalLink size={14} aria-hidden="true" /> {new URL(l).host}
+                      {new URL(l).pathname !== "/" ? new URL(l).pathname : ""}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+          {(rest.length > 0 || text(f.did)) && (
+            <section className="profile-section">
+              <h2>Details</h2>
+              <dl className="facts">
+                {rest.map(([k, v]) => (
+                  <div key={k}>
+                    <dt>{labels.get(k) ?? k}</dt>
+                    <dd className="wrap">
+                      {pictures.has(k) ? (
+                        <FieldPicture entryId={entryId} field={k} value={v} />
+                      ) : typeof v === "boolean" ? (
+                        v ? "Yes" : "No"
+                      ) : (
+                        text(v)
+                      )}
+                    </dd>
+                  </div>
+                ))}
+                {text(f.did) && (
+                  <div>
+                    <dt>{labels.get("did") ?? "DID"}</dt>
+                    <dd>
+                      <CopyDid did={text(f.did)} />
+                    </dd>
+                  </div>
+                )}
+              </dl>
+            </section>
+          )}
+        </article>
       )}
     </main>
   );
@@ -350,7 +443,11 @@ function PictureField({
   return (
     <div className="picture-field">
       {current ? (
-        <Picture entryId={entryId} field={field.key} value={current} size={72} />
+        field.key === "avatar" ? (
+          <MemberAvatar entryId={entryId} value={current} name={null} size={72} />
+        ) : (
+          <FieldPicture entryId={entryId} field={field.key} value={current} size={72} />
+        )
       ) : (
         <span className="muted">(no picture)</span>
       )}
@@ -617,9 +714,7 @@ export function MyCardPage() {
 
   return (
     <main className="home" id="main">
-      <p>
-        <a href="#/directory">&larr; Directory</a>
-      </p>
+      <Crumbs trail={[{ label: "Directory", href: "#/directory" }, { label: "Your card" }]} />
       <section className="welcome">
         <p className="eyebrow">Directory</p>
         <h1>Your card</h1>
