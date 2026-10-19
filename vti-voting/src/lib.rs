@@ -23,6 +23,7 @@
 //! Requirements: VTI-VOT-001 – 100, the Community Voting chapter of the VTI specification.
 
 pub mod ballot_box;
+pub mod board;
 pub mod election;
 pub mod error;
 pub mod registrar;
