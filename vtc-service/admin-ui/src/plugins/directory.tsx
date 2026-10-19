@@ -23,6 +23,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search, X } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
+import {
+  DirectoryAvatar,
+  DirectoryPicture,
+  VerifiedValueView,
+  blobRef,
+  verifiedValue,
+} from "@/components/DirectoryAvatar";
 import { DataTable } from "@/components/DataTable";
 import { Field } from "@/components/Field";
 import { PageHeader } from "@/components/PageHeader";
@@ -723,7 +730,17 @@ function EntriesTab() {
           {(list.data?.items ?? []).map((e) => (
             <Fragment key={e.entryId}>
               <tr>
-                <td>{display(e.fields.displayName) || <span className="muted">(no name)</span>}</td>
+                <td>
+                  <span className="dir-name-cell">
+                    <DirectoryAvatar
+                      entryId={e.entryId}
+                      value={e.fields.avatar}
+                      name={display(e.fields.displayName) || display(e.fields.nickname)}
+                      colourKey={e.entryId}
+                    />
+                    {display(e.fields.displayName) || <span className="muted">(no name)</span>}
+                  </span>
+                </td>
                 <td>{display(e.fields.role)}</td>
                 <td>
                   <code>{display(e.fields.did)}</code>
@@ -776,7 +793,9 @@ function EntryDetail({
         {Object.entries(fields).map(([k, v]) => (
           <div key={k}>
             <dt>{labels.get(k) ?? k}</dt>
-            <dd>{display(v)}</dd>
+            <dd>
+              <EntryValue entryId={entryId} field={k} value={v} />
+            </dd>
           </div>
         ))}
       </dl>
@@ -785,6 +804,15 @@ function EntryDetail({
       )}
     </div>
   );
+}
+
+/** One value of an entry: a picture shown as one, a verified value with its
+ *  issuer, anything else as text. */
+function EntryValue({ entryId, field, value }: { entryId: string; field: string; value: unknown }) {
+  if (blobRef(value)) return <DirectoryPicture entryId={entryId} field={field} value={value} />;
+  const verified = verifiedValue(value);
+  if (verified) return <VerifiedValueView value={verified} />;
+  return <>{display(value)}</>;
 }
 
 function AssertForm({

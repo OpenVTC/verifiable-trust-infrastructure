@@ -102,6 +102,8 @@ const VETTER_ROLE = "vetter";
 const MAX_ENDORSEMENT_PAGES = 50;
 
 import { useNameBook } from "@/lib/names";
+import { DirectoryAvatar } from "@/components/DirectoryAvatar";
+import { listAllEntries } from "@/lib/directory";
 import { MemberGitCard, MemberGitCell, useMemberGit } from "@/plugins/members/MemberGit";
 import {
   compareValues,
@@ -116,6 +118,7 @@ import {
 import { rightLabel, rightRank } from "@/plugins/repos/model";
 import { ApproverDevicesCard } from "@/plugins/members/StepUpApprovers";
 import { MemberNotesCard } from "@/plugins/members/MemberNotes";
+import { MemberProfileCard } from "@/plugins/members/MemberProfile";
 import { AddMemberForm, EntriesWithoutMembership } from "@/plugins/members/Admission";
 import { StepUpPasskeysCard } from "@/plugins/members/StepUpPasskeys";
 import { readErrorMessage } from "@/plugins/repos/ui";
@@ -397,6 +400,44 @@ const MEMBER_COLUMN_TIPS: Partial<Record<MemberSortKey, string>> = {
   git: "The member's strongest git right in any namespace this community governs, how many more they hold, and the forge accounts they linked.",
 };
 
+/** What the directory shows of one member, for the Members list. */
+interface DirectoryFace {
+  entryId: string;
+  name: string | null;
+  pronouns: string | null;
+  avatar: unknown;
+}
+
+function text(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+/** Each member's directory entry, by DID: their own name, pronouns and
+ *  picture. Read once for the list; a failure (no directory yet, or a role
+ *  that cannot read it) leaves the list as it was. */
+function useDirectoryFaces(): Map<string, DirectoryFace> {
+  const q = useQuery({
+    queryKey: ["directory", "entries", "all"],
+    queryFn: listAllEntries,
+    retry: false,
+    staleTime: 60_000,
+  });
+  return useMemo(() => {
+    const out = new Map<string, DirectoryFace>();
+    for (const e of q.data ?? []) {
+      const did = text(e.fields.did);
+      if (!did) continue;
+      out.set(did, {
+        entryId: e.entryId,
+        name: text(e.fields.displayName) ?? text(e.fields.nickname),
+        pronouns: text(e.fields.pronouns),
+        avatar: e.fields.avatar,
+      });
+    }
+    return out;
+  }, [q.data]);
+}
+
 function MembersList() {
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
@@ -406,6 +447,7 @@ function MembersList() {
   const [page, setPage] = useState(0);
   const [adding, setAdding] = useState(false);
   const book = useNameBook();
+  const faces = useDirectoryFaces();
 
   // `?q=` and `?add=1` (the command palette's "Search members for…" and "Add
   // a member"): applied once, then dropped from the URL, so a reload or the
@@ -443,7 +485,8 @@ function MembersList() {
 
   const rows = useMemo(() => {
     const terms = searchTerms(search);
-    const nameOf = (m: MemberRow) => m.label ?? book.nameOf(m.did) ?? null;
+    const nameOf = (m: MemberRow) =>
+      faces.get(m.did)?.name ?? m.label ?? book.nameOf(m.did) ?? null;
     const scored: { m: MemberRow; score: number }[] = [];
     for (const m of all) {
       if (roleFilter && m.role !== roleFilter) continue;
@@ -454,6 +497,7 @@ function MembersList() {
       const score = matchScore(terms, {
         short: [
           nameOf(m) ?? "",
+          m.label ?? "",
           m.role,
           didHandle(m.did),
           ...accounts.map((a) => a.account.login),
@@ -489,7 +533,7 @@ function MembersList() {
         : b.score - a.score || byJoined(a.m, b.m),
     );
     return scored.map((s) => s.m);
-  }, [all, roleFilter, personhoodFilter, search, sort, git.index, book]);
+  }, [all, roleFilter, personhoodFilter, search, sort, git.index, book, faces]);
 
   const pages = Math.max(1, Math.ceil(rows.length / ROWS_PER_PAGE));
   const current = Math.min(page, pages - 1);
@@ -637,17 +681,30 @@ function MembersList() {
               </tr>
             )}
             {visible.map((m) => {
-              const name = m.label ?? book.nameOf(m.did) ?? null;
+              const face = faces.get(m.did);
+              const name = face?.name ?? m.label ?? book.nameOf(m.did) ?? null;
+              // The community's label for them, when the directory name differs.
+              const alias = face?.name && m.label && m.label !== face.name ? m.label : null;
+              const detail = [face?.pronouns, alias && `“${alias}”`].filter(Boolean).join(" · ");
               return (
                 <tr key={m.did}>
                   <td className="members-member">
-                    <span className="member-cell">
+                    <span className="member-row-identity">
+                      <DirectoryAvatar
+                        entryId={face?.entryId}
+                        value={face?.avatar}
+                        name={name}
+                        colourKey={face?.entryId ?? m.did}
+                        size={36}
+                      />
+                      <span className="member-cell">
                       <span className="member-name-line">
                         {name ? (
                           <strong className="member-name">{name}</strong>
                         ) : (
                           <span className="member-name muted">No name</span>
                         )}
+                        {detail && <span className="member-directory-detail">{detail}</span>}
                         {m.joinedViaInvitation && (
                           <Ticket
                             size={14}
@@ -659,6 +716,7 @@ function MembersList() {
                       </span>
                       <span className="member-did">
                         <DidText did={m.did} to={encodeURIComponent(m.did)} />
+                      </span>
                       </span>
                     </span>
                   </td>
@@ -946,6 +1004,7 @@ function MemberDetail() {
 
       {query.data && (
         <>
+          <MemberProfileCard did={decoded} />
           <section className="card">
             <h3>Identity</h3>
             <dl>

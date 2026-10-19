@@ -28,6 +28,7 @@ import type {
   DirectoryEntriesListPayload,
   DirectoryEntriesListResponse,
   DirectoryEntriesShowResponse,
+  DirectoryImagesGetResponse,
   DirectoryFieldDefinition,
   DirectoryFieldInput,
   DirectoryFieldsListResponse,
@@ -50,6 +51,12 @@ export const NOTES_APPEND_TASK = "https://trusttasks.org/spec/vtc/directory/note
 export const NOTES_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/notes/list/0.1";
 export const NOTES_EXPORT_TASK = "https://trusttasks.org/spec/vtc/directory/notes/export/0.1";
 export const EXPORT_TASK = "https://trusttasks.org/spec/vtc/directory/export/0.1";
+export const IMAGES_GET_TASK = "https://trusttasks.org/spec/vtc/directory/images/get/0.1";
+
+/** `entries/list`'s largest page (`list-limits.json`). */
+const ENTRIES_PAGE = 100;
+/** How many pages {@link listAllEntries} reads before it stops. */
+const MAX_ENTRY_PAGES = 20;
 /** Administrators' notes about members: apart from `vtc.directory.admin`. */
 export const DIRECTORY_NOTES = "vtc.directory.notes";
 
@@ -148,6 +155,29 @@ export async function listEntries(
   query: DirectoryEntriesListPayload,
 ): Promise<DirectoryEntriesListResponse> {
   return postSignedRead<DirectoryEntriesListResponse>(ENTRIES_LIST_TASK, query);
+}
+
+/** Every entry an administrator reads, a page at a time, up to
+ *  {@link MAX_ENTRY_PAGES} pages — what the Members list joins on by DID. */
+export async function listAllEntries(): Promise<DirectoryEntriesListResponse["items"]> {
+  const out: DirectoryEntriesListResponse["items"] = [];
+  let cursor: string | undefined;
+  for (let i = 0; i < MAX_ENTRY_PAGES; i++) {
+    const page = await listEntries({ limit: ENTRIES_PAGE, ...(cursor ? { cursor } : {}) });
+    out.push(...page.items);
+    if (typeof page.nextCursor !== "string") break;
+    cursor = page.nextCursor;
+  }
+  return out;
+}
+
+/** One picture on an entry, read through the administrator's projection. */
+export async function getImage(
+  entryId: string,
+  field: string,
+  sha256: string,
+): Promise<DirectoryImagesGetResponse> {
+  return postSignedRead<DirectoryImagesGetResponse>(IMAGES_GET_TASK, { entryId, field, sha256 });
 }
 
 export async function showEntry(entryId: string): Promise<DirectoryEntriesShowResponse> {
