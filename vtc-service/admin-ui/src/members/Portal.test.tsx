@@ -350,6 +350,12 @@ describe("portal routes", () => {
     const { routeOf } = await import("./Portal");
     expect(routeOf("#/directory")).toEqual({ page: "directory" });
     expect(routeOf("#/card")).toEqual({ page: "card" });
+    expect(routeOf("#/groups")).toEqual({ page: "groups" });
+    expect(routeOf("#/groups/grp_W5k2N8xRb3Qz7TpLAAAAAA")).toEqual({
+      page: "group",
+      groupId: "grp_W5k2N8xRb3Qz7TpLAAAAAA",
+    });
+    expect(routeOf("#/groups/not-a-group")).toEqual({ page: "home" });
     expect(routeOf("#/directory/dir_Q7m2K9xVb4Tz8LpRaB3c")).toEqual({
       page: "entry",
       entryId: "dir_Q7m2K9xVb4Tz8LpRaB3c",

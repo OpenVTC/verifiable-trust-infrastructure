@@ -572,3 +572,22 @@ body {
   align-items: center;
   gap: 1.25rem;
 }
+
+/* Groups. */
+.group-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-decoration: none;
+  color: inherit;
+}
+.group-tile-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 1.05rem;
+}
+.group-actions {
+  margin: 16px 0;
+}

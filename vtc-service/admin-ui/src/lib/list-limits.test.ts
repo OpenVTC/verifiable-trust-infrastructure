@@ -56,6 +56,9 @@ const VETTERS = `${T}/vtc/vetting/vetters/list/0.1`;
 const ACTIVITY = `${T}/git-ns/activity/list/0.1`;
 const DIRECTORY_ENTRIES = `${T}/vtc/directory/entries/list/0.1`;
 const DIRECTORY_EXPORT = `${T}/vtc/directory/export/0.1`;
+const GROUPS_LIST = `${T}/vtc/groups/list/0.1`;
+const GROUPS_MEMBERS = `${T}/vtc/groups/members/list/0.1`;
+const GROUPS_REQUESTS = `${T}/vtc/groups/requests/list/0.1`;
 
 interface Site {
   /** The file, under `src/`. */
@@ -77,6 +80,13 @@ const SITES: Site[] = [
   { file: "plugins/directory.tsx", site: "limit: 100", uri: DIRECTORY_ENTRIES, uriFile: "lib/directory.ts", from: ["100"] },
   // The directory export: the largest page, followed to the end.
   { file: "lib/directory.ts", site: "limit: 500", uri: DIRECTORY_EXPORT, from: ["500"] },
+  // The Groups page: every group, every member and every pending request, the largest page.
+  { file: "lib/groups.ts", site: "(GROUPS_LIST_TASK, {\n      limit: PAGE", uri: GROUPS_LIST, from: ["PAGE"] },
+  { file: "lib/groups.ts", site: "(GROUPS_MEMBERS_LIST_TASK, {\n      groupId,\n      limit: PAGE", uri: GROUPS_MEMBERS, from: ["PAGE"] },
+  { file: "lib/groups.ts", site: "(GROUPS_REQUESTS_LIST_TASK, {\n    limit: PAGE", uri: GROUPS_REQUESTS, from: ["PAGE"] },
+  // The member portal's groups: one page of a hundred groups, and of a group's members.
+  { file: "members/groups-api.ts", site: "(GROUPS_LIST_TASK, { limit: 100 })", uri: GROUPS_LIST, from: ["100"] },
+  { file: "members/groups-api.ts", site: "{ groupId, limit: 100 }", uri: GROUPS_MEMBERS, from: ["100"] },
   // The Members list's directory faces: the largest page, followed to the end.
   { file: "lib/directory.ts", site: "limit: ENTRIES_PAGE", uri: DIRECTORY_ENTRIES, from: ["ENTRIES_PAGE"] },
   // The member portal's directory: one page of fifty.

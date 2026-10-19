@@ -8,6 +8,7 @@ import { BadgeCheck, BookUser, Boxes, LogOut, Sparkles } from "lucide-react";
 
 import { MemberApiError, memberFetch, postMember, vtcDid, type MemberMe } from "./api";
 import { DirectoryPage, EntryPage, MyCardPage } from "./Directory";
+import { GroupPage, GroupsPage } from "./Groups";
 import { listFields, showCard } from "./directory-api";
 import { MemberAvatar, nameOf, text } from "./member-card";
 import { RoomPage, RoomsPage } from "./Rooms";
@@ -30,20 +31,26 @@ async function fetchMe(): Promise<MemberMe | null> {
 }
 
 /** The portal's page, from the location hash: `#/rooms`, `#/rooms/<roomId>`,
- *  `#/directory`, `#/directory/<entryId>`, `#/card`, else home. */
+ *  `#/directory`, `#/directory/<entryId>`, `#/card`, `#/groups`,
+ *  `#/groups/<groupId>`, else home. */
 export type Route =
   | { page: "home" }
   | { page: "rooms" }
   | { page: "room"; roomId: string }
   | { page: "directory" }
   | { page: "entry"; entryId: string }
-  | { page: "card" };
+  | { page: "card" }
+  | { page: "groups" }
+  | { page: "group"; groupId: string };
 
 export function routeOf(hash: string): Route {
   const path = hash.replace(/^#/, "");
   if (path === "/rooms") return { page: "rooms" };
   if (path === "/directory") return { page: "directory" };
   if (path === "/card") return { page: "card" };
+  if (path === "/groups") return { page: "groups" };
+  const group = /^\/groups\/(grp_[A-Za-z0-9_-]{16,64})$/.exec(path);
+  if (group) return { page: "group", groupId: group[1]! };
   const entry = /^\/directory\/(dir_[A-Za-z0-9_-]{16,64})$/.exec(path);
   if (entry) return { page: "entry", entryId: entry[1]! };
   const m = /^\/rooms\/(.+)$/.exec(path);
@@ -147,6 +154,8 @@ function SignedIn({ me }: { me: MemberMe }) {
   if (route.page === "directory") return <DirectoryPage />;
   if (route.page === "entry") return <EntryPage entryId={route.entryId} />;
   if (route.page === "card") return <MyCardPage />;
+  if (route.page === "groups") return <GroupsPage />;
+  if (route.page === "group") return <GroupPage groupId={route.groupId} />;
   if (!host.data) {
     return (
       <main className="home" id="main">
@@ -220,6 +229,9 @@ function OwnCardPanel({ own }: { own: ReturnType<typeof useOwnCard> }) {
         </a>{" "}
         <a className="btn btn-ghost" href="#/directory">
           Browse members
+        </a>{" "}
+        <a className="btn btn-ghost" href="#/groups">
+          Groups
         </a>
       </p>
     </section>

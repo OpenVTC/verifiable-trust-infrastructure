@@ -33,6 +33,19 @@ Only **static** groups are served. A dynamic group's rule is checked — it may 
 verified facts — and the create is then refused `kindNotServed`. Nothing is stored for
 it.
 
+## In the console and the portal
+
+The console's **Groups** page (Membership) lists every group the administrator may see;
+a holder of `vtc.groups.manage` creates one there. A group's page shows its settings,
+its members by their directory name and picture, the requests to join it, its managers
+and deleting it — each part shown to the group's managers only, and to anyone else only
+what the community answers them.
+
+The member portal's **Groups** page (`#/groups`) lists the groups a member belongs to
+and the ones they may see, and a group's page lets them join an open group, ask to join
+one by request (with an optional note for its managers) or leave. Its members are listed
+where the group shows them, each linking to their directory entry.
+
 ## Turning groups on
 
 Groups are off until the host's operator writes a `[groups]` section and restarts:

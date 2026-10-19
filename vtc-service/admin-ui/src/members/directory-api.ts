@@ -64,7 +64,9 @@ export class DirectoryError extends Error {
 
 let recipient: Promise<string> | null = null;
 
-async function send<T>(typeUri: string, payload: unknown): Promise<T> {
+/** Send `payload` as the member, signed by this browser's portal key. Shared by
+ *  every portal page that reads or writes as the member (directory, groups). */
+export async function send<T>(typeUri: string, payload: unknown): Promise<T> {
   if (isThemePreview()) {
     // A preview signs nothing; its sample member has no directory.
     guardPreviewRequest("POST", "/v1/trust-tasks");

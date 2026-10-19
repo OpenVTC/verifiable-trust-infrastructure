@@ -31,6 +31,7 @@ import {
   Ticket,
   UserCog,
   Users,
+  UsersRound,
   Workflow,
 } from "lucide-react";
 
@@ -44,6 +45,7 @@ import { ConsoleKeys } from "@/plugins/consoleKeys";
 import { Dashboard } from "@/plugins/dashboard";
 import { DATA_ROOMS_CAPABILITIES, DataRooms } from "@/plugins/dataRooms";
 import { Directory } from "@/plugins/directory";
+import { Groups } from "@/plugins/groups";
 import { Invitations } from "@/plugins/invitations";
 import { JoinRequests } from "@/plugins/joinRequests";
 import { Members } from "@/plugins/members";
@@ -126,6 +128,17 @@ export function registerBuiltinPlugins(): void {
     path: "/directory",
     iconComponent: BookUser,
     reactComponent: Directory,
+  });
+
+  // The community's groups: every administrator reads them; holders of
+  // vtc.groups.manage create them, and each group's managers run it.
+  registerPlugin({
+    id: "groups",
+    group: "membership",
+    label: "Groups",
+    path: "/groups",
+    iconComponent: UsersRound,
+    reactComponent: Groups,
   });
 
   registerPlugin({
