@@ -346,6 +346,17 @@ const COMMUNITY_DID: &str = "did:web:community.example";
 const REQUEST_ID: &str = "5b8f1d4e-9c2a-4f6b-8e31-7a0c5d9e2f14";
 const TS: &str = "2026-08-23T00:00:00Z";
 
+/// The disclosure statement a community with only the base fields publishes,
+/// generated as `directory::disclosure::statement` generates it.
+fn base_disclosure() -> Value {
+    crate::directory::disclosure::build(
+        &crate::directory::fields::base_fields(),
+        crate::directory::model::Settings::default().default_listing,
+        crate::directory::disclosure::Served::this_build(),
+    )
+    .expect("the base schema gives a statement")
+}
+
 /// A directory entry identifier, as `directory::cards::new_entry_id` mints one.
 const DIRECTORY_ENTRY: &str = "dir_Q7m2K9xVb4Tz8LpRaB3c";
 
@@ -2706,6 +2717,33 @@ fn table() -> Vec<Conformance> {
                 )
                 .expect("the manifest projects the criterion"),
             )
+        ),
+        // 0.4: the same answer, with the directory's disclosure statement the
+        // way `directory::disclosure` generates it from the base schema.
+        checked!(
+            s::join_requests::manifest::v0_4::Payload,
+            s::join_requests::manifest::v0_4::Response,
+            json!({}),
+            to_v(
+                crate::routes::join_requests::manifest::response_v0_4(
+                    COMMUNITY_DID.into(),
+                    vec![crate::schemas::accepts::AcceptsCriterion::new(
+                        "open",
+                        crate::schemas::accepts::Admission::Automatic,
+                        DID,
+                    )],
+                    None,
+                    Vec::new(),
+                    base_disclosure(),
+                )
+                .expect("the manifest carries the statement"),
+            )
+        ),
+        checked!(
+            s::directory::disclosure::v0_1::Payload,
+            s::directory::disclosure::v0_1::Response,
+            json!({}),
+            json!({ "communityDid": COMMUNITY_DID, "disclosure": base_disclosure() })
         ),
         checked!(
             s::vetting::revoke_statement::v0_1::Payload,

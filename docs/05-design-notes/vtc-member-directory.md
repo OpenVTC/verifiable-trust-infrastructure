@@ -344,8 +344,12 @@ whom. A member directory is exactly that disclosure.
 The VTC **generates** the statement from its configuration: the field
 schema, the ceilings, the default listing, whether admin notes are kept,
 and whether `did` can reach `members`. It publishes the statement in the
-community profile and shows it to applicants before they join. Because it
-is generated, it cannot drift from what the directory actually does.
+join manifest (`vtc/join-requests/manifest/0.4`, `directoryDisclosure`),
+which every applicant reads before applying, and on its own as
+`vtc/directory/disclosure/0.1`. Because it is generated, it cannot drift from
+what the directory actually does. (The first draft of this note put it in the
+community profile; the manifest is where an applicant already looks, and the
+one read that discloses nothing about them.)
 
 ## 6. The personal layer: stars, lists, notes, nicknames
 

@@ -310,4 +310,6 @@ export type DirectoryEntriesShowResponse = Schemas["VtcDirectoryEntriesShowV0_1R
 export type DirectoryCard = Schemas["VtcDirectoryCardShowV0_1DirectoryCard"];
 export type DirectoryCardShowResponse = Schemas["VtcDirectoryCardShowV0_1Response"];
 export type DirectoryCardUpdatePayload = Schemas["VtcDirectoryCardUpdateV0_1Payload"];
+export type DirectoryDisclosureResponse = Schemas["VtcDirectoryDisclosureV0_1Response"];
+export type DirectoryDisclosure = Schemas["VtcDirectoryDisclosureV0_1DirectoryDisclosure"];
 export type DirectoryCardUpdateResponse = Schemas["VtcDirectoryCardUpdateV0_1Response"];

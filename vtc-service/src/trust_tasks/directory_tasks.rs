@@ -9,6 +9,7 @@
 //! | `card/assert/0.1` | `vtc.directory.admin` |
 //! | `entries/{list,show}/0.1` | an active member or an administrator, each entry projected for them |
 //! | `query/0.1` | as `entries/show`, answered through the same projection (`community_tasks`) |
+//! | `disclosure/0.1` | anyone the join manifest answers: the statement is what an applicant reads before applying (VTI-DIR-130) |
 //!
 //! None has a REST route. Each arrives the same way over TSP, DIDComm or
 //! HTTPS.
@@ -28,6 +29,7 @@ use chrono::Utc;
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::vtc::directory::{
     card::{assert::v0_1 as card_assert, show::v0_1 as card_show, update::v0_1 as card_update},
+    disclosure::v0_1 as disclosure,
     entries::{list::v0_1 as entries_list, show::v0_1 as entries_show},
     fields::{
         define::v0_1 as fields_define, list::v0_1 as fields_list, retire::v0_1 as fields_retire,
@@ -64,6 +66,7 @@ pub(crate) const CARD_UPDATE_TYPE: &str = <card_update::Payload as Payload>::TYP
 pub(crate) const CARD_ASSERT_TYPE: &str = <card_assert::Payload as Payload>::TYPE_URI;
 pub(crate) const ENTRIES_LIST_TYPE: &str = <entries_list::Payload as Payload>::TYPE_URI;
 pub(crate) const ENTRIES_SHOW_TYPE: &str = <entries_show::Payload as Payload>::TYPE_URI;
+pub(crate) const DISCLOSURE_TYPE: &str = <disclosure::Payload as Payload>::TYPE_URI;
 
 /// Exactly what [`dispatch`] routes.
 pub(crate) const URIS: &[&str] = &[
@@ -76,6 +79,7 @@ pub(crate) const URIS: &[&str] = &[
     CARD_ASSERT_TYPE,
     ENTRIES_LIST_TYPE,
     ENTRIES_SHOW_TYPE,
+    DISCLOSURE_TYPE,
 ];
 
 // ─── the codes these tasks declare, as the error-code census witnesses them ─
@@ -138,6 +142,7 @@ pub(super) async fn dispatch(
         CARD_ASSERT_TYPE => handle_card_assert(state, ctx, doc).await,
         ENTRIES_LIST_TYPE => handle_entries_list(state, ctx, doc).await,
         ENTRIES_SHOW_TYPE => handle_entries_show(state, ctx, doc).await,
+        DISCLOSURE_TYPE => handle_disclosure(state, ctx, doc).await,
         _ => return None,
     })
 }
@@ -337,6 +342,43 @@ async fn handle_fields_list(
             },
         }),
     )
+}
+
+/// `vtc/directory/disclosure/0.1`: the statement of what the directory
+/// discloses, and to whom, generated now
+/// ([`crate::directory::disclosure::statement`]).
+///
+/// Answered to every reader the join manifest is answered to, and refused on
+/// exactly the same terms ([`super::discovery_refusal`]): an applicant who can
+/// read the criteria can read the statement.
+async fn handle_disclosure(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(reject) = parse_spec_payload::<disclosure::Payload>(&doc) {
+        return reject;
+    }
+    if let Some(refusal) = super::discovery_refusal(state, ctx, &doc).await {
+        return refusal;
+    }
+    let community_did = state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .filter(|d| !d.is_empty());
+    let Some(community_did) = community_did else {
+        return app_error_to_reject(&doc, &AppError::Internal("VTC DID not configured".into()));
+    };
+    match crate::directory::disclosure::statement(&state.directory).await {
+        Ok(statement) => success_response(
+            &doc,
+            json!({ "communityDid": community_did, "disclosure": statement }),
+        ),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
 }
 
 fn field_error(doc: &TrustTask<Value>, task: &str, e: FieldError) -> TrustTaskOutcome {

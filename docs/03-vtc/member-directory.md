@@ -27,6 +27,40 @@ Specification: *Community Directory and Groups* in the VTI specification
 | `vtc/directory/entries/list/0.1` | members, administrators | Browse, search and filter, each entry projected for the caller |
 | `vtc/directory/entries/show/0.1` | members, administrators | One entry by entry identifier; by DID only for `vtc.directory.admin` or `vtc.members.manage` |
 | `vtc/directory/query/0.1` | members, administrators | The older lookup by DID, answered through the same projection |
+| `vtc/directory/disclosure/0.1` | anyone the join manifest answers | The disclosure statement (below) |
+| `vtc/join-requests/manifest/0.4` | anyone, unless join discovery is closed | The join criteria **and** the disclosure statement, as `directoryDisclosure`; 0.3 is still served without it |
+
+## What applicants are told
+
+Before anyone applies, they are told what the directory would disclose about
+them and to whom (VTI-DIR-130). The VTC **generates** this statement each time
+it is read, from what it runs — nobody writes it, so it cannot describe a
+directory other than this one:
+
+- every active field: who writes it (the member, the community, a
+  credential, the community's records), what a new card shows it to, and the
+  widest audience a member may show it to (its ceiling);
+- a new card's listing (`[directory] default_listing`) and search setting;
+- how far a member's membership DID can reach: the `did` field's ceiling, or
+  administrators only when that field is disabled;
+- whether administrators keep notes, whether there are groups, and whether a
+  card can be published beyond the community. This build has none of these, so
+  it says so; the answers are read from which tasks it serves, and change by
+  themselves when those features arrive;
+- a `statementDigest`, so an applicant can record which statement they saw.
+
+Every audience is the widest a value can reach. The `directory` policy only
+narrows, so the statement never understates what can be disclosed.
+
+Applicants receive it in the join manifest (0.4), which every applicant reads,
+and anyone can read it on its own with `vtc/directory/disclosure/0.1`. Both
+are answered to exactly the callers the manifest is: closing public join
+discovery (`vtc/community/join-discovery/update`) closes both to callers the
+community cannot identify.
+
+Administrators see it on the console's **Directory → What applicants see**
+tab, in the same plain words a wallet would show, next to a table of every
+field.
 
 ## In the member portal
 

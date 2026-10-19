@@ -169,6 +169,9 @@ spec_types! {
         in vetters::profile::v0_1::Payload as "VettingMethod";
     /// `vtc/join-requests/manifest/0.3#response`.
     JoinManifest03Response(manifest::v0_3::Response);
+    /// `vtc/join-requests/manifest/0.4#response` — the criteria, and the
+    /// directory's disclosure statement.
+    JoinManifest04Response(manifest::v0_4::Response);
     /// `vtc/schemas/accepts/register/0.2` payload — one join criterion as an
     /// administrator states it.
     AcceptsRegister02Payload(accepts::register::v0_2::Payload);
@@ -325,6 +328,11 @@ spec_types! {
     DirectoryCardUpdate01Payload(directory::card::update::v0_1::Payload);
     /// `vtc/directory/card/update/0.1#response` — the card as it now stands.
     DirectoryCardUpdate01Response(directory::card::update::v0_1::Response);
+    /// `vtc/directory/disclosure/0.1` payload.
+    DirectoryDisclosure01Payload(directory::disclosure::v0_1::Payload);
+    /// `vtc/directory/disclosure/0.1#response` — what the directory would
+    /// disclose about a member, and to whom.
+    DirectoryDisclosure01Response(directory::disclosure::v0_1::Response);
     /// `vtc/rooms/community/members/list/0.1` payload.
     RoomsCommunityMembersList01Payload(rooms_community::members::list::v0_1::Payload);
     /// `vtc/rooms/community/members/list/0.1#response` — one page of a room's
@@ -670,6 +678,7 @@ mod tests {
         check::<EndorsementTypeDelete01Response>();
         check::<VetterProfile01VettingMethod>();
         check::<JoinManifest03Response>();
+        check::<JoinManifest04Response>();
         check::<AcceptsRegister02Payload>();
         check::<AcceptsList02Response>();
         check::<JoinManifest02VettingRequirements>();
@@ -703,6 +712,8 @@ mod tests {
         check::<DirectoryCardShow01Response>();
         check::<DirectoryCardUpdate01Payload>();
         check::<DirectoryCardUpdate01Response>();
+        check::<DirectoryDisclosure01Payload>();
+        check::<DirectoryDisclosure01Response>();
     }
 
     #[test]

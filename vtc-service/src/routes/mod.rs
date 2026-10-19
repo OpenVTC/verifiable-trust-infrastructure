@@ -163,6 +163,8 @@ use crate::server::AppState;
         vta_sdk::openapi::DirectoryCardShow01Response,
         vta_sdk::openapi::DirectoryCardUpdate01Payload,
         vta_sdk::openapi::DirectoryCardUpdate01Response,
+        vta_sdk::openapi::DirectoryDisclosure01Payload,
+        vta_sdk::openapi::DirectoryDisclosure01Response,
         vta_sdk::openapi::RoomsCommunityMembersList01Payload,
         vta_sdk::openapi::RoomsCommunityMembersList01Response,
         // Where rooms' files are kept (`trust_tasks::storage_tasks`), signed
@@ -239,6 +241,7 @@ use crate::server::AppState;
         vta_sdk::openapi::AcceptsRegister02Payload,
         vta_sdk::openapi::AcceptsList02Response,
         vta_sdk::openapi::JoinManifest03Response,
+        vta_sdk::openapi::JoinManifest04Response,
         rooms::HostedRoom,
         // The custom-endorsement reads/revoke the console signs
         // (`vtc/endorsements/{list,show,revoke}/0.1`) — bearer REST routes for

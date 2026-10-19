@@ -669,7 +669,9 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # trust-tasks-tf #821. Its breaks: `SealedRecord` gains `version` (#816, which
 # `pnm rooms file get` now reads), and the device `Capability` enum gains
 # `sign-document` (#819), which this VTA neither grants nor serves.
-trust-tasks-rs = { version = "0.32", default-features = false, features = [
+# 0.32.1: `vtc/directory/disclosure/0.1` and `vtc/join-requests/manifest/0.4`,
+# which carries the directory's disclosure statement (trust-tasks-tf #823).
+trust-tasks-rs = { version = "0.32.1", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

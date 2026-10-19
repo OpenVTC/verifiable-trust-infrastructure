@@ -930,6 +930,8 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/directory/card/assert/0.1",
     "https://trusttasks.org/spec/vtc/directory/entries/list/0.1",
     "https://trusttasks.org/spec/vtc/directory/entries/show/0.1",
+    // Its "What applicants see" tab: the disclosure statement, read back.
+    "https://trusttasks.org/spec/vtc/directory/disclosure/0.1",
     // The member portal's directory (`admin-ui/src/members/directory-api.ts`),
     // signed by the portal key the member delegated `vtc/directory` to.
     "https://trusttasks.org/spec/vtc/directory/card/show/0.1",

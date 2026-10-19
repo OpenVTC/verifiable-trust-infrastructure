@@ -15,6 +15,7 @@
 //! the index `entry:<did>`.
 
 pub mod cards;
+pub mod disclosure;
 pub mod fields;
 pub mod model;
 pub mod project;

@@ -37,7 +37,8 @@ use vti_common::store::KeyspaceHandle;
 /// Storage key in the `community` keyspace.
 pub const JOIN_DISCOVERY_STORAGE_KEY: &[u8] = b"community/join-discovery";
 
-/// Whether the join manifest answers an unidentified caller.
+/// Whether the join manifest — and with it the directory's disclosure
+/// statement (`vtc/directory/disclosure`) — answers an unidentified caller.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]

@@ -3160,7 +3160,7 @@ export interface components {
             /** @description The statement's `id`. */
             statementId: string;
         };
-        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (metadata stripped, dimensions capped) so its digest does not link the member across communities. `url` and `urlExpiresAt` appear only in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. */
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
         VtcDirectoryCardAssertV0_1CardBlobRef: {
             /**
              * @description Media type of the stored bytes.
@@ -3237,7 +3237,7 @@ export interface components {
          * @enum {string}
          */
         VtcDirectoryCardShowV0_1Audience: "admins" | "groups" | "connections" | "members" | "public";
-        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (metadata stripped, dimensions capped) so its digest does not link the member across communities. `url` and `urlExpiresAt` appear only in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. */
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
         VtcDirectoryCardShowV0_1CardBlobRef: {
             /**
              * @description Media type of the stored bytes.
@@ -3263,11 +3263,22 @@ export interface components {
         VtcDirectoryCardShowV0_1CardValues: {
             [key: string]: components["schemas"]["VtcDirectoryCardShowV0_1FieldValue"];
         };
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcDirectoryCardShowV0_1DigestMultibase: string;
         /** @description A member's own directory record: their values, a visibility for each field, their discoverability and who may ask to be introduced. Returned whole only to its subject. Every other reader receives a `DirectoryEntry`. */
         VtcDirectoryCardShowV0_1DirectoryCard: {
             discoverability: components["schemas"]["VtcDirectoryCardShowV0_1Discoverability"];
             entryId: components["schemas"]["VtcDirectoryCardShowV0_1EntryId"];
             ext?: components["schemas"]["VtcDirectoryCardShowV0_1Ext"];
+            externalCard?: components["schemas"]["VtcDirectoryCardShowV0_1ExternalCard"];
             /** @description The community groups whose members count as the `groups` audience for this card. Absent: every community group the subject belongs to. A group the subject has left stops counting at once. */
             groupAudience?: string[];
             introductions: components["schemas"]["VtcDirectoryCardShowV0_1Introductions"];
@@ -3297,6 +3308,17 @@ export interface components {
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcDirectoryCardShowV0_1Ext: {
             [key: string]: unknown;
+        };
+        /** @description Where the member's external card stands. Present on a card exactly when `discoverability.external` is true. `published`: the community is serving the card the member signed, and its trust registry points to it. `awaitingSignature`: the member's `public` values have changed since they signed, so the community has withdrawn the card it was serving and serves none until the member signs the current values (vtc/directory/card/publish). The community never serves a card the member did not sign, and never one that differs from their current `public` values. */
+        VtcDirectoryCardShowV0_1ExternalCard: {
+            cardDigest?: components["schemas"]["VtcDirectoryCardShowV0_1DigestMultibase"];
+            /**
+             * Format: date-time
+             * @description Present while `published`: when the card now served was published.
+             */
+            publishedAt?: string;
+            /** @enum {string} */
+            state: "published" | "awaitingSignature";
         };
         /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
         VtcDirectoryCardShowV0_1FieldKey: string;
@@ -3353,7 +3375,7 @@ export interface components {
          * @enum {string}
          */
         VtcDirectoryCardUpdateV0_1Audience: "admins" | "groups" | "connections" | "members" | "public";
-        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (metadata stripped, dimensions capped) so its digest does not link the member across communities. `url` and `urlExpiresAt` appear only in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. */
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
         VtcDirectoryCardUpdateV0_1CardBlobRef: {
             /**
              * @description Media type of the stored bytes.
@@ -3379,11 +3401,22 @@ export interface components {
         VtcDirectoryCardUpdateV0_1CardValues: {
             [key: string]: components["schemas"]["VtcDirectoryCardUpdateV0_1FieldValue"];
         };
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcDirectoryCardUpdateV0_1DigestMultibase: string;
         /** @description A member's own directory record: their values, a visibility for each field, their discoverability and who may ask to be introduced. Returned whole only to its subject. Every other reader receives a `DirectoryEntry`. */
         VtcDirectoryCardUpdateV0_1DirectoryCard: {
             discoverability: components["schemas"]["VtcDirectoryCardUpdateV0_1Discoverability"];
             entryId: components["schemas"]["VtcDirectoryCardUpdateV0_1EntryId"];
             ext?: components["schemas"]["VtcDirectoryCardUpdateV0_1Ext"];
+            externalCard?: components["schemas"]["VtcDirectoryCardUpdateV0_1ExternalCard"];
             /** @description The community groups whose members count as the `groups` audience for this card. Absent: every community group the subject belongs to. A group the subject has left stops counting at once. */
             groupAudience?: string[];
             introductions: components["schemas"]["VtcDirectoryCardUpdateV0_1Introductions"];
@@ -3413,6 +3446,17 @@ export interface components {
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcDirectoryCardUpdateV0_1Ext: {
             [key: string]: unknown;
+        };
+        /** @description Where the member's external card stands. Present on a card exactly when `discoverability.external` is true. `published`: the community is serving the card the member signed, and its trust registry points to it. `awaitingSignature`: the member's `public` values have changed since they signed, so the community has withdrawn the card it was serving and serves none until the member signs the current values (vtc/directory/card/publish). The community never serves a card the member did not sign, and never one that differs from their current `public` values. */
+        VtcDirectoryCardUpdateV0_1ExternalCard: {
+            cardDigest?: components["schemas"]["VtcDirectoryCardUpdateV0_1DigestMultibase"];
+            /**
+             * Format: date-time
+             * @description Present while `published`: when the card now served was published.
+             */
+            publishedAt?: string;
+            /** @enum {string} */
+            state: "published" | "awaitingSignature";
         };
         /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
         VtcDirectoryCardUpdateV0_1FieldKey: string;
@@ -3477,7 +3521,107 @@ export interface components {
              */
             verifiedAt: string;
         };
-        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (metadata stripped, dimensions capped) so its digest does not link the member across communities. `url` and `urlExpiresAt` appear only in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. */
+        /**
+         * @description Who may see a directory field, ordered from narrowest to widest. `admins`: holders of `vtc.directory.admin` (and, for derived fields, `vtc.members.manage`). `groups`: members who share at least one community group with the subject (narrowed to the groups the subject names in `groupAudience`, where it names any). `connections`: members holding an attributed, in-force verified relationship with the subject at the community. `members`: every active member. `public`: anyone, and what the member's signed public card carries outside the community.
+         *
+         *     `groups` and `connections` are not a chain: a viewer sees a field when they satisfy the audience the subject chose for it or any wider audience. Every audience includes the administrators, and the subject always sees their own whole card. There is no `onlyMe`: a value nobody else should see is not directory data.
+         * @enum {string}
+         */
+        VtcDirectoryDisclosureV0_1Audience: "admins" | "groups" | "connections" | "members" | "public";
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcDirectoryDisclosureV0_1DigestMultibase: string;
+        /** @description The statement itself. Every member is generated from the community's configuration when the statement is read. `statementDigest` names this exact statement, so an applicant can record which one it was shown. */
+        VtcDirectoryDisclosureV0_1DirectoryDisclosure: {
+            /** @description Whether administrators keep notes about members. Notes are never on a card and never reach another member; a member may ask for the notes about them. */
+            adminNotes: boolean;
+            ext?: components["schemas"]["VtcDirectoryDisclosureV0_1Ext"];
+            /** @description Whether a member may publish a card beyond the community: their `public` values, signed by them, offered through the community's trust registry. Always the member's own choice, and off on a new card. False where the community cannot publish external cards. */
+            externalCards: boolean;
+            /** @description Every active field, base and community-defined, in display order. A base field the community has disabled is absent, which is how a reader learns it is not collected. */
+            fields: components["schemas"]["VtcDirectoryDisclosureV0_1DisclosedField"][];
+            groups?: components["schemas"]["VtcDirectoryDisclosureV0_1GroupDisclosure"];
+            membershipIdentifiers: components["schemas"]["VtcDirectoryDisclosureV0_1Audience"];
+            newCard: components["schemas"]["VtcDirectoryDisclosureV0_1NewCardDefaults"];
+            statementDigest: components["schemas"]["VtcDirectoryDisclosureV0_1DigestMultibase"];
+        };
+        /** @description One active field of the community's directory, as an applicant needs to see it: what it is, who writes its value, the widest audience it may ever reach and the audience a new card gives it. Disabled and retired fields are not listed: no projection shows them. */
+        VtcDirectoryDisclosureV0_1DisclosedField: {
+            ceiling: components["schemas"]["VtcDirectoryDisclosureV0_1Audience"];
+            defaultVisibility: components["schemas"]["VtcDirectoryDisclosureV0_1Audience"];
+            description?: components["schemas"]["VtcDirectoryDisclosureV0_1FieldDescription"];
+            /** @description Whether members may filter on the field and see counts by its values. Absent: false. */
+            facet?: boolean;
+            key: components["schemas"]["VtcDirectoryDisclosureV0_1FieldKey"];
+            label: components["schemas"]["VtcDirectoryDisclosureV0_1FieldLabel"];
+            /** @description Whether a member's search may match the field, within what the searcher may see. */
+            searchable: boolean;
+            source: components["schemas"]["VtcDirectoryDisclosureV0_1FieldSource"];
+            type: components["schemas"]["VtcDirectoryDisclosureV0_1FieldType"];
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcDirectoryDisclosureV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Help text shown to a member filling the field in. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcDirectoryDisclosureV0_1FieldDescription: string;
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcDirectoryDisclosureV0_1FieldKey: string;
+        /** @description What readers see as the field's name. Plain text. */
+        VtcDirectoryDisclosureV0_1FieldLabel: string;
+        /**
+         * @description Who writes the value. `member`: self-asserted, through vtc/directory/card/update. `admin`: asserted by the community through vtc/directory/card/assert; the member reads it and cannot change it. `credential`: a claim the member discloses from a credential through vtc/directory/card/present, badged with its issuer. `derived`: a base field read from the community's own records (`role`, `joinedAt`, `did`, `personhood`) and never stored on a card. Each source is written only through its own path.
+         * @enum {string}
+         */
+        VtcDirectoryDisclosureV0_1FieldSource: "member" | "admin" | "credential" | "derived";
+        /**
+         * @description The kind of value a field holds, which fixes its `FieldValue` shape. `did` holds a DID the member chooses to show (never their membership DID, which is the derived base field `did`). `claim` holds a `VerifiedValue` and requires `source: credential`.
+         * @enum {string}
+         */
+        VtcDirectoryDisclosureV0_1FieldType: "text" | "longText" | "url" | "email" | "phone" | "enum" | "multiEnum" | "date" | "country" | "image" | "did" | "claim";
+        /** @description Present when the community has groups. A member of a group holds a credential, issued by the group's own identifier, that evidences their membership, and can present it outside the community — which is why an applicant is told. */
+        VtcDirectoryDisclosureV0_1GroupDisclosure: {
+            /** @description How long each group membership credential is valid for, as an ISO 8601 duration in weeks, days, hours, minutes and seconds (`P30D`). It is renewed while the member stays in the group, and a credential already issued stays valid until it expires even after its holder leaves. */
+            credentialValidity: string;
+        };
+        /**
+         * @description Who may ask the community to introduce them to this member. `anyone`: any active member who can find the entry. `groups`: only members who share a community group with them. `connections`: only members holding an attributed, in-force verified relationship with them. `off`: nobody. A refused introduction is never reported to its sender.
+         * @enum {string}
+         */
+        VtcDirectoryDisclosureV0_1Introductions: "anyone" | "groups" | "connections" | "off";
+        /**
+         * @description Whether members can find the entry. `listed`: it appears when members browse. `findable`: it does not appear when browsing, but a search that matches it under `search` returns it. `hidden`: no member finds it by browsing or searching; administrators still see it, and members who share a group that shows its members see it in that group's member list.
+         * @enum {string}
+         */
+        VtcDirectoryDisclosureV0_1Listing: "listed" | "findable" | "hidden";
+        /** @description The discoverability a card has when the community creates it, before its member chooses. A new card is never published beyond the community (VTI-DIR-042), so there is no member for that here: `externalCards` says whether the member may turn it on. */
+        VtcDirectoryDisclosureV0_1NewCardDefaults: {
+            introductions?: components["schemas"]["VtcDirectoryDisclosureV0_1Introductions"];
+            listing: components["schemas"]["VtcDirectoryDisclosureV0_1Listing"];
+            /**
+             * @description What a member's search may match, as the card's `discoverability.search`.
+             * @enum {string}
+             */
+            search: "byName" | "exactNickname" | "off";
+        };
+        /** @description Read the statement of what a community's directory discloses about its members, and to whom, generated from the configuration in force. Anyone may read it, applicants above all, so the request carries nothing about the reader. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcDirectoryDisclosureV0_1Payload: {
+            ext?: components["schemas"]["VtcDirectoryDisclosureV0_1Ext"];
+        };
+        /** @description The success response to a vtc/directory/disclosure/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/disclosure/0.1#response. */
+        VtcDirectoryDisclosureV0_1Response: {
+            communityDid: string;
+            disclosure: components["schemas"]["VtcDirectoryDisclosureV0_1DirectoryDisclosure"];
+            ext?: components["schemas"]["VtcDirectoryDisclosureV0_1Ext"];
+        };
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
         VtcDirectoryEntriesListV0_1CardBlobRef: {
             /**
              * @description Media type of the stored bytes.
@@ -3577,7 +3721,7 @@ export interface components {
              */
             verifiedAt: string;
         };
-        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (metadata stripped, dimensions capped) so its digest does not link the member across communities. `url` and `urlExpiresAt` appear only in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. */
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
         VtcDirectoryEntriesShowV0_1CardBlobRef: {
             /**
              * @description Media type of the stored bytes.
@@ -4298,6 +4442,231 @@ export interface components {
             /** @description Claim types the applicant's Vetting Card must carry, which the identity commitment is computed over, and which a counted statement must list as verified. Absent: none. */
             requiredClaims?: components["schemas"]["VtcJoinRequestsManifestV0_3ClaimType"][];
             requirementsGrace?: components["schemas"]["VtcJoinRequestsManifestV0_3Duration"];
+            /**
+             * Format: uri
+             * @description The predicate IRI a counted vetting statement carries in `credentialSubject.predicate` — `https://registry.trustoverip.org/dtg/vsc/vetted/1`, the DTG VSC registry's identity-vetting predicate, or a predicate in a namespace the community controls — registered as one the community accepts via vtc/endorsement-types/register. A statement under any other predicate does not count.
+             */
+            statementType: string;
+            /** @description Version of this requirements object's shape. `0.1` for the members defined here. */
+            version: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * @description Who may see a directory field, ordered from narrowest to widest. `admins`: holders of `vtc.directory.admin` (and, for derived fields, `vtc.members.manage`). `groups`: members who share at least one community group with the subject (narrowed to the groups the subject names in `groupAudience`, where it names any). `connections`: members holding an attributed, in-force verified relationship with the subject at the community. `members`: every active member. `public`: anyone, and what the member's signed public card carries outside the community.
+         *
+         *     `groups` and `connections` are not a chain: a viewer sees a field when they satisfy the audience the subject chose for it or any wider audience. Every audience includes the administrators, and the subject always sees their own whole card. There is no `onlyMe`: a value nobody else should see is not directory data.
+         * @enum {string}
+         */
+        VtcJoinRequestsManifestV0_4Audience: "admins" | "groups" | "connections" | "members" | "public";
+        /**
+         * @description The vocabulary token naming what a value IS — `name.legal`, `phone.mobile`, `address.postal`, `person.birthDate`. Dotted, most-general segment first, so that a consumer with no knowledge of the specific token can still group by its prefix.
+         *
+         *     The token is the maintainer's own; no external vocabulary is primary. External vocabularies (vCard/jCard, OIDC standard claims, schema.org) are mappings applied at PRESENTATION by a renderer, not at rest, so that a query written in any of them can be matched without the store having to live inside any one of them.
+         *
+         *     The `x:` prefix is an open extension namespace and is not decoration. The closest prior art — Windows CardSpace's self-issued card — supported exactly fifteen predefined claim types with no extensibility, and that is the specific way it failed the requirement a holder actually has. An `x:` attribute stores, composes, binds and discloses exactly like a known one; it renders generically and matches only an explicit query.
+         */
+        VtcJoinRequestsManifestV0_4ClaimType: string;
+        /** @description OPTIONAL. How the community asks to be shown to a prospective applicant: a name, an accent colour and a logo. Presentation only, self-asserted and unverified — `communityDid` identifies the community, never `branding`. Not part of any criterion, so not covered by a `requirementsDigest`. Every member is optional. */
+        VtcJoinRequestsManifestV0_4CommunityBranding: {
+            /** @description An sRGB colour as `#rrggbb`, compared case-insensitively. A community SHOULD write it in lower case. */
+            accentColor?: string;
+            /** @description The community's name as it asks to be shown. */
+            displayName?: string;
+            ext?: components["schemas"]["VtcJoinRequestsManifestV0_4Ext"];
+            /**
+             * Format: uri
+             * @description An https URL of the community's logo. Fetched by the client, so an untrusted image from wherever it points.
+             */
+            logoUrl?: string;
+        };
+        VtcJoinRequestsManifestV0_4Criterion: {
+            /**
+             * @description How the community decides a submission that meets this criterion. `automatic`: it admits the applicant without a person deciding. `review`: it refers the submission to an administrator, who decides.
+             * @enum {string}
+             */
+            admission: "automatic" | "review";
+            /**
+             * @description Whose credentials meet `presentationDefinition`: `community` (this community's own), `recognised` (this community's, or a community it recognises), or `any` (any issuer whose credential verifies). Present exactly when `presentationDefinition` is.
+             * @enum {string}
+             */
+            credentialIssuers?: "any" | "community" | "recognised";
+            /** @description Plain-language summary of the criterion, authored by the community and shown to prospective applicants. Informative: where it and `vetting` disagree, `vetting` governs. */
+            description?: string;
+            id: string;
+            /** @description True: the criterion is met only by a submission carrying a valid, unconsumed invitation this community issued to the applicant. */
+            invitationRequired?: boolean;
+            /** @description The credentials an applicant must present for this criterion (opaque here). Absent: the criterion requires no credential. */
+            presentationDefinition?: Record<string, never>;
+            requirementsDigest: components["schemas"]["VtcJoinRequestsManifestV0_4DigestMultibase"];
+            vetting?: components["schemas"]["VtcJoinRequestsManifestV0_4VettingRequirements"];
+        };
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcJoinRequestsManifestV0_4DigestMultibase: string;
+        /** @description The statement itself. Every member is generated from the community's configuration when the statement is read. `statementDigest` names this exact statement, so an applicant can record which one it was shown. */
+        VtcJoinRequestsManifestV0_4DirectoryDisclosure: {
+            /** @description Whether administrators keep notes about members. Notes are never on a card and never reach another member; a member may ask for the notes about them. */
+            adminNotes: boolean;
+            ext?: components["schemas"]["VtcJoinRequestsManifestV0_4Ext"];
+            /** @description Whether a member may publish a card beyond the community: their `public` values, signed by them, offered through the community's trust registry. Always the member's own choice, and off on a new card. False where the community cannot publish external cards. */
+            externalCards: boolean;
+            /** @description Every active field, base and community-defined, in display order. A base field the community has disabled is absent, which is how a reader learns it is not collected. */
+            fields: components["schemas"]["VtcJoinRequestsManifestV0_4DisclosedField"][];
+            groups?: components["schemas"]["VtcJoinRequestsManifestV0_4GroupDisclosure"];
+            membershipIdentifiers: components["schemas"]["VtcJoinRequestsManifestV0_4Audience"];
+            newCard: components["schemas"]["VtcJoinRequestsManifestV0_4NewCardDefaults"];
+            statementDigest: components["schemas"]["VtcJoinRequestsManifestV0_4DigestMultibase"];
+        };
+        /** @description One active field of the community's directory, as an applicant needs to see it: what it is, who writes its value, the widest audience it may ever reach and the audience a new card gives it. Disabled and retired fields are not listed: no projection shows them. */
+        VtcJoinRequestsManifestV0_4DisclosedField: {
+            ceiling: components["schemas"]["VtcJoinRequestsManifestV0_4Audience"];
+            defaultVisibility: components["schemas"]["VtcJoinRequestsManifestV0_4Audience"];
+            description?: components["schemas"]["VtcJoinRequestsManifestV0_4FieldDescription"];
+            /** @description Whether members may filter on the field and see counts by its values. Absent: false. */
+            facet?: boolean;
+            key: components["schemas"]["VtcJoinRequestsManifestV0_4FieldKey"];
+            label: components["schemas"]["VtcJoinRequestsManifestV0_4FieldLabel"];
+            /** @description Whether a member's search may match the field, within what the searcher may see. */
+            searchable: boolean;
+            source: components["schemas"]["VtcJoinRequestsManifestV0_4FieldSource"];
+            type: components["schemas"]["VtcJoinRequestsManifestV0_4FieldType"];
+        };
+        /** @description An ISO 8601 duration in weeks, days, hours, minutes and seconds only (e.g. `P120D`, `P2W`, `P1DT12H`, `PT15M`). Years and months are refused: their length depends on the calendar, and an age limit that means different things on different days is not a limit. */
+        VtcJoinRequestsManifestV0_4Duration: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcJoinRequestsManifestV0_4Ext: {
+            [key: string]: unknown;
+        };
+        /**
+         * @description Names the `ext` namespaces a consumer MUST understand or refuse, per SPEC.md §4.5.1.
+         *
+         *     Every entry MUST be an immediate key of the sibling `ext` object at the same level; an entry naming an absent namespace is non-conforming and the consumer rejects the document with `malformedRequest`. A consumer that does not recognize a namespace named here MUST NOT process the document as though the namespace were absent, and rejects it with `unsupportedExtension` — the exception to the rule that unrecognized namespaces are ignored.
+         *
+         *     A producer marks a namespace only where the document's meaning depends on it. Marking one that merely carries a hint or an annotation turns every consumer that has not implemented it into a failure where it would otherwise have interoperated. JSON Schema cannot check either of those rules: that an entry names a present namespace is checkable only against the sibling `ext`, and whether a namespace is load-bearing is not a schema question at all. Both are consumer-side checks.
+         */
+        VtcJoinRequestsManifestV0_4ExtCritical: string[];
+        /** @description Help text shown to a member filling the field in. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcJoinRequestsManifestV0_4FieldDescription: string;
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcJoinRequestsManifestV0_4FieldKey: string;
+        /** @description What readers see as the field's name. Plain text. */
+        VtcJoinRequestsManifestV0_4FieldLabel: string;
+        /**
+         * @description Who writes the value. `member`: self-asserted, through vtc/directory/card/update. `admin`: asserted by the community through vtc/directory/card/assert; the member reads it and cannot change it. `credential`: a claim the member discloses from a credential through vtc/directory/card/present, badged with its issuer. `derived`: a base field read from the community's own records (`role`, `joinedAt`, `did`, `personhood`) and never stored on a card. Each source is written only through its own path.
+         * @enum {string}
+         */
+        VtcJoinRequestsManifestV0_4FieldSource: "member" | "admin" | "credential" | "derived";
+        /**
+         * @description The kind of value a field holds, which fixes its `FieldValue` shape. `did` holds a DID the member chooses to show (never their membership DID, which is the derived base field `did`). `claim` holds a `VerifiedValue` and requires `source: credential`.
+         * @enum {string}
+         */
+        VtcJoinRequestsManifestV0_4FieldType: "text" | "longText" | "url" | "email" | "phone" | "enum" | "multiEnum" | "date" | "country" | "image" | "did" | "claim";
+        /** @description Present when the community has groups. A member of a group holds a credential, issued by the group's own identifier, that evidences their membership, and can present it outside the community — which is why an applicant is told. */
+        VtcJoinRequestsManifestV0_4GroupDisclosure: {
+            /** @description How long each group membership credential is valid for, as an ISO 8601 duration in weeks, days, hours, minutes and seconds (`P30D`). It is renewed while the member stays in the group, and a credential already issued stays valid until it expires even after its holder leaves. */
+            credentialValidity: string;
+        };
+        /**
+         * @description Who may ask the community to introduce them to this member. `anyone`: any active member who can find the entry. `groups`: only members who share a community group with them. `connections`: only members holding an attributed, in-force verified relationship with them. `off`: nobody. A refused introduction is never reported to its sender.
+         * @enum {string}
+         */
+        VtcJoinRequestsManifestV0_4Introductions: "anyone" | "groups" | "connections" | "off";
+        /**
+         * @description Whether members can find the entry. `listed`: it appears when members browse. `findable`: it does not appear when browsing, but a search that matches it under `search` returns it. `hidden`: no member finds it by browsing or searching; administrators still see it, and members who share a group that shows its members see it in that group's member list.
+         * @enum {string}
+         */
+        VtcJoinRequestsManifestV0_4Listing: "listed" | "findable" | "hidden";
+        /** @description The discoverability a card has when the community creates it, before its member chooses. A new card is never published beyond the community (VTI-DIR-042), so there is no member for that here: `externalCards` says whether the member may turn it on. */
+        VtcJoinRequestsManifestV0_4NewCardDefaults: {
+            introductions?: components["schemas"]["VtcJoinRequestsManifestV0_4Introductions"];
+            listing: components["schemas"]["VtcJoinRequestsManifestV0_4Listing"];
+            /**
+             * @description What a member's search may match, as the card's `discoverability.search`.
+             * @enum {string}
+             */
+            search: "byName" | "exactNickname" | "off";
+        };
+        VtcJoinRequestsManifestV0_4Response: {
+            branding?: components["schemas"]["VtcJoinRequestsManifestV0_4CommunityBranding"];
+            communityDid: string;
+            criteria: components["schemas"]["VtcJoinRequestsManifestV0_4Criterion"][];
+            directoryDisclosure?: components["schemas"]["VtcJoinRequestsManifestV0_4DirectoryDisclosure"];
+            ext?: components["schemas"]["VtcJoinRequestsManifestV0_4Ext"];
+            /** @description What the community asks an applicant to tell it about themselves, as claim types — never values. Answered in persona terms: the applicant's agent discloses those attributes from the face the applicant chooses, and they arrive on vtc/join-requests/submit as `attributes`. SELF-ASSERTED: a community MUST NOT describe an answer as verified, and MUST NOT make a decision that assumes it is. Outside every criterion, so no `requirementsDigest` covers it. Absent when the community asks nothing. */
+            requestedAttributes?: {
+                /** @description Why the community asks, in words shown to the applicant before they disclose. */
+                purpose?: string;
+                /** @description False for an attribute the applicant may decline. A submission missing a required one is refused with vtc/join-requests/submit:attributesMissing. */
+                required?: boolean;
+                /** @description A claim-type token from the persona claim-type registry (persona/_shared/0.1/CLAIM-TYPES.md) — `name.display`, `address.country` — or an `x:` extension token. */
+                type: string;
+            }[];
+        };
+        /** @description A class of documentation, named in lowerCamelCase. Open rather than enumerated, because what documentation a vetter accepts is each vetter's own choice. Well-known values: `passport`, `nationalId`, `driverLicence`, and `none` — the vetter will attest without a document, which is the `priorAcquaintance` case. Only the class ever travels — never a document number, an image, an issuing authority or an expiry date. `none` states a policy (what a vetter accepts); a record of what was relied on expresses 'no document' as an empty list instead. */
+        VtcJoinRequestsManifestV0_4VettingDocumentation: string;
+        /**
+         * @description How the vetter established that the person they checked is the person controlling the applicant's DID. `inPerson` — both people were physically together. `video` — a live, two-way video call. `priorAcquaintance` — the vetter has known or worked with this person over a period, and attests from that knowledge rather than from a document. A method is a description of what happened, not an assurance level: which methods count, and how many of each, is community policy.
+         * @enum {string}
+         */
+        VtcJoinRequestsManifestV0_4VettingMethod: "inPerson" | "video" | "priorAcquaintance";
+        /**
+         * @description The vetter's own declaration of how they relate to the applicant. Declared, not verified: it exists so community policy can cap how much evidence comes from people close to the applicant, and a false declaration is the vetter's attributable act.
+         * @enum {string}
+         */
+        VtcJoinRequestsManifestV0_4VettingRelationship: "none" | "communityColleague" | "sameEmployer" | "family" | "otherPersonal";
+        /** @description What identity-vetting evidence a criterion needs, beyond what a presentation-definition can express: distinct eligible vetters, per-method floors, independence caps. Every number is the community's own policy. This schema supplies no defaults — an absent optional member means the community imposes no constraint of that kind, never that some protocol value applies. Deliberately open: a consumer MUST ignore members it does not recognise, so a community publishing a newer shape does not make an older client unable to read the rest. Durations: `maxStatementAge` — a statement older than this at decision time does not count (absent: no limit beyond the statement's own validity); `decisionSla` — how long after submission the community undertakes to decide, including on a referred application; `requirementsGrace` — how long an application started under an earlier `requirementsDigest` is still evaluated under that version. */
+        VtcJoinRequestsManifestV0_4VettingRequirements: {
+            /** @description Documentation a statement must have relied on in order to count. Absent — the expected case — means each vetter decides what documentation they accept, including none for prior acquaintance, and the community counts what they attest. */
+            acceptedDocumentClasses?: components["schemas"]["VtcJoinRequestsManifestV0_4VettingDocumentation"][];
+            /** @description Methods whose statements count at all. */
+            acceptedMethods: components["schemas"]["VtcJoinRequestsManifestV0_4VettingMethod"][];
+            decisionSla?: components["schemas"]["VtcJoinRequestsManifestV0_4Duration"];
+            /** @description How a vetter's eligibility is established. */
+            eligibleVetters: {
+                /** @description The role a statement's issuer must hold, matched as the action `role:<role>` in a Verifiable Authority Credential (`AuthorityCredential`) the community issued to that issuer, whose `authority.scope` is the community's DID (see `vtc/vetting/vetters/grant/0.1`). A statement counts only if its issuer holds such a credential. */
+                role: string;
+            };
+            ext?: components["schemas"]["VtcJoinRequestsManifestV0_4Ext"];
+            extCritical?: components["schemas"]["VtcJoinRequestsManifestV0_4ExtCritical"];
+            /**
+             * Format: uri
+             * @description Where the community's vetting governance — including the attestation text vetters sign — is published.
+             */
+            governanceFrameworkUrl?: string;
+            /** @description Caps on how much evidence may come from people close to the applicant. Absent: no caps. */
+            independence?: {
+                /** @description The most counted statements that may come from vetters declaring each relationship — e.g. `{ "family": 0 }`. */
+                maxByDeclaredRelationship?: {
+                    [key: string]: number;
+                };
+                /** @description When true, every counted statement must carry the same identity commitment — all vetters verified the same claimed identity. Absent: false. */
+                requireConsistentIdentityCommitment?: boolean;
+            };
+            /**
+             * @description Whether an invitation credential must accompany the statements at submission (`required`), may (`optional`), or plays no part (`none`). Absent: the presentation-definition alone governs.
+             * @enum {string}
+             */
+            invitation?: "required" | "optional" | "none";
+            maxStatementAge?: components["schemas"]["VtcJoinRequestsManifestV0_4Duration"];
+            /** @description Per-method floors within `minStatements` — e.g. `{ "inPerson": 1 }`. Every method named MUST also be in `acceptedMethods`. Absent: no method floor. */
+            minByMethod?: {
+                [key: string]: number;
+            };
+            /** @description How many counted statements are needed, counting each vetter once however many DIDs they hold. */
+            minStatements: number;
+            /** @description Claim types an applicant MAY add to the card and a vetter MAY verify. They never affect whether a statement counts. */
+            optionalClaims?: components["schemas"]["VtcJoinRequestsManifestV0_4ClaimType"][];
+            /** @description Claim types the applicant's Vetting Card must carry, which the identity commitment is computed over, and which a counted statement must list as verified. Absent: none. */
+            requiredClaims?: components["schemas"]["VtcJoinRequestsManifestV0_4ClaimType"][];
+            requirementsGrace?: components["schemas"]["VtcJoinRequestsManifestV0_4Duration"];
             /**
              * Format: uri
              * @description The predicate IRI a counted vetting statement carries in `credentialSubject.predicate` — `https://registry.trustoverip.org/dtg/vsc/vetted/1`, the DTG VSC registry's identity-vetting predicate, or a predicate in a namespace the community controls — registered as one the community accepts via vtc/endorsement-types/register. A statement under any other predicate does not count.

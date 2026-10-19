@@ -5,6 +5,9 @@
 //                        and defaults; define, change, disable, retire.
 //   /directory/entries   Entries tab: every member's entry as an administrator
 //                        reads it, and the values administrators assert.
+//   /directory/disclosure  What applicants see: the disclosure statement the
+//                        daemon generates from all of the above (VTI-DIR-130),
+//                        in the words an applicant is given. Read-only.
 //
 // Reading needs any administrative role; changing the schema and asserting
 // values need `vtc.directory.admin`. A change that widens a field is parked for
@@ -30,9 +33,12 @@ import {
   DIRECTORY_ADMIN,
   FIELD_TYPES,
   assertValues,
+  audiencePhrase,
   defineField,
+  describeDisclosure,
   listEntries,
   listFields,
+  readDisclosure,
   retireField,
   showEntry,
   updateField,
@@ -92,15 +98,90 @@ export function Directory() {
         items={[
           { id: "fields", label: "Fields", to: "/directory", end: true },
           { id: "entries", label: "Entries", to: "/directory/entries" },
+          { id: "disclosure", label: "What applicants see", to: "/directory/disclosure" },
         ]}
       />
       <Routes>
         <Route index element={<FieldsTab />} />
         <Route path="entries" element={<EntriesTab />} />
+        <Route path="disclosure" element={<DisclosureTab />} />
       </Routes>
     </section>
   );
 }
+
+// ─── what applicants see ──────────────────────────────────────────────────
+
+/** The disclosure statement, read back from the daemon. Nothing here is
+ *  editable: it changes when the schema or the directory settings do. */
+function DisclosureTab() {
+  const q = useQuery({
+    queryKey: ["directory", "disclosure"],
+    queryFn: readDisclosure,
+  });
+  const d = q.data?.disclosure;
+  return (
+    <>
+      <p className="muted">
+        Every applicant is shown this before they apply, in the join manifest and on its own. It is
+        generated from the fields and settings on the other tabs, so it changes when they do. Each
+        audience is the widest a value can reach: a member can always show less.
+      </p>
+      {q.error && (
+        <section className="card error">
+          <h3>Failed to load the disclosure statement</h3>
+          <p>{(q.error as Error).message}</p>
+        </section>
+      )}
+      {d && (
+        <>
+          <section className="card">
+            <h3>In words</h3>
+            <ul>
+              {describeDisclosure(d).map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </section>
+          <section className="card">
+            <DataTable
+              caption="Fields, as applicants see them"
+              columns={[
+                { key: "field", label: "Field" },
+                { key: "source", label: "Written by" },
+                { key: "default", label: "A new card shows it to" },
+                { key: "ceiling", label: "A member may show it to" },
+              ]}
+            >
+              {d.fields.map((f) => (
+                <tr key={f.key}>
+                  <td>
+                    {f.label}
+                    {f.description && <div className="muted">{f.description}</div>}
+                  </td>
+                  <td>{SOURCE_WORDS[f.source]}</td>
+                  <td>{audiencePhrase(f.defaultVisibility)}</td>
+                  <td>{audiencePhrase(f.ceiling)}</td>
+                </tr>
+              ))}
+            </DataTable>
+            <p className="muted">
+              Statement <code>{d.statementDigest}</code>. Applicants may record this to tell
+              later whether the terms changed.
+            </p>
+          </section>
+        </>
+      )}
+    </>
+  );
+}
+
+const SOURCE_WORDS: Record<DirectoryFieldDefinition["source"], string> = {
+  member: "the member",
+  admin: "the community",
+  credential: "a credential the member presents",
+  derived: "the community's records",
+};
 
 // ─── fields ───────────────────────────────────────────────────────────────
 

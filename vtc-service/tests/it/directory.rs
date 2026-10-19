@@ -976,3 +976,154 @@ async fn a_member_without_a_live_entry_leaves_the_directory() {
     let browse = ok(&fix, &viewer, "entries/list", json!({})).await;
     assert_eq!(names(&browse), vec!["Viewer"]);
 }
+
+// ─── the disclosure statement (VTI-DIR-130) ─────────────────────────────────
+
+const MANIFEST_0_4: &str = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.4";
+const MANIFEST_0_3: &str = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3";
+
+/// An unsigned document of `type_uri`, as a prospective applicant who has not
+/// identified themselves sends it.
+fn anonymous(type_uri: &str, payload: Value) -> Value {
+    json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": type_uri,
+        "recipient": TEST_VTC_DID,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "expiresAt": "2099-01-01T00:00:00Z",
+        "payload": payload,
+    })
+}
+
+async fn read_anonymously(fix: &Fixture, type_uri: &str) -> (StatusCode, Value) {
+    let (status, doc) = post(&fix.vtc, &anonymous(type_uri, json!({}))).await;
+    (status, doc["payload"].clone())
+}
+
+#[tokio::test]
+async fn anyone_reads_what_the_directory_discloses_before_applying() {
+    let fix = build_fixture().await;
+    let (status, body) = read_anonymously(&fix, &task("disclosure")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["communityDid"], TEST_VTC_DID);
+    let statement = &body["disclosure"];
+
+    // The base schema as this build ships it: a name members see, a DID that
+    // stays with administrators until its member chooses, and the features
+    // this build does not have stated as absent.
+    let name = statement["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["key"] == "displayName")
+        .expect("the name field is stated");
+    assert_eq!(name["defaultVisibility"], "members");
+    assert_eq!(statement["newCard"]["listing"], "listed");
+    assert_eq!(statement["adminNotes"], false);
+    assert_eq!(statement["externalCards"], false);
+    assert!(statement.get("groups").is_none());
+    assert_eq!(
+        statement["statementDigest"].as_str().unwrap(),
+        vtc_service::directory::disclosure::statement_digest(statement).unwrap(),
+        "a reader can recompute the digest from what it received"
+    );
+}
+
+#[tokio::test]
+async fn the_statement_follows_the_configuration_at_once() {
+    let fix = build_fixture().await;
+    let before = read_anonymously(&fix, &task("disclosure")).await.1["disclosure"].clone();
+
+    let (status, body) = define(&fix, text_field("org.example.employer")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after = read_anonymously(&fix, &task("disclosure")).await.1["disclosure"].clone();
+    assert!(
+        after["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["key"] == "org.example.employer"),
+        "a field defined now is in the next statement"
+    );
+    assert_ne!(before["statementDigest"], after["statementDigest"]);
+
+    // Retired: hidden from every projection, so gone from the statement.
+    ok(
+        &fix,
+        &fix.admin,
+        "fields/retire",
+        json!({ "key": "org.example.employer", "reason": "no longer asked" }),
+    )
+    .await;
+    let retired = read_anonymously(&fix, &task("disclosure")).await.1["disclosure"].clone();
+    assert_eq!(
+        retired, before,
+        "the same configuration is the same statement"
+    );
+}
+
+#[tokio::test]
+async fn the_join_manifest_carries_the_same_statement_from_0_4() {
+    let fix = build_fixture().await;
+    let statement = read_anonymously(&fix, &task("disclosure")).await.1["disclosure"].clone();
+
+    let (status, manifest) = read_anonymously(&fix, MANIFEST_0_4).await;
+    assert_eq!(status, StatusCode::OK, "{manifest}");
+    assert_eq!(manifest["directoryDisclosure"], statement);
+
+    let (status, older) = read_anonymously(&fix, MANIFEST_0_3).await;
+    assert_eq!(status, StatusCode::OK, "{older}");
+    assert!(
+        older.get("directoryDisclosure").is_none(),
+        "0.3 has no member for the statement"
+    );
+    assert_eq!(older["criteria"], manifest["criteria"]);
+}
+
+/// A community that answers its join criteria only to callers it can identify
+/// answers the statement on the same terms: never stricter, never looser.
+#[tokio::test]
+async fn the_statement_is_as_public_as_the_join_criteria() {
+    use vtc_service::community::join_discovery::{JoinDiscovery, store_join_discovery};
+    let fix = build_fixture().await;
+    store_join_discovery(
+        &fix.vtc.state.community_ks,
+        &JoinDiscovery { public: false },
+    )
+    .await
+    .unwrap();
+
+    for uri in [task("disclosure"), MANIFEST_0_4.to_string()] {
+        let (status, body) = read_anonymously(&fix, &uri).await;
+        assert_ne!(status, StatusCode::OK, "{uri}: {body}");
+        assert_eq!(tt_error_code(&body), "permissionDenied", "{uri}: {body}");
+    }
+
+    // Identified, by anyone — not only a member.
+    let stranger = Party::new();
+    let (status, body) = send(&fix, &stranger, "disclosure", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["disclosure"]["statementDigest"].is_string());
+}
+
+#[tokio::test]
+async fn the_requests_carry_nothing() {
+    let fix = build_fixture().await;
+    for uri in [
+        task("disclosure"),
+        MANIFEST_0_4.to_string(),
+        MANIFEST_0_3.to_string(),
+    ] {
+        let (status, doc) = post(
+            &fix.vtc,
+            &anonymous(&uri, json!({ "fields": ["displayName"] })),
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "{uri}: {doc}");
+        assert_eq!(
+            tt_error_code(&doc["payload"]),
+            "malformedRequest",
+            "{uri}: {doc}"
+        );
+    }
+}

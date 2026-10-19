@@ -141,9 +141,11 @@ pub struct JoinRequestAttribute {
 // ---------------------------------------------------------------------------
 
 /// The published `vtc/join-requests/manifest` types, generated from the
-/// specification. [`manifest::v0_3`] is the version a VTC serves: each
+/// specification. [`manifest::v0_4`] is the version a VTC serves first: each
 /// criterion states its `admission` and the requirements it has, in the order
-/// the community decides by, with a `requirementsDigest`. Its `Payload` and
+/// the community decides by, with a `requirementsDigest`, and the response
+/// carries the community's directory disclosure statement. [`manifest::v0_3`]
+/// is the same without the statement, and still served. Its `Payload` and
 /// `Response` are the manifest's wire types; nothing in this crate restates
 /// them.
 ///
@@ -393,15 +395,21 @@ pub const JOIN_REQUEST_WITHDRAW_ERR_ALREADY_DECIDED: &str =
     withdraw::v0_1::error_codes::ALREADY_DECIDED.code;
 
 /// Trust Task `type` for a join-request manifest request
-/// (`vtc/join-requests/manifest/0.3`): discover the community's join criteria.
-/// Public read; empty payload.
+/// (`vtc/join-requests/manifest/0.4`): discover the community's join criteria
+/// and what its member directory would disclose about a member
+/// (`directoryDisclosure`). Public read; empty payload.
 pub const JOIN_REQUEST_MANIFEST_TYPE: &str =
-    <manifest::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <manifest::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `#response` variant of [`JOIN_REQUEST_MANIFEST_TYPE`] — carries a
-/// [`manifest::v0_3::Response`].
+/// [`manifest::v0_4::Response`].
 pub const JOIN_REQUEST_MANIFEST_RESPONSE_TYPE: &str =
-    <manifest::v0_3::Response as trust_tasks_rs::Payload>::TYPE_URI;
+    <manifest::v0_4::Response as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/join-requests/manifest/0.3`: the same answer without
+/// `directoryDisclosure`, still served to clients that ask for it.
+pub const JOIN_REQUEST_MANIFEST_V0_3_TYPE: &str =
+    <manifest::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ---------------------------------------------------------------------------
 // Status — applicant poll (join-requests/status/1.0)

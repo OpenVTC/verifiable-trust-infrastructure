@@ -254,6 +254,7 @@ use vta_sdk::protocols::vetting::{
 };
 
 use crate::join::{JoinSubmitOutcome, JoinTransport};
+use crate::routes::join_requests::manifest::ManifestVersion;
 use crate::server::AppState;
 
 pub(crate) use helpers::TrustTaskOutcome;
@@ -1110,7 +1111,10 @@ fn dispatch_typed<'a>(
             Box::pin(async move { handle_submit(state, ctx, doc).await })
         }
         jr::JOIN_REQUEST_MANIFEST_TYPE => {
-            Box::pin(async move { handle_manifest(state, ctx, doc).await })
+            Box::pin(async move { handle_manifest(state, ctx, doc, ManifestVersion::V0_4).await })
+        }
+        jr::JOIN_REQUEST_MANIFEST_V0_3_TYPE => {
+            Box::pin(async move { handle_manifest(state, ctx, doc, ManifestVersion::V0_3).await })
         }
         jr::JOIN_REQUEST_STATUS_TYPE => {
             Box::pin(async move { handle_status(state, ctx, doc).await })
@@ -2036,6 +2040,14 @@ mod spine_proof_tests {
             "a public read of the community's join criteria; names no identity to authorize",
         ),
         (
+            jr::JOIN_REQUEST_MANIFEST_V0_3_TYPE,
+            "the same public read, without the directory's disclosure statement",
+        ),
+        (
+            directory_tasks::DISCLOSURE_TYPE,
+            "a public read of what the directory discloses, answered to whoever the join manifest is",
+        ),
+        (
             vetting_wire::VETTING_VETTER_LIST_TYPE,
             "a public read of the vetter registry",
         ),
@@ -2869,9 +2881,11 @@ fn unsupported_type_or_version(doc: &TrustTask<Value>, type_uri: &str) -> TrustT
 /// not actually serve.
 pub(crate) const DISPATCHED_URIS: &[&str] = &[
     jr::JOIN_REQUEST_SUBMIT_TYPE,
-    // 0.3: every criterion states its admission, in the order the community
-    // decides by.
+    // 0.4: every criterion states its admission, in the order the community
+    // decides by, and the directory's disclosure statement rides beside them.
     jr::JOIN_REQUEST_MANIFEST_TYPE,
+    // 0.3: the same, without the statement, for clients not yet on 0.4.
+    jr::JOIN_REQUEST_MANIFEST_V0_3_TYPE,
     jr::JOIN_REQUEST_STATUS_TYPE,
     // The applicant closing their own request. Paired with `status` above: the
     // poll is how they learn the community asked for more, and this is how
@@ -3171,6 +3185,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     directory_tasks::CARD_ASSERT_TYPE,
     directory_tasks::ENTRIES_LIST_TYPE,
     directory_tasks::ENTRIES_SHOW_TYPE,
+    // What the directory discloses, read before applying (VTI-DIR-130).
+    directory_tasks::DISCLOSURE_TYPE,
     community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
     community_tasks::RECOGNITION_CHECK_TYPE,
     community_tasks::MEMBERS_LIST_TYPE,
@@ -4186,53 +4202,77 @@ fn caller_is_identified(ctx: &JoinAuthCtx) -> bool {
     ctx.verified_signer.is_some() || ctx.sender_did.is_some()
 }
 
-/// The join manifest (`vtc/join-requests/manifest/0.3`).
+/// The join manifest (`vtc/join-requests/manifest/0.4`, and 0.3 without the
+/// directory's disclosure statement).
 ///
-/// Public unless the community has turned public discovery off, in which case
-/// an unidentified caller is refused and an identified one is answered exactly
-/// as before — see [`JoinDiscovery`](crate::community::profile::JoinDiscovery).
-/// The refusal is `permissionDenied` with a sentence saying *how* to ask rather
-/// than only that this failed: a client that reads "not public" and stops has
-/// been told the wrong thing, because the same question over an identified
-/// transport still answers.
+/// Public unless the community has turned public discovery off — see
+/// [`discovery_refusal`].
 async fn handle_manifest(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    version: ManifestVersion,
 ) -> TrustTaskOutcome {
-    use crate::routes::join_requests::manifest::manifest_v0_3;
-    if !caller_is_identified(ctx) {
-        let public = match crate::community::join_discovery::load_join_discovery(
-            &state.community_ks,
-        )
-        .await
-        {
-            Ok(setting) => setting.public,
-            // A setting that cannot be read is not a reason to stop answering a
-            // question that has always been public: failing open keeps a
-            // storage fault from looking like a closed community, and the
-            // manifest carries nothing that was not already published.
-            Err(e) => {
-                tracing::warn!(error = %e, "join discovery unreadable; answering the manifest");
-                true
-            }
-        };
-        if !public {
-            return reject_with(
-                &doc,
-                RejectReason::PermissionDenied {
-                    reason: "this community does not publish its join requirements to callers \
-                             it cannot identify — ask over DIDComm, or with a signed Trust Task \
-                             document"
-                        .to_string(),
-                },
-            );
-        }
+    use vta_sdk::protocols::join_requests::manifest::{v0_3, v0_4};
+    let payload = match version {
+        ManifestVersion::V0_3 => parse_spec_payload::<v0_3::Payload>(&doc).map(drop),
+        ManifestVersion::V0_4 => parse_spec_payload::<v0_4::Payload>(&doc).map(drop),
+    };
+    if let Err(reject) = payload {
+        return reject;
     }
-    manifest_v0_3(state)
+    if let Some(refusal) = discovery_refusal(state, ctx, &doc).await {
+        return refusal;
+    }
+    crate::routes::join_requests::manifest::manifest(state, version)
         .await
         .map(|r| success_response(&doc, r))
         .unwrap_or_else(|e| app_error_to_reject(&doc, &e))
+}
+
+/// The refusal for an unidentified caller when the community has turned public
+/// discovery off, else `None`.
+///
+/// Shared by everything an applicant reads before applying — the join manifest
+/// and the directory's disclosure statement — so that a reader who may see the
+/// one may see the other: the statement is part of what an applicant is told
+/// before they apply (VTI-DIR-130). An identified caller is answered exactly as
+/// before — see [`JoinDiscovery`](crate::community::profile::JoinDiscovery).
+/// The refusal is `permissionDenied` with a sentence saying *how* to ask rather
+/// than only that this failed: a client that reads "not public" and stops has
+/// been told the wrong thing, because the same question over an identified
+/// transport still answers.
+pub(super) async fn discovery_refusal(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+) -> Option<TrustTaskOutcome> {
+    if caller_is_identified(ctx) {
+        return None;
+    }
+    let public =
+        match crate::community::join_discovery::load_join_discovery(&state.community_ks).await {
+            Ok(setting) => setting.public,
+            // A setting that cannot be read is not a reason to stop answering a
+            // question that has always been public: failing open keeps a storage
+            // fault from looking like a closed community, and what these reads
+            // carry was already published.
+            Err(e) => {
+                tracing::warn!(error = %e, "join discovery unreadable; answering the read");
+                true
+            }
+        };
+    (!public).then(|| {
+        reject_with(
+            doc,
+            RejectReason::PermissionDenied {
+                reason: "this community does not publish its join requirements to callers \
+                         it cannot identify — ask over DIDComm, or with a signed Trust Task \
+                         document"
+                    .to_string(),
+            },
+        )
+    })
 }
 
 // ─── status ────────────────────────────────────────────────────────────────

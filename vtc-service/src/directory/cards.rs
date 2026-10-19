@@ -22,6 +22,17 @@ use super::model::{
 /// A card's values, serialized, may not exceed this (VTI-DIR-016).
 pub const MAX_CARD_VALUE_BYTES: usize = 16 * 1024;
 
+/// Whether a member can publish their card beyond the community (VTI-DIR-046).
+/// This build cannot, so `card/update` refuses `external` and the disclosure
+/// statement says no card leaves the community.
+pub const EXTERNAL_PUBLICATION: bool = false;
+
+/// What a member's search may match on a new card.
+pub const NEW_CARD_SEARCH: SearchMode = SearchMode::ByName;
+
+/// From whom a new card accepts introductions.
+pub const NEW_CARD_INTRODUCTIONS: Introductions = Introductions::Anyone;
+
 fn card_key(entry_id: &str) -> Vec<u8> {
     format!("card:{entry_id}").into_bytes()
 }
@@ -94,10 +105,11 @@ pub fn fresh(did: &str, settings: &Settings, own_label: Option<&str>, now: DateT
         visibility: BTreeMap::new(),
         discoverability: Discoverability {
             listing: settings.default_listing,
-            search: SearchMode::ByName,
+            search: NEW_CARD_SEARCH,
+            // VTI-DIR-042: only ever the member's own choice.
             external: false,
         },
-        introductions: Introductions::Anyone,
+        introductions: NEW_CARD_INTRODUCTIONS,
         group_audience: None,
         revision: 0,
         updated_at: now,
@@ -353,7 +365,7 @@ pub fn apply_member_update(
     }
 
     if let Some(d) = update.discoverability {
-        if d.external {
+        if d.external && !EXTERNAL_PUBLICATION {
             // VTI-DIR-046 / VTI-REG-004: this build publishes no external
             // card. Refused whole, so nothing else in the document lands.
             return Err(CardError::NotAvailable);
