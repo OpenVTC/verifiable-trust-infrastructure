@@ -1,9 +1,9 @@
 //! The voting service's half: admit a cast, then count its ticket once.
 //!
 //! [`BallotBox::verify`] is pure and holds no secret, only the community's published `hvk`, so
-//! it runs in parallel and any auditor can run it again over the board (draft VTI-VOT-001,
-//! VOT-007). [`BallotBox::admit`] adds the one stateful step, recording the tag in a
-//! [`NullifierStore`] under the election's revote rule (VOT-002).
+//! it runs in parallel and any auditor can run it again over the board (VTI-VOT-044,
+//! VTI-VOT-070). [`BallotBox::admit`] adds the one stateful step, recording the tag in a
+//! [`NullifierStore`] under the election's revote rule (VTI-VOT-041).
 
 use std::collections::HashMap;
 

@@ -20,7 +20,7 @@
 //! This crate is behaviour only. The wire forms that carry a ticket request, a ticket or a cast
 //! are Trust Task payloads, and come from the specification once it exists.
 //!
-//! Design: the community voting design note (draft requirements `VTI-VOT-*`).
+//! Requirements: VTI-VOT-001 – 100, the Community Voting chapter of the VTI specification.
 
 pub mod ballot_box;
 pub mod election;

@@ -2,7 +2,7 @@
 //! bound into.
 //!
 //! Both are functions of the community, the election identifier and the **manifest digest**
-//! (draft VTI-VOT-012). A member shown a different question than the one registered derives a
+//! (VTI-VOT-011). A member shown a different question than the one registered derives a
 //! different point and context, so their ballot does not count in the registered election: what
 //! a member answers is what was registered, or nothing.
 

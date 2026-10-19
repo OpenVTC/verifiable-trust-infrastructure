@@ -3,7 +3,7 @@
 //! This type holds a key and signs; it counts nothing. Whether the requester is eligible for an
 //! election, and whether they already hold a ticket for it, are facts about the community's
 //! records: the caller checks them durably, and logs the member-signed request, before calling
-//! [`Registrar::issue_ticket`] (draft VTI-VOT-010 needs that log).
+//! [`Registrar::issue_ticket`] (VTI-VOT-022 requires that record).
 //!
 //! # The keys are derived, not stored
 //!

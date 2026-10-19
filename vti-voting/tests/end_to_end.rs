@@ -1,6 +1,6 @@
 //! Ticket → cast → ballot box, end to end, and every way a cast must fail.
 //!
-//! Test names carry the draft requirement they hold (VOT-001 … VOT-012, community voting design).
+//! Test names carry the requirement they hold (VTI-VOT-*, the VTI specification's Community Voting chapter).
 
 use rand::{SeedableRng, rngs::StdRng};
 use vti_voting::{
@@ -38,7 +38,7 @@ fn ballot_box(params: &VotingParams, e: &Election, revote: Revote) -> BallotBox<
 }
 
 #[test]
-fn vot_001_a_ticketed_cast_is_counted() {
+fn vot_040_a_ticketed_cast_is_counted() {
     let reg = Registrar::generate(COMMUNITY, &mut rng(1)).unwrap();
     let params = reg.params();
     let e = election("agm-2027");
@@ -52,7 +52,7 @@ fn vot_001_a_ticketed_cast_is_counted() {
 }
 
 #[test]
-fn vot_001_a_ticket_from_another_registrar_is_refused() {
+fn vot_040_a_ticket_from_another_registrar_is_refused() {
     let ours = Registrar::generate(COMMUNITY, &mut rng(1)).unwrap();
     // Same community identifier, another key: a forged registrar.
     let forged = Registrar::generate(COMMUNITY, &mut rng(99)).unwrap();
@@ -69,7 +69,7 @@ fn vot_001_a_ticket_from_another_registrar_is_refused() {
 }
 
 #[test]
-fn vot_001_a_ticket_for_another_election_is_refused() {
+fn vot_040_a_ticket_for_another_election_is_refused() {
     let reg = Registrar::generate(COMMUNITY, &mut rng(1)).unwrap();
     let params = reg.params();
     let (voter, ticket) = ticketed(&reg, &election("survey-1"), 2);
@@ -79,7 +79,7 @@ fn vot_001_a_ticket_for_another_election_is_refused() {
 }
 
 #[test]
-fn vot_002_a_second_ballot_replaces_the_first_under_one_tag() {
+fn vot_041_a_second_ballot_replaces_the_first_under_one_tag() {
     let reg = Registrar::generate(COMMUNITY, &mut rng(1)).unwrap();
     let params = reg.params();
     let e = election("agm-2027");
@@ -98,7 +98,7 @@ fn vot_002_a_second_ballot_replaces_the_first_under_one_tag() {
 }
 
 #[test]
-fn vot_002_without_revote_a_different_second_ballot_is_refused() {
+fn vot_041_without_revote_a_different_second_ballot_is_refused() {
     let reg = Registrar::generate(COMMUNITY, &mut rng(1)).unwrap();
     let params = reg.params();
     let e = election("agm-2027");
@@ -111,7 +111,7 @@ fn vot_002_without_revote_a_different_second_ballot_is_refused() {
 }
 
 #[test]
-fn vot_002_a_resent_cast_is_answered_as_the_first_time() {
+fn vot_042_a_resent_cast_is_answered_as_the_first_time() {
     let reg = Registrar::generate(COMMUNITY, &mut rng(1)).unwrap();
     let params = reg.params();
     let e = election("agm-2027");
@@ -128,7 +128,7 @@ fn vot_002_a_resent_cast_is_answered_as_the_first_time() {
 }
 
 #[test]
-fn vot_003_tags_differ_across_voters_and_across_elections() {
+fn vot_031_tags_differ_across_voters_and_across_elections() {
     let reg = Registrar::generate(COMMUNITY, &mut rng(1)).unwrap();
     let params = reg.params();
     let e1 = election("agm-2027");
@@ -160,7 +160,7 @@ fn vot_003_tags_differ_across_voters_and_across_elections() {
 }
 
 #[test]
-fn vot_003_the_cast_does_not_carry_the_voter_identifier() {
+fn vot_020_the_cast_does_not_carry_the_voter_identifier() {
     let reg = Registrar::generate(COMMUNITY, &mut rng(1)).unwrap();
     let params = reg.params();
     let e = election("agm-2027");
@@ -173,7 +173,7 @@ fn vot_003_the_cast_does_not_carry_the_voter_identifier() {
 }
 
 #[test]
-fn vot_007_verification_needs_only_published_parameters() {
+fn vot_044_verification_needs_only_published_parameters() {
     let reg = Registrar::generate(COMMUNITY, &mut rng(1)).unwrap();
     let e = election("agm-2027");
     let (voter, ticket) = ticketed(&reg, &e, 2);
@@ -187,7 +187,7 @@ fn vot_007_verification_needs_only_published_parameters() {
 }
 
 #[test]
-fn vot_007_a_cast_cannot_be_moved_to_another_ballot() {
+fn vot_030_a_cast_cannot_be_moved_to_another_ballot() {
     let reg = Registrar::generate(COMMUNITY, &mut rng(1)).unwrap();
     let params = reg.params();
     let e = election("agm-2027");
@@ -202,7 +202,7 @@ fn vot_007_a_cast_cannot_be_moved_to_another_ballot() {
 }
 
 #[test]
-fn vot_012_a_ballot_for_another_manifest_does_not_count() {
+fn vot_011_a_ballot_for_another_manifest_does_not_count() {
     let reg = Registrar::generate(COMMUNITY, &mut rng(1)).unwrap();
     let params = reg.params();
     let registered = election("agm-2027");
