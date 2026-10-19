@@ -37,7 +37,7 @@ serde_json_canonicalizer.workspace = true
 # `trust-tasks-rs` release yet. Renamed so the rest of the graph keeps the
 # crates.io copy the workspace pins; replace with the workspace dependency
 # (feature `voting`) once a release carries the family.
-trust-tasks-voting = { package = "trust-tasks-rs", git = "https://github.com/trustoverip/dtgwg-trust-tasks-tf", rev = "579f9cbe7d9a69baca806a5127aeab539b7873cc", default-features = false, features = ["voting"] }
+trust-tasks-voting = { package = "trust-tasks-rs", git = "https://github.com/trustoverip/dtgwg-trust-tasks-tf", rev = "6309a4334f4a1d6b2cd4d035687eead5531420ba", default-features = false, features = ["voting"] }
 
 [dev-dependencies]
 rand = { version = "0.8", features = ["std", "std_rng"] }

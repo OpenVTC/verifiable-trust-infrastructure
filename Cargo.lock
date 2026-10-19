@@ -10874,7 +10874,7 @@ dependencies = [
 [[package]]
 name = "trust-tasks-rs"
 version = "0.32.2"
-source = "git+https://github.com/trustoverip/dtgwg-trust-tasks-tf?rev=579f9cbe7d9a69baca806a5127aeab539b7873cc#579f9cbe7d9a69baca806a5127aeab539b7873cc"
+source = "git+https://github.com/trustoverip/dtgwg-trust-tasks-tf?rev=6309a4334f4a1d6b2cd4d035687eead5531420ba#6309a4334f4a1d6b2cd4d035687eead5531420ba"
 dependencies = [
  "async-trait",
  "chrono",
@@ -12450,6 +12450,32 @@ dependencies = [
  "thiserror 2.0.21",
  "trust-tasks-rs 0.32.2",
  "vti-vetting-pcs",
+]
+
+[[package]]
+name = "vti-voting-service"
+version = "0.1.0"
+dependencies = [
+ "affinidi-did-resolver-cache-sdk",
+ "anyhow",
+ "axum",
+ "chrono",
+ "clap",
+ "ed25519-dalek 3.0.0",
+ "http-body-util",
+ "multibase",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "trust-tasks-rs 0.32.1",
+ "uuid",
+ "vta-sdk",
+ "vti-common",
+ "vti-voting",
 ]
 
 [[package]]

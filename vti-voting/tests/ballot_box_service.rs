@@ -419,6 +419,6 @@ fn vot_012_013_only_the_community_registers_closes_or_cancels() {
     });
     assert_eq!(
         s.bb.register(COMMUNITY, &payload, now).unwrap_err().local,
-        "conflict"
+        "alreadyRegistered"
     );
 }

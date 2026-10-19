@@ -259,11 +259,22 @@ fn journal_failure(reason: String) -> Failure {
 }
 
 /// One cast as admitted: what its receipt names and what makes a resend recognisable.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct Admitted {
     leaf: u64,
     ballot_digest: [u8; 32],
+    /// A bearer credential: on a private board it alone admits a read of this leaf.
     receipt_token: String,
+}
+
+/// Written by hand so the receipt token never reaches a log.
+impl std::fmt::Debug for Admitted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Admitted")
+            .field("leaf", &self.leaf)
+            .field("receipt_token", &"<redacted>")
+            .finish_non_exhaustive()
+    }
 }
 
 struct ElectionRecord {
@@ -598,9 +609,9 @@ impl BallotBox {
                 existing.advance(now)?;
                 return respond::<register::Response>(json!({ "election": existing.summary(now) }));
             }
-            return Err(Failure::standard(
-                "conflict",
-                "this election is registered with another manifest or key",
+            return Err(Failure::task(
+                "alreadyRegistered",
+                "this election is registered with another manifest or key (VTI-VOT-013)",
             ));
         }
         let mut record = self.build_record(manifest_value.clone(), parameters.clone())?;

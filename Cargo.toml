@@ -43,6 +43,9 @@ members = [
   # Community voting on PCS (design: community voting, draft VTI-VOT-*):
   # `publish = false` until its first published consumer, not a default member.
   "vti-voting",
+  # The voting service binary (a ballot box host service): `publish = false`,
+  # not a default member.
+  "vti-voting-service",
 ]
 # `vta-mobile-core` is a UniFFI client crate that cross-compiles to Android/iOS.
 # Keep it out of `default-members` so a bare `cargo build`/`test` for the server
