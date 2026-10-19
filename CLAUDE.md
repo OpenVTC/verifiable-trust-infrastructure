@@ -1416,8 +1416,8 @@ new flow, update both this section and the relevant `docs/*.md`.
   community** through `keys/sign-document`, with a slot in the community's
   revocation list and an expiry. Served: `create`, `update`, `delete`, `list`,
   `show`, `members/{add,remove,list}`, `join`, `leave`, `requests/{list,decide}`
-  for **static** groups (a dynamic one is checked, then refused `kindNotServed`).
-  Managers (`managers/*`), credential renewal and bindings are later phases.
+  `managers/{add,remove}` for **static** groups (a dynamic one is checked, then
+  refused `kindNotServed`). Credential renewal and bindings are later phases.
 - **Invariants to preserve**: the VTC holds no group key and never falls back to
   one (`noKeyHolder`). Remote first: a group is stored only after its DID and its
   authority exist; a served log is published before anything verifies against
@@ -1436,7 +1436,11 @@ new flow, update both this section and the relevant `docs/*.md`.
   revocation). The directory's `groups` audience counts only groups both belong
   to whose member list the viewer may see (`groups::audience_groups`). Departure
   ends every membership and withdraws pending requests (`groups::on_departure`,
-  before the card's own departure). Nobody decides their own request.
+  before the card's own departure). Nobody decides their own request. A
+  manager's appointment is a resource grant written under the git-ns write lock
+  (so `acl/*` writes keep it); a granter who departs or no longer covers it
+  sends it to an `acl.grants.review` item (`groupGrants`), withdrawn on decline
+  or at the deadline (`groups::managers::sweep`).
 - **Code**: `vtc-service/src/groups/` (`mod`, `identity`, `policy`),
   `vtc-service/src/trust_tasks/group_tasks.rs`,
   `vtc-service/policies/default/groups.rego`, `vta-sdk/templates/vtc-group.json`.

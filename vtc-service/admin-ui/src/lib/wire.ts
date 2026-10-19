@@ -5009,6 +5009,52 @@ export interface components {
             value?: string | boolean;
             values?: string[];
         };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcGroupsManagersAddV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcGroupsManagersAddV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcGroupsManagersAddV0_1GroupId: string;
+        /** @description A group manager, or an administrator who manages every group, appoints a community member a manager of one group: an access-control resource grant of `vtc.groups.manage` qualified to that group. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcGroupsManagersAddV0_1Payload: {
+            entryId: components["schemas"]["VtcGroupsManagersAddV0_1EntryId"];
+            ext?: components["schemas"]["VtcGroupsManagersAddV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsManagersAddV0_1GroupId"];
+            /** @description Why, recorded with the change. */
+            reason?: string;
+        };
+        /** @description The success response to a vtc/groups/managers/add/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/managers/add/0.1#response. */
+        VtcGroupsManagersAddV0_1Response: {
+            ext?: components["schemas"]["VtcGroupsManagersAddV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsManagersAddV0_1GroupId"];
+            /** @description The group's managers after the appointment. Entries holding `vtc.groups.manage` qualified to this group, read from the access-control list; administrators who manage every group are not listed. */
+            managers: components["schemas"]["VtcGroupsManagersAddV0_1EntryId"][];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcGroupsManagersRemoveV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcGroupsManagersRemoveV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcGroupsManagersRemoveV0_1GroupId: string;
+        /** @description A manager steps down, or an administrator who manages every group withdraws another member's appointment as a group's manager. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcGroupsManagersRemoveV0_1Payload: {
+            entryId: components["schemas"]["VtcGroupsManagersRemoveV0_1EntryId"];
+            ext?: components["schemas"]["VtcGroupsManagersRemoveV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsManagersRemoveV0_1GroupId"];
+            /** @description Why, recorded with the change. */
+            reason?: string;
+        };
+        /** @description The success response to a vtc/groups/managers/remove/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/managers/remove/0.1#response. */
+        VtcGroupsManagersRemoveV0_1Response: {
+            ext?: components["schemas"]["VtcGroupsManagersRemoveV0_1Ext"];
+            groupId: components["schemas"]["VtcGroupsManagersRemoveV0_1GroupId"];
+            /** @description The group's managers after the change. Entries holding `vtc.groups.manage` qualified to this group, read from the access-control list; administrators who manage every group are not listed. */
+            managers: components["schemas"]["VtcGroupsManagersRemoveV0_1EntryId"][];
+        };
         /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
         VtcGroupsMembersAddV0_1CardBlobRef: {
             /**

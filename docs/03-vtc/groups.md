@@ -23,9 +23,10 @@ This page says what this build serves.
 | `vtc/groups/leave/0.1` | an active member, for themselves | Leave a group, or withdraw a request |
 | `vtc/groups/requests/list/0.1` | a manager | The requests to the groups the caller manages |
 | `vtc/groups/requests/decide/0.1` | a manager, never the requester | Approve or decline a request |
+| `vtc/groups/managers/add/0.1` | a manager of the group | Appoint an active member a manager of it |
+| `vtc/groups/managers/remove/0.1` | the manager, or `vtc.groups.manage` unqualified | End an appointment; a manager may step down |
 
-Appointing managers (`managers/*`), renewing members' group credentials, and bindings
-to rooms or grants come next. The member portal signs these tasks with its sign-in key
+Renewing members' group credentials, and bindings to rooms or grants, come next. The member portal signs these tasks with its sign-in key
 for the member (`signingScope` `vtc/groups`), as it does the directory's.
 
 Only **static** groups are served. A dynamic group's rule is checked — it may read only
@@ -99,6 +100,16 @@ holder's access-control entry, beside its role, and every gate reads it there; a
 record never decides who manages it. `managers` on a group lists the entries holding the
 qualified grant, for information. The capability is in the community-admin role's
 ceiling.
+
+A manager is appointed with `vtc/groups/managers/add`, by a manager of the group or an
+administrator who manages every group: the grant is written on the appointee's entry,
+delegated by the signer, and needs no administrative role. Managers of one group do not
+remove one another; a manager may step down, and an administrator who manages every
+group may end anyone's appointment. When a grant's granter leaves the community or no
+longer manages the group, the grant goes to review: an `acl.grants.review` item asks the
+community's administrators to re-affirm it under their own authority, and it is
+withdrawn when the review is declined or its deadline (the action lifetime) passes.
+Deleting a group withdraws every appointment to it.
 
 A manager's authority is over the group's membership and settings, and confers nothing
 else: authority reaches a group only through a binding, and adding a member to a group

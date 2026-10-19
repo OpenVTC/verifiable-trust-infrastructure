@@ -73,6 +73,11 @@ pub async fn purge_due(state: &AppState) -> Result<Vec<String>, AppError> {
 /// the cards withdrawn and the registry records queued for repair.
 pub async fn settle(state: &AppState) -> Result<(usize, usize, usize), AppError> {
     withdraw_lapsed(state).await?;
+    // Group manager appointments whose granter no longer stands behind them
+    // go to review, and are withdrawn at its deadline.
+    if let Err(e) = crate::groups::managers::sweep(state).await {
+        warn!(error = %e, "could not review group manager appointments; the next pass will");
+    }
     let erased = super::images::collect(state.directory.ks(), Utc::now()).await?
         + super::notes::sweep_departed(state.directory.ks(), Utc::now()).await?;
     let withdrawn = super::external::reconcile_all(state).await?;

@@ -3242,6 +3242,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     group_tasks::LEAVE_TYPE,
     group_tasks::REQUESTS_LIST_TYPE,
     group_tasks::REQUESTS_DECIDE_TYPE,
+    group_tasks::MANAGERS_ADD_TYPE,
+    group_tasks::MANAGERS_REMOVE_TYPE,
     // Credential-sourced fields, filled from a presentation.
     directory_tasks::CARD_PRESENT_TYPE,
     community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,

@@ -398,6 +398,14 @@ spec_types! {
     GroupsRequestsDecide01Payload(groups::requests::decide::v0_1::Payload);
     /// `vtc/groups/requests/decide/0.1#response` — the request, and the membership it made.
     GroupsRequestsDecide01Response(groups::requests::decide::v0_1::Response);
+    /// `vtc/groups/managers/add/0.1` payload — appointing a group's manager.
+    GroupsManagersAdd01Payload(groups::managers::add::v0_1::Payload);
+    /// `vtc/groups/managers/add/0.1#response` — the group's managers.
+    GroupsManagersAdd01Response(groups::managers::add::v0_1::Response);
+    /// `vtc/groups/managers/remove/0.1` payload — ending a manager's appointment.
+    GroupsManagersRemove01Payload(groups::managers::remove::v0_1::Payload);
+    /// `vtc/groups/managers/remove/0.1#response` — the group's managers.
+    GroupsManagersRemove01Response(groups::managers::remove::v0_1::Response);
     /// `vtc/directory/card/present/0.1` payload — the fields a presentation fills.
     DirectoryCardPresent01Payload(directory::card::present::v0_1::Payload);
     /// `vtc/directory/card/present/0.1#response` — each field's verified value.
@@ -831,6 +839,10 @@ mod tests {
         check::<GroupsRequestsList01Response>();
         check::<GroupsRequestsDecide01Payload>();
         check::<GroupsRequestsDecide01Response>();
+        check::<GroupsManagersAdd01Payload>();
+        check::<GroupsManagersAdd01Response>();
+        check::<GroupsManagersRemove01Payload>();
+        check::<GroupsManagersRemove01Response>();
         check::<DirectoryCardPresent01Payload>();
         check::<DirectoryCardPresent01Response>();
         check::<DirectoryNotesAppend01Payload>();

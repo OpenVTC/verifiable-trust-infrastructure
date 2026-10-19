@@ -10,6 +10,8 @@
 //! | `members/list/0.1` | anyone the group shows its members to |
 //! | `join/0.1`, `leave/0.1` | an active member, for themselves |
 //! | `requests/list/0.1`, `requests/decide/0.1` | a manager of the request's group; nobody decides their own |
+//! | `managers/add/0.1` | a manager of the group, who covers the grant they write |
+//! | `managers/remove/0.1` | the manager themselves, or `vtc.groups.manage` unqualified |
 //!
 //! None has a REST route. A group the caller may not see answers `notFound`
 //! exactly as one that does not exist, on every task.
@@ -25,6 +27,7 @@ use trust_tasks_rs::specs::vtc::groups::{
     join::v0_1 as group_join,
     leave::v0_1 as group_leave,
     list::v0_1 as group_list,
+    managers::{add::v0_1 as managers_add, remove::v0_1 as managers_remove},
     members::{
         add::v0_1 as members_add, list::v0_1 as members_list, remove::v0_1 as members_remove,
     },
@@ -61,6 +64,8 @@ pub(crate) const JOIN_TYPE: &str = <group_join::Payload as Payload>::TYPE_URI;
 pub(crate) const LEAVE_TYPE: &str = <group_leave::Payload as Payload>::TYPE_URI;
 pub(crate) const REQUESTS_LIST_TYPE: &str = <requests_list::Payload as Payload>::TYPE_URI;
 pub(crate) const REQUESTS_DECIDE_TYPE: &str = <requests_decide::Payload as Payload>::TYPE_URI;
+pub(crate) const MANAGERS_ADD_TYPE: &str = <managers_add::Payload as Payload>::TYPE_URI;
+pub(crate) const MANAGERS_REMOVE_TYPE: &str = <managers_remove::Payload as Payload>::TYPE_URI;
 
 /// Every type this module serves.
 pub(crate) const URIS: &[&str] = &[
@@ -76,6 +81,8 @@ pub(crate) const URIS: &[&str] = &[
     LEAVE_TYPE,
     REQUESTS_LIST_TYPE,
     REQUESTS_DECIDE_TYPE,
+    MANAGERS_ADD_TYPE,
+    MANAGERS_REMOVE_TYPE,
 ];
 
 macro_rules! codes {
@@ -123,6 +130,11 @@ codes! {
     DECIDE_ERR_SELF_DECISION = requests_decide::SELF_DECISION;
     DECIDE_ERR_KEY_HOLDER_UNAVAILABLE = requests_decide::KEY_HOLDER_UNAVAILABLE;
     DECIDE_ERR_KEY_HOLDER_REFUSED = requests_decide::KEY_HOLDER_REFUSED;
+    MANAGERS_ADD_ERR_NOT_FOUND = managers_add::NOT_FOUND;
+    MANAGERS_ADD_ERR_ENTRY_NOT_FOUND = managers_add::ENTRY_NOT_FOUND;
+    MANAGERS_ADD_ERR_ALREADY_MANAGER = managers_add::ALREADY_MANAGER;
+    MANAGERS_REMOVE_ERR_NOT_FOUND = managers_remove::NOT_FOUND;
+    MANAGERS_REMOVE_ERR_NOT_MANAGER = managers_remove::NOT_MANAGER;
 }
 
 pub(super) async fn dispatch(
@@ -144,6 +156,8 @@ pub(super) async fn dispatch(
         LEAVE_TYPE => handle_leave(state, ctx, doc).await,
         REQUESTS_LIST_TYPE => handle_requests_list(state, ctx, doc).await,
         REQUESTS_DECIDE_TYPE => handle_requests_decide(state, ctx, doc).await,
+        MANAGERS_ADD_TYPE => handle_managers_add(state, ctx, doc).await,
+        MANAGERS_REMOVE_TYPE => handle_managers_remove(state, ctx, doc).await,
         _ => return None,
     })
 }
@@ -662,6 +676,10 @@ async fn handle_delete(
     if let Some(a) = &group.authority
         && let Err(e) = identity::revoke_authority(state, a).await
     {
+        return app_error_to_reject(&doc, &e);
+    }
+    // Nobody manages a group that is gone.
+    if let Err(e) = groups::managers::withdraw_all(state, &group.group_id).await {
         return app_error_to_reject(&doc, &e);
     }
     let members_removed = match groups::remove(state.directory.ks(), &group.group_id).await {
@@ -1675,4 +1693,144 @@ async fn handle_requests_decide(
         body["credentialId"] = json!(m.credential_id);
     }
     success_response(&doc, body)
+}
+
+// ─── managers ─────────────────────────────────────────────────────────────
+
+/// `managers/add/0.1` (items 1 – 7).
+async fn handle_managers_add(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match standing(state, ctx, &doc).await {
+        Ok(s) => s,
+        Err(reject) => return reject,
+    };
+    if let Err(reject) = parse_spec_payload::<managers_add::Payload>(&doc) {
+        return reject;
+    }
+    let p = &doc.payload;
+    let group_id = p.get("groupId").and_then(Value::as_str).unwrap_or_default();
+    let entry_id = p.get("entryId").and_then(Value::as_str).unwrap_or_default();
+    // Items 1 and 4: managing the group is covering the grant.
+    let group = match managed_group(state, &doc, &who, group_id, MANAGERS_ADD_ERR_NOT_FOUND).await {
+        Ok(g) => g,
+        Err(reject) => return reject,
+    };
+    let did = match active_entry(state, entry_id).await {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            return declared(
+                &doc,
+                MANAGERS_ADD_ERR_ENTRY_NOT_FOUND,
+                "No active member has this entry.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    // Item 2: by a grant to this group, or by managing every group.
+    let already = match crate::acl::get_acl_entry(&state.acl_ks, &did).await {
+        Ok(Some(e)) => {
+            groups::managers::appointed(&e, &group.group_id)
+                || e.can(crate::acl::Capability::GroupsManage, None)
+        }
+        Ok(None) => false,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if already {
+        return declared(
+            &doc,
+            MANAGERS_ADD_ERR_ALREADY_MANAGER,
+            "This member already manages the group.",
+        );
+    }
+    // Item 7.
+    if let Err(e) = audit_membership(
+        state,
+        &who.did,
+        &group.group_id,
+        entry_id,
+        "managerAppointed",
+        None,
+    )
+    .await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
+    // Item 3.
+    if let Err(e) =
+        groups::managers::appoint(state, &who.did, &did, &group.group_id, reason_of(&doc)).await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
+    match groups::managers(state, &group.group_id).await {
+        Ok(m) => success_response(&doc, json!({ "groupId": group.group_id, "managers": m })),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `managers/remove/0.1` (items 1 – 4).
+async fn handle_managers_remove(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match standing(state, ctx, &doc).await {
+        Ok(s) => s,
+        Err(reject) => return reject,
+    };
+    if let Err(reject) = parse_spec_payload::<managers_remove::Payload>(&doc) {
+        return reject;
+    }
+    let p = &doc.payload;
+    let group_id = p.get("groupId").and_then(Value::as_str).unwrap_or_default();
+    let entry_id = p.get("entryId").and_then(Value::as_str).unwrap_or_default();
+    let group =
+        match managed_group(state, &doc, &who, group_id, MANAGERS_REMOVE_ERR_NOT_FOUND).await {
+            Ok(g) => g,
+            Err(reject) => return reject,
+        };
+    // Item 2: managers of one group do not remove one another.
+    let own = who.entry_id.as_deref() == Some(entry_id);
+    if !own && !who.manages_all {
+        return denied(
+            &doc,
+            "only an administrator who manages every group removes another manager",
+        );
+    }
+    let not_manager = || {
+        declared(
+            &doc,
+            MANAGERS_REMOVE_ERR_NOT_MANAGER,
+            "This entry holds no appointment to manage the group.",
+        )
+    };
+    let did = match crate::directory::cards::get(state.directory.ks(), entry_id).await {
+        Ok(Some(card)) => card.did,
+        Ok(None) => return not_manager(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    // Item 3: the capability held unqualified is no appointment.
+    match groups::managers::withdraw(state, &did, &group.group_id).await {
+        Ok(true) => {}
+        Ok(false) => return not_manager(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    if let Err(e) = audit_membership(
+        state,
+        &who.did,
+        &group.group_id,
+        entry_id,
+        "managerRemoved",
+        reason_of(&doc),
+    )
+    .await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
+    match groups::managers(state, &group.group_id).await {
+        Ok(m) => success_response(&doc, json!({ "groupId": group.group_id, "managers": m })),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
 }

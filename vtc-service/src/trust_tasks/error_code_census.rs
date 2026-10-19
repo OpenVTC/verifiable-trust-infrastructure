@@ -1474,6 +1474,36 @@ fn witnesses() -> Vec<Witness> {
             "requests_decide_refuses_what_its_specification_declares"
         ),
         witness!(
+            s::groups::managers::add::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::group_tasks::MANAGERS_ADD_ERR_NOT_FOUND,
+            "groups.rs",
+            "managers_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::managers::add::v0_1::error_codes::ENTRY_NOT_FOUND,
+            crate::trust_tasks::group_tasks::MANAGERS_ADD_ERR_ENTRY_NOT_FOUND,
+            "groups.rs",
+            "managers_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::managers::add::v0_1::error_codes::ALREADY_MANAGER,
+            crate::trust_tasks::group_tasks::MANAGERS_ADD_ERR_ALREADY_MANAGER,
+            "groups.rs",
+            "managers_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::managers::remove::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::group_tasks::MANAGERS_REMOVE_ERR_NOT_FOUND,
+            "groups.rs",
+            "managers_remove_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::managers::remove::v0_1::error_codes::NOT_MANAGER,
+            crate::trust_tasks::group_tasks::MANAGERS_REMOVE_ERR_NOT_MANAGER,
+            "groups.rs",
+            "managers_remove_refuses_what_its_specification_declares"
+        ),
+        witness!(
             s::directory::notes::append::v0_1::error_codes::NOT_FOUND,
             crate::trust_tasks::directory_tasks::NOTES_APPEND_ERR_NOT_FOUND,
             "directory_notes.rs",

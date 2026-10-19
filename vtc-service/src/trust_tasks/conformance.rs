@@ -2922,6 +2922,18 @@ fn table() -> Vec<Conformance> {
             json!({ "request": { "requestId": "greq_W5k2N8xRb3Qz7TpLAAAAAA", "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "message": "I work on identity.", "createdAt": "2026-10-19T09:00:00Z", "state": "pending" }, "member": { "entryId": DIRECTORY_ENTRY, "source": "added", "since": "2026-10-19T09:00:00Z", "state": "active", "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "credentialValidUntil": "2026-11-18T09:00:00Z" }, "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d" })
         ),
         checked!(
+            s::groups::managers::add::v0_1::Payload,
+            s::groups::managers::add::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "reason": "she convenes it" }),
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "managers": [DIRECTORY_ENTRY] })
+        ),
+        checked!(
+            s::groups::managers::remove::v0_1::Payload,
+            s::groups::managers::remove::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY }),
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "managers": [] })
+        ),
+        checked!(
             s::directory::notes::append::v0_1::Payload,
             s::directory::notes::append::v0_1::Response,
             json!({ "entryId": DIRECTORY_ENTRY, "text": "Spoke at the June meetup.", "followUp": "2026-11-01" }),

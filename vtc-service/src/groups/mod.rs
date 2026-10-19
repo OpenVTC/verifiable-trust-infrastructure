@@ -32,6 +32,7 @@
 
 pub mod credential;
 pub mod identity;
+pub mod managers;
 pub mod policy;
 
 use std::collections::BTreeSet;

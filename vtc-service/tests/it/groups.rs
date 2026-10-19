@@ -76,6 +76,14 @@ const DECIDE_ERR_KEY_HOLDER_UNAVAILABLE: &str =
     g::requests::decide::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE.code;
 const DECIDE_ERR_KEY_HOLDER_REFUSED: &str =
     g::requests::decide::v0_1::error_codes::KEY_HOLDER_REFUSED.code;
+const MANAGERS_ADD_ERR_NOT_FOUND: &str = g::managers::add::v0_1::error_codes::NOT_FOUND.code;
+const MANAGERS_ADD_ERR_ENTRY_NOT_FOUND: &str =
+    g::managers::add::v0_1::error_codes::ENTRY_NOT_FOUND.code;
+const MANAGERS_ADD_ERR_ALREADY_MANAGER: &str =
+    g::managers::add::v0_1::error_codes::ALREADY_MANAGER.code;
+const MANAGERS_REMOVE_ERR_NOT_FOUND: &str = g::managers::remove::v0_1::error_codes::NOT_FOUND.code;
+const MANAGERS_REMOVE_ERR_NOT_MANAGER: &str =
+    g::managers::remove::v0_1::error_codes::NOT_MANAGER.code;
 const UNKNOWN_ENTRY: &str = "dir_UnknownUnknownUnknown";
 
 const SPEC: &str = "https://trusttasks.org/spec/vtc/groups";
@@ -1155,4 +1163,186 @@ async fn a_departure_ends_every_membership_and_request() {
         1,
         "{requests}"
     );
+}
+
+// ─── managers ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn managers_add_refuses_what_its_specification_declares() {
+    let fix = fixture().await;
+    let group_id = fix.group("closed", "members", "members").await;
+    let (carol, carol_entry) = fix.another_member().await;
+
+    let (_, b) = fix
+        .as_admin(
+            "managers/add",
+            json!({ "groupId": UNKNOWN_GROUP, "entryId": carol_entry }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), MANAGERS_ADD_ERR_NOT_FOUND, "{b}");
+    let (_, b) = fix
+        .as_admin(
+            "managers/add",
+            json!({ "groupId": group_id, "entryId": UNKNOWN_ENTRY }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), MANAGERS_ADD_ERR_ENTRY_NOT_FOUND, "{b}");
+
+    let (status, doc) = fix
+        .as_admin(
+            "managers/add",
+            json!({ "groupId": group_id, "entryId": carol_entry, "reason": "she convenes it" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["payload"]["managers"], json!([carol_entry]));
+    let (_, b) = fix
+        .as_admin(
+            "managers/add",
+            json!({ "groupId": group_id, "entryId": carol_entry }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), MANAGERS_ADD_ERR_ALREADY_MANAGER, "{b}");
+
+    // A member with no administrative role now manages that one group …
+    let (_, dave_entry) = fix.another_member().await;
+    let (status, doc) = call(
+        &fix.vtc,
+        &carol,
+        &task("members/add"),
+        json!({ "groupId": group_id, "entryId": dave_entry }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    // … and may appoint a co-manager of it, but creates no group.
+    let (_, b) = call(
+        &fix.vtc,
+        &carol,
+        &task("create"),
+        static_group("Hers", "members", "members"),
+    )
+    .await;
+    assert_eq!(tt_error_code(&b), "permissionDenied", "{b}");
+}
+
+#[tokio::test]
+async fn managers_remove_refuses_what_its_specification_declares() {
+    let fix = fixture().await;
+    let group_id = fix.group("closed", "members", "members").await;
+    let (carol, carol_entry) = fix.another_member().await;
+    let (dave, dave_entry) = fix.another_member().await;
+    for e in [&carol_entry, &dave_entry] {
+        fix.as_admin("managers/add", json!({ "groupId": group_id, "entryId": e }))
+            .await;
+    }
+
+    let (_, b) = fix
+        .as_admin(
+            "managers/remove",
+            json!({ "groupId": UNKNOWN_GROUP, "entryId": carol_entry }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), MANAGERS_REMOVE_ERR_NOT_FOUND, "{b}");
+    let (_, member_entry) = fix.another_member().await;
+    let (_, b) = fix
+        .as_admin(
+            "managers/remove",
+            json!({ "groupId": group_id, "entryId": member_entry }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), MANAGERS_REMOVE_ERR_NOT_MANAGER, "{b}");
+
+    // Managers of one group do not remove one another.
+    let (_, b) = call(
+        &fix.vtc,
+        &carol,
+        &task("managers/remove"),
+        json!({ "groupId": group_id, "entryId": dave_entry }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&b), "permissionDenied", "{b}");
+    // A manager steps down.
+    let (status, doc) = call(
+        &fix.vtc,
+        &dave,
+        &task("managers/remove"),
+        json!({ "groupId": group_id, "entryId": dave_entry }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["payload"]["managers"], json!([carol_entry]));
+}
+
+/// A manager appointed by a manager who then loses the group is reviewed, and
+/// withdrawn at the review's deadline unless someone re-affirms it.
+#[tokio::test]
+async fn an_appointment_whose_granter_no_longer_covers_it_is_reviewed_then_withdrawn() {
+    let fix = fixture().await;
+    let group_id = fix.group("closed", "members", "members").await;
+    let (carol, carol_entry) = fix.another_member().await;
+    let (dave, dave_entry) = fix.another_member().await;
+    fix.as_admin(
+        "managers/add",
+        json!({ "groupId": group_id, "entryId": carol_entry }),
+    )
+    .await;
+    let (status, doc) = call(
+        &fix.vtc,
+        &carol,
+        &task("managers/add"),
+        json!({ "groupId": group_id, "entryId": dave_entry }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    // Carol steps down: she no longer stands behind Dave's appointment.
+    call(
+        &fix.vtc,
+        &carol,
+        &task("managers/remove"),
+        json!({ "groupId": group_id, "entryId": carol_entry }),
+    )
+    .await;
+
+    let state = &fix.vtc.state;
+    assert_eq!(
+        vtc_service::groups::managers::sweep(state).await.unwrap(),
+        0
+    );
+    let mut entry = vtc_service::acl::get_acl_entry(&state.acl_ks, &dave.did)
+        .await
+        .unwrap()
+        .unwrap();
+    let review = entry.resource_grants[0]
+        .review
+        .clone()
+        .expect("under review");
+    assert_eq!(review.granter, carol.did);
+    // Still in force while under review.
+    let (status, _) = call(
+        &fix.vtc,
+        &dave,
+        &task("members/list"),
+        json!({ "groupId": group_id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The deadline passes with nobody re-affirming it.
+    entry.resource_grants[0].review.as_mut().unwrap().deadline =
+        Utc::now() - chrono::Duration::minutes(1);
+    vtc_service::acl::store_acl_entry(&state.acl_ks, &entry)
+        .await
+        .unwrap();
+    assert_eq!(
+        vtc_service::groups::managers::sweep(state).await.unwrap(),
+        1
+    );
+    let (_, b) = call(
+        &fix.vtc,
+        &dave,
+        &task("members/add"),
+        json!({ "groupId": group_id, "entryId": carol_entry }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&b), "permissionDenied", "{b}");
 }
