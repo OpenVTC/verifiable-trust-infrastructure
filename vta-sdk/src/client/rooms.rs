@@ -136,6 +136,31 @@ impl VtaClient {
         }
     }
 
+    /// Send `payload` at each of `versions` in turn, newest first, moving on only while the
+    /// VTA does not serve the one asked (`unsupportedType` / `unsupportedVersion`, typed as
+    /// [`VtaError::UnsupportedTaskType`]); any other answer, success or refusal, is final.
+    ///
+    /// As [`Self::dispatch_at_or_before`], for versions whose payloads are identical: a
+    /// version the VTA never routed was never executed, so the next ask is not a retry.
+    async fn dispatch_newest_served(
+        &self,
+        versions: &[&str],
+        payload: Value,
+        timeout: u64,
+    ) -> Result<Value, VtaError> {
+        let (last, newer) = versions.split_last().expect("at least one version to ask");
+        for uri in newer {
+            match self
+                .dispatch_trust_task(uri, payload.clone(), timeout)
+                .await
+            {
+                Err(VtaError::UnsupportedTaskType { .. }) => continue,
+                other => return other,
+            }
+        }
+        self.dispatch_trust_task(last, payload, timeout).await
+    }
+
     /// `rooms/keys/seal/0.1` — seal one record body under the room's current
     /// epoch, ready for `rooms/records/put`.
     ///
@@ -422,10 +447,19 @@ impl VtaClient {
         })
     }
 
-    /// `rooms/owner/group/add/0.2` — admit `member` to a room's group from the KeyPackage
-    /// their key holder minted (base64url). A VTA that does not serve 0.2
-    /// (`unsupportedType` / `unsupportedVersion`) is asked at 0.1, whose request and
-    /// response are 0.2's.
+    /// `rooms/owner/group/add/0.3` — admit `member` to a room's group from the KeyPackage
+    /// their key holder minted (base64url). A VTA that does not serve 0.3
+    /// (`unsupportedType` / `unsupportedVersion`) is asked at 0.2, and one that does not
+    /// serve 0.2 at 0.1: all three take the same request and give the same response, which
+    /// is why 0.2's response type is returned whichever answered.
+    ///
+    /// An earlier removal the VTA was still settling, whose revocation list the host refused
+    /// when it was delivered again, is refused at 0.3 as
+    /// `rooms/owner/group/add:earlierRemovalRefused` (`details`: the earlier `member`, the
+    /// host's `code`, `listKept`) — at 0.2 and 0.1 as `hostRefused` carrying the same
+    /// `details`. Nothing of this admission was done, and repeating it proceeds.
+    /// `hostUnreachable` at 0.3 says which step went unanswered (`details.stage`:
+    /// `revocation` — that earlier removal's list — or `advance`).
     ///
     /// The VTA advances the room's epoch at `host_did` first, and only then its own group.
     /// The reply carries the **Welcome** (and, where the group needs it, the ratchet tree):
@@ -455,26 +489,19 @@ impl VtaClient {
         // Two host round trips at most (an earlier admission settled, then the advance),
         // each over whatever transport the host speaks.
         let timeout = ROOM_TT_TIMEOUT * 4;
-        // A VTA that does not serve 0.2 never routed the first ask, so asking again at 0.1
-        // is not a retry of an admission.
-        let value = match self
-            .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_2,
-                payload.clone(),
+        // A VTA that does not serve a version never routed that ask, so asking again at
+        // the one before is not a retry of an admission.
+        let value = self
+            .dispatch_newest_served(
+                &[
+                    trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3,
+                    trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_2,
+                    trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_1,
+                ],
+                payload,
                 timeout,
             )
-            .await
-        {
-            Err(VtaError::UnsupportedTaskType { .. }) => {
-                self.dispatch_trust_task(
-                    trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_1,
-                    payload,
-                    timeout,
-                )
-                .await?
-            }
-            other => other?,
-        };
+            .await?;
         serde_json::from_value(value).map_err(|e| {
             VtaError::Protocol(format!(
                 "rooms/owner/group/add response does not match its schema: {e}"
@@ -685,8 +712,15 @@ impl VtaClient {
         })
     }
 
-    /// `rooms/owner/group/renew/0.1` — renew a sealed room: advance its group with a
-    /// commit that adds and removes nobody, and the room's epoch at `host_did` with it.
+    /// `rooms/owner/group/renew/0.2` — renew a sealed room: advance its group with a
+    /// commit that adds and removes nobody, and the room's epoch at `host_did` with it. A
+    /// VTA that does not serve 0.2 (`unsupportedType` / `unsupportedVersion`) is asked at
+    /// 0.1, which takes the same request and gives the same response — 0.1's type, returned
+    /// whichever answered.
+    ///
+    /// An earlier removal the VTA was still settling is reported as at
+    /// [`Self::room_group_add`]: `rooms/owner/group/renew:earlierRemovalRefused` at 0.2,
+    /// `hostRefused` with the same `details` at 0.1, and nothing of this renewal done.
     ///
     /// The only correct renewal of an `attributed` or `private` room — a bare
     /// `rooms/epoch/mint` moves the host without the group and leaves every member unable
@@ -708,8 +742,11 @@ impl VtaClient {
             payload["reason"] = json!(r);
         }
         let value = self
-            .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_1,
+            .dispatch_newest_served(
+                &[
+                    trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
+                    trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_1,
+                ],
                 payload,
                 // As for add: an earlier advance settled, then this one.
                 ROOM_TT_TIMEOUT * 4,

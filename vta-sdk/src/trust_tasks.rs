@@ -1199,6 +1199,16 @@ pub const TASK_ROOMS_OWNER_GROUP_ADD_0_1: &str =
 pub const TASK_ROOMS_OWNER_GROUP_ADD_0_2: &str =
     <trust_tasks_rs::specs::rooms::owner::group::add::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `spec/rooms/owner/group/add/0.3` — 0.2, and a pending removal it settles first is
+/// settled by `rooms/owner/group/remove/0.3` item 8 and reported as this task's own: refused
+/// `earlierRemovalRefused` (`{member, code, listKept}`) when settling discards it, or
+/// `hostUnreachable` at `stage: revocation` when its list goes unanswered — none of this
+/// request's own work done either way. `hostRefused` means only that the host declined this
+/// request's own advance (`{code, reason}`).
+/// Auth: as 0.1.
+pub const TASK_ROOMS_OWNER_GROUP_ADD_0_3: &str =
+    <trust_tasks_rs::specs::rooms::owner::group::add::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/owner/group/remove/0.1` — remove a member's leaf from a room's group:
 /// advance the room's epoch at its host first, then this agent's group, so nothing sealed
 /// from then on is readable to them. Recalls nothing they already read.
@@ -1239,6 +1249,14 @@ pub const TASK_ROOMS_OWNER_REVOKE_0_1: &str =
 /// the room in this agent's vault.
 pub const TASK_ROOMS_OWNER_GROUP_RENEW_0_1: &str =
     "https://trusttasks.org/spec/rooms/owner/group/renew/0.1";
+
+/// `spec/rooms/owner/group/renew/0.2` — 0.1, and a pending removal it settles first is
+/// reported as this task's own, as `rooms/owner/group/add/0.3` reports it
+/// (`earlierRemovalRefused`; `hostUnreachable` at a `stage`; `hostRefused` for this
+/// request's own advance only).
+/// Auth: as 0.1.
+pub const TASK_ROOMS_OWNER_GROUP_RENEW_0_2: &str =
+    <trust_tasks_rs::specs::rooms::owner::group::renew::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/vta/memory/delete/0.1` — remove one entry by key (`not_found` if
 /// absent). Auth: context access. Payload:
@@ -2745,11 +2763,13 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_OWNER_GROUP_CREATE_0_1,
     TASK_ROOMS_OWNER_GROUP_ADD_0_1,
     TASK_ROOMS_OWNER_GROUP_ADD_0_2,
+    TASK_ROOMS_OWNER_GROUP_ADD_0_3,
     TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
     TASK_ROOMS_OWNER_GROUP_REMOVE_0_2,
     TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
     TASK_ROOMS_OWNER_REVOKE_0_1,
     TASK_ROOMS_OWNER_GROUP_RENEW_0_1,
+    TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
     TASK_VTA_MEMORY_DELETE_0_1,
     // External accounts (`external/*`)
     TASK_EXTERNAL_ACCOUNTS_LIST_0_1,

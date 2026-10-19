@@ -417,7 +417,17 @@ community's VTA does not answer, the answer is `admissionPending` and nothing is
 retrying the identical request is safe. If the VTA did admit the member and only its answer
 was lost, the retry reaches the VTA again, and a VTA serving `rooms/owner/group/add/0.2`
 answers it with the Welcome it kept (until its next advance of the room or 24 hours);
-against a VTA that serves only 0.1 that retry is `alreadyAccepted`.
+against a VTA that serves only 0.1 that retry is `alreadyAccepted`. The VTC asks
+`group/add/0.3` first, then 0.2, then 0.1, each for a VTA that does not serve the one
+before.
+
+If the VTA was still settling an earlier removal from the room and had to give it up (the
+host — this community — refused that removal's revocation list when the VTA delivered it
+again), the acceptance is refused `keyHolderRefused` with the VTA's
+`rooms/owner/group/add:earlierRemovalRefused` in `details.code`: nothing of the admission
+was done, and the same request can be sent again at once. The member is not told which
+member that removal concerned; the VTC logs the VTA's message for the administrators, who
+remove that member again if that is still wanted.
 
 ### From `pnm`
 

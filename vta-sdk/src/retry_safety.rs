@@ -718,6 +718,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // the agent keeps it only until its next advance of the room or 24 hours, so a key
     // still covers a retry later than that, and a cached answer is the same answer.
     (trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_2, Keyed),
+    // `Keyed`, like 0.2. An `earlierRemovalRefused` refusal did nothing of the request, so
+    // its repeat under a new key is a new request, as the code's meaning says.
+    (trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3, Keyed),
     // `Keyed`, like add. A second execution after a lost reply is refused
     // `notMember` — the removal happened, but the caller is told the member was
     // never there, and an operator reading that may conclude the wrong person
@@ -744,6 +747,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // apply instead of one. Replaying the first answer reports the one renewal
     // that happened. Nothing in the answer is secret.
     (trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_1, Keyed),
+    // `Keyed`, like 0.1, for the same second renewal; an `earlierRemovalRefused` refusal
+    // did nothing of the request, as at add 0.3.
+    (trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2, Keyed),
     (trust_tasks::TASK_VTA_MEMORY_DELETE_0_1, RetrySafe),
     // ── Application state ───────────────────────────────────────────────
     //

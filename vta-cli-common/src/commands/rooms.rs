@@ -1527,6 +1527,54 @@ pub async fn cmd_rooms_owner_group_create(
     Ok(())
 }
 
+/// An earlier removal the VTA was settling when it took this request, and whose revocation
+/// list the host refused on redelivery, explained for the operator — or `None` when `e` is
+/// not that refusal.
+///
+/// It is `rooms/owner/group/{add,renew,remove}:earlierRemovalRefused` at `add/0.3`,
+/// `renew/0.2` and `remove/0.3`, and at the earlier versions of add and renew the task's own
+/// `hostRefused` carrying the same `details` (`member`, `code`, `listKept`) —
+/// `rooms/owner/group/remove/0.3` item 8.2. The earlier removal did not take effect, and
+/// nothing of `this` was done: the fix is to run the command again, then remove the
+/// earlier member again if that is still wanted.
+fn earlier_removal_refused(
+    e: &VtaError,
+    room_id: &str,
+    host_did: &str,
+    signing_key_id: Option<&str>,
+    this: &str,
+) -> Option<String> {
+    let VtaError::Rejected { code, details, .. } = e else {
+        return None;
+    };
+    let task = code.strip_prefix("rooms/owner/group/")?;
+    let d = details.as_ref()?;
+    let ours = task.ends_with(":earlierRemovalRefused")
+        || (task.ends_with(":hostRefused") && d.get("member").is_some());
+    if !ours {
+        return None;
+    }
+    let earlier = d["member"].as_str().unwrap_or("an earlier member");
+    let host_code = d["code"].as_str().unwrap_or("no code given");
+    let kept = if d["listKept"].as_bool() == Some(true) {
+        format!(
+            "Their withdrawal is kept in the room's revocation list and carried by every later \
+             one; the host enforces it only if it ever accepted that list — deliver it again \
+             with\n    pnm rooms owner revoke --room {room_id} --signing-key {} --host \
+             {host_did}",
+            signing_key_id.unwrap_or("<the room's key>")
+        )
+    } else {
+        "Their withdrawal was discarded: no host accepted it.".to_string()
+    };
+    Some(format!(
+        "Nothing was done: an earlier removal of {earlier} from {room_id} did not take effect \
+         — {host_did} refused its revocation list when your VTA delivered it again \
+         ({host_code}). {earlier} is still in the room's group. {kept}\n\nRun this command \
+         again to {this}; then remove {earlier} again if that is still wanted."
+    ))
+}
+
 /// `rooms owner group-remove` — remove a member from a room.
 ///
 /// With `signing_key_id`, `rooms/owner/group/remove/0.3` (0.2 on a VTA that does not serve
@@ -1594,30 +1642,16 @@ pub async fn cmd_rooms_owner_group_remove(
             }
             // 0.3 item 8.2: an earlier removal did not take effect, and this one was not
             // started. Say which member, whether their withdrawal survives, and what to run.
-            Err(VtaError::Rejected { code, details, .. })
-                if code == "rooms/owner/group/remove:earlierRemovalRefused" =>
+            Err(e)
+                if let Some(said) = earlier_removal_refused(
+                    &e,
+                    room_id,
+                    host_did,
+                    Some(key),
+                    &format!("remove {member}"),
+                ) =>
             {
-                let d = details.unwrap_or_default();
-                let earlier = d["member"].as_str().unwrap_or("an earlier member");
-                let host_code = d["code"].as_str().unwrap_or("no code given");
-                let kept = if d["listKept"].as_bool() == Some(true) {
-                    format!(
-                        "Their withdrawal is kept in the room's revocation list and carried by \
-                         every later one; the host enforces it only if it ever accepted that \
-                         list — deliver it again with\n    pnm rooms owner revoke --room \
-                         {room_id} --signing-key {key} --host {host_did}"
-                    )
-                } else {
-                    "Their withdrawal was discarded: no host accepted it.".to_string()
-                };
-                return Err(format!(
-                    "Nothing was done: an earlier removal of {earlier} from {room_id} did not \
-                     take effect — {host_did} refused its revocation list when your VTA \
-                     delivered it again ({host_code}). {earlier} is still in the room's group. \
-                     {kept}\n\nRun this command again to remove {member}; then remove \
-                     {earlier} again if that is still wanted."
-                )
-                .into());
+                return Err(said.into());
             }
             // The one case the specification hands to 0.1: a private room's host cannot be
             // told whom to refuse.
@@ -1635,7 +1669,10 @@ pub async fn cmd_rooms_owner_group_remove(
     let resp = client
         .idempotent(|| client.room_group_remove(room_id, host_did, member, reason))
         .await
-        .map_err(hint)?;
+        .map_err(|e| {
+            earlier_removal_refused(&e, room_id, host_did, None, &format!("remove {member}"))
+                .unwrap_or_else(|| hint(e))
+        })?;
     println!(
         "Removed {member} from {room_id}'s group; the room is now at epoch {}.",
         resp.epoch
@@ -1727,9 +1764,10 @@ pub async fn cmd_rooms_owner_revoke(
     Ok(())
 }
 
-/// `rooms owner group-renew` — renew a sealed room (`rooms/owner/group/renew/0.1`):
-/// advance its group with a commit that changes no membership, and the room at its host
-/// with that commit.
+/// `rooms owner group-renew` — renew a sealed room (`rooms/owner/group/renew/0.2`, or 0.1
+/// against an older VTA): advance its group with a commit that changes no membership, and
+/// the room at its host with that commit. An earlier removal the VTA was settling, refused
+/// at the host, is explained as `group-remove` explains it: nothing of the renewal was done.
 pub async fn cmd_rooms_owner_group_renew(
     client: &VtaClient,
     room_id: &str,
@@ -1742,12 +1780,16 @@ pub async fn cmd_rooms_owner_group_renew(
         .idempotent(|| client.room_group_renew(room_id, host_did, reason))
         .await
         .map_err(|e| {
-            format!(
-                "{e}\n\n`noGroup` means this VTA holds no group for {room_id}: an `open` room \
-                 renews with `pnm rooms renew`. `epochConflict` means another admin advanced \
-                 the room: catch up and retry. `hostUnreachable` leaves the outcome unknown; \
-                 running this again settles it with the host before anything else."
-            )
+            earlier_removal_refused(&e, room_id, host_did, None, &format!("renew {room_id}"))
+                .unwrap_or_else(|| {
+                    format!(
+                        "{e}\n\n`noGroup` means this VTA holds no group for {room_id}: an \
+                         `open` room renews with `pnm rooms renew`. `epochConflict` means \
+                         another admin advanced the room: catch up and retry. \
+                         `hostUnreachable` leaves the outcome unknown; running this again \
+                         settles it with the host before anything else."
+                    )
+                })
         })?;
     println!(
         "Renewed {room_id}; the room is now at epoch {}.",
@@ -1762,8 +1804,9 @@ pub async fn cmd_rooms_owner_group_renew(
 }
 
 /// `rooms owner group-add` — admit a member from their KeyPackage
-/// (`rooms/owner/group/add/0.2`, or 0.1 against an older VTA) and write the Welcome to
-/// `out` for delivery.
+/// (`rooms/owner/group/add/0.3`, or 0.2 / 0.1 against an older VTA) and write the Welcome
+/// to `out` for delivery. An earlier removal the VTA was settling, refused at the host, is
+/// explained as `group-remove` explains it: nothing of the admission was done.
 pub async fn cmd_rooms_owner_group_add(
     client: &VtaClient,
     room_id: &str,
@@ -1791,11 +1834,14 @@ pub async fn cmd_rooms_owner_group_add(
         .idempotent(|| client.room_group_add(room_id, host_did, member, &key_package, reason))
         .await
         .map_err(|e| {
-            format!(
-                "{e}\n\n`epochConflict` means another admin advanced the room: catch up and \
-                 retry. `hostUnreachable` leaves the outcome unknown; running this again \
-                 settles it with the host before anything else."
-            )
+            earlier_removal_refused(&e, room_id, host_did, None, &format!("admit {member}"))
+                .unwrap_or_else(|| {
+                    format!(
+                        "{e}\n\n`epochConflict` means another admin advanced the room: catch \
+                         up and retry. `hostUnreachable` leaves the outcome unknown; running \
+                         this again settles it with the host before anything else."
+                    )
+                })
         })?;
 
     let delivery = serde_json::json!({
@@ -2417,6 +2463,58 @@ pub async fn cmd_rooms_memberships(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn rejected(code: &str, details: Value) -> VtaError {
+        VtaError::Rejected {
+            code: code.into(),
+            message: "refused".into(),
+            details: Some(details),
+        }
+    }
+
+    /// `earlierRemovalRefused` at add 0.3 / renew 0.2 / remove 0.3, and an earlier
+    /// version's `hostRefused` carrying the same `details`, are explained alike; a
+    /// `hostRefused` of the request's own advance (`{code, reason}`) is not.
+    #[test]
+    fn an_earlier_removal_is_explained_whichever_version_reported_it() {
+        let d =
+            json!({ "member": "did:key:zEarlier", "code": "permissionDenied", "listKept": true });
+        for code in [
+            "rooms/owner/group/add:earlierRemovalRefused",
+            "rooms/owner/group/renew:earlierRemovalRefused",
+            "rooms/owner/group/remove:earlierRemovalRefused",
+            "rooms/owner/group/add:hostRefused",
+            "rooms/owner/group/renew:hostRefused",
+        ] {
+            let said = earlier_removal_refused(
+                &rejected(code, d.clone()),
+                "did:room",
+                "did:host",
+                None,
+                "admit did:key:zNew",
+            )
+            .unwrap_or_else(|| panic!("{code} is an earlier removal"));
+            assert!(said.starts_with("Nothing was done"), "{said}");
+            assert!(said.contains("did:key:zEarlier"), "{said}");
+            assert!(
+                said.contains("pnm rooms owner revoke --room did:room"),
+                "{said}"
+            );
+            assert!(said.contains("again to admit did:key:zNew"), "{said}");
+        }
+        let own = rejected(
+            "rooms/owner/group/add:hostRefused",
+            json!({ "code": "permissionDenied", "reason": "not today" }),
+        );
+        assert!(earlier_removal_refused(&own, "r", "h", None, "x").is_none());
+        let kept_not = rejected(
+            "rooms/owner/group/renew:earlierRemovalRefused",
+            json!({ "member": "did:key:zEarlier", "code": "rooms/revocations/put:listInvalid",
+                "listKept": false }),
+        );
+        let said = earlier_removal_refused(&kept_not, "r", "h", None, "x").unwrap();
+        assert!(said.contains("discarded"), "{said}");
+    }
 
     /// `vtc/rooms/memberships/list/0.1`'s table: the same answers, the same standing.
     #[test]

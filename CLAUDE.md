@@ -999,7 +999,12 @@ new flow, update both this section and the relevant `docs/*.md`.
   redelivery is settled by `group/remove/0.3` item 8 at **every** version and task
   (`HostCall::settle_refused_list`): only `listInvalid`/`entryNotPermitted`/
   `sequenceConflict` discard the list (and only while still held); the request is then
-  refused and never goes on to its own work.
+  refused and never goes on to its own work — `earlierRemovalRefused` at `remove/0.3`,
+  `add/0.3` and `renew/0.2` (trust-tasks-tf #824), the task's own `hostRefused` with
+  `{member, code, listKept}` at the versions declaring no such code. `AdvanceCodes`
+  stages `hostUnreachable` and `hostRefused` independently: `add/0.3` / `renew/0.2`
+  stage the first and give `hostRefused` `{code, reason}`; only `remove/0.2`/`0.3`
+  give it `{stage, code}`.
 - **Code**: `vti-rooms/src/{revocation,revocation_tasks,authz}.rs`,
   `vti-rooms-dtg/src/lib.rs` (`verify_room_signed`, `credential_facts`),
   `room-host/src/files.rs`, `vtc-service/src/rooms/{handlers,files}.rs`,

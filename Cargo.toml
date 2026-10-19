@@ -670,7 +670,10 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # `pnm rooms file get` now reads), and the device `Capability` enum gains
 # `sign-document` (#819), which this VTA neither grants nor serves.
 # 0.32.1: `vtc/directory/disclosure/0.1` and `vtc/join-requests/manifest/0.4`,
-# which carries the directory's disclosure statement (trust-tasks-tf #823).
+# which carries the directory's disclosure statement (trust-tasks-tf #823); and
+# `rooms/owner/group/add/0.3` and `rooms/owner/group/renew/0.2`, which settle a
+# pending removal like remove 0.3 (`earlierRemovalRefused`, `hostUnreachable`'s
+# `stage`; trust-tasks-tf #824).
 trust-tasks-rs = { version = "0.32.1", default-features = false, features = [
   "validate",
   "all-specs",

@@ -3390,6 +3390,21 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_OWNER_GROUP_ADD_0_3,
+            checked!(
+                specs::rooms::owner::group::add::v0_3::Payload,
+                specs::rooms::owner::group::add::v0_3::Response,
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "keyPackage": "AAEAAgADAAQ" }),
+                // The response is 0.2's; what 0.3 adds is how an earlier removal is refused.
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "epoch": 2, "welcome": "AAEAAgADAAQ", "ratchetTree": "AAEAAgADAAQ" })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
             checked!(
                 specs::rooms::owner::group::remove::v0_1::Payload,
@@ -3475,6 +3490,17 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::rooms::owner::group::renew::v0_1::Payload,
                 specs::rooms::owner::group::renew::v0_1::Response,
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "reason": "Quarterly renewal" }),
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind", "epoch": 5 })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
+            checked!(
+                specs::rooms::owner::group::renew::v0_2::Payload,
+                specs::rooms::owner::group::renew::v0_2::Response,
                 json!({ "roomId": "did:webvh:example.com:rooms:northwind",
                     "host": "did:webvh:example.com:northwind-community",
                     "reason": "Quarterly renewal" }),

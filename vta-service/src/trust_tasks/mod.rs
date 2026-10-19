@@ -2790,6 +2790,10 @@ dispatch_table! {
     // 0.2: a repeated admission is answered with its kept Welcome (item 8).
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_2 => room_owner_group::handle_add_v0_2
         [ Mutating Metadata true ],
+    // 0.3: an earlier removal it settles is reported as its own `earlierRemovalRefused`,
+    // `hostUnreachable` carries its `stage` (trust-tasks-tf #824).
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3 => room_owner_group::handle_add_v0_3
+        [ Mutating Metadata true ],
     // The mirror of add: same host, same authority, the other direction.
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1 => room_owner_group::handle_remove
         [ Mutating Metadata true ],
@@ -2807,6 +2811,9 @@ dispatch_table! {
         [ Mutating Metadata true ],
     // And renewal: same host, same authority, no membership change.
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_1 => room_owner_group::handle_renew
+        [ Mutating Metadata true ],
+    // 0.2: settles an earlier removal as add 0.3 does (trust-tasks-tf #824).
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2 => room_owner_group::handle_renew_v0_2
         [ Mutating Metadata true ],
     // ─── Application-state slice (spec/vta/app-state/*) ──────────
     // Versioned, namespaced per-context JSON the VTA stores but never

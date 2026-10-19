@@ -2438,13 +2438,19 @@ async fn room_act_falls_back_to_0_1() {
     assert_eq!(resp.principal.as_str(), member);
 }
 
-/// `rooms/owner/group/add/0.2` first; a VTA that does not serve it is asked at 0.1, the
-/// same request, and its answer read as 0.2's.
+/// `rooms/owner/group/add/0.3` first, then 0.2; a VTA that serves neither is asked at
+/// 0.1, the same request, and its answer read as 0.2's.
 #[tokio::test]
 async fn room_group_add_falls_back_to_0_1() {
     let server = MockServer::start().await;
     let room = "did:webvh:example.com:rooms:northwind";
     let member = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+    let _v3 = mount_unsupported(
+        &server,
+        "https://trusttasks.org/spec/rooms/owner/group/add/0.3",
+        1,
+    )
+    .await;
     let _m = mount_only_0_1(
         &server,
         "https://trusttasks.org/spec/rooms/owner/group/add/0.2",
@@ -2458,6 +2464,133 @@ async fn room_group_add_falls_back_to_0_1() {
         .await
         .expect("answered at 0.1");
     assert_eq!(resp.epoch, 2);
+}
+
+/// A VTA serving 0.2 but not 0.3 answers at 0.2, and 0.1 is never asked.
+#[tokio::test]
+async fn room_group_add_falls_back_to_0_2() {
+    let server = MockServer::start().await;
+    let room = "did:webvh:example.com:rooms:northwind";
+    let member = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+    let _v1 = mount_unsupported(
+        &server,
+        "https://trusttasks.org/spec/rooms/owner/group/add/0.1",
+        0,
+    )
+    .await;
+    let _m = mount_only_0_1(
+        &server,
+        "https://trusttasks.org/spec/rooms/owner/group/add/0.3",
+        "https://trusttasks.org/spec/rooms/owner/group/add/0.2",
+        json!({ "roomId": room, "member": member, "epoch": 3, "welcome": "AAEAAgADAAQ" }),
+    )
+    .await;
+    let c = client(&server).await;
+    let resp = c
+        .room_group_add(room, "did:key:zHost", member, "AAEAAgADAAQ", None)
+        .await
+        .expect("answered at 0.2");
+    assert_eq!(resp.epoch, 3);
+}
+
+/// `rooms/owner/group/renew/0.2` first; a VTA that does not serve it is asked at 0.1.
+#[tokio::test]
+async fn room_group_renew_falls_back_to_0_1() {
+    let server = MockServer::start().await;
+    let room = "did:webvh:example.com:rooms:northwind";
+    let _m = mount_only_0_1(
+        &server,
+        "https://trusttasks.org/spec/rooms/owner/group/renew/0.2",
+        "https://trusttasks.org/spec/rooms/owner/group/renew/0.1",
+        json!({ "roomId": room, "epoch": 5 }),
+    )
+    .await;
+    let c = client(&server).await;
+    let resp = c
+        .room_group_renew(room, "did:key:zHost", None)
+        .await
+        .expect("answered at 0.1");
+    assert_eq!(resp.epoch, 5);
+}
+
+/// An `earlierRemovalRefused` at the new version is the VTA's answer: it reaches the
+/// caller typed, with its `details`, and the older version is never asked.
+#[tokio::test]
+async fn an_earlier_removal_refused_is_final_and_never_falls_back() {
+    let server = MockServer::start().await;
+    let room = "did:webvh:example.com:rooms:northwind";
+    let earlier = "did:key:z6MkEarlier";
+    let refusal = |code: &str| {
+        ResponseTemplate::new(409).set_body_json(json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000001",
+            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {
+                "code": code,
+                "message": "an earlier removal did not take effect",
+                "retryable": true,
+                "details": { "member": earlier, "code": "permissionDenied", "listKept": true },
+            },
+        }))
+    };
+    let _add = Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(task_type(
+            "https://trusttasks.org/spec/rooms/owner/group/add/0.3",
+        ))
+        .respond_with(refusal("rooms/owner/group/add:earlierRemovalRefused"))
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+    let _renew = Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(task_type(
+            "https://trusttasks.org/spec/rooms/owner/group/renew/0.2",
+        ))
+        .respond_with(refusal("rooms/owner/group/renew:earlierRemovalRefused"))
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+    let _a2 = mount_unsupported(
+        &server,
+        "https://trusttasks.org/spec/rooms/owner/group/add/0.2",
+        0,
+    )
+    .await;
+    let _r1 = mount_unsupported(
+        &server,
+        "https://trusttasks.org/spec/rooms/owner/group/renew/0.1",
+        0,
+    )
+    .await;
+    let c = client(&server).await;
+    for (task, err) in [
+        (
+            "add",
+            c.room_group_add(room, "did:key:zHost", "did:key:z6MkNew", "AAEA", None)
+                .await
+                .map(|_| ())
+                .unwrap_err(),
+        ),
+        (
+            "renew",
+            c.room_group_renew(room, "did:key:zHost", None)
+                .await
+                .map(|_| ())
+                .unwrap_err(),
+        ),
+    ] {
+        match err {
+            VtaError::Rejected { code, details, .. } => {
+                assert_eq!(
+                    code,
+                    format!("rooms/owner/group/{task}:earlierRemovalRefused")
+                );
+                assert_eq!(details.unwrap()["member"], earlier);
+            }
+            other => panic!("{task}: expected the refusal, got {other:?}"),
+        }
+    }
 }
 
 /// `rooms/owner/register/0.2` first; a VTA that does not serve it is asked at 0.1, the

@@ -561,8 +561,8 @@ Step by step:
    ```bash
    pnm rooms keys key-package --room <room-did> --invitation ./invite.json --out ./kp.b64
    ```
-3. **The owner's VTA admits the leaf** (`rooms/owner/group/add/0.2`, falling
-   back to `0.1` against a VTA that predates it):
+3. **The owner's VTA admits the leaf** (`rooms/owner/group/add/0.3`, falling
+   back to `0.2` and then `0.1` against a VTA that predates it):
 
    ```bash
    pnm rooms owner group-add --room <room-did> --host-did <host-did> \
@@ -575,9 +575,14 @@ Step by step:
    your `admin` grant — signed as your owner persona, presenting a leaf your
    persona narrowed to itself, never as the VTA), and only then moves its own
    group. A refusal leaves the
-   group where it was. An unanswered advance is kept pending and settled with
-   the host by the next admission or removal, because the host may have taken
-   it and a key holder cannot process its own commit from the wire. Deliver
+   group where it was (`hostRefused`, `details` `{code, reason}` at 0.3). An
+   unanswered advance is kept pending (`hostUnreachable`, `details.stage:
+   advance` at 0.3) and settled with the host by the next admission, removal or
+   renewal, because the host may have taken it and a key holder cannot process
+   its own commit from the wire. An earlier *removal* still pending is settled
+   first and in full — its revocation list delivered again — and if the host
+   refuses that list, nothing of this admission is done
+   (`earlierRemovalRefused`, see *Remove a member* below). Deliver
    `welcome.json` to the joiner directly — **never through the host**, which
    on a `private` room must not learn who joined.
 
@@ -735,9 +740,15 @@ the host as your owner persona:
   and does none of its own work**: `group-remove` answers
   `earlierRemovalRefused` (`details`: the earlier `member`, the host's `code`,
   `listKept`) and `pnm` says which member is still in the group and what to run;
-  `group-add`, `group-renew` and `group-remove` 0.1 answer their own `hostRefused`
-  with the same details; 0.2, which has no such code, answers `hostRefused` at
-  `stage: revocation` with the member in the message. Repeat the request — the
+  so do `group-add` at 0.3 and `group-renew` at 0.2, each under its own slug
+  (trust-tasks-tf #824), where `hostRefused` means only that the host declined
+  that request's own advance (`{code, reason}`), and an unanswered redelivery is
+  their `hostUnreachable` at `stage: revocation`. The earlier versions —
+  `group-add` 0.1/0.2, `group-renew` 0.1, `group-remove` 0.1 — answer their own
+  `hostRefused` with the same three details, and `hostUnreachable` with none;
+  `group-remove` 0.2, which has no such code, answers `hostRefused` at
+  `stage: revocation` with the member in the message. `pnm` asks the newest
+  version and explains every one of these alike. Repeat the request — the
   earlier removal is no longer pending — and remove that member again if that is
   still wanted. A VTC's `members/remove` reports it as `keyHolderRefused`, saying
   the same.
@@ -1526,7 +1537,9 @@ host can see, which is exactly the correlation the tiers exist to deny.
   ```
 
 - **A sealed room** (`attributed`, `private`) renews from the **owner's VTA**
-  (`rooms/owner/group/renew/0.1`). Its epoch is the MLS group's epoch plus one,
+  (`rooms/owner/group/renew/0.2`, or 0.1 against an older VTA; the two differ only
+  in how an earlier removal settled first is reported, as for `group-add` 0.3).
+  Its epoch is the MLS group's epoch plus one,
   so the host's epoch may only advance together with the group — carried to the
   host as the mint's commit. The VTA builds a commit that adds and removes
   nobody (an update of its own leaf) and the epoch link that keeps the past

@@ -40,7 +40,8 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::rooms::owner::{
     group::{
-        add::v0_1 as owner_add_v0_1, add::v0_2 as owner_add, create::v0_1 as owner_group_create,
+        add::v0_1 as owner_add_v0_1, add::v0_2 as owner_add_v0_2, add::v0_3 as owner_add,
+        create::v0_1 as owner_group_create,
     },
     invite::v0_1 as owner_invite,
     issue_authority::v0_2 as owner_authority,
@@ -94,6 +95,9 @@ pub(crate) const MEMBERS_REMOVE_V0_2_TYPE: &str = <remove_v0_2::Payload as Paylo
 const EARLIER_REMOVAL_REFUSED: &str =
     trust_tasks_rs::specs::rooms::owner::group::remove::v0_3::error_codes::EARLIER_REMOVAL_REFUSED
         .code;
+/// The same refusal at an admission (`rooms/owner/group/add/0.3` item 6.1): an earlier
+/// removal from the room did not take effect, and nothing of the admission was done.
+const ADD_EARLIER_REMOVAL_REFUSED: &str = owner_add::error_codes::EARLIER_REMOVAL_REFUSED.code;
 pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::TYPE_URI;
 pub(crate) const OFFERS_LIST_TYPE: &str = <offers_list::Payload as Payload>::TYPE_URI;
 pub(crate) const OFFERS_LIST_V0_2_TYPE: &str = <offers_list_v0_2::Payload as Payload>::TYPE_URI;
@@ -122,9 +126,15 @@ pub(crate) const URIS: &[&str] = &[
 ];
 
 const OWNER_GROUP_CREATE: &str = <owner_group_create::Payload as Payload>::TYPE_URI;
+/// `rooms/owner/group/add/0.3`: an earlier removal the VTA settles first is reported as
+/// `earlierRemovalRefused`, never as a refusal of this admission (trust-tasks-tf #824).
 const OWNER_GROUP_ADD: &str = <owner_add::Payload as Payload>::TYPE_URI;
-/// For a VTA that does not serve `rooms/owner/group/add/0.2`: same request, same response,
-/// but a repeated admission is refused `alreadyMember` rather than answered (0.2 item 8).
+/// For a VTA that does not serve 0.3: same request, same response, and an earlier removal
+/// reported as `hostRefused` with the earlier `member` in its `details`.
+const OWNER_GROUP_ADD_V0_2: &str = <owner_add_v0_2::Payload as Payload>::TYPE_URI;
+/// For a VTA that does not serve `rooms/owner/group/add/0.2` either: same request, same
+/// response, but a repeated admission is refused `alreadyMember` rather than answered (0.2
+/// item 8).
 const OWNER_GROUP_ADD_V0_1: &str = <owner_add_v0_1::Payload as Payload>::TYPE_URI;
 const OWNER_INVITE: &str = <owner_invite::Payload as Payload>::TYPE_URI;
 const OWNER_MEMBERSHIP: &str = <owner_membership::Payload as Payload>::TYPE_URI;
@@ -2059,16 +2069,21 @@ async fn handle_offers_accept(
             Ok(r) => r,
             Err(e) => return app_error_to_reject(&doc, &e),
         };
-        // 0.2 first, whose answer to a repeat of an admission whose reply was lost is its
-        // Welcome (item 8). A VTA that does not serve 0.2 never routed the ask, so asking
-        // again at 0.1 — which takes the same request — is not a second admission.
-        let asked = match ask(&holder, OWNER_GROUP_ADD, request.clone(), ADVANCE_TIMEOUT).await {
-            Err(HolderError::Refused { code, .. })
-                if matches!(code.as_str(), "unsupportedType" | "unsupportedVersion") =>
-            {
-                ask(&holder, OWNER_GROUP_ADD_V0_1, request, ADVANCE_TIMEOUT).await
+        // 0.3 first, then 0.2, whose answer to a repeat of an admission whose reply was
+        // lost is its Welcome (item 8). A VTA that does not serve a version never routed the
+        // ask, so asking again at the one before — which takes the same request — is not a
+        // second admission.
+        let mut versions = [OWNER_GROUP_ADD, OWNER_GROUP_ADD_V0_2, OWNER_GROUP_ADD_V0_1].iter();
+        let asked = loop {
+            let Some(uri) = versions.next() else {
+                unreachable!("at least one version is asked");
+            };
+            let answer = ask(&holder, uri, request.clone(), ADVANCE_TIMEOUT).await;
+            let unserved = matches!(&answer, Err(HolderError::Refused { code, .. })
+                if matches!(code.as_str(), "unsupportedType" | "unsupportedVersion"));
+            if !unserved || versions.len() == 0 {
+                break answer;
             }
-            other => other,
         };
         match asked {
             Ok(answer) => match read::<owner_add::Response>("rooms/owner/group/add", answer) {
@@ -2120,6 +2135,35 @@ async fn handle_offers_accept(
                      not kept here: ask the community to remove and re-admit you",
                     None,
                 );
+            }
+            // `rooms/owner/group/add/0.3` item 6.1: the VTA was still settling an earlier
+            // removal from this room, the host refused its revocation list on redelivery, and
+            // nothing of this admission was done. That earlier removal is no longer pending,
+            // so the same acceptance now proceeds. The VTA's message names the member that
+            // removal concerned: the administrators are told, the accepting member is not.
+            Err(HolderError::Refused { code, message }) if code == ADD_EARLIER_REMOVAL_REFUSED => {
+                tracing::warn!(
+                    room = %room_id, vta_said = %message,
+                    "an earlier removal from a community room did not take effect: the room's \
+                     host refused its revocation list when the community's VTA delivered it \
+                     again. Remove that member again (`cnm rooms members remove`) if that is \
+                     still wanted"
+                );
+                return refuse_logged(
+                    state,
+                    &doc,
+                    c::ACCEPT_KEY_HOLDER_REFUSED,
+                    "nothing was done: the community's VTA first settled an earlier change to \
+                     this room, which did not take effect. Your acceptance can now proceed: \
+                     send the same request again"
+                        .to_string(),
+                    Some(HolderError::refused_details(
+                        &code,
+                        "an earlier removal from this room did not take effect; nothing of this \
+                         admission was done",
+                    )),
+                )
+                .await;
             }
             Err(HolderError::Refused { code, message }) => {
                 return refuse_logged(
