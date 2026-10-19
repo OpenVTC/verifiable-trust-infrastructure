@@ -27,7 +27,9 @@ pub mod board;
 pub mod election;
 pub mod error;
 pub mod registrar;
+pub mod rules;
 pub mod scheme;
+pub mod tally;
 pub mod voter;
 
 pub use error::VotingError;

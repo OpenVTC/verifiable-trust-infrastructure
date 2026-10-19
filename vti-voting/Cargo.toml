@@ -28,7 +28,16 @@ rand_chacha = "0.3"
 serde.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+chrono.workspace = true
+multibase.workspace = true
+serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
+# TEMPORARY — feature branch only, MUST NOT reach `main`. The voting wire types
+# are generated on trustoverip/dtgwg-trust-tasks-tf#834 and are in no
+# `trust-tasks-rs` release yet. Renamed so the rest of the graph keeps the
+# crates.io copy the workspace pins; replace with the workspace dependency
+# (feature `voting`) once a release carries the family.
+trust-tasks-voting = { package = "trust-tasks-rs", git = "https://github.com/trustoverip/dtgwg-trust-tasks-tf", rev = "579f9cbe7d9a69baca806a5127aeab539b7873cc", default-features = false, features = ["voting"] }
 
 [dev-dependencies]
 rand = { version = "0.8", features = ["std", "std_rng"] }
-serde_json.workspace = true
