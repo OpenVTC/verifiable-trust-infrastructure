@@ -988,6 +988,17 @@ existing member session; nothing is added to the console.
   a record's note rendered as text and its file with **Download**; **Add a
   note** and **Add a file**, each sized against the limits before anything is
   sent.
+- **Previews** (`admin-ui/src/members/file-preview.ts`, the wallet manager's
+  rules restated, not imported): chosen from the bytes `getFile` returns,
+  never from the record's claimed type — raster PNG/JPEG/GIF/WebP by
+  signature, drawn in an `<img>` from a `data:` URL (inside the CSP's
+  existing `img-src 'self' data:`, so nothing is widened), and plain UTF-8
+  text without control characters, drawn as text. No SVG, PDF or HTML, never
+  framed: the portal's origin is the community's own, which makes an author's
+  markup worse here than in the extension. The record's claim decides only
+  *whether to fetch*: pictures up to 2 MB get a list thumbnail unasked (two
+  reads in flight at most), anything else a **Preview** button, and one fetch
+  serves preview and download.
 
 The member portal's routes are unchanged. Nothing about a room crosses the
 portal's own server: the page talks to the wallet, and the wallet to the

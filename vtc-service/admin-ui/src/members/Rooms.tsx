@@ -8,10 +8,11 @@
 // file they add is confirmed there first. Design:
 // `docs/05-design-notes/data-rooms-files.md` §8.5.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Boxes, Download, FileText, FilePlus2, Gift, NotebookPen, RefreshCw, Share2 } from "lucide-react";
+import { ArrowLeft, Boxes, Download, Eye, FileText, FilePlus2, Gift, NotebookPen, RefreshCw, Share2 } from "lucide-react";
 
+import { blobBytes, createLimiter, mayPreview, showBytes, worthAutoPreview, type Shown } from "./file-preview";
 import { InstallWallet } from "./InstallWallet";
 import {
   actionableOffers,
@@ -562,6 +563,15 @@ function Records({
                   {r.author ? ` · ${shortDid(r.author)}` : ""}
                   {r.status && r.status !== "active" ? ` · ${r.status}` : ""}
                 </span>
+                {i < AUTO_OPEN && (
+                  <RecordThumbnail
+                    wallet={wallet}
+                    hostDid={hostDid}
+                    roomId={roomId}
+                    recordKey={r.key}
+                    onOpen={() => setOpen(r.key)}
+                  />
+                )}
               </li>
             ))}
         </ul>
@@ -685,9 +695,63 @@ function RecordBody({
       {rec.tags && rec.tags.length > 0 && (
         <p className="muted small">{rec.tags.map((t) => `#${t}`).join(" ")}</p>
       )}
-      {rec.file && <FileDownload wallet={wallet} hostDid={hostDid} roomId={roomId} rec={rec} />}
+      {rec.file && <FileBox wallet={wallet} hostDid={hostDid} roomId={roomId} rec={rec} />}
     </>
   );
+}
+
+// ── Files ───────────────────────────────────────────────────────────────────
+
+/** What the wallet hands over for a file: verified bytes and the record's account of them. */
+type GotFile = Awaited<ReturnType<WalletRooms["getFile"]>>;
+
+/** Thumbnails fetched unasked: two at a time, so a big room does not fire dozens of
+ *  reads at the member's agent, and a click is not stuck behind them. */
+const THUMBNAILS = createLimiter(2);
+
+/** How long a fetched file stays in memory once nothing on the page shows it. */
+const FILE_CACHE_MS = 60_000;
+
+/**
+ * One verified fetch per record version, shared by the thumbnail, the preview
+ * and the download — so a picture shown in the list is not read again to save
+ * it. Always `wallet.getFile`: the portal reads no room content any other way.
+ * `auto` fetches unasked, through the thumbnail queue; `fetchNow` is a click's.
+ */
+function useRoomFile(
+  wallet: WalletRooms,
+  hostDid: string,
+  roomId: string,
+  rec: { key: string; version: number },
+  auto: boolean,
+) {
+  const qc = useQueryClient();
+  const queryKey = ["member-room-file", roomId, rec.key, rec.version];
+  const [progress, setProgress] = useState<TransferProgress | null>(null);
+  const got = useQuery({
+    queryKey,
+    // A row scrolled away or a page left before its turn is not fetched.
+    queryFn: ({ signal }) =>
+      THUMBNAILS.run(async () => {
+        if (signal.aborted) throw new Error("no longer shown");
+        return wallet.getFile({ hostDid, roomId, key: rec.key });
+      }),
+    enabled: auto,
+    staleTime: Infinity,
+    gcTime: FILE_CACHE_MS,
+    retry: false,
+  });
+  const fetchNow = (): Promise<GotFile> =>
+    qc
+      .fetchQuery({
+        queryKey,
+        queryFn: () => wallet.getFile({ hostDid, roomId, key: rec.key, onProgress: setProgress }),
+        staleTime: Infinity,
+        gcTime: FILE_CACHE_MS,
+        retry: false,
+      })
+      .finally(() => setProgress(null));
+  return { got, fetchNow, progress };
 }
 
 /** A file name another member chose, safe to offer as a download name. */
@@ -696,7 +760,128 @@ export function downloadName(name: string): string {
   return base || "room-file";
 }
 
-function FileDownload({
+/** Hand a verified file to the member, under a name that cannot choose where it lands. */
+function saveFile(got: GotFile): void {
+  const url = URL.createObjectURL(got.blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = downloadName(got.file.name);
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // The download has its own reference by now; this one only holds memory.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+/**
+ * What a verified file is shown as, once its bytes are read — or `null` until
+ * then. Decided by the bytes alone (`file-preview.ts`).
+ */
+function useShown(blob: Blob | undefined): Shown | null {
+  const [state, setState] = useState<{ blob: Blob; shown: Shown } | null>(null);
+  useEffect(() => {
+    if (!blob) return;
+    let live = true;
+    blobBytes(blob).then(
+      (bytes) => live && setState({ blob, shown: showBytes(bytes) }),
+      () => live && setState({ blob, shown: { kind: "none" } }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [blob]);
+  return state && state.blob === blob ? state.shown : null;
+}
+
+/** A verified picture, drawn from a `data:` URL typed by its bytes. */
+function PreviewImage({ url, name, className }: { url: string; name: string; className: string }) {
+  return <img className={className} src={url} alt={name} decoding="async" />;
+}
+
+/** Text from a verified file: a text node in a scrollable `<pre>`, never markup. */
+function PreviewText({ text, cut }: { text: string; cut: boolean }) {
+  return (
+    <pre className="file-text" aria-label="File preview">
+      {text}
+      {cut ? "\n…" : ""}
+    </pre>
+  );
+}
+
+/**
+ * A small picture's thumbnail in the record list, fetched unasked through the
+ * wallet (one queued read per row; see `THUMBNAILS`). Only pictures are drawn
+ * here: text, and bytes that turn out to be no picture whatever the record
+ * claims, wait for the record's own view.
+ */
+function RecordThumbnail({
+  wallet,
+  hostDid,
+  roomId,
+  recordKey,
+  onOpen,
+}: {
+  wallet: WalletRooms;
+  hostDid: string;
+  roomId: string;
+  recordKey: string;
+  onOpen: () => void;
+}) {
+  // Reads only what the row's title already opened; never a read of its own.
+  const rec = useQuery({
+    queryKey: ["member-room-record", roomId, recordKey],
+    queryFn: () => wallet.read({ hostDid, roomId, key: recordKey }),
+    enabled: false,
+    staleTime: Infinity,
+  });
+  const data = rec.data;
+  if (!data?.file || data.status === "retracted" || !worthAutoPreview(data.file)) return null;
+  return <Thumbnail wallet={wallet} hostDid={hostDid} roomId={roomId} rec={data} onOpen={onOpen} />;
+}
+
+function Thumbnail({
+  wallet,
+  hostDid,
+  roomId,
+  rec,
+  onOpen,
+}: {
+  wallet: WalletRooms;
+  hostDid: string;
+  roomId: string;
+  rec: RoomRecord;
+  onOpen: () => void;
+}) {
+  const { got } = useRoomFile(wallet, hostDid, roomId, rec, true);
+  const shown = useShown(got.data?.blob);
+  const name = rec.file?.name ?? "file";
+  if (got.isError) return <p className="error small">No preview: {errorText(got.error)}</p>;
+  if (!got.data || !shown) {
+    return (
+      <span className="thumb-loading" aria-label="Loading a preview">
+        Loading preview…
+      </span>
+    );
+  }
+  if (shown.kind !== "image") return null;
+  return (
+    <button type="button" className="thumb" onClick={onOpen} aria-label={`Open ${name}`}>
+      <PreviewImage url={shown.url} name={name} className="thumb-img" />
+    </button>
+  );
+}
+
+/**
+ * A record's file: its preview, and its download.
+ *
+ * One verified fetch serves the thumbnail, the preview and the download: the
+ * bytes reach this page only after the wallet has matched every one against the
+ * digest the author signed, and a preview is chosen from those bytes, never
+ * from the record's claimed type (`file-preview.ts`). A small picture is
+ * fetched without a click; anything else waits for Preview or Download.
+ */
+function FileBox({
   wallet,
   hostDid,
   roomId,
@@ -707,40 +892,68 @@ function FileDownload({
   roomId: string;
   rec: RoomRecord;
 }) {
-  const [progress, setProgress] = useState<TransferProgress | null>(null);
-  const get = useMutation({
-    mutationFn: () => wallet.getFile({ hostDid, roomId, key: rec.key, onProgress: setProgress }),
-    onSuccess: (got) => {
-      const url = URL.createObjectURL(got.blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = downloadName(got.file.name);
-      a.rel = "noopener";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    },
-    onSettled: () => setProgress(null),
-  });
   const file = rec.file!;
+  const auto = worthAutoPreview(file);
+  const { got, fetchNow, progress } = useRoomFile(wallet, hostDid, roomId, rec, auto);
+  const [saved, setSaved] = useState(false);
+  const preview = useMutation({ mutationFn: fetchNow });
+  const download = useMutation({
+    mutationFn: fetchNow,
+    onSuccess: (res) => {
+      saveFile(res);
+      setSaved(true);
+    },
+  });
+  const shown = useShown(got.data?.blob);
+  const busy = preview.isPending || download.isPending || got.isFetching;
+  const error = download.error ?? preview.error ?? (got.data ? null : got.error);
   return (
     <div className="file-box">
       <p>
         <FileText size={14} aria-hidden="true" /> <b className="wrap">{file.name}</b> · {formatBytes(file.size)}
         {file.mediaType ? ` · ${file.mediaType}` : ""}
       </p>
-      <button type="button" className="btn btn-primary" onClick={() => get.mutate()} disabled={get.isPending}>
-        <Download size={14} aria-hidden="true" /> {get.isPending ? describe(progress) : "Download"}
-      </button>
-      {get.isError && (
+      {busy && !got.data && auto && !download.isPending && (
+        <span className="thumb-loading" aria-label="Loading a preview">
+          Loading preview…
+        </span>
+      )}
+      {shown?.kind === "image" && <PreviewImage url={shown.url} name={file.name} className="file-preview-img" />}
+      {shown?.kind === "text" && <PreviewText text={shown.text} cut={shown.cut} />}
+      {shown?.kind === "none" && (
+        <p className="muted small">No preview for this kind of file. Download it to open it.</p>
+      )}
+      <div className="actions">
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => download.mutate()}
+          disabled={download.isPending}
+        >
+          <Download size={14} aria-hidden="true" />{" "}
+          {download.isPending ? describe(progress) : saved ? "Download again" : "Download"}
+        </button>
+        {!got.data && !auto && mayPreview(file) && (
+          <button type="button" className="btn" onClick={() => preview.mutate()} disabled={busy}>
+            <Eye size={14} aria-hidden="true" /> {preview.isPending ? describe(progress) : "Preview"}
+          </button>
+        )}
+      </div>
+      {error && (
         <p className="error" role="alert">
-          {errorText(get.error)}
+          {errorText(error)}
         </p>
       )}
-      <p className="muted small">
-        Decrypted in your wallet and checked against what its author signed before this page receives a byte.
-      </p>
+      {got.data ? (
+        <p className="muted small">
+          ✓ Every byte matches the digest its author signed. Its type is the author&rsquo;s word for it — open it
+          with that in mind.
+        </p>
+      ) : (
+        <p className="muted small">
+          Decrypted in your wallet and checked against what its author signed before this page receives a byte.
+        </p>
+      )}
     </div>
   );
 }

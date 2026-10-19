@@ -1093,7 +1093,20 @@ the room's storage against their limits, the records (each sealed one
 opened through the wallet for its title), a note as plain text, a
 file's download (decrypted in the wallet and checked against what its
 author signed before the page receives it), and adding a note or a
-file. Running a room as its owner, curating and direct-to-storage
+file. A file is also **previewed**, from those verified bytes and never
+from the type its record claims: PNG, JPEG, GIF and WebP pictures
+recognised by their signature, drawn in an `<img>` from a `data:` URL
+(which the default CSP's `img-src 'self' data:` already allows), and
+plain UTF-8 text with no control characters, shown as text in a
+scrollable box and cut at 20,000 characters. Nothing else is previewed
+— SVG, PDF and HTML included — and nothing is framed: this page is the
+community's own origin, so an author's markup drawn here would run with
+its sessions. Pictures up to 2 MB get a thumbnail in the record list
+without a click, two fetched at a time so a big room does not send
+dozens of reads to the member's agent at once; any other file has a
+**Preview** button. One fetch serves the thumbnail, the preview and the
+download, all through the wallet's `getFile` — reads of a shared room
+do not prompt. Running a room as its owner, curating and direct-to-storage
 transfer from the browser come later
 ([`data-rooms-files.md`](../05-design-notes/data-rooms-files.md) §8.5).
 

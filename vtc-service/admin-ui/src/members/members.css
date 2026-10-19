@@ -251,6 +251,57 @@ body {
 .file-box p {
   margin: 0;
 }
+/* Previews of verified room files: pictures in an <img>, text in a <pre>. */
+.thumb {
+  all: unset;
+  cursor: zoom-in;
+  justify-self: start;
+  margin-top: 0.35rem;
+}
+.thumb:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+.thumb-img,
+.file-preview-img {
+  display: block;
+  object-fit: contain;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+.thumb-img {
+  max-width: min(100%, 240px);
+  max-height: 140px;
+}
+.file-preview-img {
+  max-width: 100%;
+  max-height: 420px;
+  justify-self: start;
+}
+.thumb-loading {
+  display: grid;
+  place-items: center;
+  width: min(100%, 240px);
+  height: 100px;
+  margin-top: 0.35rem;
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+.file-text {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 0.75rem;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 @media (max-width: 30rem) {
   .facts div {

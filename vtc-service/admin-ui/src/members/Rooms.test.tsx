@@ -329,6 +329,179 @@ describe("data rooms in the portal", () => {
   });
 });
 
+// ── File previews ──
+//
+// A preview is chosen from the verified bytes the wallet hands over, never from
+// the record's claimed type; a small picture is fetched unasked, anything else
+// waits for a click; and every byte comes through `wallet.getFile`.
+
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+
+function fileRecord(key: string, file: { name: string; size: number; mediaType?: string }) {
+  return {
+    key,
+    version: 2,
+    status: "active",
+    updatedAt: "2026-10-16T00:00:00Z",
+    author: MEMBER,
+    file,
+    sealed: true,
+    verification: {},
+  };
+}
+
+function walletServing(
+  records: ReturnType<typeof fileRecord>[],
+  bytes: (key: string) => BlobPart,
+  getFile?: WalletRooms["getFile"],
+) {
+  return fakeWallet({
+    browse: vi.fn(async () => ({
+      records: records.map((r) => ({ key: r.key, version: r.version, updatedAt: r.updatedAt, author: MEMBER })),
+      complete: true,
+      verification: {},
+    })),
+    read: vi.fn(async ({ key }: { key: string }) => records.find((r) => r.key === key)!),
+    getFile:
+      getFile ??
+      vi.fn(async ({ key }: { key: string }) => {
+        const r = records.find((x) => x.key === key)!;
+        return { file: r.file, author: MEMBER, version: r.version, blob: new Blob([bytes(key)]) };
+      }),
+  });
+}
+
+describe("room file previews", () => {
+  let created: string[];
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 404 })));
+    created = [];
+    URL.createObjectURL = vi.fn(() => {
+      created.push("blob:x");
+      return "blob:x";
+    });
+    URL.revokeObjectURL = vi.fn();
+  });
+  afterEach(() => {
+    delete (window as { vtaWallet?: unknown }).vtaWallet;
+    vi.unstubAllGlobals();
+  });
+
+  it("a small picture gets a thumbnail from its verified bytes, and is read once for view and download", async () => {
+    const wallet = walletServing([fileRecord("k1", { name: "design.png", size: PNG.length, mediaType: "image/png" })], () => PNG);
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    const thumb = await screen.findByRole("button", { name: "Open design.png" });
+    const img = thumb.querySelector("img")!;
+    expect(img.getAttribute("src")).toMatch(/^data:image\/png;base64,/);
+    // Drawing a preview made no object URL: `data:` is what the CSP allows.
+    expect(created).toHaveLength(0);
+
+    fireEvent.click(thumb);
+    await waitFor(() => expect(document.querySelector("img.file-preview-img")).not.toBeNull());
+    // jsdom does not navigate; the save is the anchor's click.
+    const save = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    fireEvent.click(screen.getByRole("button", { name: /Download/ }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    save.mockRestore();
+    expect(created).toHaveLength(1);
+    expect(wallet.getFile).toHaveBeenCalledTimes(1);
+    expect(wallet.getFile).toHaveBeenCalledWith({ hostDid: HOST, roomId: ROOM, key: "k1" });
+  });
+
+  it("a record labelled image/png whose bytes are HTML is never drawn as a picture or as markup", async () => {
+    const html = "<html><body><script>window.pwned = 1</script><iframe src=x></iframe></body></html>";
+    const wallet = walletServing([fileRecord("k1", { name: "photo.png", size: html.length, mediaType: "image/png" })], () => html);
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByText("photo.png");
+    // Fetched as a thumbnail candidate on the record's word, then refused by its bytes.
+    await waitFor(() => expect(wallet.getFile).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByLabelText("Loading a preview")).toBeNull());
+    expect(document.querySelector("img")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Open photo.png/ })).toBeNull();
+
+    // In the record's own view it is at most its text, in a <pre>, as text.
+    fireEvent.click(screen.getByRole("button", { name: /photo.png/ }));
+    const pre = await screen.findByLabelText("File preview");
+    expect(pre.tagName).toBe("PRE");
+    expect(pre.textContent).toBe(html);
+    expect(pre.children).toHaveLength(0);
+    expect(document.querySelector("img, iframe, script")).toBeNull();
+    expect((window as { pwned?: number }).pwned).toBeUndefined();
+  });
+
+  it("bytes that are neither a picture nor text are download only", async () => {
+    const wallet = walletServing(
+      [fileRecord("k1", { name: "photo.png", size: 8, mediaType: "image/png" })],
+      () => new Uint8Array([0x25, 0x50, 0x44, 0x46, 0, 1, 2, 3]),
+    );
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    fireEvent.click(await screen.findByRole("button", { name: /photo.png/ }));
+    await screen.findByText(/No preview for this kind of file/);
+    expect(document.querySelector("img")).toBeNull();
+    expect(screen.getByRole("button", { name: /Download/ })).toBeTruthy();
+  });
+
+  it("text is previewed on a click, as text", async () => {
+    const words = "Agreed: <b>ship it</b>\n\tFriday";
+    const wallet = walletServing([fileRecord("k1", { name: "notes.txt", size: words.length, mediaType: "text/plain" })], () => words);
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    fireEvent.click(await screen.findByRole("button", { name: /notes.txt/ }));
+    await screen.findByRole("button", { name: /Preview/ });
+    expect(wallet.getFile).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /Preview/ }));
+    const pre = await screen.findByLabelText("File preview");
+    expect(pre.textContent).toBe(words);
+    expect(pre.querySelector("b")).toBeNull();
+    expect(screen.getByRole("button", { name: /Download/ })).toBeTruthy();
+  });
+
+  it("a picture above the auto-preview limit is not fetched until asked", async () => {
+    const wallet = walletServing([fileRecord("k1", { name: "big.png", size: 3 * 1024 * 1024, mediaType: "image/png" })], () => PNG);
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    fireEvent.click(await screen.findByRole("button", { name: /big.png/ }));
+    const preview = await screen.findByRole("button", { name: /Preview/ });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(wallet.getFile).not.toHaveBeenCalled();
+    expect(document.querySelector("img")).toBeNull();
+    fireEvent.click(preview);
+    await waitFor(() => expect(document.querySelector("img.file-preview-img")).not.toBeNull());
+    expect(wallet.getFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("thumbnails are fetched a few at a time, not all at once", async () => {
+    const records = Array.from({ length: 6 }, (_, i) => fileRecord(`k${i}`, { name: `p${i}.png`, size: PNG.length, mediaType: "image/png" }));
+    let inFlight = 0;
+    let most = 0;
+    const release: (() => void)[] = [];
+    const getFile = vi.fn(async ({ key }: { key: string }) => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      await new Promise<void>((r) => release.push(r));
+      inFlight--;
+      const r = records.find((x) => x.key === key)!;
+      return { file: r.file, author: MEMBER, version: r.version, blob: new Blob([PNG]) };
+    });
+    const wallet = walletServing(records, () => PNG, getFile);
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByText("p0.png");
+    await waitFor(() => expect(getFile).toHaveBeenCalledTimes(2));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(getFile).toHaveBeenCalledTimes(2);
+    while (getFile.mock.calls.length < 6 || release.length > 0) {
+      release.shift()?.();
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /^Open p\d\.png$/ })).toHaveLength(6));
+    expect(most).toBe(2);
+  });
+});
+
 describe("what fits", () => {
   it("names the limit that a file breaks, and who can raise it", () => {
     expect(fileWontFit(INFO, 10)).toBeNull();
