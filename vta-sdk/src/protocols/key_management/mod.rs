@@ -46,5 +46,6 @@ pub const IMPORT_KEY: &str = "https://firstperson.network/protocols/key-manageme
 pub const IMPORT_KEY_RESULT: &str =
     "https://firstperson.network/protocols/key-management/1.0/import-key-result";
 pub mod sign_csr;
+pub mod sign_document;
 pub mod sign_jws;
 pub mod sign_sshsig;

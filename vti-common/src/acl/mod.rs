@@ -198,6 +198,18 @@ pub enum Capability {
     ///
     /// Derived by every role that derives `Sign`.
     SignCsr,
+    /// Data Integrity document signing — `keys/sign-document/0.1`: an
+    /// `eddsa-jcs-2022` proof over a JSON document that names its signer (a
+    /// credential, a member's external directory card), from a key that never
+    /// leaves the VTA and only as the DID the document names. Registered
+    /// upstream as `signDocument` (`sign-document`). The VTA builds the proof
+    /// itself, so a holder obtains a Data Integrity proof and nothing else;
+    /// `sign` is not accepted in its place, for the reason given on
+    /// [`Capability::SignJws`] and because a `sign` grant was never given with
+    /// the issuer binding this task adds.
+    ///
+    /// Derived by every role that derives `Sign`.
+    SignDocument,
     /// Mutating the **archival lifecycle** of a stored credential — the
     /// `vault/credentials/{archive,unarchive,delete,restore,purge}/0.1`
     /// tasks. Distinct from `VaultWrite` (which gates `vault/credentials/
@@ -449,6 +461,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::SignSshsig,
             Capability::SignJws,
             Capability::SignCsr,
+            Capability::SignDocument,
             Capability::SignTrustTask,
             Capability::KeyMint,
             Capability::KeyExport,
@@ -473,6 +486,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::SignSshsig,
             Capability::SignJws,
             Capability::SignCsr,
+            Capability::SignDocument,
             Capability::SignTrustTask,
             Capability::KeyMint,
             Capability::ExternalAuthUse,
@@ -508,6 +522,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::SignSshsig,
             Capability::SignJws,
             Capability::SignCsr,
+            Capability::SignDocument,
             Capability::SignTrustTask,
             Capability::MemoryRead,
             Capability::MemoryWrite,
@@ -2007,9 +2022,9 @@ mod tests {
         assert!(!entry_has_capability(&entry, Capability::VaultRead));
     }
 
-    /// `sign-jws` and `sign-csr` follow `sign` through the roles, and a
-    /// verifier narrowed to them holds neither the general oracle nor the
-    /// other's, on the wire under their registered names.
+    /// `sign-jws`, `sign-csr` and `sign-document` follow `sign` through the
+    /// roles, and a holder narrowed to one holds neither the general oracle
+    /// nor another's, on the wire under their registered names.
     #[test]
     fn sign_jws_and_sign_csr_follow_sign_and_narrow_alone() {
         for role in [
@@ -2019,7 +2034,11 @@ mod tests {
             Role::Reader,
             Role::Monitor,
         ] {
-            for cap in [Capability::SignJws, Capability::SignCsr] {
+            for cap in [
+                Capability::SignJws,
+                Capability::SignCsr,
+                Capability::SignDocument,
+            ] {
                 assert_eq!(
                     role_has_capability(&role, Capability::Sign),
                     role_has_capability(&role, cap),
@@ -2029,6 +2048,13 @@ mod tests {
             }
         }
         let mut entry = AclEntry::new("did:key:zVerifier", Role::Application, "did:key:zRoot");
+        entry.capabilities = vec![Capability::SignDocument];
+        assert!(entry_has_capability(&entry, Capability::SignDocument));
+        assert!(!entry_has_capability(&entry, Capability::SignJws));
+        assert_eq!(
+            serde_json::to_value(Capability::SignDocument).unwrap(),
+            "sign-document"
+        );
         entry.capabilities = vec![Capability::SignJws];
         assert!(entry_has_capability(&entry, Capability::SignJws));
         assert!(!entry_has_capability(&entry, Capability::SignCsr));

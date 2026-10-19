@@ -526,6 +526,14 @@ pub const TASK_KEYS_SIGN_JWS_0_1: &str =
 pub const TASK_KEYS_SIGN_CSR_0_1: &str =
     <crate::protocols::key_management::sign_csr::SignCsrPayload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `keys/sign-document/0.1` — an `eddsa-jcs-2022` proof over a JSON document
+/// that names its signer, from a key the VTA holds, made only as the DID the
+/// document names.
+/// Payload: [`crate::protocols::key_management::sign_document::SignDocumentPayload`].
+/// Auth: write, plus the `sign-document` capability (`sign` is not accepted).
+pub const TASK_KEYS_SIGN_DOCUMENT_0_1: &str =
+    <crate::protocols::key_management::sign_document::SignDocumentPayload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/vta/keys/derive-and-sign/1.0` — derive a key at a BIP-32 path from the
 /// seed, sign a base64url payload, and return `{ public_key, signature }`
 /// WITHOUT persisting a key record (ephemeral signing oracle over the seed's
@@ -2568,6 +2576,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_KEYS_SIGN_SSHSIG_0_1,
     TASK_KEYS_SIGN_JWS_0_1,
     TASK_KEYS_SIGN_CSR_0_1,
+    TASK_KEYS_SIGN_DOCUMENT_0_1,
     TASK_KEYS_DERIVE_AND_SIGN_0_1,
     TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
     // Seeds slice

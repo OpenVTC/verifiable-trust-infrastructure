@@ -2475,6 +2475,10 @@ dispatch_table! {
         [ None None true ],
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_CSR_0_1 => keys::handle_sign_csr
         [ None None true ],
+    // sideEffects none, discloses none, actsAsSubject — the proof is the
+    // signer DID's own assertion.
+    vta_sdk::trust_tasks::TASK_KEYS_SIGN_DOCUMENT_0_1 => keys::handle_sign_document
+        [ None None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1 => keys::handle_derive_and_sign
         [ Mutating None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1 => keys::handle_derive_and_sign_document

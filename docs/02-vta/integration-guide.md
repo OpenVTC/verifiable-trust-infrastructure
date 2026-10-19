@@ -247,6 +247,26 @@ as `keys.sign-jws` (`alg`, `typ`, the SHA-256 of the signing input — never the
 payload) or `keys.sign-csr` (subject, alternative names, the SHA-256 of the
 signed request).
 
+An issuer whose key stays in the VTA uses `keys/sign-document/0.1`: an
+`eddsa-jcs-2022` Data Integrity proof over a JSON document — a credential, or a
+member's external directory card — made **only as the DID the document names**
+in `issuer` or `controller`. The VTA reads that DID's document itself (from the
+identifier for a `did:key` or `did:peer`, from its own log for a `did:webvh` it
+minted, otherwise by resolving it — never from the request), refuses a key that
+is not one of its verification methods (`issuerMismatch`) or not listed under the
+requested purpose (`purposeNotAuthorized`, `assertionMethod` by default), refuses
+a document that already carries a proof, and builds the proof configuration and
+hash data itself. The answer is the document exactly as sent with the proof
+attached; use it as it is. Gated on `sign-document`, and `sign` is not accepted
+in its place. Each proof is audited as `keys.sign-document` (signer, method,
+purpose, the document's `id` and `type`, and the SHA-256 of the hash data —
+never the document).
+
+```rust
+let signed = client.sign_document(&key.key_id, credential, None).await?;
+// signed.document carries the proof; signed.signer_did is the DID it names.
+```
+
 From the command line, `pnm keys sign-csr` writes the request:
 
 ```sh

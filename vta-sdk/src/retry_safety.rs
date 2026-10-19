@@ -229,6 +229,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // another valid signature over it. Nothing durable beyond the audit row.
     (trust_tasks::TASK_KEYS_SIGN_JWS_0_1, ReadOnly),
     (trust_tasks::TASK_KEYS_SIGN_CSR_0_1, ReadOnly),
+    // The same document and proof configuration hash to the same bytes, and
+    // Ed25519 signs them the same way; with `created` left to the VTA a retry
+    // is another valid proof. Nothing durable beyond the audit row.
+    (trust_tasks::TASK_KEYS_SIGN_DOCUMENT_0_1, ReadOnly),
     (trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1, ReadOnly),
     (
         trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,

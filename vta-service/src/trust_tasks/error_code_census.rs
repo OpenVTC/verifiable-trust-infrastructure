@@ -144,8 +144,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::keys::sign_sshsig::v0_1::error_codes::FAILED_PRECONDITION,
         s::keys::sign::v0_1::error_codes::FAILED_PRECONDITION,
         s::keys::rename::v0_1::error_codes::ALREADY_EXISTS,
-        s::keys::sign::v0_1::error_codes::INVALID_ARGUMENT,
-        s::keys::sign_jws::v0_1::error_codes::NOT_FOUND,
         s::persona::attribute::delete::v1_0::error_codes::REFERENCED,
         s::persona::attribute::delete::v1_0::error_codes::VERSION_CONFLICT,
         s::persona::attribute::list::v1_0::error_codes::CURSOR_INVALID,

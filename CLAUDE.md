@@ -878,6 +878,15 @@ new flow, update both this section and the relevant `docs/*.md`.
   `sign-jws` / `sign-csr` **only**: `sign` is not accepted, because this VTA
   frames `keys/sign` payloads and the specs say such a custodian SHOULD NOT
   widen `sign` into either.
+- **Documents** (`keys/sign-document/0.1`: credentials, a member's external
+  directory card): an `eddsa-jcs-2022` proof made **only as the DID the
+  document names** (`issuer` / `controller`), with a key that DID's own document
+  lists under the requested purpose. That document is never taken from the
+  request — `did:key` / `did:peer` from the identifier, a `did:webvh` this VTA
+  minted from its own log (`persona::own_document`), else resolved. The VTA
+  builds the proof configuration and the 64 bytes of hash data
+  (`sign_formats`), signed as `ProtocolDefined`. Gated on `sign-document`
+  **only**; never sign a document that names no signer or already has a proof.
 - **Delegated identities**: `keys/derive-and-sign*` signs as a path without a
   key record. Super-admin only, confined to `m/26'/9'`, audited with a digest
   of what was signed.

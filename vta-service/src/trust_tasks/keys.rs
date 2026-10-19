@@ -481,9 +481,63 @@ fn protocol_sign_refusal(
                 Some(details),
             )
         }
+        R::Format(F::ProofPresent) => reject_declared(
+            doc,
+            codes
+                .document
+                .map_or(codes.invalid_argument, |d| d.proof_present),
+            "the document already carries a proof; this task makes a document's only proof"
+                .to_string(),
+        ),
+        R::Format(F::DocumentInvalid(reason)) => super::helpers::reject_with_code(
+            doc,
+            declared_code(
+                codes
+                    .document
+                    .map_or(codes.invalid_argument, |d| d.document_invalid),
+            ),
+            match reason {
+                "noSigner" => "the document names its signer in neither issuer nor controller",
+                "signerMalformed" => "the document names its signer in a form that is not a DID",
+                _ => "the document holds a value RFC 8785 cannot serialise exactly",
+            }
+            .to_string(),
+            Some(serde_json::json!({ "reason": reason })),
+        ),
+        R::Format(F::IssuerMismatch(member)) => super::helpers::reject_with_code(
+            doc,
+            declared_code(
+                codes
+                    .document
+                    .map_or(codes.invalid_argument, |d| d.issuer_mismatch),
+            ),
+            format!(
+                "the key is not a verification method of the DID the document's {member} names"
+            ),
+            Some(serde_json::json!({ "member": member })),
+        ),
+        R::Format(F::PurposeNotAuthorized(purpose)) => super::helpers::reject_with_code(
+            doc,
+            declared_code(
+                codes
+                    .document
+                    .map_or(codes.invalid_argument, |d| d.purpose_not_authorized),
+            ),
+            format!("the signer DID does not list the key under {purpose}"),
+            Some(serde_json::json!({ "proofPurpose": purpose })),
+        ),
         R::App(crate::error::AppError::NotFound(m)) => reject_declared(doc, codes.not_found, m),
         R::App(e) => app_error_to_reject(doc, e),
     }
+}
+
+/// The codes only `keys/sign-document` declares.
+#[derive(Clone, Copy)]
+struct DocumentSignCodes {
+    proof_present: trust_tasks_rs::DeclaredErrorCode,
+    document_invalid: trust_tasks_rs::DeclaredErrorCode,
+    issuer_mismatch: trust_tasks_rs::DeclaredErrorCode,
+    purpose_not_authorized: trust_tasks_rs::DeclaredErrorCode,
 }
 
 /// The declared codes one protocol signing task renders its refusals with.
@@ -495,6 +549,7 @@ struct ProtocolSignCodes {
     header_member_forbidden: Option<trust_tasks_rs::DeclaredErrorCode>,
     payload_invalid: Option<trust_tasks_rs::DeclaredErrorCode>,
     subject_invalid: Option<trust_tasks_rs::DeclaredErrorCode>,
+    document: Option<DocumentSignCodes>,
 }
 
 fn declared_code(code: trust_tasks_rs::DeclaredErrorCode) -> trust_tasks_rs::TrustTaskCode {
@@ -597,6 +652,7 @@ pub(super) async fn handle_sign_jws(
                 header_member_forbidden: Some(error_codes::HEADER_MEMBER_FORBIDDEN),
                 payload_invalid: Some(error_codes::PAYLOAD_INVALID),
                 subject_invalid: None,
+                document: None,
             },
         ),
     }
@@ -667,6 +723,98 @@ pub(super) async fn handle_sign_csr(
                 header_member_forbidden: None,
                 payload_invalid: None,
                 subject_invalid: Some(error_codes::SUBJECT_INVALID),
+                document: None,
+            },
+        ),
+    }
+}
+
+/// Handler for `keys/sign-document/0.1` — an `eddsa-jcs-2022` proof over a
+/// document that names its signer, from a key that never leaves the VTA. The
+/// document is read as received: every member of it is signed as given.
+pub(super) async fn handle_sign_document(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use vta_sdk::protocols::key_management::sign_document::{
+        SignDocumentPayload, SignDocumentResponse, error_codes,
+    };
+
+    if let Err(e) = auth.require_write() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: SignDocumentPayload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let Some(document) = doc.payload.get("document").cloned() else {
+        return reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: "keys/sign-document: no document".into(),
+            },
+        );
+    };
+    let text = |k: &str| doc.payload.get(k).and_then(Value::as_str);
+    let signed = operations::keys::sign_document(
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.internal_ks,
+        &state.contexts_ks,
+        &state.acl_ks,
+        &state.seed_store,
+        &state.audit_sink,
+        operations::persona::PersonaStores::from_state(state),
+        state.did_resolver.as_ref(),
+        auth,
+        req.key_id.as_str(),
+        &document,
+        text("proofPurpose"),
+        text("created"),
+        text("challenge"),
+        text("domain"),
+        TRANSPORT_TRUST_TASK,
+    )
+    .await;
+    match signed {
+        Ok(s) => {
+            let body = serde_json::json!({
+                "keyId": req.key_id.as_str(),
+                "signerDid": s.signer_did,
+                "document": s.document,
+                "proof": s.proof,
+            });
+            // Through the generated response, so an answer its schema refuses
+            // is never sent — but sent as built: the document is the bytes the
+            // proof covers.
+            match serde_json::from_value::<SignDocumentResponse>(body.clone()) {
+                Ok(_) => success_response(&doc, body),
+                Err(e) => reject_with(
+                    &doc,
+                    RejectReason::InternalError {
+                        reason: format!("keys/sign-document response: {e}"),
+                    },
+                ),
+            }
+        }
+        Err(refusal) => protocol_sign_refusal(
+            &doc,
+            refusal,
+            ProtocolSignCodes {
+                not_found: error_codes::NOT_FOUND,
+                invalid_argument: error_codes::INVALID_ARGUMENT,
+                failed_precondition: error_codes::FAILED_PRECONDITION,
+                key_type_unsupported: error_codes::KEY_TYPE_UNSUPPORTED,
+                header_member_forbidden: None,
+                payload_invalid: None,
+                subject_invalid: None,
+                document: Some(DocumentSignCodes {
+                    proof_present: error_codes::PROOF_PRESENT,
+                    document_invalid: error_codes::DOCUMENT_INVALID,
+                    issuer_mismatch: error_codes::ISSUER_MISMATCH,
+                    purpose_not_authorized: error_codes::PURPOSE_NOT_AUTHORIZED,
+                }),
             },
         ),
     }
@@ -1220,3 +1368,7 @@ mod import_wrapping_key_tests {
         assert_eq!(resp["payload"]["code"], "permissionDenied", "{resp}");
     }
 }
+
+#[cfg(test)]
+#[path = "sign_document_tests.rs"]
+mod sign_document_tests;
