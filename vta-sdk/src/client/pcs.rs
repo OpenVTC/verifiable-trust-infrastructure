@@ -194,4 +194,55 @@ impl VtaClient {
         )
         .await
     }
+
+    /// `vta/pcs/voter/register/0.1` — this election's voter key and the blinded ticket request
+    /// to carry to `vtc/elections/tickets/issue`.
+    pub async fn pcs_voter_register(
+        &self,
+        req: &pcs::voter::register::v0_1::Payload,
+    ) -> Result<pcs::voter::register::v0_1::Response, VtaError> {
+        self.pcs_call(
+            trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_1,
+            req,
+            PCS_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/pcs/voter/accept/0.1` — unblind the community's answer into the ticket.
+    pub async fn pcs_voter_accept(
+        &self,
+        req: &pcs::voter::accept::v0_1::Payload,
+    ) -> Result<pcs::voter::accept::v0_1::Response, VtaError> {
+        self.pcs_call(
+            trust_tasks::TASK_VTA_PCS_VOTER_ACCEPT_0_1,
+            req,
+            PCS_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/pcs/vote/0.1` — the signed cast document. Send it to the ballot box yourself, from
+    /// your own connection, and resend that same document if the answer is lost.
+    pub async fn pcs_vote(
+        &self,
+        req: &pcs::vote::v0_1::Payload,
+    ) -> Result<pcs::vote::v0_1::Response, VtaError> {
+        self.pcs_call(trust_tasks::TASK_VTA_PCS_VOTE_0_1, req, PCS_PROOF_TIMEOUT)
+            .await
+    }
+
+    /// `vta/pcs/voter/receipt/0.1` — keep a receipt, and check its inclusion in a head the
+    /// community kept.
+    pub async fn pcs_voter_receipt(
+        &self,
+        req: &pcs::voter::receipt::v0_1::Payload,
+    ) -> Result<pcs::voter::receipt::v0_1::Response, VtaError> {
+        self.pcs_call(
+            trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1,
+            req,
+            PCS_TT_TIMEOUT,
+        )
+        .await
+    }
 }

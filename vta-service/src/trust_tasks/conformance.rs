@@ -633,6 +633,36 @@ fn pcs_vetter() -> Value {
     })
 }
 
+// ─── vta/pcs voter fixtures ──────────────────────────────────────────────
+
+const VOTING_BOX: &str = "did:webvh:QmVote:vote.example.net";
+/// A SHA-256 multihash, multibase base58btc.
+const VOTING_DIGEST: &str = "zQmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
+
+fn voting_params() -> Value {
+    json!({ "suite": "ps-ddh-bls12381", "votingKey": PCS_B58 })
+}
+
+fn voting_manifest() -> Value {
+    json!({
+        "electionId": "agm-2027", "community": PCS_COMMUNITY,
+        "questions": [{ "key": "budget", "type": "choice",
+            "options": [{ "key": "yes" }, { "key": "no" }],
+            "minSelections": 1, "maxSelections": 1, "optional": false }],
+        "secrecy": "open", "roll": { "rule": "members" },
+        "registrationOpens": "2026-11-01T00:00:00Z", "votingOpens": "2026-11-03T00:00:00Z",
+        "votingCloses": "2026-11-07T18:00:00Z", "revote": "replace",
+        "board": { "visibility": "public", "auditors": [] }, "ballotBox": VOTING_BOX,
+        "binding": false, "allowEarlyClose": false, "resultsBeforeClose": false,
+        "textReleaseThreshold": 10,
+    })
+}
+
+fn voting_ballot() -> Value {
+    json!({ "electionId": "agm-2027", "manifestDigest": VOTING_DIGEST,
+        "answers": [{ "question": "budget", "choice": ["yes"] }] })
+}
+
 // ─── vta/witness fixtures ────────────────────────────────────────────────
 
 const WITNESS_DID: &str = "did:webvh:QmWitness:witness.example.org:a";
@@ -2435,6 +2465,57 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::vta::pcs::vetter::show::v0_1::Response,
                 json!({ "contextId": "personal", "community": PCS_COMMUNITY }),
                 json!({ "vetter": pcs_vetter() })
+            ),
+        ),
+        // ─── vta/pcs voter role ──────────────────────────────────
+        (
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_1,
+            checked!(
+                specs::vta::pcs::voter::register::v0_1::Payload,
+                specs::vta::pcs::voter::register::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": voting_params(), "manifest": voting_manifest() }),
+                json!({ "electionId": "agm-2027", "manifestDigest": VOTING_DIGEST,
+                    "request": { "label": "voter/agm-2027", "id": PCS_B58, "request": { "encoding": PCS_B58, "t0": PCS_B58, "proof": PCS_B58 } } })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_VOTER_ACCEPT_0_1,
+            checked!(
+                specs::vta::pcs::voter::accept::v0_1::Payload,
+                specs::vta::pcs::voter::accept::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "electionId": "agm-2027", "parameters": voting_params(),
+                    "response": { "electionId": "agm-2027", "label": "voter/agm-2027", "preCredential": PCS_B58 } }),
+                json!({ "electionId": "agm-2027", "ticketHeld": true })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_VOTE_0_1,
+            checked!(
+                specs::vta::pcs::vote::v0_1::Payload,
+                specs::vta::pcs::vote::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": voting_params(), "manifest": voting_manifest(), "ballot": voting_ballot() }),
+                json!({ "tag": PCS_B58, "castDocument": {
+                    "id": "urn:uuid:3f6b9d2e-81c4-4a7f-9e05-6d1c2b8a4f70",
+                    "type": "https://trusttasks.org/spec/voting/ballot/cast/0.1#request",
+                    "issuer": "did:key:z6MkpVoteCastKey2222222222222222222222222222222",
+                    "recipient": VOTING_BOX, "issuedAt": TS, "expiresAt": "2026-11-07T18:00:00Z",
+                    "payload": { "community": PCS_COMMUNITY, "electionId": "agm-2027",
+                        "cast": { "ballot": voting_ballot(), "tag": PCS_B58, "attestation": PCS_B58 } },
+                    "proof": { "type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022",
+                        "verificationMethod": "did:key:z6MkpVoteCastKey2222222222222222222222222222222#z6MkpVoteCastKey2222222222222222222222222222222",
+                        "proofPurpose": "assertionMethod", "created": TS, "proofValue": PCS_B58 } } })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_VOTER_RECEIPT_0_1,
+            checked!(
+                specs::vta::pcs::voter::receipt::v0_1::Payload,
+                specs::vta::pcs::voter::receipt::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "electionId": "agm-2027",
+                    "receipt": { "type": "https://trusttasks.org/spec/voting/ballot/cast/0.1#response", "issuer": VOTING_BOX },
+                    "checkpoint": { "type": "https://trusttasks.org/spec/voting/board/head/0.1#response", "issuer": VOTING_BOX },
+                    "inclusion": { "leafIndex": 41, "treeSize": 213, "entryHash": VOTING_DIGEST, "path": [VOTING_DIGEST] } }),
+                json!({ "electionId": "agm-2027", "status": "included", "leafIndex": 41 })
             ),
         ),
         // ─── vta/witness — the witnessed party ───────────────────

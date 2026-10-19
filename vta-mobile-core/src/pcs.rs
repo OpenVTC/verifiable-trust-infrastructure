@@ -5,7 +5,7 @@
 //! holds the key and runs the scheme; the device builds each request, carries the messages
 //! between the VTA, the community and the vetter, and never sees a key.
 //!
-//! One builder and one parser cover the twelve tasks: [`build_pcs_task`] validates the payload
+//! One builder and one parser cover the sixteen tasks: [`build_pcs_task`] validates the payload
 //! JSON against the task's generated type (so a request the schema refuses never leaves the
 //! device), wraps it in a holder-signed document, and [`parse_pcs_response`] checks a response
 //! against the task's generated response type and hands back its payload JSON.
@@ -16,6 +16,14 @@
 //! 2. [`PcsTask::VerifyAttestation`] — each `vetting/attestation` a vetter sends;
 //! 3. [`PcsTask::Prove`] — after `vtc/vetting/pcs-challenge`, the join submission's
 //!    `extensions.hiddenVetting`.
+//!
+//! The voter's round (community voting, VTI-VOT-020 – 053):
+//!
+//! 1. [`PcsTask::VoterRegister`] — the blinded ticket request for `vtc/elections/tickets/issue`;
+//! 2. [`PcsTask::VoterAccept`] — the community's answer, unblinded into the ticket;
+//! 3. [`PcsTask::Vote`] — the signed `voting/ballot/cast` document, which the device sends to
+//!    the ballot box itself, after a pause, and resends unchanged if the answer is lost;
+//! 4. [`PcsTask::VoterReceipt`] — the ballot box's receipt, kept and checked.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -42,6 +50,10 @@ pub enum PcsTask {
     TokensAbandon,
     Attest,
     VetterShow,
+    VoterRegister,
+    VoterAccept,
+    Vote,
+    VoterReceipt,
 }
 
 fn invalid<E: std::fmt::Display>(e: E) -> FfiError {
@@ -110,6 +122,10 @@ pub fn build_pcs_task(
         PcsTask::TokensAbandon => signed::<pcs::tokens::abandon::v0_1::Payload>(&env, p, s),
         PcsTask::Attest => signed::<pcs::attest::v0_1::Payload>(&env, p, s),
         PcsTask::VetterShow => signed::<pcs::vetter::show::v0_1::Payload>(&env, p, s),
+        PcsTask::VoterRegister => signed::<pcs::voter::register::v0_1::Payload>(&env, p, s),
+        PcsTask::VoterAccept => signed::<pcs::voter::accept::v0_1::Payload>(&env, p, s),
+        PcsTask::Vote => signed::<pcs::vote::v0_1::Payload>(&env, p, s),
+        PcsTask::VoterReceipt => signed::<pcs::voter::receipt::v0_1::Payload>(&env, p, s),
     }
 }
 
@@ -132,6 +148,10 @@ pub fn parse_pcs_response(task: PcsTask, json: String) -> Result<String, FfiErro
         PcsTask::TokensAbandon => response::<pcs::tokens::abandon::v0_1::Response>(j),
         PcsTask::Attest => response::<pcs::attest::v0_1::Response>(j),
         PcsTask::VetterShow => response::<pcs::vetter::show::v0_1::Response>(j),
+        PcsTask::VoterRegister => response::<pcs::voter::register::v0_1::Response>(j),
+        PcsTask::VoterAccept => response::<pcs::voter::accept::v0_1::Response>(j),
+        PcsTask::Vote => response::<pcs::vote::v0_1::Response>(j),
+        PcsTask::VoterReceipt => response::<pcs::voter::receipt::v0_1::Response>(j),
     }
 }
 

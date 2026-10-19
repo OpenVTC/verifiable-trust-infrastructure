@@ -69,8 +69,9 @@ naming another member DID is refused `memberMismatch`.
 |---|---|---|
 | `pcs-vetter` (`pcsVetter`) | `root-request`, `root-accept`, `tokens/*`, `attest`, `vetter/show` | `admin`, `initiator` |
 | `pcs-applicant` (`pcsApplicant`) | `applications/*`, `verify-attestation`, `prove` | `admin`, `initiator` |
+| `pcs-voter` (`pcsVoter`) | `voter/register`, `voter/accept`, `vote`, `voter/receipt` | `admin`, `initiator` |
 
-Neither is `sign`, and `sign` confers neither (VTI-VTA-007). `application`
+None is `sign`, and `sign` confers none (VTI-VTA-007). `application`
 derives neither: an agent vets or applies for its principal only when granted the
 capability by name. Every task is also gated on the context: a vetter task, and
 `applications/create`, name it; an application handle in a context the caller
@@ -83,6 +84,25 @@ type URI ([Approvals](approvals.md)):
 ```sh
 pnm approvals require https://trusttasks.org/spec/vta/pcs/attest/0.1 --reauth
 ```
+
+## The voter's round
+
+The same engine votes in a community's elections (community voting, VTI-VOT-020 –
+053; conventions `voting/_shared/0.1/CONVENTIONS.md`):
+
+| Step | Who | Task |
+|---|---|---|
+| 1 | client → VTA | `vta/pcs/voter/register` — a fresh key for this election and the blinded ticket request; a repeat before the ticket is held answers with the same request |
+| 2 | client → community | `vtc/elections/tickets/issue` — the community signs the ticket blind, one per eligible member |
+| 3 | client → VTA | `vta/pcs/voter/accept` — unblinded and kept wrapped |
+| 4 | client → VTA | `vta/pcs/vote` — the ballot checked against the manifest, the cast built, and the `voting/ballot/cast` document returned **signed by a key made for that cast alone** and never kept |
+| 5 | client → ballot box | the cast document, from the client's own connection, after a pause; resent unchanged if the answer is lost |
+| 6 | client → VTA | `vta/pcs/voter/receipt` — the ballot box's signed receipt kept, and checked for inclusion in a head the community kept |
+
+A voter key is per election, so a key recovered later links one election, never a
+member's voting history. The cast never carries the member's DID (VTI-VOT-003), and
+audit names the election, never a tag, a cast or a receipt (VTI-VOT-100). An MCP
+host confirms every `vote` (`vta-mcp`'s guard counts it destructive).
 
 ## Audit
 

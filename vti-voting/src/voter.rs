@@ -53,6 +53,26 @@ impl Ticket {
     pub fn election(&self) -> &Election {
         &self.election
     }
+
+    /// The ticket's credential as the suite's canonical encoding, multibase, for an agent to
+    /// keep wrapped at rest. **Secret.**
+    ///
+    /// # Errors
+    /// [`VotingError::Serialization`] if the credential cannot be encoded.
+    pub fn to_text(&self) -> Result<String, VotingError> {
+        vti_vetting_pcs::scheme::enc(&self.cred)
+            .map_err(|e| VotingError::Serialization(e.to_string()))
+    }
+
+    /// The inverse of [`Self::to_text`], for `election`.
+    ///
+    /// # Errors
+    /// [`VotingError::Serialization`] if the text is not an encoded credential.
+    pub fn from_text(election: Election, text: &str) -> Result<Self, VotingError> {
+        let cred = vti_vetting_pcs::scheme::dec(text)
+            .map_err(|e| VotingError::Serialization(e.to_string()))?;
+        Ok(Self { election, cred })
+    }
 }
 
 /// A cast: the attestation that admits one ballot. The ballot's bytes travel beside it.

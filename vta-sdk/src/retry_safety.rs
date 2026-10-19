@@ -521,6 +521,18 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // token gone.
     (trust_tasks::TASK_VTA_PCS_ATTEST_0_1, Keyed),
     (trust_tasks::TASK_VTA_PCS_VETTER_SHOW_0_1, ReadOnly),
+    // ── Voter role (`vta/pcs/voter/*`, `vta/pcs/vote`) ──────────────────
+    // A repeat before the ticket is held answers with the request already kept,
+    // under the same key and blinding state, so a replayed answer still unblinds.
+    (trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_1, RetrySafe),
+    // A repeat finds no request in flight; keyed so it gets the original answer.
+    (trust_tasks::TASK_VTA_PCS_VOTER_ACCEPT_0_1, Keyed),
+    // Each execution is a new cast, signed by a new one-time key: keyed so a
+    // retry is answered with the same document, which is what the client must
+    // resend to the ballot box (a second cast would be a second board entry).
+    (trust_tasks::TASK_VTA_PCS_VOTE_0_1, Keyed),
+    // Keeping a receipt already kept stores nothing new.
+    (trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1, RetrySafe),
     // ── Witnessed party (`vta/witness/*`) ───────────────────────────────
     // Each step is safe to repeat (`vta/_shared/0.6/CONVENTIONS.md` §5): a
     // repeated open is an unsent, expiring session; a repeated present builds a

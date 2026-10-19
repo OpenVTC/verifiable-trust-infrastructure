@@ -3,11 +3,11 @@ name = "vti-voting"
 description = "Community voting on the Predicate Credential System: unlinkable voting tickets, casts bound to their ballot, and the ballot box's one-ballot-per-ticket check"
 version = "0.1.0"
 edition.workspace = true
-# Not published: nothing published depends on it yet. The voting service, the
-# VTC's registrar half and the VTA's voter role will, once their Trust Task
-# families are specified (design: community voting, draft VTI-VOT-*). Publish it
-# then, with that first consumer.
-publish = false
+readme = "README.md"
+# Published, because `vta-service` and `vtc-service` are: the VTA runs the
+# voter role and the VTC the registrar, and a crate cannot go to crates.io
+# without its whole dependency closure there too.
+publish.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true

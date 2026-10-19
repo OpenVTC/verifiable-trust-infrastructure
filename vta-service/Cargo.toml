@@ -194,6 +194,9 @@ vta-external = { path = "../vta-external", version = "0.8" }
 # applicant engines this VTA runs for its principal. Always compiled — a hosted
 # VTA is what serves a wallet that cannot run PCS itself.
 vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.5" }
+# The voter role of the PCS engine (`vta/pcs/voter/*`, `vta/pcs/vote`): tickets,
+# casts and the receipt checks, over the same PCS instance.
+vti-voting = { path = "../vti-voting", version = "0.1" }
 # The PCS crate itself, for the multibase codec of the blinding state an
 # enrolment in flight is stored as. Pinned with `vti-vetting-pcs`.
 predicate-credential-system = { version = "0.1", features = ["serde"] }

@@ -2659,6 +2659,15 @@ dispatch_table! {
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VETTER_SHOW_0_1 => pcs::handle_vetter_show
         [ None Metadata false ],
+    // The voter role (`vta/pcs/voter/*`, `vta/pcs/vote`, trust-tasks-tf #834).
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_1 => pcs::handle_voter_register
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_ACCEPT_0_1 => pcs::handle_voter_accept
+        [ Mutating None true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_0_1 => pcs::handle_vote
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1 => pcs::handle_voter_receipt
+        [ Mutating Metadata false ],
     // ─── Witnessed party (`vta/witness/*`) ─────────────────────────
     // Classes match each specification's own declarations: the VTA acts as the
     // relationship DID at open and present; accept stores what the witness said.

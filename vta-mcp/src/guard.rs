@@ -365,6 +365,10 @@ const DESTRUCTIVE_VERBS: &[&str] = &[
     // `vta/pcs/tokens/abandon`: discards a draw's serials, so an answer the
     // community sends later can never be taken.
     "abandon",
+    // `vta/pcs/vote`: builds a signed cast of the principal's ballot. The
+    // client sends it, but the document is the vote — the act a host must
+    // confirm, every time, whatever was approved before.
+    "vote",
 ];
 
 /// The slug of a Trust Task URI — the part after [`SPEC_PREFIX`], with the
@@ -703,6 +707,9 @@ mod tests {
         "prove",
         "root-request",
         "root-accept",
+        // `vta/pcs/voter/receipt`: keeps a receipt and checks its inclusion;
+        // stores, removes nothing.
+        "receipt",
         "accept",
         "create",
         "update",

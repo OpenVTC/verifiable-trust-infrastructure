@@ -723,6 +723,224 @@ pub(super) async fn handle_vetter_show(
     }
 }
 
+// ─── Voter ───────────────────────────────────────────────────────────────────
+//
+// `vta/pcs/voter/*` and `vta/pcs/vote` (trust-tasks-tf #834, VTI-VOT-020 – 053). Audit names the
+// election and never a tag, a cast, a ballot or a receipt (VTI-VOT-100): the record pairs the
+// caller with an election they took part in, which their community already knows, and nothing
+// that could link them to what they voted.
+
+/// The voter-task preamble: the capability, the payload against its schema, the context.
+async fn voter_preamble<P: DeserializeOwned>(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+) -> Result<(String, String), TrustTaskOutcome> {
+    require_capability(state, auth, doc, Capability::PcsVoter, "pcs voter").await?;
+    parse_payload::<P>(doc)?;
+    let context = str_of(doc, "contextId").to_string();
+    require_context(doc, auth, &context)?;
+    Ok((context, str_of(doc, "community").to_string()))
+}
+
+/// `vta/pcs/voter/register/0.1`.
+pub(super) async fn handle_voter_register(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::voter::register::v0_1 as t;
+    let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let manifest = value_of(&doc, "manifest");
+    match crate::operations::pcs_voter::register(
+        state,
+        &caller(auth),
+        &context,
+        &community,
+        &value_of(&doc, "parameters"),
+        &manifest,
+    )
+    .await
+    {
+        Ok(answer) => {
+            let election = manifest["electionId"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            audit(
+                state,
+                "pcs.voter.register",
+                auth,
+                &community,
+                &context,
+                Some(&election),
+            )
+            .await;
+            respond::<t::Response>(&doc, answer)
+        }
+        Err(e) => refuse(&doc, e, |e| match e {
+            PcsError::ElectionChanged => Some(t::error_codes::ELECTION_CHANGED),
+            PcsError::UnsupportedSuite(_) => Some(t::error_codes::UNSUPPORTED_SUITE),
+            PcsError::ParametersInvalid(_) => Some(t::error_codes::PARAMETERS_INVALID),
+            PcsError::UnsupportedSecrecy(_) => Some(t::error_codes::UNSUPPORTED_SECRECY),
+            PcsError::TicketHeld => Some(t::error_codes::TICKET_HELD),
+            _ => None,
+        }),
+    }
+}
+
+/// `vta/pcs/voter/accept/0.1`.
+pub(super) async fn handle_voter_accept(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::voter::accept::v0_1 as t;
+    let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let election = str_of(&doc, "electionId").to_string();
+    match crate::operations::pcs_voter::accept(
+        state,
+        &caller(auth),
+        &context,
+        &community,
+        &election,
+        &value_of(&doc, "parameters"),
+        &value_of(&doc, "response"),
+    )
+    .await
+    {
+        Ok(answer) => {
+            audit(
+                state,
+                "pcs.voter.accept",
+                auth,
+                &community,
+                &context,
+                Some(&election),
+            )
+            .await;
+            respond::<t::Response>(&doc, answer)
+        }
+        Err(e) => refuse(&doc, e, |e| match e {
+            PcsError::NotFound => Some(t::error_codes::NOT_FOUND),
+            PcsError::NoRequestInFlight => Some(t::error_codes::NO_REQUEST_IN_FLIGHT),
+            PcsError::CredentialInvalid(_) => Some(t::error_codes::CREDENTIAL_INVALID),
+            PcsError::ParametersInvalid(_) | PcsError::UnsupportedSuite(_) => {
+                Some(t::error_codes::PARAMETERS_INVALID)
+            }
+            _ => None,
+        }),
+    }
+}
+
+/// `vta/pcs/vote/0.1`.
+pub(super) async fn handle_vote(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::vote::v0_1 as t;
+    let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let manifest = value_of(&doc, "manifest");
+    match crate::operations::pcs_voter::vote(
+        state,
+        &caller(auth),
+        &context,
+        &community,
+        &value_of(&doc, "parameters"),
+        &manifest,
+        &value_of(&doc, "ballot"),
+        chrono::Utc::now(),
+    )
+    .await
+    {
+        Ok(answer) => {
+            // The election, and nothing that names the cast (VTI-VOT-100).
+            let election = manifest["electionId"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            audit(
+                state,
+                "pcs.vote",
+                auth,
+                &community,
+                &context,
+                Some(&election),
+            )
+            .await;
+            respond::<t::Response>(&doc, answer)
+        }
+        Err(e) => refuse(&doc, e, |e| match e {
+            PcsError::NotFound => Some(t::error_codes::NOT_FOUND),
+            PcsError::ManifestMismatch => Some(t::error_codes::MANIFEST_MISMATCH),
+            PcsError::BallotInvalid(_) => Some(t::error_codes::BALLOT_INVALID),
+            PcsError::NotOpen => Some(t::error_codes::NOT_OPEN),
+            PcsError::ParametersInvalid(_) | PcsError::UnsupportedSuite(_) => {
+                Some(t::error_codes::PARAMETERS_INVALID)
+            }
+            _ => None,
+        }),
+    }
+}
+
+/// `vta/pcs/voter/receipt/0.1`.
+pub(super) async fn handle_voter_receipt(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::voter::receipt::v0_1 as t;
+    let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let election = str_of(&doc, "electionId").to_string();
+    match crate::operations::pcs_voter::receipt(
+        state,
+        &context,
+        &community,
+        &election,
+        &value_of(&doc, "receipt"),
+        doc.payload.get("checkpoint"),
+        doc.payload.get("inclusion"),
+    )
+    .await
+    {
+        Ok(answer) => {
+            audit(
+                state,
+                "pcs.voter.receipt",
+                auth,
+                &community,
+                &context,
+                Some(&election),
+            )
+            .await;
+            respond::<t::Response>(&doc, answer)
+        }
+        Err(e) => refuse(&doc, e, |e| match e {
+            PcsError::NotFound => Some(t::error_codes::NOT_FOUND),
+            PcsError::ReceiptInvalid(_) => Some(t::error_codes::RECEIPT_INVALID),
+            PcsError::EvidenceInvalid(_) => Some(t::error_codes::EVIDENCE_INVALID),
+            _ => None,
+        }),
+    }
+}
+
 #[cfg(test)]
 #[path = "pcs_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "pcs_voter_tests.rs"]
+mod voter_tests;

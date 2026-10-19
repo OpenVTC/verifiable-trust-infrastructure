@@ -2482,6 +2482,26 @@ pub const TASK_VTA_PCS_ATTEST_0_1: &str =
 pub const TASK_VTA_PCS_VETTER_SHOW_0_1: &str =
     <trust_tasks_rs::specs::vta::pcs::vetter::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+// ─── Voter role of the PCS engine (trust-tasks-tf #834, VTI-VOT-020 – 053) ──
+// The VTA holds a voter key per election, unblinds the community's ticket and
+// builds the cast; the client sends the cast itself, from its own connection.
+
+/// `vta/pcs/voter/register/0.1` — this election's voter key and the blinded ticket request.
+pub const TASK_VTA_PCS_VOTER_REGISTER_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::voter::register::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/voter/accept/0.1` — unblind the community's answer into the ticket.
+pub const TASK_VTA_PCS_VOTER_ACCEPT_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::voter::accept::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/vote/0.1` — validate a ballot and build the signed cast document.
+pub const TASK_VTA_PCS_VOTE_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::vote::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/voter/receipt/0.1` — keep a cast's receipt and check its inclusion.
+pub const TASK_VTA_PCS_VOTER_RECEIPT_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::voter::receipt::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 // ─── Witnessed party (`vta/witness/*/0.2`, trust-tasks-tf #779, #799) ──────
 // The VTA is the participating party of a `witness/session` for its principal:
 // it builds and signs every document as the relationship DID, and verifies and
@@ -2812,6 +2832,10 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_PCS_TOKENS_ABANDON_0_1,
     TASK_VTA_PCS_ATTEST_0_1,
     TASK_VTA_PCS_VETTER_SHOW_0_1,
+    TASK_VTA_PCS_VOTER_REGISTER_0_1,
+    TASK_VTA_PCS_VOTER_ACCEPT_0_1,
+    TASK_VTA_PCS_VOTE_0_1,
+    TASK_VTA_PCS_VOTER_RECEIPT_0_1,
     TASK_VTA_WITNESS_OPEN_0_2,
     TASK_VTA_WITNESS_PRESENT_0_2,
     TASK_VTA_WITNESS_ACCEPT_0_2,

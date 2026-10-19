@@ -682,8 +682,8 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # `stage`; trust-tasks-tf #824).
 # 0.32.3: community voting — `voting/*`, `vtc/elections/*`, `vta/pcs/voter/*`
 # and `vta/pcs/vote` (trust-tasks-tf #834), and the `pcsVoter` capability
-# (appended, #835).
-trust-tasks-rs = { version = "0.32.3", default-features = false, features = [
+# (appended, #835). 0.32.4: `pcs-voter` in device/_shared 0.1 too (#836).
+trust-tasks-rs = { version = "0.32.4", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
