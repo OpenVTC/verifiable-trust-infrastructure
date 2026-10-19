@@ -29,6 +29,7 @@ pub mod error;
 pub mod registrar;
 pub mod rules;
 pub mod scheme;
+pub mod service;
 pub mod tally;
 pub mod voter;
 

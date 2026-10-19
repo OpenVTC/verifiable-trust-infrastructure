@@ -142,6 +142,31 @@ impl Voter {
         })
     }
 
+    /// The wire `Cast` (conventions §3.6) for a ballot as JSON: the attestation is made over the
+    /// ballot's RFC 8785 (JCS) bytes, and `tag` and `attestation` are the suite's canonical
+    /// encodings, multibase.
+    ///
+    /// # Errors
+    /// As [`Self::cast`]; [`VotingError::Serialization`] if the ballot cannot be canonicalized.
+    pub fn cast_wire<R: RngCore + CryptoRng>(
+        &self,
+        params: &VotingParams,
+        ticket: &Ticket,
+        ballot: &serde_json::Value,
+        rng: &mut R,
+    ) -> Result<serde_json::Value, VotingError> {
+        let bytes = serde_json_canonicalizer::to_vec(ballot)
+            .map_err(|e| VotingError::Serialization(e.to_string()))?;
+        let cast = self.cast(params, ticket, &bytes, rng)?;
+        let attestation = vti_vetting_pcs::scheme::enc(&cast.attestation)
+            .map_err(|e| VotingError::Serialization(e.to_string()))?;
+        Ok(serde_json::json!({
+            "ballot": ballot,
+            "tag": cast.tag()?,
+            "attestation": attestation,
+        }))
+    }
+
     /// Cast `ballot` with `ticket`: an attestation for the election's point, bound to the ballot.
     ///
     /// # Errors
