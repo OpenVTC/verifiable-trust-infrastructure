@@ -32,7 +32,7 @@ use rand::RngCore;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_voting::specs::voting::{
+use trust_tasks_rs::specs::voting::{
     ballot::cast::v0_1 as cast, board::consistency::v0_1 as consistency, board::head::v0_1 as head,
     board::inclusion::v0_1 as inclusion, board::read::v0_1 as read,
     election::cancel::v0_1 as cancel, election::close::v0_1 as close,

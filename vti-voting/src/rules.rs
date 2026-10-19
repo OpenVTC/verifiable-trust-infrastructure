@@ -13,7 +13,7 @@
 use std::collections::HashSet;
 
 use sha2::{Digest, Sha256};
-use trust_tasks_voting::specs::voting::{
+use trust_tasks_rs::specs::voting::{
     ballot::cast::v0_1::{Answer, Ballot},
     election::register::v0_1::{Manifest, Question, RollRuleRule, SecrecyLevel},
 };

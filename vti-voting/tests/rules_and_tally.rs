@@ -1,7 +1,7 @@
 //! Manifest and ballot rules, and the count, over the generated wire types.
 
 use serde_json::{Value, json};
-use trust_tasks_voting::specs::voting::{
+use trust_tasks_rs::specs::voting::{
     ballot::cast::v0_1::Ballot, election::register::v0_1::Manifest,
 };
 use vti_voting::{
