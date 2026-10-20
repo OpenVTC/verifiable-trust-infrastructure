@@ -7,6 +7,7 @@ mod backup;
 mod config;
 mod consent;
 mod did_log;
+mod elections;
 mod git;
 mod member;
 mod members;
@@ -284,6 +285,13 @@ enum Commands {
     Git {
         #[command(subcommand)]
         command: git::GitCommands,
+    },
+
+    /// The community's polls, surveys and elections: create them from a manifest, list,
+    /// show, close, cancel, and certify a result (`vtc/elections/*`).
+    Elections {
+        #[command(subcommand)]
+        command: elections::ElectionsCommands,
     },
 
     /// Data rooms the community itself owns: create them, offer members admission,
@@ -1062,6 +1070,7 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Vetting { .. }
             | Commands::Git { .. }
             | Commands::Rooms { .. }
+            | Commands::Elections { .. }
             | Commands::Consent { .. }
             | Commands::Actions { .. }
             | Commands::Access { .. }
@@ -1698,6 +1707,14 @@ async fn main() {
         Commands::Rooms { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => rooms::run(command, &key, &target, cli.transport.into()).await,
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Elections { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => {
+                    elections::run(command, &key, &target, cli.transport.into()).await
+                }
                 Err(e) => Err(e),
             }
         }

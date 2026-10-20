@@ -103,6 +103,7 @@ const SESSION_TIMEOUT_SECS: u64 = 60;
 
 pub mod acl;
 pub mod actions;
+pub mod elections;
 pub mod git_ns;
 pub mod members;
 pub mod rooms;
