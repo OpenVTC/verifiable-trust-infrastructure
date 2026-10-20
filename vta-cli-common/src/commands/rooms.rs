@@ -1964,7 +1964,7 @@ impl OfferStepError {
 }
 
 /// Have the VTA complete a request to the community as `target.member`
-/// (`rooms/keys/act/0.5`, or the newest version below it that completes the type) and send
+/// (`rooms/keys/act/0.6`, or the newest version below it that completes the type) and send
 /// it to the community. Returns the community's response
 /// payload, or the party that failed.
 async fn act_and_send_offer(

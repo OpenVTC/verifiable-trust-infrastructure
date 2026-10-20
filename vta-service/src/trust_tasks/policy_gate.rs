@@ -117,6 +117,7 @@ async fn task_subject(
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_3
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_4
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_6
     {
         return super::room_act::act_subject(state, auth, payload).await;
     }

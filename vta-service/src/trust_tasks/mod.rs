@@ -2752,6 +2752,10 @@ dispatch_table! {
     // 0.5: also `vtc/rooms/memberships/list/0.1`.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5 => room_act::handle_act_v0_5
         [ None Metadata true ],
+    // 0.6: also `vtc/rooms/offers/list/0.3`, which carries the renewals of the admissions
+    // a member holds (trust-tasks-tf #843).
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_6 => room_act::handle_act_v0_6
+        [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1 => room_group::handle_list
         [ None Metadata false ],
     // 0.2: each entry names its member; `includePersonal` adds the member's own label.

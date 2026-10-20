@@ -666,6 +666,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_4, RetrySafe),
     // 0.5 adds `vtc/rooms/memberships/list/0.1`, a read: still nothing stored.
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_5, RetrySafe),
+    // 0.6 adds `vtc/rooms/offers/list/0.3`, a listing: still nothing stored.
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_6, RetrySafe),
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_1, RetrySafe),
     // 0.2 names each entry's member and can carry the member's own labels: still a read.
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_2, RetrySafe),

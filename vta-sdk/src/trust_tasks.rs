@@ -1102,6 +1102,12 @@ pub const TASK_ROOMS_KEYS_ACT_0_4: &str =
 pub const TASK_ROOMS_KEYS_ACT_0_5: &str =
     <trust_tasks_rs::specs::rooms::keys::act::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `spec/rooms/keys/act/0.6` — `act` 0.5, and `vtc/rooms/offers/list/0.3`: the offer listing
+/// that also carries the renewals of the admissions a member holds, completed on the offer
+/// types' terms. Auth: as 0.1.
+pub const TASK_ROOMS_KEYS_ACT_0_6: &str =
+    <trust_tasks_rs::specs::rooms::keys::act::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/keys/file-key/0.1` — one file's key, for the member's own client
 /// to seal or open that file itself, so file bytes never pass through the VTA.
 /// Unlike `open`, a key crosses — one bound to the room, the epoch and the file,
@@ -2756,6 +2762,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_ACT_0_3,
     TASK_ROOMS_KEYS_ACT_0_4,
     TASK_ROOMS_KEYS_ACT_0_5,
+    TASK_ROOMS_KEYS_ACT_0_6,
     TASK_ROOMS_KEYS_FILE_KEY_0_1,
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
     TASK_ROOMS_KEYS_LIST_0_1,

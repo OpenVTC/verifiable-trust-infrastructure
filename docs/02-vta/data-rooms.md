@@ -1326,6 +1326,16 @@ the 0.3 offer types and further for room requests, never for a `0.2` listing,
 and `pnm` lists at 0.1 when either the VTA or the community does not serve the
 newer version.
 
+**The community's record and the renewals (0.5, 0.6).** `rooms/keys/act/0.5` adds
+`vtc/rooms/memberships/list/0.1`, the community's record of where each admission
+stands, and `0.6` adds `vtc/rooms/offers/list/0.3`, which also carries the
+renewals of the admissions a member holds — fresh membership and authority
+credentials the community issues before the ones held expire. Each is in the
+offer row, on the same terms; each earlier table is closed, so a `0.5` request
+wrapping a `0.3` listing is refused `typeNotActable`. The SDK's
+`room_act_community` asks 0.6 first and falls back version by version, never
+below 0.6 for a `0.3` listing.
+
 `act` is not a signing oracle: only the table's host-bound room requests are
 completed, never `rooms/epoch/prune`, ownership changes, `rooms/create` or a
 chunk upload, and a delegate (§7) is refused. A `rooms/epoch/mint` for a room
@@ -1712,7 +1722,7 @@ and `vtc-service`:
 | `rooms/keys/file-key/0.1`, `0.2` | `roomOpen` capability |
 | `rooms/keys/seal/0.1` | `roomOpen` capability |
 | `rooms/keys/seal/0.2` | `roomOpen` capability; `signAsPrincipal` refused to a delegate |
-| `rooms/keys/act/0.1`, `0.2`, `0.3` | `roomPresent` capability; refused to a delegate |
+| `rooms/keys/act/0.1` – `0.6` | `roomPresent` capability; refused to a delegate |
 | `rooms/keys/list/0.1`, `0.2` | `roomOpen` capability; at 0.2 a delegate is listed nothing, and `personal` only with `includePersonal` |
 | `rooms/keys/label/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate |
 | `rooms/keys/chain/0.1` | `roomOpen` capability |

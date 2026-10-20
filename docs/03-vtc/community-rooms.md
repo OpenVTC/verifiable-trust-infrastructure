@@ -432,8 +432,8 @@ remove that member again if that is still wanted.
 ### From `pnm`
 
 The persona an offer names is held by the member's VTA, so `pnm` builds each request and
-has the VTA sign it as that persona with `rooms/keys/act/0.5` (0.4 or 0.3 for the offer
-types, against an older VTA) — no presentation inserted,
+has the VTA sign it as that persona with `rooms/keys/act/0.6` (0.5, 0.4 or 0.3, against an
+older VTA, for the types those complete) — no presentation inserted,
 and an acceptance completed only with a KeyPackage that VTA minted itself for that member
 and room (`keyPackageNotHeld` otherwise). The signed document goes to the VTC over its
 Trust Task HTTPS endpoint, unchanged.
@@ -465,7 +465,7 @@ wallet, `pnm`, OpenVTC. None keeps its own record of which rooms the member acce
 reads the same two:
 
 - the **community's** — `vtc/rooms/memberships/list/0.1`, signed as the member (through
-  `rooms/keys/act/0.5`): every room the community offered them, `offered`, `admitted` or
+  `rooms/keys/act` at 0.5 or later): every room the community offered them, `offered`, `admitted` or
   `removed`, for as long as it keeps the record (an offer withdrawn before acceptance is
   not listed). `repeatAcceptUntil` says, on a sealed room, until when the Welcome is kept;
 - the **VTA's** — `rooms/keys/list`: which rooms' groups it holds, for which member.
