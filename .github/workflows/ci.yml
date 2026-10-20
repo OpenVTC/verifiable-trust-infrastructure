@@ -67,7 +67,7 @@ jobs:
   #           authorization-context types, `affects`: seconds to a minute
   #           each, little or no compile. Every tier-1 job `needs` all of them.
   #   tier 1  Clippy, Test (workspace), Test (VTC), Test (VTC, vetting-pcs),
-  #           Test (VTC admin UI), Mobile build (ios / android).
+  #           Test (VTC admin UI), Mobile build (ios-device / ios-simulator / android).
   #   tier 2  the Feature combos groups, Feature combos (all-features), Enclave
   #           build, Enclave proxy, MSRV. Each `needs` Clippy only, and runs
   #           unless it (or tier 0) FAILED.
@@ -1609,22 +1609,33 @@ jobs:
     # bindings: UniFFI reads them from metadata that does not depend on the
     # host, and on the iOS leg the extra host build ran a job of three serial
     # full builds (device 25 min, simulator 19, host 16) past its 60-minute
-    # limit (#2211, #2212). Both iOS targets build in one cargo invocation.
+    # limit (#2211, #2212).
+    #
+    # iOS is two legs, one per target. trust-tasks-rs alone takes 14-20 minutes
+    # per target on the 3-core, 7 GB macOS runner; both targets in one job ran
+    # past the limit serially, and in one cargo invocation (#2222) the two
+    # rustc processes on that crate never finished at all.
     #
     # Tier 1, not tier 2: as the critical path, waiting for Clippy added
     # Clippy's minutes to the whole run. It still waits for tier 0, so a
     # formatting slip or a stale lockfile does not start it.
-    name: Mobile build (${{ matrix.platform }})
+    name: Mobile build (${{ matrix.leg }})
     needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.mobile != 'false' }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: ios
+          - leg: ios-device
+            platform: ios
             os: macos-latest
-            targets: aarch64-apple-ios,aarch64-apple-ios-sim
-          - platform: android
+            targets: aarch64-apple-ios
+          - leg: ios-simulator
+            platform: ios
+            os: macos-latest
+            targets: aarch64-apple-ios-sim
+          - leg: android
+            platform: android
             os: ubuntu-latest
             targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
     runs-on: ${{ matrix.os }}
@@ -1678,6 +1689,7 @@ jobs:
       - name: Cross-compile and generate bindings
         env:
           PLATFORM: ${{ matrix.platform }}
+          TARGETS: ${{ matrix.targets }}
         run: |
           # The workspace builds dependencies at opt-level 2 in dev (#1931), so
           # tests spend less time running them. This job only checks that the
@@ -1690,5 +1702,8 @@ jobs:
           mkdir -p ~/.cargo
           printf '[profile.dev.package."*"]\nopt-level = 0\n' >> ~/.cargo/config.toml
           export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
-          if [ "$PLATFORM" = ios ]; then export BINDINGS=0; fi
+          if [ "$PLATFORM" = ios ]; then
+            export BINDINGS=0
+            export IOS_TARGETS="${TARGETS//,/ }"
+          fi
           ./vta-mobile-core/scripts/build-mobile.sh "$PLATFORM"

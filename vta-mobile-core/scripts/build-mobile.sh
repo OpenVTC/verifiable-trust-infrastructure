@@ -53,20 +53,21 @@ if [ "$PROFILE" = "release" ]; then
   PROFILE_DIR="release"
 fi
 
-IOS_TARGETS=(aarch64-apple-ios aarch64-apple-ios-sim)
+# IOS_TARGETS (space-separated) narrows the iOS build; CI builds one target per
+# job.
+read -r -a IOS_TARGETS <<< "${IOS_TARGETS:-aarch64-apple-ios aarch64-apple-ios-sim}"
 # cargo-ndk ABI names (it maps these to the android triples + NDK toolchain).
 ANDROID_ABIS=(arm64-v8a armeabi-v7a x86_64)
 
 build_ios() {
   echo "── iOS (deployment target $IPHONEOS_DEPLOYMENT_TARGET, $PROFILE) ──"
-  # One invocation for every target: cargo builds them side by side and
-  # compiles host-side build scripts and proc-macros once, not once per target.
-  local target_args=()
+  # One target at a time, deliberately: built side by side in one cargo
+  # invocation, two rustc processes on trust-tasks-rs ran a 7 GB macOS runner
+  # past an hour on that crate alone (#2222).
   for target in "${IOS_TARGETS[@]}"; do
     echo "  • $target"
-    target_args+=(--target "$target")
+    cargo build --locked -p vta-mobile-core --lib --target "$target" $CARGO_PROFILE_FLAG
   done
-  cargo build --locked -p vta-mobile-core --lib "${target_args[@]}" $CARGO_PROFILE_FLAG
 }
 
 build_android() {
