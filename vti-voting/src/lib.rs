@@ -35,6 +35,7 @@ pub mod service;
 pub mod tally;
 pub mod trustees;
 pub mod voter;
+pub mod wire;
 
 pub use error::VotingError;
 

@@ -851,8 +851,12 @@ fn seal_to<R: RngCore + CryptoRng>(
     Ok(Sealed { kem, body })
 }
 
-/// Open a sealed payload whose KEM element `r_elem` is already recovered.
-fn open_with(r_elem: &Point, s: &Sealed, aad_ctx: &[u8]) -> Result<Vec<u8>> {
+/// Open a sealed payload whose KEM element `r_elem` is already recovered — a sealed ballot from
+/// the element a [`crate::ceremony::Decryption`] combined, under `ctx`.
+///
+/// # Errors
+/// [`TrusteeError::SealedInvalid`].
+pub fn open_with(r_elem: &Point, s: &Sealed, aad_ctx: &[u8]) -> Result<Vec<u8>> {
     ChaCha20Poly1305::new(&seal_key(r_elem))
         .decrypt(
             &Nonce::default(),

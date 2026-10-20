@@ -40,14 +40,21 @@ use trust_tasks_rs::specs::voting::{
     result::show::v0_1 as result,
 };
 
+mod encrypted;
+
+use encrypted::Encrypted;
+
 use crate::{
     ballot_box::{BallotBox as Verifier, MemoryNullifiers, Revote as BoxRevote},
     board::{Board, Hash},
+    ceremony::{Ceremony, Decryption},
     election::{Election, ElectionId},
     rules::{self, RuleError, digest_multibase},
     scheme::{Hvk, VotingParams},
     tally,
+    trustees::Threshold,
     voter::Cast,
+    wire::Target,
 };
 
 /// A refusal: the task's error local part and a reason for the operator's log. The host turns
@@ -101,6 +108,13 @@ impl From<RuleError> for Failure {
         }
     }
 }
+
+/// The secrecy levels this ballot box serves: all three (CONVENTIONS §9).
+pub const SERVED_LEVELS: &[register::SecrecyLevel] = &[
+    register::SecrecyLevel::Open,
+    register::SecrecyLevel::Sealed,
+    register::SecrecyLevel::TalliedEncrypted,
+];
 
 /// Who asked. A read of a public board needs nobody; everything else is decided on the DID the
 /// binding proved.
@@ -292,6 +306,14 @@ struct ElectionRecord {
     exact: HashMap<[u8; 32], Admitted>,
     /// The counted cast under each tag.
     counted: HashMap<String, (Admitted, cast::Ballot)>,
+    /// The counted encrypted cast under each tag, at the sealed and tallied-encrypted levels.
+    encrypted: HashMap<String, (Admitted, Encrypted)>,
+    /// `ctx` of the encrypted levels (CONVENTIONS §9.2).
+    ctx: Vec<u8>,
+    /// The trustees' key ceremony, at the encrypted levels.
+    ceremony: Option<Ceremony>,
+    /// The decryption round, once an encrypted election has closed with its key formed.
+    decryption: Option<Decryption<Target>>,
     result: Option<Value>,
 }
 
@@ -384,8 +406,17 @@ impl ElectionRecord {
             let leaf = self.board.append(&bytes) as u64;
             let entry: Value = serde_json::from_slice(&bytes)
                 .map_err(|e| journal_failure(format!("entry {leaf}: {e}")))?;
+            if self.replay_encrypted(&entry, leaf, receipts)? {
+                self.entries.push(bytes);
+                continue;
+            }
             match entry["kind"].as_str() {
-                Some("opened") => self.state = State::Voting,
+                Some("opened") => {
+                    if let Some(c) = &mut self.ceremony {
+                        c.deadline();
+                    }
+                    self.state = State::Voting;
+                }
                 Some("cast") => {
                     let cast_value = &entry["cast"];
                     let cast_digest: [u8; 32] = Sha256::digest(jcs(cast_value)?).into();
@@ -401,7 +432,10 @@ impl ElectionRecord {
                     self.counted
                         .insert(typed.tag.as_str().to_string(), (admitted, typed.ballot));
                 }
-                Some("closed" | "closedEarly") => self.state = State::Closed,
+                Some("closed" | "closedEarly") => {
+                    self.state = State::Closed;
+                    self.start_decryption();
+                }
                 Some("result") => {
                     self.result = Some(entry["result"].clone());
                     self.state = State::Tallied;
@@ -420,7 +454,7 @@ impl ElectionRecord {
             "community": self.manifest.community.as_str(),
             "manifestDigest": digest_multibase(&self.digest),
             "state": self.state.wire(),
-            "ballotsAdmitted": self.counted.len(),
+            "ballotsAdmitted": self.counted.len() + self.encrypted.len(),
             "head": self.head(self.board.len(), now),
         })
     }
@@ -448,9 +482,15 @@ impl ElectionRecord {
         }))
     }
 
-    /// Close at `at` and publish the result on the board.
+    /// Close at `at` and publish the result on the board — at the encrypted levels, once the
+    /// trustees have decrypted it.
     fn close(&mut self, kind: &str, at: DateTime<Utc>) -> Result<(), Failure> {
         self.append(&json!({ "kind": kind, "at": time(at) }))?;
+        if self.ceremony.is_some() {
+            self.state = State::Closed;
+            self.start_decryption();
+            return self.finish_if_decrypted(at);
+        }
         self.state = State::Closed;
         let result = self.tally_now(false, at)?;
         self.append(&json!({ "kind": "result", "result": result }))?;
@@ -466,6 +506,7 @@ impl ElectionRecord {
         }
         if self.state <= State::Registration && now >= self.manifest.voting_opens {
             let at = self.manifest.voting_opens;
+            self.ceremony_deadline()?;
             self.append(&json!({ "kind": "opened", "at": time(at) }))?;
             self.state = State::Voting;
         }
@@ -535,6 +576,18 @@ impl BallotBox {
             digest,
         )
         .map_err(|e| Failure::malformed(e.to_string()))?;
+        let ctx = election.trustee_context();
+        let ceremony = match &manifest.trustees {
+            Some(t) => Some(Ceremony::new(
+                Threshold::new(
+                    u32::try_from(t.threshold).unwrap_or(0),
+                    u32::try_from(t.dids.len()).unwrap_or(0),
+                )
+                .map_err(|e| Failure::malformed(e.to_string()))?,
+                ctx.clone(),
+            )),
+            None => None,
+        };
         let revote = match manifest.revote {
             register::Revote::Replace => BoxRevote::Replace,
             _ => BoxRevote::Refuse,
@@ -554,6 +607,10 @@ impl BallotBox {
             entries: Vec::new(),
             exact: HashMap::new(),
             counted: HashMap::new(),
+            encrypted: HashMap::new(),
+            ctx,
+            ceremony,
+            decryption: None,
             result: None,
         })
     }
@@ -598,7 +655,7 @@ impl BallotBox {
         if rules::digest_from_multibase(p.manifest_digest.as_str()) != Some(digest) {
             return Err(RuleError::ManifestMismatch.into());
         }
-        rules::check_manifest(&p.manifest, Some(&self.did))?;
+        rules::check_manifest_serving(&p.manifest, Some(&self.did), SERVED_LEVELS)?;
         let parameters = payload["parameters"].clone();
         let key = (
             community.clone(),
@@ -714,6 +771,11 @@ impl BallotBox {
     pub fn cast(&mut self, payload: &Value, now: DateTime<Utc>) -> Result<Value, Failure> {
         let p: cast::Payload = parse(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
+        if e.ceremony.is_some() {
+            return Err(Failure::malformed(
+                "a sealed or tallied-encrypted election is cast with voting/ballot/cast-encrypted",
+            ));
+        }
         // Cheapest first (VTI-VOT-045): state, then form, then class and tag, then the pairing.
         if e.state != State::Voting {
             return Err(Failure::task("notOpen", "voting is not open"));

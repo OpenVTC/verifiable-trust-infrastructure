@@ -187,6 +187,35 @@ impl Voter {
         }))
     }
 
+    /// The wire `EncryptedCast` (CONVENTIONS §9.5) for an encrypted form from
+    /// [`encrypted_form`]: the attestation is made over the form's JCS bytes, never the
+    /// plaintext ballot's.
+    ///
+    /// # Errors
+    /// As [`Self::cast_wire`].
+    pub fn cast_encrypted_wire<R: RngCore + CryptoRng>(
+        &self,
+        params: &VotingParams,
+        ticket: &Ticket,
+        form: &EncryptedForm,
+        rng: &mut R,
+    ) -> Result<serde_json::Value, VotingError> {
+        let (field, value) = match form {
+            EncryptedForm::Sealed(v) => ("sealed", v),
+            EncryptedForm::Encrypted(v) => ("encrypted", v),
+        };
+        let bytes = serde_json_canonicalizer::to_vec(value)
+            .map_err(|e| VotingError::Serialization(e.to_string()))?;
+        let cast = self.cast(params, ticket, &bytes, rng)?;
+        let attestation = vti_vetting_pcs::scheme::enc(&cast.attestation)
+            .map_err(|e| VotingError::Serialization(e.to_string()))?;
+        Ok(serde_json::json!({
+            field: value,
+            "tag": cast.tag()?,
+            "attestation": attestation,
+        }))
+    }
+
     /// Cast `ballot` with `ticket`: an attestation for the election's point, bound to the ballot.
     ///
     /// # Errors
@@ -210,6 +239,90 @@ impl Voter {
             rng,
         )?;
         Ok(Cast { attestation })
+    }
+}
+
+/// A ballot in the form its election's level casts it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EncryptedForm {
+    /// A `SealedPayload`: the ballot's JCS bytes sealed to the election key.
+    Sealed(serde_json::Value),
+    /// An `EncryptedBallot`: each choice question's options as 0/1 ciphertexts with proofs.
+    Encrypted(serde_json::Value),
+}
+
+/// The encrypted form of `ballot` (already checked against the manifest,
+/// [`crate::rules::check_ballot`]) under the formed election key (CONVENTIONS §9.4 – 9.5).
+///
+/// # Errors
+/// [`VotingError::Serialization`] for a ballot that cannot be canonicalized, a level that is not
+/// encrypted, or a tallied-encrypted ballot that answers anything but choice questions.
+pub fn encrypted_form<R: RngCore + CryptoRng>(
+    manifest: &trust_tasks_rs::specs::voting::election::register::v0_1::Manifest,
+    election: &Election,
+    key: &crate::trustees::ElectionKey,
+    ballot: &serde_json::Value,
+    rng: &mut R,
+) -> Result<EncryptedForm, VotingError> {
+    use trust_tasks_rs::specs::voting::election::register::v0_1::{Question, SecrecyLevel};
+    let bad = |why: String| VotingError::Serialization(why);
+    let ctx = election.trustee_context();
+    match manifest.secrecy {
+        SecrecyLevel::Sealed => {
+            let bytes = serde_json_canonicalizer::to_vec(ballot).map_err(|e| bad(e.to_string()))?;
+            let sealed =
+                crate::trustees::seal(key, &bytes, &ctx, rng).map_err(|e| bad(e.to_string()))?;
+            Ok(EncryptedForm::Sealed(crate::wire::sealed_value(&sealed)))
+        }
+        SecrecyLevel::TalliedEncrypted => {
+            let mut questions = Vec::with_capacity(manifest.questions.len());
+            for q in &manifest.questions {
+                let Question::Choice {
+                    key: qkey,
+                    options,
+                    min_selections,
+                    max_selections,
+                    optional,
+                    ..
+                } = q
+                else {
+                    return Err(bad("a tallied-encrypted election asks choices only".into()));
+                };
+                let answer = ballot["answers"]
+                    .as_array()
+                    .and_then(|a| a.iter().find(|a| a["question"] == qkey.as_str()));
+                let chosen: Vec<bool> = options
+                    .iter()
+                    .map(|o| {
+                        answer
+                            .and_then(|a| a["choice"].as_array())
+                            .is_some_and(|c| c.iter().any(|k| k == o.key.as_str()))
+                    })
+                    .collect();
+                let counts = crate::trustees::admitted_counts(
+                    options.len(),
+                    *min_selections,
+                    max_selections.get(),
+                    *optional,
+                )
+                .map_err(|e| bad(e.to_string()))?;
+                let eq = crate::trustees::encrypt_vote(
+                    key,
+                    &chosen,
+                    &counts,
+                    &crate::trustees::question_ctx(&ctx, qkey.as_str()),
+                    rng,
+                )
+                .map_err(|e| bad(e.to_string()))?;
+                questions.push(crate::wire::encrypted_question_value(qkey.as_str(), &eq));
+            }
+            Ok(EncryptedForm::Encrypted(serde_json::json!({
+                "electionId": election.id().as_str(),
+                "manifestDigest": crate::rules::digest_multibase(election.manifest_digest()),
+                "questions": questions,
+            })))
+        }
+        _ => Err(bad("an open election is cast in the clear".into())),
     }
 }
 

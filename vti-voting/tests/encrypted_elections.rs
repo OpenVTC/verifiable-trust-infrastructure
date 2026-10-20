@@ -1,0 +1,431 @@
+//! Sealed and tallied-encrypted elections end to end (CONVENTIONS §9): the trustees generate the
+//! key through the ballot box, voters cast encrypted ballots, two of three trustees decrypt after
+//! close, and the box publishes the result — and a restored box rebuilds every step.
+
+use std::{collections::BTreeSet, sync::Arc};
+
+use chrono::{DateTime, Utc};
+use rand::{SeedableRng, rngs::StdRng};
+use serde_json::{Value, json};
+use trust_tasks_rs::specs::voting::election::register::v0_1::Manifest;
+use vti_voting::{
+    election::{Election, ElectionId},
+    registrar::Registrar,
+    rules::{digest_multibase, manifest_digest},
+    service::{BallotBox, Caller, MemoryJournal, NoJournal},
+    trustees::{
+        Dealing, Share, Threshold, TransportSecret, TrusteeKey, deal, open_share, partial_decrypt,
+        seal_share, verify_share,
+    },
+    voter::{EncryptedForm, Voter, encrypted_form},
+    wire,
+};
+
+const COMMUNITY: &str = "did:webvh:QmCommunity:vtc.example.org";
+const BOX: &str = "did:webvh:QmVote:vote.example.net";
+const TRUSTEES: [&str; 3] = [
+    "did:webvh:QmT1:t1.example",
+    "did:webvh:QmT2:t2.example",
+    "did:webvh:QmT3:t3.example",
+];
+
+fn t(s: &str) -> DateTime<Utc> {
+    s.parse().unwrap()
+}
+
+fn manifest(secrecy: &str) -> Value {
+    json!({
+        "electionId": "board-2027",
+        "community": COMMUNITY,
+        "questions": [
+            { "key": "chair", "type": "choice",
+              "options": [{ "key": "ana" }, { "key": "ben" }, { "key": "cai" }],
+              "minSelections": 1, "maxSelections": 1, "optional": true },
+            { "key": "projects", "type": "choice",
+              "options": [{ "key": "kiln" }, { "key": "laser" }],
+              "minSelections": 0, "maxSelections": 2, "optional": false }
+        ],
+        "secrecy": secrecy,
+        "trustees": { "dids": TRUSTEES, "threshold": 2 },
+        "roll": { "rule": "members" },
+        "registrationOpens": "2026-11-01T00:00:00Z",
+        "votingOpens": "2026-11-03T00:00:00Z",
+        "votingCloses": "2026-11-07T18:00:00Z",
+        "revote": "replace",
+        "board": { "visibility": "public", "auditors": [] },
+        "ballotBox": BOX,
+        "binding": false,
+        "allowEarlyClose": false,
+        "resultsBeforeClose": false,
+        "textReleaseThreshold": 10
+    })
+}
+
+struct Trustee {
+    transport: TransportSecret,
+    shares: Vec<Share>,
+    key: Option<TrusteeKey>,
+}
+
+struct Run {
+    reg: Registrar,
+    bb: BallotBox,
+    journal: Arc<MemoryJournal>,
+    manifest: Value,
+    digest: [u8; 32],
+    trustees: Vec<Trustee>,
+    rng: StdRng,
+}
+
+const BEFORE: &str = "2026-11-02T00:00:00Z";
+const DURING: &str = "2026-11-04T00:00:00Z";
+const AFTER: &str = "2026-11-08T00:00:00Z";
+
+impl Run {
+    fn new(secrecy: &str) -> Self {
+        let mut rng = StdRng::seed_from_u64(7);
+        let reg = Registrar::generate(COMMUNITY, &mut rng).unwrap();
+        let manifest = manifest(secrecy);
+        let digest = manifest_digest(&manifest).unwrap();
+        let journal = Arc::new(MemoryJournal::default());
+        let mut bb = BallotBox::with_journal(BOX, journal.clone());
+        bb.register(
+            COMMUNITY,
+            &json!({
+                "community": COMMUNITY,
+                "manifest": manifest,
+                "manifestDigest": digest_multibase(&digest),
+                "parameters": { "suite": "ps-ddh-bls12381", "votingKey": reg.public_text().unwrap() },
+            }),
+            t("2026-10-30T00:00:00Z"),
+        )
+        .unwrap();
+        let trustees = (1..=3)
+            .map(|j| Trustee {
+                transport: TransportSecret::generate(j, &mut rng),
+                shares: Vec::new(),
+                key: None,
+            })
+            .collect();
+        Self {
+            reg,
+            bb,
+            journal,
+            manifest,
+            digest,
+            trustees,
+            rng,
+        }
+    }
+
+    fn election(&self) -> Election {
+        Election::new(
+            COMMUNITY,
+            ElectionId::new("board-2027").unwrap(),
+            self.digest,
+        )
+        .unwrap()
+    }
+
+    fn sel(&self) -> Value {
+        json!({ "community": COMMUNITY, "electionId": "board-2027" })
+    }
+
+    fn with(&self, extra: Value) -> Value {
+        let mut v = self.sel();
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        v
+    }
+
+    fn status(&mut self, now: &str) -> Value {
+        let sel = self.sel();
+        self.bb
+            .trustees_status(Caller::Anonymous, &sel, t(now))
+            .unwrap()
+    }
+
+    /// The whole key ceremony, each step as its trustee would send it.
+    fn ceremony(&mut self) {
+        let ctx = self.election().trustee_context();
+        for j in 0..3 {
+            let tk = self.trustees[j].transport.publish(&ctx, &mut self.rng);
+            let p = self.with(json!({ "transportKey": wire::transport_key_value(&tk) }));
+            let a = self.bb.trustees_enrol(TRUSTEES[j], &p, t(BEFORE)).unwrap();
+            // A repeat is the same answer, and nobody else may enrol as this trustee.
+            assert_eq!(
+                self.bb.trustees_enrol(TRUSTEES[j], &p, t(BEFORE)).unwrap(),
+                a
+            );
+            let other = TRUSTEES[(j + 1) % 3];
+            assert_eq!(
+                self.bb
+                    .trustees_enrol(other, &p, t(BEFORE))
+                    .unwrap_err()
+                    .local,
+                "permissionDenied"
+            );
+        }
+        assert_eq!(self.status(BEFORE)["phase"], "dealing");
+
+        let tks: Vec<_> = self.status(BEFORE)["transportKeys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| wire::transport_key(v).unwrap())
+            .collect();
+        let th = Threshold::new(2, 3).unwrap();
+        for i in 1..=3u32 {
+            let (dealing, shares) = deal(i, th, &ctx, &mut self.rng).unwrap();
+            let sealed = shares
+                .iter()
+                .map(|s| {
+                    (
+                        s.recipient,
+                        seal_share(s, &tks[s.recipient as usize - 1], &ctx, &mut self.rng).unwrap(),
+                    )
+                })
+                .collect();
+            let sd = vti_voting::ceremony::SealedDealing {
+                dealing,
+                shares: sealed,
+            };
+            let p = self.with(json!({ "dealing": wire::dealing_value(&sd) }));
+            self.bb
+                .trustees_deal(TRUSTEES[i as usize - 1], &p, t(BEFORE))
+                .unwrap();
+        }
+        let status = self.status(BEFORE);
+        assert_eq!(status["phase"], "confirming");
+
+        // Each trustee opens what the board holds for it and confirms.
+        let dealings: Vec<_> = status["dealings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| wire::dealing(v).unwrap())
+            .collect();
+        for (j, did) in TRUSTEES.iter().enumerate() {
+            let mut complaints = BTreeSet::new();
+            let tr = &mut self.trustees[j];
+            for sd in &dealings {
+                let me = tr.transport.trustee;
+                match open_share(&tr.transport, sd.dealing.dealer, &sd.shares[&me], &ctx)
+                    .and_then(|s| verify_share(&sd.dealing, &s).map(|()| s))
+                {
+                    Ok(s) => tr.shares.push(s),
+                    Err(_) => {
+                        complaints.insert(sd.dealing.dealer);
+                    }
+                }
+            }
+            let p = self.with(json!({ "trustee": j + 1, "complaints": complaints }));
+            self.bb.trustees_confirm(did, &p, t(BEFORE)).unwrap();
+        }
+        let status = self.status(BEFORE);
+        assert_eq!(status["phase"], "keyed");
+        let ek = wire::election_key(&status["electionKey"], th).unwrap();
+        let plain: Vec<Dealing> = dealings.iter().map(|d| d.dealing.clone()).collect();
+        for tr in &mut self.trustees {
+            tr.key = Some(
+                TrusteeKey::from_shares(tr.transport.trustee, &tr.shares, &plain, &ek).unwrap(),
+            );
+        }
+    }
+
+    fn cast(&mut self, seed: u64, ballot: Value) -> Value {
+        let params = self.reg.params();
+        let mut r = StdRng::seed_from_u64(seed);
+        let v = Voter::generate(&params, &mut r).unwrap();
+        let e = self.election();
+        let (req, st) = v.ticket_request(&params, &e, &mut r).unwrap();
+        let pre = self.reg.issue_ticket(&e, v.id(), &req, &mut r).unwrap();
+        let ticket = v.accept_ticket(&params, &e, &pre, &st).unwrap();
+        let status = self.status(DURING);
+        let ek = wire::election_key(&status["electionKey"], Threshold::new(2, 3).unwrap()).unwrap();
+        let m: Manifest = serde_json::from_value(self.manifest.clone()).unwrap();
+        let form = encrypted_form(&m, &e, &ek, &ballot, &mut r).unwrap();
+        let cast = v
+            .cast_encrypted_wire(&params, &ticket, &form, &mut r)
+            .unwrap();
+        self.with(json!({ "cast": cast }))
+    }
+
+    fn ballot(&self, chair: Option<&str>, projects: &[&str]) -> Value {
+        json!({
+            "electionId": "board-2027",
+            "manifestDigest": digest_multibase(&self.digest),
+            "answers": [
+                match chair {
+                    Some(c) => json!({ "question": "chair", "choice": [c] }),
+                    None => json!({ "question": "chair", "abstain": true }),
+                },
+                { "question": "projects", "choice": projects }
+            ],
+        })
+    }
+
+    /// Trustee `j` (0-based) decrypts every target the board lists.
+    fn decrypt(&mut self, j: usize) -> Value {
+        let ctx = self.election().trustee_context();
+        let status = self.status(AFTER);
+        assert_eq!(status["phase"], "decrypting");
+        let key = self.trustees[j].key.clone().unwrap();
+        let partials: Vec<Value> = status["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tv| {
+                let (target, ct) = wire::target(tv).unwrap();
+                let p = partial_decrypt(&key, &ct, &ctx, &mut self.rng);
+                wire::partial_value(&target, &ct, &p)
+            })
+            .collect();
+        let p = self.with(json!({ "trustee": j + 1, "partials": partials }));
+        self.bb.trustees_decrypt(TRUSTEES[j], &p, t(AFTER)).unwrap()
+    }
+}
+
+#[test]
+fn vot_060_064_a_tallied_encrypted_election_reveals_only_totals() {
+    let mut run = Run::new("talliedEncrypted");
+    run.ceremony();
+    let votes = [
+        (Some("ana"), vec!["kiln"]),
+        (Some("ben"), vec!["kiln", "laser"]),
+        (Some("ana"), vec![]),
+        (None, vec!["laser"]),
+    ];
+    let mut receipts = Vec::new();
+    for (i, (chair, projects)) in votes.iter().enumerate() {
+        let ballot = run.ballot(*chair, projects);
+        let p = run.cast(100 + i as u64, ballot);
+        let r = run.bb.cast_encrypted(&p, t(DURING)).unwrap();
+        assert_eq!(r["outcome"], "counted");
+        // A resend is the first receipt (VTI-VOT-042).
+        let again = run.bb.cast_encrypted(&p, t(DURING)).unwrap();
+        assert_eq!(again["outcome"], "alreadyCounted");
+        assert_eq!(again["receiptToken"], r["receiptToken"]);
+        assert_eq!(again["leafIndex"], r["leafIndex"]);
+        receipts.push(r);
+    }
+    // The open cast task does not take an encrypted election's ballots.
+    let open_cast = json!({ "community": COMMUNITY, "electionId": "board-2027", "cast": {} });
+    assert!(run.bb.cast(&open_cast, t(DURING)).is_err());
+    // Neither before close nor by one trustee alone is anything decrypted.
+    let sel = run.sel();
+    assert_eq!(
+        run.bb
+            .result(Caller::Anonymous, &sel, t(DURING))
+            .unwrap_err()
+            .local,
+        "notTallied"
+    );
+    let a = run.decrypt(0);
+    assert_eq!(a["phase"], "decrypting");
+    let b = run.decrypt(2);
+    assert_eq!(b["phase"], "done");
+    let result = run.bb.result(Caller::Anonymous, &sel, t(AFTER)).unwrap();
+    let q = &result["result"]["questions"];
+    assert_eq!(result["result"]["ballotsCounted"], 4);
+    assert_eq!(q[0]["choice"], json!({ "ana": 2, "ben": 1, "cai": 0 }));
+    assert_eq!(q[0]["abstained"], 1, "single selection: derived");
+    assert_eq!(q[1]["choice"], json!({ "kiln": 2, "laser": 2 }));
+    assert_eq!(q[1]["abstained"], 0, "multiple selections: not derivable");
+
+    // A restored box rebuilds the ceremony, the casts, the partials and the result.
+    let mut restored =
+        BallotBox::restore(BOX, Arc::new(NoJournal), run.journal.contents()).unwrap();
+    assert_eq!(
+        restored.result(Caller::Anonymous, &sel, t(AFTER)).unwrap(),
+        result
+    );
+    assert_eq!(
+        restored
+            .trustees_status(Caller::Anonymous, &sel, t(AFTER))
+            .unwrap(),
+        run.status(AFTER)
+    );
+}
+
+#[test]
+fn vot_063_a_sealed_election_opens_each_ballot_after_close() {
+    let mut run = Run::new("sealed");
+    // Before the key is formed nobody can cast.
+    run.ceremony();
+    let ballot = run.ballot(Some("cai"), &["laser"]);
+    let p = run.cast(200, ballot.clone());
+    let r = run.bb.cast_encrypted(&p, t(DURING)).unwrap();
+    let p2 = run.cast(201, run.ballot(Some("ana"), &[]));
+    run.bb.cast_encrypted(&p2, t(DURING)).unwrap();
+    run.decrypt(1);
+    let done = run.decrypt(0);
+    assert_eq!(done["phase"], "done");
+    let sel = run.sel();
+    let result = run.bb.result(Caller::Anonymous, &sel, t(AFTER)).unwrap();
+    assert_eq!(result["result"]["ballotsCounted"], 2);
+    assert_eq!(
+        result["result"]["questions"][0]["choice"],
+        json!({ "ana": 1, "ben": 0, "cai": 1 })
+    );
+    // The board holds the opened ballot at the cast's leaf.
+    let board = run
+        .bb
+        .board_read(
+            Caller::Anonymous,
+            &run.with(json!({ "from": 0, "limit": 100 })),
+            t(AFTER),
+        )
+        .unwrap();
+    let unsealed: Vec<&Value> = board["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["entry"]["kind"] == "unsealed")
+        .collect();
+    assert_eq!(unsealed.len(), 2);
+    assert!(
+        unsealed
+            .iter()
+            .any(|e| e["entry"]["leafIndex"] == r["leafIndex"] && e["entry"]["ballot"] == ballot)
+    );
+}
+
+#[test]
+fn vot_062_casts_need_a_formed_key_and_the_elections_own_form() {
+    let mut run = Run::new("sealed");
+    // The ceremony never completes: at votingOpens it fails, and no cast is admitted.
+    let ctx = run.election().trustee_context();
+    let tk = run.trustees[0].transport.publish(&ctx, &mut run.rng);
+    let p = run.with(json!({ "transportKey": wire::transport_key_value(&tk) }));
+    run.bb.trustees_enrol(TRUSTEES[0], &p, t(BEFORE)).unwrap();
+    assert_eq!(run.status(DURING)["phase"], "failed");
+    let fake = run.with(json!({ "cast": {
+        "sealed": { "kem": { "a": "z11", "b": "z11" }, "body": "z11" },
+        "tag": "z11", "attestation": "z11" } }));
+    let err = run.bb.cast_encrypted(&fake, t(DURING)).unwrap_err();
+    assert_eq!(err.local, "notOpen");
+    // A trustee step after the ceremony failed is refused.
+    let tk2 = run.trustees[1].transport.publish(&ctx, &mut run.rng);
+    let p2 = run.with(json!({ "transportKey": wire::transport_key_value(&tk2) }));
+    assert_eq!(
+        run.bb
+            .trustees_enrol(TRUSTEES[1], &p2, t(DURING))
+            .unwrap_err()
+            .local,
+        "notEnrolling"
+    );
+
+    // An encrypted form the election does not take is wrongLevel.
+    let mut run = Run::new("sealed");
+    run.ceremony();
+    let wrong = run.with(json!({ "cast": {
+        "encrypted": { "electionId": "board-2027", "manifestDigest": digest_multibase(&run.digest), "questions": [] },
+        "tag": "z11", "attestation": "z11" } }));
+    assert_eq!(
+        run.bb.cast_encrypted(&wrong, t(DURING)).unwrap_err().local,
+        "wrongLevel"
+    );
+    let _ = EncryptedForm::Sealed(Value::Null);
+}
