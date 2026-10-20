@@ -179,7 +179,7 @@ impl VtaChannel for FakeVta {
         let answer = match type_uri {
             MINT => {
                 let did = Party::new().did;
-                json!({
+                let mut answer = json!({
                     "did": did,
                     "contextId": payload["contextId"],
                     "scid": "QmScid",
@@ -189,7 +189,15 @@ impl VtaChannel for FakeVta {
                     "preRotationKeyCount": 0,
                     "createdAt": Utc::now().to_rfc3339(),
                     "serverId": payload["serverId"],
-                })
+                });
+                // A serverless mint answers with the log, for the community
+                // to serve.
+                if payload.get("url").is_some() {
+                    answer.as_object_mut().unwrap().remove("serverId");
+                    answer["serverless"] = json!(true);
+                    answer["logEntry"] = json!(format!("{{\"did\":\"{did}\"}}"));
+                }
+                answer
             }
             SIGN_DOCUMENT => {
                 let mut document = payload["document"].clone();
@@ -1442,4 +1450,43 @@ async fn a_member_who_left_the_community_is_not_renewed() {
     let report = groups::renewal::sweep(state, now).await.unwrap();
     assert!(report.credentials.is_empty() && report.failed.is_empty());
     assert_eq!(fix.vta.calls_of(SIGN_DOCUMENT).len(), signs);
+}
+
+/// `dids.webvh_server` (`did_hosting`), set at runtime, decides where the next
+/// group's identity is published over `[groups] webvh_server`: `local` serves it
+/// here, a server id has the VTA publish it there.
+#[tokio::test]
+async fn the_runtime_hosting_choice_decides_where_a_groups_identity_is_published() {
+    let fix = fixture().await;
+    let store = vtc_service::config_store::ConfigStore::new(fix.vtc.state.config_ks.clone());
+
+    store
+        .put(vtc_service::did_hosting::DIDS_WEBVH_SERVER, &json!("local"))
+        .await
+        .unwrap();
+    let (status, doc) = fix
+        .as_admin("create", static_group("Served here", "members", "members"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let mint = fix.vta.calls_of(MINT);
+    let url = mint[0]["url"].as_str().expect("a serverless mint");
+    assert!(
+        url.starts_with("https://vtc.example.com/group-dids/"),
+        "{url}"
+    );
+    assert!(mint[0].get("serverId").is_none(), "{}", mint[0]);
+
+    store
+        .put(
+            vtc_service::did_hosting::DIDS_WEBVH_SERVER,
+            &json!("hosting-eu"),
+        )
+        .await
+        .unwrap();
+    let (status, doc) = fix
+        .as_admin("create", static_group("Hosted there", "members", "members"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let mint = fix.vta.calls_of(MINT);
+    assert_eq!(mint[1]["serverId"], "hosting-eu", "{}", mint[1]);
 }

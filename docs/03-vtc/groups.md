@@ -73,6 +73,25 @@ authority_renew_within_days = 30
 Without it, or without a link to the community's VTA (`vta_did`, the community's
 signing key and `[messaging]`), a create is refused `noKeyHolder` with what to add.
 
+### Where group identities are published, at runtime
+
+`dids.webvh_server` chooses where the identities this community mints are published —
+its groups' and its own rooms' alike — and can be changed without a restart, by an
+administrator holding `vtc.config.admin`: on the Groups page (*Where identities are
+published*), with `config/patch`, or in a `vtc/config/import`.
+
+| Value | Each new identity is |
+|---|---|
+| `local` | served by this community, at `<public_url>/group-dids/<id>/did.jsonl` (rooms: `/room-dids/`) |
+| a server id | published by the community's VTA on that `did:webvh` hosting server |
+| unset (the default) | as `[groups] webvh_server` (rooms: `[rooms.community] webvh_server`) says, and served here where that is absent |
+
+`[dids] webvh_server` in `config.toml`, and `VTC_DIDS_WEBVH_SERVER`, set the same key at
+their layers. A change applies to the next identity minted: one already minted stays
+where it was published, because its DID names its host. The change is audited like any
+configuration change; it confers no authority, so it is not held for another
+administrator's consent.
+
 The community's own entry at its VTA needs, in that context, `key-mint` (to mint each
 group's identity) and `sign-document` (to sign the community's authority credential as
 the community).

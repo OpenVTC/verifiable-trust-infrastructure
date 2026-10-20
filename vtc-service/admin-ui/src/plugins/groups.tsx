@@ -19,6 +19,7 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable } from "@/components/DataTable";
 import { DirectoryAvatar } from "@/components/DirectoryAvatar";
 import { EmptyState } from "@/components/EmptyState";
+import { DidHostingCard } from "@/plugins/DidHostingCard";
 import { PageHeader } from "@/components/PageHeader";
 import { COMMUNITY_ROOMS_LIST_KEY, ROOMS_MANAGE, fetchCommunityRooms } from "@/lib/community-rooms-api";
 import { listAllEntries } from "@/lib/directory";
@@ -134,6 +135,7 @@ function GroupsList() {
         separate choices.
       </p>
       {creating && <CreateGroupForm onDone={() => setCreating(false)} />}
+      {holds(caps, "vtc.config.admin") && <DidHostingCard />}
       {list.error && (
         <section className="card error">
           <h3>Failed to read the groups</h3>

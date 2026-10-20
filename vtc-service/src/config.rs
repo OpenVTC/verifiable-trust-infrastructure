@@ -139,6 +139,15 @@ pub struct AppConfig {
     /// naming this section. Writing it is what turns them on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub groups: Option<GroupsConfig>,
+    /// Where the identities this community mints — its groups' and its own
+    /// rooms' — are published (`[dids] webvh_server`): the file layer of the
+    /// runtime key `dids.webvh_server` (`crate::did_hosting`). **Absent means
+    /// each kind's own setting**, as before the key existed.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::did_hosting::DidsConfig::is_empty"
+    )]
+    pub dids: crate::did_hosting::DidsConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
 }

@@ -54,6 +54,9 @@ context = "vtc"                             # the VTA context the rooms' keys ar
 **Where a room's DID is published.** A room's DID must resolve before its credentials
 can be checked — the VTA verifies the community's own credentials as it stores them.
 
+- The runtime key `dids.webvh_server` overrides `webvh_server` for every identity
+  the community mints, rooms and groups alike, without a restart
+  ([groups](groups.md#where-group-identities-are-published-at-runtime)).
 - With `webvh_server`, the VTA publishes each room's log on that hosting server
   (registered at the VTA with `pnm webvh servers register`).
 - Without it, the room's DID is minted serverless at

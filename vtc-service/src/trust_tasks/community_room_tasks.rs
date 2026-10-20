@@ -466,6 +466,15 @@ struct Setup {
 }
 
 async fn setup(state: &AppState) -> Result<Setup, String> {
+    let hosting = {
+        let config = state.config.read().await.clone();
+        crate::did_hosting::live(
+            &config,
+            &crate::config_store::ConfigStore::new(state.config_ks.clone()),
+        )
+        .await
+        .map_err(|e| format!("where room identities are published could not be read: {e}"))?
+    };
     let config = state.config.read().await;
     let Some(community) = config.rooms.community.clone() else {
         return Err(
@@ -495,7 +504,9 @@ async fn setup(state: &AppState) -> Result<Setup, String> {
              `[messaging] mediator_did`"
                 .to_string()
         })?;
-    let publish = match (&community.webvh_server, &config.public_url) {
+    let server =
+        crate::did_hosting::server_for(hosting.as_deref(), community.webvh_server.as_deref());
+    let publish = match (&server, &config.public_url) {
         (Some(server), _) => Publish::Server(server.clone()),
         (None, Some(url)) => Publish::Served {
             public_url: url.trim_end_matches('/').to_string(),
@@ -503,8 +514,8 @@ async fn setup(state: &AppState) -> Result<Setup, String> {
         (None, None) => {
             return Err(
                 "a room's identity is served from this community's public URL unless \
-                        `[rooms.community] webvh_server` names a hosting server at the VTA: set \
-                        `public_url`, or `webvh_server`"
+                        `dids.webvh_server` (or `[rooms.community] webvh_server`) names a \
+                        hosting server at the VTA: set `public_url`, or `dids.webvh_server`"
                     .into(),
             );
         }

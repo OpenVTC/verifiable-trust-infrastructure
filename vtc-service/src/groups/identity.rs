@@ -53,6 +53,15 @@ pub struct Setup {
 /// What to configure when the community cannot hold a group's keys: the
 /// message of a `noKeyHolder`.
 pub async fn setup(state: &AppState) -> Result<Setup, String> {
+    let hosting = {
+        let config = state.config.read().await.clone();
+        crate::did_hosting::live(
+            &config,
+            &crate::config_store::ConfigStore::new(state.config_ks.clone()),
+        )
+        .await
+        .map_err(|e| format!("where group identities are published could not be read: {e}"))?
+    };
     let config = state.config.read().await;
     let Some(groups) = config.groups.clone() else {
         return Err(
@@ -85,16 +94,17 @@ pub async fn setup(state: &AppState) -> Result<Setup, String> {
              context`, or `[rooms.community] context`"
                 .to_string()
         })?;
-    let publish = match (&groups.webvh_server, &config.public_url) {
+    let server = crate::did_hosting::server_for(hosting.as_deref(), groups.webvh_server.as_deref());
+    let publish = match (&server, &config.public_url) {
         (Some(server), _) => Publish::Server(server.clone()),
         (None, Some(url)) => Publish::Served {
             public_url: url.trim_end_matches('/').to_string(),
         },
         (None, None) => {
             return Err(
-                "a group's identity is served from this community's public URL unless `[groups] \
-                 webvh_server` names a hosting server at the VTA: set `public_url`, or \
-                 `webvh_server`"
+                "a group's identity is served from this community's public URL unless \
+                 `dids.webvh_server` (or `[groups] webvh_server`) names a hosting server at the \
+                 VTA: set `public_url`, or `dids.webvh_server`"
                     .into(),
             );
         }

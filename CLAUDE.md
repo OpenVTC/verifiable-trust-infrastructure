@@ -1429,6 +1429,11 @@ new flow, update both this section and the relevant `docs/*.md`.
   admission — and renews bound admissions into `offers/list/0.3` `renewals`
   (membership + authority, never an invitation; the renewed `validUntil` becomes
   the admission's own).
+- **Where identities are published** (`did_hosting`): the runtime key
+  `dids.webvh_server` (`local` or a VTA hosting-server id; `config/patch`,
+  import, the Groups page) is read live at every group and community-room
+  mint and overrides each kind's `webvh_server`; unset, those apply. It never
+  moves an identity already minted, and is not consent-gated.
 - **Renewal** (`groups::renewal`, create item 5's MUST): a sweeper renews a
   group's authority within `[groups] authority_renew_within_days` (default
   `max(30, credential_valid_days)`, ≤ half the life) **in the slot it already
