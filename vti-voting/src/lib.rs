@@ -25,6 +25,7 @@
 pub mod audit;
 pub mod ballot_box;
 pub mod board;
+pub mod ceremony;
 pub mod election;
 pub mod error;
 pub mod registrar;
