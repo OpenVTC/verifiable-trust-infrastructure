@@ -58,6 +58,13 @@ enum Task {
     Inclusion,
     Consistency,
     Result,
+    CastEncrypted,
+    Enrol,
+    Deal,
+    Confirm,
+    Justify,
+    Decrypt,
+    TrusteeStatus,
 }
 
 impl Task {
@@ -77,6 +84,13 @@ impl Task {
             "voting/board/inclusion" => Task::Inclusion,
             "voting/board/consistency" => Task::Consistency,
             "voting/result/show" => Task::Result,
+            "voting/ballot/cast-encrypted" => Task::CastEncrypted,
+            "voting/trustees/enrol" => Task::Enrol,
+            "voting/trustees/deal" => Task::Deal,
+            "voting/trustees/confirm" => Task::Confirm,
+            "voting/trustees/justify" => Task::Justify,
+            "voting/trustees/decrypt" => Task::Decrypt,
+            "voting/trustees/status" => Task::TrusteeStatus,
             _ => return None,
         })
     }
@@ -93,6 +107,13 @@ impl Task {
             Task::Inclusion => "voting/board/inclusion",
             Task::Consistency => "voting/board/consistency",
             Task::Result => "voting/result/show",
+            Task::CastEncrypted => "voting/ballot/cast-encrypted",
+            Task::Enrol => "voting/trustees/enrol",
+            Task::Deal => "voting/trustees/deal",
+            Task::Confirm => "voting/trustees/confirm",
+            Task::Justify => "voting/trustees/justify",
+            Task::Decrypt => "voting/trustees/decrypt",
+            Task::TrusteeStatus => "voting/trustees/status",
         }
     }
 
@@ -100,7 +121,16 @@ impl Task {
     fn needs_proof(self) -> bool {
         matches!(
             self,
-            Task::Register | Task::Close | Task::Cancel | Task::Cast
+            Task::Register
+                | Task::Close
+                | Task::Cancel
+                | Task::Cast
+                | Task::CastEncrypted
+                | Task::Enrol
+                | Task::Deal
+                | Task::Confirm
+                | Task::Justify
+                | Task::Decrypt
         )
     }
 }
@@ -273,6 +303,13 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
             Task::Inclusion => bb.board_inclusion(caller, p, now),
             Task::Consistency => bb.board_consistency(caller, p, now),
             Task::Result => bb.result(caller, p, now),
+            Task::CastEncrypted => bb.cast_encrypted(p, now),
+            Task::Enrol => bb.trustees_enrol(signer_did, p, now),
+            Task::Deal => bb.trustees_deal(signer_did, p, now),
+            Task::Confirm => bb.trustees_confirm(signer_did, p, now),
+            Task::Justify => bb.trustees_justify(signer_did, p, now),
+            Task::Decrypt => bb.trustees_decrypt(signer_did, p, now),
+            Task::TrusteeStatus => bb.trustees_status(caller, p, now),
         }
     };
 

@@ -297,6 +297,116 @@ async fn a_reply_is_never_answered() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A sealed election's trustees enrol over the service: only the trustee the manifest names at
+/// an index enrols as it, and only signed.
+#[tokio::test]
+async fn trustees_enrol_over_http() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let svc = state(&dir);
+    let service_did = svc.identity.did.clone();
+    let community = Identity::from_seed(&[5; 32]).unwrap();
+    let trustees: Vec<Identity> = (1..=3u8)
+        .map(|i| Identity::from_seed(&[20 + i; 32]).unwrap())
+        .collect();
+    let reg = Registrar::generate(&community.did, &mut StdRng::seed_from_u64(2)).unwrap();
+    let now = Utc::now();
+    let manifest = json!({
+        "electionId": "sealed-2027",
+        "community": community.did,
+        "questions": [{ "key": "chair", "type": "choice",
+            "options": [{ "key": "ana" }, { "key": "bo" }],
+            "minSelections": 1, "maxSelections": 1, "optional": false }],
+        "secrecy": "sealed",
+        "trustees": { "dids": trustees.iter().map(|t| t.did.clone()).collect::<Vec<_>>(), "threshold": 2 },
+        "roll": { "rule": "members" },
+        "registrationOpens": (now - Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "votingOpens": (now + Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "votingCloses": (now + Duration::days(2)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "revote": "replace",
+        "board": { "visibility": "public", "auditors": [] },
+        "ballotBox": service_did,
+        "binding": false,
+        "allowEarlyClose": false,
+        "resultsBeforeClose": false,
+        "textReleaseThreshold": 10
+    });
+    let digest = manifest_digest(&manifest).unwrap();
+    let register = json!({
+        "community": community.did,
+        "manifest": manifest,
+        "manifestDigest": digest_multibase(&digest),
+        "parameters": { "suite": "ps-ddh-bls12381", "votingKey": reg.public_text().unwrap() },
+    });
+    let (status, _) = send(
+        &svc,
+        doc(
+            "election/register",
+            &service_did,
+            Some(&community),
+            register,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let ctx = Election::new(
+        &community.did,
+        ElectionId::new("sealed-2027").unwrap(),
+        digest,
+    )
+    .unwrap()
+    .trustee_context();
+    let tk = vti_voting::trustees::TransportSecret::generate(1, &mut StdRng::seed_from_u64(3))
+        .publish(&ctx, &mut StdRng::seed_from_u64(4));
+    let enrol = json!({
+        "community": community.did,
+        "electionId": "sealed-2027",
+        "transportKey": vti_voting::wire::transport_key_value(&tk),
+    });
+    let (status, answer) = send(
+        &svc,
+        doc("trustees/enrol", &service_did, None, enrol.clone()).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
+    let (status, answer) = send(
+        &svc,
+        doc(
+            "trustees/enrol",
+            &service_did,
+            Some(&trustees[1]),
+            enrol.clone(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+    let (status, answer) = send(
+        &svc,
+        doc("trustees/enrol", &service_did, Some(&trustees[0]), enrol).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["payload"]["phase"], "enrolling");
+    assert_eq!(signed_by(&answer).await, service_did);
+
+    let (status, answer) = send(
+        &svc,
+        doc(
+            "trustees/status",
+            &service_did,
+            None,
+            json!({ "community": community.did, "electionId": "sealed-2027" }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["payload"]["transportKeys"][0]["trustee"], 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The `#request` fragment is optional: a peer sending through the generated payload types uses
 /// the bare type URI, and is served the same.
 #[tokio::test]
