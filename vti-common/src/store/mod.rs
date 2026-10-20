@@ -192,12 +192,31 @@ pub(crate) fn key_in_bounds(key: &[u8], bounds: &(Bound<Vec<u8>>, Bound<Vec<u8>>
     above && below
 }
 
+/// Prefix of the error a vsock response larger than one frame produces.
+///
+/// Lives here, outside the `vsock-store` gate, because the construction site
+/// (`vsock_pool`) and both matchers have to agree on it and the matchers are
+/// not all gated. Shared rather than written out three times: the first
+/// version of this compared against `AppError`'s *rendered* form, which
+/// carries a `"internal error: "` prefix the raw message does not, so neither
+/// matcher ever fired.
+pub(crate) const OVERSIZED_RESPONSE_PREFIX: &str = "vsock response too large:";
+
+/// Is this the "response did not fit one frame" error?
+///
+/// Matches the variant's payload, **not** `to_string()`: `AppError`'s
+/// `Display` prepends its own kind, so a rendered error never starts with the
+/// message it was built from.
+pub(crate) fn is_oversized_response(error: &AppError) -> bool {
+    matches!(error, AppError::Internal(message) if message.starts_with(OVERSIZED_RESPONSE_PREFIX))
+}
+
 /// The error an operator needs when a bulk read is the only option left and
 /// the result does not fit one vsock frame. Raised rather than retried: the
 /// request is deterministic, so a second attempt returns the same oversized
 /// response.
 pub(crate) fn map_oversized_bulk_read(error: AppError) -> AppError {
-    if error.to_string().starts_with("vsock response too large:") {
+    if is_oversized_response(&error) {
         AppError::Internal(
             "bounded vsock scan is unavailable and the legacy response exceeds 16 MiB; \
              upgrade the enclave proxy"
@@ -1654,6 +1673,73 @@ impl LocalKeyspaceHandle {
             let _ = store_key;
             Ok(plaintext)
         }
+    }
+}
+
+#[cfg(test)]
+mod oversized_response_tests {
+    //! The oversized-response error has to be *recognised*, not just raised.
+    //!
+    //! Two behaviours hang off recognising it: the pool must refuse to retry a
+    //! deterministic oversized read, and a bulk-read fallback must turn it into
+    //! the upgrade instruction. The first version of both matchers compared
+    //! against `AppError::to_string()`, which carries `Display`'s own
+    //! `"internal error: "` prefix, so neither ever fired — a proxy without
+    //! bounded scan retried every oversized read and reported the raw error.
+    //! These build the error the way production does rather than hand-writing
+    //! its rendered form, which is the only way to catch that.
+
+    use super::*;
+
+    /// Exactly how `round_trip_within` raises it.
+    fn as_production_raises_it() -> AppError {
+        AppError::Internal(format!("{OVERSIZED_RESPONSE_PREFIX} 36869978 > 16777216"))
+    }
+
+    #[test]
+    fn the_rendered_error_does_not_start_with_its_own_message() {
+        // The trap itself: `Display` prepends the error kind, so matching on
+        // the rendered form against the raw message can never succeed.
+        let rendered = as_production_raises_it().to_string();
+        assert!(
+            !rendered.starts_with(OVERSIZED_RESPONSE_PREFIX),
+            "if this ever passes, matching on `to_string()` would be safe — it is not: {rendered}"
+        );
+        assert!(rendered.contains(OVERSIZED_RESPONSE_PREFIX));
+    }
+
+    #[test]
+    fn an_oversized_response_is_recognised() {
+        assert!(is_oversized_response(&as_production_raises_it()));
+    }
+
+    #[test]
+    fn other_errors_are_not_mistaken_for_it() {
+        for other in [
+            AppError::Internal("something else entirely".into()),
+            AppError::NotFound("row".into()),
+        ] {
+            assert!(!is_oversized_response(&other), "{other}");
+        }
+    }
+
+    #[test]
+    fn a_bulk_read_fallback_reports_the_upgrade_instruction() {
+        let mapped = map_oversized_bulk_read(as_production_raises_it()).to_string();
+        assert!(
+            mapped.contains("upgrade the enclave proxy"),
+            "an operator needs to be told what to do, got: {mapped}"
+        );
+        assert!(
+            !mapped.contains("36869978"),
+            "the raw frame size is not the operator's problem: {mapped}"
+        );
+    }
+
+    #[test]
+    fn an_unrelated_error_passes_through_the_mapping_unchanged() {
+        let untouched = map_oversized_bulk_read(AppError::NotFound("row".into()));
+        assert_eq!(untouched.to_string(), "not found: row");
     }
 }
 
