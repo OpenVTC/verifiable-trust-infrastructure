@@ -172,6 +172,39 @@ impl VtcClient {
     }
 }
 
+impl VtcClient {
+    /// Send a request document someone else signed — a member's VTA, through
+    /// `vta/pcs/voter/{read,register}` — to the community unchanged, over its HTTPS Trust Task
+    /// door, and return the answer's payload. A persona-signed document never rides this
+    /// client's own session: it would arrive attributed to the session's DID.
+    ///
+    /// # Errors
+    /// [`VtcError::Http`] for a refusal, carrying the `trust-task-error` document as its body.
+    pub async fn send_signed_document(&self, document: &Value) -> Result<Value, VtcError> {
+        let resp = self
+            .http
+            .post(format!("{}/trust-tasks", self.base_url))
+            .header("content-type", "application/json")
+            .body(serde_json::to_string(document).map_err(|e| VtcError::Url(e.to_string()))?)
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            return Err(VtcError::Http {
+                status: status.as_u16(),
+                body: text,
+            });
+        }
+        let doc: trust_tasks_rs::TrustTask<Value> =
+            serde_json::from_str(&text).map_err(|e| VtcError::Http {
+                status: status.as_u16(),
+                body: format!("not a Trust Task document: {e}: {text}"),
+            })?;
+        Ok(doc.payload)
+    }
+}
+
 /// `payload`, once it validates against `P`'s published schema.
 fn checked<P: ValidatedPayload>(payload: Value) -> Result<Value, VtcError> {
     P::validate_value(&payload).map_err(|e| VtcError::InvalidPayload(e.to_string()))?;

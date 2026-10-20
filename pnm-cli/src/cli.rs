@@ -358,11 +358,75 @@ pub(crate) enum Commands {
         command: RoomCommands,
     },
 
+    /// Vote in your community's polls and elections. Your VTA holds every key: it signs your
+    /// requests to the community as your membership DID, unblinds your ticket, and builds each
+    /// cast under a key made for it alone; this CLI posts the cast to the ballot box itself.
+    ///
+    /// Needs the `pcsVoter` capability in the context your membership persona lives in.
+    #[command(name = "elections")]
+    Elections {
+        #[command(subcommand)]
+        command: ElectionCommands,
+    },
+
     /// Operate an Affinidi messaging mediator as a DID this VTA manages.
     #[command(name = "messaging")]
     Messaging {
         #[command(subcommand)]
         command: MessagingCommands,
+    },
+}
+
+/// The community a member votes in, and who they are there.
+#[derive(clap::Args)]
+pub(crate) struct ElectionTarget {
+    /// Base URL of the community's Trust Task endpoint (e.g. `https://vtc.example.com/v1`).
+    #[arg(long)]
+    pub(crate) vtc: String,
+    /// The community's DID.
+    #[arg(long)]
+    pub(crate) vtc_did: String,
+    /// Your membership DID at the community: a persona your VTA holds.
+    #[arg(long)]
+    pub(crate) member: String,
+    /// The VTA context that persona lives in; your voter keys are derived there.
+    #[arg(long)]
+    pub(crate) context: String,
+}
+
+/// A member's election commands.
+#[derive(Subcommand)]
+pub(crate) enum ElectionCommands {
+    /// The elections the community lets you vote in.
+    List {
+        #[command(flatten)]
+        target: ElectionTarget,
+    },
+    /// One election: its questions, schedule, and what you are told about its ballot box.
+    Show {
+        election_id: String,
+        #[command(flatten)]
+        target: ElectionTarget,
+    },
+    /// Take your ticket if you have not, then vote.
+    ///
+    /// A later vote replaces an earlier one where the election allows it. Run the same
+    /// command again if the ballot box did not answer.
+    Vote {
+        election_id: String,
+        /// An answer to a choice question, as `question=option`. Repeat for each question,
+        /// and for each option of a multi-select. Optional questions left out are abstained.
+        #[arg(long = "answer")]
+        answers: Vec<String>,
+        /// The whole ballot as JSON (`voting/ballot/cast` `Ballot`), for questions `--answer`
+        /// cannot express.
+        #[arg(long, conflicts_with = "answers")]
+        ballot: Option<std::path::PathBuf>,
+        /// Send the cast at once rather than after a random pause of up to 20 seconds.
+        #[arg(long)]
+        no_delay: bool,
+        #[command(flatten)]
+        target: ElectionTarget,
     },
 }
 

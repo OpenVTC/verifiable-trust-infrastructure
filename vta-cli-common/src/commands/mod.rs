@@ -10,6 +10,7 @@ pub mod cred_vault;
 pub mod credentials;
 pub mod device;
 pub mod did_templates;
+pub mod elections;
 pub mod external;
 pub mod keys;
 pub mod memory;
