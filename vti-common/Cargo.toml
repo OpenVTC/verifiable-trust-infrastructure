@@ -180,12 +180,12 @@ object_store = { version = "0.14", default-features = false, optional = true }
 # S3's XML answers to the multipart and listing requests a direct upload's
 # verification reads (`blob_store::presigned`). Already in the graph through
 # `object_store`.
-quick-xml = { version = "0.41", features = ["serialize"], optional = true }
+quick-xml = { version = "0.42", features = ["serialize"], optional = true }
 
 [dev-dependencies]
 # `blob_store::presigned` also compiles for this crate's own tests without the
 # `blob-presigned` feature, and reads S3's XML answers.
-quick-xml = { version = "0.41", features = ["serialize"] }
+quick-xml = { version = "0.42", features = ["serialize"] }
 # Parses the config fixtures in the VaultConfig tests.
 toml = { workspace = true }
 tempfile = "3"
