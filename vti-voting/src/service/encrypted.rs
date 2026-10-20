@@ -772,7 +772,9 @@ fn encrypted_receipt(
     now: DateTime<Utc>,
 ) -> Result<Value, Failure> {
     respond::<cast_encrypted::Response>(json!({
+        "electionId": e.id(),
         "leafIndex": a.leaf,
+        "entryHash": hash_text(e.board.leaf(a.leaf as usize).expect("admitted leaves exist")),
         "outcome": outcome,
         "receiptToken": a.receipt_token,
         "head": e.head(e.board.len(), now),
