@@ -1346,3 +1346,100 @@ async fn an_appointment_whose_granter_no_longer_covers_it_is_reviewed_then_withd
     .await;
     assert_eq!(tt_error_code(&b), "permissionDenied", "{b}");
 }
+
+#[tokio::test]
+async fn the_sweeper_renews_a_groups_authority_and_its_members_credentials_before_they_lapse() {
+    use vtc_service::groups;
+    let fix = fixture().await;
+    let group_id = fix.group("open", "members", "members").await;
+    let (status, doc) = fix.as_member("join", json!({ "groupId": group_id })).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let entry_id = entry_of(&fix.vtc, &fix.member).await;
+    let state = &fix.vtc.state;
+    let ks = state.directory.ks();
+    let now = Utc::now();
+
+    // Nothing is due yet.
+    let report = groups::renewal::sweep(state, now).await.unwrap();
+    assert!(report.authorities.is_empty() && report.credentials.is_empty());
+
+    // Both near their expiry.
+    let mut group = groups::get(ks, &group_id).await.unwrap().unwrap();
+    let old = group.authority.clone().unwrap();
+    group.authority.as_mut().unwrap().valid_until = now + chrono::Duration::days(5);
+    groups::put(ks, &group).await.unwrap();
+    let mut m = groups::membership(ks, &group_id, &entry_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let old_credential = m.credential_id.clone().unwrap();
+    m.credential_valid_until = Some(now + chrono::Duration::days(2));
+    groups::put_membership(ks, &m).await.unwrap();
+
+    // The VTA does not answer the authority's renewal: it waits out a backoff,
+    // and the member's credential is renewed all the same.
+    fix.vta.script(SIGN_DOCUMENT, Script::Silent);
+    let report = groups::renewal::sweep(state, now).await.unwrap();
+    assert_eq!(report.failed, vec![group_id.clone()]);
+    assert_eq!(
+        report.credentials,
+        vec![(group_id.clone(), entry_id.clone())]
+    );
+    let m = groups::membership(ks, &group_id, &entry_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(m.credential_id.as_deref(), Some(old_credential.as_str()));
+    assert!(m.credential_valid_until.unwrap() > now + chrono::Duration::days(29));
+    let signed = fix.vta.calls_of(SIGN_DOCUMENT);
+    let vmc = &signed.last().unwrap()["document"];
+    assert_eq!(vmc["credentialSubject"]["id"], fix.member.did.as_str());
+
+    let report = groups::renewal::sweep(state, now).await.unwrap();
+    assert!(report.failed.is_empty() && report.authorities.is_empty());
+
+    // After the backoff, the authority is renewed in the slot it always held.
+    let later = now + chrono::Duration::hours(7);
+    let report = groups::renewal::sweep(state, later).await.unwrap();
+    assert_eq!(report.authorities, vec![group_id.clone()]);
+    let group = groups::get(ks, &group_id).await.unwrap().unwrap();
+    let renewed = group.authority.clone().unwrap();
+    assert_ne!(renewed.credential_id, old.credential_id);
+    assert_eq!(renewed.status_list_index, old.status_list_index);
+    assert!(renewed.valid_until > later + chrono::Duration::days(364));
+    let vac = group.authority_credential.unwrap();
+    assert_eq!(vac["credentialSubject"]["id"], group.group_did.as_str());
+    assert_eq!(
+        vac["credentialStatus"]["statusListIndex"]
+            .as_str()
+            .map(str::to_string),
+        Some(old.status_list_index.to_string()),
+        "{vac}"
+    );
+}
+
+#[tokio::test]
+async fn a_member_who_left_the_community_is_not_renewed() {
+    use vtc_service::groups;
+    let fix = fixture().await;
+    let group_id = fix.group("open", "members", "members").await;
+    fix.as_member("join", json!({ "groupId": group_id })).await;
+    let entry_id = entry_of(&fix.vtc, &fix.member).await;
+    let state = &fix.vtc.state;
+    let ks = state.directory.ks();
+    let now = Utc::now();
+    let mut m = groups::membership(ks, &group_id, &entry_id)
+        .await
+        .unwrap()
+        .unwrap();
+    m.credential_valid_until = Some(now + chrono::Duration::days(1));
+    groups::put_membership(ks, &m).await.unwrap();
+    vtc_service::acl::delete_acl_entry(&state.acl_ks, &fix.member.did)
+        .await
+        .unwrap();
+
+    let signs = fix.vta.calls_of(SIGN_DOCUMENT).len();
+    let report = groups::renewal::sweep(state, now).await.unwrap();
+    assert!(report.credentials.is_empty() && report.failed.is_empty());
+    assert_eq!(fix.vta.calls_of(SIGN_DOCUMENT).len(), signs);
+}

@@ -200,7 +200,7 @@ pub async fn mint(
     }
 
     let authority = if issues_credentials {
-        match issue_authority(state, setup, &group_did, Utc::now()).await {
+        match issue_authority(state, setup, &group_did, Utc::now(), None).await {
             Ok(a) => Some(a),
             Err(e) => {
                 if let Some(path) = &did_path {
@@ -228,17 +228,28 @@ pub async fn mint(
 /// [`GROUP_AUTHORITY_ACTION`] within the community, with a slot in the
 /// community's revocation list. Answers what this community keeps of it, and
 /// the signed credential.
+///
+/// `slot` is the slot a renewal reuses: every authority a group is ever issued
+/// shares one, so deleting the group revokes them all with one bit. `None`
+/// allocates a fresh one.
 pub async fn issue_authority(
     state: &AppState,
     setup: &Setup,
     group_did: &str,
     valid_from: DateTime<Utc>,
+    slot: Option<u32>,
 ) -> Result<(Authority, Value), Failure> {
     let valid_until = valid_from + Duration::days(i64::from(setup.authority_days));
     let slot = status_list::with_locked(
         &state.status_lists_ks,
         affinidi_status_list::StatusPurpose::Revocation,
-        |row| Ok(status_list::allocate(row).map(|slot| (slot, row.list_credential_id.clone()))),
+        move |row| {
+            let slot = match slot {
+                Some(slot) => Some(slot),
+                None => status_list::allocate(row),
+            };
+            Ok(slot.map(|slot| (slot, row.list_credential_id.clone())))
+        },
     )
     .await
     .map_err(Failure::Local)?;

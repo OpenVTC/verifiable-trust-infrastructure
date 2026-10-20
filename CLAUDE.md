@@ -1417,7 +1417,14 @@ new flow, update both this section and the relevant `docs/*.md`.
   revocation list and an expiry. Served: `create`, `update`, `delete`, `list`,
   `show`, `members/{add,remove,list}`, `join`, `leave`, `requests/{list,decide}`
   `managers/{add,remove}` for **static** groups (a dynamic one is checked, then
-  refused `kindNotServed`). Credential renewal and bindings are later phases.
+  refused `kindNotServed`). Bindings are a later phase.
+- **Renewal** (`groups::renewal`, create item 5's MUST): a sweeper renews a
+  group's authority within `[groups] authority_renew_within_days` (default
+  `max(30, credential_valid_days)`, ≤ half the life) **in the slot it already
+  holds** (deletion's one bit revokes every authority it was issued), and each
+  active member's credential within a third of its life, offered with the
+  current authority. Remote first; the sweeper is the only retry owner
+  (`grenew:` schedules, capped backoff + jitter); no "renew now" task.
 - **Invariants to preserve**: the VTC holds no group key and never falls back to
   one (`noKeyHolder`). Remote first: a group is stored only after its DID and its
   authority exist; a served log is published before anything verifies against

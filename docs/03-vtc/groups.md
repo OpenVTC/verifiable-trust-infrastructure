@@ -26,7 +26,7 @@ This page says what this build serves.
 | `vtc/groups/managers/add/0.1` | a manager of the group | Appoint an active member a manager of it |
 | `vtc/groups/managers/remove/0.1` | the manager, or `vtc.groups.manage` unqualified | End an appointment; a manager may step down |
 
-Renewing members' group credentials, and bindings to rooms or grants, come next. The member portal signs these tasks with its sign-in key
+Bindings to rooms or grants come next. The member portal signs these tasks with its sign-in key
 for the member (`signingScope` `vtc/groups`), as it does the directory's.
 
 Only **static** groups are served. A dynamic group's rule is checked — it may read only
@@ -62,6 +62,9 @@ webvh_server = "hosting"
 authority_valid_days = 365
 # Days a member's group credential lasts, renewed while they stay. Default 30.
 credential_valid_days = 30
+# Days before the authority lapses that it is renewed. Default 30, or
+# credential_valid_days where that is longer; never more than half its life.
+authority_renew_within_days = 30
 ```
 
 Without it, or without a link to the community's VTA (`vta_did`, the community's
@@ -145,6 +148,27 @@ credential lasts `[groups] credential_valid_days` (default 30) and carries no st
 list — a small group's list would single its members out — so leaving, removal or
 departure stops renewal and the credential lapses at its expiry. `credentialValidUntil`
 is shown only to the member and the group's managers.
+
+## Renewal
+
+A sweeper renews both kinds of credential at the community's VTA before they lapse
+(`vtc/groups/create` item 5). There is no task for it, and nothing to run by hand.
+
+- **A group's authority** is renewed within `authority_renew_within_days` of its expiry,
+  signed again by the VTA as the community. It keeps the group's one slot in the
+  community's revocation list, so deleting the group revokes every authority it was ever
+  issued. The old credential is not revoked: members present it until their own
+  credential is renewed.
+- **A member's credential** is renewed within a third of its life of its expiry (ten
+  days of a 30-day credential), signed again as the group and offered with the group's
+  current authority. Only an active member of the community is renewed.
+
+The authority's window is at least a member credential's life, so every member receives
+the new authority before the old one lapses. Nothing is recorded before the VTA has
+signed; a VTA that does not answer is retried with a capped, jittered backoff (one minute
+doubling to six hours), logged at `warn` each time and audited when a run of failures
+begins (`GroupChanged` `authorityRenewalFailed`, `GroupMembershipChanged`
+`credentialRenewalFailed`). Each renewal is audited by reference.
 
 ## Groups in the directory
 

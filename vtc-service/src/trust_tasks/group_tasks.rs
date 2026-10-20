@@ -576,7 +576,8 @@ async fn handle_update(
                     );
                 }
             };
-            match identity::issue_authority(state, &setup, &next.group_did, Utc::now()).await {
+            match identity::issue_authority(state, &setup, &next.group_did, Utc::now(), None).await
+            {
                 Ok((a, c)) => {
                     next.authority = Some(a);
                     next.authority_credential = Some(c);

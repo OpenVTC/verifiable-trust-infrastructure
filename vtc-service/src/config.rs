@@ -173,9 +173,35 @@ pub struct GroupsConfig {
     /// renewed while the member stays; its expiry is its revocation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_valid_days: Option<u32>,
+    /// How long before a group's authority credential lapses the community
+    /// renews it, in days. Default: 30, or a member credential's life where
+    /// that is longer, so every member receives the new authority with a
+    /// renewed credential before the old one lapses. Never more than half the
+    /// authority's own life (`groups::renewal`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_renew_within_days: Option<u32>,
 }
 
 impl GroupsConfig {
+    /// [`Self::authority_renew_within_days`], defaulted, and never more than
+    /// half the authority's own life: a renewal due again as soon as it landed
+    /// would renew on every pass.
+    pub fn authority_renew_within(&self) -> chrono::Duration {
+        let days = self
+            .authority_renew_within_days
+            .unwrap_or_else(|| 30.max(self.credential_valid_days()))
+            .min(self.authority_valid_days() / 2)
+            .max(1);
+        chrono::Duration::days(i64::from(days))
+    }
+
+    /// How long before a member's group credential lapses it is renewed: a
+    /// third of its life (ten days of a 30-day credential), at least an hour.
+    pub fn credential_renew_within(&self) -> chrono::Duration {
+        let life = chrono::Duration::days(i64::from(self.credential_valid_days()));
+        (life / 3).max(chrono::Duration::hours(1))
+    }
+
     /// [`Self::authority_valid_days`], defaulted and at least one day.
     pub fn authority_valid_days(&self) -> u32 {
         self.authority_valid_days.unwrap_or(365).max(1)

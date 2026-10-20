@@ -34,6 +34,7 @@ pub mod credential;
 pub mod identity;
 pub mod managers;
 pub mod policy;
+pub mod renewal;
 
 use std::collections::BTreeSet;
 
@@ -368,6 +369,7 @@ pub async fn remove(ks: &KeyspaceHandle, group_id: &str) -> Result<usize, AppErr
         ks.remove(by_entry_key(&m.entry_id, group_id)).await?;
     }
     ks.remove(group_key(group_id)).await?;
+    renewal::forget(ks, group_id).await?;
     Ok(members.len())
 }
 
@@ -422,7 +424,8 @@ pub async fn remove_membership(
     entry_id: &str,
 ) -> Result<(), AppError> {
     ks.remove(member_key(group_id, entry_id)).await?;
-    ks.remove(by_entry_key(entry_id, group_id)).await
+    ks.remove(by_entry_key(entry_id, group_id)).await?;
+    renewal::forget_credential(ks, group_id, entry_id).await
 }
 
 /// What the caller is to a group, read now.
