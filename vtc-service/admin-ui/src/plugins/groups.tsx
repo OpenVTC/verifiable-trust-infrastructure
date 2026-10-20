@@ -13,27 +13,31 @@
 import { useMemo, useState } from "react";
 import { Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, UserMinus, UserPlus } from "lucide-react";
+import { DoorOpen, Plus, Trash2, UserMinus, UserPlus } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable } from "@/components/DataTable";
 import { DirectoryAvatar } from "@/components/DirectoryAvatar";
 import { EmptyState } from "@/components/EmptyState";
 import { PageHeader } from "@/components/PageHeader";
+import { COMMUNITY_ROOMS_LIST_KEY, ROOMS_MANAGE, fetchCommunityRooms } from "@/lib/community-rooms-api";
 import { listAllEntries } from "@/lib/directory";
 import {
   AUDIENCES,
   GROUPS_MANAGE,
   JOIN_POLICIES,
+  addGroupBinding,
   addGroupManager,
   addGroupMember,
   audienceWithin,
   createGroup,
   decideGroupRequest,
   deleteGroup,
+  listGroupBindings,
   listGroupMembers,
   listGroupRequests,
   listGroups,
+  removeGroupBinding,
   removeGroupManager,
   removeGroupMember,
   showGroup,
@@ -41,6 +45,7 @@ import {
   type Audience,
   type JoinPolicy,
 } from "@/lib/groups";
+import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
 import { holds, useCapabilities } from "@/lib/viewer";
 import type { Group } from "@/lib/wire-types";
@@ -339,6 +344,7 @@ function GroupPage() {
           <GroupMembers group={group} manages={manages} />
           {manages && <GroupRequests group={group} />}
           {manages && <GroupManagers group={group} />}
+          {manages && <GroupRooms group={group} />}
           {manages && <DeleteGroup group={group} onDeleted={() => navigate("..")} />}
         </>
       )}
@@ -684,6 +690,160 @@ function GroupManagers({ group }: { group: Group }) {
           Appoint
         </button>
       </form>
+    </section>
+  );
+}
+
+const ROOM_ACTIONS = ["read", "write", "curate"] as const;
+type RoomAction = (typeof ROOM_ACTIONS)[number];
+
+/** Rooms the group's members are admitted to (`vtc/groups/bindings/*`). Binding takes
+ *  `vtc.rooms.manage` as well as managing the group, and the requester's gesture. */
+function GroupRooms({ group }: { group: Group }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const caps = useCapabilities();
+  const mayBind = holds(caps, ROOMS_MANAGE);
+  const bindings = useQuery({
+    queryKey: ["groups", "bindings", group.groupId],
+    queryFn: () => listGroupBindings(group.groupId),
+  });
+  const rooms = useQuery({
+    queryKey: COMMUNITY_ROOMS_LIST_KEY,
+    queryFn: fetchCommunityRooms,
+    enabled: mayBind,
+  });
+  const [roomId, setRoomId] = useState("");
+  const [actions, setActions] = useState<RoomAction[]>(["read", "write"]);
+  const [days, setDays] = useState("30");
+  const [reason, setReason] = useState("");
+  const n = Number(days);
+  const ready =
+    roomId !== "" && actions.length > 0 && Number.isInteger(n) && n >= 1 && n <= 3650 && reason.trim() !== "";
+  const labelOf = (id: string) =>
+    rooms.data?.rooms.find((r) => r.room.roomId === id)?.label ?? id;
+  const refresh = () => void qc.invalidateQueries({ queryKey: ["groups"] });
+  const add = useMutation({
+    mutationFn: () =>
+      addGroupBinding(
+        group.groupId,
+        { kind: "room", roomId, actions, validFor: `P${n}D` },
+        reason.trim(),
+        gestureFromConfirm(confirm),
+      ),
+    onSuccess: () => {
+      setRoomId("");
+      setReason("");
+      refresh();
+      toast.push("success", `Every member of ${group.name} is being offered a place in “${labelOf(roomId)}”.`);
+    },
+    onError: (err) => toast.pushFromError(err, "Not bound"),
+  });
+  const remove = useMutation({
+    mutationFn: (bindingId: string) =>
+      removeGroupBinding(group.groupId, bindingId, "Ended from the group's page.", gestureFromConfirm(confirm)),
+    onSuccess: (r) => {
+      refresh();
+      toast.push(
+        "success",
+        r.state === "removing"
+          ? "Ending: members who are in the room only through this group are being removed."
+          : "Ended.",
+      );
+    },
+    onError: (err) => toast.pushFromError(err, "Not ended"),
+  });
+  const items = bindings.data ?? [];
+  return (
+    <section className="card">
+      <h3>
+        <DoorOpen size={16} aria-hidden="true" /> Rooms
+      </h3>
+      <p className="muted">
+        Members of this group are offered a place in these community rooms, keep it while they stay,
+        and lose it when they leave — unless they were admitted to the room directly too.
+      </p>
+      {bindings.error && <p className="error">{(bindings.error as Error).message}</p>}
+      {items.length === 0 && bindings.isSuccess && <p className="muted">Not bound to any room.</p>}
+      <ul className="group-managers">
+        {items.map((b) => {
+          const spec = b.binding as { kind: string; roomId?: string; actions?: string[]; validFor?: string };
+          return (
+            <li key={b.bindingId}>
+              <span>
+                {spec.kind === "room" ? labelOf(spec.roomId ?? "") : spec.kind}
+                {spec.actions && <span className="muted"> — {spec.actions.join(", ")}</span>}
+                {spec.validFor && <span className="muted">, renewed every {spec.validFor.slice(1, -1)} days</span>}
+                {b.state !== "active" && <span className="pill">{b.state}</span>}
+              </span>
+              {mayBind && b.state === "active" && (
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={remove.isPending}
+                  onClick={() => remove.mutate(b.bindingId)}
+                >
+                  End
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {mayBind && (
+        <form
+          className="stack"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (ready) add.mutate();
+          }}
+        >
+          <select aria-label="Room to bind" value={roomId} onChange={(e) => setRoomId(e.target.value)}>
+            <option value="">Choose a community room…</option>
+            {(rooms.data?.rooms ?? []).map((r) => (
+              <option key={r.room.roomId} value={r.room.roomId}>
+                {r.label}
+              </option>
+            ))}
+          </select>
+          <fieldset className="inline-form">
+            <legend>What members may do</legend>
+            {ROOM_ACTIONS.map((a) => (
+              <label key={a}>
+                <input
+                  type="checkbox"
+                  checked={actions.includes(a)}
+                  onChange={(e) =>
+                    setActions((cur) => (e.target.checked ? [...cur, a] : cur.filter((x) => x !== a)))
+                  }
+                />{" "}
+                {a}
+              </label>
+            ))}
+          </fieldset>
+          <label>
+            Days each admission lasts before it is renewed
+            <input
+              type="number"
+              min={1}
+              max={3650}
+              value={days}
+              onChange={(e) => setDays(e.target.value)}
+            />
+          </label>
+          <input
+            aria-label="Why bind the room"
+            placeholder="Why, e.g. the working group's drafting room"
+            value={reason}
+            maxLength={1024}
+            onChange={(e) => setReason(e.target.value)}
+          />
+          <button type="submit" className="secondary" disabled={!ready || add.isPending}>
+            Bind room
+          </button>
+        </form>
+      )}
     </section>
   );
 }

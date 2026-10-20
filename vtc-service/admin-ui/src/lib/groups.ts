@@ -7,8 +7,12 @@
 // nothing here sees a key or a credential.
 
 import { postSignedRead, postSignedTrustTask } from "./api";
+import { postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 import type {
   Group,
+  GroupBinding,
+  GroupBindingsListResponse,
+  GroupBindingsRemoveResponse,
   GroupCreatePayload,
   GroupJoinRequest,
   GroupListResponse,
@@ -32,6 +36,9 @@ export const GROUPS_REQUESTS_LIST_TASK = "https://trusttasks.org/spec/vtc/groups
 export const GROUPS_REQUESTS_DECIDE_TASK = "https://trusttasks.org/spec/vtc/groups/requests/decide/0.1";
 export const GROUPS_MANAGERS_ADD_TASK = "https://trusttasks.org/spec/vtc/groups/managers/add/0.1";
 export const GROUPS_MANAGERS_REMOVE_TASK = "https://trusttasks.org/spec/vtc/groups/managers/remove/0.1";
+export const GROUPS_BINDINGS_ADD_TASK = "https://trusttasks.org/spec/vtc/groups/bindings/add/0.1";
+export const GROUPS_BINDINGS_REMOVE_TASK = "https://trusttasks.org/spec/vtc/groups/bindings/remove/0.1";
+export const GROUPS_BINDINGS_LIST_TASK = "https://trusttasks.org/spec/vtc/groups/bindings/list/0.1";
 
 /** The capability that creates groups and manages every one. */
 export const GROUPS_MANAGE = "vtc.groups.manage";
@@ -162,4 +169,53 @@ export async function removeGroupManager(groupId: string, entryId: string): Prom
     entryId,
   });
   return body.managers;
+}
+
+// ── Bindings (`vtc/groups/bindings/*`): room bindings only ─────────────────
+
+/** A room binding's terms, as `bindings/add` takes them. */
+export interface RoomBindingSpec {
+  kind: "room";
+  roomId: string;
+  actions: ("read" | "write" | "curate")[];
+  /** Whole days, as an ISO 8601 duration: `P30D`. */
+  validFor: string;
+}
+
+/** A group's bindings — to its managers only. */
+export async function listGroupBindings(groupId: string): Promise<GroupBinding[]> {
+  const body = await postSignedRead<GroupBindingsListResponse>(GROUPS_BINDINGS_LIST_TASK, {
+    groupId,
+  });
+  return body.items;
+}
+
+/** Bind a group to a community room, after the requester's bound gesture. */
+export async function addGroupBinding(
+  groupId: string,
+  binding: RoomBindingSpec,
+  reason: string,
+  confirmGesture: ConfirmGesture,
+): Promise<GroupBinding> {
+  const body = await postSignedWithStepUp<{ binding: GroupBinding }>(
+    GROUPS_BINDINGS_ADD_TASK,
+    { groupId, binding, reason },
+    confirmGesture,
+  );
+  return body.binding;
+}
+
+/** End a binding, after the requester's bound gesture: `removing` while what only it
+ *  covered is withdrawn, `removed` once nothing was. */
+export async function removeGroupBinding(
+  groupId: string,
+  bindingId: string,
+  reason: string,
+  confirmGesture: ConfirmGesture,
+): Promise<GroupBindingsRemoveResponse> {
+  return postSignedWithStepUp<GroupBindingsRemoveResponse>(
+    GROUPS_BINDINGS_REMOVE_TASK,
+    { groupId, bindingId, reason },
+    confirmGesture,
+  );
 }

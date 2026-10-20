@@ -335,3 +335,6 @@ export type GroupShowResponse = Schemas["VtcGroupsShowV0_1Response"];
 export type GroupMembersListResponse = Schemas["VtcGroupsMembersListV0_1Response"];
 export type GroupRequestsListResponse = Schemas["VtcGroupsRequestsListV0_1Response"];
 export type GroupManagersResponse = Schemas["VtcGroupsManagersAddV0_1Response"];
+export type GroupBinding = Schemas["VtcGroupsBindingsListV0_1GroupBinding"];
+export type GroupBindingsListResponse = Schemas["VtcGroupsBindingsListV0_1Response"];
+export type GroupBindingsRemoveResponse = Schemas["VtcGroupsBindingsRemoveV0_1Response"];

@@ -4,7 +4,9 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+import { COMMUNITY_ROOMS_LIST_TASK } from "@/lib/community-rooms-api";
 import {
+  GROUPS_BINDINGS_LIST_TASK,
   GROUPS_LIST_TASK,
   GROUPS_MEMBERS_LIST_TASK,
   GROUPS_REQUESTS_DECIDE_TASK,
@@ -125,6 +127,64 @@ describe("the Groups page", () => {
         { requestId: "greq_W5k2N8xRb3Qz7TpLAAAAAA", decision: "approve" },
       ]),
     );
+  });
+});
+
+describe("a group's rooms", () => {
+  const ROOM = "did:webvh:QmRoom:vtc.example.com:rooms:board";
+  const routes = () => [
+    ...ROUTES,
+    taskRoute(GROUPS_SHOW_TASK, { group: group(), myMembership: "none" }),
+    taskRoute(GROUPS_MEMBERS_LIST_TASK, { items: [] }),
+    taskRoute(GROUPS_REQUESTS_LIST_TASK, { items: [] }),
+    taskRoute(GROUPS_BINDINGS_LIST_TASK, {
+      items: [
+        {
+          bindingId: "gb_P2k8W5qYc6Vd1MsKAAAAAA",
+          binding: { kind: "room", roomId: ROOM, actions: ["read", "write"], validFor: "P30D" },
+          state: "active",
+          createdAt: "2026-10-20T09:00:00Z",
+        },
+      ],
+    }),
+    taskRoute(COMMUNITY_ROOMS_LIST_TASK, {
+      items: [
+        {
+          room: { roomId: ROOM },
+          label: "Board pack",
+          admitted: 1,
+          offered: 0,
+          ownerAuthorityValidUntil: "2027-10-20T00:00:00Z",
+          createdBy: "did:example:admin",
+        },
+      ],
+    }),
+  ];
+
+  it("names each bound room, and lets a holder of vtc.rooms.manage bind and end", async () => {
+    mockFetch(routes());
+    renderWithProviders(<Groups />, {
+      route: `/groups/${encodeURIComponent(GROUP_ID)}`,
+      path: "/groups/*",
+      whoami: whoamiWith(["vtc.groups.manage", "vtc.rooms.manage"]),
+    });
+    // The binding, by the room's label, and the room offered in the form.
+    await waitFor(() => expect(screen.getAllByText("Board pack").length).toBe(2));
+    expect(screen.getByRole("option", { name: "Board pack" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Bind room" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "End" })).toBeTruthy();
+  });
+
+  it("only lists the bindings to a manager without vtc.rooms.manage", async () => {
+    mockFetch(routes());
+    renderWithProviders(<Groups />, {
+      route: `/groups/${encodeURIComponent(GROUP_ID)}`,
+      path: "/groups/*",
+      whoami: whoamiWith(["vtc.groups.manage"]),
+    });
+    expect(await screen.findByText(/read, write/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Bind room" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "End" })).toBeNull();
   });
 });
 
