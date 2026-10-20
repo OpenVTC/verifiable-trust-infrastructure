@@ -2438,3 +2438,67 @@ fn dtg_witness_builtin_missing_mediator_did_errors() {
         "got: {err}"
     );
 }
+
+// ─── ballot-box built-in ───────────────────────────────────────────────
+//
+// A `vti-voting-service` identity: the witness's shape (one Ed25519 key that
+// authenticates and asserts — it answers Trust Tasks and signs receipts and
+// board heads — and one X25519 key-agreement key, TSP + DIDComm through a
+// mediator) plus a `TrustTaskHTTPS` door, because a cast from a one-time key
+// MUST be accepted over a binding whose sender holds no session (VTI-VOT-004).
+
+const BALLOT_BOX_DID: &str = "did:webvh:QmBBX:votes.example.net:b1";
+const BALLOT_BOX_MEDIATOR: &str = "did:webvh:QmMED:mediator.example.org:mediator";
+const BALLOT_BOX_HTTPS: &str = "https://votes.example.net";
+
+fn ballot_box_vars() -> TemplateVars {
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", BALLOT_BOX_DID);
+    vars.insert_string("SIGNING_KEY_MB", "z6MkBBXsigning");
+    vars.insert_string("KA_KEY_MB", "z6LSBBXka");
+    vars.insert_string("MEDIATOR_DID", BALLOT_BOX_MEDIATOR);
+    vars.insert_string("HTTPS_URL", BALLOT_BOX_HTTPS);
+    vars
+}
+
+#[test]
+fn ballot_box_builtin_loads_and_requires_its_mediator_and_https_door() {
+    let tpl = load_embedded("ballot-box").expect("load_embedded");
+    assert_eq!(tpl.kind, "ballot-box");
+    assert_eq!(tpl.methods, vec!["webvh"]);
+    assert_eq!(tpl.required_vars, vec!["MEDIATOR_DID", "HTTPS_URL"]);
+    tpl.validate().expect("validate after load");
+}
+
+/// TSP, then DIDComm, both at the mediator, then the sessionless cast door —
+/// matched by `type`, never by `#id`.
+#[test]
+fn ballot_box_builtin_advertises_tsp_didcomm_and_the_cast_door() {
+    let doc = load_embedded("ballot-box")
+        .unwrap()
+        .render(&ballot_box_vars())
+        .unwrap();
+    let services = doc["service"].as_array().expect("service is array");
+    let types: Vec<&str> = services
+        .iter()
+        .map(|s| s["type"].as_str().expect("a single type string"))
+        .collect();
+    assert_eq!(
+        types,
+        ["TSPTransport", "DIDCommMessaging", "TrustTaskHTTPS"]
+    );
+    assert_eq!(services[0]["serviceEndpoint"], BALLOT_BOX_MEDIATOR);
+    assert_eq!(
+        services[1]["serviceEndpoint"][0]["uri"],
+        BALLOT_BOX_MEDIATOR
+    );
+    assert_eq!(services[2]["serviceEndpoint"], BALLOT_BOX_HTTPS);
+
+    let signing = format!("{BALLOT_BOX_DID}#key-0");
+    assert_eq!(doc["authentication"], json!([signing]));
+    assert_eq!(doc["assertionMethod"], json!([signing]));
+    assert_eq!(
+        doc["keyAgreement"],
+        json!([format!("{BALLOT_BOX_DID}#key-1")])
+    );
+}

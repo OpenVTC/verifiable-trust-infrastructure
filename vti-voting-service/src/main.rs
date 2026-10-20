@@ -1,26 +1,43 @@
-use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use std::path::PathBuf;
 
-use clap::Parser;
-use vti_voting::service::BallotBox;
-use vti_voting_service::{AppState, identity::Identity, journal::FileJournal, router};
+use clap::{Parser, Subcommand};
+use vti_voting_service::{config::VotingConfig, run, setup};
 
 /// The voting service: a ballot box and board for community elections.
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
-    /// Where the service keeps its identity and its journal.
-    #[arg(long, default_value = "./voting-data")]
-    data_dir: PathBuf,
-    /// The address to serve the HTTPS Trust Task binding on (terminate TLS in front of it).
-    #[arg(long, default_value = "127.0.0.1:8740")]
-    listen: String,
-    /// Verify only did:key signers, resolving nothing over the network. Every cast is signed
-    /// by a did:key; a community on did:webvh then cannot register, so this is for tests.
-    #[arg(long)]
-    did_key_only: bool,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Provision the service's identity from the operator's VTA (two phases).
+    Setup {
+        /// Phase 1: mint the setup key into this file and print the grant to run at the VTA.
+        #[arg(long, conflicts_with = "from")]
+        setup_key_out: Option<PathBuf>,
+        /// The VTA context to provision into (phase 1).
+        #[arg(long, default_value = setup::DEFAULT_CONTEXT)]
+        context: String,
+        /// Phase 2: provision from this setup file.
+        #[arg(long)]
+        from: Option<PathBuf>,
+    },
+    /// Serve the ballot box.
+    Run {
+        /// The configuration `setup` wrote.
+        #[arg(long, conflicts_with_all = ["data_dir", "listen"])]
+        config: Option<PathBuf>,
+        /// Without --config: serve as a did:key minted into this directory, over HTTPS only
+        /// (for tests).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Without --config: the address to serve the HTTPS binding on.
+        #[arg(long)]
+        listen: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -28,41 +45,35 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "vti_voting_service=info".into()),
+                .unwrap_or_else(|_| "vti_voting_service=info,vti_common=info".into()),
         )
         .init();
-    let args = Args::parse();
-
-    let identity = Identity::load_or_mint(&args.data_dir)?;
-    // Printed, not only logged: it is what a community names as `ballotBox`.
-    println!("ballot box DID: {}", identity.did);
-
-    let journal = Arc::new(FileJournal::open(&args.data_dir.join("journal"))?);
-    let restored = journal.load()?;
-    let elections = restored.len();
-    let ballot_box = BallotBox::restore(&identity.did, journal, restored)
-        .map_err(|f| anyhow::anyhow!("restoring the journal: {} ({})", f.reason, f.local))?;
-
-    let resolver = if !args.did_key_only {
-        use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
-        let client = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
-        vti_common::auth::TrustTaskVmResolver::new(client)
-    } else {
-        vti_common::auth::TrustTaskVmResolver::did_key_only()
-    };
-
-    let state = Arc::new(AppState {
-        ballot_box: Mutex::new(ballot_box),
-        identity,
-        resolver,
-    });
-    let listener = tokio::net::TcpListener::bind(&args.listen).await?;
-    tracing::info!(
-        listen = %args.listen,
-        data_dir = %args.data_dir.display(),
-        elections,
-        "voting service ready — holding ballots it cannot attribute"
-    );
-    axum::serve(listener, router(state)).await?;
-    Ok(())
+    match Args::parse().command {
+        Command::Setup {
+            setup_key_out: Some(out),
+            context,
+            ..
+        } => setup::run_phase1(&out, &context).await,
+        Command::Setup {
+            from: Some(path), ..
+        } => setup::run_from_file(&path).await,
+        Command::Setup { .. } => {
+            anyhow::bail!("name --setup-key-out <path> (phase 1) or --from <setup.toml> (phase 2)")
+        }
+        Command::Run {
+            config: Some(path), ..
+        } => run::run(VotingConfig::load(&path)?).await,
+        Command::Run {
+            data_dir, listen, ..
+        } => {
+            let mut config = VotingConfig::from_toml_str("data_dir = \"./voting-data\"\n")?;
+            if let Some(dir) = data_dir {
+                config.data_dir = dir;
+            }
+            if let Some(listen) = listen {
+                config.listen = listen;
+            }
+            run::run(config).await
+        }
+    }
 }

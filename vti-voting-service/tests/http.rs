@@ -239,3 +239,83 @@ async fn an_election_over_http_with_a_restart() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Over TSP or DIDComm the transport proves the sender, and the document's issuer must be it: a
+/// party cannot relay another's request as its own (framework §7.2 item 6).
+#[tokio::test]
+async fn over_messaging_the_issuer_must_be_the_proven_sender() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let st = state(&dir);
+    let community = Identity::from_seed(&[7u8; 32]).unwrap();
+    let request = doc(
+        "board/head",
+        &st.identity.did,
+        Some(&community),
+        json!({ "community": community.did, "electionId": "e1" }),
+    )
+    .await;
+    let bytes = serde_json::to_vec(&request).unwrap();
+
+    let relayed =
+        vti_voting_service::dispatch::answer(&st, &bytes, Some("did:key:z6MkOther")).await;
+    let refused = relayed.doc.expect("a refusal is answered");
+    assert_eq!(refused["payload"]["code"], "permissionDenied", "{refused}");
+    signed_by(&refused).await;
+
+    let direct = vti_voting_service::dispatch::answer(&st, &bytes, Some(&community.did)).await;
+    let answered = direct.doc.expect("answered");
+    assert_ne!(
+        answered["payload"]["code"], "permissionDenied",
+        "{answered}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A reply or an error is never answered: over messaging, an error answering an error is a loop.
+#[tokio::test]
+async fn a_reply_is_never_answered() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let st = state(&dir);
+    for type_uri in [
+        "https://trusttasks.org/spec/voting/board/head/0.1#response",
+        "https://trusttasks.org/spec/trust-task-error/0.1",
+    ] {
+        let reply = json!({
+            "id": format!("urn:uuid:{}", Uuid::new_v4()),
+            "type": type_uri,
+            "issuer": "did:key:z6MkOther",
+            "recipient": st.identity.did,
+            "issuedAt": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {},
+        });
+        let bytes = serde_json::to_vec(&reply).unwrap();
+        let out =
+            vti_voting_service::dispatch::answer(&st, &bytes, Some("did:key:z6MkOther")).await;
+        assert!(out.doc.is_none(), "{type_uri} was answered");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The `#request` fragment is optional: a peer sending through the generated payload types uses
+/// the bare type URI, and is served the same.
+#[tokio::test]
+async fn a_bare_request_type_is_served() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let st = state(&dir);
+    let community = Identity::from_seed(&[9u8; 32]).unwrap();
+    let mut request = doc(
+        "board/head",
+        &st.identity.did,
+        None,
+        json!({ "community": community.did, "electionId": "e1" }),
+    )
+    .await;
+    request["type"] = json!("https://trusttasks.org/spec/voting/board/head/0.1");
+    let out =
+        vti_voting_service::dispatch::answer(&st, &serde_json::to_vec(&request).unwrap(), None)
+            .await;
+    let answer = out.doc.expect("answered");
+    assert_ne!(answer["payload"]["code"], "unsupportedType", "{answer}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

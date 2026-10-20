@@ -39,6 +39,8 @@ pub const BUILTIN_DID_HOST_TSP_TEMPLATE: &str = "did-host-tsp";
 /// and over nothing else. Not the did:webvh log witness, whose shape is
 /// `did-host-didcomm` (the `witness` init alias).
 pub const BUILTIN_DTG_WITNESS_TEMPLATE: &str = "dtg-witness";
+/// The built-in `ballot-box` template: a vti-voting-service identity.
+pub const BUILTIN_BALLOT_BOX_TEMPLATE: &str = "ballot-box";
 
 /// Default validity on a wizard-issued VP for the online path — chosen to
 /// comfortably cover the round-trip with the verifier's ±5min skew margin
@@ -205,6 +207,24 @@ impl ProvisionAsk {
         Self::for_template(BUILTIN_DTG_WITNESS_TEMPLATE, vars, context)
     }
 
+    /// Curated builder for the built-in `ballot-box` template: a
+    /// vti-voting-service identity reached over TSP and DIDComm at
+    /// `mediator_did`, with its sessionless cast door at `https_url`
+    /// (VTI-VOT-004).
+    pub fn ballot_box(
+        context: impl Into<String>,
+        mediator_did: impl Into<String>,
+        https_url: impl Into<String>,
+    ) -> Self {
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "MEDIATOR_DID".to_string(),
+            Value::String(mediator_did.into()),
+        );
+        vars.insert("HTTPS_URL".to_string(), Value::String(https_url.into()));
+        Self::for_template(BUILTIN_BALLOT_BOX_TEMPLATE, vars, context)
+    }
+
     /// Curated builder for the built-in `vta-admin` template — mint a
     /// standalone long-term admin DID without an associated integration.
     /// The admin-rollover path is disabled (the integration template *is*
@@ -335,6 +355,7 @@ mod tests {
             BUILTIN_DID_HOST_HTTP_TSP_TEMPLATE,
             BUILTIN_DID_HOST_TSP_TEMPLATE,
             BUILTIN_DTG_WITNESS_TEMPLATE,
+            BUILTIN_BALLOT_BOX_TEMPLATE,
         ] {
             load_embedded(name).unwrap_or_else(|e| {
                 panic!("built-in template {name} not in vta-sdk registry: {e}")

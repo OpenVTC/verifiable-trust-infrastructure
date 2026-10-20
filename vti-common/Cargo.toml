@@ -25,6 +25,9 @@ tsp = [
   "affinidi-tdk/tsp",
   "vta-sdk/tsp",
 ]
+# `host_session`: a host service's identity reached over TSP and DIDComm
+# through its own mediator session (the witness, the ballot box).
+host-session = ["tsp", "dep:trust-tasks-didcomm"]
 # Exposes `AuthClaims::unsafe_local_cli_super_admin` — a synthesizer that
 # produces a super-admin claim without any wire-level verification. Only
 # for the local/dev `vta` binary's CLI, where the trust boundary is the
@@ -103,6 +106,8 @@ reqwest = { workspace = true }
 affinidi-messaging-sdk = { workspace = true, optional = true, features = [
   "tsp",
 ] }
+# `host_session`: the DIDComm binding envelope's type.
+trust-tasks-didcomm = { workspace = true, optional = true }
 axum = { workspace = true }
 axum-extra = { workspace = true }
 chrono = { workspace = true }

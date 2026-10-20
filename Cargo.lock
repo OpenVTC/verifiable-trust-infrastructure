@@ -12247,6 +12247,7 @@ dependencies = [
  "tower_governor",
  "tracing",
  "trust-tasks-capability-client",
+ "trust-tasks-didcomm",
  "trust-tasks-rs",
  "url",
  "utoipa",
@@ -12445,6 +12446,7 @@ version = "0.1.0"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "anyhow",
+ "async-trait",
  "axum",
  "chrono",
  "clap",
@@ -12452,9 +12454,11 @@ dependencies = [
  "http-body-util",
  "multibase",
  "serde",
+ "serde_ignored",
  "serde_json",
  "sha2 0.11.0",
  "tokio",
+ "toml",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -12462,6 +12466,7 @@ dependencies = [
  "uuid",
  "vta-sdk",
  "vti-common",
+ "vti-secrets",
  "vti-voting",
 ]
 

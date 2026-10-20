@@ -15,6 +15,16 @@
 //! its rate limiting and its abuse handling belong here, not on a community's authenticated
 //! door.
 //!
+//! # How it is reached
+//!
+//! - **TSP, then DIDComm** ([`messaging`]), through the service identity's own mediator session:
+//!   the community's registration, close and cancel, and every read by a party that holds an
+//!   identifier (a community, an auditor).
+//! - **HTTPS** ([`http`]): the binding a cast is always accepted on (VTI-VOT-004). A voter
+//!   casting from a key made for that cast has no mediator session to receive a receipt on, and
+//!   opening one as that key would give the mediator an account, a relationship record, and the
+//!   voter's address and timing. The receipt comes back in the synchronous response.
+//!
 //! # How a request is authorized
 //!
 //! - **Registration, early close and cancellation**: the document's own proof names the
@@ -34,8 +44,14 @@
 //! The ballot box itself — every rule of every task — is [`vti_voting::service::BallotBox`].
 //! This crate is its host: identity, transport, signing and durability.
 
+pub mod config;
+pub mod dispatch;
 pub mod http;
 pub mod identity;
 pub mod journal;
+pub mod messaging;
+pub mod run;
+pub mod setup;
 
-pub use http::{AppState, router};
+pub use dispatch::AppState;
+pub use http::router;

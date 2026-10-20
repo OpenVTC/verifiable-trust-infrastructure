@@ -31,8 +31,9 @@ k8s-secrets = ["vti-secrets/k8s-secrets"]
 [dependencies]
 # `trust_task::{discovery, acceptance}` — the discovery answer and acceptance
 # window the VTA and VTC answer with — `seed_store::SeedStore`, and (`tsp`)
-# `tsp_route::send_reply`, which routes a TSP reply to a peer on another mediator.
-vti-common = { path = "../vti-common", version = "0.48", features = ["tsp"] }
+# `host_session`, the mediator session and its supervisor, which routes a TSP
+# reply to a peer on another mediator (`tsp_route`).
+vti-common = { path = "../vti-common", version = "0.48", features = ["host-session"] }
 # The `[secrets]` table and `create_seed_store`: the witness keeps its key
 # material behind the same backends the VTA and VTC use, never in its config.
 vti-secrets = { path = "../vti-secrets", version = "0.21" }

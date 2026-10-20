@@ -80,9 +80,10 @@ pub use runner_didcomm::{
 pub use runner_tsp::{provision_admin_rotation_via_tsp, provision_via_tsp};
 
 pub use ask::{
-    BUILTIN_DID_HOST_DIDCOMM_TEMPLATE, BUILTIN_DID_HOST_HTTP_DIDCOMM_TEMPLATE,
-    BUILTIN_DID_HOST_HTTP_TEMPLATE, BUILTIN_DTG_WITNESS_TEMPLATE, BUILTIN_MEDIATOR_TEMPLATE,
-    BUILTIN_VTA_ADMIN_TEMPLATE, DEFAULT_VALIDITY, ProvisionAsk,
+    BUILTIN_BALLOT_BOX_TEMPLATE, BUILTIN_DID_HOST_DIDCOMM_TEMPLATE,
+    BUILTIN_DID_HOST_HTTP_DIDCOMM_TEMPLATE, BUILTIN_DID_HOST_HTTP_TEMPLATE,
+    BUILTIN_DTG_WITNESS_TEMPLATE, BUILTIN_MEDIATOR_TEMPLATE, BUILTIN_VTA_ADMIN_TEMPLATE,
+    DEFAULT_VALIDITY, ProvisionAsk,
 };
 /// Cryptographically-sound DI-signed (`eddsa-jcs-2022`) REST authentication for
 /// any client holding a key (e.g. a fleet manager authenticating as a per-VTA

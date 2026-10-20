@@ -16,7 +16,7 @@ use crate::config::WitnessConfig;
 use crate::correlation::{self, OperatorFootprint};
 use crate::dispatch::IdentityContext;
 use crate::keys::WitnessKeyring;
-use crate::messaging::{IdentitySession, Shared, supervise};
+use crate::messaging::{IdentitySession, Shared, WitnessResponder, supervise};
 use crate::store::WitnessStore;
 use crate::witness::{WitnessPolicy, Witnessing};
 
@@ -44,6 +44,14 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("open the secret store: {e}"))?;
     let keyring = WitnessKeyring::load(&*store).await?;
     let witness_store = WitnessStore::open(&config.data_dir)?;
+    // Built before the identities: each verifies its proofs through this one
+    // resolver, and every ATM resolves through it too.
+    let did_resolver = DIDCacheClient::new(vta_sdk::resolver::build_did_cache_config(
+        config.resolver_url.as_deref(),
+    ))
+    .await
+    .map_err(|e| anyhow::anyhow!("build the DID resolver: {e}"))?;
+    let vm_resolver = TrustTaskVmResolver::new(did_resolver.clone());
     let mut sessions = Vec::with_capacity(enabled.len());
     for witness in &enabled {
         let bundle = keyring.get(&witness.did).ok_or_else(|| {
@@ -74,20 +82,14 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
         let secrets = vta_sdk::did_key::secrets_from_bundle(bundle)
             .map_err(|e| anyhow::anyhow!("witness {:?}: {e}", witness.name))?;
         sessions.push(IdentitySession::new(
-            identity,
+            WitnessResponder::new(identity, vm_resolver.clone()),
             witness.mediator_did.clone(),
             secrets,
         ));
     }
 
-    let did_resolver = DIDCacheClient::new(vta_sdk::resolver::build_did_cache_config(
-        config.resolver_url.as_deref(),
-    ))
-    .await
-    .map_err(|e| anyhow::anyhow!("build the DID resolver: {e}"))?;
     let shared = Arc::new(Shared {
         did_resolver: did_resolver.clone(),
-        vm_resolver: TrustTaskVmResolver::new(did_resolver.clone()),
         resolver_url: config.resolver_url.clone(),
     });
 

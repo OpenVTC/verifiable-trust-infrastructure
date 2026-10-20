@@ -14,7 +14,7 @@ consumer gets the new shape on the next create. No redeploy.
 
 - **Data, not code.** An operator can ship a new agent kind by dropping a JSON
   file, no recompile. The built-ins (`ai-agent`, `didcomm-mediator`,
-  `push-gateway`, `vta-admin`, `vtc-host`, `dtg-witness`, `did-host-http-didcomm`,
+  `push-gateway`, `vta-admin`, `vtc-host`, `dtg-witness`, `ballot-box`, `did-host-http-didcomm`,
   `did-host-http`, `did-host-didcomm`, `did-host-http-tsp`, `did-host-tsp`)
   are baseline shapes, not the only shapes.
 - **Method-agnostic.** Same format works for `did:webvh`, `did:web`, or
@@ -303,6 +303,13 @@ template without explicit scope is **context → global → builtin**:
     `didcomm` = a `DIDCommMessaging` endpoint, `tsp` = a `TSPTransport`
     endpoint — not the service that uses it. `didcomm` and `tsp` both route
     through the shared mediator.
+  - `ballot-box` — a `vti-voting-service` identity (integration kind
+    `ballot-box`). The `dtg-witness` shape — `#key-0` under `authentication` and
+    `assertionMethod` (it answers Trust Tasks and signs receipts and board heads),
+    `#key-1` for key agreement, `#tsp` and `#didcomm` at `MEDIATOR_DID` — plus
+    `#trust-tasks` (`TrustTaskHTTPS`) at `HTTPS_URL` (both required): a cast from a
+    key made for that cast has no mediator session, so it must be accepted over
+    HTTPS (VTI-VOT-004). Communities and auditors use TSP or DIDComm.
   - `dtg-witness` — a `vti-witness` identity (integration kind `dtg-witness`; see
     [the witness host service](../06-witness/README.md)). An Ed25519 key
     (`#key-0`) under both `authentication` and `assertionMethod` — it answers
