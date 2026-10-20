@@ -50,6 +50,26 @@ election stays `pendingRegistration` and is delivered as soon as they are.
 Casting is between the member's VTA and the ballot box (`vta/pcs/vote`, then
 `voting/ballot/cast` over HTTPS, the one sessionless door). The community never sees it.
 
+### From the command line
+
+An administrator: `cnm elections create <manifest.json>`, `list`, `show <id>`,
+`close <id>`, `cancel <id> --reason …`, `certify <id> [--attestation <vc.json>]…`. The
+admin console has the same under **Governance → Elections**.
+
+A member, with their membership persona held by their VTA:
+
+```sh
+pnm elections show agm-2027 --vtc https://vtc.example.com/v1 --vtc-did <community DID> \
+    --member <your membership DID> --context <the persona's context>
+pnm elections vote agm-2027 --answer chair=alice --vtc … --vtc-did … --member … --context …
+```
+
+The VTA signs the community's reads and the ticket request as the member
+(`vta/pcs/voter/read`, `vta/pcs/voter/register` with `member`), unblinds the ticket, and
+builds the cast under a key made for it alone; `pnm` posts the cast to the ballot box from
+its own connection after a random pause. Running `vote` again after a lost answer resends;
+where the manifest allows, a later vote replaces the earlier one.
+
 ### What the community checks on create
 
 The manifest must be valid as the ballot box would judge it, open-secrecy (sealed and
@@ -98,7 +118,6 @@ kept beside it, never instead of it. A certified result authorizes nothing by it
 ## Not yet served
 
 - Sealed and tallied-encrypted secrecy.
-- `cnm` commands and a console page.
 
 ## Code
 
