@@ -135,6 +135,7 @@ describe("wallet sign-in", () => {
     await waitFor(() =>
       expect(vi.mocked(fetch).mock.calls.some(([u]) => String(u).endsWith("/sign-out"))).toBe(true),
     );
+    await screen.findByText(/continue as/i);
     expect(onSignedIn).not.toHaveBeenCalled();
   });
 
@@ -216,6 +217,10 @@ describe("wallet sign-in", () => {
     };
     const requests = (posted: Array<{ type: string }>) =>
       posted.filter((p) => p.type.endsWith("/request/0.1")).length;
+    const redeems = (posted: Array<{ type: string }>) =>
+      posted.filter((p) => p.type.endsWith("/redeem/0.1")).length;
+    /** Let pending promises and effects run out. */
+    const settle = () => act(() => new Promise<void>((r) => setTimeout(r, 20)));
 
     /** A first redeem the test ends with `requestExpired`; later ones hang. */
     function stubExpiring() {
@@ -247,6 +252,8 @@ describe("wallet sign-in", () => {
       expire();
       await waitFor(() => expect(requests(posted)).toBe(2));
       expect(await screen.findByRole("img", { name: /sign-in code/i })).toBeTruthy();
+      await settle();
+      expect(requests(posted)).toBe(2);
       expect(screen.queryByText(/code expired/i)).toBeNull();
     });
 
@@ -260,7 +267,11 @@ describe("wallet sign-in", () => {
       setVisibility("hidden");
       now.mockReturnValue(t0 + 121_000);
       expire();
-      await waitFor(() => expect(screen.getByText(/getting a code/i)).toBeTruthy());
+      // The lapsed code is gone and no new one is asked for while hidden.
+      await waitFor(() => expect(redeems(posted)).toBe(1));
+      await settle();
+      expect(screen.queryByRole("img", { name: /sign-in code/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /show the code again/i })).toBeNull();
       expect(requests(posted)).toBe(1);
 
       setVisibility("visible");
@@ -273,11 +284,12 @@ describe("wallet sign-in", () => {
       const posted = stubService([() => new Promise<Response>(() => {}) as unknown as Response]);
       render(<WalletSignIn onSignedIn={() => {}} />);
       await waitFor(() => expect(fetch).toHaveBeenCalled());
-      await new Promise((r) => setTimeout(r, 20));
+      await settle();
       expect(requests(posted)).toBe(0);
 
       setVisibility("visible");
       expect(await screen.findByRole("img", { name: /sign-in code/i })).toBeTruthy();
+      await settle();
       expect(requests(posted)).toBe(1);
     });
   });

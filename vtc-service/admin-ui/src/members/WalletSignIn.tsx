@@ -318,6 +318,8 @@ export function WalletSignIn({
     try {
       cfgRef.current ??= await fetchSignInConfig();
       await generateSessionKey();
+      // Unmounted or superseded while the key was made: open no request.
+      if (runRef.current !== run) return;
       const { requestId, claimDeadline } = await openRequest(cfgRef.current, audience);
       if (runRef.current !== run) return;
       openedAtRef.current = Date.now();
