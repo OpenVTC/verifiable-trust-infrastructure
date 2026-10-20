@@ -146,9 +146,7 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
         board.append(&bytes);
         leaves_bytes.push(bytes);
     }
-    if board.len() as u64 != e.head.tree_size
-        || board.root(board.len()).ok() != Some(e.head.root)
-    {
+    if board.len() as u64 != e.head.tree_size || board.root(board.len()).ok() != Some(e.head.root) {
         return Err(AuditFailure::RootMismatch);
     }
     // 2.
@@ -181,7 +179,9 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
                 if let Some((_, _, by)) = owed {
                     return Err(AuditFailure::ReplacementInvalid {
                         index: by,
-                        reason: "a later cast under a counted tag is not followed by its replacement".into(),
+                        reason:
+                            "a later cast under a counted tag is not followed by its replacement"
+                                .into(),
                     });
                 }
                 let invalid = |reason: String| AuditFailure::CastInvalid { index, reason };
@@ -241,8 +241,8 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
     let ballots: Vec<&cast::Ballot> = counted.values().map(|(_, b)| b).collect();
     let (n, questions) = tally::tally(&manifest, ballots, false)
         .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
-    let questions =
-        serde_json::to_value(&questions).map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
+    let questions = serde_json::to_value(&questions)
+        .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
     let published = e.result;
     if published["ballotsCounted"].as_u64() != Some(n) {
         return Err(AuditFailure::ResultMismatch(format!(
@@ -255,13 +255,21 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
             "the totals differ from the counted ballots'".into(),
         ));
     }
-    if published["manifestDigest"].as_str().and_then(digest_from_multibase) != Some(digest) {
+    if published["manifestDigest"]
+        .as_str()
+        .and_then(digest_from_multibase)
+        != Some(digest)
+    {
         return Err(AuditFailure::ResultMismatch(
             "it names another manifest".into(),
         ));
     }
     let at = HeadRef::from_wire(&published["head"])?;
-    if board.root(usize::try_from(at.tree_size).unwrap_or(usize::MAX)).ok() != Some(at.root) {
+    if board
+        .root(usize::try_from(at.tree_size).unwrap_or(usize::MAX))
+        .ok()
+        != Some(at.root)
+    {
         return Err(AuditFailure::ResultMismatch(
             "its head is not a prefix of the board".into(),
         ));
@@ -317,5 +325,7 @@ fn same_result(a: &Value, b: &Value) -> bool {
 /// # Errors
 /// [`AuditFailure::Unreadable`] if it cannot be canonicalized.
 pub fn result_digest(result: &Value) -> Result<String, AuditFailure> {
-    Ok(rules::digest_multibase(&Sha256::digest(canonical(result)?).into()))
+    Ok(rules::digest_multibase(
+        &Sha256::digest(canonical(result)?).into(),
+    ))
 }

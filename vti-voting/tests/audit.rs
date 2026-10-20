@@ -81,7 +81,11 @@ fn run(revote: &str) -> Run {
     };
     let now = t("2026-11-04T00:00:00Z");
     let mut checkpoint = None;
-    for (seed, choices) in [(10u64, vec!["yes", "no"]), (20, vec!["yes"]), (30, vec!["no"])] {
+    for (seed, choices) in [
+        (10u64, vec!["yes", "no"]),
+        (20, vec!["yes"]),
+        (30, vec!["no"]),
+    ] {
         let mut r = StdRng::seed_from_u64(seed);
         let v = Voter::generate(&params, &mut r).unwrap();
         let (req, st) = v.ticket_request(&params, &election, &mut r).unwrap();
@@ -91,9 +95,14 @@ fn run(revote: &str) -> Run {
             if revote == "refuse" && choice == "no" && seed == 10 {
                 continue;
             }
-            let cast = v.cast_wire(&params, &ticket, &ballot(choice), &mut r).unwrap();
-            bb.cast(&json!({ "community": COMMUNITY, "electionId": "agm-2027", "cast": cast }), now)
+            let cast = v
+                .cast_wire(&params, &ticket, &ballot(choice), &mut r)
                 .unwrap();
+            bb.cast(
+                &json!({ "community": COMMUNITY, "electionId": "agm-2027", "cast": cast }),
+                now,
+            )
+            .unwrap();
         }
         if checkpoint.is_none() {
             let head = bb.board_head(Caller::Anonymous, &sel, now).unwrap();
@@ -144,7 +153,10 @@ fn check(r: &Run, entries: &[Value], result: &Value, tickets: u64) -> Result<u64
 fn an_honest_board_verifies_from_the_published_key_alone() {
     let r = run("replace");
     assert_eq!(check(&r, &r.entries, &r.result, 3), Ok(3));
-    assert_eq!(r.result["questions"][0]["choice"], json!({ "yes": 1, "no": 2 }));
+    assert_eq!(
+        r.result["questions"][0]["choice"],
+        json!({ "yes": 1, "no": 2 })
+    );
 }
 
 #[test]
