@@ -59,6 +59,9 @@ const shown = (state: string, extra: object = {}) => ({
 });
 
 const routes = (extra: MockRoute[] = []): MockRoute[] => [
+  taskRoute("https://trusttasks.org/spec/trust-task-discovery/0.3", {
+    supportedTypes: [ELECTIONS_LIST_TASK],
+  }),
   taskRoute(ELECTIONS_LIST_TASK, {
     elections: [
       {
@@ -76,6 +79,14 @@ const routes = (extra: MockRoute[] = []): MockRoute[] => [
 ];
 
 describe("Elections", () => {
+  it("says so when this VTC was built without elections", async () => {
+    mockFetch([
+      taskRoute("https://trusttasks.org/spec/trust-task-discovery/0.3", { supportedTypes: [] }),
+    ]);
+    renderWithProviders(<Elections />, { route: "/elections", path: "/elections/*" });
+    expect(await screen.findByText("Elections are not built into this VTC")).toBeTruthy();
+  });
+
   it("lists the community's elections", async () => {
     mockFetch(routes());
     renderWithProviders(<Elections />, { route: "/elections", path: "/elections/*" });

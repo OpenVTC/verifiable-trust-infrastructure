@@ -683,7 +683,7 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # 0.32.3: community voting — `voting/*`, `vtc/elections/*`, `vta/pcs/voter/*`
 # and `vta/pcs/vote` (trust-tasks-tf #834), and the `pcsVoter` capability
 # (appended, #835). 0.32.4: `pcs-voter` in device/_shared 0.1 too (#836).
-trust-tasks-rs = { version = "0.32.4", default-features = false, features = [
+trust-tasks-rs = { version = "0.32.5", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
@@ -968,10 +968,4 @@ type_complexity = "allow"
 # ever reports one, the fix is the same choice we faced here: patch it (fast,
 # and it will break again on the next minor bump) or cut the dependency edge
 # upstream (slower, permanent).
-
-# Temporary, on the community-voting feature branch only: `vta/pcs/voter/register`'s
-# `member` / `ticketDocument` (trust-tasks-tf #841), until it is released. Removed
-# before the branch reaches `main`.
-[patch.crates-io]
-trust-tasks-rs = { git = "https://github.com/trustoverip/dtgwg-trust-tasks-tf", branch = "feat/voter-signs-ticket" }
 

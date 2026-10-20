@@ -778,6 +778,32 @@ const FEATURE_GATED_DOCUMENT_TYPES: &[(&str, bool)] = &[
         "https://trusttasks.org/spec/vtc/vetting/hidden/show/0.1",
         cfg!(feature = "vetting-pcs"),
     ),
+    // Community elections (`voting`): the Elections page, shown only once
+    // discovery lists `vtc/elections/list` (`lib/elections-api.ts`).
+    (
+        "https://trusttasks.org/spec/vtc/elections/create/0.1",
+        cfg!(feature = "voting"),
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/elections/list/0.1",
+        cfg!(feature = "voting"),
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/elections/show/0.1",
+        cfg!(feature = "voting"),
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/elections/close/0.1",
+        cfg!(feature = "voting"),
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/elections/cancel/0.1",
+        cfg!(feature = "voting"),
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/elections/certify/0.1",
+        cfg!(feature = "voting"),
+    ),
 ];
 
 /// Document types the console sends that the *spine* dispatches rather than

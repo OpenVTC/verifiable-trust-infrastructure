@@ -124,6 +124,18 @@ export interface Created {
   actionId?: string;
 }
 
+const TASK_DISCOVERY = "https://trusttasks.org/spec/trust-task-discovery/0.3";
+
+/** Whether this VTC serves elections at all. They are built only with its `voting` feature,
+ *  and the console cannot tell that from anything but discovery, which lists exactly the
+ *  tasks this build dispatches. */
+export async function fetchElectionsServed(): Promise<boolean> {
+  const res = await postSignedRead<{ supportedTypes?: unknown[] }>(TASK_DISCOVERY, {
+    patterns: ["vtc/elections/*"],
+  });
+  return (res.supportedTypes ?? []).includes(ELECTIONS_LIST_TASK);
+}
+
 /** The page size asked, within the specification's maximum. */
 const PAGE = 100;
 /** Pages read before stopping. */

@@ -29,6 +29,7 @@ import {
   createElection,
   fetchElection,
   fetchElections,
+  fetchElectionsServed,
   refusalHint,
   sampleManifest,
   type Election,
@@ -56,6 +57,31 @@ function Refusal({ title, error }: { title: string; error: unknown }) {
 }
 
 export function Elections() {
+  const served = useQuery({
+    queryKey: [...ELECTIONS_KEY, "served"],
+    queryFn: fetchElectionsServed,
+    retry: false,
+    staleTime: Infinity,
+  });
+  if (served.isPending) return null;
+  if (served.data === false) {
+    return (
+      <div className="page">
+        <header className="page-header">
+          <h1>Elections</h1>
+        </header>
+        <section className="card">
+          <h2>Elections are not built into this VTC</h2>
+          <p className="muted">
+            Community elections are a build feature (<code>voting</code>). The host operator
+            installs a VTC built with it — <code>cargo install vtc-service --features voting</code>{" "}
+            — and names the voting services it trusts under <code>[voting]</code> in its
+            configuration.
+          </p>
+        </section>
+      </div>
+    );
+  }
   return (
     <Routes>
       <Route index element={<ElectionList />} />
