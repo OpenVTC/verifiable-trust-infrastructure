@@ -6,7 +6,7 @@
 //! host signs the answer as the ballot box — every answer that carries a head must be signed
 //! (conventions §4, VTI-VOT-050), and the cast's answer is the voter's receipt (VTI-VOT-043).
 //!
-//! Time is an input: [`BallotBox::advance`] runs on the election's own clock — `opened` at
+//! Time is an input: each election advances on its own clock — `opened` at
 //! `votingOpens`, `closed` and the result at `votingCloses` — and every handler advances first,
 //! so an election never answers from a state its clock has left.
 //!
