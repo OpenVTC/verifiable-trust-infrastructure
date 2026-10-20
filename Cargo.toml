@@ -677,7 +677,10 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # 0.32.3: the `vtc/groups/*` family — create, update, delete, list, show,
 # members/{add,remove,list}, join, leave, requests/{list,decide} and
 # managers/{add,remove} (trust-tasks-tf #831, #833).
-trust-tasks-rs = { version = "0.32.3", default-features = false, features = [
+# 0.32.6: vtc/rooms/offers/list/0.3 (renewals of the admissions a member holds),
+# rooms/keys/act/0.6 (completes it) and vtc/groups/bindings/add's
+# `kindNotServed` (trust-tasks-tf #843).
+trust-tasks-rs = { version = "0.32.6", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
