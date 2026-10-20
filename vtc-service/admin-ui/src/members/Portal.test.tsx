@@ -90,9 +90,14 @@ describe("member portal", () => {
     // No self-issued wallet sign-in: it would present the extension's did:key.
     expect(screen.queryByRole("button", { name: /browser's wallet/i })).toBeNull();
     expect(screen.getByRole("button", { name: /sign in with a passkey/i })).toBeTruthy();
-    // The trigger-link sign-in is the first option (contract C7).
-    const options = screen.getAllByRole("button").map((b) => b.textContent ?? "");
-    expect(options[0]).toMatch(/show sign-in code/i);
+    // The trigger-link sign-in is the first option (contract C7): its section
+    // comes before every other option. (Its code appears unasked; here the
+    // config stub refuses, so the section is retrying it.)
+    const wallet = screen.getByRole("heading", { name: /sign in with your wallet/i });
+    const passkey = screen.getByRole("button", { name: /sign in with a passkey/i });
+    expect(
+      wallet.compareDocumentPosition(passkey) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     // SIOPv2 is legacy: folded behind "Using an older wallet?", and the
     // extension's install guide with it.
     const legacy = screen.getByText(/using an older wallet\?/i).closest("details") as HTMLDetailsElement;

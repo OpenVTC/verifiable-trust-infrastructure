@@ -79,6 +79,36 @@
 //!
 //! The budgets are `[rooms.rate_limits]` ([`crate::config::RoomRateLimitsConfig`]),
 //! read when the first room document arrives.
+//!
+//! # Sign-in traffic
+//!
+//! Every `auth/oob/*` document is signed by a throwaway `did:key` — the
+//! portal's `K_b` for `request`, `redeem` and `cancel`, the wallet's `K_a` for
+//! `claim`, `prove` and `respond` — so none is a known signer's, and on the
+//! anonymous governor one sign-in spent most of an address's burst of 10: the
+//! page's request and its redeem polls, the wallet's three steps, from the same
+//! address when the wallet is on the same device. A second sign-in, or a
+//! reload, within the minute was refused, and so was everyone else behind the
+//! same NAT. So the closed set of sign-in task types ([`oob_tasks::URIS`]) is
+//! charged to its own per-address ceiling, like rooms:
+//!
+//! | the document | charged, and when |
+//! |---|---|
+//! | any `auth/oob/*` document | the address's sign-in ceiling ([`SIGN_IN_ADDRESS_LIMITER`]), **before** anything is verified |
+//! | one whose proof never verifies | the address's sign-in ceiling again, [`SIGN_IN_FAILURE_COST`] times |
+//!
+//! One sign-in is about ten documents (`request`, a redeem answer per state
+//! change, `claim`, `prove`, `respond`, sometimes `cancel`), so a burst of
+//! [`SIGN_IN_BURST`] fits several people signing in at once behind one address,
+//! and one a second sustains several a minute. What a document can make the
+//! service do before it is refused is one signature check over a key the
+//! document carries (a `did:key` resolves locally), plus, for `prove`, the
+//! member's own identify, so a flood of forgeries is held to one every
+//! [`SIGN_IN_PERIOD`] × [`SIGN_IN_FAILURE_COST`] once its burst is spent. Sign-in
+//! documents never touch the anonymous governor, so a join or recognise flood
+//! does not cost an address its sign-ins, nor the reverse. The redeem
+//! long-poll keeps its own cap on polls held open per address
+//! (`oob_tasks::PollGuard`).
 
 use std::net::IpAddr;
 use std::num::NonZeroU32;
@@ -96,11 +126,12 @@ use vti_common::rate_limit::TrustedProxyKeyExtractor;
 
 use super::rate_limit::{
     ROOM_ADDRESS_LIMITER, ROOM_PRESENTER_LIMITER, ROOM_TRANSFER_LIMITER, RateLimited,
-    SIGNED_ADDRESS_LIMITER, SIGNER_LIMITER, UNAUTH_LIMITER,
+    SIGN_IN_ADDRESS_LIMITER, SIGNED_ADDRESS_LIMITER, SIGNER_LIMITER, UNAUTH_LIMITER,
 };
 use crate::config::{RoomBudget, RoomRateLimitsConfig};
 use crate::server::AppState;
 use crate::trust_tasks::VerifiedAdmission;
+use crate::trust_tasks::oob_tasks;
 
 /// A known signer's bucket: a burst of 60, then one document every 500 ms.
 pub const SIGNER_BURST: u32 = 60;
@@ -111,6 +142,19 @@ pub const SIGNER_PERIOD: Duration = Duration::from_millis(500);
 pub const SIGNED_ADDRESS_BURST: u32 = 120;
 pub const SIGNED_ADDRESS_PERIOD: Duration = Duration::from_millis(250);
 
+/// The per-address ceiling on sign-in documents: a burst of 60, then one a
+/// second (see the module docs).
+pub const SIGN_IN_BURST: u32 = 60;
+pub const SIGN_IN_PERIOD: Duration = Duration::from_secs(1);
+
+/// What a sign-in document whose proof never verifies costs the address's
+/// sign-in ceiling on top of the one it paid on arrival.
+pub const SIGN_IN_FAILURE_COST: u32 = 10;
+
+/// Past this many tracked addresses, the sign-in limiter forgets the ones that
+/// have refilled completely.
+const SIGN_IN_TRACKED_KEYS: usize = 10_000;
+
 /// The door's limiters, shared by every request.
 #[derive(Clone)]
 pub struct TrustTaskLimits {
@@ -119,6 +163,8 @@ pub struct TrustTaskLimits {
     address: Arc<DefaultKeyedRateLimiter<IpAddr>>,
     signed_address: Arc<DefaultKeyedRateLimiter<IpAddr>>,
     signer: Arc<DefaultKeyedRateLimiter<String>>,
+    /// The sign-in (`auth/oob/*`) ceiling, per address.
+    sign_in: Arc<DefaultKeyedRateLimiter<IpAddr>>,
     /// The room budgets, built from `[rooms.rate_limits]` when the first room
     /// document arrives (the router is built before the configuration is read).
     rooms: Arc<OnceLock<Arc<RoomLimiters>>>,
@@ -137,6 +183,7 @@ impl TrustTaskLimits {
             key_extractor,
             quota(SIGNED_ADDRESS_PERIOD, SIGNED_ADDRESS_BURST),
             quota(SIGNER_PERIOD, SIGNER_BURST),
+            quota(SIGN_IN_PERIOD, SIGN_IN_BURST),
         )
     }
 
@@ -145,13 +192,38 @@ impl TrustTaskLimits {
         key_extractor: TrustedProxyKeyExtractor,
         signed_address: Quota,
         signer: Quota,
+        sign_in: Quota,
     ) -> Self {
         Self {
             address,
             signed_address: Arc::new(RateLimiter::keyed(signed_address)),
             signer: Arc::new(RateLimiter::keyed(signer)),
+            sign_in: Arc::new(RateLimiter::keyed(sign_in)),
             rooms: Arc::new(OnceLock::new()),
             key_extractor,
+        }
+    }
+
+    fn charge_sign_in(&self, address: &IpAddr) -> Result<(), RateLimited> {
+        if self.sign_in.len() > SIGN_IN_TRACKED_KEYS {
+            self.sign_in.retain_recent();
+        }
+        charge(&self.sign_in, address).map_err(|wait| {
+            RateLimited::new(
+                SIGN_IN_ADDRESS_LIMITER,
+                wait,
+                "too many sign-in documents from this address; wait for the \
+                 Retry-After period before retrying",
+            )
+        })
+    }
+
+    /// Spend up to [`SIGN_IN_FAILURE_COST`] of the address's sign-in ceiling.
+    fn penalize_sign_in(&self, address: &IpAddr) {
+        for _ in 0..SIGN_IN_FAILURE_COST {
+            if self.sign_in.check_key(address).is_err() {
+                break;
+            }
         }
     }
 
@@ -381,6 +453,9 @@ pub struct Admission {
     refusal: Mutex<Option<RateLimited>>,
     /// Set for a `rooms/*` document, which none of the above is charged for.
     room: Option<Arc<RoomAdmission>>,
+    /// An `auth/oob/*` document, charged to the sign-in ceiling and nothing
+    /// else; `verified` records whether its proof verified.
+    sign_in: bool,
 }
 
 impl Admission {
@@ -413,6 +488,24 @@ impl Admission {
                     authorized: AtomicBool::new(false),
                     refusal: Mutex::new(None),
                 })),
+                sign_in: false,
+            });
+        }
+        if claim
+            .type_uri
+            .as_deref()
+            .is_some_and(|t| oob_tasks::URIS.contains(&t))
+        {
+            limits.charge_sign_in(&address)?;
+            return Ok(Self {
+                limits: limits.clone(),
+                address,
+                claimed: None,
+                verified: AtomicBool::new(false),
+                address_charged: AtomicBool::new(false),
+                refusal: Mutex::new(None),
+                room: None,
+                sign_in: true,
             });
         }
         let claimed = match claim.signer() {
@@ -430,6 +523,7 @@ impl Admission {
             address_charged: AtomicBool::new(false),
             refusal: Mutex::new(None),
             room: None,
+            sign_in: false,
         };
         if admission.claimed.is_some() {
             charge(&limits.signed_address, &address).map_err(|wait| {
@@ -487,6 +581,14 @@ impl Admission {
         if let Some(limited) = self.refusal.lock().ok().and_then(|mut slot| slot.take()) {
             return Err(limited);
         }
+        // A sign-in document whose proof never verified: the verification it
+        // cost is paid for out of the address's sign-in ceiling.
+        if self.sign_in {
+            if !self.verified.load(Ordering::SeqCst) {
+                self.limits.penalize_sign_in(&self.address);
+            }
+            return Ok(());
+        }
         if self.claimed.is_some()
             && !self.verified.load(Ordering::SeqCst)
             && !self.address_charged.load(Ordering::SeqCst)
@@ -516,6 +618,11 @@ impl VerifiedAdmission for Admission {
     fn admit_verified(&self, signer: &str) -> bool {
         // A room document is charged when its room authorizes it, not here.
         if self.room.is_some() {
+            return true;
+        }
+        // A sign-in document was charged on arrival; record that it verified.
+        if self.sign_in {
+            self.verified.store(true, Ordering::SeqCst);
             return true;
         }
         match &self.claimed {
@@ -601,12 +708,21 @@ mod tests {
     use super::*;
 
     fn limits(signed_address_burst: u32, signer_burst: u32) -> TrustTaskLimits {
+        limits_with_sign_in(signed_address_burst, signer_burst, 10)
+    }
+
+    fn limits_with_sign_in(
+        signed_address_burst: u32,
+        signer_burst: u32,
+        sign_in_burst: u32,
+    ) -> TrustTaskLimits {
         let slow = Duration::from_secs(3600);
         TrustTaskLimits::with_quotas(
             Arc::new(RateLimiter::keyed(quota(slow, 2))),
             TrustedProxyKeyExtractor::new(Vec::new()),
             quota(slow, signed_address_burst),
             quota(slow, signer_burst),
+            quota(slow, sign_in_burst),
         )
     }
 
@@ -622,7 +738,86 @@ mod tests {
             address_charged: AtomicBool::new(false),
             refusal: Mutex::new(None),
             room: None,
+            sign_in: false,
         }
+    }
+
+    fn sign_in_admission(limits: &TrustTaskLimits) -> Admission {
+        Admission {
+            sign_in: true,
+            ..admission(limits, None)
+        }
+    }
+
+    const HERE: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1));
+
+    #[test]
+    fn every_sign_in_task_type_is_charged_to_the_sign_in_ceiling() {
+        for uri in oob_tasks::URIS {
+            assert!(
+                uri.starts_with("https://trusttasks.org/spec/auth/oob/"),
+                "{uri}"
+            );
+        }
+        // `identify` and `grant` only ever ride inside `prove` and `respond`.
+        assert!(!oob_tasks::URIS.iter().any(|u| u.contains("/identify/")));
+        assert!(!oob_tasks::URIS.iter().any(|u| u.contains("/grant/")));
+    }
+
+    #[test]
+    fn sign_in_documents_never_spend_the_anonymous_budget() {
+        let limits = limits_with_sign_in(10, 10, 20);
+        // Twelve verified sign-in documents: past the anonymous burst of 2.
+        for _ in 0..12 {
+            limits
+                .charge_sign_in(&HERE)
+                .expect("within the sign-in burst");
+            let a = sign_in_admission(&limits);
+            assert!(a.admit_verified("did:key:zKa"));
+            a.finish().expect("verified, so no penalty");
+        }
+        assert!(
+            charge(&limits.address, &HERE).is_ok(),
+            "anonymous budget untouched"
+        );
+        assert!(charge(&limits.address, &HERE).is_ok());
+    }
+
+    #[test]
+    fn the_sign_in_ceiling_refuses_past_its_burst() {
+        let limits = limits_with_sign_in(10, 10, 3);
+        for _ in 0..3 {
+            limits.charge_sign_in(&HERE).expect("within the burst");
+        }
+        assert_eq!(
+            limits.charge_sign_in(&HERE).unwrap_err().limiter(),
+            SIGN_IN_ADDRESS_LIMITER
+        );
+        // Another address has its own.
+        assert!(limits.charge_sign_in(&IpAddr::from([192, 0, 2, 2])).is_ok());
+    }
+
+    #[test]
+    fn an_anonymous_flood_does_not_cost_sign_ins() {
+        let limits = limits_with_sign_in(10, 10, 3);
+        while charge(&limits.address, &HERE).is_ok() {}
+        assert!(limits.charge_sign_in(&HERE).is_ok());
+    }
+
+    #[test]
+    fn a_sign_in_document_that_never_verifies_costs_extra() {
+        let limits = limits_with_sign_in(10, 10, SIGN_IN_FAILURE_COST + 2);
+        limits.charge_sign_in(&HERE).expect("arrival");
+        sign_in_admission(&limits)
+            .finish()
+            .expect("the penalty is not a refusal");
+        // One left after the arrival and the penalty.
+        limits.charge_sign_in(&HERE).expect("the last token");
+        assert!(limits.charge_sign_in(&HERE).is_err());
+        assert!(
+            charge(&limits.address, &HERE).is_ok(),
+            "never the anonymous budget"
+        );
     }
 
     #[test]

@@ -1001,6 +1001,49 @@ async fn sign_in_config_names_the_link_host_and_the_member_page_is_hardened() {
     }
 }
 
+/// Sign-in from one address is not held to the anonymous governor (a burst of
+/// 10): the page reads its config on every load, and one sign-in alone sends
+/// about ten `auth/oob/*` documents from the same address when the wallet is on
+/// the same device (`routing::trust_task_admission`, "Sign-in traffic").
+#[tokio::test]
+async fn sign_in_from_one_address_is_not_held_to_the_anonymous_governor() {
+    let f = fixture().await;
+    for n in 0..25 {
+        let mut req = Request::builder()
+            .uri("/v1/member/sign-in/config")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(SocketAddr::new(
+                "198.51.100.77".parse::<IpAddr>().unwrap(),
+                40_000,
+            )));
+        let res = f.vtc.router.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "config read {n}");
+    }
+
+    let b = Browser {
+        key: Party::new(),
+        ip: "198.51.100.78",
+    };
+    let id = start(&f, &b).await;
+    for n in 0..20 {
+        let r = redeem(&f, &b, &id).await;
+        assert_ne!(
+            r.status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "redeem {n}: {}",
+            r.body
+        );
+        assert_eq!(
+            code(&r),
+            "auth/oob/redeem:pending",
+            "redeem {n}: {}",
+            r.body
+        );
+    }
+}
+
 // ── Operator console: the `admin` session audience ──────────────────────────
 //
 // The console's login page asks for an admin session by putting

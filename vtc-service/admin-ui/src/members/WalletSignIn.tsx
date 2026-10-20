@@ -10,8 +10,8 @@
 // identity being signed in here (T4), and a known identity is not that.
 //
 // The code needs no click: it is made as soon as the page knows wallet
-// sign-in can work and the tab is in view (when the config could not be
-// fetched, a "Show sign-in code" button tries again). Nobody can use a code without
+// sign-in can work and the tab is in view. Reading the config is retried a
+// few times; when it still fails, the page says why, with "Try again". Nobody can use a code without
 // being a member and seeing the number, and the first scanner locks it, so
 // showing it unasked costs one request and gives nothing away. An unclaimed
 // code is renewed when its claim window closes — while the tab is in view
@@ -24,6 +24,10 @@
 // script reads them, only for a code the person clicked on this page, and
 // fills the number in for them. The page posts nothing and learns nothing
 // back; a phone wallet still asks the person to type the number.
+//
+// A rate-limit refusal (`429`, or the VTC's own `rateLimited`) is waited out
+// for its `Retry-After` and retried — a poll always, the code request a few
+// times — and only one that persists is shown, in words, never as "429".
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
@@ -38,6 +42,7 @@ import {
   keepSessionKeyForPortal,
   missingDidServices,
   NOT_AN_ADMIN,
+  retryAfterMs,
   OobError,
   openRequest,
   redeemOnce,
@@ -58,6 +63,21 @@ type Phase =
   | { kind: "confirm"; result: RedeemResult }
   | { kind: "ended"; reason: "declined" | "cancelled" | "expired" | "notAnAdmin" }
   | { kind: "error"; message: string };
+
+/** Tries for the config on page load, and for a code request a rate limit
+ *  refused, before the page says what went wrong. */
+const CONFIG_ATTEMPTS = 3;
+const REQUEST_ATTEMPTS = 3;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** The wait before try `attempt + 1`: a rate limit's own `Retry-After`, else
+ *  a short backoff. */
+function backoffMs(e: unknown, attempt: number): number {
+  return e instanceof OobError && e.code === "rateLimited"
+    ? retryAfterMs(e)
+    : 500 * 2 ** attempt;
+}
 
 /** The code as SVG rects: level M, no logo, a 4-module quiet zone, at least
  *  4 CSS px a module, dark on light in every theme (contract C1). */
@@ -155,7 +175,9 @@ export function WalletSignIn({
   // Whether the config is known and wallet sign-in can be offered: the code
   // is made unasked only then.
   const [ready, setReady] = useState(false);
-  const [configFailed, setConfigFailed] = useState(false);
+  // Why the config could not be read, after its retries; `null` while it
+  // could be, or is still being tried.
+  const [configFailed, setConfigFailed] = useState<string | null>(null);
   const [visible, setVisible] = useState(() => document.visibilityState !== "hidden");
   const abortRef = useRef<AbortController | null>(null);
   const runRef = useRef(0);
@@ -168,23 +190,32 @@ export function WalletSignIn({
 
   useEffect(() => stopPolling, [stopPolling]);
 
-  // Learn up front whether wallet sign-in can work. A failure here changes
-  // nothing: the click fetches again and reports what went wrong.
+  // Learn up front whether wallet sign-in can work, trying a few times — a
+  // rate limit or a blip on load is not worth showing. One that persists is
+  // shown with its reason and "Try again".
   useEffect(() => {
     let live = true;
-    fetchSignInConfig()
-      .then((cfg) => {
-        if (!live) return;
-        cfgRef.current = cfg;
-        const lacking = missingDidServices(cfg);
-        setMissing(lacking);
-        setReady(lacking === null);
-      })
-      .catch(() => {
-        // Offer the button instead: its click fetches again and reports
-        // what went wrong.
-        if (live) setConfigFailed(true);
-      });
+    void (async () => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const cfg = await fetchSignInConfig();
+          if (!live) return;
+          cfgRef.current = cfg;
+          const lacking = missingDidServices(cfg);
+          setMissing(lacking);
+          setReady(lacking === null);
+          return;
+        } catch (e) {
+          if (!live) return;
+          if (attempt + 1 >= CONFIG_ATTEMPTS) {
+            setConfigFailed(e instanceof Error ? e.message : String(e));
+            return;
+          }
+          await sleep(backoffMs(e, attempt));
+          if (!live) return;
+        }
+      }
+    })();
     return () => {
       live = false;
     };
@@ -275,7 +306,8 @@ export function WalletSignIn({
               continue;
             }
             case "rateLimited":
-              await new Promise((r) => setTimeout(r, 1000));
+              // Wait out the limit, then poll the same request again.
+              await sleep(retryAfterMs(e));
               continue;
             case "declined":
               forgetSessionKey();
@@ -320,7 +352,18 @@ export function WalletSignIn({
       await generateSessionKey();
       // Unmounted or superseded while the key was made: open no request.
       if (runRef.current !== run) return;
-      const { requestId, claimDeadline } = await openRequest(cfgRef.current, audience);
+      let opened: Awaited<ReturnType<typeof openRequest>> | undefined;
+      for (let attempt = 0; !opened; attempt++) {
+        try {
+          opened = await openRequest(cfgRef.current, audience);
+        } catch (e) {
+          const limited = e instanceof OobError && e.code === "rateLimited";
+          if (!limited || attempt + 1 >= REQUEST_ATTEMPTS) throw e;
+          await sleep(retryAfterMs(e));
+          if (runRef.current !== run) return;
+        }
+      }
+      const { requestId, claimDeadline } = opened;
       if (runRef.current !== run) return;
       openedAtRef.current = Date.now();
       setPhase({
@@ -395,10 +438,12 @@ export function WalletSignIn({
         (phase.kind === "idle" || phase.kind === "starting" || phase.kind === "lapsed") && (
         <>
           {configFailed && phase.kind === "idle" ? (
-            <button type="button" className="btn btn-primary btn-lg" onClick={showCode}>
-              <QrCode size={18} aria-hidden="true" />
-              Show sign-in code
-            </button>
+            <div className="alert" role="status">
+              <p className="alert-title">{configFailed}</p>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={showCode}>
+                Try again
+              </button>
+            </div>
           ) : (
             <p className="option-note" role="status">
               <QrCode size={18} aria-hidden="true" /> Getting a code…

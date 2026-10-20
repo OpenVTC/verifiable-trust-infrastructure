@@ -330,4 +330,127 @@ describe("wallet sign-in", () => {
       }
     });
   });
+
+  describe("when a rate limit refuses", () => {
+    /** A limiter's `429` (`routing::rate_limit`): not a trust-task reply. */
+    const limited = () =>
+      new Response(
+        JSON.stringify({
+          error: "rate_limited",
+          limiter: "sign-in-address",
+          message: "too many",
+          retryAfterSecs: 1,
+        }),
+        { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "1" } },
+      );
+
+    /** Config and request answers scripted in order (the last repeats);
+     *  redeem as given. */
+    function stubWith(opts: {
+      configs?: Array<() => Response>;
+      requests?: Array<() => Response>;
+      redeems?: Array<() => Response>;
+    }) {
+      const count = { config: 0, request: 0, redeem: 0 };
+      const pick = (list: Array<() => Response> | undefined, n: number, dflt: () => Response) =>
+        list ? list[Math.min(n, list.length - 1)]!() : dflt();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === "string" ? input : input.toString();
+          if (url.endsWith("/v1/member/sign-in/config")) {
+            return pick(opts.configs, count.config++, () => json(200, CFG));
+          }
+          const doc = JSON.parse(String(init?.body));
+          if (doc.type.endsWith("/request/0.1")) {
+            return pick(opts.requests, count.request++, () =>
+              json(200, {
+                type: `${doc.type}#response`,
+                payload: { requestId: RID, claimDeadline: Math.floor(Date.now() / 1000) + 120 },
+              }),
+            );
+          }
+          if (doc.type.endsWith("/redeem/0.1")) {
+            return pick(
+              opts.redeems,
+              count.redeem++,
+              () => new Promise<Response>(() => {}) as unknown as Response,
+            );
+          }
+          return json(200, { type: `${doc.type}#response`, payload: { status: "cancelled" } });
+        }),
+      );
+      return count;
+    }
+
+    it("waits out a 429 on a poll and carries on to the number", async () => {
+      const count = stubWith({
+        redeems: [
+          limited,
+          () => err("auth/oob/redeem:pending", { state: "claimed", matchNumber: "47" }),
+          () => new Promise<Response>(() => {}) as unknown as Response,
+        ],
+      });
+      render(<WalletSignIn onSignedIn={() => {}} />);
+      await screen.findByText(/your number is/i, undefined, { timeout: 4000 });
+      expect(screen.getByText("47").getAttribute("data-oob-match-number")).toBe("47");
+      expect(screen.queryByText(/429/)).toBeNull();
+      expect(count.redeem).toBeGreaterThanOrEqual(2);
+    });
+
+    it("retries a code request a 429 refused", async () => {
+      const count = stubWith({
+        requests: [
+          limited,
+          () =>
+            json(200, {
+              type: "https://trusttasks.org/spec/auth/oob/request/0.1#response",
+              payload: { requestId: RID, claimDeadline: Math.floor(Date.now() / 1000) + 120 },
+            }),
+        ],
+      });
+      render(<WalletSignIn onSignedIn={() => {}} />);
+      expect(
+        await screen.findByRole("img", { name: /sign-in code/i }, { timeout: 4000 }),
+      ).toBeTruthy();
+      expect(count.request).toBe(2);
+      expect(screen.queryByText(/429/)).toBeNull();
+    });
+
+    it("says so in words, never '429', when the code request stays refused", async () => {
+      stubWith({ requests: [limited] });
+      render(<WalletSignIn onSignedIn={() => {}} />);
+      expect(
+        await screen.findByText(/too many sign-in attempts from this network/i, undefined, {
+          timeout: 6000,
+        }),
+      ).toBeTruthy();
+      expect(screen.queryByText(/^429$/)).toBeNull();
+    }, 10_000);
+
+    it("retries the config on load, then makes the code", async () => {
+      const count = stubWith({ configs: [limited, () => json(200, CFG)] });
+      render(<WalletSignIn onSignedIn={() => {}} />);
+      expect(
+        await screen.findByRole("img", { name: /sign-in code/i }, { timeout: 4000 }),
+      ).toBeTruthy();
+      expect(count.config).toBe(2);
+    });
+
+    it("gives the reason and 'Try again' when the config stays unreadable", async () => {
+      const count = stubWith({ configs: [limited] });
+      render(<WalletSignIn onSignedIn={() => {}} />);
+      expect(
+        await screen.findByText(/too many sign-in attempts from this network/i, undefined, {
+          timeout: 6000,
+        }),
+      ).toBeTruthy();
+      expect(count.config).toBe(3);
+      expect(screen.queryByRole("button", { name: /show sign-in code/i })).toBeNull();
+      // Try again reads it afresh and, once it answers, makes the code.
+      stubWith({});
+      fireEvent.click(screen.getByRole("button", { name: /try again/i }));
+      expect(await screen.findByRole("img", { name: /sign-in code/i })).toBeTruthy();
+    }, 10_000);
+  });
 });

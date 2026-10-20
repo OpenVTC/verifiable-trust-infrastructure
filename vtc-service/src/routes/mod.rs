@@ -823,7 +823,16 @@ fn build_api_chain(
 
     // The member portal's session-gated routes (`MemberAuth`): off the
     // governor, like every other authenticated route — the session is the gate.
+    //
+    // And the sign-in pages' config, which needs no session but is no work to
+    // serve: public settings and the cached DID self-check. Every load of the
+    // member portal's and the console's sign-in page reads it before it makes a
+    // code. Behind the per-IP governor it shared one small bucket with the code
+    // request, the redeem polls and the wallet's own claim, prove and respond
+    // from the same address, so a few sign-ins or reloads in a minute left the
+    // next page load refused and the page fell back to a button.
     let api = api
+        .route("/member/sign-in/config", get(member_portal::sign_in_config))
         .route("/member/me", get(member_portal::me))
         .route("/member/passkeys", get(member_portal::list_passkeys))
         .route(
@@ -994,10 +1003,6 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         .route(
             "/member/wallet/auth/refresh",
             post(member_portal::wallet_refresh),
-        )
-        .route(
-            "/member/sign-in/config",
-            get(member_portal::sign_in_config),
         )
         .route("/member/session", post(member_portal::session))
         .route("/member/auth/refresh", post(member_portal::cookie_refresh))
