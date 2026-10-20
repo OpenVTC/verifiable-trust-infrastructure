@@ -202,6 +202,7 @@ pub async fn append(
         };
         batch.insert(note_key(entry_id, existing.len() as u64), &note)?;
         ks.apply_batch(batch).await?;
+        super::changed();
         return Ok(Ok(note));
     }
     let note = Note {
@@ -216,6 +217,7 @@ pub async fn append(
     };
     batch.insert(note_key(entry_id, existing.len() as u64), &note)?;
     ks.apply_batch(batch).await?;
+    super::changed();
     Ok(Ok(note))
 }
 
@@ -244,6 +246,7 @@ pub async fn on_departure(
         batch.insert_raw(departed_key(entry_id), until.to_rfc3339().into_bytes());
     }
     ks.apply_batch(batch).await?;
+    super::changed();
     Ok(())
 }
 
@@ -267,6 +270,7 @@ pub async fn sweep_departed(ks: &KeyspaceHandle, now: DateTime<Utc>) -> Result<u
         }
         batch.remove(key);
         ks.apply_batch(batch).await?;
+        super::changed();
         erased += 1;
     }
     Ok(erased)

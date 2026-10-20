@@ -1648,10 +1648,15 @@ new flow, update both this section and the relevant `docs/*.md`.
 ### VTC admin console live channel (`vtc/admin/events/*`)
 - **What**: An open admin console learns *when* to re-read — the action list,
   acknowledgements, join requests, members, single-administrator mode, the
-  configuration, and (0.2) the rooms pages — without polling every read on a
-  timer. One stream per console session; polling stays the fallback. Both
-  0.1 and 0.2 are served, each stream answered at its own version; the topic
-  set is closed per version (`rooms` only at 0.2, for `vtc.rooms.admin`).
+  configuration, (0.2) the rooms pages, and (0.3) the directory and groups
+  pages — without polling every read on a timer. One stream per console
+  session; polling stays the fallback. 0.1, 0.2 and 0.3 are served, each
+  stream answered at its own version; the topic set is closed per version
+  (`rooms` from 0.2, for `vtc.rooms.admin`; `directory` and `groups` from 0.3,
+  for `vtc.directory.{admin,notes}` and `vtc.groups.manage`). `groups` is
+  fingerprinted over the groups the recipient manages, so a manager qualified
+  to one group is never hinted about another; `directory` is coalesced to one
+  hint per ten seconds.
 - **Transport**: HTTPS binding 0.3 §2.1 **streamed responses** — the signed
   `vtc/admin/events/subscribe/0.1` document POSTed to the ordinary
   `/v1/trust-tasks` door with `Accept: text/event-stream, application/json;q=0.5`,
@@ -1680,9 +1685,10 @@ new flow, update both this section and the relevant `docs/*.md`.
   redelivery (a replay answers `204`); the bus is fed from storage seams
   (action save/delete, join-request store/delete, member store/delete, ACL
   store/delete, config override and profile writes, storage-config writes,
-  and `vti_rooms::observe`'s hook for room registration/renewal and holdings
-  or limit writes) and carries no row data; `rooms` is fingerprinted (rooms,
-  lifecycle state, 80/95/100 % bands, configs) so only rule-4 changes hint, and
+  `vti_rooms::observe`'s hook for room registration/renewal and holdings
+  or limit writes, and the directory's and groups' own writes) and carries
+  no row data; `rooms` is fingerprinted (rooms, lifecycle state,
+  80/95/100 % bands, configs) so only rule-4 changes hint, and
   a stream wakes itself at the next clock-driven lifecycle change;
   no lock across an await (R1.3); the console's live status is derived from
   bytes arriving, never latched (R6.2).

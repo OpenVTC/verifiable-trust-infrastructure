@@ -1126,6 +1126,23 @@ fn table() -> Vec<Conformance> {
                 "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
             })
         ),
+        // 0.3: the same, plus `directory` and `groups`; its hints are
+        // `event/0.3` documents.
+        checked!(
+            s::admin::events::subscribe::v0_3::Payload,
+            s::admin::events::subscribe::v0_3::Response,
+            json!({
+                "topics": ["actions", "acknowledgements", "joinRequests", "members",
+                           "singleAdminMode", "config", "rooms", "directory", "groups"],
+                "since": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
+            }),
+            json!({
+                "topics": ["actions", "members", "directory", "groups"],
+                "heartbeatSeconds": 25,
+                "resumed": false,
+                "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
+            })
+        ),
         // ─── custom administrative roles ─────────────────────────────
         // Responses rendered by the handler's own renderers.
         checked!(

@@ -502,15 +502,16 @@ once and then dropped from the URL.
 ### Live updates, and polling as the fallback
 
 A signed-in console holds **one live channel** per session:
-`vtc/admin/events/subscribe` — at **0.2** when the VTC lists it in
-`trust-task-discovery`, else 0.1 — sent as a signed document to the ordinary
+`vtc/admin/events/subscribe` — at the newest version the VTC lists in
+`trust-task-discovery` (**0.3**, 0.2, else 0.1) — sent as a signed document to the ordinary
 `POST /v1/trust-tasks` with `Accept: text/event-stream, application/json;q=0.5`
 and answered as a **streamed response** (HTTPS binding 0.3 §2.1): `200
 text/event-stream`, whose first event is the signed `#response` and whose later
 events are `vtc/admin/events/event` **hints** of the same version. There is no
 other route — no `GET`, no WebSocket — and nothing about the door changes for
-any other task. The VTC serves both versions; 0.2 adds the `rooms` topic and
-nothing else, so a 0.1 console (or `cnm actions watch`) is unchanged.
+any other task. The VTC serves all three versions; 0.2 adds the `rooms` topic
+and 0.3 the `directory` and `groups` topics, and nothing else, so an older
+console (or `cnm actions watch`) is unchanged.
 
 **A hint is never data.** It names a topic, when it changed, and for the three
 badge topics the viewer's count:
@@ -524,6 +525,16 @@ badge topics the viewer's count:
 | `singleAdminMode` | the single-administrator banner | — | every administrator |
 | `config` | the configuration and profile screens | — | holders of `vtc.config.admin` |
 | `rooms` (0.2) | the Data rooms page (its Rooms, Usage, Storage and Community rooms tabs) and a room's page | — | holders of `vtc.rooms.admin` |
+| `directory` (0.3) | the Directory pages, and the member list and member page, which show each member's card | — | holders of `vtc.directory.admin` or `vtc.directory.notes` |
+| `groups` (0.3) | the Groups page and a group's page | — | holders of `vtc.groups.manage`; a manager of one group hears only about that group |
+
+`directory` is hinted when a field, a card or a value, an external card or an
+administrators' note is written or removed, at most once every ten seconds, so
+one member editing their card does not read as a rhythm. `groups` is hinted
+when a group, a membership, a join request or a manager's appointment changes —
+only for the groups the administrator may manage: the VTC digests each group
+they manage, with its members, requests and managers, and hints when that
+moves. Neither hint names an entry, a group or a member.
 
 `rooms` is hinted when a room is registered (or removed), when a room's
 lifecycle state changes — which happens with the clock, so the VTC wakes the

@@ -758,6 +758,8 @@ const EMBEDDED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/admin/events/event/0.1",
     // …and at 0.2, on a stream opened at 0.2 (the `rooms` topic).
     "https://trusttasks.org/spec/vtc/admin/events/event/0.2",
+    // …and at 0.3, on a stream opened at 0.3 (`directory`, `groups`).
+    "https://trusttasks.org/spec/vtc/admin/events/event/0.3",
 ];
 
 /// Document types the console sends that the spine dispatches only in a build
@@ -827,6 +829,8 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.1",
     // At 0.2 (adds `rooms`) when `trust-task-discovery` lists it.
     "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.2",
+    // At 0.3 (adds `directory` and `groups`) when discovery lists it.
+    "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.3",
     // Custom administrative roles (`trust_tasks::role_tasks`): the Roles
     // page's reads, and the definitions it sends for approval.
     "https://trusttasks.org/spec/vtc/roles/list/0.1",

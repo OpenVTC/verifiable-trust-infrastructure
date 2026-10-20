@@ -140,6 +140,7 @@ pub async fn ensure(
             "a directory card was created for this member concurrently; read it again".into(),
         ));
     }
+    super::changed();
     Ok(card)
 }
 
@@ -156,6 +157,7 @@ async fn store_if_revision(
         return Ok(false);
     }
     ks.insert(card_key(&card.entry_id), card).await?;
+    super::changed();
     Ok(true)
 }
 
@@ -580,6 +582,7 @@ pub async fn rotate(ks: &KeyspaceHandle, old_did: &str, new_did: &str) -> Result
             "{new_did} already has a directory entry; the rotation cannot carry the card"
         )));
     }
+    super::changed();
     Ok(())
 }
 
@@ -620,6 +623,7 @@ pub async fn on_departure(ks: &KeyspaceHandle, did: &str, how: Departure) -> Res
         }
     }
     ks.apply_batch(batch).await?;
+    super::changed();
     Ok(())
 }
 
@@ -634,6 +638,7 @@ pub async fn purge_field(ks: &KeyspaceHandle, field: &str) -> Result<usize, AppE
         if had_value || had_choice {
             ks.insert(card_key(&card.entry_id), &card).await?;
             purged += usize::from(had_value);
+            super::changed();
         }
     }
     Ok(purged)

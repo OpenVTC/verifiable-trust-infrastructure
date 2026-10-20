@@ -244,7 +244,9 @@ pub async fn get_request(
 }
 
 pub async fn put_request(ks: &KeyspaceHandle, r: &JoinRequest) -> Result<(), AppError> {
-    ks.insert(request_key(&r.request_id), r).await
+    ks.insert(request_key(&r.request_id), r).await?;
+    changed();
+    Ok(())
 }
 
 /// Every request, oldest first.
@@ -313,6 +315,13 @@ pub fn new_group_id() -> String {
     )
 }
 
+/// Tell open consoles a group changed (the `groups` topic of
+/// `vtc/admin/events/subscribe/0.3`). A hint, carrying nothing: each stream's
+/// fingerprint decides whether it concerns a group its recipient manages.
+fn changed() {
+    crate::admin_events::notify(crate::admin_events::Topic::Groups);
+}
+
 fn group_key(group_id: &str) -> Vec<u8> {
     format!("group:{group_id}").into_bytes()
 }
@@ -350,7 +359,9 @@ pub async fn all(ks: &KeyspaceHandle) -> Result<Vec<Group>, AppError> {
 }
 
 pub async fn put(ks: &KeyspaceHandle, group: &Group) -> Result<(), AppError> {
-    ks.insert(group_key(&group.group_id), group).await
+    ks.insert(group_key(&group.group_id), group).await?;
+    changed();
+    Ok(())
 }
 
 /// Remove a group and every membership of it; its pending requests are
@@ -370,6 +381,7 @@ pub async fn remove(ks: &KeyspaceHandle, group_id: &str) -> Result<usize, AppErr
     }
     ks.remove(group_key(group_id)).await?;
     renewal::forget(ks, group_id).await?;
+    changed();
     Ok(members.len())
 }
 
@@ -414,7 +426,9 @@ pub async fn membership(
 /// Record a membership, from both sides.
 pub async fn put_membership(ks: &KeyspaceHandle, m: &Membership) -> Result<(), AppError> {
     ks.insert(member_key(&m.group_id, &m.entry_id), m).await?;
-    ks.insert(by_entry_key(&m.entry_id, &m.group_id), m).await
+    ks.insert(by_entry_key(&m.entry_id, &m.group_id), m).await?;
+    changed();
+    Ok(())
 }
 
 /// End a membership, from both sides.
@@ -425,6 +439,7 @@ pub async fn remove_membership(
 ) -> Result<(), AppError> {
     ks.remove(member_key(group_id, entry_id)).await?;
     ks.remove(by_entry_key(entry_id, group_id)).await?;
+    changed();
     renewal::forget_credential(ks, group_id, entry_id).await
 }
 

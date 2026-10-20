@@ -255,7 +255,9 @@ pub async fn get(ks: &KeyspaceHandle, key: &str) -> Result<Option<FieldDef>, App
 }
 
 async fn put(ks: &KeyspaceHandle, f: &FieldDef) -> Result<(), AppError> {
-    ks.insert(field_key(&f.key).into_bytes(), f).await
+    ks.insert(field_key(&f.key).into_bytes(), f).await?;
+    super::changed();
+    Ok(())
 }
 
 /// Why a field write was refused — one variant per declared error code.

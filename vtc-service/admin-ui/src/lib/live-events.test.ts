@@ -12,9 +12,12 @@ import {
   EVENT_TASK_V0_2,
   LIVE_V0_1,
   LIVE_V0_2,
+  LIVE_V0_3,
   LiveEvents,
   liveVersionFor,
   SUBSCRIBE_TASK_V0_2,
+  SUBSCRIBE_TASK_V0_3,
+  EVENT_TASK_V0_3,
   SseParser,
   STREAM_ACCEPT,
   SUBSCRIBE_TASK,
@@ -319,8 +322,9 @@ describe("0.2 and the rooms topic", () => {
     const h = harness([() => streamResponse(s.stream)], LIVE_V0_2);
     h.client.start();
     await settle();
-    expect(h.signed[0]).toEqual({ topics: [...ALL_TOPICS] });
+    expect(h.signed[0]).toEqual({ topics: [...LIVE_V0_2.topics] });
     expect(h.signed[0]!.topics).toContain("rooms");
+    expect(h.signed[0]!.topics).not.toContain("groups");
 
     s.push(
       sse(
@@ -357,6 +361,48 @@ describe("0.2 and the rooms topic", () => {
   });
 });
 
+describe("0.3 and the directory and groups topics", () => {
+  it("subscribes at the newest version discovery lists", () => {
+    expect(liveVersionFor([SUBSCRIBE_TASK_V0_3, SUBSCRIBE_TASK_V0_2, SUBSCRIBE_TASK])).toBe(
+      LIVE_V0_3,
+    );
+    expect(liveVersionFor([SUBSCRIBE_TASK_V0_2])).toBe(LIVE_V0_2);
+  });
+
+  it("asks for directory and groups only at 0.3", () => {
+    expect(LIVE_V0_1.topics).not.toContain("directory");
+    expect(LIVE_V0_2.topics).not.toContain("groups");
+    expect(LIVE_V0_3.topics).toEqual(ALL_TOPICS);
+  });
+
+  it("hands on 0.3 groups and directory hints", async () => {
+    const s = controlledStream();
+    const h = harness([() => streamResponse(s.stream)], LIVE_V0_3);
+    h.client.start();
+    await settle();
+    expect(h.signed[0]).toEqual({ topics: [...ALL_TOPICS] });
+    s.push(
+      sse(
+        response(
+          { topics: ["directory", "groups"] },
+          { type: `${SUBSCRIBE_TASK_V0_3}#response` },
+        ),
+        "tok0",
+      ),
+    );
+    await settle();
+    expect(h.client.effectiveTopics).toEqual(["directory", "groups"]);
+    s.push(sse(hint("groups", "tok1", undefined, { type: EVENT_TASK_V0_3 }), "tok1"));
+    s.push(sse(hint("directory", "tok2", undefined, { type: EVENT_TASK_V0_3 }), "tok2"));
+    await settle();
+    expect(h.hints).toEqual([
+      ["groups", undefined],
+      ["directory", undefined],
+    ]);
+    h.client.stop();
+  });
+});
+
 describe("hint to query keys", () => {
   it("re-reads the badge, page, tile and banner keys each topic names", () => {
     const has = (t: Topic, key: readonly unknown[]) =>
@@ -368,6 +414,8 @@ describe("hint to query keys", () => {
     // Prefixes: the page, the badge count and the dashboard tile all sit under them.
     expect(PENDING_JOIN_REQUESTS_KEY[0]).toBe("join-requests");
     expect(has("joinRequests", ["join-requests"])).toBe(true);
+    expect(has("directory", ["directory"])).toBe(true);
+    expect(has("groups", ["groups"])).toBe(true);
     expect(MEMBER_COUNT_KEY[0]).toBe("members");
     expect(has("members", ["members"])).toBe(true);
     expect(has("config", ["admin-config"])).toBe(true);
