@@ -164,6 +164,10 @@ pub struct TestVtcBuilder {
     community_key_holder: Option<Arc<dyn crate::rooms::vta_storage::VtaChannel>>,
     /// `[directory]`, as the directory runs with it.
     directory: crate::directory::model::Settings,
+    /// `[voting]`.
+    voting: crate::elections::VotingConfig,
+    /// The ballot boxes elections are registered with.
+    ballot_boxes: Option<Arc<dyn crate::elections::link::BallotBoxChannel>>,
 }
 
 impl Default for TestVtcBuilder {
@@ -191,6 +195,8 @@ impl Default for TestVtcBuilder {
             community_rooms: None,
             community_key_holder: None,
             directory: crate::directory::model::Settings::default(),
+            voting: Default::default(),
+            ballot_boxes: None,
         }
     }
 }
@@ -205,6 +211,17 @@ impl TestVtcBuilder {
     /// Run the member directory with `settings` (`[directory]`).
     pub fn with_directory(mut self, settings: crate::directory::model::Settings) -> Self {
         self.directory = settings;
+        self
+    }
+
+    /// Set `[voting]`, and reach ballot boxes through `link`.
+    pub fn with_elections(
+        mut self,
+        voting: crate::elections::VotingConfig,
+        link: Arc<dyn crate::elections::link::BallotBoxChannel>,
+    ) -> Self {
+        self.voting = voting;
+        self.ballot_boxes = Some(link);
         self
     }
 
@@ -544,6 +561,7 @@ impl TestVtcBuilder {
         if let Some(limits) = &self.room_rate_limits {
             config.rooms.rate_limits = limits.clone();
         }
+        config.voting = self.voting.clone();
         if let Some(community) = &self.community_rooms {
             config.rooms.community = Some(community.clone());
         }
@@ -692,6 +710,12 @@ impl TestVtcBuilder {
                     .keyspace(crate::store::keyspaces::DIRECTORY)
                     .expect("directory ks"),
                 self.directory,
+            )),
+            elections: Arc::new(crate::elections::Elections::new(
+                store
+                    .keyspace(crate::store::keyspaces::ELECTIONS)
+                    .expect("elections ks"),
+                self.ballot_boxes,
             )),
             audit_ks,
             audit_key_ks,

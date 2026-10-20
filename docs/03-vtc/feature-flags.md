@@ -18,6 +18,8 @@ side.
 | `azure-secrets` | – | Azure Key Vault secret backend | `azure_security_keyvault_secrets`, `azure_identity` |
 | `vault-secrets` | – | HashiCorp Vault (KV v2; kubernetes/token/approle auth). Configure via the `[secrets]` table (`vault_addr`, …) — no setup-wizard picker | *(shared via `vti-secrets`)* |
 | `k8s-secrets` | – | Kubernetes `Secret` secret backend (in-cluster SA or kubeconfig) | `kube`, `k8s-openapi` |
+| `vetting-pcs` | – | Hidden vetting (the community half of the PCS engine) | `vti-vetting-pcs`, `predicate-credential-system` (arkworks) |
+| `voting` | – | Community elections, `vtc/elections/*` ([elections.md](elections.md)) | `vetting-pcs`, `vti-voting` |
 
 ## Deployment profiles
 

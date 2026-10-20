@@ -122,6 +122,9 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmYGMiMk9SpEJwJ7g4EpxKCourBJVRP6PnmHMzYccbQugH",
   [pinKey("config.witnesses.change", `${SPEC}/vtc/config/import/0.1`)]:
     "zQmathdofD8yrXDQ2AuSfsWwjjKdx9RdPkAnC2r7qdU79hc",
+  // Creating a binding election (VTI-VOT-081).
+  [pinKey("election.binding.create", `${SPEC}/vtc/elections/create/0.1`)]:
+    "zQmRruPSiJx9JHEBJCdQiH1qXMTdqf2Dy6yL1WmUJqTU8mX",
   // Widening a member-directory field (VTI-DIR-024).
   [pinKey("directory.field.widen", `${SPEC}/vtc/directory/fields/update/0.1`)]:
     "zQmafxMMkTfH4kb9QgoUQEJtUs4tuZFvqM8nxhjEawj6vYZ",

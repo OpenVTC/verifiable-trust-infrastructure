@@ -106,6 +106,15 @@ pub const COMMUNITY_ROOMS: &str = "community_rooms";
 /// a link a member shared, a group membership — would then miss.
 pub const DIRECTORY: &str = "directory";
 
+/// Community elections (`crate::elections`): one record per election (its manifest
+/// as registered, where it stands with its ballot box, the board heads kept, the
+/// certification) and one per ticket issued (who took it — never the ticket).
+///
+/// **Backed up**: a restored community that forgot whom it issued tickets to would
+/// issue a second one to the same member (VTI-VOT-022), and certification holds the
+/// board to the number issued (VTI-VOT-072).
+pub const ELECTIONS: &str = "elections";
+
 /// Uploads and downloads in flight. Hours long at most, so **not backed up**: a restored
 /// host starts with none, and a client resumes from `begin`.
 pub use vti_rooms::blobs::ROOM_BLOB_TRANSFERS_KEYSPACE as ROOM_BLOB_TRANSFERS;
@@ -278,6 +287,7 @@ pub const ALL: &[&str] = &[
     STORAGE_CONFIGS,
     COMMUNITY_ROOMS,
     DIRECTORY,
+    ELECTIONS,
     AUDIT,
     AUDIT_KEY,
     AUDIT_CHECKPOINT,
@@ -343,6 +353,8 @@ pub const BACKED_UP: &[&str] = &[
     COMMUNITY_ROOMS,
     // The directory's schema and every member's card.
     DIRECTORY,
+    // Who took a ticket, the manifests, the checkpoints and certifications.
+    ELECTIONS,
     AUDIT,
     AUDIT_KEY,
     // Required, not optional: restoring the audit log without its
@@ -490,8 +502,9 @@ mod tests {
         // `AppState::room_files` holds (`ROOM_BLOBS`, `ROOM_BLOB_TRANSFERS`), plus the
         // one `AppState::room_storage` holds (`STORAGE_CONFIGS`), plus the one
         // `AppState::community_rooms` holds (`COMMUNITY_ROOMS`), plus the one
-        // `AppState::directory` holds (`DIRECTORY`).
-        assert_eq!(ALL.len(), 54, "ALL must list every AppState keyspace");
+        // `AppState::directory` holds (`DIRECTORY`), plus the one
+        // `AppState::elections` holds (`ELECTIONS`).
+        assert_eq!(ALL.len(), 55, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

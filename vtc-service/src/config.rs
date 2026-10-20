@@ -131,6 +131,14 @@ pub struct AppConfig {
     /// [`crate::directory`].
     #[serde(default, skip_serializing_if = "DirectoryConfig::is_default")]
     pub directory: DirectoryConfig,
+    /// Community elections (`[voting]`): the voting services this community
+    /// registers elections with (VTI-VOT-082). **Absent means none**, so no
+    /// election can be created. See [`crate::elections`].
+    #[serde(
+        default,
+        skip_serializing_if = "crate::elections::VotingConfig::is_empty"
+    )]
+    pub voting: crate::elections::VotingConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
 }

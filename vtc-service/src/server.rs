@@ -210,6 +210,9 @@ pub struct AppState {
     /// The member directory (`crate::directory`): its schema and every
     /// member's card, in its own keyspace.
     pub directory: Arc<crate::directory::Directory>,
+    /// Community elections (`crate::elections`): the registrar's records, and its
+    /// link to ballot boxes over this VTC's messaging.
+    pub elections: Arc<crate::elections::Elections>,
     pub audit_ks: KeyspaceHandle,
     pub audit_key_ks: KeyspaceHandle,
     /// Signed audit checkpoints (#708). Read by `GET /v1/audit/verify`,
@@ -904,6 +907,25 @@ pub async fn run(
         config.directory.settings().map_err(AppError::Config)?,
     ));
 
+    // Community elections: ballot boxes are reached over this VTC's messaging, as
+    // this community (VTI-VOT-005), so the link needs its signing key and a resolver.
+    let ballot_box_link = match (credential_signer.clone(), did_resolver.clone()) {
+        (Some(signer), Some(resolver)) => Some(Arc::new(crate::elections::link::BallotBoxLink {
+            peers: crate::outbound::PeerTasks {
+                didcomm: didcomm_cell.clone(),
+                signer: Some(signer),
+                replies: pending_replies.clone(),
+                resolver: Some(resolver),
+            },
+        })
+            as Arc<dyn crate::elections::link::BallotBoxChannel>),
+        _ => None,
+    };
+    let elections = Arc::new(crate::elections::Elections::new(
+        store.keyspace(keyspaces::ELECTIONS)?,
+        ballot_box_link,
+    ));
+
     // Room files through the community's VTA (`rooms::vta_storage`): the
     // presigned requests come sealed to this community's key-agreement key.
     if let (Some(link), Some(vtc_did), Some(secrets)) =
@@ -1039,6 +1061,7 @@ pub async fn run(
         room_storage,
         community_rooms,
         directory,
+        elections,
         audit_ks,
         audit_key_ks,
         audit_checkpoint_ks: audit_checkpoint_ks.clone(),
@@ -1573,6 +1596,10 @@ pub async fn run(
     // The profile of each room the community owns, written into the room by its VTA:
     // the one retry owner for a create or update that answered `roomProfile: pending`.
     crate::rooms::community_profile::spawn(state.clone(), shutdown_rx.clone());
+    // Community elections: the one retry owner for a registration the ballot box has
+    // not answered, the board checkpoints, and discarding pre-credentials after close.
+    #[cfg(feature = "voting")]
+    crate::elections::sweeper::spawn(state.clone(), shutdown_rx.clone());
     // Room files deleted, orphaned past their grace, or abandoned mid-transfer.
     crate::rooms::files::spawn_sweeper(
         state.room_files.clone(),

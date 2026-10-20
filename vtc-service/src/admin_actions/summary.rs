@@ -60,6 +60,8 @@ pub const KIND_POLICY_RECOGNITION: &str = "policy.recognition.change";
 pub const KIND_HIDDEN_VETTING_CHANGE: &str = "join.criteria.hiddenVetting";
 /// Widening a member-directory field (VTI-DIR-024).
 pub const KIND_DIRECTORY_FIELD_WIDEN: &str = "directory.field.widen";
+/// Creating a binding election (VTI-VOT-081).
+pub const KIND_ELECTION_BINDING_CREATE: &str = "election.binding.create";
 pub const KIND_INVITE_CREATE: &str = "admin.invite.create";
 /// An operator's offline write, raised for acknowledgement (VTI-VTC-023).
 pub const KIND_OPERATOR_WRITE: &str = "operator.offlineWrite";
@@ -146,6 +148,10 @@ pub(crate) const HIDDEN_PUBLISH: &str =
 pub(crate) const HIDDEN_WITHDRAW: &str =
     <trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const DIRECTORY_FIELDS_UPDATE: &str = crate::trust_tasks::directory_tasks::FIELDS_UPDATE_TYPE;
+/// `vtc/elections/create/0.1`, off the generated type: a build without `voting`
+/// still pins the template the console holds.
+pub(crate) const ELECTIONS_CREATE: &str =
+    <trust_tasks_rs::specs::vtc::elections::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const ROLES_DEFINE: &str = "https://trusttasks.org/spec/vtc/roles/define/0.1";
 const ROLES_DELETE: &str = "https://trusttasks.org/spec/vtc/roles/delete/0.1";
 const BACKUP_FINALIZE_IMPORT: &str = "https://trusttasks.org/spec/backup/finalize-import/0.1";
@@ -196,6 +202,10 @@ const DIRECTORY_WIDEN_EFFECT: &str = "Members' directory values in the field {ke
                                       further: a wider ceiling or default, a field searched or \
                                       counted, or one shown again. No member's own choice changes, \
                                       but every card that made none takes the new default.";
+const ELECTION_CREATE_EFFECT: &str = "The community creates {electionId}, a binding election: its \
+                                      result decides something in the community's name. Voting \
+                                      runs from {votingOpens} to {votingCloses} at the ballot box \
+                                      {ballotBox}, and the roll is {roll}.";
 const POLICY_EFFECT: &str = "The rules that decide who holds authority in this community change.";
 const RECOGNITION_POLICY_EFFECT: &str = "The rules that decide who this community recognises as a \
                                          person change — for joining, and for members whose \
@@ -460,6 +470,20 @@ pub const TEMPLATES: &[Template] = &[
             "/document/configOverrides/witnesses.trusted",
             "text",
         )],
+    },
+    Template {
+        kind: KIND_ELECTION_BINDING_CREATE,
+        type_uri: ELECTIONS_CREATE,
+        title: "Create the binding election {electionId}",
+        effect: ELECTION_CREATE_EFFECT,
+        fields: &[
+            f("electionId", "/manifest/electionId", "text"),
+            f("title", "/manifest/title", "text"),
+            f("ballotBox", "/manifest/ballotBox", "did"),
+            f("roll", "/manifest/roll/rule", "text"),
+            f("votingOpens", "/manifest/votingOpens", "datetime"),
+            f("votingCloses", "/manifest/votingCloses", "datetime"),
+        ],
     },
     Template {
         kind: KIND_DIRECTORY_FIELD_WIDEN,
@@ -826,6 +850,11 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_WITNESSES_CHANGE,
         CONFIG_IMPORT,
         "zQmathdofD8yrXDQ2AuSfsWwjjKdx9RdPkAnC2r7qdU79hc",
+    ),
+    (
+        KIND_ELECTION_BINDING_CREATE,
+        ELECTIONS_CREATE,
+        "zQmRruPSiJx9JHEBJCdQiH1qXMTdqf2Dy6yL1WmUJqTU8mX",
     ),
     (
         KIND_DIRECTORY_FIELD_WIDEN,

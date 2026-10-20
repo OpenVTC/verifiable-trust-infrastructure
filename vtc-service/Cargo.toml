@@ -49,6 +49,10 @@ default = ["setup", "keyring", "website", "admin-ui", "tsp"]
 # `bls12_381_plus` arrives with `affinidi-bbs` behind the `bbs` feature — but it
 # does add the arkworks stack.
 vetting-pcs = ["dep:vti-vetting-pcs", "dep:predicate-credential-system"]
+# Community elections (`vtc/elections/*`): the registrar's PCS key, ticket issuance and
+# certification, on `vti-voting`. Off by default for the reason `vetting-pcs` is: the
+# arkworks stack. The records and the action-list kind are built without it.
+voting = ["vetting-pcs", "dep:vti-voting"]
 # Trust Spanning Protocol transport. **Receive-side, and ON by default.**
 #
 # On by default because a DID document is a contract and this one is routinely
@@ -168,6 +172,7 @@ path = "tests/it/main.rs"
 [dependencies]
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
 vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.5", optional = true }
+vti-voting = { path = "../vti-voting", version = "0.1", optional = true }
 predicate-credential-system = { version = "0.1", optional = true }
 vti-rooms = { path = "../vti-rooms", version = "0.19" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.21" }

@@ -4134,6 +4134,12 @@ pub(crate) async fn sign_requests(
             "What members' directory values in this field may reach widens, for every card \
              that has made no choice of its own.",
         ),
+        Act::CreateBindingElection => (
+            "electionCreate",
+            json!({ "electionId": rec.subject, "binding": true }),
+            "The community creates an election whose result it treats as deciding something in \
+             its name, and registers it with the ballot box its manifest names.",
+        ),
         Act::ChangeJoinCriteria => (
             "joinCriteriaChange",
             json!({ "criterion": rec.subject }),

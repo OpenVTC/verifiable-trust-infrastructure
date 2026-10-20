@@ -564,6 +564,22 @@ pub enum AuditEvent {
     /// never which vetters enrolled or asked to vet at an event.
     HiddenVettingChanged(HiddenVettingChangedData),
 
+    /// A community election changed: created (parked or registered), its
+    /// registration answered, closed, cancelled or certified (VTI-VOT-100).
+    ///
+    /// Carries what governs the election — its identifier, its manifest's
+    /// digest, the ballot box's answer — and never a ballot, a tag or a
+    /// ticket: the community never holds one.
+    ElectionChanged(ElectionChangedData),
+
+    /// A ticket was issued for a community election (VTI-VOT-100). The row's
+    /// subject is the party it was issued to.
+    ///
+    /// Carries the election only. Never the request's identifier, the blinded
+    /// request or the pre-credential, nor anything derived from them: those
+    /// are what a later deanonymisation would join a ticket to its holder by.
+    ElectionTicketIssued(ElectionTicketIssuedData),
+
     VetterProfileUpdated(VetterProfileUpdatedData),
 
     /// A vetter's profile was deleted because they no longer hold a live grant —
@@ -1120,6 +1136,8 @@ impl AuditEvent {
             Self::HiddenVetterReissued(..) => "HiddenVetterReissued",
             Self::HiddenVetterTokensIssued(..) => "HiddenVetterTokensIssued",
             Self::HiddenVettingChanged(..) => "HiddenVettingChanged",
+            Self::ElectionChanged(..) => "ElectionChanged",
+            Self::ElectionTicketIssued(..) => "ElectionTicketIssued",
             Self::VetterProfileUpdated(..) => "VetterProfileUpdated",
             Self::VetterProfileDeleted(..) => "VetterProfileDeleted",
             Self::VetterGrantResent(..) => "VetterGrantResent",
@@ -2544,6 +2562,51 @@ pub struct HiddenVetterTokensIssuedData {
     pub tick: u32,
     /// How many tokens were signed. Never more than the published drip rate.
     pub issued: usize,
+}
+
+/// Payload for [`AuditEvent::ElectionChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ElectionChangedData {
+    /// The election, by the identifier its manifest gives it.
+    pub election_id: String,
+    /// What happened: `created`, `parked`, `registered`, `registrationRefused`,
+    /// `closed`, `cancelled` or `certified`.
+    pub change: String,
+    /// The manifest's digest, multibase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_digest: Option<String>,
+    /// Whether the manifest states its result is binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<bool>,
+    /// The parked action the change followed from, when there was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_id: Option<String>,
+    /// The ballot box's answer: `success`, `pending`, or the code it refused with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ballot_box_answer: Option<String>,
+    /// The requester's stated reason (close, cancel).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The verified head a certification rests on: tree size and root hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_tree_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_root_hash: Option<String>,
+    /// The certified result's digest, multibase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_digest: Option<String>,
+    /// The issuer of each auditor attestation a certification carried.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attestation_issuers: Vec<String>,
+}
+
+/// Payload for [`AuditEvent::ElectionTicketIssued`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ElectionTicketIssuedData {
+    /// The election the ticket is for.
+    pub election_id: String,
 }
 
 /// Payload for [`AuditEvent::HiddenVettingChanged`].

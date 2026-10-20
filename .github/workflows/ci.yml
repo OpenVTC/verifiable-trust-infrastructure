@@ -319,11 +319,13 @@ jobs:
       - name: Install cargo-nextest
         run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
 
-      - name: hidden vetting (vetting-pcs)
+      # `voting` (community elections) implies `vetting-pcs`: both run on the PCS
+      # stack, so one rebuild covers both.
+      - name: hidden vetting and elections (vetting-pcs, voting)
         run: |
-          cargo clippy -p vtc-service --features vetting-pcs --all-targets -- -D warnings
-          cargo nextest run --profile ci -p vtc-service --features vetting-pcs --no-fail-fast
-          cargo test -p vtc-service --features vetting-pcs --doc --no-fail-fast
+          cargo clippy -p vtc-service --features vetting-pcs,voting --all-targets -- -D warnings
+          cargo nextest run --profile ci -p vtc-service --features vetting-pcs,voting --no-fail-fast
+          cargo test -p vtc-service --features vetting-pcs,voting --doc --no-fail-fast
 
   test-vtc-admin-ui:
     # The admin console's own checks. `cargo build -p vtc-service` runs

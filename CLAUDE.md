@@ -91,7 +91,7 @@ Layer 4 (the spine + consumers):
 | `vta-keys` | **Key management**: master-seed storage, BIP-32 hierarchical derivation, key wrapping (AES-GCM), imported-key handling, `create_seed_store` backend selection, `derive_pre_rotation_keys` |
 | `vta-vault` | **Holder credential vault**: storage, query, receive/verify, present, status refresh, and the archival lifecycle (`VaultStatus {Active,Archived,Deleted}`) |
 | `vti-vetting-pcs` | **Hidden vetting** on the Predicate Credential System: the community's `issuer` and `verifier` (`vtc-service`, feature `vetting-pcs`) and the member-side `vetter` / `applicant` engines the VTA runs as its principal's PCS engine (`vta/pcs/*`). Feature `harness`: an in-process community (`vtc::Vtc`) for end-to-end tests. Docs: `docs/02-vta/pcs-engine.md` |
-| `vti-voting` | **Community voting** (VTI-VOT-001 – 100; published, as `vta-service` runs its voter role). The PCS core: `registrar` (voting helper key under its own deployment label, tickets under `voter/<election>`), `voter` (fresh key per election, blind ticket request, `cast_wire` = `attest_in_context` for the election point over the ballot's JCS bytes), `ballot_box` (verifies on the published `hvk` alone; the tag is the per-election nullifier). `board` (RFC 9162 log, inclusion/consistency proofs), `rules` + `tally` over the generated `voting/*` types, and `service::BallotBox` — every `voting/*` task as a state machine with a `Journal` (rebuilt by replaying the board). Wire types: `trust_tasks_rs::specs::voting` (0.32.3+). Benchmark: `examples/scale.rs` |
+| `vti-voting` | **Community voting** (VTI-VOT-001 – 100; published, as `vta-service` runs its voter role). The PCS core: `registrar` (voting helper key under its own deployment label, tickets under `voter/<election>`), `voter` (fresh key per election, blind ticket request, `cast_wire` = `attest_in_context` for the election point over the ballot's JCS bytes), `ballot_box` (verifies on the published `hvk` alone; the tag is the per-election nullifier). `board` (RFC 9162 log, inclusion/consistency proofs), `rules` + `tally` over the generated `voting/*` types, and `service::BallotBox` — every `voting/*` task as a state machine with a `Journal` (rebuilt by replaying the board). `audit` re-verifies a whole board from the published key alone (certification, any auditor). Wire types: `trust_tasks_rs::specs::voting` (0.32.3+). Benchmark: `examples/scale.rs` |
 | `vti-voting-service` | **The voting service** (`publish = false`): a host service holding ballot boxes for any number of communities, never a roster. Its identity is a `did:webvh` its operator's VTA mints from the `ballot-box` template (`vti-voting-service setup`, two-phase like the witness; keys in `[secrets]`). Communities and auditors reach it over **TSP, then DIDComm** through its own mediator session (`vti_common::host_session`; the transport-proven sender must be the document's issuer). **HTTPS** (`POST /trust-tasks`, advertised `TrustTaskHTTPS`) stays only as the sessionless cast door VTI-VOT-004 requires: a one-time key has no mediator session to take a receipt on, and opening one would hand the mediator the voter's address and timing. One dispatcher (`dispatch::answer`) behind both; every answer signed as its DID (receipts and heads are evidence); a file journal (`sync_data` before answering). Without `[identity]` it runs as a test `did:key` over HTTPS only |
 | `vta-external` | **External accounts** (`external/*`): identities the VTA holds at clouds and third-party services — account store (`external_accounts`; secrets in `external_secrets`, excluded from backup), the `ExternalAuthDriver` trait and drivers (`s3-static-presign` first), scope and binding checks, the per-binding rate. Design: `docs/05-design-notes/vta-external-accounts.md` |
 | `vta-webvh` | WebVH hosting infrastructure for the `did:webvh` lifecycle and its other consumers |
@@ -1746,6 +1746,28 @@ new flow, update both this section and the relevant `docs/*.md`.
   (`project_capability_module`).
 - **Docs**: `docs/03-vtc/trust-registry.md` (*Capability modules*),
   `../design-docs/vtc-capability-modules.md`.
+
+### VTC community elections (`vtc/elections/*`, feature `voting`)
+- **What**: The community as **registrar** of its polls, surveys and elections
+  (VTI-VOT-001 – 100): create from a manifest, list/show, close, cancel, and issue each party
+  the roll admits one ticket, blind. The ballot box is a `vti-voting-service`, never the VTC.
+- **Invariants to preserve**: the community never handles a ballot, and the ballot box never
+  learns who holds a ticket — nothing here may carry one to the other. The ballot box is
+  reached over TSP > DIDComm as the community (`elections::link`, `PeerTasks`), never HTTPS
+  (VTI-VOT-005). Remote first: `registered` / `closed` / `cancelled` only after the ballot box
+  answered; a registration it has not answered is redelivered by `elections::sweeper`, the one
+  retry owner; cancel stops issuance durably **before** it asks. Tickets: one per party per
+  election, recorded before answering, one critical section (`Elections::issue_lock`); the
+  audit row never carries the request's identifier, commitment or pre-credential. Unknown and
+  unseen are the same `electionUnknown`. A binding election parks as
+  `Act::CreateBindingElection` (VTI-VOT-081). The voting key is HKDF from the signer's master
+  (`vtc-voting-pcs-secret/v1`), unrelated to hidden vetting's. The trusted ballot boxes are
+  host config (`[voting] trusted_ballot_boxes`, VTI-VOT-082). `certify` reads everything from
+  the ballot box, never the requester, and re-verifies the board from the community's own key
+  (`vti_voting::audit`); auditors' attestations are evidence beside it, never instead.
+- **Code**: `vtc-service/src/elections/`, `vtc-service/src/trust_tasks/election_tasks.rs`,
+  `vtc-service/tests/it/election_tasks.rs`.
+- **Docs**: `docs/03-vtc/elections.md`.
 
 ## Runtime guards to preserve
 

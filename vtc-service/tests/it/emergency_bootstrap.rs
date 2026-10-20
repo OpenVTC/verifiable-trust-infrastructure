@@ -376,6 +376,12 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
                 .unwrap(),
             vtc_service::directory::model::Settings::default(),
         )),
+        elections: std::sync::Arc::new(vtc_service::elections::Elections::new(
+            store
+                .keyspace(vtc_service::store::keyspaces::ELECTIONS)
+                .unwrap(),
+            None,
+        )),
         invitations_ks,
         consumed_invitations_ks,
         console_keys_ks,

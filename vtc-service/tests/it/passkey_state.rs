@@ -156,6 +156,12 @@ async fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) 
                 .unwrap(),
             vtc_service::directory::model::Settings::default(),
         )),
+        elections: std::sync::Arc::new(vtc_service::elections::Elections::new(
+            store
+                .keyspace(vtc_service::store::keyspaces::ELECTIONS)
+                .unwrap(),
+            None,
+        )),
         invitations_ks,
         consumed_invitations_ks,
         registry_client: None,

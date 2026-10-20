@@ -175,6 +175,12 @@ pub(crate) mod admission_tasks;
 // projection are `crate::capability_modules`'s; this is their only door.
 pub(crate) mod capability_module_tasks;
 
+// Community elections: `vtc/elections/*` (VTI-VOT-001 – 100). The registrar's
+// records and its link to ballot boxes are `crate::elections`'s; feature-gated
+// with the PCS key they issue tickets under.
+#[cfg(feature = "voting")]
+pub(crate) mod election_tasks;
+
 // The integration tests' soft WebAuthn authenticator, for the spine tests that
 // drive a real passkey ceremony.
 #[cfg(test)]
@@ -1410,6 +1416,14 @@ fn dispatch_typed<'a>(
                 }
             }
         }),
+        #[cfg(feature = "voting")]
+        uri if election_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match election_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("election_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
         uri if capability_module_tasks::URIS.contains(&uri) => Box::pin(async move {
             match capability_module_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
@@ -2322,6 +2336,16 @@ mod spine_proof_tests {
             capability_module_tasks::LIST_TYPE,
             "a member read; `acting_party` refuses an unsigned caller as `proofRequired`",
         ),
+        #[cfg(feature = "voting")]
+        (
+            election_tasks::LIST_TYPE,
+            "a roll-scoped read; `election_tasks::caller` takes the caller from the proof and refuses an unsigned one as `proofRequired`",
+        ),
+        #[cfg(feature = "voting")]
+        (
+            election_tasks::SHOW_TYPE,
+            "a roll-scoped read; `election_tasks::caller` takes the caller from the proof and refuses an unsigned one as `proofRequired`",
+        ),
         (
             auth_tasks::CHALLENGE_TYPE,
             "names no identity to authorize — it is the first message of the handshake",
@@ -2946,6 +2970,23 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     crate::vetting::pcs_tasks::HIDDEN_WITHDRAW_TYPE,
     #[cfg(feature = "vetting-pcs")]
     crate::vetting::pcs_tasks::HIDDEN_SHOW_TYPE,
+    // Community elections (VTI-VOT-001 – 100): an administrator creating,
+    // closing and cancelling them, anyone the roll admits reading them and
+    // taking a ticket. No REST route.
+    #[cfg(feature = "voting")]
+    election_tasks::CREATE_TYPE,
+    #[cfg(feature = "voting")]
+    election_tasks::LIST_TYPE,
+    #[cfg(feature = "voting")]
+    election_tasks::SHOW_TYPE,
+    #[cfg(feature = "voting")]
+    election_tasks::CLOSE_TYPE,
+    #[cfg(feature = "voting")]
+    election_tasks::CANCEL_TYPE,
+    #[cfg(feature = "voting")]
+    election_tasks::ISSUE_TYPE,
+    #[cfg(feature = "voting")]
+    election_tasks::CERTIFY_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
     // The admin-facing member verbs (#1641 phase 2): the binding that holds the

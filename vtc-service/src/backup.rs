@@ -613,6 +613,7 @@ fn backed_up_handle<'a>(state: &'a AppState, name: &str) -> Option<&'a KeyspaceH
         x if x == STORAGE_CONFIGS => state.room_storage.keyspace(),
         x if x == COMMUNITY_ROOMS => state.community_rooms.keyspace(),
         x if x == DIRECTORY => state.directory.ks(),
+        x if x == ELECTIONS => state.elections.ks(),
         x if x == INVITATIONS => &state.invitations_ks,
         x if x == CONSUMED_INVITATIONS => &state.consumed_invitations_ks,
         x if x == AUDIT => &state.audit_ks,

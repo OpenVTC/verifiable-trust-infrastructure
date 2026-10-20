@@ -3236,7 +3236,60 @@ fn table() -> Vec<Conformance> {
     ];
     #[cfg(feature = "vetting-pcs")]
     table.extend(pcs_witnesses());
+    #[cfg(feature = "voting")]
+    table.extend(election_witnesses());
     table
+}
+
+/// Community elections (`vtc/elections/*`), witnessed only where they are bound: each the
+/// specification's own example request and response.
+#[cfg(feature = "voting")]
+fn election_witnesses() -> Vec<Conformance> {
+    use trust_tasks_rs::specs::vtc as s;
+    vec![
+        checked!(
+            s::elections::create::v0_1::Payload,
+            s::elections::create::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"manifest": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "title": "Board election 2026", "questions": [{"key": "chair", "type": "choice", "text": "Who should chair the board?", "options": [{"key": "alice", "label": "Alice"}, {"key": "bob", "label": "Bob"}], "minSelections": 1, "maxSelections": 1, "optional": true}], "secrecy": "open", "roll": {"rule": "members"}, "registrationOpens": "2026-11-01T00:00:00Z", "votingOpens": "2026-11-08T00:00:00Z", "votingCloses": "2026-11-15T00:00:00Z", "revote": "replace", "board": {"visibility": "public", "auditors": ["did:web:audit.example"]}, "ballotBox": "did:web:ballots.example", "binding": true, "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "state": "registered", "actionId": "act_Vb3k9Qm2Lp7xR4tZ"}"#).unwrap()
+        ),
+        checked!(
+            s::elections::list::v0_1::Payload,
+            s::elections::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"state": "voting", "limit": 20}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"elections": [{"electionId": "board-2026", "title": "Board election 2026", "state": "voting", "votingOpens": "2026-11-08T00:00:00Z", "votingCloses": "2026-11-15T00:00:00Z", "binding": true, "ticketHeld": true}]}"#).unwrap()
+        ),
+        checked!(
+            s::elections::show::v0_1::Payload,
+            s::elections::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"manifest": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "title": "Board election 2026", "questions": [{"key": "chair", "type": "choice", "text": "Who should chair the board?", "options": [{"key": "alice", "label": "Alice"}, {"key": "bob", "label": "Bob"}], "minSelections": 1, "maxSelections": 1, "optional": true}], "secrecy": "open", "roll": {"rule": "members"}, "registrationOpens": "2026-11-01T00:00:00Z", "votingOpens": "2026-11-08T00:00:00Z", "votingCloses": "2026-11-15T00:00:00Z", "revote": "replace", "board": {"visibility": "public", "auditors": ["did:web:audit.example"]}, "ballotBox": "did:web:ballots.example", "binding": true, "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}, "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "state": "registration", "parameters": {"suite": "ps-ddh-bls12381", "votingKey": "z3Xef1JY2x1s2vY6yKWfLu8Ap2vKuoZGwaQLZ2tjq8QkEZbGeZyaNgtznZ8B7N1yf14"}, "disclosure": {"ballotBox": "did:web:ballots.example", "ballotBoxOperator": "Ballots Example Ltd", "sameOperator": false, "boardVisibility": "public", "auditors": ["did:web:audit.example"], "revote": "replace", "coercionResistance": false}, "checkpoints": [{"head": {"electionId": "board-2026", "treeSize": 0, "rootHash": "zQmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n", "issuedAt": "2026-11-01T00:00:05Z"}, "document": {"id": "urn:uuid:92a3b4c5-d6e7-4f80-a9ba-2b3c4d5e6f70", "type": "https://trusttasks.org/spec/voting/board/head/0.1#response", "issuer": "did:web:ballots.example", "recipient": "did:webvh:QmCommunity:community.example", "issuedAt": "2026-11-01T00:00:05Z", "threadId": "urn:uuid:a3b4c5d6-e7f8-4091-bacb-3c4d5e6f7081", "payload": {"head": {"electionId": "board-2026", "treeSize": 0, "rootHash": "zQmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n", "issuedAt": "2026-11-01T00:00:05Z"}}, "proof": {"type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022", "verificationMethod": "did:web:ballots.example#key-1", "created": "2026-11-01T00:00:05Z", "proofPurpose": "assertionMethod", "proofValue": "z5BallotBoxHeadProofValue"}}}]}"#).unwrap()
+        ),
+        checked!(
+            s::elections::close::v0_1::Payload,
+            s::elections::close::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"electionId": "motion-17", "reason": "Every one of the 12 eligible members has voted."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"electionId": "motion-17", "state": "closed"}"#).unwrap()
+        ),
+        checked!(
+            s::elections::cancel::v0_1::Payload,
+            s::elections::cancel::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "reason": "The candidate list omitted a nominee; the election will be created again."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "state": "cancelled"}"#).unwrap()
+        ),
+        checked!(
+            s::elections::certify::v0_1::Payload,
+            s::elections::certify::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "auditAttestations": [{"@context": ["https://www.w3.org/ns/credentials/v2"], "type": ["VerifiableCredential"], "issuer": "did:web:audit.example", "validFrom": "2026-11-15T18:00:00Z", "credentialSubject": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "treeSize": 84, "rootHash": "zQmPXME1oRtoT627YKaDPDQ3PwA8tdP9rWuAAweLzqSwAWT"}}]}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "result": {"electionId": "board-2026", "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "ballotsCounted": 80, "questions": [{"question": "chair", "abstained": 2, "choice": {"alice": 41, "bob": 37}}], "head": {"electionId": "board-2026", "treeSize": 84, "rootHash": "zQmPXME1oRtoT627YKaDPDQ3PwA8tdP9rWuAAweLzqSwAWT", "issuedAt": "2026-11-15T00:00:03Z"}}, "head": {"electionId": "board-2026", "treeSize": 84, "rootHash": "zQmPXME1oRtoT627YKaDPDQ3PwA8tdP9rWuAAweLzqSwAWT", "issuedAt": "2026-11-15T00:00:03Z"}, "certifiedAt": "2026-11-16T09:00:19Z", "auditAttestations": [{"@context": ["https://www.w3.org/ns/credentials/v2"], "type": ["VerifiableCredential"], "issuer": "did:web:audit.example", "validFrom": "2026-11-15T18:00:00Z", "credentialSubject": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "treeSize": 84, "rootHash": "zQmPXME1oRtoT627YKaDPDQ3PwA8tdP9rWuAAweLzqSwAWT"}}]}"#).unwrap()
+        ),
+        checked!(
+            s::elections::tickets::issue::v0_1::Payload,
+            s::elections::tickets::issue::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "request": {"label": "voter/board-2026", "id": "z5jokfsiZx1sk1mJyQnBnR519B9mcQhw9a8LrF9VQdAjExwoLzcdVdZ2aXaH14a3mdF", "request": {"encoding": "z6P4jNSt4qHKYhSBGSWgr6VcQGMsjmfYGUBdYWNtS7xbpGsTuiY1PDfoce4yTApuqUm", "proof": "zSzFTCny3qaXpSHTsTE877ffQfSuF9T5zo53iuZkwx9NbLYSq3GeLZpRda286SBhqwJg"}}}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "label": "voter/board-2026", "preCredential": "z3Xef1JY2x1s2vY6yKWfLu8Ap2vKuoZGwaQLZ2tjq8QkEZbGeZyaNgtznZ8B7N1yf14"}"#).unwrap()
+        ),
+    ]
 }
 
 /// Hidden vetting's four exchanges (`zkp-pcs`), witnessed only where they are bound.

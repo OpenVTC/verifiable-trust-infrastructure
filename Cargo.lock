@@ -12190,6 +12190,7 @@ dependencies = [
  "vti-rooms-dtg",
  "vti-secrets",
  "vti-vetting-pcs",
+ "vti-voting",
  "webauthn-rs",
  "webauthn-rs-proto",
  "wiremock",
