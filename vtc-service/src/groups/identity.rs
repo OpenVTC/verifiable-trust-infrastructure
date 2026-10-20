@@ -150,13 +150,18 @@ pub async fn mint(
         Publish::Server(id) => id.clone(),
     };
     // A label at the VTA only: the group's name is never in its DID document,
-    // nor anywhere the VTA publishes.
+    // nor anywhere the VTA publishes. No transport either, said explicitly: the
+    // `vtc-group` template carries no service (nothing delivers messages to a
+    // group yet), and a VTA left to its own default would try to add `#tsp`
+    // at a mediator the document does not name.
     let mut request = json!({
         "contextId": setup.context,
         "template": "vtc-group",
         "templateVars": { "WEBVH_SERVER": webvh_server },
         "setPrimary": false,
         "label": "Community group",
+        "addMediatorService": false,
+        "addTspService": false,
     });
     match (&setup.publish, &did_path) {
         (Publish::Server(id), _) => request["serverId"] = json!(id),

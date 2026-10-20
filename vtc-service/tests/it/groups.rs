@@ -416,6 +416,10 @@ async fn an_administrator_creates_a_group_its_vta_holds_the_keys_of() {
     let mint = fix.vta.calls_of(MINT);
     assert_eq!(mint.len(), 1);
     assert_eq!(mint[0]["template"], "vtc-group");
+    // No transport, said explicitly: a VTA left to its default would try to
+    // add `#tsp` to a document that names no mediator, and refuse the mint.
+    assert_eq!(mint[0]["addTspService"], false, "{}", mint[0]);
+    assert_eq!(mint[0]["addMediatorService"], false, "{}", mint[0]);
     assert!(
         mint[0]["templateVars"].get("LABEL").is_none(),
         "{}",

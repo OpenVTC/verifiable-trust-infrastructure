@@ -915,6 +915,10 @@ pub async fn create_did_webvh(
     // Resolved once, here, because both document paths below consume it.
     let add_tsp_service =
         document::resolve_add_tsp_service(params.add_tsp_service, config, did_resolver).await;
+    // Whether the caller asked for `#tsp` itself, rather than having it
+    // defaulted on: only an explicit request may refuse a document it cannot be
+    // added to.
+    let tsp_requested = params.add_tsp_service == Some(true);
 
     // `KeyMint` decides *whether*; the context check below still bounds *where*.
     ensure_may_mint(acl_ks, auth).await?;
@@ -1433,7 +1437,7 @@ pub async fn create_did_webvh(
         // never reaches the builder `with_tsp_service` feeds below — which is how
         // `add_tsp_service` came to be silently ignored for every templated DID.
         // Apply it to the document itself, at the mediator the template names.
-        document::with_tsp_in_rendered_document(add_tsp_service, &mut rendered)?;
+        document::with_tsp_in_rendered_document(add_tsp_service, tsp_requested, &mut rendered)?;
         params.did_document = Some(rendered);
     }
 
