@@ -101,18 +101,96 @@ fn bad_manifest(why: impl Into<String>) -> RuleError {
     RuleError::InvalidManifest(why.into())
 }
 
+/// The most trustees an election may have (`TrusteeIndex` runs 1..=64).
+pub const MAX_TRUSTEES: usize = 64;
+
+/// The trustee rules of a sealed or tallied-encrypted manifest (VTI-VOT-060 – 064): trustees
+/// named, `2 <= threshold <= n <= 64`, neither the community nor the ballot box among them, no
+/// running totals, and — tallied-encrypted — choice questions only.
+fn check_trustees(m: &Manifest) -> Result<(), RuleError> {
+    let Some(t) = &m.trustees else {
+        return Err(bad_manifest(
+            "a sealed or tallied-encrypted election names its trustees",
+        ));
+    };
+    let n = t.dids.len();
+    if n > MAX_TRUSTEES {
+        return Err(bad_manifest(format!(
+            "at most {MAX_TRUSTEES} trustees, not {n}"
+        )));
+    }
+    if t.threshold < 2 || t.threshold > n as i64 {
+        return Err(bad_manifest(
+            "the trustees' threshold must satisfy 2 <= threshold <= trustees",
+        ));
+    }
+    if t.dids
+        .iter()
+        .map(|d| d.as_str())
+        .collect::<HashSet<_>>()
+        .len()
+        != n
+    {
+        return Err(bad_manifest("a trustee is named twice"));
+    }
+    if t.dids
+        .iter()
+        .any(|d| d.as_str() == m.community.as_str() || d.as_str() == m.ballot_box.as_str())
+    {
+        return Err(bad_manifest(
+            "neither the community nor the ballot box is a trustee",
+        ));
+    }
+    if m.results_before_close {
+        return Err(bad_manifest(
+            "running totals are an open election's alone (VTI-VOT-061)",
+        ));
+    }
+    if m.secrecy == SecrecyLevel::TalliedEncrypted
+        && m.questions
+            .iter()
+            .any(|q| !matches!(q, Question::Choice { .. }))
+    {
+        return Err(bad_manifest(
+            "a tallied-encrypted election asks choice questions only (VTI-VOT-064)",
+        ));
+    }
+    Ok(())
+}
+
+/// The secrecy levels served. The encrypted levels join when the ballot box runs the trustees'
+/// ceremony and admits encrypted casts (CONVENTIONS §9); until then a ballot box refuses them
+/// (`unsupportedSecrecy`), and so does a VTC creating one.
+pub const SERVED_LEVELS: &[SecrecyLevel] = &[SecrecyLevel::Open];
+
 /// A manifest's cross-field rules (VTI-VOT-010), as a ballot box checks it at registration and
 /// a VTC at creation. `ballot_box` is the checking service's own DID, when it is one.
 ///
 /// # Errors
-/// [`RuleError::UnsupportedSecrecy`] for a level other than open; otherwise
+/// [`RuleError::UnsupportedSecrecy`] for a level not in [`SERVED_LEVELS`]; otherwise
 /// [`RuleError::InvalidManifest`] naming the first rule broken.
 pub fn check_manifest(m: &Manifest, ballot_box: Option<&str>) -> Result<(), RuleError> {
-    if m.secrecy != SecrecyLevel::Open {
+    check_manifest_serving(m, ballot_box, SERVED_LEVELS)
+}
+
+/// [`check_manifest`] for a service serving `served`.
+///
+/// # Errors
+/// As [`check_manifest`].
+pub fn check_manifest_serving(
+    m: &Manifest,
+    ballot_box: Option<&str>,
+    served: &[SecrecyLevel],
+) -> Result<(), RuleError> {
+    if !served.contains(&m.secrecy) {
         return Err(RuleError::UnsupportedSecrecy(m.secrecy.to_string()));
     }
-    if m.trustees.is_some() {
-        return Err(bad_manifest("an open election has no trustees"));
+    if m.secrecy == SecrecyLevel::Open {
+        if m.trustees.is_some() {
+            return Err(bad_manifest("an open election has no trustees"));
+        }
+    } else {
+        check_trustees(m)?;
     }
     if !(m.registration_opens <= m.voting_opens && m.voting_opens < m.voting_closes) {
         return Err(bad_manifest(

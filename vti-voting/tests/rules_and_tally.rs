@@ -120,6 +120,70 @@ fn vot_010_manifest_rules_are_enforced() {
 }
 
 #[test]
+fn vot_062_trustee_rules_are_enforced_for_the_encrypted_levels() {
+    use trust_tasks_rs::specs::voting::election::register::v0_1::SecrecyLevel;
+    use vti_voting::rules::check_manifest_serving;
+    const ALL: &[SecrecyLevel] = &[
+        SecrecyLevel::Open,
+        SecrecyLevel::Sealed,
+        SecrecyLevel::TalliedEncrypted,
+    ];
+    let trustees = json!({
+        "dids": ["did:webvh:QmT1:t1.example", "did:webvh:QmT2:t2.example", "did:webvh:QmT3:t3.example"],
+        "threshold": 2
+    });
+    let sealed = || {
+        let mut v = manifest_json();
+        v["secrecy"] = json!("sealed");
+        v["trustees"] = trustees.clone();
+        v
+    };
+    let check = |v: &Value| check_manifest_serving(&manifest(v), Some(BOX), ALL);
+    assert_eq!(check(&sealed()), Ok(()));
+    // Not served yet: the ballot box and the VTC refuse the encrypted levels.
+    assert!(matches!(
+        check_manifest(&manifest(&sealed()), Some(BOX)),
+        Err(RuleError::UnsupportedSecrecy(_))
+    ));
+
+    let mut broken: Vec<(&str, Value)> = Vec::new();
+    let mut v = sealed();
+    v.as_object_mut().unwrap().remove("trustees");
+    broken.push(("no trustees", v));
+    let mut v = sealed();
+    v["trustees"]["threshold"] = json!(4);
+    broken.push(("threshold above n", v));
+    let mut v = sealed();
+    v["trustees"]["dids"][1] = json!(BOX);
+    broken.push(("the ballot box as a trustee", v));
+    let mut v = sealed();
+    v["trustees"]["dids"][0] = v["community"].clone();
+    broken.push(("the community as a trustee", v));
+    let mut v = sealed();
+    v["resultsBeforeClose"] = json!(true);
+    broken.push(("running totals", v));
+    let mut v = sealed();
+    v["secrecy"] = json!("talliedEncrypted");
+    broken.push(("a tallied-encrypted ranking", v));
+    let mut v = manifest_json();
+    v["trustees"] = trustees.clone();
+    broken.push(("an open election with trustees", v));
+    for (why, v) in broken {
+        assert!(
+            matches!(check(&v), Err(RuleError::InvalidManifest(_))),
+            "{why}"
+        );
+    }
+
+    // Choice questions only: tallied-encrypted passes.
+    let mut v = sealed();
+    v["secrecy"] = json!("talliedEncrypted");
+    let choices: Vec<Value> = v["questions"].as_array().unwrap()[..2].to_vec();
+    v["questions"] = json!(choices);
+    assert_eq!(check(&v), Ok(()));
+}
+
+#[test]
 fn vot_011_the_digest_is_over_the_manifest_as_received() {
     let v = manifest_json();
     let d = manifest_digest(&v).unwrap();
