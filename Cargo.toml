@@ -674,7 +674,10 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # `rooms/owner/group/add/0.3` and `rooms/owner/group/renew/0.2`, which settle a
 # pending removal like remove 0.3 (`earlierRemovalRefused`, `hostUnreachable`'s
 # `stage`; trust-tasks-tf #824).
-trust-tasks-rs = { version = "0.32.1", default-features = false, features = [
+# 0.32.3: the `vtc/groups/*` family — create, update, delete, list, show,
+# members/{add,remove,list}, join, leave, requests/{list,decide} and
+# managers/{add,remove} (trust-tasks-tf #831, #833).
+trust-tasks-rs = { version = "0.32.3", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
