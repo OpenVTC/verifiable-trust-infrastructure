@@ -1504,6 +1504,54 @@ fn witnesses() -> Vec<Witness> {
             "managers_remove_refuses_what_its_specification_declares"
         ),
         witness!(
+            s::groups::bindings::add::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::group_tasks::BINDINGS_ADD_ERR_NOT_FOUND,
+            "community_rooms.rs",
+            "vtc_groups_bindings_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::bindings::add::v0_1::error_codes::ROOM_NOT_FOUND,
+            crate::trust_tasks::group_tasks::BINDINGS_ADD_ERR_ROOM_NOT_FOUND,
+            "community_rooms.rs",
+            "vtc_groups_bindings_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::bindings::add::v0_1::error_codes::BINDING_EXISTS,
+            crate::trust_tasks::group_tasks::BINDINGS_ADD_ERR_BINDING_EXISTS,
+            "community_rooms.rs",
+            "vtc_groups_bindings_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::bindings::add::v0_1::error_codes::TOO_MANY_BINDINGS,
+            crate::trust_tasks::group_tasks::BINDINGS_ADD_ERR_TOO_MANY_BINDINGS,
+            "community_rooms.rs",
+            "vtc_groups_bindings_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::bindings::add::v0_1::error_codes::KIND_NOT_SERVED,
+            crate::trust_tasks::group_tasks::BINDINGS_ADD_ERR_KIND_NOT_SERVED,
+            "community_rooms.rs",
+            "vtc_groups_bindings_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::bindings::remove::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::group_tasks::BINDINGS_REMOVE_ERR_NOT_FOUND,
+            "community_rooms.rs",
+            "vtc_groups_bindings_remove_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::bindings::remove::v0_1::error_codes::BINDING_NOT_FOUND,
+            crate::trust_tasks::group_tasks::BINDINGS_REMOVE_ERR_BINDING_NOT_FOUND,
+            "community_rooms.rs",
+            "vtc_groups_bindings_remove_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::bindings::list::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::group_tasks::BINDINGS_LIST_ERR_NOT_FOUND,
+            "community_rooms.rs",
+            "vtc_groups_bindings_list_refuses_what_its_specification_declares"
+        ),
+        witness!(
             s::directory::notes::append::v0_1::error_codes::NOT_FOUND,
             crate::trust_tasks::directory_tasks::NOTES_APPEND_ERR_NOT_FOUND,
             "directory_notes.rs",
@@ -2459,6 +2507,14 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::groups::members::add::v0_1::error_codes::EXCEEDS_ROLE_CEILING,
         s::groups::members::remove::v0_1::error_codes::DYNAMIC_GROUP,
         s::groups::leave::v0_1::error_codes::ALREADY_OPTED_OUT,
+        // A grants or role binding is refused `kindNotServed` before any of
+        // its own checks (bindings/add item 7): until the community provisions
+        // grants from groups, nothing reaches the eligibility, capability, role
+        // or binder-authority refusals.
+        s::groups::bindings::add::v0_1::error_codes::GROUP_NOT_ELIGIBLE,
+        s::groups::bindings::add::v0_1::error_codes::UNKNOWN_CAPABILITY,
+        s::groups::bindings::add::v0_1::error_codes::UNKNOWN_ROLE,
+        s::groups::bindings::add::v0_1::error_codes::EXCEEDS_BINDER_AUTHORITY,
         // BASELINE-END
     ]
 }
@@ -2471,7 +2527,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// the baseline past the ceiling — a newly bound task declaring codes
 /// nothing tests — requires raising this constant, which is the point:
 /// that always wants a human decision, never a silent pass.
-const UNWITNESSED_CEILING: usize = 15;
+const UNWITNESSED_CEILING: usize = 19;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.

@@ -12,6 +12,8 @@
 //! | `requests/list/0.1`, `requests/decide/0.1` | a manager of the request's group; nobody decides their own |
 //! | `managers/add/0.1` | a manager of the group, who covers the grant they write |
 //! | `managers/remove/0.1` | the manager themselves, or `vtc.groups.manage` unqualified |
+//! | `bindings/{add,remove}/0.1` | a manager of the group who also holds `vtc.rooms.manage`, after their bound gesture |
+//! | `bindings/list/0.1` | a manager of the group |
 //!
 //! None has a REST route. A group the caller may not see answers `notFound`
 //! exactly as one that does not exist, on every task.
@@ -22,6 +24,9 @@
 use chrono::Utc;
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::vtc::groups::{
+    bindings::{
+        add::v0_1 as bindings_add, list::v0_1 as bindings_list, remove::v0_1 as bindings_remove,
+    },
     create::v0_1 as group_create,
     delete::v0_1 as group_delete,
     join::v0_1 as group_join,
@@ -66,6 +71,9 @@ pub(crate) const REQUESTS_LIST_TYPE: &str = <requests_list::Payload as Payload>:
 pub(crate) const REQUESTS_DECIDE_TYPE: &str = <requests_decide::Payload as Payload>::TYPE_URI;
 pub(crate) const MANAGERS_ADD_TYPE: &str = <managers_add::Payload as Payload>::TYPE_URI;
 pub(crate) const MANAGERS_REMOVE_TYPE: &str = <managers_remove::Payload as Payload>::TYPE_URI;
+pub(crate) const BINDINGS_ADD_TYPE: &str = <bindings_add::Payload as Payload>::TYPE_URI;
+pub(crate) const BINDINGS_REMOVE_TYPE: &str = <bindings_remove::Payload as Payload>::TYPE_URI;
+pub(crate) const BINDINGS_LIST_TYPE: &str = <bindings_list::Payload as Payload>::TYPE_URI;
 
 /// Every type this module serves.
 pub(crate) const URIS: &[&str] = &[
@@ -83,6 +91,9 @@ pub(crate) const URIS: &[&str] = &[
     REQUESTS_DECIDE_TYPE,
     MANAGERS_ADD_TYPE,
     MANAGERS_REMOVE_TYPE,
+    BINDINGS_ADD_TYPE,
+    BINDINGS_REMOVE_TYPE,
+    BINDINGS_LIST_TYPE,
 ];
 
 macro_rules! codes {
@@ -135,6 +146,14 @@ codes! {
     MANAGERS_ADD_ERR_ALREADY_MANAGER = managers_add::ALREADY_MANAGER;
     MANAGERS_REMOVE_ERR_NOT_FOUND = managers_remove::NOT_FOUND;
     MANAGERS_REMOVE_ERR_NOT_MANAGER = managers_remove::NOT_MANAGER;
+    BINDINGS_ADD_ERR_NOT_FOUND = bindings_add::NOT_FOUND;
+    BINDINGS_ADD_ERR_ROOM_NOT_FOUND = bindings_add::ROOM_NOT_FOUND;
+    BINDINGS_ADD_ERR_BINDING_EXISTS = bindings_add::BINDING_EXISTS;
+    BINDINGS_ADD_ERR_TOO_MANY_BINDINGS = bindings_add::TOO_MANY_BINDINGS;
+    BINDINGS_ADD_ERR_KIND_NOT_SERVED = bindings_add::KIND_NOT_SERVED;
+    BINDINGS_REMOVE_ERR_NOT_FOUND = bindings_remove::NOT_FOUND;
+    BINDINGS_REMOVE_ERR_BINDING_NOT_FOUND = bindings_remove::BINDING_NOT_FOUND;
+    BINDINGS_LIST_ERR_NOT_FOUND = bindings_list::NOT_FOUND;
 }
 
 pub(super) async fn dispatch(
@@ -158,6 +177,9 @@ pub(super) async fn dispatch(
         REQUESTS_DECIDE_TYPE => handle_requests_decide(state, ctx, doc).await,
         MANAGERS_ADD_TYPE => handle_managers_add(state, ctx, doc).await,
         MANAGERS_REMOVE_TYPE => handle_managers_remove(state, ctx, doc).await,
+        BINDINGS_ADD_TYPE => handle_bindings_add(state, ctx, doc).await,
+        BINDINGS_REMOVE_TYPE => handle_bindings_remove(state, ctx, doc).await,
+        BINDINGS_LIST_TYPE => handle_bindings_list(state, ctx, doc).await,
         _ => return None,
     })
 }
@@ -1832,6 +1854,269 @@ async fn handle_managers_remove(
     }
     match groups::managers(state, &group.group_id).await {
         Ok(m) => success_response(&doc, json!({ "groupId": group.group_id, "managers": m })),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+// ─── bindings ─────────────────────────────────────────────────────────────
+
+/// `bindings/add/0.1`. Room bindings only: a grants or role binding is refused
+/// `kindNotServed` once item 1 has passed (item 7), and nothing is recorded.
+///
+/// A room binding admits every member of the group to the room, as
+/// `vtc/rooms/community/members/add` admits one, so it takes the same
+/// authority — `vtc.rooms.manage` beside managing the group — and the same
+/// gesture bound to this document, and is not parked: community room changes
+/// never are (the specification's SHOULD on holding a `curate` binding for
+/// consent is met by that gesture, as for a direct admission with `curate`).
+async fn handle_bindings_add(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::groups::bindings::{self, Binding, RoomBinding};
+    let who = match standing(state, ctx, &doc).await {
+        Ok(s) => s,
+        Err(reject) => return reject,
+    };
+    if let Err(reject) = parse_spec_payload::<bindings_add::Payload>(&doc) {
+        return reject;
+    }
+    let p = &doc.payload;
+    let group_id = p.get("groupId").and_then(Value::as_str).unwrap_or_default();
+    let spec = p.get("binding").cloned().unwrap_or(Value::Null);
+    let reason = reason_of(&doc).unwrap_or_default();
+    // Item 1.
+    let group = match managed_group(state, &doc, &who, group_id, BINDINGS_ADD_ERR_NOT_FOUND).await {
+        Ok(g) => g,
+        Err(reject) => return reject,
+    };
+    // Item 7.
+    let Some(rb) = RoomBinding::from_spec(&spec) else {
+        return declared(
+            &doc,
+            BINDINGS_ADD_ERR_KIND_NOT_SERVED,
+            "this community binds groups to rooms only; a grants or role binding is not \
+             recorded",
+        );
+    };
+    // Item 2.
+    let room = match state.community_rooms.room(&rb.room_id).await {
+        Ok(Some(room)) if who.can(crate::acl::Capability::RoomsManage) => room,
+        Ok(_) => {
+            return declared(
+                &doc,
+                BINDINGS_ADD_ERR_ROOM_NOT_FOUND,
+                "The community owns no room with this identifier that you may manage.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let ks = state.directory.ks();
+    let existing = match bindings::of_group(ks, &group.group_id).await {
+        Ok(b) => b,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if existing
+        .iter()
+        .any(|b| b.binding == spec && b.state == Binding::ACTIVE)
+    {
+        return declared(
+            &doc,
+            BINDINGS_ADD_ERR_BINDING_EXISTS,
+            "An equal binding already exists.",
+        );
+    }
+    if existing.len() >= bindings::MAX_BINDINGS {
+        return declared(
+            &doc,
+            BINDINGS_ADD_ERR_TOO_MANY_BINDINGS,
+            format!("The group already has {} bindings.", bindings::MAX_BINDINGS),
+        );
+    }
+    if let Err(reject) = crate::trust_tasks::community_room_tasks::bound_step_up(
+        state,
+        &who.did,
+        &doc,
+        &format!(
+            "Admit every member of the group “{}” to the community room “{}”",
+            group.name, room.label
+        ),
+    )
+    .await
+    {
+        return reject;
+    }
+    // Item 4: recorded, then the reconciler offers each member admission.
+    let b = Binding {
+        binding_id: bindings::new_binding_id(),
+        group_id: group.group_id.clone(),
+        binding: spec,
+        state: Binding::ACTIVE.into(),
+        created_at: Utc::now(),
+        created_by: who.did.clone(),
+        reason: reason.clone(),
+    };
+    if let Err(e) = bindings::put(ks, &b).await {
+        return app_error_to_reject(&doc, &e);
+    }
+    if let Err(e) = audit(
+        state,
+        &who.did,
+        AuditEvent::GroupChanged(GroupChangedData {
+            group_id: group.group_id.clone(),
+            change: "bindingAdded".into(),
+            fields: vec![b.binding_id.clone()],
+            reason: Some(reason),
+        }),
+    )
+    .await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
+    success_response(&doc, json!({ "binding": b.wire() }))
+}
+
+/// `bindings/remove/0.1`: the binding goes into removal, and the reconciler
+/// withdraws each admission only it covered, then deletes it (item 2). One that
+/// covered nobody is deleted at once.
+async fn handle_bindings_remove(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::groups::bindings::{self, Binding};
+    let who = match standing(state, ctx, &doc).await {
+        Ok(s) => s,
+        Err(reject) => return reject,
+    };
+    if let Err(reject) = parse_spec_payload::<bindings_remove::Payload>(&doc) {
+        return reject;
+    }
+    let p = &doc.payload;
+    let group_id = p.get("groupId").and_then(Value::as_str).unwrap_or_default();
+    let binding_id = p
+        .get("bindingId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let reason = reason_of(&doc).unwrap_or_default();
+    let group =
+        match managed_group(state, &doc, &who, group_id, BINDINGS_REMOVE_ERR_NOT_FOUND).await {
+            Ok(g) => g,
+            Err(reject) => return reject,
+        };
+    let ks = state.directory.ks();
+    let mut b = match bindings::get(ks, &group.group_id, binding_id).await {
+        Ok(Some(b)) if b.state != Binding::REMOVING => b,
+        Ok(_) => {
+            return declared(
+                &doc,
+                BINDINGS_REMOVE_ERR_BINDING_NOT_FOUND,
+                "The group has no binding with this identifier.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let room_label = match b.room() {
+        Some(rb) => {
+            if !who.can(crate::acl::Capability::RoomsManage) {
+                return denied(&doc, "removing a room binding takes vtc.rooms.manage");
+            }
+            match state.community_rooms.room(&rb.room_id).await {
+                Ok(r) => r.map(|r| r.label).unwrap_or(rb.room_id),
+                Err(e) => return app_error_to_reject(&doc, &e),
+            }
+        }
+        None => String::new(),
+    };
+    if let Err(reject) = crate::trust_tasks::community_room_tasks::bound_step_up(
+        state,
+        &who.did,
+        &doc,
+        &format!(
+            "Stop admitting the members of the group “{}” to the community room “{}”",
+            group.name, room_label
+        ),
+    )
+    .await
+    {
+        return reject;
+    }
+    let named = match b.room() {
+        Some(rb) => match state.community_rooms.members(&rb.room_id).await {
+            Ok(m) => m.iter().any(|r| {
+                r.state != crate::rooms::community::MemberRecord::REMOVED
+                    && r.sources.contains(&b.binding_id)
+            }),
+            Err(e) => return app_error_to_reject(&doc, &e),
+        },
+        None => false,
+    };
+    let outcome = if named {
+        b.state = Binding::REMOVING.into();
+        bindings::put(ks, &b).await.map(|()| "removing")
+    } else {
+        bindings::delete(ks, &b.group_id, &b.binding_id)
+            .await
+            .map(|()| "removed")
+    };
+    let outcome = match outcome {
+        Ok(o) => o,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if let Err(e) = audit(
+        state,
+        &who.did,
+        AuditEvent::GroupChanged(GroupChangedData {
+            group_id: group.group_id.clone(),
+            change: "bindingRemoved".into(),
+            fields: vec![b.binding_id.clone()],
+            reason: Some(reason),
+        }),
+    )
+    .await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
+    success_response(&doc, json!({ "bindingId": b.binding_id, "state": outcome }))
+}
+
+/// `bindings/list/0.1`: to managers of the group only, and `notFound` alike for
+/// a group that does not exist and one the caller may not manage.
+async fn handle_bindings_list(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match standing(state, ctx, &doc).await {
+        Ok(s) => s,
+        Err(reject) => return reject,
+    };
+    if let Err(reject) = parse_spec_payload::<bindings_list::Payload>(&doc) {
+        return reject;
+    }
+    let group_id = doc
+        .payload
+        .get("groupId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let ks = state.directory.ks();
+    match groups::get(ks, group_id).await {
+        Ok(Some(g)) if who.manages(&g.group_id) => {}
+        Ok(_) => {
+            return declared(
+                &doc,
+                BINDINGS_LIST_ERR_NOT_FOUND,
+                "No group you may manage has this identifier.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    match crate::groups::bindings::of_group(ks, group_id).await {
+        Ok(b) => success_response(
+            &doc,
+            json!({ "items": b.iter().map(|b| b.wire()).collect::<Vec<_>>() }),
+        ),
         Err(e) => app_error_to_reject(&doc, &e),
     }
 }

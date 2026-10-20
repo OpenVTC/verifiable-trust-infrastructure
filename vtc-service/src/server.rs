@@ -1574,6 +1574,9 @@ pub async fn run(
     // renewed at the community's VTA before they lapse (`vtc/groups/create`
     // item 5). Always spawned: it does nothing while `[groups]` is off.
     crate::groups::renewal::spawn(state.clone(), shutdown_rx.clone());
+    // What each group's room bindings provide its members: offers, withdrawals and
+    // renewals (`vtc/groups/bindings/*`). Always spawned: idle while no binding exists.
+    crate::groups::bindings::spawn(state.clone(), shutdown_rx.clone());
     // The profile of each room the community owns, written into the room by its VTA:
     // the one retry owner for a create or update that answered `roomProfile: pending`.
     crate::rooms::community_profile::spawn(state.clone(), shutdown_rx.clone());

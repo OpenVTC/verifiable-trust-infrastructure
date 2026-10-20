@@ -406,6 +406,18 @@ spec_types! {
     GroupsManagersRemove01Payload(groups::managers::remove::v0_1::Payload);
     /// `vtc/groups/managers/remove/0.1#response` — the group's managers.
     GroupsManagersRemove01Response(groups::managers::remove::v0_1::Response);
+    /// `vtc/groups/bindings/add/0.1` payload — binding a group to a room.
+    GroupsBindingsAdd01Payload(groups::bindings::add::v0_1::Payload);
+    /// `vtc/groups/bindings/add/0.1#response` — the binding recorded.
+    GroupsBindingsAdd01Response(groups::bindings::add::v0_1::Response);
+    /// `vtc/groups/bindings/remove/0.1` payload — ending a binding, and why.
+    GroupsBindingsRemove01Payload(groups::bindings::remove::v0_1::Payload);
+    /// `vtc/groups/bindings/remove/0.1#response` — where its removal stands.
+    GroupsBindingsRemove01Response(groups::bindings::remove::v0_1::Response);
+    /// `vtc/groups/bindings/list/0.1` payload — one group's bindings.
+    GroupsBindingsList01Payload(groups::bindings::list::v0_1::Payload);
+    /// `vtc/groups/bindings/list/0.1#response` — the group's bindings.
+    GroupsBindingsList01Response(groups::bindings::list::v0_1::Response);
     /// `vtc/directory/card/present/0.1` payload — the fields a presentation fills.
     DirectoryCardPresent01Payload(directory::card::present::v0_1::Payload);
     /// `vtc/directory/card/present/0.1#response` — each field's verified value.

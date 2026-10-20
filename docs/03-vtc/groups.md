@@ -25,8 +25,11 @@ This page says what this build serves.
 | `vtc/groups/requests/decide/0.1` | a manager, never the requester | Approve or decline a request |
 | `vtc/groups/managers/add/0.1` | a manager of the group | Appoint an active member a manager of it |
 | `vtc/groups/managers/remove/0.1` | the manager, or `vtc.groups.manage` unqualified | End an appointment; a manager may step down |
+| `vtc/groups/bindings/{add,remove}/0.1` | a manager of the group who holds `vtc.rooms.manage`, after a bound gesture | Bind the group to a community room, or end the binding |
+| `vtc/groups/bindings/list/0.1` | a manager of the group | The group's bindings |
 
-Bindings to rooms or grants come next. The member portal signs these tasks with its sign-in key
+Room bindings are served; a grants or role binding is refused `kindNotServed` and nothing
+is stored ([Room bindings](#room-bindings)). The member portal signs these tasks with its sign-in key
 for the member (`signingScope` `vtc/groups`), as it does the directory's.
 
 Only **static** groups are served. A dynamic group's rule is checked — it may read only
@@ -200,6 +203,36 @@ decision := {"effect": "deny", "with": {"code": "group-full",
 }
 ```
 
+## Room bindings
+
+A **room binding** links a room the community owns ([community rooms](community-rooms.md))
+to the group: every member of the group is offered admission to it with the binding's
+`actions`, for `validFor` (`P30D`, say), and keeps it while they stay in the group.
+
+- **Who may bind**: a manager of the group who also holds `vtc.rooms.manage` — the same
+  authority as admitting one member to the room — after their gesture bound to the
+  request, as `vtc/rooms/community/members/add` takes. It is not parked for other
+  administrators: community room changes never are.
+- **Offers.** A reconciler offers each active member admission through the room's usual
+  offer path. The member accepts it as any offer, with their own key package on a sealed
+  room, so nobody is put in an encrypted room without their own key. An offer is recorded
+  only after the community's VTA issued its credentials.
+- **What covers an admission.** Each admission records its sources: the bindings that
+  cover it, and `direct` where an administrator also admitted the member. Leaving the group
+  drops that binding's source; an admission with no source left is removed, through the
+  same worker that removes a member who left the community. A direct admission is never
+  removed because a binding that also covered it went.
+- **Renewal.** Within a third of `validFor` of an admitted member's expiry, the community
+  issues a fresh membership and authority with the same actions. The member collects them
+  from `vtc/rooms/offers/list/0.3`'s `renewals` and stores them in place of the ones they
+  renew ([community rooms](community-rooms.md#the-members-half--vtcroomsoffers)).
+- **Ending a binding** puts it into `removing`: what only it covered is withdrawn, then it
+  is deleted. One that covered nobody is deleted at once. Deleting the group ends all of
+  its bindings the same way.
+
+A VTA that does not answer is retried with a capped, jittered backoff; the reconciler runs
+every minute and whenever a group's members or bindings change.
+
 ## Deleting a group
 
 Deleting revokes the group's authority credential in the community's revocation list
@@ -210,7 +243,8 @@ still resolve their issuer until they expire.
 
 Groups live in the `directory` keyspace (backed up), beside the cards whose `entryId`
 keys every membership: `group:<groupId>`, the memberships as `gm:<groupId>:<entryId>` and
-`mg:<entryId>:<groupId>`, and served identity logs as `group-did:<path>`. A rotation
+`mg:<entryId>:<groupId>`, bindings as `gbind:<groupId>:<bindingId>`, and served identity
+logs as `group-did:<path>`. A rotation
 keeps the member's entry, so it moves nothing. Every change is audited by reference
 (`GroupChanged`): the group, what changed and the reason given, never a name or
 description.

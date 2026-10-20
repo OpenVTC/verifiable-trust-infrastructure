@@ -522,6 +522,8 @@ async fn drive_one(
     record.state = MemberRecord::REMOVED.into();
     record.removed_at = Some(rfc3339(now));
     record.credentials = None;
+    record.renewal = None;
+    record.sources.clear();
     record.welcome = None;
     cr.settle_removal(&record).await?;
     drop(guard);

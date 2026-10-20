@@ -30,6 +30,7 @@
 //! Only static groups are served: a dynamic group's create is refused
 //! (`kindNotServed` once the specification declares it), never stored.
 
+pub mod bindings;
 pub mod credential;
 pub mod identity;
 pub mod managers;
@@ -320,6 +321,8 @@ pub fn new_group_id() -> String {
 /// fingerprint decides whether it concerns a group its recipient manages.
 fn changed() {
     crate::admin_events::notify(crate::admin_events::Topic::Groups);
+    // Who a group's room bindings cover may have moved.
+    bindings::kick();
 }
 
 fn group_key(group_id: &str) -> Vec<u8> {
@@ -381,6 +384,7 @@ pub async fn remove(ks: &KeyspaceHandle, group_id: &str) -> Result<usize, AppErr
     }
     ks.remove(group_key(group_id)).await?;
     renewal::forget(ks, group_id).await?;
+    bindings::on_group_deleted(ks, group_id).await?;
     changed();
     Ok(members.len())
 }
@@ -523,6 +527,11 @@ impl Standing {
 
     /// Does this caller manage `group_id`: by holding the capability
     /// unqualified, or at `group:<groupId>`, read from the live entry.
+    /// Whether the caller holds `cap` unqualified, read from their live entry.
+    pub fn can(&self, cap: Capability) -> bool {
+        self.entry.as_ref().is_some_and(|e| e.can(cap, None))
+    }
+
     pub fn manages(&self, group_id: &str) -> bool {
         self.entry.as_ref().is_some_and(|e| {
             e.can(

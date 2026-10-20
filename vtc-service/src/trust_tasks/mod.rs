@@ -2254,6 +2254,10 @@ mod spine_proof_tests {
             "reads the join requests to groups the signer manages; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
+            group_tasks::BINDINGS_LIST_TYPE,
+            "reads the bindings of a group the signer manages; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
             community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
             "a community read; the handler refuses an unsigned caller where that read is gated at all",
         ),
@@ -3112,6 +3116,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     community_room_tasks::MEMBERS_LIST_TYPE,
     community_room_tasks::OFFERS_LIST_TYPE,
     community_room_tasks::OFFERS_LIST_V0_2_TYPE,
+    // 0.3: also the renewals of the admissions the member holds.
+    community_room_tasks::OFFERS_LIST_V0_3_TYPE,
     community_room_tasks::OFFERS_ACCEPT_TYPE,
     community_room_tasks::MEMBERSHIPS_LIST_TYPE,
     // The OpenID4VP verifier identities, as a holder of `vtc.config.admin`
@@ -3248,6 +3254,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     group_tasks::REQUESTS_DECIDE_TYPE,
     group_tasks::MANAGERS_ADD_TYPE,
     group_tasks::MANAGERS_REMOVE_TYPE,
+    // A group's room bindings: what its members are offered, and renewed.
+    group_tasks::BINDINGS_ADD_TYPE,
+    group_tasks::BINDINGS_REMOVE_TYPE,
+    group_tasks::BINDINGS_LIST_TYPE,
     // Credential-sourced fields, filled from a presentation.
     directory_tasks::CARD_PRESENT_TYPE,
     community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,

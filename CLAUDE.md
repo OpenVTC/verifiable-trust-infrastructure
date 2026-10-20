@@ -1417,7 +1417,18 @@ new flow, update both this section and the relevant `docs/*.md`.
   revocation list and an expiry. Served: `create`, `update`, `delete`, `list`,
   `show`, `members/{add,remove,list}`, `join`, `leave`, `requests/{list,decide}`
   `managers/{add,remove}` for **static** groups (a dynamic one is checked, then
-  refused `kindNotServed`). Bindings are a later phase.
+  refused `kindNotServed`), and `bindings/{add,remove,list}` for **room**
+  bindings (grants/role bindings refused `kindNotServed`, nothing stored).
+- **Room bindings** (`groups::bindings`): a manager holding `vtc.rooms.manage`
+  binds a community room, after the bound gesture `members/add` takes (never
+  parked). The reconciler is the one owner of every effect: it offers each
+  active group member admission through the normal offer path (recorded only
+  after the VTA answered), keeps `MemberRecord::sources` (`gb_…` ids, plus
+  `direct` for an administrator's admission), owes a `LeftGroup` removal
+  through `rooms::departures` when no source is left — never removing a direct
+  admission — and renews bound admissions into `offers/list/0.3` `renewals`
+  (membership + authority, never an invitation; the renewed `validUntil` becomes
+  the admission's own).
 - **Renewal** (`groups::renewal`, create item 5's MUST): a sweeper renews a
   group's authority within `[groups] authority_renew_within_days` (default
   `max(30, credential_valid_days)`, ≤ half the life) **in the slot it already

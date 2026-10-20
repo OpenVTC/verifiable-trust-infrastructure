@@ -359,6 +359,20 @@ fn base_disclosure() -> Value {
     .expect("the base schema gives a statement")
 }
 
+fn sample_binding() -> crate::groups::bindings::Binding {
+    crate::groups::bindings::Binding {
+        binding_id: "gb_P2k8W5qYc6Vd1MsKAAAAAA".into(),
+        group_id: "grp_W5k2N8xRb3Qz7TpLAAAAAA".into(),
+        binding: json!({ "kind": "room", "roomId": "did:key:z6MkRoom", "actions": ["read"], "validFor": "P30D" }),
+        state: "active".into(),
+        created_at: chrono::DateTime::parse_from_rfc3339("2026-10-20T09:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+        created_by: "did:example:administrator".into(),
+        reason: "The working group's room.".into(),
+    }
+}
+
 /// A note as `directory::notes` stores it.
 fn admin_note() -> crate::directory::notes::Note {
     crate::directory::notes::Note {
@@ -1450,6 +1464,23 @@ fn table() -> Vec<Conformance> {
                 "state": "open",
                 "credentials": { "invitation": "{}", "membership": "{}", "authority": "{}" },
             }] })
+        ),
+        // 0.3: the same offers, and on the first page the renewals of the
+        // admissions the member holds (`groups::bindings`).
+        checked!(
+            s::rooms::offers::list::v0_3::Payload,
+            s::rooms::offers::list::v0_3::Response,
+            json!({}),
+            json!({
+                "items": [],
+                "renewals": [{
+                    "roomId": "did:key:z6MkRoom", "host": "did:example:community",
+                    "label": "Board pack", "visibility": "attributed", "actions": ["read"],
+                    "validUntil": "2027-11-10T00:00:00Z", "renews": "2026-11-10T00:00:00Z",
+                    "issuedAt": "2026-10-20T09:00:00Z",
+                    "credentials": { "membership": "{}", "authority": "{}" },
+                }],
+            })
         ),
         checked!(
             s::rooms::memberships::list::v0_1::Payload,
@@ -2949,6 +2980,34 @@ fn table() -> Vec<Conformance> {
             s::groups::managers::remove::v0_1::Response,
             json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY }),
             json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "managers": [] })
+        ),
+        // A group's room bindings (`groups::bindings`); the response is the
+        // stored binding's own `wire()`.
+        checked!(
+            s::groups::bindings::add::v0_1::Payload,
+            s::groups::bindings::add::v0_1::Response,
+            json!({
+                "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA",
+                "binding": { "kind": "room", "roomId": "did:key:z6MkRoom", "actions": ["read"], "validFor": "P30D" },
+                "reason": "The working group's room.",
+            }),
+            json!({ "binding": sample_binding().wire() })
+        ),
+        checked!(
+            s::groups::bindings::list::v0_1::Payload,
+            s::groups::bindings::list::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA" }),
+            json!({ "items": [sample_binding().wire()] })
+        ),
+        checked!(
+            s::groups::bindings::remove::v0_1::Payload,
+            s::groups::bindings::remove::v0_1::Response,
+            json!({
+                "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA",
+                "bindingId": "gb_P2k8W5qYc6Vd1MsKAAAAAA",
+                "reason": "The room moved.",
+            }),
+            json!({ "bindingId": "gb_P2k8W5qYc6Vd1MsKAAAAAA", "state": "removing" })
         ),
         checked!(
             s::directory::notes::append::v0_1::Payload,

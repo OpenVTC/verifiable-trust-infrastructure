@@ -58,6 +58,7 @@ use trust_tasks_rs::specs::vtc::rooms::community::{
 use trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
 use trust_tasks_rs::specs::vtc::rooms::offers::{
     accept::v0_1 as accept, list::v0_1 as offers_list, list::v0_2 as offers_list_v0_2,
+    list::v0_3 as offers_list_v0_3,
 };
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::audit::{AuditEvent, CommunityRoomChangedData, FieldChange};
@@ -101,6 +102,7 @@ const ADD_EARLIER_REMOVAL_REFUSED: &str = owner_add::error_codes::EARLIER_REMOVA
 pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::TYPE_URI;
 pub(crate) const OFFERS_LIST_TYPE: &str = <offers_list::Payload as Payload>::TYPE_URI;
 pub(crate) const OFFERS_LIST_V0_2_TYPE: &str = <offers_list_v0_2::Payload as Payload>::TYPE_URI;
+pub(crate) const OFFERS_LIST_V0_3_TYPE: &str = <offers_list_v0_3::Payload as Payload>::TYPE_URI;
 pub(crate) const OFFERS_ACCEPT_TYPE: &str = <accept::Payload as Payload>::TYPE_URI;
 pub(crate) const MEMBERSHIPS_LIST_TYPE: &str = <memberships_list::Payload as Payload>::TYPE_URI;
 
@@ -121,6 +123,7 @@ pub(crate) const URIS: &[&str] = &[
     MEMBERS_LIST_TYPE,
     OFFERS_LIST_TYPE,
     OFFERS_LIST_V0_2_TYPE,
+    OFFERS_LIST_V0_3_TYPE,
     OFFERS_ACCEPT_TYPE,
     MEMBERSHIPS_LIST_TYPE,
 ];
@@ -182,8 +185,9 @@ pub(super) async fn dispatch(
             handle_members_remove(state, ctx, doc, RemoveVersion::V0_2).await
         }
         MEMBERS_LIST_TYPE => handle_members_list(state, ctx, doc).await,
-        OFFERS_LIST_TYPE => handle_offers_list(state, ctx, doc, Shape::V0_1).await,
-        OFFERS_LIST_V0_2_TYPE => handle_offers_list(state, ctx, doc, Shape::V0_2).await,
+        OFFERS_LIST_TYPE => handle_offers_list(state, ctx, doc, OffersShape::V0_1).await,
+        OFFERS_LIST_V0_2_TYPE => handle_offers_list(state, ctx, doc, OffersShape::V0_2).await,
+        OFFERS_LIST_V0_3_TYPE => handle_offers_list(state, ctx, doc, OffersShape::V0_3).await,
         OFFERS_ACCEPT_TYPE => handle_offers_accept(state, ctx, doc).await,
         MEMBERSHIPS_LIST_TYPE => handle_memberships_list(state, ctx, doc).await,
         _ => return None,
@@ -199,6 +203,15 @@ pub(super) async fn dispatch(
 enum Shape {
     V0_1,
     V0_2,
+}
+
+/// The version of `vtc/rooms/offers/list` being answered: 0.2 adds each room's
+/// description, 0.3 the renewals of the admissions the member holds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OffersShape {
+    V0_1,
+    V0_2,
+    V0_3,
 }
 
 fn now() -> DateTime<Utc> {
@@ -238,7 +251,7 @@ async fn ask(
 
 /// The requester's gesture bound to this document: `Ok(())` once spent, the refusal
 /// asking for it otherwise.
-async fn bound_step_up(
+pub(crate) async fn bound_step_up(
     state: &AppState,
     actor: &str,
     doc: &TrustTask<Value>,
@@ -284,7 +297,7 @@ async fn refuse_logged(
     refuse(doc, code, message, details)
 }
 
-async fn audit(state: &AppState, actor: &str, data: CommunityRoomChangedData) {
+pub(crate) async fn audit(state: &AppState, actor: &str, data: CommunityRoomChangedData) {
     let Some(writer) = state.audit_writer.as_ref() else {
         return;
     };
@@ -297,7 +310,7 @@ async fn audit(state: &AppState, actor: &str, data: CommunityRoomChangedData) {
     }
 }
 
-fn change(event: &str, room: &OwnedRoom) -> CommunityRoomChangedData {
+pub(crate) fn change(event: &str, room: &OwnedRoom) -> CommunityRoomChangedData {
     CommunityRoomChangedData {
         event: event.to_string(),
         room_id: room.room_id.clone(),
@@ -1437,6 +1450,8 @@ async fn handle_members_add(
         credentials: Some(credentials),
         welcome: None,
         admitted_epoch: None,
+        renewal: None,
+        sources: Vec::new(),
     };
     if let Err(e) = state.community_rooms.put_member(&record).await {
         return app_error_to_reject(&doc, &e);
@@ -1452,7 +1467,7 @@ async fn handle_members_add(
 }
 
 /// The invitation, membership and authority credentials for `member`.
-async fn issue_offer(
+pub(crate) async fn issue_offer(
     holder: &KeyHolder,
     room: &OwnedRoom,
     member: &str,
@@ -1492,6 +1507,40 @@ async fn issue_offer(
         membership,
         authority,
     })
+}
+
+/// A renewal of `member`'s admission to `room`: fresh membership and authority
+/// credentials, the authority granting exactly `actions` until `valid_until`. No
+/// invitation: the member is already in the room (`vtc/rooms/offers/list/0.3` item 5).
+pub(crate) async fn issue_renewal(
+    holder: &KeyHolder,
+    room: &OwnedRoom,
+    member: &str,
+    actions: &[String],
+    valid_until: &str,
+) -> Result<(String, String), HolderError> {
+    let internal = |e: AppError| HolderError::Unavailable(e.to_string());
+    let common = json!({
+        "roomId": room.room_id,
+        "signingKeyId": room.signing_key_id,
+        "subject": member,
+        "validUntil": valid_until,
+    });
+    let membership = typed::<owner_membership::Payload>(common.clone()).map_err(internal)?;
+    let mut authority = common;
+    authority["actions"] = json!(actions);
+    let authority = typed::<owner_authority::Payload>(authority).map_err(internal)?;
+    let membership = read::<owner_membership::Response>(
+        "rooms/owner/issue-membership",
+        ask(holder, OWNER_MEMBERSHIP, membership, SIGN_TIMEOUT).await?,
+    )?
+    .credential;
+    let authority = read::<owner_authority::Response>(
+        "rooms/owner/issue-authority",
+        ask(holder, OWNER_AUTHORITY, authority, SIGN_TIMEOUT).await?,
+    )?
+    .credential;
+    Ok((membership, authority))
 }
 
 async fn handle_members_remove(
@@ -1636,6 +1685,8 @@ async fn handle_members_remove(
     record.state = MemberRecord::REMOVED.into();
     record.removed_at = Some(rfc3339(now()));
     record.credentials = None;
+    record.renewal = None;
+    record.sources.clear();
     record.welcome = None;
     // A removal owed on the member's departure from the community, if one is, is settled
     // by this one (`crate::rooms::departures`).
@@ -1763,7 +1814,7 @@ async fn handle_offers_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    shape: Shape,
+    shape: OffersShape,
 ) -> TrustTaskOutcome {
     use crate::rooms::community::codes as c;
     let signer = match active_signer(state, ctx, &doc, c::OFFERS_LIST_NOT_A_MEMBER).await {
@@ -1771,9 +1822,11 @@ async fn handle_offers_list(
         Err(reject) => return reject,
     };
     let parsed = match shape {
-        Shape::V0_1 => parse_spec_payload::<offers_list::Payload>(&doc)
+        OffersShape::V0_1 => parse_spec_payload::<offers_list::Payload>(&doc)
             .map(|p| (p.cursor.map(|c| c.to_string()), p.limit)),
-        Shape::V0_2 => parse_spec_payload::<offers_list_v0_2::Payload>(&doc)
+        OffersShape::V0_2 => parse_spec_payload::<offers_list_v0_2::Payload>(&doc)
+            .map(|p| (p.cursor.map(|c| c.to_string()), p.limit)),
+        OffersShape::V0_3 => parse_spec_payload::<offers_list_v0_3::Payload>(&doc)
             .map(|p| (p.cursor.map(|c| c.to_string()), p.limit)),
     };
     let (cursor, limit) = match parsed {
@@ -1790,15 +1843,54 @@ async fn handle_offers_list(
     let at = now();
     // Item 1: the signer's own, whatever the request carries. Item 3: never a withdrawn
     // one; an accepted one only while a repeat can be answered.
-    let records = match state.community_rooms.records_of(&signer).await {
-        Ok(r) => r
-            .into_iter()
-            .filter(|r| {
-                r.credentials.is_some() && (r.state == MemberRecord::OFFERED || r.welcome_kept(at))
-            })
-            .collect::<Vec<_>>(),
+    let all = match state.community_rooms.records_of(&signer).await {
+        Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    // 0.3 item 6: the latest renewal of each admission the member holds, until
+    // what it renews expires — on the first page only, in full.
+    let mut renewals = Vec::new();
+    if shape == OffersShape::V0_3 && cursor.is_none() {
+        for r in all.iter().filter(|r| r.state == MemberRecord::ADMITTED) {
+            let Some(renewal) = &r.renewal else {
+                continue;
+            };
+            if chrono::DateTime::parse_from_rfc3339(&renewal.renews)
+                .is_ok_and(|t| t.with_timezone(&Utc) <= at)
+            {
+                continue;
+            }
+            let room = match state.community_rooms.room(&r.room_id).await {
+                Ok(Some(room)) => room,
+                Ok(None) => continue,
+                Err(e) => return app_error_to_reject(&doc, &e),
+            };
+            let mut item = json!({
+                "roomId": r.room_id,
+                "host": host,
+                "label": room.label,
+                "visibility": room.visibility,
+                "actions": r.actions,
+                "validUntil": renewal.valid_until,
+                "renews": renewal.renews,
+                "issuedAt": renewal.issued_at,
+                "credentials": {
+                    "membership": renewal.membership,
+                    "authority": renewal.authority,
+                },
+            });
+            if let Some(d) = &room.description {
+                item["description"] = json!(d);
+            }
+            renewals.push(item);
+        }
+    }
+    let records = all
+        .into_iter()
+        .filter(|r| {
+            r.credentials.is_some() && (r.state == MemberRecord::OFFERED || r.welcome_kept(at))
+        })
+        .collect::<Vec<_>>();
     let (records, next) = match page(
         &doc,
         records,
@@ -1834,7 +1926,7 @@ async fn handle_offers_list(
         });
         // 0.2 item 4: the description beside the label, and never the tags or anything
         // else of the administrators' tracking.
-        if shape == Shape::V0_2
+        if shape != OffersShape::V0_1
             && let Some(d) = &room.description
         {
             item["description"] = json!(d);
@@ -1842,12 +1934,16 @@ async fn handle_offers_list(
         items.push(item);
     }
     let mut body = json!({ "items": items });
+    if !renewals.is_empty() {
+        body["renewals"] = json!(renewals);
+    }
     if let Some(n) = next {
         body["nextCursor"] = json!(n);
     }
     match shape {
-        Shape::V0_1 => respond::<offers_list::Response>(&doc, body),
-        Shape::V0_2 => respond::<offers_list_v0_2::Response>(&doc, body),
+        OffersShape::V0_1 => respond::<offers_list::Response>(&doc, body),
+        OffersShape::V0_2 => respond::<offers_list_v0_2::Response>(&doc, body),
+        OffersShape::V0_3 => respond::<offers_list_v0_3::Response>(&doc, body),
     }
 }
 

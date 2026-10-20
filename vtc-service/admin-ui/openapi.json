@@ -9382,6 +9382,545 @@
         },
         "additionalProperties": false
       },
+      "VtcGroupsBindingsAddV0_1BindingId": {
+        "type": "string",
+        "pattern": "^gb_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcGroupsBindingsAddV0_1BindingSpec": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1RoomBindingSpec"
+          },
+          {
+            "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1GrantsBindingSpec"
+          },
+          {
+            "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1RoleBindingSpec"
+          }
+        ]
+      },
+      "VtcGroupsBindingsAddV0_1Capability": {
+        "type": "string",
+        "description": "Opaque identifier of one administrative power in the maintainer's capability registry — lowercase dot-separated segments (e.g. `keys.sign`, `vtc.roles.assign`, `git.repo.manage`). A consumer MUST NOT treat a capability it does not recognise as granted.",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[a-z][a-z0-9-]*(\\.[a-z0-9-]+)*$"
+      },
+      "VtcGroupsBindingsAddV0_1CapabilityRef": {
+        "type": "object",
+        "description": "A capability, optionally qualified by a resource. Used where a capability is named but not granted — a role's ceiling, a role's approve ceiling, an entry's approvable capabilities. An unqualified reference covers every resource of the capability's kind.",
+        "required": [
+          "capability"
+        ],
+        "properties": {
+          "capability": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1Capability"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1ResourceQualifier"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsBindingsAddV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcGroupsBindingsAddV0_1GrantsBindingSpec": {
+        "type": "object",
+        "description": "A grant set the group confers: each capability is written onto every member's access-control entry as a resource grant whose source is the group, bounded by the member's role ceiling and by the binder's own holdings.",
+        "required": [
+          "kind",
+          "grants"
+        ],
+        "properties": {
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1CapabilityRef"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "grants"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsBindingsAddV0_1GroupBinding": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "binding",
+          "state",
+          "createdAt"
+        ],
+        "properties": {
+          "binding": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1BindingSpec"
+          },
+          "bindingId": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1BindingId"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "string",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "state": {
+            "type": "string",
+            "description": "`pending`: waiting for the consent the community requires. `active`: in force; the community's reconciler keeps members' admissions and grants in line with it. `removing`: being withdrawn; the reconciler is removing what only this binding provided.",
+            "enum": [
+              "pending",
+              "active",
+              "removing"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsBindingsAddV0_1GroupId": {
+        "type": "string",
+        "description": "Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID.",
+        "pattern": "^grp_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcGroupsBindingsAddV0_1MemberAction": {
+        "type": "string",
+        "description": "What a member of a community-owned room may do there. `admin` is not among them: minting epochs, admitting and removing members are the community's, as the room's owner, and are exercised through the vtc/rooms/community/* tasks rather than by any member's credential. `curate` is not implied by `write`.",
+        "enum": [
+          "read",
+          "write",
+          "curate"
+        ]
+      },
+      "VtcGroupsBindingsAddV0_1MemberActions": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1MemberAction"
+        },
+        "description": "The actions granted, at least one. An empty list confers nothing rather than everything, and a schema that allowed it would make the more dangerous reading available to a careless consumer.",
+        "maxItems": 3,
+        "minItems": 1,
+        "uniqueItems": true
+      },
+      "VtcGroupsBindingsAddV0_1Payload": {
+        "type": "object",
+        "description": "Bind a group to a community room, so its members are offered admission, or to a grant set or role's capabilities, which the community provisions into members' access-control entries with the group as their source. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "groupId",
+          "binding",
+          "reason"
+        ],
+        "properties": {
+          "binding": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1BindingSpec"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1Ext"
+          },
+          "groupId": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1GroupId"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why, recorded with the change and shown to anyone who must approve it.",
+            "maxLength": 1024,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsBindingsAddV0_1ResourceQualifier": {
+        "type": "string",
+        "description": "Opaque qualifier naming the part of the maintainer's resources a capability applies to (e.g. `git-ns:github.com/acme`, `git-repo:github.com/acme/r#4211`, `policy:join`). Its grammar and containment rule are the maintainer's: a qualified capability covers the named resource and the resources inside it. A qualifier MUST NOT be read as widening the entry's act scope.",
+        "maxLength": 512,
+        "minLength": 1
+      },
+      "VtcGroupsBindingsAddV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/groups/bindings/add/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/bindings/add/0.1#response.",
+        "required": [
+          "binding"
+        ],
+        "properties": {
+          "binding": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1GroupBinding"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1Ext"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsBindingsAddV0_1RoleBindingSpec": {
+        "type": "object",
+        "description": "A grant set by reference: the capability ceiling of a defined role, conferred as resource grants exactly as a `grants` binding confers its list. It never assigns the role itself — an entry's administrative role and its community role stay direct assignments.",
+        "required": [
+          "kind",
+          "role"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "role"
+            ]
+          },
+          "role": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1RoleName"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsBindingsAddV0_1RoleName": {
+        "type": "string",
+        "description": "A role identifier: lowercase, hyphen-separated, at most 64 characters. Compared by exact string equality. It is the value an AclEntry 0.2 carries in `role`.",
+        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+      },
+      "VtcGroupsBindingsAddV0_1RoomBindingSpec": {
+        "type": "object",
+        "description": "Links a room the community owns to the group: joining the group offers the member admission to the room with `actions`, valid for `validFor`, renewed while they stay in the group (collected with vtc/rooms/offers/list at 0.3 or later); leaving removes them unless another source still covers them.",
+        "required": [
+          "kind",
+          "roomId",
+          "actions",
+          "validFor"
+        ],
+        "properties": {
+          "actions": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsAddV0_1MemberActions"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "room"
+            ]
+          },
+          "roomId": {
+            "type": "string",
+            "description": "The community-owned room's DID.",
+            "maxLength": 512,
+            "pattern": "^did:"
+          },
+          "validFor": {
+            "type": "string",
+            "description": "How long each admission's authority runs, as an ISO 8601 duration in whole days (`P365D`). The community renews it while the member stays in the group.",
+            "pattern": "^P[1-9][0-9]{0,4}D$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsBindingsListV0_1BindingId": {
+        "type": "string",
+        "pattern": "^gb_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcGroupsBindingsListV0_1BindingSpec": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/VtcGroupsBindingsListV0_1RoomBindingSpec"
+          },
+          {
+            "$ref": "#/components/schemas/VtcGroupsBindingsListV0_1GrantsBindingSpec"
+          },
+          {
+            "$ref": "#/components/schemas/VtcGroupsBindingsListV0_1RoleBindingSpec"
+          }
+        ]
+      },
+      "VtcGroupsBindingsListV0_1Capability": {
+        "type": "string",
+        "description": "Opaque identifier of one administrative power in the maintainer's capability registry — lowercase dot-separated segments (e.g. `keys.sign`, `vtc.roles.assign`, `git.repo.manage`). A consumer MUST NOT treat a capability it does not recognise as granted.",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[a-z][a-z0-9-]*(\\.[a-z0-9-]+)*$"
+      },
+      "VtcGroupsBindingsListV0_1CapabilityRef": {
+        "type": "object",
+        "description": "A capability, optionally qualified by a resource. Used where a capability is named but not granted — a role's ceiling, a role's approve ceiling, an entry's approvable capabilities. An unqualified reference covers every resource of the capability's kind.",
+        "required": [
+          "capability"
+        ],
+        "properties": {
+          "capability": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsListV0_1Capability"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsListV0_1ResourceQualifier"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsBindingsListV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcGroupsBindingsListV0_1GrantsBindingSpec": {
+        "type": "object",
+        "description": "A grant set the group confers: each capability is written onto every member's access-control entry as a resource grant whose source is the group, bounded by the member's role ceiling and by the binder's own holdings.",
+        "required": [
+          "kind",
+          "grants"
+        ],
+        "properties": {
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcGroupsBindingsListV0_1CapabilityRef"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "grants"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsBindingsListV0_1GroupBinding": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "binding",
+          "state",
+          "createdAt"
+        ],
+        "properties": {
+          "binding": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsListV0_1BindingSpec"
+          },
+          "bindingId": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsListV0_1BindingId"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "string",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "state": {
+            "type": "string",
+            "description": "`pending`: waiting for the consent the community requires. `active`: in force; the community's reconciler keeps members' admissions and grants in line with it. `removing`: being withdrawn; the reconciler is removing what only this binding provided.",
+            "enum": [
+              "pending",
+              "active",
+              "removing"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsBindingsListV0_1GroupId": {
+        "type": "string",
+        "description": "Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID.",
+        "pattern": "^grp_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcGroupsBindingsListV0_1MemberAction": {
+        "type": "string",
+        "description": "What a member of a community-owned room may do there. `admin` is not among them: minting epochs, admitting and removing members are the community's, as the room's owner, and are exercised through the vtc/rooms/community/* tasks rather than by any member's credential. `curate` is not implied by `write`.",
+        "enum": [
+          "read",
+          "write",
+          "curate"
+        ]
+      },
+      "VtcGroupsBindingsListV0_1MemberActions": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/VtcGroupsBindingsListV0_1MemberAction"
+        },
+        "description": "The actions granted, at least one. An empty list confers nothing rather than everything, and a schema that allowed it would make the more dangerous reading available to a careless consumer.",
+        "maxItems": 3,
+        "minItems": 1,
+        "uniqueItems": true
+      },
+      "VtcGroupsBindingsListV0_1Payload": {
+        "type": "object",
+        "description": "A group manager or administrator lists what a group is bound to: the rooms its members are admitted to and the grants it confers. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "groupId"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsListV0_1Ext"
+          },
+          "groupId": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsListV0_1GroupId"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsBindingsListV0_1ResourceQualifier": {
+        "type": "string",
+        "description": "Opaque qualifier naming the part of the maintainer's resources a capability applies to (e.g. `git-ns:github.com/acme`, `git-repo:github.com/acme/r#4211`, `policy:join`). Its grammar and containment rule are the maintainer's: a qualified capability covers the named resource and the resources inside it. A qualifier MUST NOT be read as widening the entry's act scope.",
+        "maxLength": 512,
+        "minLength": 1
+      },
+      "VtcGroupsBindingsListV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/groups/bindings/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/bindings/list/0.1#response.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsListV0_1Ext"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcGroupsBindingsListV0_1GroupBinding"
+            },
+            "maxItems": 64
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsBindingsListV0_1RoleBindingSpec": {
+        "type": "object",
+        "description": "A grant set by reference: the capability ceiling of a defined role, conferred as resource grants exactly as a `grants` binding confers its list. It never assigns the role itself — an entry's administrative role and its community role stay direct assignments.",
+        "required": [
+          "kind",
+          "role"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "role"
+            ]
+          },
+          "role": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsListV0_1RoleName"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsBindingsListV0_1RoleName": {
+        "type": "string",
+        "description": "A role identifier: lowercase, hyphen-separated, at most 64 characters. Compared by exact string equality. It is the value an AclEntry 0.2 carries in `role`.",
+        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+      },
+      "VtcGroupsBindingsListV0_1RoomBindingSpec": {
+        "type": "object",
+        "description": "Links a room the community owns to the group: joining the group offers the member admission to the room with `actions`, valid for `validFor`, renewed while they stay in the group (collected with vtc/rooms/offers/list at 0.3 or later); leaving removes them unless another source still covers them.",
+        "required": [
+          "kind",
+          "roomId",
+          "actions",
+          "validFor"
+        ],
+        "properties": {
+          "actions": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsListV0_1MemberActions"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "room"
+            ]
+          },
+          "roomId": {
+            "type": "string",
+            "description": "The community-owned room's DID.",
+            "maxLength": 512,
+            "pattern": "^did:"
+          },
+          "validFor": {
+            "type": "string",
+            "description": "How long each admission's authority runs, as an ISO 8601 duration in whole days (`P365D`). The community renews it while the member stays in the group.",
+            "pattern": "^P[1-9][0-9]{0,4}D$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsBindingsRemoveV0_1BindingId": {
+        "type": "string",
+        "pattern": "^gb_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcGroupsBindingsRemoveV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcGroupsBindingsRemoveV0_1GroupId": {
+        "type": "string",
+        "description": "Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID.",
+        "pattern": "^grp_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcGroupsBindingsRemoveV0_1Payload": {
+        "type": "object",
+        "description": "Remove a group's binding: members lose the room admission or grants it provided, unless another source still provides them. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "groupId",
+          "bindingId",
+          "reason"
+        ],
+        "properties": {
+          "bindingId": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsRemoveV0_1BindingId"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsRemoveV0_1Ext"
+          },
+          "groupId": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsRemoveV0_1GroupId"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why, recorded with the change and shown to anyone who must approve it.",
+            "maxLength": 1024,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcGroupsBindingsRemoveV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/groups/bindings/remove/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/bindings/remove/0.1#response.",
+        "required": [
+          "bindingId",
+          "state"
+        ],
+        "properties": {
+          "bindingId": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsRemoveV0_1BindingId"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcGroupsBindingsRemoveV0_1Ext"
+          },
+          "state": {
+            "type": "string",
+            "description": "`removed`: done. `removing`: the reconciler is withdrawing what only this binding provided. `pending`: a reduction of authority the community is holding on its terms.",
+            "enum": [
+              "removed",
+              "removing",
+              "pending"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "VtcGroupsCreateV0_1DynamicRule": {
         "type": "object",
         "description": "A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries.",

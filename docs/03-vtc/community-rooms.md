@@ -405,7 +405,11 @@ The member, signed with **their own DID** (the persona named in the offer):
 1. `vtc/rooms/offers/list/0.1` — their offers, each with the three credentials. They
    store the membership and authority in their own VTA's vault
    (`pnm cred-vault receive`). At `0.2` each offer also carries the room's current
-   description; never its tags.
+   description; never its tags. At `0.3` the first page also carries `renewals`: for a
+   room they are in through a group's room binding
+   ([groups](groups.md#room-bindings)), a fresh membership and authority issued before the
+   ones they hold expire. They store each **in place of** the one it renews, never beside
+   it, and accept nothing. A renewal stays listed until what it renews expires.
 2. On a sealed room, their VTA mints a KeyPackage against the offer's invitation
    (`pnm rooms keys key-package --invitation …`).
 3. `vtc/rooms/offers/accept/0.1` with the KeyPackage (none on an `open` room). The VTC has
