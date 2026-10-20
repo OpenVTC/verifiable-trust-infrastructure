@@ -8,6 +8,22 @@
 // confirm is skipped when this browser last continued as the same identity
 // for the same audience: "Continue as …?" guards against someone else's
 // identity being signed in here (T4), and a known identity is not that.
+//
+// The code needs no click: it is made as soon as the page knows wallet
+// sign-in can work and the tab is in view (when the config could not be
+// fetched, a "Show sign-in code" button tries again). Nobody can use a code without
+// being a member and seeing the number, and the first scanner locks it, so
+// showing it unasked costs one request and gives nothing away. An unclaimed
+// code is renewed when its claim window closes — while the tab is in view
+// only, so a page left in a background tab makes no requests; one that
+// lapsed there is renewed when the tab comes back (`lapsed`). A claimed code
+// that expires still ends as expired: someone scanned it.
+//
+// The claimed number carries `data-oob-request-id` and
+// `data-oob-match-number` (contract C11). The browser plugin's content
+// script reads them, only for a code the person clicked on this page, and
+// fills the number in for them. The page posts nothing and learns nothing
+// back; a phone wallet still asks the person to type the number.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
@@ -35,6 +51,9 @@ type Phase =
   | { kind: "idle" }
   | { kind: "starting" }
   | { kind: "waiting"; link: string; requestId: string; claimDeadline: number }
+  /** An unclaimed code's window closed while the tab was hidden; a new one
+   *  is made when the tab is in view again. */
+  | { kind: "lapsed" }
   | { kind: "claimed"; requestId: string; matchNumber: string }
   | { kind: "confirm"; result: RedeemResult }
   | { kind: "ended"; reason: "declined" | "cancelled" | "expired" | "notAnAdmin" }
@@ -91,6 +110,9 @@ function rememberSubject(audience: SessionAudience, subject: string): void {
   }
 }
 
+/** How long a code must have lived to be renewed when it ends unclaimed. */
+const MIN_CODE_LIFE_MS = 10_000;
+
 /** What an ended sign-in says. */
 function endedMessage(reason: Extract<Phase, { kind: "ended" }>["reason"]): string {
   switch (reason) {
@@ -130,6 +152,11 @@ export function WalletSignIn({
   // its codes: the option is replaced by a note and the page's other options
   // carry on. `null` until known, and whenever wallet sign-in can be offered.
   const [missing, setMissing] = useState<string[] | null>(null);
+  // Whether the config is known and wallet sign-in can be offered: the code
+  // is made unasked only then.
+  const [ready, setReady] = useState(false);
+  const [configFailed, setConfigFailed] = useState(false);
+  const [visible, setVisible] = useState(() => document.visibilityState !== "hidden");
   const abortRef = useRef<AbortController | null>(null);
   const runRef = useRef(0);
 
@@ -149,9 +176,15 @@ export function WalletSignIn({
       .then((cfg) => {
         if (!live) return;
         cfgRef.current = cfg;
-        setMissing(missingDidServices(cfg));
+        const lacking = missingDidServices(cfg);
+        setMissing(lacking);
+        setReady(lacking === null);
       })
-      .catch(() => {});
+      .catch(() => {
+        // Offer the button instead: its click fetches again and reports
+        // what went wrong.
+        if (live) setConfigFailed(true);
+      });
     return () => {
       live = false;
     };
@@ -159,23 +192,37 @@ export function WalletSignIn({
 
   useEffect(() => {
     const onVisibility = () => {
-      if (document.visibilityState === "hidden") setCodeHidden(true);
+      const shown = document.visibilityState !== "hidden";
+      setVisible(shown);
+      if (!shown) setCodeHidden(true);
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
 
-  // Hide an unclaimed code once its claim window closes.
+  // An unclaimed code whose claim window closed: a new one while the tab is
+  // in view, otherwise `lapsed` until it is. Read through a ref so the poll
+  // loop calls the current `showCode`.
+  // A code that ends within `MIN_CODE_LIFE_MS` of being made (a clock off by
+  // minutes, a VTC that drops requests) ends as expired instead, so a page
+  // never makes code after code in a loop.
+  const renewRef = useRef<() => void>(() => {});
+  const openedAtRef = useRef(0);
+  renewRef.current = () => {
+    stopPolling();
+    forgetSessionKey();
+    if (Date.now() - openedAtRef.current < MIN_CODE_LIFE_MS) {
+      setPhase({ kind: "ended", reason: "expired" });
+    } else if (document.visibilityState === "hidden") setPhase({ kind: "lapsed" });
+    else void showCode();
+  };
+
   useEffect(() => {
     if (phase.kind !== "waiting") return;
     const ms = phase.claimDeadline * 1000 - Date.now();
-    const t = window.setTimeout(() => {
-      stopPolling();
-      forgetSessionKey();
-      setPhase({ kind: "ended", reason: "expired" });
-    }, Math.max(0, ms));
+    const t = window.setTimeout(() => renewRef.current(), Math.max(0, ms));
     return () => window.clearTimeout(t);
-  }, [phase, stopPolling]);
+  }, [phase]);
 
   // A member sign-in keeps its browser key for the directory pages, which
   // sign with it under the delegation the member approved.
@@ -189,6 +236,7 @@ export function WalletSignIn({
   const poll = useCallback(
     async (requestId: string, run: number) => {
       const cfg = cfgRef.current!;
+      let claimed = false;
       while (runRef.current === run) {
         const ctl = new AbortController();
         abortRef.current = ctl;
@@ -221,6 +269,7 @@ export function WalletSignIn({
             case "pending": {
               const n = e.details.matchNumber;
               if (typeof n === "string") {
+                claimed = true;
                 setPhase({ kind: "claimed", requestId, matchNumber: n });
               }
               continue;
@@ -242,6 +291,11 @@ export function WalletSignIn({
               return;
             case "requestExpired":
             case "requestNotFound":
+              if (!claimed) {
+                // Nobody scanned it: a fresh code, not an error.
+                renewRef.current();
+                return;
+              }
               forgetSessionKey();
               setPhase({ kind: "ended", reason: "expired" });
               return;
@@ -266,6 +320,7 @@ export function WalletSignIn({
       await generateSessionKey();
       const { requestId, claimDeadline } = await openRequest(cfgRef.current, audience);
       if (runRef.current !== run) return;
+      openedAtRef.current = Date.now();
       setPhase({
         kind: "waiting",
         link: triggerLink(cfgRef.current, requestId, claimDeadline),
@@ -286,6 +341,15 @@ export function WalletSignIn({
       });
     }
   };
+
+  // Make the code unasked once wallet sign-in can work and the tab is in
+  // view, and renew one that lapsed while the tab was hidden.
+  const showCodeRef = useRef(showCode);
+  showCodeRef.current = showCode;
+  useEffect(() => {
+    if (!ready || !visible) return;
+    if (phase.kind === "idle" || phase.kind === "lapsed") void showCodeRef.current();
+  }, [ready, visible, phase.kind]);
 
   const cancel = async (requestId: string) => {
     stopPolling();
@@ -325,17 +389,19 @@ export function WalletSignIn({
         </div>
       )}
 
-      {!missing && (phase.kind === "idle" || phase.kind === "starting") && (
+      {!missing &&
+        (phase.kind === "idle" || phase.kind === "starting" || phase.kind === "lapsed") && (
         <>
-          <button
-            type="button"
-            className="btn btn-primary btn-lg"
-            onClick={showCode}
-            disabled={phase.kind === "starting"}
-          >
-            <QrCode size={18} aria-hidden="true" />
-            {phase.kind === "starting" ? "Getting a code…" : "Show sign-in code"}
-          </button>
+          {configFailed && phase.kind === "idle" ? (
+            <button type="button" className="btn btn-primary btn-lg" onClick={showCode}>
+              <QrCode size={18} aria-hidden="true" />
+              Show sign-in code
+            </button>
+          ) : (
+            <p className="option-note" role="status">
+              <QrCode size={18} aria-hidden="true" /> Getting a code…
+            </p>
+          )}
           <p className="option-note">
             Scan it with your wallet app (Keyring is the first), or click it if your wallet
             is on this device. Your keys stay with your wallet.
@@ -365,7 +431,11 @@ export function WalletSignIn({
                 }. Scan it with your wallet, or click it to open your wallet.`}
               />
             </a>
-            <p className="option-note">Waiting for your wallet…</p>
+            <p className="option-note">
+              Scan it with your wallet app, or click it if your wallet is on this device.
+              {audience === "admin" &&
+                " Approve as the identity that administers this community."}
+            </p>
             <button
               type="button"
               className="btn btn-ghost btn-sm"
@@ -380,7 +450,14 @@ export function WalletSignIn({
         <div className="claimed" role="status">
           <p className="lead">
             Approve on your phone. Your number is{" "}
-            <strong className="match-number">{phase.matchNumber}</strong>
+            {/* C11: the browser plugin reads these, for a code clicked here. */}
+            <strong
+              className="match-number"
+              data-oob-request-id={phase.requestId}
+              data-oob-match-number={phase.matchNumber}
+            >
+              {phase.matchNumber}
+            </strong>
           </p>
           <p className="option-note">
             If you didn't just scan this code, someone else did: cancel and get a new one.

@@ -940,8 +940,9 @@ their own keyspace too, so one can never open a console session or
 answer a step-up.
 
 **Signing in with your wallet** (the default, first option). The page
-shows a sign-in code: a QR code that is also a link, so a wallet on the
-same device can be clicked instead of scanned. Its text is a **trigger
+shows a sign-in code as soon as it loads, with no click: a QR code that
+is also a link, so a wallet on the same device can be clicked instead of
+scanned. Its text is a **trigger
 link** (VTI spec §7a, flow `/vti/flow/sign-in/0.1`):
 
 ```
@@ -968,7 +969,11 @@ Trust Task document on `POST /v1/trust-tasks`:
    `assertionMethod` key. A claim starts a fresh 120 s decision window.
 3. The browser's long poll (`auth/oob/redeem`, 25 s, one open poll per
    request) now shows **"Your number is 47"** — only to the holder of
-   `K_b`.
+   `K_b`. The number's element carries `data-oob-request-id` and
+   `data-oob-match-number` (sign-in contract C11): when the person
+   clicked the code on this page, the browser plugin reads them and
+   fills the number in, so only a phone wallet asks for it to be typed.
+   The page posts nothing to the plugin and learns nothing back.
 4. The wallet sends `auth/oob/prove` carrying `auth/oob/identify`, signed
    by the member's DID for `authentication`, with the typed number. The
    VTC checks the DID against the ACL **before** resolving anything, then
@@ -994,7 +999,12 @@ Trust Task document on `POST /v1/trust-tasks`:
    sign-in is bounded the same way.
 
 The page hides the code when the tab is hidden (the request keeps
-running). It is served with `Referrer-Policy: no-referrer`,
+running). An unclaimed code is replaced with a fresh one when its 120 s
+run out, but only while the tab is in view: a page left in a background
+tab makes no requests, and gets a new code when it comes back. A code
+that ends within 10 s of being made is shown as expired instead, so a
+skewed clock cannot make the page request code after code. A claimed
+code that expires is shown as expired: someone scanned it. It is served with `Referrer-Policy: no-referrer`,
 `Cache-Control: no-store` and a CSP with `frame-ancestors 'none'`, and
 every `auth/oob` response is `no-store`. Each step is audited as
 `MemberWalletSignIn` (city and country, never the address). The city and
@@ -1025,7 +1035,7 @@ then `cnm did-log install` if the VTC serves its own log; see
 (`{"status":"ok"}`, `{"status":"unknown"}`, or
 `{"status":"missing","missing":["SignInPortal"]}`): only the service types
 the public document lacks. When it is `missing`, the member portal's and
-the console's sign-in pages replace "Show sign-in code" with a short note
+the console's sign-in pages replace the sign-in code with a short note
 naming them, and the other options are unchanged. The check never blocks
 start-up, and a DID that does not resolve is `unknown`, not `missing`, so
 the page keeps offering wallet sign-in.

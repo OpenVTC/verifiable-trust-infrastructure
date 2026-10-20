@@ -3,7 +3,7 @@
 // then the deprecated SIOPv2 buttons behind "Using an older wallet?", and a
 // way back to the community's home page.
 
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -82,7 +82,7 @@ describe("operator console login", () => {
     stubDaemon();
     renderLogin();
     const wallet = screen.getByRole("heading", { name: /sign in with your wallet/i });
-    const code = screen.getByRole("button", { name: /show sign-in code/i });
+    const code = screen.getByText(/getting a code/i);
     const passkey = screen.getByRole("button", { name: /sign in with a passkey/i });
     const older = screen.getByText("Using an older wallet?");
     expect(before(wallet, code)).toBe(true);
@@ -147,7 +147,6 @@ describe("operator console login", () => {
       return new Promise<Response>(() => {}) as unknown as Response;
     });
     renderLogin();
-    fireEvent.click(screen.getByRole("button", { name: /show sign-in code/i }));
     expect(
       await screen.findByRole("img", { name: /acme guild operator console/i }),
     ).toBeTruthy();
@@ -180,7 +179,6 @@ describe("operator console login", () => {
       });
     });
     renderLogin();
-    fireEvent.click(screen.getByRole("button", { name: /show sign-in code/i }));
     await waitFor(() =>
       expect(
         screen.getByText("This identity isn't an administrator of this community."),
@@ -197,7 +195,6 @@ describe("operator console login", () => {
       }),
     );
     renderLogin();
-    fireEvent.click(screen.getByRole("button", { name: /show sign-in code/i }));
     expect(
       await screen.findByText(/doesn't offer wallet sign-in to the operator console/i),
     ).toBeTruthy();
