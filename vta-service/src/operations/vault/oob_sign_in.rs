@@ -33,7 +33,18 @@
 //! - **passkey** (a WebAuthn client): the decision's proof is by the device's
 //!   transport key, and its `evidence` is a WebAuthn assertion by the enrolled
 //!   credential over the UTF-8 bytes of `challenge`, with the UV flag set,
-//!   verified with `vti-webauthn`.
+//!   verified with `vti-webauthn`;
+//! - **VTA-checked PIN** (browser plugin without a PRF passkey): the
+//!   decision's proof is by the device's transport key, with no evidence, and
+//!   the consent carries `pinProof`, an HMAC by the PIN-derived key over
+//!   `org.openvtc.uv-pin/v1|<digest>`, counted against a persisted, escalating
+//!   guess limit ([`crate::operations::uv_pin`]);
+//! - **remote approver** (approve on the member's phone): the consent is
+//!   `{ "remote": true }` and carries no decision. The VTA raises a
+//!   `task-consent` request bound to the enrolled approver and this grant's
+//!   digest, pushes it to the phone, and answers `oobUvPending` (with the match
+//!   code the phone shows) until the phone's `task-consent/decision/0.1`
+//!   approves it; the resulting single-use grant is then consumed here.
 //!
 //! The same grant `id` is never signed twice.
 //!
@@ -75,9 +86,10 @@ use trust_tasks_rs::specs::task_consent::decision::v0_2 as decision_spec;
 use vta_sdk::protocols::backup_management::chunked::{
     sha256_digest_multibase, sha256_from_digest_multibase,
 };
-use vta_sdk::protocols::device_management::{EXT_UV_CONSENT, UvKeyMaterial};
+use vta_sdk::protocols::device_management::{EXT_UV_CONSENT, UvKeyMaterial, uv_pin_grant_message};
 use vti_common::acl::{AclEntry, DeviceBinding, UvKey, get_acl_entry};
 use vti_common::error::AppError;
+use vti_common::task_consent as consent;
 use vti_common::vault::{SiteTarget, VaultEntry, VaultSecret};
 
 use crate::store::KeyspaceHandle;
@@ -208,14 +220,20 @@ impl OobDocument {
 /// The UV approval a grant was signed on.
 #[derive(Debug, Clone)]
 pub struct UvApproval {
-    /// `hardwareKey` or `webauthn`.
+    /// `hardwareKey`, `prfSealedKey`, `webauthn`, `vtaPin` or
+    /// `remoteApprover`.
     pub kind: &'static str,
-    /// The DID that made the decision's proof.
+    /// The DID that made the decision's proof — for `remoteApprover`, the
+    /// approving phone.
     pub signer: String,
-    /// The decision document's `id`.
+    /// The decision document's `id`; for `remoteApprover`, the task-consent
+    /// grant it consumed (`task-consent:<digest>`).
     pub decision_id: String,
     /// The grant digest it approved.
     pub digest: String,
+    /// For `remoteApprover`: the task-consent grant `(type, digest)` to spend
+    /// once every other check has passed.
+    remote_grant: Option<(String, String)>,
 }
 
 /// Everything [`authorize`] established, for the audit row.
@@ -262,6 +280,20 @@ pub enum OobError {
     NoUvKey,
     /// The UV decision did not verify, or did not approve this grant.
     UvInvalid(String),
+    /// The PIN proof is wrong. `locked_until` is set when this proof locked
+    /// the PIN.
+    UvPinWrong {
+        attempts_remaining: u32,
+        locked_until: Option<i64>,
+    },
+    /// Too many wrong PINs: refused unchecked until `locked_until` (unix s).
+    UvLocked { locked_until: i64 },
+    /// The phone has been asked and has not answered yet.
+    UvPending { match_code: String, expires_at: u64 },
+    /// The phone declined this grant.
+    UvDeclined,
+    /// The phone was asked and did not answer in time.
+    UvExpired,
     /// This grant `id` has been signed before.
     Replayed,
     /// The persona's DID document does not authorise the signing key for
@@ -323,6 +355,30 @@ impl OobError {
                     .into(),
             ),
             OobError::UvInvalid(why) => ("oobUvInvalid", why.clone()),
+            OobError::UvPinWrong {
+                attempts_remaining, ..
+            } => (
+                "oobUvPinWrong",
+                format!("the PIN is wrong; {attempts_remaining} attempt(s) left before a lock"),
+            ),
+            OobError::UvLocked { .. } => (
+                "oobUvLocked",
+                "too many wrong PINs; the PIN is locked for now".into(),
+            ),
+            OobError::UvPending { .. } => (
+                "oobUvPending",
+                "approve this sign-in on your phone; send the same request again to collect \
+                 the approval"
+                    .into(),
+            ),
+            OobError::UvDeclined => (
+                "oobUvDeclined",
+                "the sign-in was declined on the phone".into(),
+            ),
+            OobError::UvExpired => (
+                "oobUvExpired",
+                "the phone did not approve this sign-in in time; start a new sign-in".into(),
+            ),
             OobError::Replayed => (
                 "oobGrantReplayed",
                 "this grant id has already been signed; build a new grant".into(),
@@ -337,6 +393,64 @@ impl OobError {
             OobError::App(e) => ("internal", e.to_string()),
         }
     }
+
+    /// The refusal's `details`: `{ code }`, plus `attemptsRemaining`,
+    /// `lockedUntil` (unix seconds), or `matchCode` and `expiresAt` (unix
+    /// seconds) where the refusal carries them.
+    pub fn details(&self) -> Value {
+        let (code, _) = self.code_and_message();
+        let mut out = json!({ "code": code });
+        match self {
+            OobError::UvPinWrong {
+                attempts_remaining,
+                locked_until,
+            } => {
+                out["attemptsRemaining"] = json!(attempts_remaining);
+                if let Some(t) = locked_until {
+                    out["lockedUntil"] = json!(t);
+                }
+            }
+            OobError::UvLocked { locked_until } => out["lockedUntil"] = json!(locked_until),
+            OobError::UvPending {
+                match_code,
+                expires_at,
+            } => {
+                out["matchCode"] = json!(match_code);
+                out["expiresAt"] = json!(expires_at);
+            }
+            _ => {}
+        }
+        out
+    }
+}
+
+/// What a `remoteApprover` approval needs from the service around the gate:
+/// who may approve, and a way to ask them.
+#[async_trait::async_trait]
+pub trait RemoteApproval: Send + Sync {
+    /// Whether `device_did` may (still) name `approver` as its remote
+    /// approver.
+    async fn approver_permitted(&self, device_did: &str, approver: &str) -> Result<bool, AppError>;
+    /// Sign the `task-consent/request` for `pending` and push it to its bound
+    /// approver. Called once per raised request, never per poll.
+    async fn ask(
+        &self,
+        pending: &consent::PendingTaskConsent,
+        ask: &RemoteAsk,
+    ) -> Result<(), AppError>;
+}
+
+/// What the phone is told about the sign-in it is asked to approve.
+#[derive(Debug, Clone)]
+pub struct RemoteAsk {
+    /// The grant's `origin`: the community's site.
+    pub origin: String,
+    /// The browser device's display name.
+    pub device_name: String,
+    /// The persona signing in.
+    pub persona: String,
+    /// The grant's `notAfter` (unix seconds).
+    pub not_after: u64,
 }
 
 /// What [`authorize`] reads.
@@ -350,6 +464,11 @@ pub struct OobDeps<'a> {
     pub webvh_ks: &'a KeyspaceHandle,
     /// This VTA's DID: a UV decision addressed elsewhere is refused.
     pub vta_did: Option<String>,
+    /// Where refused PIN proofs are audited.
+    pub audit: &'a vta_audit::SharedAuditSink,
+    /// The service's side of a `remoteApprover` approval. `None` refuses every
+    /// remote approval.
+    pub remote: Option<&'a (dyn RemoteApproval + 'a)>,
 }
 
 // ─── Classification ─────────────────────────────────────────────────────────
@@ -497,9 +616,36 @@ pub async fn authorize(
                 .is_some_and(|t| t.ends_with("/auth/oob/grant/0.2"));
             let p = GrantFields::read(payload, v0_2)?;
             check_grant(&p, now)?;
-            let uv =
-                verify_uv_decision(deps, device_did, binding, envelope, payload_ext, now).await?;
+            let grant_ctx = GrantContext {
+                envelope_id: &envelope_id,
+                persona: &principal,
+                origin: &p.origin,
+                not_after: p.not_after,
+            };
+            let uv = verify_uv_decision(
+                deps,
+                device_did,
+                binding,
+                envelope,
+                payload_ext,
+                &grant_ctx,
+                now,
+            )
+            .await?;
             check_assertion_method(deps, &principal, secret).await?;
+            // Spend the phone's approval only now that nothing else refuses:
+            // single use, and never burnt by a refusal above.
+            if let Some((type_uri, digest)) = &uv.remote_grant {
+                let now_s = u64::try_from(now.timestamp()).unwrap_or(0);
+                if consent::consume_grant(deps.task_consent_ks, device_did, type_uri, digest, now_s)
+                    .await?
+                    .is_none()
+                {
+                    return Err(OobError::UvInvalid(
+                        "this phone approval has already been used".into(),
+                    ));
+                }
+            }
             // Last, so a refusal above never burns the id. One signature per
             // grant id, ever (base design §11 item 3).
             let marker = json!({
@@ -510,10 +656,7 @@ pub async fn authorize(
                 "signedAt": now.to_rfc3339(),
                 "notAfter": p.not_after,
             });
-            let key = format!(
-                "{GRANT_REPLAY_PREFIX}{}",
-                hex::encode(Sha256::digest(envelope_id.as_bytes()))
-            );
+            let key = grant_replay_key(&envelope_id);
             if !deps.task_consent_ks.insert_if_absent(key, &marker).await? {
                 return Err(OobError::Replayed);
             }
@@ -531,6 +674,22 @@ pub async fn authorize(
         device_id: binding.device_id.clone(),
         uv,
     }))
+}
+
+/// The replay marker's key for grant `id`.
+fn grant_replay_key(envelope_id: &str) -> String {
+    format!(
+        "{GRANT_REPLAY_PREFIX}{}",
+        hex::encode(Sha256::digest(envelope_id.as_bytes()))
+    )
+}
+
+/// What the UV check needs to know about the grant beyond its digest.
+struct GrantContext<'a> {
+    envelope_id: &'a str,
+    persona: &'a str,
+    origin: &'a str,
+    not_after: u64,
 }
 
 /// The entry's device binding, if it is enrolled and active.
@@ -630,11 +789,25 @@ async fn verify_uv_decision(
     binding: &DeviceBinding,
     unsigned_grant: &Value,
     payload_ext: Option<&Value>,
+    grant: &GrantContext<'_>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<UvApproval, OobError> {
     let uv_key: &UvKey = binding.uv_key.as_ref().ok_or(OobError::NoUvKey)?;
-    let decision = payload_ext
-        .and_then(|e| e.get(EXT_UV_CONSENT))
+    let consent_ext = payload_ext.and_then(|e| e.get(EXT_UV_CONSENT));
+    if let UvKeyMaterial::RemoteApprover { approver } = &uv_key.enrolment.key {
+        return remote_approval(
+            deps,
+            device_did,
+            binding,
+            approver,
+            unsigned_grant,
+            consent_ext,
+            grant,
+            now,
+        )
+        .await;
+    }
+    let decision = consent_ext
         .and_then(|c| c.get("decision"))
         .ok_or(OobError::UvRequired)?;
     let bad = |why: &str| OobError::UvInvalid(why.to_string());
@@ -778,6 +951,32 @@ async fn verify_uv_decision(
             .map_err(|why| bad(&why))?;
             "webauthn"
         }
+        UvKeyMaterial::VtaPin { .. } => {
+            // The document is the device's; the PIN proof beside it is the
+            // user verification, checked against the guess limit.
+            if signer != device_did {
+                return Err(bad(
+                    "a PIN UV decision must be signed by the device's transport key",
+                ));
+            }
+            if payload.evidence.is_some() {
+                return Err(bad("a PIN UV decision carries no evidence"));
+            }
+            let proof = consent_ext
+                .and_then(|c| c.get("pinProof"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| bad("a PIN approval needs pinProof"))?;
+            check_pin(
+                deps,
+                device_did,
+                uv_key,
+                &uv_pin_grant_message(digest_str),
+                proof,
+                now,
+            )
+            .await?;
+            "vtaPin"
+        }
         _ => return Err(OobError::NoUvKey),
     };
 
@@ -786,7 +985,218 @@ async fn verify_uv_decision(
         signer,
         decision_id,
         digest: sha256_digest_multibase(&expected),
+        remote_grant: None,
     })
+}
+
+/// Check a `vtaPin` proof over `message`, auditing a refusal.
+async fn check_pin(
+    deps: &OobDeps<'_>,
+    device_did: &str,
+    uv_key: &UvKey,
+    message: &str,
+    proof: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), OobError> {
+    use crate::operations::uv_pin::{self, PinRefusal};
+    match uv_pin::check(
+        deps.acl_ks,
+        device_did,
+        uv_key,
+        message,
+        proof,
+        now.timestamp(),
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(refusal) => {
+            uv_pin::audit_refusal(deps.audit, device_did, "oob-grant", &refusal).await;
+            Err(match refusal {
+                PinRefusal::Locked { locked_until } => OobError::UvLocked { locked_until },
+                PinRefusal::Wrong {
+                    attempts_remaining,
+                    locked_until,
+                    ..
+                } => OobError::UvPinWrong {
+                    attempts_remaining,
+                    locked_until,
+                },
+                PinRefusal::Malformed => {
+                    OobError::UvInvalid("pinProof must be a 32-byte HMAC in base64url".into())
+                }
+                PinRefusal::NotAPin => OobError::App(AppError::Internal(
+                    "the stored PIN verifier is unreadable".into(),
+                )),
+                PinRefusal::App(e) => OobError::App(e),
+            })
+        }
+    }
+}
+
+// ─── Remote approval ────────────────────────────────────────────────────────
+
+/// The approver-set label a remote approval's request carries. Not a policy
+/// set: the request is bound to one approver
+/// ([`consent::PendingTaskConsent::bound_approver`]), and the decision handler
+/// accepts that approver's decision and no other.
+pub const REMOTE_APPROVER_SET: &str = "org.openvtc.uv-approver";
+
+/// How long the phone has to answer: the service's own decision window for a
+/// grant (base design §7.2), and never past the grant's `notAfter`.
+pub const REMOTE_WINDOW_SECS: u64 = 120;
+
+/// How long a raised request's mark outlives it, so a late poll still reads
+/// "declined" or "expired" rather than raising the question again.
+const REMOTE_MARK_KEEP_SECS: u64 = 600;
+
+/// A `remoteApprover` device's approval of this grant: spend the phone's
+/// approval if it has given one, else report where the request stands —
+/// declined, expired, or pending (raising it, once, if it has not been).
+#[allow(clippy::too_many_arguments)]
+async fn remote_approval(
+    deps: &OobDeps<'_>,
+    device_did: &str,
+    binding: &DeviceBinding,
+    approver: &str,
+    unsigned_grant: &Value,
+    consent_ext: Option<&Value>,
+    grant: &GrantContext<'_>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<UvApproval, OobError> {
+    if consent_ext
+        .and_then(|c| c.get("remote"))
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(
+            if consent_ext.is_some_and(|c| c.get("decision").is_some()) {
+                OobError::UvInvalid(
+                    "this device approves sign-ins on a phone; send { \"remote\": true }".into(),
+                )
+            } else {
+                OobError::UvRequired
+            },
+        );
+    }
+    let port = deps.remote.ok_or_else(|| {
+        OobError::App(AppError::Internal(
+            "remote approval is not available on this VTA".into(),
+        ))
+    })?;
+    if !port.approver_permitted(device_did, approver).await? {
+        return Err(OobError::UvInvalid(
+            "the enrolled remote approver is no longer one this device may name; enrol \
+             another approval method"
+                .into(),
+        ));
+    }
+
+    let ks = deps.task_consent_ks;
+    let now_s = u64::try_from(now.timestamp()).unwrap_or(0);
+    let digest = grant_digest(unsigned_grant)?;
+    let type_uri = unsigned_grant
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    // What the request is keyed by: this grant, this device, this approver. A
+    // changed enrolment never reuses another approver's request.
+    let task_payload = json!({ "grantDigest": digest, "device": device_did, "approver": approver });
+    let internal = consent::payload_digest(&type_uri, &task_payload)?;
+
+    // The phone approved: the decision handler minted a single-use grant for
+    // (this device, this digest), naming the approver it accepted.
+    if let Some(g) = consent::get_grant(ks, device_did, &internal, now_s).await? {
+        if g.type_uri == type_uri && g.approvers.iter().any(|a| a == approver) {
+            return Ok(UvApproval {
+                kind: "remoteApprover",
+                signer: approver.to_string(),
+                decision_id: format!("task-consent:{internal}"),
+                digest,
+                remote_grant: Some((type_uri, internal)),
+            });
+        }
+        consent::discard_grant(ks, device_did, &internal).await?;
+    }
+
+    let replayed = ks
+        .get_raw(grant_replay_key(grant.envelope_id))
+        .await?
+        .is_some();
+    if let Some(mark) = consent::get_bound_mark(ks, device_did, &internal).await? {
+        if mark.denied {
+            return Err(OobError::UvDeclined);
+        }
+        if let Some(p) = consent::get_pending(ks, &internal, now_s).await? {
+            return Err(pending_refusal(&p));
+        }
+        return Err(if replayed {
+            OobError::Replayed
+        } else {
+            OobError::UvExpired
+        });
+    }
+    // Never ask the phone about a grant id that has been signed already.
+    if replayed {
+        return Err(OobError::Replayed);
+    }
+
+    let expires_at = (now_s + REMOTE_WINDOW_SECS).min(grant.not_after);
+    // 256 bits: the replay nonce and the digest salt, as the consent gate's.
+    let challenge = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let pending = consent::PendingTaskConsent {
+        digest: internal.clone(),
+        wire_digest: consent::wire_digest(&type_uri, &task_payload, &challenge)?,
+        correlator: format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        type_uri,
+        requester_did: device_did.to_string(),
+        approver_set: REMOTE_APPROVER_SET.to_string(),
+        min_approvals: 1,
+        exclude_requester: true,
+        challenge,
+        approvals: Vec::new(),
+        state_pin: None,
+        guards: Default::default(),
+        subject_context: None,
+        requester_authorized: true,
+        bound_approver: Some(approver.to_string()),
+        created_at: now_s,
+        expires_at,
+    };
+    if !consent::store_bound_pending(ks, &pending, expires_at + REMOTE_MARK_KEEP_SECS).await? {
+        // A concurrent poll raised it first: answer with its request.
+        return Err(match consent::get_pending(ks, &internal, now_s).await? {
+            Some(p) => pending_refusal(&p),
+            None => OobError::UvExpired,
+        });
+    }
+    let ask = RemoteAsk {
+        origin: grant.origin.to_string(),
+        device_name: binding.display_name.clone(),
+        persona: grant.persona.to_string(),
+        not_after: grant.not_after,
+    };
+    if let Err(e) = port.ask(&pending, &ask).await {
+        // Nobody was asked: withdraw the question so the next poll raises it
+        // again, rather than waiting out a request no phone will ever see.
+        tracing::warn!(error = %e, device = %device_did, "remote UV approval: could not ask the approver");
+        consent::discard_bound_pending(ks, &pending).await?;
+        return Err(OobError::App(e));
+    }
+    Err(pending_refusal(&pending))
+}
+
+/// `oobUvPending` for `p`, with the match code the phone shows for it.
+fn pending_refusal(p: &consent::PendingTaskConsent) -> OobError {
+    OobError::UvPending {
+        match_code: vta_sdk::task_consent::match_code(&p.wire_digest).unwrap_or_default(),
+        expires_at: p.expires_at,
+    }
 }
 
 /// The enrolled passkey, as a [`vti_webauthn::VmResolver`] that knows exactly

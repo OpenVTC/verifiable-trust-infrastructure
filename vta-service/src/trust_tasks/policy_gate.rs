@@ -250,6 +250,19 @@ pub(crate) async fn approver_set_members(
         .unwrap_or_default())
 }
 
+/// Every DID any approver set names — the operator's designation of the
+/// devices that approve, which a browser may name as its `remoteApprover`
+/// (`operations::device::uv_approver_eligible`).
+pub(crate) async fn all_named_approvers(
+    state: &AppState,
+) -> Result<std::collections::HashSet<String>, AppError> {
+    Ok(effective_approver_sets(state)
+        .await?
+        .into_values()
+        .flatten()
+        .collect())
+}
+
 /// Whether `did` is named by *any* approver set — the question the pre-auth
 /// transport gate asks before letting a ceremony task past the ACL.
 pub(crate) async fn is_named_approver(state: &AppState, did: &str) -> Result<bool, AppError> {
@@ -750,6 +763,7 @@ async fn mint_pending(
         guards: guards.clone(),
         subject_context: subject_context.clone(),
         requester_authorized,
+        bound_approver: None,
         created_at: now,
         expires_at: now + CONSENT_PENDING_TTL_SECS,
     };

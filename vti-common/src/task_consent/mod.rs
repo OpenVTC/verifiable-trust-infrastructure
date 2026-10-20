@@ -43,6 +43,7 @@ use crate::store::{Batch, KeyspaceHandle};
 const PENDING_PREFIX: &[u8] = b"pending:";
 const GRANT_PREFIX: &[u8] = b"grant:";
 const WIRE_INDEX_PREFIX: &[u8] = b"wire:";
+const BOUND_MARK_PREFIX: &[u8] = b"bound:";
 
 /// Domain-separation tag: keeps these digests from colliding with any other
 /// SHA-256 over a canonical payload elsewhere in the system.
@@ -229,6 +230,17 @@ pub struct PendingTaskConsent {
     /// tasks with no context subject) are never treated as delegated.
     #[serde(default = "default_true")]
     pub requester_authorized: bool,
+    /// When set, the **only** DID whose decision counts, in place of the
+    /// members of `approver_set` — a request the node raised for one named
+    /// approver rather than for a policy's set (a browser's sign-in approved
+    /// on the member's phone). Such a request is stored with
+    /// [`store_bound_pending`] and leaves a [`BoundRequestMark`], so its
+    /// requester can tell "declined" and "expired" from "never asked".
+    ///
+    /// `#[serde(default)]` so every pending written before this field existed
+    /// reads as an ordinary set-resolved request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_approver: Option<String>,
     pub created_at: u64,
     pub expires_at: u64,
 }
@@ -282,6 +294,16 @@ fn grant_key(requester_did: &str, digest: &str) -> Vec<u8> {
     // it last after the fixed-shape prefix+digest to keep the key unambiguous.
     [
         GRANT_PREFIX,
+        digest.as_bytes(),
+        b":",
+        requester_did.as_bytes(),
+    ]
+    .concat()
+}
+
+fn bound_mark_key(requester_did: &str, digest: &str) -> Vec<u8> {
+    [
+        BOUND_MARK_PREFIX,
         digest.as_bytes(),
         b":",
         requester_did.as_bytes(),
@@ -483,6 +505,20 @@ pub async fn sweep_expired(ks: &KeyspaceHandle, now: u64) -> Result<usize, AppEr
         }
     }
 
+    for (key, value) in ks.prefix_iter_raw("bound:").await? {
+        match serde_json::from_slice::<BoundRequestMark>(&value) {
+            Ok(m) if m.keep_until <= now => {
+                let mut batch = Batch::new();
+                batch.require_unchanged(key.clone(), value).remove(key);
+                if ks.apply_batch(batch).await?.is_applied() {
+                    pruned += 1;
+                }
+            }
+            Ok(_) => {}
+            Err(e) => tracing::debug!(error = %e, "task-consent sweeper: unreadable bound mark"),
+        }
+    }
+
     for (key, value) in ks.prefix_iter_raw("grant:").await? {
         match serde_json::from_slice::<TaskConsentGrant>(&value) {
             Ok(g) if g.expires_at <= now => {
@@ -514,6 +550,113 @@ pub async fn remove_pending_if_present(
         .remove(pending_key(&p.digest))
         .remove(wire_index_key(&p.wire_digest));
     Ok(ks.apply_batch(batch).await?.is_applied())
+}
+
+// ── Bound requests ─────────────────────────────────────────────────────────
+
+/// The lasting record that a request bound to one approver
+/// ([`PendingTaskConsent::bound_approver`]) was raised, and how it ended.
+///
+/// A pending disappears when it is granted, denied or lapses, so on its own it
+/// cannot answer the requester's next poll: "denied" and "expired" would both
+/// read as "never asked", and the requester would raise the question again —
+/// ringing the approver's phone for a request they had just refused. The mark
+/// outlives the pending until `keep_until` and is swept by [`sweep_expired`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BoundRequestMark {
+    /// Internal digest of the request.
+    pub digest: String,
+    pub requester_did: String,
+    /// The one approver whose decision counts.
+    pub approver: String,
+    /// When the pending request lapses (unix seconds).
+    pub expires_at: u64,
+    /// When this mark may be swept (unix seconds), at or after `expires_at`.
+    pub keep_until: u64,
+    /// The approver declined.
+    #[serde(default)]
+    pub denied: bool,
+}
+
+/// Raise a request bound to `p.bound_approver`: the pending, its wire index and
+/// its [`BoundRequestMark`], as one store batch that applies only while no mark
+/// exists for `(requester, digest)`. Returns `false`, writing nothing, when the
+/// request was raised before — the caller reads what is there instead of
+/// asking again, which is what makes raising it idempotent.
+pub async fn store_bound_pending(
+    ks: &KeyspaceHandle,
+    p: &PendingTaskConsent,
+    keep_until: u64,
+) -> Result<bool, AppError> {
+    let approver = p.bound_approver.clone().ok_or_else(|| {
+        AppError::Internal("store_bound_pending needs a pending with a bound approver".into())
+    })?;
+    let mark = BoundRequestMark {
+        digest: p.digest.clone(),
+        requester_did: p.requester_did.clone(),
+        approver,
+        expires_at: p.expires_at,
+        keep_until: keep_until.max(p.expires_at),
+        denied: false,
+    };
+    let mark_key = bound_mark_key(&p.requester_did, &p.digest);
+    let mut batch = Batch::new();
+    batch
+        .require_absent(mark_key.clone())
+        .require_absent(pending_key(&p.digest))
+        .insert(mark_key, &mark)?
+        .insert(pending_key(&p.digest), p)?;
+    batch.insert_raw(wire_index_key(&p.wire_digest), p.digest.as_bytes().to_vec());
+    Ok(ks.apply_batch(batch).await?.is_applied())
+}
+
+/// The mark of a bound request, if one was raised for `(requester, digest)`
+/// and has not been swept.
+pub async fn get_bound_mark(
+    ks: &KeyspaceHandle,
+    requester_did: &str,
+    digest: &str,
+) -> Result<Option<BoundRequestMark>, AppError> {
+    ks.get(bound_mark_key(requester_did, digest)).await
+}
+
+/// Record the bound approver's denial: remove the pending and its wire index
+/// and mark the request denied, as one store batch that applies only while the
+/// pending is still stored. `false` means a concurrent decision resolved it
+/// first, exactly as for [`remove_pending_if_present`].
+pub async fn deny_bound_pending(
+    ks: &KeyspaceHandle,
+    p: &PendingTaskConsent,
+) -> Result<bool, AppError> {
+    let mark_key = bound_mark_key(&p.requester_did, &p.digest);
+    let Some(mut mark) = ks.get::<BoundRequestMark>(mark_key.clone()).await? else {
+        // No mark: not a bound request after all. Deny it the ordinary way.
+        return remove_pending_if_present(ks, p).await;
+    };
+    mark.denied = true;
+    let mut batch = Batch::new();
+    batch
+        .require_present(pending_key(&p.digest))
+        .remove(pending_key(&p.digest))
+        .remove(wire_index_key(&p.wire_digest))
+        .insert(mark_key, &mark)?;
+    Ok(ks.apply_batch(batch).await?.is_applied())
+}
+
+/// Withdraw a bound request that was never put to its approver: the pending,
+/// its wire index and its mark, as one store batch.
+pub async fn discard_bound_pending(
+    ks: &KeyspaceHandle,
+    p: &PendingTaskConsent,
+) -> Result<(), AppError> {
+    let mut batch = Batch::new();
+    batch
+        .remove(pending_key(&p.digest))
+        .remove(wire_index_key(&p.wire_digest))
+        .remove(bound_mark_key(&p.requester_did, &p.digest));
+    ks.apply_batch(batch).await?;
+    Ok(())
 }
 
 // ── Grant ──────────────────────────────────────────────────────────────────
@@ -753,6 +896,106 @@ mod tests {
         );
     }
 
+    fn bound(digest: &str) -> PendingTaskConsent {
+        PendingTaskConsent {
+            bound_approver: Some("did:key:zPhone".into()),
+            min_approvals: 1,
+            ..pending(digest, 1)
+        }
+    }
+
+    /// Raising a bound request is idempotent: the second raise writes nothing,
+    /// so a polling requester never asks the approver twice.
+    #[tokio::test]
+    async fn a_bound_request_is_raised_once() {
+        let (ks, _d) = temp_ks().await;
+        let p = bound("b1");
+        assert!(store_bound_pending(&ks, &p, 2000).await.unwrap());
+        let mut again = bound("b1");
+        again.challenge = "another".into();
+        assert!(!store_bound_pending(&ks, &again, 2000).await.unwrap());
+        assert_eq!(
+            get_pending(&ks, "b1", 200)
+                .await
+                .unwrap()
+                .unwrap()
+                .challenge,
+            "nonce123"
+        );
+        let mark = get_bound_mark(&ks, "did:key:zReq", "b1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(mark.approver, "did:key:zPhone");
+        assert!(!mark.denied);
+        // An unbound pending cannot be stored this way.
+        assert!(
+            store_bound_pending(&ks, &pending("b2", 1), 2000)
+                .await
+                .is_err()
+        );
+    }
+
+    /// A denial of a bound request outlives the pending, so the requester's
+    /// next poll reads "declined"; the sweeper removes the mark at keep_until.
+    #[tokio::test]
+    async fn a_denied_bound_request_stays_denied_until_swept() {
+        let (ks, _d) = temp_ks().await;
+        let p = bound("b3");
+        store_bound_pending(&ks, &p, 2000).await.unwrap();
+        assert!(deny_bound_pending(&ks, &p).await.unwrap());
+        assert!(get_pending(&ks, "b3", 200).await.unwrap().is_none());
+        assert!(
+            pending_by_wire_digest(&ks, &p.wire_digest, 200)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            get_bound_mark(&ks, "did:key:zReq", "b3")
+                .await
+                .unwrap()
+                .unwrap()
+                .denied
+        );
+        // A second denial finds nothing to deny.
+        assert!(!deny_bound_pending(&ks, &p).await.unwrap());
+
+        sweep_expired(&ks, 1999).await.unwrap();
+        assert!(
+            get_bound_mark(&ks, "did:key:zReq", "b3")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        sweep_expired(&ks, 2000).await.unwrap();
+        assert!(
+            get_bound_mark(&ks, "did:key:zReq", "b3")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bound_request_nobody_was_asked_is_withdrawn_whole() {
+        let (ks, _d) = temp_ks().await;
+        let p = bound("b4");
+        store_bound_pending(&ks, &p, 2000).await.unwrap();
+        discard_bound_pending(&ks, &p).await.unwrap();
+        assert!(get_pending(&ks, "b4", 200).await.unwrap().is_none());
+        assert!(
+            get_bound_mark(&ks, "did:key:zReq", "b4")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store_bound_pending(&ks, &p, 2000).await.unwrap(),
+            "can be raised again"
+        );
+    }
+
     fn pending(digest: &str, min: u32) -> PendingTaskConsent {
         PendingTaskConsent {
             digest: digest.into(),
@@ -769,6 +1012,7 @@ mod tests {
             approvals: vec![],
             subject_context: None,
             requester_authorized: true,
+            bound_approver: None,
             created_at: 100,
             expires_at: 1000,
         }

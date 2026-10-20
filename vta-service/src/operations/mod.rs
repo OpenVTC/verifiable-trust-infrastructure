@@ -88,6 +88,8 @@ pub mod seeds;
 /// input and a PKCS#10 `CertificationRequestInfo`, built here and nowhere else.
 pub mod sign_formats;
 pub mod step_up_approval;
+/// The guess limit behind a `vtaPin` user-verification key.
+pub mod uv_pin;
 pub mod vault;
 /// The VTA as its principal's witnessed party (`vta/witness/*`): it builds and signs every
 /// document of a `witness/session` as the relationship DID, and the client carries them.

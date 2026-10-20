@@ -113,13 +113,55 @@ pub fn device_name_ext(display_name: &str) -> Value {
 pub const EXT_UV_KEY: &str = "org.openvtc.uv-key";
 
 /// Extension member of a `vault/sign-trust-task` payload that carries the
-/// device's UV approval of the envelope being signed. Its value is
-/// `{ "decision": <signed task-consent/decision/0.2 document> }`.
+/// device's UV approval of the envelope being signed. Its value depends on the
+/// device's UV key kind:
+///
+/// - `{ "decision": <signed task-consent/decision/0.2 document> }` for
+///   `hardwareKey`, `prfSealedKey` and `webauthn`;
+/// - `{ "decision": …, "pinProof": "<base64url HMAC>" }` for `vtaPin` (see
+///   [`uv_pin_grant_message`]);
+/// - `{ "remote": true }` for `remoteApprover`: the VTA asks the approver's
+///   phone and answers `oobUvPending` until it has.
 ///
 /// Required for an `auth/oob/grant` envelope and ignored for every other type.
 // TODO: replace with generated trust-tasks types once vault/sign-trust-task
 // carries a consent member.
 pub const EXT_UV_CONSENT: &str = "org.openvtc.uv-consent";
+
+/// Extension member of a `device/heartbeat` payload that authorises replacing a
+/// [`UvKeyMaterial::VtaPin`] UV key: `{ "pinProof": "<base64url HMAC>" }` over
+/// [`uv_pin_change_message`] of the new enrolment, made with the **current**
+/// PIN. Counted against the same guess limit as a sign-in approval.
+pub const EXT_UV_KEY_CHANGE: &str = "org.openvtc.uv-key-change";
+
+/// Extension member of a `device/heartbeat` payload asking which DIDs this
+/// device may name as a [`UvKeyMaterial::RemoteApprover`]. Its value is `{}`;
+/// the response carries the same member as
+/// `{ "approvers": [{ "did", "displayName"?, "formFactor"? }] }`.
+pub const EXT_UV_APPROVERS: &str = "org.openvtc.uv-approvers";
+
+/// Domain prefix of every message a `vtaPin` proof is an HMAC over.
+pub const UV_PIN_DOMAIN: &str = "org.openvtc.uv-pin/v1|";
+
+/// The message a `vtaPin` approval of grant digest `digest` is an HMAC-SHA256
+/// over, keyed by the PIN-derived key: `org.openvtc.uv-pin/v1|<digest>`.
+#[must_use]
+pub fn uv_pin_grant_message(digest: &str) -> String {
+    format!("{UV_PIN_DOMAIN}{digest}")
+}
+
+/// Prefix of the message a PIN change proof is an HMAC-SHA256 over, keyed by
+/// the **current** PIN-derived key. The full message is this followed by the
+/// lowercase hex SHA-256 of the RFC 8785 (JCS) form of the new uv-key
+/// enrolment, exactly as sent under [`EXT_UV_KEY`].
+pub const UV_PIN_CHANGE_PREFIX: &str = "org.openvtc.uv-pin/v1|change|";
+
+/// Lowest PBKDF2 iteration count a `vtaPin` enrolment may name (OWASP's
+/// PBKDF2-HMAC-SHA256 floor).
+pub const UV_PIN_MIN_ITERATIONS: u32 = 600_000;
+/// Highest iteration count a `vtaPin` enrolment may name, so a stored salt
+/// cannot make a recovering browser spin for minutes.
+pub const UV_PIN_MAX_ITERATIONS: u32 = 10_000_000;
 
 /// What a device sends under [`EXT_UV_KEY`]: the public half of its UV key and
 /// the device's own account of how the private half is held.
@@ -189,6 +231,61 @@ pub enum UvKeyMaterial {
         /// The UV key as a `did:key`.
         did: String,
     },
+    /// A PIN the **VTA** checks (the browser plugin, where no PRF passkey is
+    /// usable). The browser derives `K = PBKDF2-HMAC-SHA256(NFC(pin), salt,
+    /// iterations, 32)` and enrols `verifier = K`; an approval carries
+    /// `HMAC-SHA256(K, uv_pin_grant_message(D))`. The VTA enforces a persisted,
+    /// escalating guess limit, which is what makes a short PIN safe against a
+    /// copied browser profile. Malware in the browser can capture the PIN, so
+    /// it is recorded as its own kind: policy and the audit trail can tell it
+    /// from a key a secure element or an authenticator holds.
+    #[serde(rename_all = "camelCase")]
+    VtaPin {
+        /// PBKDF2 salt, base64url, 16 to 64 bytes. Not secret.
+        salt: String,
+        /// PBKDF2 iteration count.
+        iterations: u32,
+        /// `K` itself, base64url, exactly 32 bytes. Password-equivalent: never
+        /// returned, audited or logged ([`PinVerifier`]'s `Debug` redacts it).
+        verifier: PinVerifier,
+    },
+    /// Approval on another of the member's devices — their phone — through
+    /// the VTA's task-consent machinery: the VTA pushes a VTA-signed
+    /// `task-consent/request` to `approver` and signs the grant once that
+    /// device's `task-consent/decision` approves it.
+    #[serde(rename_all = "camelCase")]
+    RemoteApprover {
+        /// The approving device's DID, as its ACL entry names it.
+        approver: String,
+    },
+}
+
+/// The `vtaPin` verifier (`K`). A newtype so that no `Debug` of a binding, an
+/// ACL entry or an enrolment can print it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PinVerifier(pub String);
+
+impl std::fmt::Debug for PinVerifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PinVerifier(<redacted>)")
+    }
+}
+
+impl PinVerifier {
+    /// The 32 key bytes, if the stored value is well formed.
+    #[must_use]
+    pub fn key_bytes(&self) -> Option<[u8; 32]> {
+        decode_b64url(&self.0).and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+    }
+}
+
+/// Base64url, with or without padding.
+fn decode_b64url(s: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(s.trim_end_matches('='))
+        .ok()
 }
 
 /// Why a [`UvKeyEnrolment`] was refused. The text names the rule, never the
@@ -285,6 +382,58 @@ impl UvKeyEnrolment {
                 if self.hardware_backed {
                     return Err(UvKeyError(
                         "a PRF-sealed UV key is not hardware-backed; no secure element holds it",
+                    ));
+                }
+            }
+            UvKeyMaterial::VtaPin {
+                salt,
+                iterations,
+                verifier,
+            } => {
+                let salt = decode_b64url(salt)
+                    .ok_or(UvKeyError("a PIN UV key's salt must be base64url"))?;
+                if !(16..=64).contains(&salt.len()) {
+                    return Err(UvKeyError("a PIN UV key's salt must be 16 to 64 bytes"));
+                }
+                if !(UV_PIN_MIN_ITERATIONS..=UV_PIN_MAX_ITERATIONS).contains(iterations) {
+                    return Err(UvKeyError(
+                        "a PIN UV key's iterations must be 600000 to 10000000",
+                    ));
+                }
+                if verifier.key_bytes().is_none() {
+                    return Err(UvKeyError(
+                        "a PIN UV key's verifier must be exactly 32 bytes of base64url",
+                    ));
+                }
+                if self.hardware_backed || self.biometric_gated {
+                    return Err(UvKeyError(
+                        "a PIN UV key is neither hardware-backed nor biometric-gated",
+                    ));
+                }
+            }
+            UvKeyMaterial::RemoteApprover { approver } => {
+                let well_formed = approver.len() <= 2048
+                    && approver
+                        .strip_prefix("did:")
+                        .and_then(|rest| rest.split_once(':'))
+                        .is_some_and(|(method, id)| {
+                            !method.is_empty()
+                                && method
+                                    .chars()
+                                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                                && !id.is_empty()
+                        })
+                    && !approver
+                        .chars()
+                        .any(|c| c.is_whitespace() || c.is_control());
+                if !well_formed {
+                    return Err(UvKeyError("a remote approver must be a DID"));
+                }
+                // The approval is the phone's; the browser holds no key at all.
+                if self.hardware_backed || self.biometric_gated {
+                    return Err(UvKeyError(
+                        "a remote-approver UV key names another device; it makes no hardware \
+                         or biometric claim of its own",
                     ));
                 }
             }
@@ -530,6 +679,99 @@ mod tests {
         }
     }
 
+    fn b64(n: usize) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(vec![7u8; n])
+    }
+
+    fn pin(salt: usize, iterations: u64, verifier: usize) -> Value {
+        serde_json::json!({
+            "kind": "vtaPin", "salt": b64(salt), "iterations": iterations,
+            "verifier": b64(verifier), "hardwareBacked": false, "biometricGated": false,
+        })
+    }
+
+    #[test]
+    fn a_pin_enrols_and_round_trips() {
+        let v = pin(16, 600_000, 32);
+        let e = UvKeyEnrolment::from_ext_value(&v).expect("valid");
+        assert!(matches!(e.key, UvKeyMaterial::VtaPin { .. }));
+        assert_eq!(serde_json::to_value(&e).unwrap(), v);
+        UvKeyEnrolment::from_ext_value(&pin(64, 10_000_000, 32)).expect("upper bounds");
+    }
+
+    #[test]
+    fn a_pin_out_of_bounds_is_refused() {
+        for bad in [
+            pin(15, 600_000, 32),
+            pin(65, 600_000, 32),
+            pin(16, 599_999, 32),
+            pin(16, 10_000_001, 32),
+            pin(16, 600_000, 31),
+            pin(16, 600_000, 33),
+        ] {
+            assert!(UvKeyEnrolment::from_ext_value(&bad).is_err(), "{bad}");
+        }
+        let mut claims = pin(16, 600_000, 32);
+        claims["biometricGated"] = serde_json::json!(true);
+        assert!(UvKeyEnrolment::from_ext_value(&claims).is_err());
+        let mut claims = pin(16, 600_000, 32);
+        claims["hardwareBacked"] = serde_json::json!(true);
+        assert!(UvKeyEnrolment::from_ext_value(&claims).is_err());
+        let mut not_b64 = pin(16, 600_000, 32);
+        not_b64["verifier"] = serde_json::json!("not base64url!");
+        assert!(UvKeyEnrolment::from_ext_value(&not_b64).is_err());
+    }
+
+    /// The verifier is password-equivalent: no `Debug` of the enrolment (and so
+    /// of a binding or an ACL entry that holds one) may print it.
+    #[test]
+    fn debug_never_prints_the_pin_verifier() {
+        let v = pin(16, 600_000, 32);
+        let e = UvKeyEnrolment::from_ext_value(&v).unwrap();
+        let printed = format!("{e:?}");
+        assert!(!printed.contains(&b64(32)), "{printed}");
+        assert!(printed.contains("redacted"), "{printed}");
+    }
+
+    fn remote(approver: &str) -> Value {
+        serde_json::json!({ "kind": "remoteApprover", "approver": approver,
+                            "hardwareBacked": false, "biometricGated": false })
+    }
+
+    #[test]
+    fn a_remote_approver_must_be_a_did() {
+        let v = remote(P256_DID_KEY);
+        let e = UvKeyEnrolment::from_ext_value(&v).expect("valid");
+        assert!(matches!(e.key, UvKeyMaterial::RemoteApprover { .. }));
+        assert_eq!(serde_json::to_value(&e).unwrap(), v);
+        UvKeyEnrolment::from_ext_value(&remote("did:webvh:scid:example.com:phone"))
+            .expect("any DID method");
+        for bad in [
+            "",
+            "phone",
+            "did:",
+            "did::x",
+            "did:key:",
+            "did:key:a b",
+            "did:KEY:x",
+        ] {
+            assert!(
+                UvKeyEnrolment::from_ext_value(&remote(bad)).is_err(),
+                "{bad}"
+            );
+        }
+        let mut claims = remote(P256_DID_KEY);
+        claims["biometricGated"] = serde_json::json!(true);
+        assert!(UvKeyEnrolment::from_ext_value(&claims).is_err());
+    }
+
+    #[test]
+    fn the_pin_messages_are_the_contracts() {
+        assert_eq!(uv_pin_grant_message("zAbc"), "org.openvtc.uv-pin/v1|zAbc");
+        assert_eq!(UV_PIN_CHANGE_PREFIX, "org.openvtc.uv-pin/v1|change|");
+    }
+
     #[test]
     fn unknown_members_and_kinds_are_refused() {
         let mut v = hardware(P256_DID_KEY, true);
@@ -542,7 +784,12 @@ mod tests {
 
     #[test]
     fn the_uv_extension_keys_match_the_schema_pattern() {
-        for key in [EXT_UV_KEY, EXT_UV_CONSENT] {
+        for key in [
+            EXT_UV_KEY,
+            EXT_UV_CONSENT,
+            EXT_UV_KEY_CHANGE,
+            EXT_UV_APPROVERS,
+        ] {
             assert!(
                 key.split('.').count() >= 2
                     && key.starts_with(|c: char| c.is_ascii_lowercase())
