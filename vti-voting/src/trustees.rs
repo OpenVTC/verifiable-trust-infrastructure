@@ -6,6 +6,9 @@
 //!   commitments to it with a proof of knowledge of its constant term, and sends each other
 //!   trustee its share. The election key is the sum of the constant terms, which nobody ever
 //!   holds; any `t` trustees can decrypt and no `t − 1` can (VTI-VOT-062). There is no dealer.
+//!   Shares ride the public board sealed to each recipient's [`TransportKey`] ([`seal_share`],
+//!   [`open_share`]); a dealer complained of reveals the share, which [`verify_share`] checks,
+//!   and the key forms from the qualified dealers alone (CONVENTIONS §9.6).
 //! - **Threshold decryption** ([`partial_decrypt`], [`verify_partial`], [`combine`]). A trustee
 //!   publishes `x_j · A` with a Chaum–Pedersen proof that it used the share its public
 //!   verification key commits to; any `t` verified partials combine by Lagrange interpolation
@@ -182,6 +185,7 @@ pub struct ChaumPedersen {
 }
 
 const DOMAIN_POK: &str = "vti/vote/trustee/pok/v1";
+const DOMAIN_TRANSPORT: &str = "vti/vote/trustee/transport/v1";
 const DOMAIN_PARTIAL: &str = "vti/vote/trustee/partial/v1";
 const DOMAIN_BIT: &str = "vti/vote/encrypted/option/v1";
 const DOMAIN_SUM: &str = "vti/vote/encrypted/question/v1";
@@ -330,10 +334,172 @@ pub fn deal<R: RngCore + CryptoRng>(
     ))
 }
 
+/// `ctx` extended with a trustee's index, 4 bytes big-endian (CONVENTIONS §9.3).
 fn dealer_ctx(ctx: &[u8], dealer: u32) -> Vec<u8> {
     let mut v = ctx.to_vec();
     v.extend_from_slice(&dealer.to_be_bytes());
     v
+}
+
+/// `ctx` extended with `frame(question)`: the context of a question's sum proof, and the base of
+/// its options' (CONVENTIONS §9.3).
+pub fn question_ctx(ctx: &[u8], question: &str) -> Vec<u8> {
+    let mut v = ctx.to_vec();
+    crate::election::frame(&mut v, question.as_bytes());
+    v
+}
+
+// ─── transport keys and sealed shares ────────────────────────────────────
+
+/// A trustee's transport key: what the other trustees seal its shares to (CONVENTIONS §9.6
+/// item 1). Published with a proof of knowledge bound to the trustee's index and the election.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransportKey {
+    pub trustee: u32,
+    pub key: Point,
+    pub pok: Schnorr,
+}
+
+/// A transport key's secret, held only by its trustee.
+#[derive(Clone)]
+pub struct TransportSecret {
+    pub trustee: u32,
+    secret: Scalar,
+}
+
+impl std::fmt::Debug for TransportSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransportSecret")
+            .field("trustee", &self.trustee)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TransportSecret {
+    /// A fresh transport secret for `trustee`.
+    pub fn generate<R: RngCore + CryptoRng>(trustee: u32, rng: &mut R) -> Self {
+        Self {
+            trustee,
+            secret: random_scalar(rng),
+        }
+    }
+
+    /// The secret as 32 bytes, for its holder's own custody.
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.secret.to_bytes()
+    }
+
+    /// # Errors
+    /// [`TrusteeError::Encoding`] for a non-canonical or zero scalar.
+    pub fn from_bytes(trustee: u32, bytes: [u8; 32]) -> Result<Self> {
+        let secret: Scalar = Option::from(Scalar::from_canonical_bytes(bytes))
+            .ok_or_else(|| TrusteeError::Encoding("not a canonical scalar".into()))?;
+        if secret == Scalar::ZERO {
+            return Err(TrusteeError::Encoding("a zero transport secret".into()));
+        }
+        Ok(Self { trustee, secret })
+    }
+
+    /// The public transport key with its proof, bound to `ctx`.
+    pub fn publish<R: RngCore + CryptoRng>(&self, ctx: &[u8], rng: &mut R) -> TransportKey {
+        let key = self.secret * G;
+        TransportKey {
+            trustee: self.trustee,
+            key,
+            pok: schnorr_prove(
+                &self.secret,
+                &key,
+                DOMAIN_TRANSPORT,
+                &dealer_ctx(ctx, self.trustee),
+                rng,
+            ),
+        }
+    }
+}
+
+/// Check a published transport key: a trustee index, not the identity, and its proof.
+///
+/// # Errors
+/// [`TrusteeError::Parameters`] for an index outside 1..=n, [`TrusteeError::DealingInvalid`] for
+/// a proof that does not verify.
+pub fn verify_transport_key(tk: &TransportKey, th: Threshold, ctx: &[u8]) -> Result<()> {
+    if tk.trustee == 0 || tk.trustee > th.n {
+        return Err(TrusteeError::Parameters(format!(
+            "trustee {} is not in 1..={}",
+            tk.trustee, th.n
+        )));
+    }
+    if tk.key == Point::identity()
+        || !schnorr_verify(
+            &tk.key,
+            &tk.pok,
+            DOMAIN_TRANSPORT,
+            &dealer_ctx(ctx, tk.trustee),
+        )
+    {
+        return Err(TrusteeError::DealingInvalid(
+            "the transport key's proof does not verify".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// `ctx ‖ "share" ‖ dealer ‖ recipient`: what a sealed share is bound to (CONVENTIONS §9.4).
+fn share_ctx(ctx: &[u8], dealer: u32, recipient: u32) -> Vec<u8> {
+    let mut v = ctx.to_vec();
+    v.extend_from_slice(b"share");
+    v.extend_from_slice(&dealer.to_be_bytes());
+    v.extend_from_slice(&recipient.to_be_bytes());
+    v
+}
+
+/// Seal a share to its recipient's transport key, so it can ride the public board.
+///
+/// # Errors
+/// [`TrusteeError::Parameters`] when `to` is not the share's recipient's key.
+pub fn seal_share<R: RngCore + CryptoRng>(
+    share: &Share,
+    to: &TransportKey,
+    ctx: &[u8],
+    rng: &mut R,
+) -> Result<Sealed> {
+    if to.trustee != share.recipient {
+        return Err(TrusteeError::Parameters(format!(
+            "a share for trustee {} sealed to trustee {}'s key",
+            share.recipient, to.trustee
+        )));
+    }
+    seal_to(
+        &to.key,
+        share.value.as_bytes(),
+        &share_ctx(ctx, share.dealer, share.recipient),
+        rng,
+    )
+}
+
+/// Open the share `dealer` sealed to this transport key's trustee. A share that does not open,
+/// or is not a canonical scalar, is grounds for a complaint; whether it matches the dealer's
+/// commitments is [`verify_share`]'s to say.
+///
+/// # Errors
+/// [`TrusteeError::ShareInvalid`].
+pub fn open_share(
+    secret: &TransportSecret,
+    dealer: u32,
+    sealed: &Sealed,
+    ctx: &[u8],
+) -> Result<Share> {
+    let r_elem = sealed.kem.b - secret.secret * sealed.kem.a;
+    let bytes = open_with(&r_elem, sealed, &share_ctx(ctx, dealer, secret.trustee))
+        .map_err(|_| TrusteeError::ShareInvalid)?;
+    let arr: [u8; 32] = bytes.try_into().map_err(|_| TrusteeError::ShareInvalid)?;
+    let value =
+        Option::from(Scalar::from_canonical_bytes(arr)).ok_or(TrusteeError::ShareInvalid)?;
+    Ok(Share {
+        dealer,
+        recipient: secret.trustee,
+        value,
+    })
 }
 
 /// Check a published dealing: `t` commitments, none the identity, and a proof of knowledge of the
@@ -384,27 +550,31 @@ pub fn verify_share(d: &Dealing, s: &Share) -> Result<()> {
     Ok(())
 }
 
-/// The election's public key and each trustee's public verification key, from every trustee's
-/// verified dealing. Anyone can compute it from the board.
+/// The election's public key and each trustee's public verification key, from the qualified
+/// dealers' verified dealings. Anyone can compute it from the board.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElectionKey {
     pub threshold: Threshold,
-    /// `Y = Σ_i C_i0`.
+    /// `Y = Σ_{i∈Q} C_i0`.
     pub key: Point,
-    /// `Y_j = Σ_i Σ_k j^k C_ik`: trustee `j`'s share times `G`.
+    /// The qualified dealers `Q`, ascending.
+    pub qualified: Vec<u32>,
+    /// `Y_j = Σ_{i∈Q} Σ_k j^k C_ik`: trustee `j`'s share times `G`, for every trustee.
     pub verification: BTreeMap<u32, Point>,
 }
 
 impl ElectionKey {
-    /// Combine `n` dealings, one per trustee, each verified.
+    /// Combine the qualified dealers' dealings (CONVENTIONS §9.6 item 5): at least one, one per
+    /// dealer, each verified. Which dealers qualify — those with no unjustified complaint — is the
+    /// ceremony's to decide; this takes exactly the dealings it is given.
     ///
     /// # Errors
-    /// [`TrusteeError::DealingInvalid`] for a missing, repeated or invalid dealing.
+    /// [`TrusteeError::DealingInvalid`] for none, a repeated or an invalid dealing.
     pub fn from_dealings(dealings: &[Dealing], th: Threshold, ctx: &[u8]) -> Result<Self> {
         let dealers: BTreeSet<u32> = dealings.iter().map(|d| d.dealer).collect();
-        if dealers.len() != dealings.len() || dealers != (1..=th.n).collect() {
+        if dealings.is_empty() || dealers.len() != dealings.len() {
             return Err(TrusteeError::DealingInvalid(
-                "exactly one dealing from every trustee is needed".into(),
+                "at least one dealing, and one per dealer, is needed".into(),
             ));
         }
         for d in dealings {
@@ -423,6 +593,7 @@ impl ElectionKey {
         Ok(Self {
             threshold: th,
             key,
+            qualified: dealers.into_iter().collect(),
             verification,
         })
     }
@@ -458,7 +629,10 @@ impl TrusteeKey {
     ) -> Result<Self> {
         let by_dealer: HashMap<u32, &Dealing> = dealings.iter().map(|d| (d.dealer, d)).collect();
         let dealers: BTreeSet<u32> = shares.iter().map(|s| s.dealer).collect();
-        if dealers.len() != shares.len() || dealers.len() != by_dealer.len() {
+        if dealers.len() != shares.len()
+            || dealers.len() != by_dealer.len()
+            || !dealers.iter().copied().eq(ek.qualified.iter().copied())
+        {
             return Err(TrusteeError::ShareInvalid);
         }
         let mut secret = Scalar::ZERO;
@@ -649,22 +823,45 @@ pub fn seal<R: RngCore + CryptoRng>(
     ctx: &[u8],
     rng: &mut R,
 ) -> Result<Sealed> {
+    seal_to(&ek.key, ballot, ctx, rng)
+}
+
+/// Seal `msg` to the key `to` under `aad_ctx` (CONVENTIONS §9.4).
+fn seal_to<R: RngCore + CryptoRng>(
+    to: &Point,
+    msg: &[u8],
+    aad_ctx: &[u8],
+    rng: &mut R,
+) -> Result<Sealed> {
     let r_elem = random_scalar(rng) * G;
     let r = random_scalar(rng);
     let kem = Ciphertext {
         a: r * G,
-        b: r_elem + r * ek.key,
+        b: r_elem + r * to,
     };
     let body = ChaCha20Poly1305::new(&seal_key(&r_elem))
         .encrypt(
             &Nonce::default(),
             Payload {
-                msg: ballot,
-                aad: &seal_aad(ctx, &kem),
+                msg,
+                aad: &seal_aad(aad_ctx, &kem),
             },
         )
         .map_err(|_| TrusteeError::Encoding("the cipher refused".into()))?;
     Ok(Sealed { kem, body })
+}
+
+/// Open a sealed payload whose KEM element `r_elem` is already recovered.
+fn open_with(r_elem: &Point, s: &Sealed, aad_ctx: &[u8]) -> Result<Vec<u8>> {
+    ChaCha20Poly1305::new(&seal_key(r_elem))
+        .decrypt(
+            &Nonce::default(),
+            Payload {
+                msg: &s.body,
+                aad: &seal_aad(aad_ctx, &s.kem),
+            },
+        )
+        .map_err(|_| TrusteeError::SealedInvalid)
 }
 
 /// Open a sealed ballot from `t` verified partial decryptions of its `kem`.
@@ -678,15 +875,7 @@ pub fn open_sealed(
     ctx: &[u8],
 ) -> Result<Vec<u8>> {
     let r_elem = combine(ek, &s.kem, partials, ctx)?;
-    ChaCha20Poly1305::new(&seal_key(&r_elem))
-        .decrypt(
-            &Nonce::default(),
-            Payload {
-                msg: &s.body,
-                aad: &seal_aad(ctx, &s.kem),
-            },
-        )
-        .map_err(|_| TrusteeError::SealedInvalid)
+    open_with(&r_elem, s, ctx)
 }
 
 // ─── tallied-encrypted ballots ───────────────────────────────────────────
@@ -1013,6 +1202,99 @@ mod tests {
             verify_partial(&ek, &s.kem, &q, CTX),
             Err(TrusteeError::PartialInvalid)
         );
+    }
+
+    #[test]
+    fn shares_ride_the_board_sealed_to_their_recipients() {
+        let mut rng = StdRng::seed_from_u64(10);
+        let th = Threshold::new(2, 3).unwrap();
+        let secrets: Vec<TransportSecret> = (1..=th.n)
+            .map(|j| TransportSecret::generate(j, &mut rng))
+            .collect();
+        let tks: Vec<TransportKey> = secrets.iter().map(|s| s.publish(CTX, &mut rng)).collect();
+        for tk in &tks {
+            verify_transport_key(tk, th, CTX).unwrap();
+        }
+        // A transport key's proof is bound to its index and its election.
+        let mut moved = tks[0];
+        moved.trustee = 2;
+        assert!(verify_transport_key(&moved, th, CTX).is_err());
+        assert!(verify_transport_key(&tks[0], th, b"another election").is_err());
+
+        let (d, shares) = deal(1, th, CTX, &mut rng).unwrap();
+        let sealed: Vec<Sealed> = shares
+            .iter()
+            .map(|s| seal_share(s, &tks[s.recipient as usize - 1], CTX, &mut rng).unwrap())
+            .collect();
+        // Each recipient opens its own, and it checks against the commitments.
+        let opened = open_share(&secrets[1], 1, &sealed[1], CTX).unwrap();
+        assert_eq!(opened, shares[1]);
+        verify_share(&d, &opened).unwrap();
+        // Nobody else opens it, nor is it accepted as another dealer's or another election's.
+        assert!(open_share(&secrets[2], 1, &sealed[1], CTX).is_err());
+        assert!(open_share(&secrets[1], 3, &sealed[1], CTX).is_err());
+        assert!(open_share(&secrets[1], 1, &sealed[1], b"another election").is_err());
+        // Sealing to the wrong trustee's key is refused before anything is sealed.
+        assert!(seal_share(&shares[0], &tks[1], CTX, &mut rng).is_err());
+        // The secret round-trips through its custody form.
+        let back = TransportSecret::from_bytes(2, secrets[1].to_bytes()).unwrap();
+        assert_eq!(open_share(&back, 1, &sealed[1], CTX).unwrap(), shares[1]);
+    }
+
+    #[test]
+    fn the_key_forms_from_the_qualified_dealers_alone() {
+        let mut rng = StdRng::seed_from_u64(11);
+        let th = Threshold::new(2, 3).unwrap();
+        let mut dealings = Vec::new();
+        let mut all_shares = Vec::new();
+        for i in 1..=th.n {
+            let (d, s) = deal(i, th, CTX, &mut rng).unwrap();
+            dealings.push(d);
+            all_shares.extend(s);
+        }
+        // Dealer 3 was disqualified: the key is the other two's.
+        let qualified = &dealings[..2];
+        let ek = ElectionKey::from_dealings(qualified, th, CTX).unwrap();
+        assert_eq!(ek.qualified, vec![1, 2]);
+        assert_eq!(ek.verification.len(), 3);
+        let keys: Vec<TrusteeKey> = (1..=th.n)
+            .map(|j| {
+                let mine: Vec<Share> = all_shares
+                    .iter()
+                    .filter(|s| s.recipient == j && s.dealer != 3)
+                    .cloned()
+                    .collect();
+                TrusteeKey::from_shares(j, &mine, qualified, &ek).unwrap()
+            })
+            .collect();
+        // A share from the disqualified dealer is refused.
+        let with_3: Vec<Share> = all_shares
+            .iter()
+            .filter(|s| s.recipient == 1)
+            .cloned()
+            .collect();
+        assert!(TrusteeKey::from_shares(1, &with_3, &dealings, &ek).is_err());
+        // Every trustee — dealer 3 too — still decrypts.
+        let s = seal(&ek, b"ballot", CTX, &mut rng).unwrap();
+        let parts: Vec<_> = [&keys[0], &keys[2]]
+            .iter()
+            .map(|k| partial_decrypt(k, &s.kem, CTX, &mut rng))
+            .collect();
+        assert_eq!(open_sealed(&ek, &s, &parts, CTX).unwrap(), b"ballot");
+        assert!(ElectionKey::from_dealings(&[], th, CTX).is_err());
+        let dup = [dealings[0].clone(), dealings[0].clone()];
+        assert!(ElectionKey::from_dealings(&dup, th, CTX).is_err());
+    }
+
+    #[test]
+    fn options_are_bound_to_their_question() {
+        let mut rng = StdRng::seed_from_u64(12);
+        let (ek, _, _) = ceremony(&mut rng);
+        let counts = admitted_counts(2, 1, 1, false).unwrap();
+        let chair = question_ctx(CTX, "chair");
+        let q = encrypt_vote(&ek, &[true, false], &counts, &chair, &mut rng).unwrap();
+        verify_vote(&ek, &q, 2, &counts, &chair).unwrap();
+        assert!(verify_vote(&ek, &q, 2, &counts, &question_ctx(CTX, "budget")).is_err());
     }
 
     #[test]

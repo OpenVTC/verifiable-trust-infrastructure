@@ -119,8 +119,20 @@ impl Election {
     }
 }
 
+impl Election {
+    /// `ctx` of the encrypted levels (CONVENTIONS §9.2): every trustee proof, sealed payload and
+    /// encrypted ballot of this election is bound to it.
+    pub fn trustee_context(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        frame(&mut out, self.community.as_bytes());
+        frame(&mut out, self.id.as_str().as_bytes());
+        frame(&mut out, &self.manifest_digest);
+        out
+    }
+}
+
 /// Length-prefixed, so no two different field sequences encode alike.
-fn frame(out: &mut Vec<u8>, field: &[u8]) {
+pub(crate) fn frame(out: &mut Vec<u8>, field: &[u8]) {
     out.extend((field.len() as u64).to_be_bytes());
     out.extend(field);
 }
