@@ -743,6 +743,55 @@ async fn voter_preamble<P: DeserializeOwned>(
     Ok((context, str_of(doc, "community").to_string()))
 }
 
+/// `vta/pcs/voter/read/0.1`: `vtc/elections/list` or `show`, signed as the member (items 3 – 6).
+pub(super) async fn handle_voter_read(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::voter::read::v0_1 as t;
+    use trust_tasks_rs::specs::vtc::elections::{list::v0_1 as list, show::v0_1 as show};
+    use trust_tasks_rs::validate::ValidatedPayload as _;
+    let (_context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let read = doc.payload["read"].as_str().unwrap_or_default();
+    let payload = value_of(&doc, "payload");
+    // Item 3: the read's own payload, against its own schema.
+    let (type_uri, checked) = match read {
+        "list" => (
+            <list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            list::Payload::validate_value(&payload).map_err(|e| e.to_string()),
+        ),
+        "show" => (
+            <show::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            show::Payload::validate_value(&payload).map_err(|e| e.to_string()),
+        ),
+        other => ("", Err(format!("`{other}` is not a read this task signs"))),
+    };
+    if let Err(reason) = checked {
+        return reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: format!("payload: {reason}"),
+            },
+        );
+    }
+    let member = doc.payload["member"].as_str().unwrap_or_default();
+    match crate::operations::pcs_voter::sign_read(
+        state, auth, member, &community, type_uri, payload,
+    )
+    .await
+    {
+        Ok(document) => respond::<t::Response>(&doc, json!({ "document": document })),
+        Err(e) => refuse(&doc, e, |e| match e {
+            PcsError::MemberNotHeld(_) => Some(t::error_codes::MEMBER_NOT_HELD),
+            _ => None,
+        }),
+    }
+}
+
 /// `vta/pcs/voter/register/0.1`.
 pub(super) async fn handle_voter_register(
     state: &AppState,

@@ -525,6 +525,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // A repeat before the ticket is held answers with the request already kept,
     // under the same key and blinding state, so a replayed answer still unblinds.
     (trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_1, RetrySafe),
+    // Signs a read as the member and keeps nothing: a repeat is another signed read.
+    (trust_tasks::TASK_VTA_PCS_VOTER_READ_0_1, RetrySafe),
     // A repeat finds no request in flight; keyed so it gets the original answer.
     (trust_tasks::TASK_VTA_PCS_VOTER_ACCEPT_0_1, Keyed),
     // Each execution is a new cast, signed by a new one-time key: keyed so a

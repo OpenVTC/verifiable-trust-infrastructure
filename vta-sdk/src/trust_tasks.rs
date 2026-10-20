@@ -2490,6 +2490,10 @@ pub const TASK_VTA_PCS_VETTER_SHOW_0_1: &str =
 pub const TASK_VTA_PCS_VOTER_REGISTER_0_1: &str =
     <trust_tasks_rs::specs::vta::pcs::voter::register::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `vta/pcs/voter/read/0.1` — `vtc/elections/list` or `show`, signed as the member.
+pub const TASK_VTA_PCS_VOTER_READ_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::voter::read::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `vta/pcs/voter/accept/0.1` — unblind the community's answer into the ticket.
 pub const TASK_VTA_PCS_VOTER_ACCEPT_0_1: &str =
     <trust_tasks_rs::specs::vta::pcs::voter::accept::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -2833,6 +2837,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_PCS_ATTEST_0_1,
     TASK_VTA_PCS_VETTER_SHOW_0_1,
     TASK_VTA_PCS_VOTER_REGISTER_0_1,
+    TASK_VTA_PCS_VOTER_READ_0_1,
     TASK_VTA_PCS_VOTER_ACCEPT_0_1,
     TASK_VTA_PCS_VOTE_0_1,
     TASK_VTA_PCS_VOTER_RECEIPT_0_1,

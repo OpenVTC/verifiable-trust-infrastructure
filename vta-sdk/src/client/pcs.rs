@@ -209,6 +209,20 @@ impl VtaClient {
         .await
     }
 
+    /// `vta/pcs/voter/read/0.1` — `vtc/elections/list` or `show`, signed as the member, to send
+    /// to the community unchanged.
+    pub async fn pcs_voter_read(
+        &self,
+        req: &pcs::voter::read::v0_1::Payload,
+    ) -> Result<pcs::voter::read::v0_1::Response, VtaError> {
+        self.pcs_call(
+            trust_tasks::TASK_VTA_PCS_VOTER_READ_0_1,
+            req,
+            PCS_TT_TIMEOUT,
+        )
+        .await
+    }
+
     /// `vta/pcs/voter/accept/0.1` — unblind the community's answer into the ticket.
     pub async fn pcs_voter_accept(
         &self,

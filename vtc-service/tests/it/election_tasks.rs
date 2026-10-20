@@ -508,6 +508,25 @@ async fn an_election_is_created_registered_shown_and_a_member_takes_a_ticket_bli
     assert_eq!(tt_error_code(&late), ISSUE_ERR_NOT_OPEN, "{late}");
 }
 
+/// SPEC §4.4.1: a request's `#request` fragment is optional, so a document typed with it routes
+/// exactly as the bare form does.
+#[tokio::test]
+async fn a_request_typed_with_its_fragment_is_served() {
+    let tv = community(InProcessBox::new()).await;
+    let chair = admin(&tv).await;
+    create(&tv, &chair, manifest("agm", false)).await;
+    let doc = signed_to(
+        &chair,
+        TEST_VTC_DID,
+        &format!("{}#request", uri("show")),
+        json!({ "electionId": "agm" }),
+    )
+    .await;
+    let (status, shown) = post(&tv, &doc).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    assert_eq!(payload(&shown)["manifest"]["electionId"], "agm");
+}
+
 #[tokio::test]
 async fn a_creation_is_refused_for_each_rule_it_breaks() {
     let bx = InProcessBox::new();

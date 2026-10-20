@@ -494,7 +494,7 @@ async fn dispatch_trust_task_validated(
         return reject_with(&doc, reason);
     }
 
-    let type_uri = doc.type_uri.to_string();
+    let type_uri = doc.type_uri.for_routing().to_string();
 
     // 2c. SPEC §7.2's *flag-driven* checks — the ones the published
     //    specification declares rather than this consumer chooses:
@@ -1061,7 +1061,7 @@ async fn dispatch_parked(
     ctx: JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let type_uri = doc.type_uri.to_string();
+    let type_uri = doc.type_uri.for_routing().to_string();
     let outcome = dispatch_typed(state, &ctx, doc, &type_uri).await;
     sign_response(state, outcome).await
 }
@@ -4799,7 +4799,7 @@ async fn resolve_admin_claims(
     // action about itself (VTI-APV-019) — and nothing else, whatever the
     // operation. One refusal here, naming the action and when it lands, for
     // every administrative verb; the capability checks behind it refuse too.
-    if !SUSPENDED_MAY_SEND.contains(&doc.type_uri.to_string().as_str())
+    if !SUSPENDED_MAY_SEND.contains(&doc.type_uri.for_routing().to_string().as_str())
         && let Some(s) = crate::acl::storage::get_suspension(&state.acl_ks, did)
             .await
             .map_err(|e| app_error_to_reject(doc, &e))?
@@ -4979,7 +4979,7 @@ async fn handle_member_admin_remove(
         checked.did.as_str(),
         body,
         crate::acl::admin_consent::Operation {
-            type_uri: &doc.type_uri.to_string(),
+            type_uri: &doc.type_uri.for_routing().to_string(),
             payload: &doc.payload,
         },
     )

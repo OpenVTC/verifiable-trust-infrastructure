@@ -2479,6 +2479,25 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_VTA_PCS_VOTER_READ_0_1,
+            checked!(
+                specs::vta::pcs::voter::read::v0_1::Payload,
+                specs::vta::pcs::voter::read::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY,
+                    "member": "did:key:z6MkpVoteCastKey2222222222222222222222222222222",
+                    "read": "show", "payload": { "electionId": "agm-2027" } }),
+                json!({ "document": {
+                    "id": "urn:uuid:3f6b9d2e-81c4-4a7f-9e05-6d1c2b8a4f71",
+                    "type": "https://trusttasks.org/spec/vtc/elections/show/0.1",
+                    "issuer": "did:key:z6MkpVoteCastKey2222222222222222222222222222222",
+                    "recipient": PCS_COMMUNITY, "issuedAt": TS,
+                    "payload": { "electionId": "agm-2027" },
+                    "proof": { "type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022",
+                        "verificationMethod": "did:key:z6MkpVoteCastKey2222222222222222222222222222222#z6MkpVoteCastKey2222222222222222222222222222222",
+                        "proofPurpose": "authentication", "created": TS, "proofValue": PCS_B58 } } })
+            ),
+        ),
+        (
             uris::TASK_VTA_PCS_VOTER_ACCEPT_0_1,
             checked!(
                 specs::vta::pcs::voter::accept::v0_1::Payload,

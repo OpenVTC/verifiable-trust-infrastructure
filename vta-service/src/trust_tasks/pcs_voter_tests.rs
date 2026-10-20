@@ -454,3 +454,70 @@ async fn the_ticket_request_is_signed_as_the_member_and_kept() {
     let again = ok(&handle_voter_register(&state, &auth, with_member(&persona.did)).await);
     assert_eq!(again["ticketDocument"], first["ticketDocument"]);
 }
+
+/// `vta/pcs/voter/read`: one of the two election reads, signed as the member — and nothing else.
+#[tokio::test]
+async fn an_election_read_is_signed_as_the_member() {
+    let (state, _dir) = build_signing_test_app_state().await;
+    crate::contexts::create_context(&state.contexts_ks, "member", "member")
+        .await
+        .unwrap();
+    let auth = claims("did:key:z6MkVoter", Role::Admin, "member");
+    let persona = crate::operations::persona::test_fixture::did_key_persona(
+        &state.keys_ks,
+        &state.internal_ks,
+        &state.contexts_ks,
+        &state.acl_ks,
+        &state.seed_store,
+        &state.audit_sink,
+        "member",
+        "membership-key",
+    )
+    .await;
+    let read = |member: &str, which: &str, payload: Value| {
+        doc(
+            uris::TASK_VTA_PCS_VOTER_READ_0_1,
+            json!({ "contextId": "member", "community": COMMUNITY, "member": member,
+                    "read": which, "payload": payload }),
+        )
+    };
+
+    let shown = ok(&handle_voter_read(
+        &state,
+        &auth,
+        read(&persona.did, "show", json!({ "electionId": "agm-2028" })),
+    )
+    .await);
+    let d = &shown["document"];
+    assert_eq!(
+        d["type"],
+        "https://trusttasks.org/spec/vtc/elections/show/0.1"
+    );
+    assert_eq!(d["issuer"], persona.did.as_str());
+    assert_eq!(d["recipient"], COMMUNITY);
+    assert_eq!(d["payload"], json!({ "electionId": "agm-2028" }));
+    let signer = vta_sdk::trust_task_proof::verify_trust_task_proof_value(
+        d,
+        &vta_sdk::trust_task_proof::TrustTaskVmResolver::did_key_only(),
+    )
+    .await
+    .expect("the member's proof verifies");
+    assert_eq!(signer, persona.did);
+
+    let listed = ok(&handle_voter_read(&state, &auth, read(&persona.did, "list", json!({}))).await);
+    assert_eq!(
+        listed["document"]["type"],
+        "https://trusttasks.org/spec/vtc/elections/list/0.1"
+    );
+
+    // A payload the read's own schema refuses is not signed.
+    let out = handle_voter_read(&state, &auth, read(&persona.did, "show", json!({}))).await;
+    assert_eq!(code(&out), "malformedRequest");
+    let out = handle_voter_read(
+        &state,
+        &auth,
+        read("did:key:z6MkNotHeldHere", "list", json!({})),
+    )
+    .await;
+    assert_eq!(code(&out), "vta/pcs/voter/read:memberNotHeld");
+}

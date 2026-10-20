@@ -710,6 +710,9 @@ mod tests {
         // `vta/pcs/voter/receipt`: keeps a receipt and checks its inclusion;
         // stores, removes nothing.
         "receipt",
+        // `vta/pcs/voter/read`: stores nothing, but signs as the member's
+        // membership DID, so `--read-only` must not permit it — as `prove`.
+        "read",
         "accept",
         "create",
         "update",

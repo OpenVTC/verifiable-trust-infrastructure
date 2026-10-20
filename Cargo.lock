@@ -10858,7 +10858,7 @@ dependencies = [
 [[package]]
 name = "trust-tasks-rs"
 version = "0.32.4"
-source = "git+https://github.com/trustoverip/dtgwg-trust-tasks-tf?branch=feat%2Fvoter-signs-ticket#9a75a91f6408ea343f16f5e7e1b558d80dc35227"
+source = "git+https://github.com/trustoverip/dtgwg-trust-tasks-tf?branch=feat%2Fvoter-signs-ticket#a34c5e83818bd229694447939edad30571aef69e"
 dependencies = [
  "async-trait",
  "chrono",

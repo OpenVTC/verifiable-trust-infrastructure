@@ -305,6 +305,37 @@ async fn ticket_document(
     Ok(doc)
 }
 
+/// `vta/pcs/voter/read` items 4 – 6: one of the two election reads, signed as `member`, and
+/// nothing else. The caller has already held `type_uri` to `list` or `show` and the payload to
+/// that read's schema.
+///
+/// # Errors
+/// [`PcsError::MemberNotHeld`] for a DID this VTA holds no authentication key of the caller may
+/// act as.
+pub async fn sign_read(
+    state: &AppState,
+    auth: &crate::auth::AuthClaims,
+    member: &str,
+    community: &str,
+    type_uri: &str,
+    payload: Value,
+) -> Result<Value> {
+    let signer = PersonaTicketSigner::for_member(state, auth, member).await?;
+    let now = Utc::now();
+    let stamp = |t: DateTime<Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let mut doc = json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": type_uri,
+        "issuer": member,
+        "recipient": community,
+        "issuedAt": stamp(now),
+        "expiresAt": stamp(now + chrono::Duration::hours(1)),
+        "payload": payload,
+    });
+    signer.sign(&mut doc).await?;
+    Ok(doc)
+}
+
 /// `vta/pcs/voter/register`: the blinded ticket request under this election's voter key,
 /// creating the key on first use — and, with a `member`, the request to the community signed as
 /// that member.

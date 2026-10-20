@@ -19,6 +19,7 @@
 //!
 //! The voter's round (community voting, VTI-VOT-020 – 053):
 //!
+//! 0. [`PcsTask::VoterRead`] — `vtc/elections/list` or `show`, signed as the member;
 //! 1. [`PcsTask::VoterRegister`] — the blinded ticket request for `vtc/elections/tickets/issue`;
 //! 2. [`PcsTask::VoterAccept`] — the community's answer, unblinded into the ticket;
 //! 3. [`PcsTask::Vote`] — the signed `voting/ballot/cast` document, which the device sends to
@@ -54,6 +55,7 @@ pub enum PcsTask {
     VoterAccept,
     Vote,
     VoterReceipt,
+    VoterRead,
 }
 
 fn invalid<E: std::fmt::Display>(e: E) -> FfiError {
@@ -126,6 +128,7 @@ pub fn build_pcs_task(
         PcsTask::VoterAccept => signed::<pcs::voter::accept::v0_1::Payload>(&env, p, s),
         PcsTask::Vote => signed::<pcs::vote::v0_1::Payload>(&env, p, s),
         PcsTask::VoterReceipt => signed::<pcs::voter::receipt::v0_1::Payload>(&env, p, s),
+        PcsTask::VoterRead => signed::<pcs::voter::read::v0_1::Payload>(&env, p, s),
     }
 }
 
@@ -152,6 +155,7 @@ pub fn parse_pcs_response(task: PcsTask, json: String) -> Result<String, FfiErro
         PcsTask::VoterAccept => response::<pcs::voter::accept::v0_1::Response>(j),
         PcsTask::Vote => response::<pcs::vote::v0_1::Response>(j),
         PcsTask::VoterReceipt => response::<pcs::voter::receipt::v0_1::Response>(j),
+        PcsTask::VoterRead => response::<pcs::voter::read::v0_1::Response>(j),
     }
 }
 
