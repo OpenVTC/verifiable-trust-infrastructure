@@ -9,6 +9,7 @@ use rand::{SeedableRng, rngs::StdRng};
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::voting::election::register::v0_1::Manifest;
 use vti_voting::{
+    audit::{AuditFailure, Evidence, HeadRef, audit},
     election::{Election, ElectionId},
     registrar::Registrar,
     rules::{digest_multibase, manifest_digest},
@@ -285,6 +286,105 @@ impl Run {
         let p = self.with(json!({ "trustee": j + 1, "partials": partials }));
         self.bb.trustees_decrypt(TRUSTEES[j], &p, t(AFTER)).unwrap()
     }
+}
+
+impl Run {
+    /// Certify the board as the community would (VTI-VOT-070 – 073): every entry, the head, the
+    /// published result.
+    fn certify(&mut self, tamper: impl Fn(&mut Vec<Value>)) -> Result<u64, AuditFailure> {
+        let sel = self.sel();
+        let board = self
+            .bb
+            .board_read(
+                Caller::Anonymous,
+                &self.with(json!({ "from": 0, "limit": 1000 })),
+                t(AFTER),
+            )
+            .unwrap();
+        let mut entries: Vec<Value> = board["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["entry"].clone())
+            .collect();
+        tamper(&mut entries);
+        let head = self
+            .bb
+            .board_head(Caller::Anonymous, &sel, t(AFTER))
+            .unwrap();
+        let result = self.bb.result(Caller::Anonymous, &sel, t(AFTER)).unwrap();
+        let params = self.reg.params();
+        // Tampered entries no longer hash to the head: certify against their own root, so the
+        // check that fails is the recount's.
+        let mut b = vti_voting::board::Board::new();
+        for e in &entries {
+            b.append(&serde_json_canonicalizer::to_vec(e).unwrap());
+        }
+        let head = if entries.len() as u64 == head["head"]["treeSize"].as_u64().unwrap() {
+            HeadRef {
+                tree_size: entries.len() as u64,
+                root: b.root(entries.len()).unwrap(),
+            }
+        } else {
+            HeadRef::from_wire(&head["head"]).unwrap()
+        };
+        audit(Evidence {
+            manifest: &self.manifest,
+            params: &params,
+            entries: &entries,
+            head,
+            checkpoints: &[],
+            result: &result["result"],
+            tickets_issued: 10,
+        })
+        .map(|v| v.ballots_counted)
+    }
+}
+
+#[test]
+fn vot_070_an_encrypted_board_certifies_and_a_doctored_opening_does_not() {
+    let mut run = Run::new("sealed");
+    run.ceremony();
+    let p = run.cast(300, run.ballot(Some("ana"), &["kiln"]));
+    run.bb.cast_encrypted(&p, t(DURING)).unwrap();
+    let p = run.cast(301, run.ballot(Some("ben"), &[]));
+    run.bb.cast_encrypted(&p, t(DURING)).unwrap();
+    run.decrypt(0);
+    run.decrypt(1);
+    assert_eq!(run.certify(|_| {}), Ok(2));
+    // An `unsealed` entry that says something other than what the partials open is caught.
+    let err = run
+        .certify(|entries| {
+            let e = entries
+                .iter_mut()
+                .find(|e| e["kind"] == "unsealed")
+                .unwrap();
+            e["ballot"]["answers"][0]["choice"] = json!(["cai"]);
+        })
+        .unwrap_err();
+    assert!(matches!(err, AuditFailure::ResultMismatch(_)), "{err:?}");
+
+    let mut run = Run::new("talliedEncrypted");
+    run.ceremony();
+    let p = run.cast(310, run.ballot(Some("cai"), &["laser"]));
+    run.bb.cast_encrypted(&p, t(DURING)).unwrap();
+    run.decrypt(2);
+    run.decrypt(1);
+    assert_eq!(run.certify(|_| {}), Ok(1));
+}
+
+#[test]
+fn vot_064_a_tallied_election_with_no_casts_tallies_to_zero() {
+    let mut run = Run::new("talliedEncrypted");
+    run.ceremony();
+    let sel = run.sel();
+    let result = run.bb.result(Caller::Anonymous, &sel, t(AFTER)).unwrap();
+    assert_eq!(result["result"]["ballotsCounted"], 0);
+    assert_eq!(
+        result["result"]["questions"][0]["choice"],
+        json!({ "ana": 0, "ben": 0, "cai": 0 })
+    );
+    assert_eq!(run.certify(|_| {}), Ok(0));
 }
 
 #[test]

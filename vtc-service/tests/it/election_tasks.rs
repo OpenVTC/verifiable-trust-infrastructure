@@ -37,8 +37,6 @@ use crate::common::signed::{admin, call, party_with_role, payload, post, signed_
 use trust_tasks_rs::specs::vtc::elections as el;
 const CREATE_ERR_ELECTION_EXISTS: &str = el::create::v0_1::error_codes::ELECTION_EXISTS.code;
 const CREATE_ERR_INVALID_MANIFEST: &str = el::create::v0_1::error_codes::INVALID_MANIFEST.code;
-const CREATE_ERR_UNSUPPORTED_SECRECY: &str =
-    el::create::v0_1::error_codes::UNSUPPORTED_SECRECY.code;
 const CREATE_ERR_COMMUNITY_MISMATCH: &str = el::create::v0_1::error_codes::COMMUNITY_MISMATCH.code;
 const CREATE_ERR_BALLOT_BOX_NOT_TRUSTED: &str =
     el::create::v0_1::error_codes::BALLOT_BOX_NOT_TRUSTED.code;
@@ -533,12 +531,11 @@ async fn a_creation_is_refused_for_each_rule_it_breaks() {
     let tv = community(bx.clone()).await;
     let chair = admin(&tv).await;
 
+    // A sealed election names its trustees.
     let mut sealed = manifest("sealed", false);
     sealed["secrecy"] = json!("sealed");
-    sealed["trustees"] =
-        json!({ "dids": ["did:key:z6MkTrusteeA", "did:key:z6MkTrusteeB"], "threshold": 2 });
     let (_, doc) = create(&tv, &chair, sealed).await;
-    assert_eq!(tt_error_code(&doc), CREATE_ERR_UNSUPPORTED_SECRECY, "{doc}");
+    assert_eq!(tt_error_code(&doc), CREATE_ERR_INVALID_MANIFEST, "{doc}");
 
     let mut other = manifest("other", false);
     other["community"] = json!("did:key:z6MkAnotherCommunity");
@@ -832,5 +829,233 @@ async fn a_board_with_more_ballots_than_tickets_is_not_certified() {
     assert_eq!(
         payload(&doc)["details"],
         json!({ "ballotsCounted": 2, "ticketsIssued": 1 })
+    );
+}
+
+/// Trustees for a sealed election, run against the in-process box directly — the community never
+/// carries their documents (CONVENTIONS §9.6).
+struct Trustees {
+    dids: Vec<String>,
+    keys: Vec<vti_voting::trustees::TrusteeKey>,
+}
+
+const TRUSTEE_DIDS: [&str; 3] = [
+    "did:key:z6MkTrusteeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "did:key:z6MkTrusteeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "did:key:z6MkTrusteeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+];
+
+/// The key ceremony on `bx`'s board, at the box's own clock.
+fn run_ceremony(bx: &InProcessBox, ctx: &[u8], id: &str) -> Trustees {
+    use vti_voting::trustees::{
+        Dealing, Threshold, TransportSecret, TrusteeKey, deal, open_share, seal_share, verify_share,
+    };
+    let mut rng = vti_voting::rand::rngs::OsRng;
+    let sel = json!({ "community": TEST_VTC_DID, "electionId": id });
+    let with = |extra: Value| {
+        let mut v = sel.clone();
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        v
+    };
+    let now = bx.now();
+    let mut bb = bx.bb.lock().unwrap();
+    let secrets: Vec<TransportSecret> = (1..=3)
+        .map(|j| TransportSecret::generate(j, &mut rng))
+        .collect();
+    for (s, did) in secrets.iter().zip(TRUSTEE_DIDS) {
+        let tk = s.publish(ctx, &mut rng);
+        bb.trustees_enrol(
+            did,
+            &with(json!({ "transportKey": vti_voting::wire::transport_key_value(&tk) })),
+            now,
+        )
+        .unwrap();
+    }
+    let th = Threshold::new(2, 3).unwrap();
+    let status = bb.trustees_status(Caller::Anonymous, &sel, now).unwrap();
+    let tks: Vec<_> = status["transportKeys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| vti_voting::wire::transport_key(v).unwrap())
+        .collect();
+    let mut shares: Vec<Vec<vti_voting::trustees::Share>> = vec![Vec::new(); 3];
+    for i in 1..=3u32 {
+        let (dealing, dealt) = deal(i, th, ctx, &mut rng).unwrap();
+        let sealed = dealt
+            .iter()
+            .map(|s| {
+                (
+                    s.recipient,
+                    seal_share(s, &tks[s.recipient as usize - 1], ctx, &mut rng).unwrap(),
+                )
+            })
+            .collect();
+        let sd = vti_voting::ceremony::SealedDealing {
+            dealing,
+            shares: sealed,
+        };
+        bb.trustees_deal(
+            TRUSTEE_DIDS[i as usize - 1],
+            &with(json!({ "dealing": vti_voting::wire::dealing_value(&sd) })),
+            now,
+        )
+        .unwrap();
+    }
+    let status = bb.trustees_status(Caller::Anonymous, &sel, now).unwrap();
+    let dealings: Vec<_> = status["dealings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| vti_voting::wire::dealing(v).unwrap())
+        .collect();
+    for (j, did) in TRUSTEE_DIDS.iter().enumerate() {
+        for sd in &dealings {
+            let s = open_share(
+                &secrets[j],
+                sd.dealing.dealer,
+                &sd.shares[&(j as u32 + 1)],
+                ctx,
+            )
+            .unwrap();
+            verify_share(&sd.dealing, &s).unwrap();
+            shares[j].push(s);
+        }
+        bb.trustees_confirm(
+            did,
+            &with(json!({ "trustee": j + 1, "complaints": [] })),
+            now,
+        )
+        .unwrap();
+    }
+    let status = bb.trustees_status(Caller::Anonymous, &sel, now).unwrap();
+    let ek = vti_voting::wire::election_key(&status["electionKey"], th).unwrap();
+    let plain: Vec<Dealing> = dealings.iter().map(|d| d.dealing.clone()).collect();
+    Trustees {
+        dids: TRUSTEE_DIDS.iter().map(|d| d.to_string()).collect(),
+        keys: (0..3)
+            .map(|j| TrusteeKey::from_shares(j as u32 + 1, &shares[j], &plain, &ek).unwrap())
+            .collect(),
+    }
+}
+
+/// A sealed election end to end through the community: created and registered, the trustees'
+/// key formed on the box's board, members take tickets and cast sealed ballots, two trustees
+/// decrypt after close, and the community certifies the board — the ceremony, every encrypted
+/// cast and every partial re-verified from its own voting key (VTI-VOT-060 – 073).
+#[tokio::test]
+async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() {
+    let bx = InProcessBox::new();
+    let tv = community(bx.clone()).await;
+    let chair = admin(&tv).await;
+
+    // The trustee rules are the community's to check too.
+    let mut broken = manifest("sealed", false);
+    broken["secrecy"] = json!("sealed");
+    broken["trustees"] = json!({ "dids": TRUSTEE_DIDS, "threshold": 4 });
+    let (_, doc) = create(&tv, &chair, broken).await;
+    assert_eq!(tt_error_code(&doc), CREATE_ERR_INVALID_MANIFEST, "{doc}");
+
+    // Voting opens a minute ago for the community; the box runs two hours behind, so the
+    // trustees generate the key before its votingOpens.
+    bx.ahead.store(-2 * 3600, Ordering::SeqCst);
+    let mut m = manifest("sealed", false);
+    m["secrecy"] = json!("sealed");
+    m["trustees"] = json!({ "dids": TRUSTEE_DIDS, "threshold": 2 });
+    let (status, doc) = create(&tv, &chair, m.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let (alice, bob) = (member(&tv).await, member(&tv).await);
+    let b = read_election(&tv, &alice, "sealed").await;
+    let ctx = b.election.trustee_context();
+    let trustees = run_ceremony(&bx, &ctx, "sealed");
+    assert_eq!(trustees.dids.len(), 3);
+
+    // Voting: each member's agent seals the ballot to the election key and casts it.
+    bx.ahead.store(0, Ordering::SeqCst);
+    let sel = json!({ "community": TEST_VTC_DID, "electionId": "sealed" });
+    let ek = {
+        let mut bb = bx.bb.lock().unwrap();
+        let status = bb
+            .trustees_status(Caller::Anonymous, &sel, bx.now())
+            .unwrap();
+        vti_voting::wire::election_key(
+            &status["electionKey"],
+            vti_voting::trustees::Threshold::new(2, 3).unwrap(),
+        )
+        .unwrap()
+    };
+    let typed: trust_tasks_rs::specs::voting::election::register::v0_1::Manifest =
+        serde_json::from_value(m).unwrap();
+    for (party, choice) in [(&alice, "alice"), (&bob, "alice")] {
+        let (voter, ticket) = take_ticket(&tv, party, &b).await;
+        let ballot = json!({
+            "electionId": "sealed", "manifestDigest": b.digest,
+            "answers": [{ "question": "chair", "choice": [choice] }],
+        });
+        let form = vti_voting::voter::encrypted_form(
+            &typed,
+            &b.election,
+            &ek,
+            &ballot,
+            &mut vti_voting::rand::rngs::OsRng,
+        )
+        .unwrap();
+        let cast = voter
+            .cast_encrypted_wire(
+                &b.params,
+                &ticket,
+                &form,
+                &mut vti_voting::rand::rngs::OsRng,
+            )
+            .unwrap();
+        let now = bx.now();
+        bx.bb
+            .lock()
+            .unwrap()
+            .cast_encrypted(
+                &json!({ "community": TEST_VTC_DID, "electionId": "sealed", "cast": cast }),
+                now,
+            )
+            .expect("the ballot box admits the sealed cast");
+    }
+
+    // Past the close nothing is tallied until the trustees decrypt.
+    bx.ahead.store(2 * 3600, Ordering::SeqCst);
+    let certify = json!({ "electionId": "sealed", "auditAttestations": [] });
+    let (_, doc) = call(&tv, &chair, &uri("certify"), certify.clone()).await;
+    assert_eq!(tt_error_code(&doc), CERTIFY_ERR_NOT_TALLIED, "{doc}");
+    for j in [0usize, 2] {
+        let now = bx.now();
+        let mut bb = bx.bb.lock().unwrap();
+        let status = bb.trustees_status(Caller::Anonymous, &sel, now).unwrap();
+        let partials: Vec<Value> = status["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tv| {
+                let (target, ct) = vti_voting::wire::target(tv).unwrap();
+                let p = vti_voting::trustees::partial_decrypt(
+                    &trustees.keys[j],
+                    &ct,
+                    &ctx,
+                    &mut vti_voting::rand::rngs::OsRng,
+                );
+                vti_voting::wire::partial_value(&target, &ct, &p)
+            })
+            .collect();
+        let mut p = sel.clone();
+        p["trustee"] = json!(j + 1);
+        p["partials"] = json!(partials);
+        bb.trustees_decrypt(&trustees.dids[j], &p, now).unwrap();
+    }
+
+    let (status, doc) = call(&tv, &chair, &uri("certify"), certify).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(payload(&doc)["result"]["ballotsCounted"], 2);
+    assert_eq!(
+        payload(&doc)["result"]["questions"][0]["choice"],
+        json!({ "alice": 2, "bob": 0 })
     );
 }

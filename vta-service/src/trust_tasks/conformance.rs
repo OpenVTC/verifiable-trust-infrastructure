@@ -663,6 +663,50 @@ fn voting_ballot() -> Value {
         "answers": [{ "question": "budget", "choice": ["yes"] }] })
 }
 
+/// A sealed election's manifest: the trustees, and the trustee document a VTA signs as one.
+fn sealed_manifest() -> Value {
+    let mut m = voting_manifest();
+    m["secrecy"] = json!("sealed");
+    m["trustees"] = json!({ "dids": [TRUSTEE, "did:key:z6MkTrusteeTwo", "did:key:z6MkTrusteeThree"], "threshold": 2 });
+    m
+}
+
+const TRUSTEE: &str = "did:key:z6MkTrusteeOne";
+
+fn election_key() -> Value {
+    json!({ "key": PCS_B58, "qualified": [1, 2, 3],
+        "verification": [{ "trustee": 1, "key": PCS_B58 }, { "trustee": 2, "key": PCS_B58 }, { "trustee": 3, "key": PCS_B58 }] })
+}
+
+fn sigma() -> Value {
+    json!({ "c": PCS_B58, "z": PCS_B58 })
+}
+
+fn ciphertext() -> Value {
+    json!({ "a": PCS_B58, "b": PCS_B58 })
+}
+
+/// A `voting/trustees/<task>` request signed as the trustee, as the VTA answers with it.
+fn trustee_document(task: &str, payload: Value) -> Value {
+    json!({ "document": {
+        "id": "urn:uuid:3f6b9d2e-81c4-4a7f-9e05-6d1c2b8a4f71",
+        "type": format!("https://trusttasks.org/spec/voting/trustees/{task}/0.1"),
+        "issuer": TRUSTEE, "recipient": VOTING_BOX, "issuedAt": TS, "expiresAt": TS,
+        "payload": payload,
+        "proof": { "type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022",
+            "verificationMethod": format!("{TRUSTEE}#z6MkTrusteeOne"),
+            "proofPurpose": "authentication", "created": TS, "proofValue": PCS_B58 } } })
+}
+
+fn trustee_payload(extra: Value) -> Value {
+    let mut p = json!({ "contextId": "trustees", "community": PCS_COMMUNITY, "electionId": "agm-2027",
+        "trustee": TRUSTEE });
+    p.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    p
+}
+
 // ─── vta/witness fixtures ────────────────────────────────────────────────
 
 const WITNESS_DID: &str = "did:webvh:QmWitness:witness.example.org:a";
@@ -2535,6 +2579,84 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     "checkpoint": { "type": "https://trusttasks.org/spec/voting/board/head/0.1#response", "issuer": VOTING_BOX },
                     "inclusion": { "leafIndex": 41, "treeSize": 213, "entryHash": VOTING_DIGEST, "path": [VOTING_DIGEST] } }),
                 json!({ "electionId": "agm-2027", "status": "included", "leafIndex": 41 })
+            ),
+        ),
+        // ─── vta/pcs — the encrypted levels ─────────────────────
+        (
+            uris::TASK_VTA_PCS_VOTE_ENCRYPTED_0_1,
+            checked!(
+                specs::vta::pcs::vote_encrypted::v0_1::Payload,
+                specs::vta::pcs::vote_encrypted::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": voting_params(),
+                    "manifest": sealed_manifest(), "electionKey": election_key(), "ballot": voting_ballot() }),
+                json!({ "tag": PCS_B58, "castDocument": {
+                    "id": "urn:uuid:3f6b9d2e-81c4-4a7f-9e05-6d1c2b8a4f72",
+                    "type": "https://trusttasks.org/spec/voting/ballot/cast-encrypted/0.1#request",
+                    "issuer": "did:key:z6MkpVoteCastKey2222222222222222222222222222222",
+                    "recipient": VOTING_BOX, "issuedAt": TS, "expiresAt": "2026-11-07T18:00:00Z",
+                    "payload": { "community": PCS_COMMUNITY, "electionId": "agm-2027",
+                        "cast": { "sealed": { "kem": ciphertext(), "body": PCS_B58 }, "tag": PCS_B58, "attestation": PCS_B58 } },
+                    "proof": { "type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022",
+                        "verificationMethod": "did:key:z6MkpVoteCastKey2222222222222222222222222222222#z6MkpVoteCastKey2222222222222222222222222222222",
+                        "proofPurpose": "assertionMethod", "created": TS, "proofValue": PCS_B58 } } })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_1,
+            checked!(
+                specs::vta::pcs::trustee::enrol::v0_1::Payload,
+                specs::vta::pcs::trustee::enrol::v0_1::Response,
+                trustee_payload(json!({ "manifest": sealed_manifest() })),
+                trustee_document("enrol", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
+                    "transportKey": { "trustee": 1, "key": PCS_B58, "pok": sigma() } }))
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_1,
+            checked!(
+                specs::vta::pcs::trustee::deal::v0_1::Payload,
+                specs::vta::pcs::trustee::deal::v0_1::Response,
+                trustee_payload(json!({ "manifest": sealed_manifest(), "transportKeys": [
+                    { "trustee": 1, "key": PCS_B58, "pok": sigma() },
+                    { "trustee": 2, "key": PCS_B58, "pok": sigma() },
+                    { "trustee": 3, "key": PCS_B58, "pok": sigma() }] })),
+                trustee_document("deal", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
+                    "dealing": { "dealer": 1, "commitments": [PCS_B58, PCS_B58], "pok": sigma(),
+                        "shares": [{ "recipient": 1, "share": { "kem": ciphertext(), "body": PCS_B58 } }, { "recipient": 2, "share": { "kem": ciphertext(), "body": PCS_B58 } }] } }))
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_1,
+            checked!(
+                specs::vta::pcs::trustee::keys::v0_1::Payload,
+                specs::vta::pcs::trustee::keys::v0_1::Response,
+                trustee_payload(json!({ "manifest": sealed_manifest(), "dealings": [
+                    { "dealer": 2, "commitments": [PCS_B58, PCS_B58], "pok": sigma(),
+                      "shares": [{ "recipient": 1, "share": { "kem": ciphertext(), "body": PCS_B58 } }, { "recipient": 2, "share": { "kem": ciphertext(), "body": PCS_B58 } }] }],
+                    "electionKey": election_key() })),
+                json!({ "complaints": [], "keyHeld": true })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_1,
+            checked!(
+                specs::vta::pcs::trustee::justify::v0_1::Payload,
+                specs::vta::pcs::trustee::justify::v0_1::Response,
+                trustee_payload(json!({ "recipient": 2 })),
+                trustee_document("justify", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
+                    "dealer": 1, "recipient": 2, "share": PCS_B58 }))
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TRUSTEE_DECRYPT_0_1,
+            checked!(
+                specs::vta::pcs::trustee::decrypt::v0_1::Payload,
+                specs::vta::pcs::trustee::decrypt::v0_1::Response,
+                trustee_payload(json!({ "targets": [{ "leafIndex": 7, "ciphertext": ciphertext() }],
+                    "closedAt": "2026-11-07T18:00:00Z" })),
+                trustee_document("decrypt", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
+                    "trustee": 1, "partials": [{ "target": { "leafIndex": 7, "ciphertext": ciphertext() },
+                        "d": PCS_B58, "proof": sigma() }] }))
             ),
         ),
         // ─── vta/witness — the witnessed party ───────────────────

@@ -535,6 +535,18 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_VTA_PCS_VOTE_0_1, Keyed),
     // Keeping a receipt already kept stores nothing new.
     (trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1, RetrySafe),
+    // As vote: a new encrypted cast under a new one-time key each time; keyed so a
+    // retry is answered with the same document.
+    (trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_1, Keyed),
+    // The trustee role: the transport key and the dealing are fixed on first use and
+    // derived again after, so a repeat is the same enrolment or dealing re-signed —
+    // which the ballot box answers as the first. keys keeps a share that is a
+    // function of the board; justify and decrypt keep nothing.
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_ENROL_0_1, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_DEAL_0_1, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_KEYS_0_1, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_1, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_DECRYPT_0_1, RetrySafe),
     // ── Witnessed party (`vta/witness/*`) ───────────────────────────────
     // Each step is safe to repeat (`vta/_shared/0.6/CONVENTIONS.md` §5): a
     // repeated open is an unsent, expiring session; a repeated present builds a

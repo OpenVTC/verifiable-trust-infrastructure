@@ -382,6 +382,10 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::vta::pcs::verify_attestation::v0_1::error_codes::NOT_FOUND,
         s::vta::pcs::verify_attestation::v0_1::error_codes::PARAMETERS_INVALID,
         s::vta::pcs::verify_attestation::v0_1::error_codes::UNSUPPORTED_SUITE,
+        // Declared for an engine that does not serve every level's cast task. This one
+        // serves `vta/pcs/vote` and `vta/pcs/vote-encrypted`, so every level registers and
+        // the code cannot occur here (trust-tasks-tf #845).
+        s::vta::pcs::voter::register::v0_1::error_codes::UNSUPPORTED_SECRECY,
         s::vta::services::disable::v1_0::error_codes::NOT_AUTHORIZED,
         s::vta::services::disable::v1_0::error_codes::NOT_FOUND,
         s::vta::services::drain::cancel::v1_0::error_codes::CONFLICT,
@@ -436,7 +440,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// The ceiling [`unwitnessed`]'s length may never exceed — a ratchet, not a
 /// count. Only *growing* the baseline past it needs an edit, which always
 /// wants a human decision.
-const UNWITNESSED_CEILING: usize = 372;
+const UNWITNESSED_CEILING: usize = 373;
 
 /// Every declared code in scope, keyed by code, with the URI declaring it.
 fn declared_in_scope() -> BTreeMap<&'static str, (&'static str, DeclaredErrorCode)> {

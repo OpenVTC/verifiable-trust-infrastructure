@@ -306,11 +306,10 @@ async fn the_voter_tasks_refuse_with_the_codes_their_specifications_declare() {
     let bad_key = json!({ "suite": "ps-ddh-bls12381", "votingKey": B58 });
     let (box_did, _) = box_key(5);
 
-    let sealed = manifest("sealed-1", &box_did, true, "sealed");
-    assert_eq!(
-        code(&handle_voter_register(&state, &auth, register_doc(&params, &sealed)).await),
-        "vta/pcs/voter/register:unsupportedSecrecy"
-    );
+    // Every level is served: a ticket is the same at each, only the cast differs.
+    let mut sealed = manifest("sealed-1", &box_did, true, "sealed");
+    sealed["trustees"] = json!({ "dids": ["did:key:z6MkT1", "did:key:z6MkT2"], "threshold": 2 });
+    ok(&handle_voter_register(&state, &auth, register_doc(&params, &sealed)).await);
     let m = manifest("agm-2027", &box_did, true, "open");
     let other_suite = json!({ "suite": "ps-ddh-bls12381-v9", "votingKey": params["votingKey"] });
     assert_eq!(

@@ -16,6 +16,43 @@ use trust_tasks_rs::specs::voting::{
 
 use crate::rules::{RuleError, key, option_keys};
 
+/// A tallied-encrypted election's rows (CONVENTIONS §9.7), from each option's decrypted total
+/// (`total(question, option)`) over `n` counted casts. `abstained` is derivable only where a
+/// cast selects at most one option; elsewhere it is 0.
+///
+/// # Errors
+/// [`RuleError::InvalidManifest`] for a question other than a choice, or a total missing.
+pub fn tallied_rows(
+    m: &Manifest,
+    total: impl Fn(&str, &str) -> Option<u64>,
+    n: u64,
+) -> Result<Vec<Value>, RuleError> {
+    let mut rows = Vec::with_capacity(m.questions.len());
+    for q in &m.questions {
+        let Question::Choice { max_selections, .. } = q else {
+            return Err(RuleError::InvalidManifest(
+                "a tallied-encrypted election asks choices only".into(),
+            ));
+        };
+        let qkey = key(q).unwrap_or_default();
+        let mut counts = BTreeMap::new();
+        let mut sum = 0u64;
+        for o in option_keys(q) {
+            let c = total(qkey, o)
+                .ok_or_else(|| RuleError::InvalidManifest(format!("no total for {qkey}/{o}")))?;
+            sum += c;
+            counts.insert(o.to_string(), c);
+        }
+        let abstained = if max_selections.get() == 1 {
+            n.saturating_sub(sum)
+        } else {
+            0
+        };
+        rows.push(json!({ "question": qkey, "choice": counts, "abstained": abstained }));
+    }
+    Ok(rows)
+}
+
 /// Totals per question, in the manifest's order.
 ///
 /// Text answers are disclosed only once `ballots_counted` reaches the manifest's

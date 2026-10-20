@@ -119,7 +119,10 @@ impl ElectionRecord {
         let mut by_leaf: Vec<&(Admitted, Encrypted)> = self.encrypted.values().collect();
         by_leaf.sort_by_key(|(a, _)| a.leaf);
         let mut targets = Vec::new();
-        if self.manifest.secrecy == register::SecrecyLevel::Sealed {
+        if by_leaf.is_empty() {
+            // No casts, nothing to decrypt: every total is zero (and the identity, which no wire
+            // form carries).
+        } else if self.manifest.secrecy == register::SecrecyLevel::Sealed {
             for (a, e) in &by_leaf {
                 if let Encrypted::Sealed(s) = e {
                     targets.push((Target::Leaf(a.leaf), s.kem));
@@ -204,33 +207,26 @@ impl ElectionRecord {
                 now,
             );
         } else {
-            let mut rows = Vec::new();
-            for q in &self.manifest.questions {
-                let register::Question::Choice { max_selections, .. } = q else {
-                    continue;
-                };
-                let qkey = rules::key(q).unwrap_or_default();
-                let mut counts = serde_json::Map::new();
-                let mut sum = 0u64;
-                for (t, m) in &plaintexts {
-                    if let Target::Option { question, option } = t
-                        && question == qkey
-                    {
-                        let c = read_total(m, n).map_err(|e| {
-                            Failure::standard("internalError", format!("{question}/{option}: {e}"))
-                        })?;
-                        sum += c;
-                        counts.insert(option.clone(), json!(c));
-                    }
+            let mut totals: HashMap<(String, String), u64> = HashMap::new();
+            for (t, m) in &plaintexts {
+                if let Target::Option { question, option } = t {
+                    let c = read_total(m, n).map_err(|e| {
+                        Failure::standard("internalError", format!("{question}/{option}: {e}"))
+                    })?;
+                    totals.insert((question.clone(), option.clone()), c);
                 }
-                // CONVENTIONS §9.7: derivable only when one selection is the most a cast makes.
-                let abstained = if max_selections.get() == 1 {
-                    n.saturating_sub(sum)
-                } else {
-                    0
-                };
-                rows.push(json!({ "question": qkey, "choice": counts, "abstained": abstained }));
             }
+            // With no casts there were no targets, and every total is zero.
+            let rows = tally::tallied_rows(
+                &self.manifest,
+                |q, o| {
+                    totals
+                        .get(&(q.to_string(), o.to_string()))
+                        .copied()
+                        .or((n == 0).then_some(0))
+                },
+                n,
+            )?;
             Value::Array(rows)
         };
         self.publish(n, questions, now)

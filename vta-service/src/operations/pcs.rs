@@ -94,6 +94,18 @@ pub enum PcsError {
     EvidenceInvalid(String),
     /// `member` names a DID this engine holds no `authentication` key of that the caller may act as.
     MemberNotHeld(String),
+    // The encrypted levels (`vta/pcs/vote-encrypted`, `vta/pcs/trustee/*`;
+    // operations::pcs_trustee).
+    WrongLevel,
+    ElectionKeyInvalid(String),
+    /// `trustee` names a DID this engine holds no `authentication` key of that the caller may act as.
+    TrusteeNotHeld(String),
+    NotTrustee,
+    TransportKeysInvalid(String),
+    KeyMismatch,
+    NoDealing,
+    KeyNotHeld,
+    NotClosed,
     App(AppError),
 }
 
@@ -151,6 +163,23 @@ impl std::fmt::Display for PcsError {
             Self::NotOpen => f.write_str("voting is not open"),
             Self::ReceiptInvalid(e) => write!(f, "the receipt is not this voter's: {e}"),
             Self::EvidenceInvalid(e) => write!(f, "the inclusion evidence does not verify: {e}"),
+            Self::WrongLevel => f.write_str(
+                "the manifest's level is open: an open ballot is cast with vta/pcs/vote",
+            ),
+            Self::ElectionKeyInvalid(e) => write!(f, "the election key does not hold together: {e}"),
+            Self::TrusteeNotHeld(did) => write!(
+                f,
+                "this agent holds no authentication key of {did} that you may act as, so it \
+                 cannot act as that trustee"
+            ),
+            Self::NotTrustee => f.write_str("the manifest does not name this DID as a trustee"),
+            Self::TransportKeysInvalid(e) => write!(f, "the transport keys do not verify: {e}"),
+            Self::KeyMismatch => f.write_str(
+                "the election key's verification key for this trustee is not the share computed here",
+            ),
+            Self::NoDealing => f.write_str("this engine has not dealt for this trustee and election"),
+            Self::KeyNotHeld => f.write_str("this engine holds no key share for this trustee and election"),
+            Self::NotClosed => f.write_str("voting has not closed: nothing is decrypted before it does"),
             Self::App(e) => write!(f, "{e}"),
         }
     }

@@ -94,10 +94,8 @@ fn vot_010_manifest_rules_are_enforced() {
         if field == "textReleaseThreshold" {
             assert_eq!(r, Ok(()));
         } else if field == "secrecy" {
-            assert!(
-                matches!(r, Err(RuleError::UnsupportedSecrecy(_))),
-                "{field}"
-            );
+            // Sealed without trustees: served, and refused for its trustee rules.
+            assert!(matches!(r, Err(RuleError::InvalidManifest(_))), "{field}");
         } else {
             assert!(
                 matches!(r, Err(RuleError::InvalidManifest(_))),
@@ -140,9 +138,10 @@ fn vot_062_trustee_rules_are_enforced_for_the_encrypted_levels() {
     };
     let check = |v: &Value| check_manifest_serving(&manifest(v), Some(BOX), ALL);
     assert_eq!(check(&sealed()), Ok(()));
-    // Not served yet: the ballot box and the VTC refuse the encrypted levels.
+    assert_eq!(check_manifest(&manifest(&sealed()), Some(BOX)), Ok(()));
+    // A service serving fewer levels refuses the others.
     assert!(matches!(
-        check_manifest(&manifest(&sealed()), Some(BOX)),
+        check_manifest_serving(&manifest(&sealed()), Some(BOX), &[SecrecyLevel::Open]),
         Err(RuleError::UnsupportedSecrecy(_))
     ));
 

@@ -369,6 +369,15 @@ const DESTRUCTIVE_VERBS: &[&str] = &[
     // client sends it, but the document is the vote — the act a host must
     // confirm, every time, whatever was approved before.
     "vote",
+    // `vta/pcs/vote-encrypted`: the same, for a sealed or tallied-encrypted ballot.
+    "vote-encrypted",
+    // `vta/pcs/trustee/justify`: reveals a share of the election key the trustee
+    // dealt, for good — the act a host must confirm.
+    "justify",
+    // `vta/pcs/trustee/decrypt`: the trustee's share of decrypting the result. With
+    // enough others it decides what the election says — a trustee's word, like
+    // `attest`.
+    "decrypt",
 ];
 
 /// The slug of a Trust Task URI — the part after [`SPEC_PREFIX`], with the
@@ -713,6 +722,12 @@ mod tests {
         // `vta/pcs/voter/read`: stores nothing, but signs as the member's
         // membership DID, so `--read-only` must not permit it — as `prove`.
         "read",
+        // `vta/pcs/trustee/{enrol,deal,keys}`: the trustee's transport key, its
+        // dealing and its key share — each kept, each published or confirmed as
+        // the trustee persona.
+        "enrol",
+        "deal",
+        "keys",
         "accept",
         "create",
         "update",

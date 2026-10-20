@@ -64,6 +64,9 @@ pub enum AuditFailure {
     /// The manifest, the parameters or an entry could not be read.
     #[error("{0}")]
     Unreadable(String),
+    /// A trustee step on an encrypted board does not hold (CONVENTIONS §9.6 – 9.7).
+    #[error("the trustee entry at index {index} does not hold: {reason}")]
+    CeremonyInvalid { index: u64, reason: String },
 }
 
 /// A board head: its size and root.
@@ -116,6 +119,9 @@ pub struct Verified {
     pub questions: Value,
 }
 
+#[path = "audit_encrypted.rs"]
+mod encrypted;
+
 fn canonical(v: &Value) -> Result<Vec<u8>, AuditFailure> {
     serde_json_canonicalizer::to_vec(v)
         .map_err(|e| AuditFailure::Unreadable(format!("canonicalize: {e}")))
@@ -165,6 +171,14 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
     } else {
         BoxRevote::Refuse
     };
+    if manifest.trustees.is_some() {
+        let ctx = election.trustee_context();
+        let verifier = BallotBox::new(e.params, election, revote, MemoryNullifiers::default())
+            .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
+        let (n, questions, result_entry) =
+            encrypted::recount(&manifest, &digest, ctx, &verifier, revote, e.entries)?;
+        return finish(e, &board, &digest, n, questions, result_entry);
+    }
     let verifier = BallotBox::new(e.params, election, revote, MemoryNullifiers::default())
         .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
     // Tag → (index of the counted cast, its ballot).
@@ -243,6 +257,19 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
         .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
     let questions = serde_json::to_value(&questions)
         .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
+    finish(e, &board, &digest, n, questions, result_entry)
+}
+
+/// Checks 5 and 6, on the totals the board gives.
+fn finish(
+    e: Evidence<'_>,
+    board: &Board,
+    digest: &[u8; 32],
+    n: u64,
+    questions: Value,
+    result_entry: Option<&Value>,
+) -> Result<Verified, AuditFailure> {
+    let digest = *digest;
     let published = e.result;
     if published["ballotsCounted"].as_u64() != Some(n) {
         return Err(AuditFailure::ResultMismatch(format!(

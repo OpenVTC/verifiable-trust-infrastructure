@@ -2670,6 +2670,21 @@ dispatch_table! {
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1 => pcs::handle_voter_receipt
         [ Mutating Metadata false ],
+    // The encrypted levels (`vta/pcs/vote-encrypted`, `vta/pcs/trustee/*`,
+    // trust-tasks-tf #845): each signs one document as the voter's one-time key or
+    // the trustee persona.
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_1 => pcs::handle_vote_encrypted
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_ENROL_0_1 => pcs::handle_trustee_enrol
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_DEAL_0_1 => pcs::handle_trustee_deal
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_KEYS_0_1 => pcs::handle_trustee_keys
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_1 => pcs::handle_trustee_justify
+        [ None Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_DECRYPT_0_1 => pcs::handle_trustee_decrypt
+        [ None Metadata true ],
     // ─── Witnessed party (`vta/witness/*`) ─────────────────────────
     // Classes match each specification's own declarations: the VTA acts as the
     // relationship DID at open and present; accept stores what the witness said.

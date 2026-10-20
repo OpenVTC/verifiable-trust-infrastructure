@@ -1670,12 +1670,6 @@ fn witnesses() -> Vec<Witness> {
             "a_creation_is_refused_for_each_rule_it_breaks"
         ),
         witness!(
-            s::elections::create::v0_1::error_codes::UNSUPPORTED_SECRECY,
-            crate::trust_tasks::election_tasks::CREATE_ERR_UNSUPPORTED_SECRECY,
-            "election_tasks.rs",
-            "a_creation_is_refused_for_each_rule_it_breaks"
-        ),
-        witness!(
             s::elections::create::v0_1::error_codes::COMMUNITY_MISMATCH,
             crate::trust_tasks::election_tasks::CREATE_ERR_COMMUNITY_MISMATCH,
             "election_tasks.rs",
@@ -2300,6 +2294,9 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // before anything else, so different bytes are `chunkMismatch` first;
         // the same bytes are the idempotent `stored: false`.
         s::website::upload::chunk::v0_1::error_codes::ALREADY_STORED,
+        // Declared for a community that does not serve a level. This one certifies all
+        // three (CONVENTIONS §9; trust-tasks-tf #847), so the code cannot occur here.
+        s::elections::create::v0_1::error_codes::UNSUPPORTED_SECRECY,
         // BASELINE-END
     ]
 }
@@ -2312,7 +2309,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// the baseline past the ceiling — a newly bound task declaring codes
 /// nothing tests — requires raising this constant, which is the point:
 /// that always wants a human decision, never a silent pass.
-const UNWITNESSED_CEILING: usize = 9;
+const UNWITNESSED_CEILING: usize = 10;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.

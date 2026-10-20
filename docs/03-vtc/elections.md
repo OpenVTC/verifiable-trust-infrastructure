@@ -72,9 +72,11 @@ where the manifest allows, a later vote replaces the earlier one.
 
 ### What the community checks on create
 
-The manifest must be valid as the ballot box would judge it, open-secrecy (sealed and
-tallied-encrypted are not served yet), this community's own, name a trusted ballot box, and use
-an identifier the community has not used. It is then recorded and registered **remote first**:
+The manifest must be valid as the ballot box would judge it, this community's own, name a
+trusted ballot box, and use an identifier the community has not used. A sealed or
+tallied-encrypted manifest names its trustees (`trustees.dids`, `threshold`): at least two, the
+threshold at least two, and neither the community nor the ballot box among them; it allows no
+running totals, and a tallied-encrypted one asks choice questions only (VTI-VOT-061 – 064). It is then recorded and registered **remote first**:
 `registered` only once the ballot box said so; refused at once means nothing is kept
 (`ballotBoxRefused`); no answer leaves it `pendingRegistration`, and the community's own sweeper
 is the one retry owner, with a capped backoff. No ticket is issued before registration.
@@ -115,9 +117,17 @@ tickets issued (VTI-VOT-072). Auditors' attestations — credentials from DIDs t
 in `board.auditors`, attesting the election and the head the result counts — are verified and
 kept beside it, never instead of it. A certified result authorizes nothing by itself.
 
-## Not yet served
+### Sealed and tallied-encrypted elections
 
-- Sealed and tallied-encrypted secrecy.
+The trustees generate the election key on the board before voting opens (`voting/trustees/*`,
+each trustee's VTA holding its keys — see [the trustee's round](../02-vta/pcs-engine.md#the-trustees-round)).
+If no key has formed by `votingOpens`, the ceremony has failed: no cast is admitted, and the
+community cancels the election. Voters cast with `vta/pcs/vote-encrypted`; after close any
+`threshold` trustees decrypt, and the ballot box publishes the result — every sealed ballot
+opened (or marked spoiled, uncounted, when it does not open to a valid ballot), or each
+option's total and nothing else. Certification re-runs all of it from the board: the ceremony,
+every cast's attestation over its encrypted form and a tallied ballot's proofs, every partial
+decryption, and the openings and totals they give.
 
 ## Code
 

@@ -49,7 +49,11 @@ use crate::server::AppState;
 const VOTER_STATE_TYPE: &str = "pcs-voter-state";
 const SUITE: &str = "ps-ddh-bls12381";
 const CAST_TYPE: &str = "https://trusttasks.org/spec/voting/ballot/cast/0.1#request";
+const CAST_ENCRYPTED_TYPE: &str =
+    "https://trusttasks.org/spec/voting/ballot/cast-encrypted/0.1#request";
 const RECEIPT_TYPE: &str = "https://trusttasks.org/spec/voting/ballot/cast/0.1#response";
+const ENCRYPTED_RECEIPT_TYPE: &str =
+    "https://trusttasks.org/spec/voting/ballot/cast-encrypted/0.1#response";
 const HEAD_TYPE: &str = "https://trusttasks.org/spec/voting/board/head/0.1#response";
 
 /// A voter engine's public record: one per (context, community, election).
@@ -354,9 +358,6 @@ pub async fn register(
     if manifest.community.as_str() != community {
         return Err(malformed("the manifest names another community"));
     }
-    if manifest.secrecy != register::SecrecyLevel::Open {
-        return Err(PcsError::UnsupportedSecrecy(manifest.secrecy.to_string()));
-    }
     let digest = rules::manifest_digest(manifest_value).map_err(rule)?;
     let digest_text = rules::digest_multibase(&digest);
     let election_id = manifest.election_id.as_str().to_string();
@@ -543,6 +544,11 @@ pub async fn vote(
         return Err(PcsError::ManifestMismatch);
     }
     rules::check_ballot(&manifest, &digest, &ballot).map_err(rule)?;
+    if manifest.secrecy != register::SecrecyLevel::Open {
+        return Err(malformed(
+            "a sealed or tallied-encrypted election is cast with vta/pcs/vote-encrypted",
+        ));
+    }
     if now < manifest.voting_opens || now >= manifest.voting_closes {
         return Err(PcsError::NotOpen);
     }
@@ -558,15 +564,98 @@ pub async fn vote(
         .cast_wire(&params, &ticket, ballot_value, &mut rng)
         .map_err(|e| PcsError::App(AppError::Internal(format!("cast: {e}"))))?;
 
-    let document = sign_as_one_time_key(&rec, &cast, now).await?;
-    let entry = serde_json::to_vec(&json!({ "kind": "cast", "cast": cast }))
+    let document = sign_as_one_time_key(&rec, CAST_TYPE, &cast, now).await?;
+    remember_leaf(&mut rec, "cast", &cast)?;
+    state.pcs_engine_ks.insert(key, &rec).await?;
+    Ok(json!({ "castDocument": document, "tag": cast["tag"] }))
+}
+
+/// Record the board leaf hash of a cast this engine built, so its receipt is recognised.
+fn remember_leaf(rec: &mut VoterRecord, kind: &str, cast: &Value) -> Result<()> {
+    let entry_jcs = serde_json_canonicalizer::to_vec(&json!({ "kind": kind, "cast": cast }))
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    let entry_jcs = serde_json_canonicalizer::to_vec(
-        &serde_json::from_slice::<Value>(&entry).map_err(|e| AppError::Internal(e.to_string()))?,
-    )
-    .map_err(|e| AppError::Internal(e.to_string()))?;
     rec.cast_leaves
         .push(rules::digest_multibase(&board::leaf_hash(&entry_jcs)));
+    Ok(())
+}
+
+/// `vta/pcs/vote-encrypted`: `vta/pcs/vote` for the sealed and tallied-encrypted levels — the
+/// ballot sealed to the election key, or encrypted option by option with its proofs, and the
+/// attestation over the encrypted form (CONVENTIONS §9.4 – 9.5). The plaintext ballot never
+/// leaves.
+#[allow(clippy::too_many_arguments)]
+pub async fn vote_encrypted(
+    state: &AppState,
+    caller: &Caller<'_>,
+    context_id: &str,
+    community: &str,
+    published: &Value,
+    manifest_value: &Value,
+    election_key: &Value,
+    ballot_value: &Value,
+    now: DateTime<Utc>,
+) -> Result<Value> {
+    let (params, voting_key) = voting_params(community, published)?;
+    let manifest: register::Manifest = serde_json::from_value(manifest_value.clone())
+        .map_err(|e| malformed(format!("manifest: {e}")))?;
+    let ballot: cast::Ballot = serde_json::from_value(ballot_value.clone())
+        .map_err(|e| malformed(format!("ballot: {e}")))?;
+    let election_id = manifest.election_id.as_str().to_string();
+    let key = voter_key(context_id, community, &election_id);
+
+    let _guard = write_lock().await;
+    let mut rec = record(state, &key).await?.ok_or(PcsError::NotFound)?;
+    if rec.voting_key != voting_key {
+        return Err(PcsError::ParametersInvalid(
+            "another voting key than registered".into(),
+        ));
+    }
+    let Some(trustees) = manifest
+        .trustees
+        .as_ref()
+        .filter(|_| manifest.secrecy != register::SecrecyLevel::Open)
+    else {
+        return Err(PcsError::WrongLevel);
+    };
+    let th = vti_voting::trustees::Threshold::new(
+        u32::try_from(trustees.threshold).unwrap_or(0),
+        u32::try_from(trustees.dids.len()).unwrap_or(0),
+    )
+    .map_err(|e| PcsError::ElectionKeyInvalid(e.to_string()))?;
+    let ek = vti_voting::wire::election_key(election_key, th)
+        .map_err(|e| PcsError::ElectionKeyInvalid(e.to_string()))?;
+    if ek.qualified.is_empty()
+        || ek.qualified.iter().any(|q| *q == 0 || *q > th.n)
+        || !ek.verification.keys().copied().eq(1..=th.n)
+    {
+        return Err(PcsError::ElectionKeyInvalid(
+            "its trustees are not the manifest's".into(),
+        ));
+    }
+    let digest = rules::manifest_digest(manifest_value).map_err(rule)?;
+    if rules::digest_multibase(&digest) != rec.manifest_digest {
+        return Err(PcsError::ManifestMismatch);
+    }
+    rules::check_ballot(&manifest, &digest, &ballot).map_err(rule)?;
+    if now < manifest.voting_opens || now >= manifest.voting_closes {
+        return Err(PcsError::NotOpen);
+    }
+    let st: VoterState = load_secret_json(state, &key, VOTER_STATE_TYPE, rec.seed_id).await?;
+    let Some(ticket_text) = st.ticket else {
+        return Err(PcsError::NotFound);
+    };
+    let election = election_of(&rec)?;
+    let ticket = Ticket::from_text(election.clone(), &ticket_text)
+        .map_err(|e| PcsError::App(AppError::Internal(e.to_string())))?;
+    let v = voter(state, caller, &rec, &params).await?;
+    let mut rng = vti_voting::rand::rngs::OsRng;
+    let form = vti_voting::voter::encrypted_form(&manifest, &election, &ek, ballot_value, &mut rng)
+        .map_err(|e| PcsError::BallotInvalid(e.to_string()))?;
+    let cast = v
+        .cast_encrypted_wire(&params, &ticket, &form, &mut rng)
+        .map_err(|e| PcsError::App(AppError::Internal(format!("cast: {e}"))))?;
+    let document = sign_as_one_time_key(&rec, CAST_ENCRYPTED_TYPE, &cast, now).await?;
+    remember_leaf(&mut rec, "encryptedCast", &cast)?;
     state.pcs_engine_ks.insert(key, &rec).await?;
     Ok(json!({ "castDocument": document, "tag": cast["tag"] }))
 }
@@ -575,6 +664,7 @@ pub async fn vote(
 /// record of it outlives this call (VTI-VOT-003).
 async fn sign_as_one_time_key(
     rec: &VoterRecord,
+    type_uri: &str,
     cast: &Value,
     now: DateTime<Utc>,
 ) -> Result<Value> {
@@ -594,7 +684,7 @@ async fn sign_as_one_time_key(
     .map_err(|e| AppError::Internal(format!("one-time key: {e}")))?;
     let doc = json!({
         "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        "type": CAST_TYPE,
+        "type": type_uri,
         "issuer": did,
         "recipient": rec.ballot_box,
         "issuedAt": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -637,9 +727,12 @@ pub async fn receipt(
     let rec = record(state, &key).await?.ok_or(PcsError::NotFound)?;
 
     // The receipt: the ballot box's signed answer to a cast this engine built.
-    if receipt["type"].as_str() != Some(RECEIPT_TYPE) {
+    if !matches!(
+        receipt["type"].as_str(),
+        Some(RECEIPT_TYPE | ENCRYPTED_RECEIPT_TYPE)
+    ) {
         return Err(PcsError::ReceiptInvalid(
-            "not a voting/ballot/cast response".into(),
+            "not a voting/ballot/cast or cast-encrypted response".into(),
         ));
     }
     let signer = proven_issuer(state, receipt)

@@ -25,6 +25,10 @@
 //! 3. [`PcsTask::Vote`] — the signed `voting/ballot/cast` document, which the device sends to
 //!    the ballot box itself, after a pause, and resends unchanged if the answer is lost;
 //! 4. [`PcsTask::VoterReceipt`] — the ballot box's receipt, kept and checked.
+//!
+//! In a sealed or tallied-encrypted election, step 3 is [`PcsTask::VoteEncrypted`]: the signed
+//! `voting/ballot/cast-encrypted` document, built under the election key the ballot box's
+//! `voting/trustees/status` reports.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -56,6 +60,7 @@ pub enum PcsTask {
     Vote,
     VoterReceipt,
     VoterRead,
+    VoteEncrypted,
 }
 
 fn invalid<E: std::fmt::Display>(e: E) -> FfiError {
@@ -129,6 +134,7 @@ pub fn build_pcs_task(
         PcsTask::Vote => signed::<pcs::vote::v0_1::Payload>(&env, p, s),
         PcsTask::VoterReceipt => signed::<pcs::voter::receipt::v0_1::Payload>(&env, p, s),
         PcsTask::VoterRead => signed::<pcs::voter::read::v0_1::Payload>(&env, p, s),
+        PcsTask::VoteEncrypted => signed::<pcs::vote_encrypted::v0_1::Payload>(&env, p, s),
     }
 }
 
@@ -156,6 +162,7 @@ pub fn parse_pcs_response(task: PcsTask, json: String) -> Result<String, FfiErro
         PcsTask::Vote => response::<pcs::vote::v0_1::Response>(j),
         PcsTask::VoterReceipt => response::<pcs::voter::receipt::v0_1::Response>(j),
         PcsTask::VoterRead => response::<pcs::voter::read::v0_1::Response>(j),
+        PcsTask::VoteEncrypted => response::<pcs::vote_encrypted::v0_1::Response>(j),
     }
 }
 

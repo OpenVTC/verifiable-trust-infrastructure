@@ -69,7 +69,8 @@ naming another member DID is refused `memberMismatch`.
 |---|---|---|
 | `pcs-vetter` (`pcsVetter`) | `root-request`, `root-accept`, `tokens/*`, `attest`, `vetter/show` | `admin`, `initiator` |
 | `pcs-applicant` (`pcsApplicant`) | `applications/*`, `verify-attestation`, `prove` | `admin`, `initiator` |
-| `pcs-voter` (`pcsVoter`) | `voter/register`, `voter/accept`, `vote`, `voter/receipt` | `admin`, `initiator` |
+| `pcs-voter` (`pcsVoter`) | `voter/register`, `voter/read`, `voter/accept`, `vote`, `vote-encrypted`, `voter/receipt` | `admin`, `initiator` |
+| `pcs-trustee` (`pcsTrustee`) | `trustee/enrol`, `trustee/deal`, `trustee/keys`, `trustee/justify`, `trustee/decrypt` | `admin`, `initiator` |
 
 None is `sign`, and `sign` confers none (VTI-VTA-007). `application`
 derives neither: an agent vets or applies for its principal only when granted the
@@ -105,6 +106,36 @@ member's voting history. The cast never carries the member's DID (VTI-VOT-003), 
 audit names the election, never a tag, a cast or a receipt (VTI-VOT-100). An MCP
 host confirms every `vote` (`vta-mcp`'s guard counts it destructive).
 
+In a **sealed** or **tallied-encrypted** election (VTI-VOT-060 – 064, conventions §9) step 4
+is `vta/pcs/vote-encrypted`, given the election key the ballot box's
+`voting/trustees/status` reports: the ballot is sealed to that key whole, or encrypted option
+by option with proofs that each is 0 or 1 and the question's count is one the manifest admits.
+The attestation is made over the encrypted form, and the cleartext ballot never leaves the VTA.
+`vta/pcs/vote` refuses such a manifest. The receipt is checked the same way.
+
+## The trustee's round
+
+A trustee of a sealed or tallied-encrypted election holds a transport key and a share of the
+election key; any `threshold` of the trustees decrypt the result after close, and fewer cannot.
+The VTA is the custodian of both, and signs each `voting/trustees/*` request as the trustee — a
+persona it holds, named in the manifest's `trustees.dids`. The client carries the documents to
+the ballot box (TSP or DIDComm; HTTPS where it has no session):
+
+| Step | VTA task | Then, to the ballot box |
+|---|---|---|
+| 1 | `vta/pcs/trustee/enrol` — the transport key, made on first use from a fresh path under the context's base | `voting/trustees/enrol` |
+| 2 | `vta/pcs/trustee/deal`, with every trustee's transport key — the polynomial's commitments and each trustee's share sealed to its transport key | `voting/trustees/deal` |
+| 3 | `vta/pcs/trustee/keys`, with every dealing — each share dealt to this trustee opened and checked; the dealers whose shares fail are the complaints | `voting/trustees/confirm` |
+| 4 | `vta/pcs/trustee/justify`, if complained of — the share dealt to the complainant, in the clear | `voting/trustees/justify` |
+| 5 | `vta/pcs/trustee/keys` again, with the formed `electionKey` — the trustee's share computed, checked against its published verification key, and kept | — |
+| 6 | after close, `vta/pcs/trustee/decrypt` with the targets `status` lists — one partial decryption per target, each with its proof. Refused before `closedAt` (VTI-VOT-063) | `voting/trustees/decrypt` |
+
+The transport secret and the polynomial are re-derived from the trustee's path on every use,
+domain-separated, so a repeated `deal` is the same dealing and `justify` reveals exactly the
+share that was dealt. The key share is the sum of other trustees' shares and cannot be
+re-derived; it is kept wrapped under the seed-derived KEK (`secret:trustee:…` in
+`pcs_engine`). No task returns either. An MCP host confirms every `justify` and `decrypt`.
+
 ## Audit
 
 Every task that changes state or produces an artefact is audited (`pcs.*`): the
@@ -132,6 +163,8 @@ with it.
 
 ## Not yet
 
+- **Driving the trustee's round** from a CLI or the console. The tasks and the SDK methods
+  (`VtaClient::pcs_trustee_*`) are there; a client still has to carry each step.
 - **Withdrawal.** A vetter's withdrawal of one attestation (the tag and a proof of
   knowledge of its key) is an engine operation, and joins the family once the
   community-side task that accepts it is specified.

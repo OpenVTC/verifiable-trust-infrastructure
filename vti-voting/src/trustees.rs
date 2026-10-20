@@ -389,6 +389,15 @@ impl TransportSecret {
         self.secret.to_bytes()
     }
 
+    /// The secret from 64 uniformly random bytes — a custodian's domain-separated derivation —
+    /// reduced mod ℓ, so the same bytes are the same key.
+    ///
+    /// # Errors
+    /// [`TrusteeError::Encoding`] in the negligible case the reduction is zero.
+    pub fn from_wide(trustee: u32, wide: &[u8; 64]) -> Result<Self> {
+        Self::from_bytes(trustee, Scalar::from_bytes_mod_order_wide(wide).to_bytes())
+    }
+
     /// # Errors
     /// [`TrusteeError::Encoding`] for a non-canonical or zero scalar.
     pub fn from_bytes(trustee: u32, bytes: [u8; 32]) -> Result<Self> {

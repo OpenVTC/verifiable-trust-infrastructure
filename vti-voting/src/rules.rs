@@ -158,10 +158,15 @@ fn check_trustees(m: &Manifest) -> Result<(), RuleError> {
     Ok(())
 }
 
-/// The secrecy levels served. The encrypted levels join when the ballot box runs the trustees'
-/// ceremony and admits encrypted casts (CONVENTIONS §9); until then a ballot box refuses them
-/// (`unsupportedSecrecy`), and so does a VTC creating one.
-pub const SERVED_LEVELS: &[SecrecyLevel] = &[SecrecyLevel::Open];
+/// The secrecy levels served: all three. The encrypted levels are served end to end — the
+/// trustees' ceremony and encrypted casts at the ballot box ([`crate::service`]), their
+/// certification ([`crate::audit`]) — so a ballot box registers them and a VTC creates them.
+/// `unsupportedSecrecy` remains for a level a service built from this crate would not serve.
+pub const SERVED_LEVELS: &[SecrecyLevel] = &[
+    SecrecyLevel::Open,
+    SecrecyLevel::Sealed,
+    SecrecyLevel::TalliedEncrypted,
+];
 
 /// A manifest's cross-field rules (VTI-VOT-010), as a ballot box checks it at registration and
 /// a VTC at creation. `ballot_box` is the checking service's own DID, when it is one.

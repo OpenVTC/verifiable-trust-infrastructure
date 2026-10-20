@@ -109,13 +109,6 @@ impl From<RuleError> for Failure {
     }
 }
 
-/// The secrecy levels this ballot box serves: all three (CONVENTIONS §9).
-pub const SERVED_LEVELS: &[register::SecrecyLevel] = &[
-    register::SecrecyLevel::Open,
-    register::SecrecyLevel::Sealed,
-    register::SecrecyLevel::TalliedEncrypted,
-];
-
 /// Who asked. A read of a public board needs nobody; everything else is decided on the DID the
 /// binding proved.
 #[derive(Debug, Clone, Copy)]
@@ -655,7 +648,7 @@ impl BallotBox {
         if rules::digest_from_multibase(p.manifest_digest.as_str()) != Some(digest) {
             return Err(RuleError::ManifestMismatch.into());
         }
-        rules::check_manifest_serving(&p.manifest, Some(&self.did), SERVED_LEVELS)?;
+        rules::check_manifest(&p.manifest, Some(&self.did))?;
         let parameters = payload["parameters"].clone();
         let key = (
             community.clone(),
