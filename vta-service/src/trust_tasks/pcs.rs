@@ -755,6 +755,21 @@ pub(super) async fn handle_voter_register(
         Err(r) => return r,
     };
     let manifest = value_of(&doc, "manifest");
+    // Item 9: the member's key is found, and the caller's standing to act as it checked, before
+    // anything is allocated.
+    let member = match doc.payload.get("member").and_then(Value::as_str) {
+        None => None,
+        Some(did) => {
+            match crate::operations::pcs_voter::PersonaTicketSigner::for_member(state, auth, did)
+                .await
+            {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    return refuse(&doc, e, |_| Some(t::error_codes::MEMBER_NOT_HELD));
+                }
+            }
+        }
+    };
     match crate::operations::pcs_voter::register(
         state,
         &caller(auth),
@@ -762,6 +777,9 @@ pub(super) async fn handle_voter_register(
         &community,
         &value_of(&doc, "parameters"),
         &manifest,
+        member
+            .as_ref()
+            .map(|s| s as &dyn crate::operations::pcs_voter::TicketSigner),
     )
     .await
     {
@@ -787,6 +805,7 @@ pub(super) async fn handle_voter_register(
             PcsError::ParametersInvalid(_) => Some(t::error_codes::PARAMETERS_INVALID),
             PcsError::UnsupportedSecrecy(_) => Some(t::error_codes::UNSUPPORTED_SECRECY),
             PcsError::TicketHeld => Some(t::error_codes::TICKET_HELD),
+            PcsError::MemberNotHeld(_) => Some(t::error_codes::MEMBER_NOT_HELD),
             _ => None,
         }),
     }

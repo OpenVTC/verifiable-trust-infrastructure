@@ -391,3 +391,66 @@ async fn the_voter_tasks_need_the_voter_capability() {
     .await;
     assert_eq!(code(&out), "permissionDenied");
 }
+
+/// `member` (register item 9): the VTA signs the request to the community as a persona it holds,
+/// keeps that document, and returns it unchanged on a repeat — so the community answers a resend
+/// with its first answer. A DID it holds no key of is refused before anything is allocated.
+#[tokio::test]
+async fn the_ticket_request_is_signed_as_the_member_and_kept() {
+    let (state, _dir) = build_signing_test_app_state().await;
+    crate::contexts::create_context(&state.contexts_ks, "member", "member")
+        .await
+        .unwrap();
+    let auth = claims("did:key:z6MkVoter", Role::Admin, "member");
+    let persona = crate::operations::persona::test_fixture::did_key_persona(
+        &state.keys_ks,
+        &state.internal_ks,
+        &state.contexts_ks,
+        &state.acl_ks,
+        &state.seed_store,
+        &state.audit_sink,
+        "member",
+        "membership-key",
+    )
+    .await;
+    let mut rng = StdRng::seed_from_u64(0xB7);
+    let reg = Registrar::generate(COMMUNITY, &mut rng).unwrap();
+    let params = json!({ "suite": "ps-ddh-bls12381", "votingKey": reg.public_text().unwrap() });
+    let (box_did, _) = box_key(9);
+    let m = manifest("agm-2028", &box_did, true, "open");
+    let with_member = |did: &str| {
+        doc(
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_1,
+            json!({ "contextId": "member", "community": COMMUNITY, "parameters": params,
+                    "manifest": m, "member": did }),
+        )
+    };
+
+    // A DID this VTA holds no key of: refused, and no election is recorded.
+    let out = handle_voter_register(&state, &auth, with_member("did:key:z6MkNotHeldHere")).await;
+    assert_eq!(code(&out), "vta/pcs/voter/register:memberNotHeld");
+
+    let first = ok(&handle_voter_register(&state, &auth, with_member(&persona.did)).await);
+    let ticket = &first["ticketDocument"];
+    assert_eq!(
+        ticket["type"],
+        "https://trusttasks.org/spec/vtc/elections/tickets/issue/0.1"
+    );
+    assert_eq!(ticket["issuer"], persona.did.as_str());
+    assert_eq!(ticket["recipient"], COMMUNITY);
+    assert_eq!(ticket["payload"]["request"], first["request"]);
+    assert_eq!(ticket["payload"]["manifestDigest"], first["manifestDigest"]);
+    // Signed by the member, for authentication: what the community verifies it against.
+    let signer = vta_sdk::trust_task_proof::verify_trust_task_proof_value(
+        ticket,
+        &vta_sdk::trust_task_proof::TrustTaskVmResolver::did_key_only(),
+    )
+    .await
+    .expect("the member's proof verifies");
+    assert_eq!(signer, persona.did);
+    assert_eq!(ticket["proof"]["proofPurpose"], "authentication");
+
+    // A repeat returns the same document, byte for byte.
+    let again = ok(&handle_voter_register(&state, &auth, with_member(&persona.did)).await);
+    assert_eq!(again["ticketDocument"], first["ticketDocument"]);
+}

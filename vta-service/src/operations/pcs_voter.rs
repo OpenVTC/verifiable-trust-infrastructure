@@ -73,6 +73,11 @@ pub struct VoterRecord {
     /// The ticket request as sent: answered again unchanged until the ticket is held, so the
     /// community's replayed answer can still be unblinded.
     pub request: Value,
+    /// The `vtc/elections/tickets/issue` document signed as each member this request was asked
+    /// for, kept so a repeat returns it unchanged and the community answers a resend with its
+    /// first answer.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub ticket_documents: std::collections::BTreeMap<String, Value>,
     pub ticket_held: bool,
     /// The board leaf hash of every cast this engine built, multibase — how a receipt is
     /// recognised as this voter's without recomputing the tag.
@@ -172,8 +177,137 @@ fn election_of(r: &VoterRecord) -> Result<Election> {
     Election::new(&r.community, id, digest).map_err(|e| malformed(e.to_string()))
 }
 
+/// Signs the `vtc/elections/tickets/issue` request as the member (`vta/pcs/voter/register`
+/// item 9). Built by the task handler once it has found the member's `authentication` key and
+/// checked the caller may act as it — so a refused `member` allocates nothing here.
+#[async_trait::async_trait]
+pub trait TicketSigner: Send + Sync {
+    /// The member DID the document is issued as.
+    fn did(&self) -> &str;
+    /// Attach the member's `authentication` proof to `doc`.
+    async fn sign(&self, doc: &mut Value) -> Result<()>;
+}
+
+/// [`TicketSigner`] as a persona this VTA holds: the member's `authentication` key, through the
+/// gated oracle as `ProtocolDefined` input the VTA built itself, exactly as the witnessed party
+/// signs (`operations::witness`). It signs one document type with one payload, and nothing else.
+pub struct PersonaTicketSigner<'a> {
+    state: &'a AppState,
+    auth: &'a crate::auth::AuthClaims,
+    did: String,
+    key_id: String,
+    verification_method: String,
+}
+
+impl<'a> PersonaTicketSigner<'a> {
+    /// The signer for `did`, when this VTA holds an `authentication` key of it the caller may
+    /// act as.
+    ///
+    /// # Errors
+    /// [`PcsError::MemberNotHeld`], the same whether the DID is unknown here or held for a
+    /// context the caller may not act in.
+    pub async fn for_member(
+        state: &'a AppState,
+        auth: &'a crate::auth::AuthClaims,
+        did: &str,
+    ) -> Result<Self> {
+        use crate::operations::persona::{PersonaStores, Relationship, persona_key_for};
+        let not_held = || PcsError::MemberNotHeld(did.to_string());
+        let key = persona_key_for(
+            PersonaStores::from_state(state),
+            auth,
+            did,
+            Relationship::Authentication,
+        )
+        .await
+        .map_err(|_| not_held())?
+        .ok_or_else(not_held)?;
+        crate::operations::keys::require_key_nameable(
+            &state.keys_ks,
+            &state.acl_ks,
+            auth,
+            &key.key_id,
+        )
+        .await
+        .map_err(|_| not_held())?;
+        Ok(Self {
+            state,
+            auth,
+            did: did.to_string(),
+            key_id: key.key_id,
+            verification_method: key.verification_method,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl TicketSigner for PersonaTicketSigner<'_> {
+    fn did(&self) -> &str {
+        &self.did
+    }
+
+    async fn sign(&self, doc: &mut Value) -> Result<()> {
+        use crate::operations::room_issuance::{SigningContext, VtaKeySigner};
+        let ctx = SigningContext {
+            keys_ks: &self.state.keys_ks,
+            imported_ks: &self.state.imported_ks,
+            internal_ks: &self.state.internal_ks,
+            contexts_ks: &self.state.contexts_ks,
+            acl_ks: &self.state.acl_ks,
+            seed_store: &self.state.seed_store,
+            audit: &self.state.audit_sink,
+            auth: self.auth,
+        };
+        let signer = VtaKeySigner::new(ctx, &self.key_id, &self.verification_method);
+        let proof = affinidi_data_integrity::DataIntegrityProof::sign(
+            &*doc,
+            &signer,
+            affinidi_data_integrity::SignOptions::new()
+                .with_proof_purpose("authentication")
+                .with_created(Utc::now()),
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("sign the ticket request as {}: {e}", self.did)))?;
+        doc["proof"] = serde_json::to_value(proof)
+            .map_err(|e| AppError::Internal(format!("encode the proof: {e}")))?;
+        Ok(())
+    }
+}
+
+/// The tickets/issue Type URI, bare: every community dispatches it in this form.
+const TICKETS_ISSUE: &str = "https://trusttasks.org/spec/vtc/elections/tickets/issue/0.1";
+
+/// The request to the community, signed as `signer` (item 9): a fresh id, the community as
+/// recipient, expiring no later than voting closes, and exactly this answer's payload.
+async fn ticket_document(
+    signer: &dyn TicketSigner,
+    community: &str,
+    voting_closes: DateTime<Utc>,
+    answer: &Value,
+) -> Result<Value> {
+    let now = Utc::now();
+    let expires = (now + chrono::Duration::hours(1)).min(voting_closes);
+    let stamp = |t: DateTime<Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let mut doc = json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": TICKETS_ISSUE,
+        "issuer": signer.did(),
+        "recipient": community,
+        "issuedAt": stamp(now),
+        "expiresAt": stamp(expires.max(now)),
+        "payload": {
+            "electionId": answer["electionId"],
+            "manifestDigest": answer["manifestDigest"],
+            "request": answer["request"],
+        },
+    });
+    signer.sign(&mut doc).await?;
+    Ok(doc)
+}
+
 /// `vta/pcs/voter/register`: the blinded ticket request under this election's voter key,
-/// creating the key on first use.
+/// creating the key on first use — and, with a `member`, the request to the community signed as
+/// that member.
 pub async fn register(
     state: &AppState,
     caller: &Caller<'_>,
@@ -181,6 +315,7 @@ pub async fn register(
     community: &str,
     published: &Value,
     manifest_value: &Value,
+    member: Option<&dyn TicketSigner>,
 ) -> Result<Value> {
     let (params, voting_key) = voting_params(community, published)?;
     let manifest: register::Manifest = serde_json::from_value(manifest_value.clone())
@@ -204,11 +339,28 @@ pub async fn register(
         if existing.ticket_held {
             return Err(PcsError::TicketHeld);
         }
-        return Ok(json!({
+        let mut answer = json!({
             "electionId": election_id,
             "manifestDigest": digest_text,
             "request": existing.request,
-        }));
+        });
+        if let Some(signer) = member {
+            let mut existing = existing;
+            let doc = match existing.ticket_documents.get(signer.did()) {
+                Some(kept) => kept.clone(),
+                None => {
+                    let doc =
+                        ticket_document(signer, community, existing.voting_closes, &answer).await?;
+                    existing
+                        .ticket_documents
+                        .insert(signer.did().to_string(), doc.clone());
+                    state.pcs_engine_ks.insert(key, &existing).await?;
+                    doc
+                }
+            };
+            answer["ticketDocument"] = doc;
+        }
+        return Ok(answer);
     }
 
     let (path, seed_id) = allocate_member_path(state, context_id).await?;
@@ -247,6 +399,7 @@ pub async fn register(
         id: request["id"].as_str().unwrap_or_default().to_string(),
         request: request.clone(),
         ticket_held: false,
+        ticket_documents: Default::default(),
         cast_leaves: Vec::new(),
         created_at: Utc::now(),
     };
@@ -261,8 +414,17 @@ pub async fn register(
         },
     )
     .await?;
+    let mut answer =
+        json!({ "electionId": election_id, "manifestDigest": digest_text, "request": request });
+    let mut rec = rec;
+    if let Some(signer) = member {
+        let doc = ticket_document(signer, community, rec.voting_closes, &answer).await?;
+        rec.ticket_documents
+            .insert(signer.did().to_string(), doc.clone());
+        answer["ticketDocument"] = doc;
+    }
     state.pcs_engine_ks.insert(key, &rec).await?;
-    Ok(json!({ "electionId": election_id, "manifestDigest": digest_text, "request": request }))
+    Ok(answer)
 }
 
 /// `vta/pcs/voter/accept`: unblind the community's answer into the ticket and keep it wrapped.

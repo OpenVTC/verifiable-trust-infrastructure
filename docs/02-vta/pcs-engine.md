@@ -92,8 +92,8 @@ The same engine votes in a community's elections (community voting, VTI-VOT-020 
 
 | Step | Who | Task |
 |---|---|---|
-| 1 | client → VTA | `vta/pcs/voter/register` — a fresh key for this election and the blinded ticket request; a repeat before the ticket is held answers with the same request |
-| 2 | client → community | `vtc/elections/tickets/issue` — the community signs the ticket blind, one per eligible member |
+| 1 | client → VTA | `vta/pcs/voter/register` — a fresh key for this election and the blinded ticket request; a repeat before the ticket is held answers with the same request. With `member` (a persona this VTA holds), also `ticketDocument`: the request to the community already signed as that member, kept and returned unchanged on a repeat |
+| 2 | client → community | `vtc/elections/tickets/issue` — `ticketDocument` as it came (or the request signed by a member DID the client holds); the community signs the ticket blind, one per eligible member |
 | 3 | client → VTA | `vta/pcs/voter/accept` — unblinded and kept wrapped |
 | 4 | client → VTA | `vta/pcs/vote` — the ballot checked against the manifest, the cast built, and the `voting/ballot/cast` document returned **signed by a key made for that cast alone** and never kept |
 | 5 | client → ballot box | the cast document, from the client's own connection, after a pause; resent unchanged if the answer is lost |

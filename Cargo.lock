@@ -3499,7 +3499,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.6",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -7805,7 +7805,7 @@ dependencies = [
  "aes-gcm 0.10.3",
  "aes-kw",
  "argon2 0.5.3",
- "base64 0.22.1",
+ "base64 0.21.7",
  "bitfields",
  "block-padding 0.3.3",
  "blowfish",
@@ -9460,7 +9460,7 @@ checksum = "7bd22781911de0ca6debda95f073c8f18bec65d1a94f1fa9573f3102e514cea4"
 dependencies = [
  "ahash",
  "annotate-snippets",
- "base64 0.22.1",
+ "base64 0.21.7",
  "encoding_rs_io",
  "getrandom 0.3.4",
  "granit-parser",
@@ -10858,8 +10858,7 @@ dependencies = [
 [[package]]
 name = "trust-tasks-rs"
 version = "0.32.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94e4e0f61e95144bc759b9b3c22b74d1b51d219a0b4ea0fe4feaaeebda128639"
+source = "git+https://github.com/trustoverip/dtgwg-trust-tasks-tf?branch=feat%2Fvoter-signs-ticket#9a75a91f6408ea343f16f5e7e1b558d80dc35227"
 dependencies = [
  "async-trait",
  "chrono",

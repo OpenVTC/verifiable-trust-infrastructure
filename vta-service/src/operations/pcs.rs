@@ -70,7 +70,10 @@ pub enum PcsError {
     LabelNotLive(String),
     NoRequestInFlight,
     CredentialInvalid(String),
-    CountExceedsDrip { asked: usize, drip: usize },
+    CountExceedsDrip {
+        asked: usize,
+        drip: usize,
+    },
     AlreadyInFlight,
     NoDrawInFlight,
     TokensInvalid(String),
@@ -89,6 +92,8 @@ pub enum PcsError {
     NotOpen,
     ReceiptInvalid(String),
     EvidenceInvalid(String),
+    /// `member` names a DID this engine holds no `authentication` key of that the caller may act as.
+    MemberNotHeld(String),
     App(AppError),
 }
 
@@ -133,6 +138,11 @@ impl std::fmt::Display for PcsError {
                 "the engine holds this election under another manifest digest or voting key",
             ),
             Self::UnsupportedSecrecy(s) => write!(f, "secrecy level {s} is not served by 0.1"),
+            Self::MemberNotHeld(did) => write!(
+                f,
+                "this agent holds no authentication key of {did} that you may act as, so it \
+                 cannot sign the ticket request as it"
+            ),
             Self::TicketHeld => f.write_str("a ticket for this election is already held"),
             Self::ManifestMismatch => f.write_str(
                 "the manifest or ballot is not the one this election was registered with",
