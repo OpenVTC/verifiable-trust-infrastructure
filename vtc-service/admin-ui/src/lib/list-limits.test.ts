@@ -55,6 +55,7 @@ const REVOCATIONS = `${T}/vtc/vetting/revocations/list/0.1`;
 const VETTERS = `${T}/vtc/vetting/vetters/list/0.1`;
 const ACTIVITY = `${T}/git-ns/activity/list/0.1`;
 const DIRECTORY_ENTRIES = `${T}/vtc/directory/entries/list/0.1`;
+const ELECTIONS = `${T}/vtc/elections/list/0.1`;
 
 interface Site {
   /** The file, under `src/`. */
@@ -105,6 +106,8 @@ const SITES: Site[] = [
   // Rooms the community owns, and one room's members, every page.
   { file: "lib/community-rooms-api.ts", site: "COMMUNITY_ROOMS_LIST_TASK, {\n      limit: COMMUNITY_PAGE", uri: COMMUNITY_ROOMS, from: ["COMMUNITY_PAGE"] },
   { file: "lib/community-rooms-api.ts", site: "roomId,\n      limit: COMMUNITY_PAGE", uri: COMMUNITY_ROOM_MEMBERS, from: ["COMMUNITY_PAGE"] },
+  // The community's elections, every page.
+  { file: "lib/elections-api.ts", site: "{ limit: PAGE, ...(cursor ? { cursor } : {}) }", uri: ELECTIONS, from: ["PAGE"] },
   // Room usage, every page (room detail, Room usage).
   { file: "lib/rooms-api.ts", site: "limit: USAGE_PAGE", uri: ROOMS_USAGE, from: ["USAGE_PAGE"] },
   // Storage configs, every page (Storage, a room's "other storage").
