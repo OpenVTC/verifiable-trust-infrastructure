@@ -44,8 +44,8 @@ use vta_sdk::did_templates::{
     referral_service, tsp_service,
 };
 use vta_sdk::provision_client::{
-    EphemeralSetupKey, OperatorMessages, ProvisionAsk, ProvisionResultV2, ResolvedVta, VtaEvent,
-    VtaIntent, VtaReply, resolve_vta, run_connection_test, run_provision_flight,
+    EphemeralSetupKey, OperatorMessages, Protocol, ProvisionAsk, ProvisionResultV2, ResolvedVta,
+    VtaEvent, VtaIntent, VtaReply, resolve_vta, run_connection_test, run_provision_flight,
 };
 
 use vti_common::config::StoreConfig;
@@ -121,6 +121,7 @@ async fn collect_interactive(
         // No mediator, nothing to advertise. The document carries REST only.
         None => Vec::new(),
     };
+    let provision_transport = prompt_provision_transport(resolved.as_ref())?;
 
     // 3. Mint the ephemeral DID first so we can show it to the
     //    operator before they pick a secret-store backend (the
@@ -161,6 +162,7 @@ async fn collect_interactive(
         // threaded through every intervening prompt.
         inputs: WizardInputs {
             transports,
+            provision_transport,
             ..inputs
         },
         webvh,
@@ -468,6 +470,89 @@ pub(crate) struct WizardInputs {
     /// configuration — written to `config.toml` as `[acl] single_admin_mode =
     /// true`, only when chosen, and never settable online.
     pub(crate) single_admin_mode: bool,
+    /// The transport to provision over, or `None` for the runner's automatic
+    /// TSP > DIDComm > REST. Automatic moves on only when a transport fails to
+    /// connect; a reply lost after the VTA acted on the request is final,
+    /// because the setup DID's one-time hand-off is spent by then. Forcing one
+    /// up front is the way round a mediator that drops replies (OpenVTC #501).
+    /// Not persisted: it only decides how setup reaches the VTA.
+    pub(crate) provision_transport: Option<ProvisionTransport>,
+}
+
+/// The transport `vtc setup` provisions over, when the operator forces one.
+///
+/// Distinct from [`Transport`], which selects what the community *advertises*:
+/// this is how setup reaches the *VTA*, and REST is a choice here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ProvisionTransport {
+    Tsp,
+    Didcomm,
+    Rest,
+}
+
+impl ProvisionTransport {
+    /// The runner's `force_transport` vocabulary.
+    pub(crate) fn protocol(self) -> Protocol {
+        match self {
+            ProvisionTransport::Tsp => Protocol::Tsp,
+            ProvisionTransport::Didcomm => Protocol::DidComm,
+            ProvisionTransport::Rest => Protocol::Rest,
+        }
+    }
+
+    /// The transports `resolved` advertises, in the runner's preference order.
+    fn advertised(resolved: &ResolvedVta) -> Vec<Self> {
+        [
+            (resolved.tsp_mediator_did.is_some(), ProvisionTransport::Tsp),
+            (resolved.mediator_did.is_some(), ProvisionTransport::Didcomm),
+            (resolved.rest_url.is_some(), ProvisionTransport::Rest),
+        ]
+        .into_iter()
+        .filter_map(|(on, t)| on.then_some(t))
+        .collect()
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ProvisionTransport::Tsp => "TSP",
+            ProvisionTransport::Didcomm => "DIDComm",
+            ProvisionTransport::Rest => "REST",
+        }
+    }
+}
+
+/// Ask which transport to provision over, when the VTA advertises more than
+/// one. `None` (automatic) without asking otherwise — including when the DID
+/// did not resolve, where the runner reports that itself.
+fn prompt_provision_transport(
+    resolved: Option<&ResolvedVta>,
+) -> Result<Option<ProvisionTransport>, AppError> {
+    use dialoguer::Select;
+
+    let advertised = resolved
+        .map(ProvisionTransport::advertised)
+        .unwrap_or_default();
+    if advertised.len() < 2 {
+        return Ok(None);
+    }
+    let order: Vec<&str> = advertised.iter().map(|t| t.label()).collect();
+    let mut labels = vec![format!("Automatic ({})", order.join(" → "))];
+    labels.extend(advertised.iter().map(|t| format!("{} only", t.label())));
+
+    println!();
+    println!("  How should setup reach the VTA?");
+    println!("  Automatic tries the next transport only if one fails to connect. A reply");
+    println!("  lost after the VTA acted is final — its one-time grant is spent — so pick");
+    println!("  a transport here if your mediator is known to drop replies.");
+    println!();
+    let picked = Select::new()
+        .with_prompt("Provisioning transport")
+        .items(&labels)
+        .default(0)
+        .interact()
+        .map_err(prompt_err)?;
+    Ok(picked.checked_sub(1).map(|i| advertised[i]))
 }
 
 /// A messaging transport a community can advertise.
@@ -694,6 +779,7 @@ fn prompt_inputs(single_admin: bool) -> Result<WizardInputs, AppError> {
         // Gathered later, once the mediator is known (see `collect_interactive`
         // step 2) — there is nothing to advertise before then.
         transports: Vec::new(),
+        provision_transport: None,
     })
 }
 
@@ -1565,7 +1651,13 @@ async fn run_provision_quietly(
     let ask = ProvisionAsk::for_template("vtc-host", vars, inputs.context.clone())
         .with_label("vtc-host integration");
 
-    let reply = drive_provision(inputs.vta_did.clone(), setup_key, ask).await?;
+    let reply = drive_provision(
+        inputs.vta_did.clone(),
+        setup_key,
+        ask,
+        inputs.provision_transport.map(ProvisionTransport::protocol),
+    )
+    .await?;
 
     match reply {
         VtaReply::Full(result) => Ok(*result),
@@ -1597,6 +1689,7 @@ async fn drive_provision(
     vta_did: String,
     setup_key: &EphemeralSetupKey,
     ask: ProvisionAsk,
+    force_transport: Option<Protocol>,
 ) -> Result<VtaReply, AppError> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     tokio::spawn(run_connection_test(
@@ -1605,7 +1698,7 @@ async fn drive_provision(
         setup_key.did.clone(),
         setup_key.private_key_multibase().to_string(),
         ask.clone(),
-        None,
+        force_transport,
         tx,
     ));
 
@@ -2160,12 +2253,33 @@ mod tests {
             transports: Vec::new(),
             co_admin_did: co.map(String::from),
             single_admin_mode: single,
+            provision_transport: None,
         };
         assert!(single_admin_warning(&inputs(true, None)).is_none());
         assert!(single_admin_warning(&inputs(false, Some("did:key:z6MkCo"))).is_none());
         let w = single_admin_warning(&inputs(true, Some("did:key:z6MkCo"))).unwrap();
         assert!(w.contains("another of your own identifiers"), "{w}");
         assert!(w.contains("VTI-APV-022"), "{w}");
+    }
+
+    /// #501: the provisioning transports on offer are the advertised ones, in
+    /// the runner's order, and each maps to the runner's own vocabulary.
+    #[test]
+    fn the_provisioning_transports_on_offer_are_the_advertised_ones() {
+        let resolved = ResolvedVta {
+            vta_did: "did:webvh:vta".into(),
+            tsp_mediator_did: Some("did:web:m".into()),
+            mediator_did: None,
+            rest_url: Some("https://vta.example".into()),
+        };
+        assert_eq!(
+            ProvisionTransport::advertised(&resolved),
+            vec![ProvisionTransport::Tsp, ProvisionTransport::Rest]
+        );
+        assert_eq!(ProvisionTransport::Rest.protocol(), Protocol::Rest);
+        assert_eq!(ProvisionTransport::Didcomm.protocol(), Protocol::DidComm);
+        // One transport is no choice, and an unresolved DID asks nothing.
+        assert_eq!(prompt_provision_transport(None).unwrap(), None);
     }
 
     #[cfg(unix)]

@@ -78,6 +78,14 @@ context = "default"   # the VTA context this community provisions under
 # Default false.
 # single_admin_mode = true
 
+# How setup reaches the VTA: "tsp", "didcomm" or "rest". Omit for the
+# automatic TSP > DIDComm > REST, which moves on only when a transport fails to
+# connect. A reply lost after the VTA acted on the request is final — the setup
+# DID's one-time hand-off is spent, and the VTA keeps an admin entry nobody
+# holds the key to — so force a transport here to avoid a mediator known to
+# drop replies. One the VTA does not advertise is ignored. Not persisted.
+# provision_transport = "rest"
+
 # ── DID hosting (optional) ──────────────────────────────────────────────
 # Omit the whole [webvh] table for the serverless default: the VTC
 # self-hosts its did.jsonl at base_url with a server-assigned path.
