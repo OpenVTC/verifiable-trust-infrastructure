@@ -687,7 +687,8 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # `vta/pcs/{trustee/*,vote-encrypted}` and `pcsTrustee` (#845, #847). 0.32.8:
 # trustees read their ceremony on any board; `vtc/elections/show` carries the
 # election key (#852). 0.32.9: each trustee step on the board is the trustee's
-# signed request, `trusteeStep` (#853).
+# signed request, `trusteeStep` (#853). 0.32.10: `vta/pcs/trustee/read`, and
+# trustees read `voting/election/show` on any board (#855).
 # 0.32.3: the `vtc/groups/*` family — create, update, delete, list, show,
 # members/{add,remove,list}, join, leave, requests/{list,decide} and
 # managers/{add,remove} (trust-tasks-tf #831, #833).
@@ -696,7 +697,7 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # `kindNotServed` (trust-tasks-tf #843).
 # 0.32.8: vtc/config/did-hosting/list/0.1 (trust-tasks-tf #849) — the VTA's
 # hosting servers the console offers for `dids.webvh_server`.
-trust-tasks-rs = { version = "0.32.9", default-features = false, features = [
+trust-tasks-rs = { version = "0.32.10", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
@@ -981,10 +982,4 @@ type_complexity = "allow"
 # ever reports one, the fix is the same choice we faced here: patch it (fast,
 # and it will break again on the next minor bump) or cut the dependency edge
 # upstream (slower, permanent).
-
-# Temporary, on the community-voting feature branch only: vta/pcs/trustee/read and trustees'
-# voting/election/show (trust-tasks-tf #855), until released. Removed before the branch reaches
-# `main`.
-[patch.crates-io]
-trust-tasks-rs = { git = "https://github.com/trustoverip/dtgwg-trust-tasks-tf", branch = "feat/voting-trustee-read" }
 
